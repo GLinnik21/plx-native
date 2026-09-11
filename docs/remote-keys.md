@@ -119,8 +119,8 @@ before `SDL_Init` (§5).
 | `78 \| 1<<30` | `sym` | `page_dir`, Library route only | page the grid down |
 | `300` | `wcode` | `page_dir`, Library route only | CH▲ pages up (evdev 402 `KEY_CHANNELUP`) |
 | `301` | `wcode` | `page_dir`, Library route only | CH▼ pages down (evdev 403 `KEY_CHANNELDOWN`) |
-| `8` | `sym` | `ui::search::key`, while editing | backspace |
-| `156 \| 1<<30` | `sym` | `ui::search::key`, while editing | the panel's **Clear all**. **Not producible from the evdev table** — it reaches us through the fork's own text/IME path, which is why it is measured but has no evdev provenance. |
+| `8` | `sym` | `screens::search::SearchScreen::step`, while editing | backspace |
+| `156 \| 1<<30` | `sym` | `screens::search::SearchScreen::step`, while editing | the panel's **Clear all**. **Not producible from the evdev table** — it reaches us through the fork's own text/IME path, which is why it is measured but has no evdev provenance. |
 | `48..=57` | `sym` | `screens::profiles`, PIN keypad | type that digit into the PIN. `screens::profiles::digit_of` also reads the range out of `wcode`, where it is **not** a digit — §9. |
 
 ### Swallowed

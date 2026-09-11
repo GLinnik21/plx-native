@@ -586,7 +586,11 @@ fn requery() {
 /// Called on every `install_pms` — a profile/account switch must never show the previous
 /// user's cached grid, watched-state angles, or section tabs (pms.rs's hub catalog is
 /// rebuilt wholesale on the same event; this is the browse twin).
-pub(crate) fn reset() {
+fn reset() {
+    // The section table is a crate global, and emptying it under another module's test is exactly
+    // the pollution `testlock` exists to stop — see `lib.rs::testlock`.
+    #[cfg(test)]
+    crate::testlock::assert_held("browse's section table (reset)");
     bump_gen();
     SECTIONS_GEN.fetch_add(1, Ordering::SeqCst);
     EPOCH.fetch_add(1, Ordering::SeqCst);
@@ -930,6 +934,8 @@ impl SecKind {
 /// makes a source arriving late safe at all. A source is only ever appended once, so a repeat call
 /// for it is a no-op rather than a duplicated library.
 fn append_sections(src: usize, list: Vec<(i64, String, SecKind)>) {
+    #[cfg(test)]
+    crate::testlock::assert_held("browse's section table (append)");
     // Only what this source does not already have. A re-discovery ("Check for new shares", or a
     // server that came back) therefore ADDS a library the owner has since created and leaves every
     // existing row — and every index — exactly where it was.
@@ -1017,7 +1023,7 @@ pub(crate) fn handle_of(i: usize) -> &'static str {
 }
 /// Switch section tab. Keeps the target section's remembered query/view; only re-fetches
 /// when its store is empty.
-pub(crate) fn set_cur(i: usize) {
+fn set_cur(i: usize) {
     if i >= sections().len() || i == cur() {
         return;
     }
@@ -1288,7 +1294,7 @@ fn load_remembered(sess: &crate::plex::session::Session, user: &str) {
 /// favourite, and from the boot path before discovery has settled. Recording either would write
 /// down a library the user never chose and then open there next launch — a preference invented by
 /// the app, which is worse than having none.
-pub(crate) fn note_library_choice(i: usize) {
+fn note_library_choice(i: usize) {
     let (Some(kind), Some(sec)) = (section_kind(i), sections().get(i)) else {
         return;
     };
@@ -1481,7 +1487,7 @@ fn resolve_pins() {
 /// Sources panel also records `true`, because a recorded decision is a recorded decision — the
 /// defaults must never come back and overrule one, and a profile that has flipped a switch has
 /// plainly been asked.
-pub(crate) fn record_pins(asked: bool) {
+fn record_pins(asked: bool) {
     let libs = lib_refs();
     let on: Vec<bool> = sections().iter().map(|s| s.pinned).collect();
     let user = crate::plex::session::current_profile_key();
@@ -1526,7 +1532,7 @@ pub(crate) fn first_run_asks() -> bool {
     )
 }
 
-pub(crate) fn retry_discovery() {
+fn retry_discovery() {
     for s in unsafe { &mut *addr_of_mut!(SOURCES) } {
         if !s.sections_done {
             s.retry_cd = 0;
@@ -1566,7 +1572,7 @@ pub(crate) fn is_last_pinned(i: usize) -> bool {
 /// none; this per-press flip and the two predicates above it survive as the fixture the pin
 /// invariants below are graded through.
 #[cfg(test)]
-pub(crate) fn toggle_pin(i: usize) -> bool {
+fn toggle_pin(i: usize) -> bool {
     if is_last_pinned(i) {
         return false;
     }
@@ -1603,7 +1609,7 @@ pub(crate) fn toggle_pin(i: usize) -> bool {
 /// toggle was made (`screens::onboard`'s `OnboardScreen::toggle_row`), which `toggle_pin`'s
 /// per-call check cannot see
 /// mid-edit anyway (it only ever sees what is on disk).
-pub(crate) fn apply_pins(edits: &[(usize, bool)]) {
+fn apply_pins(edits: &[(usize, bool)]) {
     let mut changed = false;
     unsafe {
         let secs = &mut *addr_of_mut!(SECTIONS);
@@ -1954,7 +1960,7 @@ fn count_line(count: i64, kind: SecKind) -> String {
 /// owns the roster ingest, and this is where it hooks in. What it does today is the half that is
 /// ours: a friend who has switched their server back on stops being unreachable on the next pump
 /// instead of after the ten-second backoff.
-pub(crate) fn recheck_shares() {
+fn recheck_shares() {
     sync_roster();
     // EVERY source, not only the ones already known to be down. Asking again is the whole content
     // of this row: a server that has since gone offline learns it (its group dims), one that came
@@ -1995,7 +2001,7 @@ pub(crate) fn total() -> i64 {
 /// The refetch the write's landing kicks is what reconciles that, as it does everywhere else here.
 ///
 /// Returns whether anything matched, matching `pms::edit_item`'s shape. **MAIN THREAD.**
-pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
+fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
     let states = unsafe { &mut *addr_of_mut!(STATES) };
     let mut hit = false;
     for state in states.iter_mut() {
@@ -2005,7 +2011,7 @@ pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) 
 }
 
 /// The grid's desired index window (visible + lookahead) — drives which page fetches next.
-pub(crate) fn want(lo: usize, hi: usize) {
+fn want(lo: usize, hi: usize) {
     unsafe { WANT = (lo, hi) };
 }
 /// What the current section's last page fetch did — the Library screen's read-out is a projection
@@ -2060,6 +2066,7 @@ pub(crate) fn cur_source_state() -> SecFetch {
 /// tier has. Compiled out of every shipped build.
 #[cfg(test)]
 pub(crate) fn seed_sources_for_test(n: usize, reachable: bool) {
+    crate::testlock::assert_held("browse's section table (seed_sources_for_test)");
     reset();
     // Source 0 takes whatever `plex::current` already is, and NOTHING is registered. Registering
     // here would leave slots in a crate-global registry that `pump`'s `sync_roster` re-adopts, and
@@ -2123,6 +2130,7 @@ pub(crate) fn seed_sources_for_test(n: usize, reachable: bool) {
 /// test should reach for to simulate an actual toggle; this is for simulating everything else.
 #[cfg(test)]
 pub(crate) fn set_pinned_for_test(i: usize, on: bool) {
+    crate::testlock::assert_held("browse's section table (set_pinned_for_test)");
     if let Some(s) = unsafe { (&mut *addr_of_mut!(SECTIONS)).get_mut(i) } {
         s.pinned = on;
     }
@@ -2135,6 +2143,7 @@ pub(crate) fn set_pinned_for_test(i: usize, on: bool) {
 /// open, without needing the worker/mailbox machinery real discovery goes through.
 #[cfg(test)]
 pub(crate) fn land_pin_for_test(pinned: bool) {
+    crate::testlock::assert_held("browse's section table (land_pin_for_test)");
     unsafe {
         let secs = &mut *addr_of_mut!(SECTIONS);
         let key = secs.len() as i64 + 1;
@@ -2152,6 +2161,7 @@ pub(crate) fn land_pin_for_test(pinned: bool) {
 
 #[cfg(test)]
 pub(crate) fn seed_pins_for_test(pinned: &[bool]) {
+    crate::testlock::assert_held("browse's section table (seed_pins_for_test)");
     reset();
     unsafe {
         *addr_of_mut!(SOURCES) = vec![BrowseSource {
@@ -2201,7 +2211,7 @@ pub(crate) fn seed_pins_for_test(pinned: &[bool]) {
 /// discover a source; there is now, and `maybe_discover` picks up exactly the pair this sets
 /// (`retry_cd == 0 && !sections_done`) on the very next [`pump`], off the main thread. The button's
 /// whole job at both layers is therefore the same one: skip the wait.
-pub(crate) fn retry_cur_source() {
+fn retry_cur_source() {
     unsafe { RETRY_CD = 0 };
     if let Some(i) = cur_source_idx() {
         if let Some(s) = source_mut(i) {
@@ -2212,7 +2222,7 @@ pub(crate) fn retry_cur_source() {
 
 /// Discovery may fail before there is a section to address. Retry exactly this source
 /// publication; a retired profile/table or removed server cannot affect its replacement.
-pub(crate) fn retry_source(epoch: u32, sid: ServerId) -> bool {
+fn retry_source(epoch: u32, sid: ServerId) -> bool {
     if table_epoch() != epoch { return false; }
     let Some(index) = sources().iter().position(|source| source.sid == sid) else { return false };
     if cur_source_idx() == Some(index) { unsafe { RETRY_CD = 0 }; }
@@ -2248,7 +2258,7 @@ pub(crate) fn sorts() -> &'static [SortEntry] {
 /// than one that acts a beat later. Sort menus are built per section from that section's own
 /// `/sorts`, so carrying an INDEX across would select a different value in the target, or silently
 /// no-op. The key is the same string on both.
-pub(crate) fn set_sort_by_key(key: &str, desc: bool) -> bool {
+fn set_sort_by_key(key: &str, desc: bool) -> bool {
     let Some(i) = sorts().iter().position(|s| s.key == key) else {
         return false;
     };
@@ -2263,7 +2273,7 @@ pub(crate) fn set_sort_by_key(key: &str, desc: bool) -> bool {
 
 /// Apply an explicit unwatched-filter value. A deferred UI transaction carries intent, not a
 /// toggle which could invert a section that changed while the page was fading.
-pub(crate) fn set_unwatched(on: bool) -> bool {
+fn set_unwatched(on: bool) -> bool {
     let Some(st) = state_mut(cur()) else { return false };
     if st.unwatched == on { return true; }
     st.unwatched = on;
@@ -2273,7 +2283,7 @@ pub(crate) fn set_unwatched(on: bool) -> bool {
 
 /// Apply a genre by its stable TAG ID rather than by its position, for [`set_sort_by_key`]'s
 /// reason. `None` is "All genres", which needs no lookup.
-pub(crate) fn set_genre_by_id(id: Option<&str>) -> bool {
+fn set_genre_by_id(id: Option<&str>) -> bool {
     match id {
         None => {
             set_genre(None);
@@ -2291,7 +2301,7 @@ pub(crate) fn set_genre_by_id(id: Option<&str>) -> bool {
 
 /// Apply a sort-menu pick: a NEW entry switches to it at its default direction; re-picking
 /// the ACTIVE entry toggles direction. Re-queries the listing either way.
-pub(crate) fn set_sort(idx: usize) {
+fn set_sort(idx: usize) {
     let c = cur();
     let Some(st) = state_mut(c) else { return };
     if idx >= st.sorts.len() {
@@ -2312,7 +2322,7 @@ pub(crate) fn genres() -> &'static [GenreEntry] {
     cur_state().map(|s| s.genres.as_slice()).unwrap_or(&[])
 }
 /// Apply a genre pick (None = All). Re-queries.
-pub(crate) fn set_genre(idx: Option<usize>) {
+fn set_genre(idx: Option<usize>) {
     let c = cur();
     let Some(st) = state_mut(c) else { return };
     st.genre = idx.and_then(|i| st.genres.get(i).cloned()).map(Arc::new);
@@ -2380,7 +2390,11 @@ fn land_directory<T>(
     mail: &'static Mutex<Option<DirectoryResult<T>>>,
     apply: impl FnOnce(&'static mut SecState, Vec<T>),
 ) {
-    if let Some(result) = mail.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    // the landing GATE (§3.3 step 3, `ui::landgate`): a replay takes this on its recorded frame
+    let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        mail.lock().unwrap_or_else(|e| e.into_inner()).take()
+    });
+    if let Some(result) = taken {
         // a menu's value list arriving repopulates an open Sort/Filter popover (`ui::idle`)
         crate::ui::idle::invalidate();
         flag.store(false, Ordering::SeqCst);
@@ -2406,7 +2420,7 @@ fn land_directory<T>(
 
 /// Lazily fetch the genre value list the first time the filter menu opens (off-thread; lands
 /// via [`pump`]).
-pub(crate) fn kick_genres() {
+fn kick_genres() {
     let done = cur_state().map(|s| s.genres_done).unwrap_or(true);
     kick_directory(done, &GENRE_FETCHING, &GENRE_RESULT, "genre", |d| {
         (!d.key.is_empty() && !d.title.is_empty()).then(|| GenreEntry {
@@ -2432,7 +2446,7 @@ pub(crate) fn rail_available() -> bool {
 }
 /// Lazily fetch the `/firstCharacter` index for the current section (off-thread; lands via
 /// [`pump`]). Letter counts are query-independent (always the unfiltered title listing).
-pub(crate) fn kick_letters() {
+fn kick_letters() {
     let done = cur_state().map(|s| s.letters_done).unwrap_or(true);
     kick_directory(
         done,
@@ -2452,7 +2466,7 @@ pub(crate) fn resolve_section(epoch: u32, sid: ServerId, key: i64) -> Option<usi
         (section.key == key && section_sid(i) == Some(sid)).then_some(i))
 }
 
-pub(crate) fn save_cursor(index: usize, cursor: Cursor) -> bool {
+fn save_cursor(index: usize, cursor: Cursor) -> bool {
     let Some(state) = state_mut(index) else { return false };
     if state.cursor.as_deref() == Some(&cursor) { return false; }
     state.cursor = Some(Arc::new(cursor));
@@ -2622,7 +2636,12 @@ fn discovery_spawn_refused(si: usize) {
 /// Apply a discovery landing. Gated on the table EPOCH, not on its shape generation: an append
 /// from one source must not throw away another's answer.
 fn land_discovery() {
-    let Some((epoch, si, landing)) = SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()
+    // the landing GATE (§3.3 step 3, `ui::landgate`): a replay takes this on its recorded frame.
+    // `maybe_discover`, which spawns the next one, is outside the gate at both call sites.
+    let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()
+    });
+    let Some((epoch, si, landing)) = taken
     else {
         return;
     };
@@ -2715,6 +2734,122 @@ fn land_discovery() {
     }
 }
 
+// ---- D3: stores::browse's one door onto every BrowseCmd -------------------------------------
+
+/// Deferred Library work against the source and table epoch a screen captured — relocated here
+/// (D3) from `stores/browse.rs`, whose `addressed` used to call every arm's mutator across the
+/// module boundary. `target`/`work` are `crate::stores::browse::{SectionAddress, LibraryWork}`.
+fn addressed(
+    target: crate::stores::browse::SectionAddress,
+    work: crate::stores::browse::LibraryWork,
+) -> bool {
+    use crate::stores::browse::{LibraryWork, QueryEdit};
+    let Some(index) = resolve_section(target.epoch, target.sid, target.section) else { return false };
+    match work {
+        LibraryWork::SaveCursor { query, cursor } => {
+            query == query_gen() && save_cursor(index, cursor)
+        }
+        LibraryWork::Commit { select, choice, query } => {
+            let switched = cur() != index;
+            if select {
+                set_cur(index);
+            }
+            if cur() != index {
+                return false;
+            }
+            if choice {
+                note_library_choice(index);
+                if switched {
+                    crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+                        feature: crate::diag::schema::Feature::LibrarySwitch,
+                    });
+                }
+            }
+            match query {
+                Some(QueryEdit::Sort { key, desc }) => set_sort_by_key(&key, desc),
+                Some(QueryEdit::Unwatched(on)) => set_unwatched(on),
+                Some(QueryEdit::Genre(id)) => set_genre_by_id(id.as_deref()),
+                None => true,
+            }
+        }
+        LibraryWork::Hubs { may_publish } => {
+            section_hubs::kick(index);
+            section_hubs::commit_staged(index, may_publish)
+        }
+        work => {
+            if cur() != index {
+                return false;
+            }
+            match work {
+                LibraryWork::Want { lo, hi } => want(lo, hi),
+                LibraryWork::Letters => kick_letters(),
+                LibraryWork::Genres => kick_genres(),
+                LibraryWork::Retry => retry_cur_source(),
+                LibraryWork::Commit { .. } | LibraryWork::Hubs { .. } | LibraryWork::SaveCursor { .. } => {
+                    unreachable!()
+                }
+            }
+            true
+        }
+    }
+}
+
+/// `stores::browse`'s one door onto every [`BrowseCmd`](crate::stores::browse::BrowseCmd) (D3):
+/// the match (and [`addressed`] above) used to live in `stores/browse.rs::run`, calling
+/// `pub(crate)` mutators across the module boundary. Relocating both here is what lets those
+/// mutators go private. Replicates the bump-vs-note bookkeeping `stores/browse.rs::run` used to
+/// do inline: every arm bumps the store's generation unconditionally EXCEPT a `SaveCursor` that
+/// changed nothing — a scroll-driven cursor save is too frequent to move the generation on a
+/// no-op — via `crate::stores::bump`/`StoreId`, both crate-wide `pub(crate)`, so this needs no
+/// help from `stores::mod`'s private `note`.
+pub(crate) fn run(cmd: crate::stores::browse::BrowseCmd) -> bool {
+    use crate::stores::browse::{BrowseCmd, LibraryWork};
+    let answer = match cmd {
+        BrowseCmd::Addressed { target, work: LibraryWork::SaveCursor { query, cursor } } => {
+            let changed = addressed(target, LibraryWork::SaveCursor { query, cursor });
+            if changed {
+                crate::stores::bump(crate::stores::StoreId::Browse);
+            }
+            return changed;
+        }
+        BrowseCmd::RetrySource { epoch, sid } => retry_source(epoch, sid),
+        BrowseCmd::Addressed { target, work } => addressed(target, work),
+        #[cfg(test)]
+        BrowseCmd::SetCur(i) => {
+            set_cur(i);
+            true
+        }
+        BrowseCmd::RecheckShares => {
+            recheck_shares();
+            true
+        }
+        BrowseCmd::ApplyPins(edits) => {
+            apply_pins(&edits);
+            true
+        }
+        BrowseCmd::RetryDiscovery => {
+            retry_discovery();
+            true
+        }
+        BrowseCmd::Reset => {
+            reset();
+            true
+        }
+        BrowseCmd::HubsInvalidateAll => {
+            section_hubs::invalidate_all();
+            true
+        }
+        BrowseCmd::SetWatchedLocal { sid, rk, on } => {
+            let a = set_watched_local(sid, &rk, on);
+            let b = section_hubs::set_watched_local(sid, &rk, on);
+            a || b
+        }
+        BrowseCmd::LeftTheDeck { sid, rk } => section_hubs::left_the_deck(sid, &rk),
+    };
+    crate::stores::bump(crate::stores::StoreId::Browse);
+    answer
+}
+
 // ---- pump: mailbox apply + next-fetch scheduling (main thread, once a frame) ----------------
 
 /// Returns true when new items just landed (the grid re-clamps focus on it).
@@ -2768,7 +2903,11 @@ pub(crate) fn pump() -> bool {
         }
     });
     // page landing
-    if let Some(r) = PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    // the landing GATE (§3.3 step 3, `ui::landgate`): a replay takes this on its recorded frame
+    let page = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()
+    });
+    if let Some(r) = page {
         // a page landing fills the grid under a screen that may have gone idle waiting for it;
         // the FAILED branch repaints too, since the retry back-off changes what the grid shows
         crate::ui::idle::invalidate();
@@ -2967,12 +3106,26 @@ fn maybe_spawn() {
 }
 
 // ---------------------------------------------------------------------------------------
-/// A two-source table for tests OUTSIDE this module (`ui::home`'s focus walk): your Movies and
+/// A two-source table for tests OUTSIDE this module (the top strip's destination walk): your Movies and
 /// TV Shows, and a friend's films and shows that fold onto them — four libraries projecting to
 /// two library-type pills (Home/Search are supplied by chrome). Writes crate globals, so the caller holds
 /// [`crate::testlock::serial`] and `reset()`s afterwards.
+///
+/// **"Two pills" is a claim about the PINS as well as about the table**, and it is the half this
+/// fixture used to leave to chance. [`append_sections`] ends in [`resolve_pins`], which reads the
+/// CURRENT PROFILE's recorded answer out of the session file — so a record naming these very
+/// machines turns a library off and the fixture quietly produces a different strip. That is not
+/// hypothetical: `library_publishes_the_actual_container_strip` and
+/// `four_libraries_on_two_servers_publish_two_type_destinations` failed alone and single-threaded
+/// in one checkout, and passed in another built from the same commit, on nothing but a
+/// `home_pins` record left in `target/<profile>/deps/auth.json` by an earlier run
+/// (`plex::session::fallback_file` is the account, and the reason a test binary can no longer
+/// reach such a file at all). Forgetting the record first is what makes the documented shape the
+/// shape every caller actually gets: the ownership defaults, yours On and a friend's Off.
 #[cfg(test)]
 pub(crate) fn seed_two_source_table_for_test() {
+    crate::testlock::assert_held("browse's section table (seed_two_source_table_for_test)");
+    crate::plex::session::forget_pins_for_test(&crate::plex::session::current_profile_key());
     tests::seed_sources(vec![
         tests::a_source("mac-mini", "", true),
         tests::a_source("nas-home", "friend", true),
@@ -3002,6 +3155,7 @@ pub(crate) fn seed_two_source_table_for_test() {
 /// and are removed by roster reconciliation; they are only suitable for pure screen tests.
 #[cfg(test)]
 pub(crate) fn seed_registered_table_for_test(sids: [ServerId; 2]) {
+    crate::testlock::assert_held("browse's section table (seed_registered_table_for_test)");
     seed_two_source_table_for_test();
     for (index, sid) in sids.into_iter().enumerate() {
         let client = crate::plex::client_for(sid).expect("registered fixture source");
@@ -3032,6 +3186,7 @@ pub(crate) fn seed_registered_table_for_test(sids: [ServerId; 2]) {
 /// grid is how those tests get their subject back.
 #[cfg(test)]
 pub(crate) fn seed_items_for_test(n: usize) {
+    crate::testlock::assert_held("browse's section table (seed_items_for_test)");
     let c = cur();
     let sid = section_sid(c).unwrap_or_default();
     if let Some(st) = state_mut(c) {
@@ -3055,6 +3210,7 @@ pub(crate) fn seed_items_for_test(n: usize) {
 
 #[cfg(test)]
 pub(crate) fn seed_letter_counts_for_test(letters: &[(&str, i64)]) {
+    crate::testlock::assert_held("browse's section table (seed_letter_counts_for_test)");
     if let Some(state) = state_mut(cur()) {
         state.letters = Arc::new(letters.iter().map(|(label, count)| ((*label).into(), *count)).collect());
         state.letters_done = true;
@@ -3063,6 +3219,7 @@ pub(crate) fn seed_letter_counts_for_test(letters: &[(&str, i64)]) {
 
 #[cfg(test)]
 pub(crate) fn seed_query_choices_for_test(sorts: Vec<SortEntry>, genres: Vec<GenreEntry>) {
+    crate::testlock::assert_held("browse's section table (seed_query_choices_for_test)");
     if let Some(state) = state_mut(cur()) {
         state.sorts = Arc::new(sorts);
         state.genres = Arc::new(genres);
@@ -3072,6 +3229,7 @@ pub(crate) fn seed_query_choices_for_test(sorts: Vec<SortEntry>, genres: Vec<Gen
 
 #[cfg(test)]
 pub(crate) fn append_section_for_test(src: usize, key: i64, title: &str, kind: SecKind) {
+    crate::testlock::assert_held("browse's section table (append_section_for_test)");
     append_sections(src, vec![(key, title.into(), kind)]);
 }
 
@@ -3610,6 +3768,13 @@ mod tests {
         let committed = std::sync::Arc::new(AtomicBool::new(false));
         let seen = committed.clone();
         let repoint = std::thread::spawn(move || {
+            // This worker races the registry's own `WRITE` mutex against the main thread's
+            // `commit_reachability_if_current` closure below — that IS the property under test —
+            // so it is not a bystander of some other module's test; it still writes the same
+            // crate-global registry `crate::testlock::serial()` protects, and it joins back into
+            // the outer test (below) strictly before that guard drops. See
+            // `crate::testlock::adopt_current_thread`'s doc for the exact contract.
+            crate::testlock::adopt_current_thread();
             start_rx.recv().unwrap();
             attempt_tx.send(()).unwrap();
             assert_eq!(
@@ -4208,6 +4373,67 @@ mod tests {
         assert!(!toggle_pin(2), "the last pinned library is refused");
         assert!(pinned(2), "…and refused means UNCHANGED, not toggled twice");
         assert_eq!(pinned_count(), 1);
+        reset();
+    }
+
+    /// **The SHARED fixture's shape is its own, not the disk's.**
+    ///
+    /// [`seed_two_source_table_for_test`] is used by three dozen tests in a dozen modules and its
+    /// doc promises one thing — four libraries projecting to two library-type pills. That promise
+    /// is about the pins as much as about the table, because [`append_sections`] ends in
+    /// [`resolve_pins`]. This plants exactly the record that broke it: an answer for the CURRENT
+    /// profile naming this fixture's own machines, with Movies switched off.
+    ///
+    /// It is the regression artifact for a failure that was NOT a race. A record of this shape,
+    /// for the empty profile key, was sitting in one checkout's `target/debug/deps/auth.json` —
+    /// which is where `paths::in_app_dir` resolves for a TEST BINARY — and it made
+    /// `app::bridge::library_publishes_the_actual_container_strip` and
+    /// `app::chrome::four_libraries_on_two_servers_publish_two_type_destinations` fail alone,
+    /// single-threaded, in that checkout only. Run against the fixture as it was, this test is red
+    /// with the Movies pill missing, in exactly the way those two were.
+    #[test]
+    fn the_shared_fixture_resolves_the_defaults_over_a_recorded_answer() {
+        let _g = crate::testlock::serial();
+        let t = TempPins::new("fixture-owns-its-pins");
+        t.watching("u-fixture-owns-its-pins");
+        let user = crate::plex::session::current_profile_key();
+        let lib = |machine: &str, key| crate::plex::session::PinnedLib {
+            machine_id: machine.into(),
+            key,
+        };
+        assert!(
+            crate::plex::session::update(|s| {
+                let mut next = s.clone();
+                next.set_pins_for(
+                    &user,
+                    crate::plex::session::HomePins {
+                        user: user.clone(),
+                        asked: true,
+                        on: vec![lib("mac-mini", 2)],
+                        off: vec![lib("mac-mini", 1), lib("nas-home", 1), lib("nas-home", 2)],
+                    },
+                );
+                Some(next)
+            }),
+            "the answer really is on disk, or this test grades nothing"
+        );
+
+        seed_two_source_table_for_test();
+
+        assert_eq!(
+            (tab_kind(0), tab_kind(1), tab_count()),
+            (Some(SecKind::Movie), Some(SecKind::Show), 2),
+            "the fixture's own two pills, whatever anybody recorded for this profile"
+        );
+        assert_eq!(
+            (pinned(0), pinned(1), pinned(2), pinned(3)),
+            (true, true, false, false),
+            "…and they are the OWNERSHIP defaults: yours On, a friend's Off"
+        );
+        assert!(
+            crate::plex::session::peek().pins_for(&user).is_none(),
+            "the record was forgotten rather than worked around, so a later resolve agrees"
+        );
         reset();
     }
 

@@ -401,10 +401,11 @@ pub(crate) struct Controller {
     /// not asked to identify dormant path capacity.
     active_variant_evidence_kbps: Option<u32>,
     /// **Committed rung changes the viewer has already seen in this playback, and when the last
-    /// one landed.** The anti-flap history for the RUNG axis, held here rather than in
-    /// `route::session` because a rung commit never leaves this object: `ff.rs::hls_demux` swaps
-    /// the cursor in place, so unlike an Original/HLS handoff there is no route mutation and no
-    /// Engine reload for `route::note_visible_switch` to hang off. A seek builds a fresh
+    /// one landed.** The anti-flap history for the RUNG axis, held here rather than on
+    /// `PlaybackSession` (a field reached only as a parameter since phase 9) because a rung commit
+    /// never leaves this object: `ff.rs::hls_demux` swaps the cursor in place, so unlike an
+    /// Original/HLS handoff there is no route mutation and no Engine reload for
+    /// `route::note_visible_switch` to hang off. A seek builds a fresh
     /// `Controller` and therefore a fresh flap budget, which is the same rule every other piece of
     /// live state here follows.
     visible_switches: u32,

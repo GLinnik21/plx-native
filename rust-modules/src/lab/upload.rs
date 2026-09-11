@@ -95,7 +95,7 @@ fn set_phase(p: u8, detail: String) {
 }
 
 /// **Main thread.** Sample everything, then hand it to a worker.
-pub(crate) fn request(reason: &str) {
+pub(crate) fn request(reason: &str, ps: &crate::route::PlaybackSession) {
     let Some(cfg) = config::get() else { return };
     if INFLIGHT.swap(true, Relaxed) {
         crate::log("lab: upload already in flight — press ignored");
@@ -107,7 +107,7 @@ pub(crate) fn request(reason: &str) {
     crate::log(&format!(
         "lab: snapshot seq={seq} reason={reason} route={route}"
     ));
-    let doc = crate::lab::snapshot::build(seq, reason, &cfg.session, route);
+    let doc = crate::lab::snapshot::build(seq, reason, &cfg.session, route, ps);
     set_phase(PHASE_SENDING, String::new());
     let url = cfg.url();
     let secret = cfg.secret.clone();

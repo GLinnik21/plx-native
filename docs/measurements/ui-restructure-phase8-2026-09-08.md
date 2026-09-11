@@ -3,6 +3,120 @@
 The controlling specification remains `~/.claude/plans/ui-plxnative-structured-phoenix.md` v4.
 This is a progress record, not a replacement or reduced definition of done.
 
+## Correction to "Review follow-up" below — 2026-09-09
+
+That section's closing sentence — "Existing Settings scrim/entrance reads of legacy page alpha
+remain; migrating the remaining navigation reads is still required" — no longer holds. A separate
+lane (`lane/nav-alphas-on-drawframe`, spec §14 phase 8) added `DrawFrame::nav_page_alpha` in
+`rust-modules/src/ui/screen.rs` — populated once per frame from the same `NavPresentation` the
+dispatcher already captures, and left un-clobbered when a container (a `RouteSurface`'s own
+appear motion, in `ui/dispatch.rs`) overwrites `DrawFrame::page_alpha` in place with its own local
+alpha. `screens/settings.rs`'s `Family::Settings` scrim and entrance arms, and
+`screens/detail/mod.rs`'s hero-button ambient-sample gate, now read that field (through the new
+pure helpers `settings_scrim_alpha`/`settings_entrance_alpha` and `may_sample_control_ground`)
+instead of calling `crate::ui::nav::page_alpha()` live. `ci/check-deps.sh` gained a `nav` gate
+(allowlist `ci/allow/nav.txt`, count 0) holding `crate::ui::nav::` at zero live calls under
+`rust-modules/src/screens/`. Item 7 of "Required remaining work" below (Library/Search's own
+`DrawFrame` cutover) is untouched by this and remains open.
+
+## Search live cutover — 2026-09-09
+
+`AppMounter.search_owned` is removed from `rust-modules/src/app/bridge.rs`; `Route::Search` mounts
+`screens::search::SearchScreen` unconditionally. Every legacy `ui::search::*` call in
+`app/{bridge,nav,input,run,mod}.rs` and `app/search_owned_tests.rs` is retired (the dev `search`
+boot trigger now seeds `stores::search::SearchCmd::SetQuery` directly, and the `searchosc`
+oscillator injects synthetic D-pad input through the dispatcher, mirroring `homeosc`, instead of
+reaching into retired screen state). The legacy `rust-modules/src/ui/search/{mod,field,results,
+empty,recents}.rs` module tree is deleted and `pub mod search` is gone from `ui/mod.rs`;
+`ci/allow/statics-migration.txt` dropped its three `ui/search/*` lines (21 → 18 entries). The 83
+legacy test bodies were reconciled against the owned screen, store and shared-component contracts
+*before* deletion, verified by test name rather than by count: 68 Ported under the same or a
+stated name, 13 Covered by an existing owned test, 2 Retired as implementation-history assertions
+with no migration contract of their own
+(`docs/measurements/search-render-contract-ledger.md`).
+
+Verified, per-package, in isolated worktrees cut from this branch (no whole-project build run by
+any single package, per this swarm's own leaf-worker rule): `cargo +nightly test --lib` and
+`--features hostsim` both green across every package's touched worktree state, `make lint` clean,
+`CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
+--no-default-features` clean, `bash ci/check-deps.sh` and `bash ci/check-statics.sh` both exit 0,
+and `grep -rn 'ui::search' rust-modules/src | wc -l` is 0 (repo-wide). A later same-day commit
+(`docs(boot): fix last stray ui::search:: reference after Search cutover`) retired the one
+doc-comment cross-reference this paragraph flagged as surviving in `app/boot.rs` (it named
+`ui::search::recents`, which moved to `search::recents`), so that caveat no longer applies —
+see the integration entry immediately below for the re-measured, whole-tree zero.
+`grep -rn 'ui::search::' rust-modules/src/app` is empty.
+
+**What remains owed (as of this per-package checkpoint).** No TV run happened anywhere in this
+task, by design — no `ssh`, `make deploy/run/test`, or `tools/tv-*` was invoked by any package.
+Neither `tests/focusfp.sh --only 4` (the live-sim-plus-mock-PMS mode) nor its committed-fixture
+replay alternative was run by this doc-only package, which does not drive a simulator or a mock
+PMS; whether an earlier or later package in this run exercised either mode is that package's own
+report, not restated here as a claim of this section. Device/simulator pixel-level and
+text-rasterization verification of the owned Search screen is a separate obligation this cutover
+does not retire, per this repo's own tier rules (`docs/agent-reference.md`'s Testing/verification
+section): host tests prove behavior, not pixels.
+
+### Search cutover — integration re-check, 2026-09-09
+
+The swarm-gate integration stage re-ran every blocking check against the merged, committed tree
+at HEAD (no worktree isolation, no per-package scoping) and closed the one item the checkpoint
+above left open. `bash ci/check-deps.sh` and `bash ci/check-statics.sh` both exit 0 against the
+merged tree (`ci/allow/statics-migration.txt` reads 18 entries, no `ui/search/*` line, `# count:
+18` self-consistent). `cargo +nightly test --lib` (2727 passed) and `--features hostsim` (2748
+passed) both green, `make lint` clean, `CARGO_INCREMENTAL=0 cargo +nightly check
+--manifest-path rust-modules/Cargo.toml --lib --no-default-features` clean. `grep -rn
+'ui::search' rust-modules/src | wc -l` is **0** whole-repo, superseding the per-package caveat
+above. `tests/focusfp.sh --only 4` (the live-sim-plus-mock-PMS mode, not the committed-fixture
+replay — the script's own mock PMS started and answered) **passed**: `[PASS] 4
+search-shelf-detail-back: 8 fingerprint lines -> /tmp/plxnative-focusfp/4-search-shelf-detail-back.fp`.
+No TV-touching command (`ssh`, `make deploy/run/test`, `tools/tv-*`) was invoked during this
+re-check. Device/simulator pixel-level and text-rasterization verification of the owned Search
+screen remains a separate, un-retired obligation, unchanged from the paragraph above.
+
+### Search cutover — fix wave 1 merged and re-verified, 2026-09-09
+
+A reviewer wave (`sg/2e51a042/fix-w1-g1`, keys `search-screen-paints-no-shared-top-bar`,
+`search-strip-motion-never-stepped`, `dead-input-stubs-left-in-the-live-ladder`,
+`boot-seed-test-does-not-exercise-the-trigger-arm`) merged cleanly (fast-forwardable, no
+conflicts) on top of the integration re-check above and fixed three related defects the cutover
+had left behind. **What changed:** (1) `Bridge::draw_chrome`'s route guard admitted only
+`Route::Home | Route::Library`, so the owned Search screen never painted the shared tab strip or
+profile chip even though `nav::route_wears_tab_bar` and `capture_chrome` both already treated it
+as a bar-wearing route — focus could walk onto invisible pills and an invisible chip. The guard is
+now a named `Bridge::draws_chrome_for` predicate derived from `route_wears_tab_bar` instead of
+re-listing routes, closing the class of bug rather than one instance of it, and pinned by a new
+host test (`search_owned_tests.rs::every_route_wearing_the_shared_bar_reaches_the_chrome_paint_guard`)
+observed RED first by reverting the predicate to the old literal match. (2) `run::update` never
+stepped the shared strip's springs (`tab_row_update_with`) on `Route::Search`, so the
+capsule/scroll/chip animations and their published hit rects went stale on that route; a
+`Route::Search` arm was added, mirroring the existing Home/Library arms (not a new call site, not
+a second `StoreWork::Search` pump — `SearchScreen::tick`'s own store pump is unchanged and this
+only steps the shared-bar springs `SearchScreen::tick` does not touch). (3) `input::key_move_focus`
+and `input::top_focus` were retired no-op stubs still wired into the live key ladder (`key_ok`'s
+chip arm read `top_focus` and could never reach the chip); both functions and their call sites are
+deleted outright, along with the now-unused `_nav: &mut Option<NavReq>` parameter on `key_ok`.
+(4) The `/tmp/plxnative-search` boot-trigger host test re-typed the store command by hand instead
+of driving the trigger's own code path; the seed-and-stand logic was extracted into
+`app::run::apply_search_boot_trigger` (called by both `dev_scripts` and the renamed test
+`a_seeded_boot_query_survives_the_freshly_mounted_screens_first_sync`), leaving only the trigger
+file's own `dev::read` call outside host-test reach.
+
+**What was verified against the merged tree at this integration stage** (no TV, no worktree
+isolation): `make check` — `cargo +nightly test --lib` 2728 passed (was 2727 before this wave; one
+net new host test), `--features hostsim` 2749 passed (was 2748), both 0 failed, `make lint` clean;
+`CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
+--no-default-features` clean; `bash ci/check-deps.sh` and `bash ci/check-statics.sh` both exit 0
+(`ci/allow/statics-migration.txt` unchanged at 18 entries, no `ui/search/*` line); `grep -rn
+'ui::search' rust-modules/src | wc -l` is **0** whole-repo; `tests/focusfp.sh --only 4` (live-sim
+against the script's own mock PMS, not fixture replay) **passed**: `[PASS] 4
+search-shelf-detail-back: 7 fingerprint lines`. The fingerprint line count (7, vs. 8 in the
+pre-fix-wave re-check above) reflects the chip/strip now painting and animating rather than a
+regression — this run's own `.fp` file is the artifact, not re-diffed against a committed fixture
+by this task. No TV-touching command was invoked. **What remains owed:** unchanged from the
+paragraph above — device/simulator pixel-level and text-rasterization verification of the shared
+bar now painting on Search is still a separate, un-retired obligation.
+
 ## Library owned-screen wave — implementation active
 
 Parent commit `6421906e` adds `Seat::ProjectedFrom(GroupId)` and uses it at MasterDetail's
@@ -628,6 +742,8 @@ Home is mounted on `codex/ui-phase8` at `e94dbc66`, including worker final
 `de3519a8` by cherry-pick. Application chrome, addressed Home commands, focus probe and opener
 redraw now use the owned screen. The old `ui/home.rs` remains deliberately until substantive
 legacy-contract parity is demonstrated; it is not the production Home implementation.
+**Superseded 2026-09-09:** that parity was reconciled test by test and `ui/home.rs` was deleted —
+`docs/measurements/home-legacy-contract-ledger.md` is the disposition of all 34 of its tests.
 
 Parent review corrections in the working tree:
 - Frame views are captured once before input; later splits retain the same publication. The

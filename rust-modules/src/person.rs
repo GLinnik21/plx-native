@@ -700,7 +700,7 @@ fn resettle(p: &mut Person) {
 /// undone by the next landing.
 ///
 /// Returns whether anything matched. **MAIN THREAD.**
-pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
+fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
     let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
         return false;
     };
@@ -732,7 +732,7 @@ pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
 /// `sid` is the server whose credit row this is, captured by the caller. It is where `key` means
 /// something and where the headshot comes from — but it is NOT the only server read: [`sources`]
 /// takes the whole roster, and every other entry resolves its own id from `guid` first.
-pub(crate) fn open(sid: ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
+fn open(sid: ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
     supersede();
     let srcs = sources(sid, key, name);
     unsafe {
@@ -844,7 +844,7 @@ const DEV_BIO: &str = "";
 /// Drop the open person and supersede any fetch for it — on leaving the page. Without the
 /// supersede, a landing arriving after the page closed would repopulate `CURRENT` behind whatever
 /// screen is now mounted (the bug `metadata::clear` carries the same guard for).
-pub(crate) fn close() {
+fn close() {
     supersede();
     unsafe { *addr_of_mut!(CURRENT) = None };
 }
@@ -853,8 +853,31 @@ pub(crate) fn close() {
 /// new user must never inherit the previous one's page, and the flags must move with the mailbox.
 /// It is also what makes [`sources`]' read-once safe: the roster only changes on the paths that
 /// call this.
-pub(crate) fn reset() {
+fn reset() {
     close();
+}
+
+/// `stores::person`'s one door onto every [`PersonCmd`](crate::stores::person::PersonCmd) (D3):
+/// the match used to live in `stores/person.rs::run`, calling `open`/`close`/`reset` across the
+/// module boundary. Relocating it here is what lets those three go private — `set_watched_local`
+/// was already `pub(crate)` for the same reason and joins them.
+pub(crate) fn run(cmd: crate::stores::person::PersonCmd) -> bool {
+    use crate::stores::person::PersonCmd;
+    match cmd {
+        PersonCmd::Open { sid, key, guid, name, thumb } => {
+            open(sid, &key, &guid, &name, &thumb);
+            true
+        }
+        PersonCmd::Close => {
+            close();
+            true
+        }
+        PersonCmd::Reset => {
+            reset();
+            true
+        }
+        PersonCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(sid, &rk, on),
+    }
 }
 
 /// True while the open person has nothing to show yet — the page's spinner state. A failed fetch
@@ -891,8 +914,12 @@ pub(crate) fn pump() -> bool {
             }
         }
         // the take releases the single-flight claim with the mail, whatever the landing turns out
-        // to be — `Fetch::take` is where that rule lives
-        if let Some(r) = FETCH[i].take() {
+        // to be — `Fetch::take` is where that rule lives. Under a replay it happens on the frame
+        // the recording took it on (§3.3 step 3, `ui::landgate`); `maybe_spawn` below is
+        // deliberately outside the gate, so the request that produces it still goes out on time.
+        if let Some(r) =
+            crate::stores::take_landing(crate::stores::StoreId::Person, || FETCH[i].take())
+        {
             // EVERY landing repaints, the failures included. `ui::idle` gates the whole frame
             // on a settled screen, so without this a shelf that arrives (or a spinner that should
             // stop) waits for the next keypress to become visible. This page had no such call at
@@ -1393,9 +1420,14 @@ fn maybe_spawn(i: usize) {
 /// in the app carries, via the same [`AccountClient`](crate::plex::account::AccountClient). Reading
 /// the session here rather than passing it in keeps this off the main thread's critical path; it is
 /// one small file read per person page.
+///
+/// **`peek`, not `load`, and "off the main thread" is why rather than an excuse.** `load` re-persists
+/// a plaintext session, and it takes `session::IO` across that write — a temp file, `sync_all`, a
+/// rename and a second `sync_all` — so a worker calling it PARKS the next main-thread `peek` for as
+/// long as the flash takes. This reader only reads: it wants a `client_id` and a token.
 #[cfg(not(test))]
 fn fetch_profile(guid: &str) -> Option<crate::plex::discover::PersonProfile> {
-    let s = crate::plex::session::load();
+    let s = crate::plex::session::peek();
     let tok = (!s.account_token.is_empty()).then_some(s.account_token.as_str());
     crate::plex::account::AccountClient::new(&s.client_id, tok).person_profile(guid)
 }
@@ -1404,7 +1436,7 @@ fn fetch_profile(guid: &str) -> Option<crate::plex::discover::PersonProfile> {
 /// respect — same identity, same session read, same host — so the two share a spawn arm.
 #[cfg(not(test))]
 fn fetch_credits(guid: &str) -> Option<Vec<crate::plex::discover::CreditGroup>> {
-    let s = crate::plex::session::load();
+    let s = crate::plex::session::peek();
     let tok = (!s.account_token.is_empty()).then_some(s.account_token.as_str());
     crate::plex::account::AccountClient::new(&s.client_id, tok).person_credits(guid)
 }
@@ -1666,7 +1698,7 @@ fn guid_tail(s: &str) -> &str {
 /// Takes the Discover `ratingKey` (a bare catalog ID) and matches it against the tail of each
 /// source's own guid index — see [`guid_tail`] for why neither side's string is compared whole.
 /// First match wins in registry order, which is the same "yours before a friend's" precedence
-/// `alt_sources` states explicitly.
+/// `screens::alt_sources` states explicitly.
 fn match_local(p: &Person, id: &str) -> Option<(ServerId, String)> {
     let id = guid_tail(id);
     if id.is_empty() {
@@ -1688,6 +1720,7 @@ fn match_local(p: &Person, id: &str) -> Option<(ServerId, String)> {
 /// `Src::matches` instead.
 #[cfg(test)]
 pub(crate) fn install_credits_for_test(groups: &[(&str, usize)]) {
+    crate::testlock::assert_held("the person store (install_credits_for_test)");
     use crate::plex::discover::{Credit, CreditGroup, CreditItem};
     let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
         return;
@@ -1730,6 +1763,7 @@ pub(crate) fn install_credits_for_test(groups: &[(&str, usize)]) {
 /// than call it and expect `credited` to stay false.
 #[cfg(test)]
 pub(crate) fn install_for_test(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
+    crate::testlock::assert_held("the person store (install_for_test)");
     let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
         return;
     };
@@ -1760,6 +1794,7 @@ pub(crate) fn install_for_test(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
 /// settle unrelated credits state and therefore supports multi-source pending-return tests.
 #[cfg(test)]
 pub(crate) fn install_source_for_test(sid: ServerId, movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
+    crate::testlock::assert_held("the person store (install_source_for_test)");
     let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
         return;
     };
@@ -2597,7 +2632,7 @@ mod tests {
     /// Empty the registry around a test that needs real slots in it, and hand it back empty — the
     /// discipline `plex::servers`' own tests document: a client left registered at a port that
     /// closed is one another module's pump will dial on a background thread.
-    struct FreshRegistry(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    struct FreshRegistry(#[allow(dead_code)] crate::testlock::Serial);
     impl Drop for FreshRegistry {
         fn drop(&mut self) {
             crate::plex::reset_servers_for_test();

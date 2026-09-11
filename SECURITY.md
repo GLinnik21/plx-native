@@ -6,7 +6,7 @@ Report privately, **not** as a public issue:
 
 - **GitHub Security Advisories** — <https://github.com/GLinnik21/plx-native/security/advisories/new>
   (preferred: it is private, it threads, and it produces a CVE if one is warranted)
-- or e-mail **glinnik21@gmail.com** with `PlxNative security` in the subject.
+- or e-mail **support@plxnative.com** with `PlxNative security` in the subject.
 
 This is a one-person unpaid project, so the honest service level is: acknowledged within **7 days**,
 an assessment within **30**. If you have not heard back in a week, assume the mail was lost and open

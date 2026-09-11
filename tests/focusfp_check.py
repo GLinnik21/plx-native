@@ -127,21 +127,30 @@ def check(flow, lines):
         if not any(stages[i:i + len(wanted)] == wanted for i in range(len(stages))):
             return "the Settings → Privacy → Settings → Legal → Settings → Home sequence never ran"
     elif flow == 8:
-        menu = next((i for i, r in enumerate(records)
-                     if r.get("route") == "itemmenu" and r.get("over") == "detail"), None)
+        # `imenu=1`, not `route=itemmenu over=detail`: since UI-restructure phase 10 the card menu
+        # is a ModalStack SURFACE, so the fingerprint names the page under it as `route=detail`
+        # (the host is the route) and the panel's own fields ride on the same line. That also
+        # means a menu record IS a detail record, hence the `imenu` filter on both sides below —
+        # without it the "before" sample would be the frame the menu opened on rather than the
+        # frame before it.
+        menu = next((i for i, r in enumerate(records) if r.get("imenu") == "1"), None)
         if menu is None:
-            return "holding Related never opened ItemMenu over Detail"
-        before = [r for r in records[:menu] if r.get("route") == "detail"]
-        after = [r for r in records[menu + 1:] if r.get("route") == "detail"]
+            return "holding Related never opened the item menu"
+        if records[menu].get("route") != "detail":
+            return "the item menu opened over %s, not Detail" % records[menu].get("route")
+        before = [r for r in records[:menu]
+                  if r.get("route") == "detail" and r.get("imenu") is None]
+        after = [r for r in records[menu + 1:]
+                 if r.get("route") == "detail" and r.get("imenu") is None]
         if not before or before[-1].get("sec") != "3" or before[-1].get("card") != "1":
             return "the held control was not a Related card"
         if not after:
-            return "BACK never dismissed ItemMenu to Detail"
+            return "BACK never dismissed the item menu back to Detail"
         if any(before[-1].get(k) in (None, "-") or after[-1].get(k) in (None, "-")
                for k in ("sid", "rk", "sec", "col")):
             return "the Detail fingerprints omit the item identity or position"
         if any(before[-1].get(k) != after[-1].get(k) for k in ("sid", "rk", "sec", "col")):
-            return "dismissing ItemMenu lost the Related card's position"
+            return "dismissing the item menu lost the Related card's position"
     elif flow == 12:
         film = lambda r: r.get("route") == "person" and r.get("filmography") == "1"
         first = next((i for i, r in enumerate(records) if film(r)), None)

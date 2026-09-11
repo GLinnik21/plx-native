@@ -145,7 +145,8 @@ ALL_TRIGGERS = [
     "plxnative-heroidx", "plxnative-pickuser", "plxnative-firstrun",
     "plxnative-onboardosc", "plxnative-consent", "plxnative-consentosc",
     "plxnative-settings", "plxnative-settingsosc", "plxnative-acct", "plxnative-acctosc",
-    # itemmenu snaps into the grid and opens the press-and-hold card context menu (route=itemmenu)
+    # itemmenu snaps into the grid and opens the press-and-hold card context menu
+    # (route=home overlay=itemmenu: the menu is a ModalStack surface since UI-restructure phase 10)
     "plxnative-itemmenu",
     # playurl is the synthetic tier's entry; replay is how many times a FINISHED one restarts (#46)
     "plxnative-playurl", "plxnative-replay", "plxnative-gstlog", "plxnative-quality",
@@ -4829,6 +4830,60 @@ def parse_worst(lines, route, overlay):
     return out
 
 
+# `coldopen screen=<word> ms=<n> prepared=<bool>` — one line per screen MOUNT (restructure spec
+# §8.4). UNARMED: the app writes it in every build, with no trigger and no threshold. That is the
+# whole reason it exists as a separate instrument, and the reason `stall_ceiling_ms` could not be
+# re-pointed at it — see `grade_coldopen`.
+COLDOPEN_RE = re.compile(r"\bcoldopen screen=(\w+) ms=(\d+) prepared=(true|false)")
+
+
+def parse_coldopen(lines, screen):
+    """Every `coldopen` sample (ms, prepared) for one SCREEN word, in log order."""
+    reject_simulator(lines)
+    out = []
+    for ln in lines:
+        m = COLDOPEN_RE.search(ln)
+        if m and m.group(1) == screen:
+            out.append((int(m.group(2)), m.group(3) == "true"))
+    return out
+
+
+def grade_coldopen(scene, lines, route, overlay):
+    """`coldopen_ceiling_ms`: the SLOWEST cold open of this scene's screen must be <= the ceiling,
+    and there must be at least one.
+
+    **Why this is not `stall_ceiling_ms` pointed at a different number.** That gate reads
+    `FRAMEDROP` lines, and the frame-drop detector prints only ABOVE the threshold the harness
+    armed it with — `frame_ceiling_threshold`, the lower of the scene's two ceilings. So a cold
+    open FASTER than the ceiling leaves no line at all, `parse_framedrop` returns [], and
+    `grade_frame_ceilings` passes it as "no FRAMEDROP line". The instrument censors every sample
+    below its own gate, which is the half of the distribution a ceiling most needs to see: five
+    runs of the same scene read "no-line PASS, 208.5, no-line PASS, 191.4, 227.8" (TV session 5,
+    2026-09-10) and there is no way to tell a 30 ms cold open from a 159 ms one in that.
+
+    `coldopen` is written unconditionally, so every run contributes exactly one sample per mount
+    and an absent line means the screen never mounted — a FAILURE here rather than a silent pass.
+    Returns (ok, detail_suffix)."""
+    ceiling = scene.get("coldopen_ceiling_ms")
+    if ceiling is None:
+        return True, ""
+    screen = overlay or route
+    samples = parse_coldopen(lines, screen)
+    if not samples:
+        return False, (f" | no `coldopen screen={screen}` line — the screen never mounted, or this "
+                       f"build predates the instrument")
+    worst = max(ms for ms, _ in samples)
+    unprepared = sum(1 for _, ok in samples if not ok)
+    ok = worst <= ceiling
+    detail = (f" | coldopen worst={worst}ms over {len(samples)} mount(s) vs coldopen_ceiling_ms "
+              f"{ceiling}")
+    if unprepared:
+        # reported, never asserted: a refusal is the budget working, and whether it is acceptable
+        # is what the TV session decides, not this run
+        detail += f" ({unprepared} mount(s) drew with a refused resource)"
+    return ok, detail
+
+
 def parse_framedrop(lines, route):
     """Every FRAMEDROP `total=` (ms) logged on this route, in log order, warmup included: a stall
     is graded over the WHOLE run because the interesting one (a cold mount) is the first."""
@@ -5091,6 +5146,12 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     ok = ok and ok_f
     detail += detail_f
 
+    # `coldopen_ceiling_ms`: the frame-plan instrument's own gate (see grade_coldopen for why it
+    # is not `stall_ceiling_ms` with a different number on it).
+    ok_o, detail_o = grade_coldopen(scene, lines, route, overlay)
+    ok = ok and ok_o
+    detail += detail_o
+
     print(f"    [{'PASS' if ok else 'FAIL'}] {detail}")
     return ok, detail
 
@@ -5119,7 +5180,7 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
     results = []
     for s in scenes:
         try:
-            ok, detail = run_fps_scene(s, cfg, token)
+            ok, detail = run_fps_scene(s, cfg, token, extra_triggers=tuple(cfg.get("extra_triggers") or ()))
         except Exception as e:  # keep the batch going
             ok, detail = False, f"ERROR: {e}"
             print(f"    [FAIL] ERROR: {e}")
@@ -5350,6 +5411,11 @@ def main():
                          "play-only decision + Load-payload cases). Default: every case. "
                          "NB distinct from fps_scenes' ui|player 'tier'.")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
+    ap.add_argument("--extra-trigger", action="append", default=[], metavar="NAME[=CONTENT]",
+                    help="arm one more plxnative-* trigger for every fps scene of this run (e.g. "
+                         "plxnative-cpuprof, plxnative-framedrop=20). A profiler trigger disqualifies "
+                         "the run's fps= as a pacing number, exactly as --graphics-profile does; use "
+                         "it to attribute a frame, never to grade one.")
     ap.add_argument("--save-logs", metavar="DIR", default=None,
                     help="write each case's full event log to DIR/<case>.log. The app truncates "
                          "its log every launch and each case overwrites the previous one, so a "
@@ -5371,6 +5437,16 @@ def main():
     ap.add_argument("--owner", action="store_true",
                     help="run as the config.local.h OWNER token (default: run as the overlay's "
                          "test_user, so watch history stays off your real account)")
+    ap.add_argument("--print-test-token", action="store_true",
+                    help="resolve manifest.local.json's test_user to its per-server Plex token, "
+                         "print it to stdout and exit -- no cases, no television, no TV lock. "
+                         "This is the identity-resolution half of the --owner/test_user split "
+                         "above, exposed standalone so tools/tv-session.sh's `up --guest` can "
+                         "reuse it instead of re-deriving the plex.tv shared_servers call: a "
+                         "guest boot must resolve the REAL managed-user token or refuse, never "
+                         "fall through to the owner's (see the 2026-09-10 postmortem in that "
+                         "script's header — a silent fallback wrote real progress into the "
+                         "household account and unscrobbling it also reset the item's viewCount).")
     ap.add_argument("--shared-server", action="store_true",
                     help="inject the overlay's `shared_server` credentials into EVERY case/scene of "
                          "this run, not just the ones declaring needs_shared_server. For bringing "
@@ -5404,6 +5480,28 @@ def main():
                     help="port for the fixture HTTP server (default: pick a free one). Pin it when "
                          "a firewall rule names a port")
     args = ap.parse_args()
+    if args.print_test_token:
+        # Standalone: this mode answers one question (what token is the managed test user's?)
+        # and touches nothing else -- no case selection, no TV lock, no launch. Reject every flag
+        # that implies one of those instead of silently ignoring it, so a copy-pasted command line
+        # fails loudly rather than quietly running the wrong thing.
+        conflicting = [f for f, v in [
+            ("--list", args.list), ("--server", args.server), ("--fps", args.fps),
+            ("--fps-player", args.fps_player), ("--pipeline", args.pipeline),
+            ("--owner", args.owner), ("--build", args.build),
+        ] if v]
+        if conflicting:
+            sys.exit(f"--print-test-token is standalone and cannot combine with {', '.join(conflicting)}")
+        manifest = load_manifest(pipeline_only=False, tv_override=args.tv)
+        test_user = manifest.get("test_user")
+        if not test_user:
+            sys.exit("no test_user in manifest.local.json -- nothing to resolve as a guest "
+                     "identity (add a test_user block, see manifest.local.json.example; or boot "
+                     "as the owner explicitly instead of asking for a guest)")
+        pms = manifest["pms"]
+        token = fetch_managed_user_token(read_token(), pms["host"], pms["port"], test_user["id"])
+        print(token)
+        return 0
     if args.graphics_profile and not (args.fps or args.fps_player):
         sys.exit("--graphics-profile operates on one deterministic FPS scene; combine it with "
                  "--fps or --fps-player and select one with --only/--filter")
@@ -5444,6 +5542,7 @@ def main():
         "pms": manifest.get("pms", {}),
         "no_early": args.no_early,
         "save_logs": args.save_logs,
+        "extra_triggers": [tuple(t.split("=", 1)) if "=" in t else (t, None) for t in args.extra_trigger],
     }
     cases = manifest["cases"]
     if args.suite:
@@ -5507,6 +5606,8 @@ def main():
                 gates += f" worst_ceiling_ms={s['worst_ceiling_ms']}"
             if s.get("stall_ceiling_ms") is not None:
                 gates += f" stall_ceiling_ms={s['stall_ceiling_ms']}"
+            if s.get("coldopen_ceiling_ms") is not None:
+                gates += f" coldopen_ceiling_ms={s['coldopen_ceiling_ms']}"
             mark = "  [+2nd server]" if s.get("needs_shared_server") else ""
             mark += f"  [SKIP: {s['skip']}]" if s.get("skip") else ""
             print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} {gates}{mark}")

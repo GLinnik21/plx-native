@@ -1,16 +1,16 @@
 //! The foreground/background lifecycle machine (`ForegroundLifecycle`, already a tested
 //! `State + Event -> Effects` machine) and the transport-pause contract. Moved out of `app.rs`
-//! verbatim in phase 1a (a pure move; `pub(super)` widening only).
+//! verbatim in phase 1a (a pure move; `pub(crate)` widening only).
 
 use super::*;
 
 // transport state — was the C playback globals; now crate::player (atomics)
 #[inline]
-pub(super) fn paused() -> bool {
+pub(crate) fn paused() -> bool {
     crate::player::TX.paused.load(Relaxed)
 }
 #[inline]
-pub(super) fn set_paused(v: bool) {
+pub(crate) fn set_paused(v: bool) {
     crate::player::TX.commit_paused(v)
 }
 /// Ask the synchronized player clock to commit a user Pause/Resume. The player publishes the feed
@@ -18,33 +18,36 @@ pub(super) fn set_paused(v: bool) {
 /// in which deadline accounting still treated an already-accepted Pause as active playback.
 /// Resume during an internal HLS hold is accepted as a deferred transition: feeding reopens, while
 /// measured re-prime owns both the eventual Starfish Play and the matching ACB Resume.
-pub(super) fn set_transport_paused(mt: &crate::task::MainThread, value: bool) -> bool {
+pub(crate) fn set_transport_paused(
+    pa: &mut crate::player::adapter::PlayerAdapter,
+    value: bool,
+) -> bool {
     if paused() == value {
         return true;
     }
     if value {
-        crate::player::pause(mt)
+        crate::player::pause(pa)
     } else {
-        crate::player::resume(mt)
+        crate::player::resume(pa)
     }
 }
 
 /// The only two inputs which may claim an OS-suspended playback session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ForegroundInput {
+pub(crate) enum ForegroundInput {
     DidForeground,
     PlayKey,
 }
 
 /// Viewer clock intent carried independently of the native Engine's current clock state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ForegroundClock {
+pub(crate) enum ForegroundClock {
     Paused,
     Playing,
 }
 
 impl ForegroundClock {
-    pub(super) fn from_paused(paused: bool) -> Self {
+    pub(crate) fn from_paused(paused: bool) -> Self {
         if paused {
             Self::Paused
         } else {
@@ -56,7 +59,7 @@ impl ForegroundClock {
 /// Work which has been claimed but whose synchronous external effect has not settled yet.
 /// Publishing this state BEFORE each call is what makes a nested/duplicate DID or Play harmless.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ForegroundClaim {
+pub(crate) enum ForegroundClaim {
     Prepare {
         saved_ns: i64,
         saved_clock: ForegroundClock,
@@ -76,7 +79,7 @@ pub(super) enum ForegroundClaim {
 /// The attempt type is opaque to the reducer. Production uses `RouteStartAttempt`, while pure
 /// tests can prove exact-attempt handling with an ordinary integer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ForegroundState<Attempt = crate::route::RouteStartAttempt> {
+pub(crate) enum ForegroundState<Attempt = crate::route::RouteStartAttempt> {
     Idle,
     Suspended {
         id: u64,
@@ -104,18 +107,18 @@ pub(super) enum ForegroundState<Attempt = crate::route::RouteStartAttempt> {
 }
 
 #[derive(Debug)]
-pub(super) struct ForegroundLifecycle<Attempt = crate::route::RouteStartAttempt> {
-    pub(super) state: ForegroundState<Attempt>,
-    pub(super) next_id: u64,
+pub(crate) struct ForegroundLifecycle<Attempt = crate::route::RouteStartAttempt> {
+    pub(crate) state: ForegroundState<Attempt>,
+    pub(crate) next_id: u64,
 }
 
 impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
-    pub(super) const IDLE: Self = Self {
+    pub(crate) const IDLE: Self = Self {
         state: ForegroundState::Idle,
         next_id: 0,
     };
 
-    pub(super) fn suspend(&mut self, saved_ns: i64, clock: ForegroundClock) {
+    pub(crate) fn suspend(&mut self, saved_ns: i64, clock: ForegroundClock) {
         self.next_id = self.next_id.wrapping_add(1);
         if self.next_id == 0 {
             self.next_id = 1;
@@ -129,7 +132,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
 
     /// The physical clock can remain Paused after a refused foreground Play. Preserve the
     /// viewer's newer Playing intent if the OS backgrounds that live session again.
-    pub(super) fn clock_for_suspend(&self, transport_paused: bool) -> ForegroundClock {
+    pub(crate) fn clock_for_suspend(&self, transport_paused: bool) -> ForegroundClock {
         match self.state {
             ForegroundState::ClockPending { .. }
             | ForegroundState::Claimed {
@@ -147,7 +150,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
     /// True while the preserved session is parked and awaiting a new native Load launch. The
     /// launched attempt is deliberately excluded: its Player route is live and a second OS
     /// background edge must suspend that Engine rather than ignore it.
-    pub(super) fn awaiting_load(&self) -> bool {
+    pub(crate) fn awaiting_load(&self) -> bool {
         matches!(
             self.state,
             ForegroundState::Suspended { .. }
@@ -161,7 +164,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
 
     /// `ClockPending` belongs to an already-loaded player. If a later real exit has removed that
     /// route, its retry must not intercept Play for the next item.
-    pub(super) fn discard_started_state(&mut self) {
+    pub(crate) fn discard_started_state(&mut self) {
         if matches!(
             self.state,
             ForegroundState::ClockPending { .. }
@@ -174,7 +177,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         }
     }
 
-    pub(super) fn claim(&mut self, input: ForegroundInput) -> ForegroundClaimResult {
+    pub(crate) fn claim(&mut self, input: ForegroundInput) -> ForegroundClaimResult {
         let state = self.state;
         match state {
             ForegroundState::Idle => ForegroundClaimResult::Ordinary,
@@ -240,7 +243,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         }
     }
 
-    pub(super) fn finish_prepare(&mut self, id: u64, prepared: bool) -> Option<ForegroundEffect> {
+    pub(crate) fn finish_prepare(&mut self, id: u64, prepared: bool) -> Option<ForegroundEffect> {
         let ForegroundState::Claimed {
             id: owner,
             claim:
@@ -276,7 +279,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         })
     }
 
-    pub(super) fn finish_load_launch(&mut self, id: u64, attempt: Attempt) -> bool {
+    pub(crate) fn finish_load_launch(&mut self, id: u64, attempt: Attempt) -> bool {
         let ForegroundState::Claimed {
             id: owner,
             claim: ForegroundClaim::Load { resume_ns, clock },
@@ -296,7 +299,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         true
     }
 
-    pub(super) fn finish_load_refusal(&mut self, id: u64) -> bool {
+    pub(crate) fn finish_load_refusal(&mut self, id: u64) -> bool {
         let ForegroundState::Claimed {
             id: owner,
             claim: ForegroundClaim::Load { resume_ns, clock },
@@ -315,7 +318,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         true
     }
 
-    pub(super) fn finish_load_terminal(&mut self, id: u64) -> bool {
+    pub(crate) fn finish_load_terminal(&mut self, id: u64) -> bool {
         let ForegroundState::Claimed {
             id: owner,
             claim: ForegroundClaim::Load { .. },
@@ -330,14 +333,14 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         true
     }
 
-    pub(super) fn pending_load_attempt(&self) -> Option<Attempt> {
+    pub(crate) fn pending_load_attempt(&self) -> Option<Attempt> {
         match self.state {
             ForegroundState::LoadPending { attempt, .. } => Some(attempt),
             _ => None,
         }
     }
 
-    pub(super) fn settle_load(
+    pub(crate) fn settle_load(
         &mut self,
         attempt: Attempt,
         status: ForegroundLoadStatus<Attempt>,
@@ -408,7 +411,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         }
     }
 
-    pub(super) fn finish_clock(&mut self, id: u64, accepted: bool) {
+    pub(crate) fn finish_clock(&mut self, id: u64, accepted: bool) {
         if !matches!(
             self.state,
             ForegroundState::Claimed {
@@ -427,14 +430,14 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ForegroundClaimResult {
+pub(crate) enum ForegroundClaimResult {
     Ordinary,
     Suppressed,
     Effect(ForegroundEffect),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ForegroundEffect {
+pub(crate) enum ForegroundEffect {
     Prepare {
         id: u64,
         resume_ns: i64,
@@ -450,25 +453,38 @@ pub(super) enum ForegroundEffect {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ForegroundActivation {
+pub(crate) enum ForegroundActivation {
     Ordinary,
     Handled,
     Launched,
 }
 
-pub(super) trait ForegroundActuator {
+pub(crate) trait ForegroundActuator {
     type Attempt: Copy + PartialEq;
 
-    fn prepare_resume(&mut self, resume_ns: i64) -> crate::player::ResumeOutcome;
+    fn prepare_resume(
+        &mut self,
+        ps: &mut crate::route::PlaybackSession,
+        resume_ns: i64,
+    ) -> crate::player::ResumeOutcome;
     fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock);
-    fn start_load(&mut self) -> ForegroundLoadStart<Self::Attempt>;
+    fn start_load(
+        &mut self,
+        ps: &mut crate::route::PlaybackSession,
+    ) -> ForegroundLoadStart<Self::Attempt>;
     fn load_status(&mut self, attempt: Self::Attempt) -> ForegroundLoadStatus<Self::Attempt>;
-    fn after_load(&mut self, attempt: Option<Self::Attempt>, clock: ForegroundClock, started: bool);
+    fn after_load(
+        &mut self,
+        ps: &mut crate::route::PlaybackSession,
+        attempt: Option<Self::Attempt>,
+        clock: ForegroundClock,
+        started: bool,
+    );
     fn play_clock(&mut self) -> bool;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ForegroundLoadStart<Attempt> {
+pub(crate) enum ForegroundLoadStart<Attempt> {
     AlreadyRunning,
     Launched(Attempt),
     Failed,
@@ -476,7 +492,7 @@ pub(super) enum ForegroundLoadStart<Attempt> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ForegroundLoadStatus<Attempt> {
+pub(crate) enum ForegroundLoadStatus<Attempt> {
     Pending,
     Started,
     Failed,
@@ -485,7 +501,7 @@ pub(super) enum ForegroundLoadStatus<Attempt> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ForegroundLoadSettlement {
+pub(crate) enum ForegroundLoadSettlement {
     Inactive,
     Pending,
     Finished {
@@ -496,7 +512,7 @@ pub(super) enum ForegroundLoadSettlement {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ForegroundPollOutcome {
+pub(crate) enum ForegroundPollOutcome {
     Inactive,
     Pending,
     Started,
@@ -506,8 +522,9 @@ pub(super) enum ForegroundPollOutcome {
 /// Claim first, then execute the claimed synchronous effects in order. Launching the native Load
 /// tells the caller to mount Player but deliberately does not issue Play: only the later exact
 /// attempt result observed by `poll_foreground_load` may advance the clock.
-pub(super) fn drive_foreground<A: ForegroundActuator>(
+pub(crate) fn drive_foreground<A: ForegroundActuator>(
     lifecycle: &mut ForegroundLifecycle<A::Attempt>,
+    ps: &mut crate::route::PlaybackSession,
     input: ForegroundInput,
     actuator: &mut A,
 ) -> ForegroundActivation {
@@ -521,7 +538,7 @@ pub(super) fn drive_foreground<A: ForegroundActuator>(
         effect = match next {
             ForegroundEffect::Prepare { id, resume_ns } => {
                 let prepared = matches!(
-                    actuator.prepare_resume(resume_ns),
+                    actuator.prepare_resume(ps, resume_ns),
                     crate::player::ResumeOutcome::Prepared
                 );
                 lifecycle.finish_prepare(id, prepared)
@@ -532,19 +549,19 @@ pub(super) fn drive_foreground<A: ForegroundActuator>(
                 clock,
             } => {
                 actuator.before_load(resume_ns, clock);
-                match actuator.start_load() {
+                match actuator.start_load(ps) {
                     ForegroundLoadStart::Launched(attempt) => {
                         launched |= lifecycle.finish_load_launch(id, attempt);
                     }
                     ForegroundLoadStart::Failed => {
-                        actuator.after_load(None, clock, false);
+                        actuator.after_load(ps, None, clock, false);
                         let _ = lifecycle.finish_load_refusal(id);
                     }
                     // No exact candidate can be followed. `AlreadyRunning` is a stable Engine
                     // outside this suspended lifecycle; `Terminal` means Original rollback could
                     // not construct a truthful route. Neither is a retryable Prepared edge.
                     ForegroundLoadStart::AlreadyRunning | ForegroundLoadStart::Terminal => {
-                        actuator.after_load(None, clock, false);
+                        actuator.after_load(ps, None, clock, false);
                         let _ = lifecycle.finish_load_terminal(id);
                     }
                 }
@@ -566,8 +583,9 @@ pub(super) fn drive_foreground<A: ForegroundActuator>(
 /// Poll the exact native Load attempt after `player::pump` has drained its media-thread result.
 /// Only a confirmed `Started` result may advance the viewer clock; failure retains the already
 /// prepared route so a Play retry never repeats PMS preparation or `resume_at`.
-pub(super) fn poll_foreground_load<A: ForegroundActuator>(
+pub(crate) fn poll_foreground_load<A: ForegroundActuator>(
     lifecycle: &mut ForegroundLifecycle<A::Attempt>,
+    ps: &mut crate::route::PlaybackSession,
     actuator: &mut A,
 ) -> ForegroundPollOutcome {
     let Some(attempt) = lifecycle.pending_load_attempt() else {
@@ -584,6 +602,7 @@ pub(super) fn poll_foreground_load<A: ForegroundActuator>(
             effect,
         } => {
             actuator.after_load(
+                ps,
                 if started {
                     Some(attempt)
                 } else {
@@ -604,16 +623,18 @@ pub(super) fn poll_foreground_load<A: ForegroundActuator>(
     }
 }
 
-pub(super) struct PlayerForegroundActuator<'a> {
-    pub(super) mt: &'a crate::task::MainThread,
-    pub(super) repause_at: &'a mut i64,
+pub(crate) struct PlayerForegroundActuator<'a> {
+    /// The native session slot — phase 9's replacement for the `&MainThread` this held, and the
+    /// same value every other player call in the loop is threaded (`player::adapter`).
+    pub(crate) pa: &'a mut crate::player::adapter::PlayerAdapter,
+    pub(crate) repause_at: &'a mut i64,
 }
 
 impl ForegroundActuator for PlayerForegroundActuator<'_> {
     type Attempt = crate::route::RouteStartAttempt;
 
-    fn prepare_resume(&mut self, resume_ns: i64) -> crate::player::ResumeOutcome {
-        crate::player::resume_at(resume_ns)
+    fn prepare_resume(&mut self, ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> crate::player::ResumeOutcome {
+        crate::player::resume_at(ps, resume_ns)
     }
 
     fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock) {
@@ -624,12 +645,12 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         }
     }
 
-    fn start_load(&mut self) -> ForegroundLoadStart<Self::Attempt> {
-        let first = crate::player::start_bufferfeed_tracked(self.mt);
+    fn start_load(&mut self, ps: &mut crate::route::PlaybackSession) -> ForegroundLoadStart<Self::Attempt> {
+        let first = crate::player::start_bufferfeed_tracked(ps, self.pa);
         if matches!(first, crate::player::BufferfeedStartOutcome::Failed) {
             // A synchronous failure inside an Original trial has no Engine for player::pump to
             // recover. Take the same explicit rollback edge here and follow its exact HLS Load.
-            return match crate::player::recover_failed_foreground_original(self.mt) {
+            return match crate::player::recover_failed_foreground_original(ps, self.pa) {
                 crate::player::ForegroundOriginalRecovery::NotOriginal
                 | crate::player::ForegroundOriginalRecovery::RetryPrepared => {
                     ForegroundLoadStart::Failed
@@ -667,6 +688,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
 
     fn after_load(
         &mut self,
+        ps: &mut crate::route::PlaybackSession,
         attempt: Option<Self::Attempt>,
         clock: ForegroundClock,
         started: bool,
@@ -682,14 +704,14 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             // `sf_load == 0` publishes Error but intentionally leaves the Engine available for
             // diagnostics. Retire it only if it still owns the observed token: player::pump may
             // already have launched a healthy replacement before foreground polls this result.
-            let _ = crate::player::suspend_bufferfeed_if_attempt(self.mt, attempt.unwrap());
+            let _ = crate::player::suspend_bufferfeed_if_attempt(ps, self.pa, attempt.unwrap());
         }
     }
 
     fn play_clock(&mut self) -> bool {
         // start_bufferfeed has installed the Initial native-clock hold from TX.paused. Publish
         // Play through the synchronized reducer so that hold and the feed gate reopen together.
-        !paused() || set_transport_paused(self.mt, false)
+        !paused() || set_transport_paused(self.pa, false)
     }
 }
 
@@ -721,7 +743,11 @@ mod foreground_resume_tests {
     impl ForegroundActuator for FakeActuator {
         type Attempt = u64;
 
-        fn prepare_resume(&mut self, resume_ns: i64) -> crate::player::ResumeOutcome {
+        fn prepare_resume(
+            &mut self,
+            _ps: &mut crate::route::PlaybackSession,
+            resume_ns: i64,
+        ) -> crate::player::ResumeOutcome {
             self.prepare_calls.push(resume_ns);
             Self::answer(&mut self.prepare)
         }
@@ -730,7 +756,10 @@ mod foreground_resume_tests {
             self.before_loads.push((resume_ns, clock));
         }
 
-        fn start_load(&mut self) -> ForegroundLoadStart<Self::Attempt> {
+        fn start_load(
+            &mut self,
+            _ps: &mut crate::route::PlaybackSession,
+        ) -> ForegroundLoadStart<Self::Attempt> {
             self.load_calls += 1;
             Self::answer(&mut self.loads)
         }
@@ -742,6 +771,7 @@ mod foreground_resume_tests {
 
         fn after_load(
             &mut self,
+            _ps: &mut crate::route::PlaybackSession,
             attempt: Option<Self::Attempt>,
             clock: ForegroundClock,
             started: bool,
@@ -782,6 +812,7 @@ mod foreground_resume_tests {
 
     #[test]
     fn refused_resume_preparation_rearms_the_exact_suspended_snapshot() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         for refused in [
             crate::player::ResumeOutcome::NoRoute,
             crate::player::ResumeOutcome::RebuildRejected,
@@ -795,7 +826,7 @@ mod foreground_resume_tests {
             };
 
             assert_eq!(
-                drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator),
+                drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::PlayKey, &mut actuator),
                 ForegroundActivation::Handled
             );
             assert_eq!(lifecycle.state, saved, "refusal {refused:?}");
@@ -805,6 +836,7 @@ mod foreground_resume_tests {
 
     #[test]
     fn did_foreground_preserves_a_paused_snapshot_without_issuing_play() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let mut lifecycle = ForegroundLifecycle::IDLE;
         lifecycle.suspend(73_000_000_000, ForegroundClock::Paused);
         let mut actuator = FakeActuator {
@@ -815,8 +847,7 @@ mod foreground_resume_tests {
         };
 
         assert_eq!(
-            drive_foreground(
-                &mut lifecycle,
+            drive_foreground(&mut lifecycle, &mut ps,
                 ForegroundInput::DidForeground,
                 &mut actuator
             ),
@@ -847,7 +878,7 @@ mod foreground_resume_tests {
         );
         assert_eq!(actuator.clock_calls, 0);
         assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut actuator),
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
             ForegroundPollOutcome::Started
         );
         assert_eq!(actuator.status_calls, vec![11]);
@@ -860,6 +891,7 @@ mod foreground_resume_tests {
 
     #[test]
     fn pending_load_failure_retains_prepared_route_and_retry_skips_resume_preparation() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let mut lifecycle = ForegroundLifecycle::IDLE;
         lifecycle.suspend(63_000_000_000, ForegroundClock::Playing);
         let mut actuator = FakeActuator {
@@ -878,8 +910,7 @@ mod foreground_resume_tests {
         };
 
         assert_eq!(
-            drive_foreground(
-                &mut lifecycle,
+            drive_foreground(&mut lifecycle, &mut ps,
                 ForegroundInput::DidForeground,
                 &mut actuator
             ),
@@ -901,7 +932,7 @@ mod foreground_resume_tests {
             "a second background edge lost the Play-key intent to the held native clock"
         );
         assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut actuator),
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
             ForegroundPollOutcome::Pending
         );
         assert_eq!(actuator.clock_calls, 0, "pending Load issued Play");
@@ -915,7 +946,7 @@ mod foreground_resume_tests {
             ForegroundState::LoadPending { attempt: 17, .. }
         ));
         assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut actuator),
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
             ForegroundPollOutcome::Failed
         );
         assert_eq!(
@@ -936,7 +967,7 @@ mod foreground_resume_tests {
         assert_eq!(actuator.teardowns, 1, "failed Engine was not retired once");
 
         assert_eq!(
-            drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator),
+            drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::PlayKey, &mut actuator),
             ForegroundActivation::Launched
         );
         assert_eq!(actuator.prepare_calls.len(), 1, "prepared URL was rebuilt");
@@ -946,7 +977,7 @@ mod foreground_resume_tests {
             "retry launch was mistaken for Start"
         );
         assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut actuator),
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
             ForegroundPollOutcome::Started
         );
         assert_eq!(actuator.status_calls, vec![17, 17, 18]);
@@ -957,8 +988,7 @@ mod foreground_resume_tests {
         assert_eq!(actuator.clock_calls, 1);
         assert_eq!(lifecycle.state, ForegroundState::Idle);
         assert_eq!(
-            drive_foreground(
-                &mut lifecycle,
+            drive_foreground(&mut lifecycle, &mut ps,
                 ForegroundInput::DidForeground,
                 &mut actuator
             ),
@@ -970,6 +1000,7 @@ mod foreground_resume_tests {
 
     #[test]
     fn async_failure_tears_down_once_so_retry_does_not_loop_on_already_running() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         #[derive(Default)]
         struct EngineSpy {
             engine_live: bool,
@@ -981,14 +1012,21 @@ mod foreground_resume_tests {
         impl ForegroundActuator for EngineSpy {
             type Attempt = u64;
 
-            fn prepare_resume(&mut self, _resume_ns: i64) -> crate::player::ResumeOutcome {
+            fn prepare_resume(
+                &mut self,
+                _ps: &mut crate::route::PlaybackSession,
+                _resume_ns: i64,
+            ) -> crate::player::ResumeOutcome {
                 self.prepares += 1;
                 crate::player::ResumeOutcome::Prepared
             }
 
             fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}
 
-            fn start_load(&mut self) -> ForegroundLoadStart<Self::Attempt> {
+            fn start_load(
+            &mut self,
+            _ps: &mut crate::route::PlaybackSession,
+        ) -> ForegroundLoadStart<Self::Attempt> {
                 if self.engine_live {
                     return ForegroundLoadStart::AlreadyRunning;
                 }
@@ -1010,6 +1048,7 @@ mod foreground_resume_tests {
 
             fn after_load(
                 &mut self,
+                _ps: &mut crate::route::PlaybackSession,
                 attempt: Option<Self::Attempt>,
                 _clock: ForegroundClock,
                 started: bool,
@@ -1030,26 +1069,25 @@ mod foreground_resume_tests {
         let mut actuator = EngineSpy::default();
 
         assert_eq!(
-            drive_foreground(
-                &mut lifecycle,
+            drive_foreground(&mut lifecycle, &mut ps,
                 ForegroundInput::DidForeground,
                 &mut actuator
             ),
             ForegroundActivation::Launched
         );
         assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut actuator),
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
             ForegroundPollOutcome::Failed
         );
         assert_eq!(actuator.teardowns, 1);
 
         assert_eq!(
-            drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator),
+            drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::PlayKey, &mut actuator),
             ForegroundActivation::Launched,
             "failed Engine survived and turned the retry into AlreadyRunning"
         );
         assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut actuator),
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
             ForegroundPollOutcome::Started
         );
         assert_eq!(
@@ -1061,6 +1099,7 @@ mod foreground_resume_tests {
 
     #[test]
     fn synchronous_load_refusal_retains_the_prepared_route() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let mut lifecycle = ForegroundLifecycle::IDLE;
         lifecycle.suspend(41_000_000_000, ForegroundClock::Playing);
         let mut actuator = FakeActuator {
@@ -1070,8 +1109,7 @@ mod foreground_resume_tests {
         };
 
         assert_eq!(
-            drive_foreground(
-                &mut lifecycle,
+            drive_foreground(&mut lifecycle, &mut ps,
                 ForegroundInput::DidForeground,
                 &mut actuator
             ),
@@ -1096,6 +1134,7 @@ mod foreground_resume_tests {
 
     #[test]
     fn unowned_or_terminal_load_releases_foreground_instead_of_retrying_forever() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         for refused in [
             ForegroundLoadStart::AlreadyRunning,
             ForegroundLoadStart::Terminal,
@@ -1109,8 +1148,7 @@ mod foreground_resume_tests {
             };
 
             assert_eq!(
-                drive_foreground(
-                    &mut lifecycle,
+                drive_foreground(&mut lifecycle, &mut ps,
                     ForegroundInput::DidForeground,
                     &mut actuator,
                 ),
@@ -1124,6 +1162,7 @@ mod foreground_resume_tests {
 
     #[test]
     fn stale_load_attempt_releases_foreground_without_touching_an_unknown_engine() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let mut lifecycle = ForegroundLifecycle::IDLE;
         lifecycle.suspend(22_000_000_000, ForegroundClock::Paused);
         let mut actuator = FakeActuator {
@@ -1134,15 +1173,14 @@ mod foreground_resume_tests {
         };
 
         assert_eq!(
-            drive_foreground(
-                &mut lifecycle,
+            drive_foreground(&mut lifecycle, &mut ps,
                 ForegroundInput::DidForeground,
                 &mut actuator
             ),
             ForegroundActivation::Launched
         );
         assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut actuator),
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
             ForegroundPollOutcome::Failed
         );
         assert_eq!(lifecycle.state, ForegroundState::Idle);
@@ -1157,6 +1195,7 @@ mod foreground_resume_tests {
 
     #[test]
     fn foreground_follows_every_tokened_replacement_without_failure_cleanup() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let mut lifecycle = ForegroundLifecycle::IDLE;
         lifecycle.suspend(31_000_000_000, ForegroundClock::Playing);
         let mut actuator = FakeActuator {
@@ -1172,15 +1211,14 @@ mod foreground_resume_tests {
         };
 
         assert_eq!(
-            drive_foreground(
-                &mut lifecycle,
+            drive_foreground(&mut lifecycle, &mut ps,
                 ForegroundInput::DidForeground,
                 &mut actuator,
             ),
             ForegroundActivation::Launched,
         );
         assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut actuator),
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
             ForegroundPollOutcome::Pending,
         );
         assert!(matches!(
@@ -1188,7 +1226,7 @@ mod foreground_resume_tests {
             ForegroundState::LoadPending { attempt: 8, .. }
         ));
         assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut actuator),
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
             ForegroundPollOutcome::Pending,
         );
         assert!(matches!(
@@ -1196,7 +1234,7 @@ mod foreground_resume_tests {
             ForegroundState::LoadPending { attempt: 9, .. }
         ));
         assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut actuator),
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
             ForegroundPollOutcome::Started,
         );
         assert_eq!(actuator.status_calls, vec![7, 8, 9]);
@@ -1208,6 +1246,7 @@ mod foreground_resume_tests {
 
     #[test]
     fn refused_play_after_load_retries_only_the_clock() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let mut lifecycle = ForegroundLifecycle::IDLE;
         lifecycle.suspend(73_000_000_000, ForegroundClock::Paused);
         let mut actuator = FakeActuator {
@@ -1219,13 +1258,13 @@ mod foreground_resume_tests {
         };
 
         assert_eq!(
-            drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator),
+            drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::PlayKey, &mut actuator),
             ForegroundActivation::Launched,
             "spawning the Load only mounts the player while its result remains pending"
         );
         assert_eq!(actuator.clock_calls, 0);
         assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut actuator),
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
             ForegroundPollOutcome::Started,
             "the exact Load succeeded even though its following Play did not"
         );
@@ -1236,7 +1275,7 @@ mod foreground_resume_tests {
             "DID after the Load must not claim another Load"
         );
         assert_eq!(
-            drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator),
+            drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::PlayKey, &mut actuator),
             ForegroundActivation::Handled
         );
         assert_eq!(actuator.prepare_calls.len(), 1);
@@ -1281,33 +1320,36 @@ mod transport_pause_contract_tests {
             paused: old_paused,
             rebuffering: old_rebuffering,
         };
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
 
         crate::player::force_pause_result_for_test(Some(0));
-        assert!(!set_transport_paused(&mt, true));
+        assert!(!set_transport_paused(&mut pa, true));
         assert!(
             !paused(),
             "feed must continue when the native clock refused Pause"
         );
 
         crate::player::force_pause_result_for_test(Some(1));
-        assert!(set_transport_paused(&mt, true));
+        assert!(set_transport_paused(&mut pa, true));
         assert!(paused());
 
         crate::player::force_play_result_for_test(Some(0));
-        assert!(!set_transport_paused(&mt, false));
+        assert!(!set_transport_paused(&mut pa, false));
         assert!(
             paused(),
             "feed must remain stopped when the native clock refused Play"
         );
 
         crate::player::force_play_result_for_test(Some(1));
-        assert!(set_transport_paused(&mt, false));
+        assert!(set_transport_paused(&mut pa, false));
         assert!(!paused());
     }
 
     #[test]
     fn refused_foreground_play_retries_the_native_clock_without_a_second_load() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let _guard = crate::testlock::serial();
         let old_paused = crate::player::TX.paused.load(Ordering::Acquire);
         struct Restore(bool);
@@ -1322,26 +1364,35 @@ mod transport_pause_contract_tests {
         let _restore = Restore(old_paused);
         crate::player::SHARED.reset_hls_clock_for_test();
         crate::player::TX.commit_paused(false);
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
         crate::player::force_pause_result_for_test(Some(1));
-        assert!(set_transport_paused(&mt, true));
+        assert!(set_transport_paused(&mut pa, true));
 
         struct Actuator<'a> {
-            mt: &'a crate::task::MainThread,
+            pa: &'a mut crate::player::adapter::PlayerAdapter,
             prepares: usize,
             loads: usize,
         }
         impl ForegroundActuator for Actuator<'_> {
             type Attempt = u64;
 
-            fn prepare_resume(&mut self, _resume_ns: i64) -> crate::player::ResumeOutcome {
+            fn prepare_resume(
+                &mut self,
+                _ps: &mut crate::route::PlaybackSession,
+                _resume_ns: i64,
+            ) -> crate::player::ResumeOutcome {
                 self.prepares += 1;
                 crate::player::ResumeOutcome::Prepared
             }
 
             fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}
 
-            fn start_load(&mut self) -> ForegroundLoadStart<Self::Attempt> {
+            fn start_load(
+            &mut self,
+            _ps: &mut crate::route::PlaybackSession,
+        ) -> ForegroundLoadStart<Self::Attempt> {
                 self.loads += 1;
                 ForegroundLoadStart::Launched(1)
             }
@@ -1356,6 +1407,7 @@ mod transport_pause_contract_tests {
 
             fn after_load(
                 &mut self,
+                _ps: &mut crate::route::PlaybackSession,
                 _attempt: Option<Self::Attempt>,
                 _clock: ForegroundClock,
                 _started: bool,
@@ -1363,20 +1415,20 @@ mod transport_pause_contract_tests {
             }
 
             fn play_clock(&mut self) -> bool {
-                set_transport_paused(self.mt, false)
+                set_transport_paused(self.pa, false)
             }
         }
 
         let mut lifecycle = ForegroundLifecycle::IDLE;
         lifecycle.suspend(42_000_000_000, ForegroundClock::Paused);
         let mut actuator = Actuator {
-            mt: &mt,
+            pa: &mut pa,
             prepares: 0,
             loads: 0,
         };
         crate::player::force_play_result_for_test(Some(0));
         assert_eq!(
-            drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator,),
+            drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::PlayKey, &mut actuator,),
             ForegroundActivation::Launched,
         );
         assert!(matches!(
@@ -1384,7 +1436,7 @@ mod transport_pause_contract_tests {
             ForegroundState::LoadPending { .. }
         ));
         assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut actuator),
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
             ForegroundPollOutcome::Started,
         );
         assert!(matches!(
@@ -1396,7 +1448,7 @@ mod transport_pause_contract_tests {
 
         crate::player::force_play_result_for_test(Some(1));
         assert_eq!(
-            drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator,),
+            drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::PlayKey, &mut actuator,),
             ForegroundActivation::Handled,
         );
         assert_eq!(
@@ -1408,3 +1460,79 @@ mod transport_pause_contract_tests {
         assert!(!paused());
     }
 }
+
+// D8 (UI restructure phase 12): relocated verbatim from `app/mod.rs`'s `root_back_tests`. The
+// functions under test (`input::back_at_root`/`input::after_cancel`/`input::AfterCancel`) stay in
+// `app/input.rs` — only the TEST is moved, which D8 asks for by name; grouping it beside the
+// foreground/background lifecycle tests above is the judgment call `app::App` reaching "the
+// television took the screen back" (`back_at_root`) and "the app keeps running through this" are
+// both properties of the app's OWN outer lifecycle, in the sense this module's other half already
+// tests, even though today's `ForegroundLifecycle` type itself does not cover them.
+#[cfg(test)]
+mod root_back_tests {
+    //! **BACK at a ROOT hands the screen back to the television, and the app keeps running.**
+    //!
+    //! [`back_at_root`] is driven for real — it is the app's whole answer to "there is nowhere
+    //! further back to go", and the regression to catch is a future edit putting `running = false`,
+    //! or a modal question, back where the platform call now goes. [`after_cancel`] is pure,
+    //! because its callers reach `auth`/`webos`, neither of which a unit test wants to drive.
+    //!
+    //! **Phase 6 retired the other half this module doc used to describe** — `onboarding_back`,
+    //! `OnboardBack` and their five tests, which pinned issues #16-#18's rule as it was reached from
+    //! the legacy `key_onboarding` key ladder. The RULE did not change (`input::
+    //! login_or_profiles_root_back` still performs exactly the `after_cancel` dance those tests
+    //! exercised, immediately below); what moved is WHO decides "is this press the screen's own
+    //! modal or the app's root" — since phase 6 that is `screens::login`/`screens::profiles`'s own
+    //! job, reading their own focus-engine state (a PIN pad's open flag, on the owned
+    //! `ProfilesScreen`) that this module cannot see and must not reach into (`app/` never names a
+    //! sibling `screens/` module's internals). A host test of that half now belongs beside the
+    //! screens that make the decision, not here.
+    //!
+    //! What NO host test can say is that the television actually shows its launcher and that the
+    //! process survives it. That is `webos::go_home`'s device half — `gohome: SAM accepted`, a
+    //! capture of the launcher (on webOS 4 a RIBBON over the still-running app, so no lifecycle
+    //! event at all) and `fuser` reporting one pid throughout — and it is why this file's
+    //! `home_requests` counter grades the DECISION and never the outcome.
+    use super::*;
+
+    /// **The one that matters (issue #16).** The root press asks the platform for its Home screen.
+    ///
+    /// Observed RED against the shipped `back_at_root`, which raised the "Exit PlxNative?" alert
+    /// and asked webOS for nothing: `left: 0, right: 1`.
+    #[test]
+    fn back_at_home_root_shows_the_platform_home() {
+        let _g = crate::testlock::serial();
+        crate::webos::release_root_press();
+        let before = crate::webos::home_requests();
+        back_at_root();
+        assert_eq!(
+            crate::webos::home_requests(),
+            before + 1,
+            "BACK at Home's root must ask webOS for its Home screen"
+        );
+        crate::webos::release_root_press();
+    }
+
+    /// **A refused root BACK leaves the sign-in it refused to leave RUNNING, and asks for the
+    /// television's Home.** This branch used to restart the flow first (`RestartAndHome`), because
+    /// `auth::cancel` invalidated the worker before it decided; that ordering is gone (issue #30,
+    /// `auth::a_refused_back_leaves_the_live_pin_poll_running`), and a restart on top of a live
+    /// poll would mint a fresh code over one the user's phone may already have answered. Observed
+    /// RED against the shipped `after_cancel`, which answered `RestartAndHome` for `Waiting`.
+    #[test]
+    fn a_root_back_out_of_a_running_sign_in_leaves_it_running() {
+        assert_eq!(
+            after_cancel(false),
+            AfterCancel::Home,
+            "nothing was disturbed, so there is nothing to restart — go to the television's Home"
+        );
+    }
+
+    /// A cancel that SUCCEEDED went somewhere inside the app: nothing to ask the platform for, and
+    /// the claim goes back so the real root BACK a moment later is not swallowed.
+    #[test]
+    fn a_cancel_that_backed_out_asks_the_platform_for_nothing() {
+        assert_eq!(after_cancel(true), AfterCancel::BackedOut);
+    }
+}
+

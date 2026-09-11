@@ -639,11 +639,12 @@ pub(crate) struct Shared {
     // the worker threads (Engine drops after join), so the ptr stays valid.
     pub hs_ptr: AtomicPtr<HttpStream>,
 
-    // ---- diagnostics mirror (`ui::stats`) -------------------------------------------------
+    // ---- diagnostics mirror (`app::diagnostics`) -------------------------------------------------
     // Values the render path (and the opted-in handled-error snapshot) need that live on the
     // Engine, republished from the pump.
-    // The render path may not call `engine(&MainThread)` — that hands out a `&'static mut` to a
-    // `static mut`, and a second live borrow is instant UB — so it reads these instead.
+    // The render path holds no `&mut PlayerAdapter` and so cannot reach the `Engine` at all (when
+    // the slot was a `static mut` it could, and a second live borrow was instant UB) — so it reads
+    // these instead.
     //
     // STRICTLY ONE-WAY: written by the pump and seam, read only for observation. Nothing in the
     // playback state machine may ever branch on one, or a diagnostic becomes load-bearing.
@@ -679,7 +680,7 @@ pub(crate) struct Shared {
     pub dg_net_rx: AtomicI64,
     /// SDL ticks when `loadCompleted` landed, and when `frames` last CHANGED. A photograph has no
     /// time axis: "Load completed, 0 frames" is innocent at 2 s and damning at 4 minutes, and the
-    /// panel cannot tell the difference without these. Stamped in the pump, never in `ui::stats` —
+    /// panel cannot tell the difference without these. Stamped in the pump, never in `app::diagnostics` —
     /// a stats-local timer would start when the panel is OPENED, so a four-minute hang would
     /// photograph as twelve seconds.
     pub dg_load_at: AtomicU32,
@@ -2125,9 +2126,17 @@ impl Transport {
 
     /// An engine reload is not a new playback and must not erase viewer Pause or the paused-seek
     /// handoff. It only retires engine-local transport mailboxes.
+    ///
+    /// **`scrub_ns` is NOT among them any more** (restructure §2.3, phase 9). The scrub preview is
+    /// the `PlayerScreen`'s own `scrub.ns` and this atomic is the PUBLISHED copy of it, so a store
+    /// here was a second owner writing over the first — and it was redundant besides: every seek
+    /// that can cause a reload is asked for by that screen, which retires its own preview in the
+    /// same step (`commit_scrub`; through phase 12 `app::playback::commit_seek` did it instead,
+    /// which was the same cross-owner write one level down). The one reload nobody asks for (the
+    /// OS taking the screen) delivers `PlayerScreen::transport_reset(true)` from the loop's
+    /// background arm.
     pub(crate) fn reset_for_reload(&self) {
         self.started.store(false, Ordering::Relaxed);
-        self.scrub_ns.store(-1, Ordering::Relaxed);
         self.seek_to_ns.store(-1, Ordering::Relaxed);
         self.seek_reqs.store(0, Ordering::Relaxed);
     }
@@ -2139,7 +2148,9 @@ impl Transport {
         self.paused.store(false, Ordering::Release);
         self.resume_pend.store(false, Ordering::Relaxed);
         self.seek_preroll.store(false, Ordering::Relaxed);
-        self.scrub_ns.store(-1, Ordering::Relaxed);
+        // …and not `scrub_ns`, for `reset_for_reload`'s reason: a new session is a fresh
+        // `PlayerScreen` (or, on an auto-advance chain, `start_playback`'s in-place reset of the
+        // live one), and both publish `Scrub::IDLE` themselves.
         self.seek_to_ns.store(-1, Ordering::Relaxed);
         self.seek_reqs.store(0, Ordering::Relaxed);
     }

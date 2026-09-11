@@ -12,6 +12,10 @@ Branch `player-ux`. This plan finishes the retained-view-tree migration begun in
 already a `SCENE`-rooted tree; detail.rs is still loose statics; app.rs still flat route bools).
 It supersedes the older steps 5–7 sketch in `ui-system-migration.md` where they disagree.
 
+This is a historical view-tree plan, not a claim that the product's recorder/restore/resolve
+architecture or end-to-end replay proof is complete. The current recorder remains live-assisted;
+those broader §0.8/§5.5 obligations are outside this document's view-tree scope.
+
 The **only correctness signal is `make`** (ARM cross-build; no host runtime). Every step below is
 sized so `make` is green at its checkpoint, and every pixel-moving step names an on-device
 `tools/capture-screen.sh` check. Steps are ordered so each screen stays independently shippable.
@@ -352,6 +356,18 @@ the `g_fc`-has-no-setter asymmetry (fc written only via move_focus/pointer_focus
 ---
 
 ## (E) STOP condition
+
+> **SUPERSEDED — kept as history only (do not implement).** This section's stopping point was
+> "app has one exclusive `enum Route`" surviving the retui View-tree migration; the UI restructure
+> (spec v4, `docs/ui-system-migration.md` §(D)/(E)/(F), phases 1-12) replaced that premise outright
+> — `Route` is being RETIRED, not kept exclusive (D1), every screen is its own owned `Screen` over
+> the shared `Focusable`/`FocusSource::Engine` contract rather than a `View` struct threaded
+> through `app.rs`-shared focus state (D2), and step 7b's "shared-focus-state risk" this section
+> was written to avoid is the risk the restructure's `focus.rs`/`hit.rs` engine exists to remove
+> entirely. As of restructure phase 12 every Screen answers `FocusSource::Engine` except for a
+> handful of named, tracked gaps in `ci/check-deps.sh`'s `ladder`/`route` gates — see
+> `docs/ui-system-migration.md` for the current, accurate state. Read the rest of this file as the
+> plan that predated that decision, not as a live target.
 
 **Stop after 7a.** At that boundary home (5.1-5.3) and detail (6.1-6.3) are full retained View
 structs on tokens + shared components, every frozen C-ABI signature intact, and app has one exclusive

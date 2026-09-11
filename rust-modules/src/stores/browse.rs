@@ -68,98 +68,24 @@ pub(crate) enum LibraryWork {
     Retry,
 }
 
-fn addressed(target: SectionAddress, work: LibraryWork) -> bool {
-    let Some(index) = crate::browse::resolve_section(target.epoch, target.sid, target.section) else { return false };
-    match work {
-        LibraryWork::SaveCursor { query, cursor } => query == crate::browse::query_gen()
-            && crate::browse::save_cursor(index, cursor),
-        LibraryWork::Commit { select, choice, query } => {
-            let switched = crate::browse::cur() != index;
-            if select { crate::browse::set_cur(index); }
-            if crate::browse::cur() != index { return false; }
-            if choice {
-                crate::browse::note_library_choice(index);
-                if switched {
-                    crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
-                        feature: crate::diag::schema::Feature::LibrarySwitch,
-                    });
-                }
-            }
-            match query {
-                Some(QueryEdit::Sort { key, desc }) => crate::browse::set_sort_by_key(&key, desc),
-                Some(QueryEdit::Unwatched(on)) => crate::browse::set_unwatched(on),
-                Some(QueryEdit::Genre(id)) => crate::browse::set_genre_by_id(id.as_deref()),
-                None => true,
-            }
-        }
-        LibraryWork::Hubs { may_publish } => {
-            crate::browse::section_hubs::kick(index);
-            crate::browse::section_hubs::commit_staged(index, may_publish)
-        }
-        work => {
-            if crate::browse::cur() != index { return false; }
-            match work {
-                LibraryWork::Want { lo, hi } => crate::browse::want(lo, hi),
-                LibraryWork::Letters => crate::browse::kick_letters(),
-                LibraryWork::Genres => crate::browse::kick_genres(),
-                LibraryWork::Retry => crate::browse::retry_cur_source(),
-                LibraryWork::Commit { .. } | LibraryWork::Hubs { .. } | LibraryWork::SaveCursor { .. } => unreachable!(),
-            }
-            true
-        }
-    }
-}
-
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
 pub(crate) fn apply(cmd: BrowseCmd) -> bool {
     super::apply(super::StoreCmd::Browse(cmd))
 }
 
-/// The store's own step, reached only through [`super::apply`].
+/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself
+/// (`addressed` included) into `browse::run` — it called `pub(crate)` mutators across this
+/// module boundary; those are private to `browse/mod.rs` now and this is their only door. The
+/// bump-vs-note bookkeeping this function used to do inline moved with it (see `browse::run`'s
+/// own doc for why that needed no help from `note`, which is private to this module).
 pub(super) fn run(cmd: BrowseCmd) -> bool {
-    let answer = match cmd {
-        BrowseCmd::Addressed { target, work: LibraryWork::SaveCursor { query, cursor } } => {
-            return note(StoreId::Browse, addressed(target, LibraryWork::SaveCursor { query, cursor }));
-        }
-        BrowseCmd::RetrySource { epoch, sid } => crate::browse::retry_source(epoch, sid),
-        BrowseCmd::Addressed { target, work } => addressed(target, work),
-        #[cfg(test)]
-        BrowseCmd::SetCur(i) => {
-            crate::browse::set_cur(i);
-            true
-        }
-        BrowseCmd::RecheckShares => {
-            crate::browse::recheck_shares();
-            true
-        }
-        BrowseCmd::ApplyPins(edits) => {
-            crate::browse::apply_pins(&edits);
-            true
-        }
-        BrowseCmd::RetryDiscovery => {
-            crate::browse::retry_discovery();
-            true
-        }
-        BrowseCmd::Reset => {
-            crate::browse::reset();
-            true
-        }
-        BrowseCmd::HubsInvalidateAll => {
-            crate::browse::section_hubs::invalidate_all();
-            true
-        }
-        BrowseCmd::SetWatchedLocal { sid, rk, on } => {
-            let a = crate::browse::set_watched_local(sid, &rk, on);
-            let b = crate::browse::section_hubs::set_watched_local(sid, &rk, on);
-            a || b
-        }
-        BrowseCmd::LeftTheDeck { sid, rk } => crate::browse::section_hubs::left_the_deck(sid, &rk),
-    };
-    // a command that changed nothing (an unknown sort key, a no-op pin batch) still moved the
-    // store's request state in every other arm, and a screen keying a memo on the generation
-    // must see every applied command — so every command bumps
-    super::bump(StoreId::Browse);
-    answer
+    // `crate::browse`'s statics are a crate global reached from both `apply` above and
+    // `crate::stores::apply(StoreCmd::Browse(..))` directly (some fixtures deliver a `StoreCmd`
+    // without going through this module's `apply`) — guard the one point both funnel through. See
+    // `lib.rs::testlock` and D5.
+    #[cfg(test)]
+    crate::testlock::assert_held("the browse store (apply)");
+    crate::browse::run(cmd)
 }
 
 /// The landing pass the Library screen runs once a frame while it is up: pages, menu data, the

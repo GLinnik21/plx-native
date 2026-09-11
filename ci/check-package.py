@@ -53,6 +53,60 @@ def build_configuration(stamp: str) -> "str | None":
     return {"": "dev", "--no-default-features": "release"}.get(fields.group("flags").strip())
 
 
+def parse_release_line(content: str) -> "tuple[int, int] | None":
+    """Mirror `rust-modules/src/release_line.rs::parse_release_line` exactly: `"X.Y"` (with or
+    without a trailing newline) into its two integers, or `None` for anything else that is not
+    that shape — `"0.6.1"` included, since splitting on the FIRST `.` leaves `"6.1"` for the minor
+    half and that does not parse as one integer either. Malformed content degrades to "absent"
+    (trunk) rather than a build failure, because `RELEASE_LINE` is hand-edited and a bad edit
+    should read as trunk for everyone on the checkout, not as a broken gate.
+    """
+    line = content.strip()
+    if "." not in line:
+        return None
+    major, _, minor = line.partition(".")
+    try:
+        return int(major), int(minor)
+    except ValueError:
+        return None
+
+
+def expected_dev_version(appinfo_version: str, release_line_content: "str | None") -> "tuple[str | None, str | None]":
+    """The `X.Y.Z-dev` string (no `plxnative@` prefix) `rust-modules/build.rs::emit_version`
+    reports for a build that is not `RELEASE=1`, derived by the SAME rule build.rs documents —
+    the two must never drift, which is exactly what going and re-deriving it separately here
+    would risk.
+
+    Trunk (`release_line_content is None` — no tracked `RELEASE_LINE`, matching
+    `release_line()`'s "absent means trunk", which also covers a marker present but malformed)
+    reports the next MINOR with the patch reset: `0.6.0-dev` after `0.5.x`, because trunk is
+    where features land and the next thing cut from it is a minor, never a patch of a line trunk
+    is not on.
+
+    A maintenance line (`RELEASE_LINE` present and parsing as `X.Y`) instead reports the next
+    PATCH on that same line: `0.6.2-dev` after `0.6.1`, because trunk's "next minor" question does
+    not apply to a line that will never cut one.
+
+    Returns `(version_or_None, error_or_None)`. The only error is a MIS-CUT line: `RELEASE_LINE`
+    names a `major.minor` that disagrees with `appinfo.json`'s — left over from the wrong branch,
+    or the version bumped without moving the marker — either way this checkout is not actually
+    floating patches for the line it claims to be on, and reporting a plausible-looking dev
+    version for it would be worse than refusing.
+    """
+    major, minor, patch = (int(x) for x in appinfo_version.split("."))
+    line = parse_release_line(release_line_content) if release_line_content is not None else None
+    if line is None:
+        return f"{major}.{minor + 1}.0-dev", None
+    line_major, line_minor = line
+    if (line_major, line_minor) != (major, minor):
+        return None, (
+            f"RELEASE_LINE names {line_major}.{line_minor} but appinfo.json is at "
+            f"{major}.{minor}.{patch} — mis-cut line (RELEASE_LINE's X.Y must equal "
+            "appinfo.json's major.minor)"
+        )
+    return f"{line_major}.{line_minor}.{patch + 1}-dev", None
+
+
 def _selftest() -> int:
     """Prove the decoder against every stamp the Makefile can actually write.
 
@@ -84,6 +138,30 @@ def _selftest() -> int:
             bad += 1
             print(f"  FAIL — {stamp!r} decoded {got!r}, want {want!r}")
     print(f"check-package: build_configuration {len(cases) - bad}/{len(cases)} stamps correct")
+
+    # `expected_dev_version` against every shape the two derivations (this file's and
+    # `rust-modules/src/release_line.rs`'s) must agree on: trunk, a real maintenance line, a
+    # malformed marker (degrades to trunk), and a mis-cut line (must refuse).
+    dev_cases = {
+        # (appinfo version, RELEASE_LINE content or None): (expected version, expects an error)
+        ("0.6.0", None): ("0.7.0-dev", False),                 # trunk: next minor, patch reset
+        ("0.6.1", "0.6\n"): ("0.6.2-dev", False),              # maintenance line: next patch
+        ("0.6.1", "0.6"): ("0.6.2-dev", False),                # no trailing newline, same result
+        ("0.6.9", "0.6"): ("0.6.10-dev", False),               # patch is not a single digit
+        ("0.6.1", "not-a-version"): ("0.7.0-dev", False),      # malformed marker degrades to trunk
+        ("0.6.1", "0.6.1"): ("0.7.0-dev", False),               # "X.Y.Z" doesn't parse as "X.Y" either
+        ("0.7.0", "0.6"): (None, True),                        # mis-cut: marker names a line this isn't on
+    }
+    dev_bad = 0
+    for (appinfo_version, release_line_content), (want_version, want_err) in dev_cases.items():
+        got_version, got_err = expected_dev_version(appinfo_version, release_line_content)
+        if got_version != want_version or (got_err is not None) != want_err:
+            dev_bad += 1
+            print(f"  FAIL — expected_dev_version({appinfo_version!r}, {release_line_content!r}) "
+                  f"= ({got_version!r}, {got_err!r}), want version={want_version!r} err={want_err}")
+    print(f"check-package: expected_dev_version {len(dev_cases) - dev_bad}/{len(dev_cases)} cases correct")
+
+    bad += dev_bad
     return 1 if bad else 0
 
 
@@ -632,7 +710,8 @@ BUILD = build_configuration(_stamp.read_text() if _stamp.exists() else "")
 # documented one that stopped shipping still fails. Whether a RELEASE build really dropped them is
 # the separate, narrower check below.
 DEV_ONLY_SONAMES = {"libswscale-plx.so.10"}   # the dev capture stream's scaler; RELEASE=1 drops it
-shipped = {p.name for p in (ROOT / "pkg").glob("*.so.*")}
+shipped = {p.name for p in (ROOT / "pkg").glob("*.so.*")
+           if p.is_file() and p.read_bytes()[:4] == b"\x7fELF"}
 if shipped:
     named = set(re.findall(r"`(lib[a-z]+-plx\.so\.\d+)`", (ROOT / "THIRD-PARTY-NOTICES.md").read_text()))
     distributed = shipped - DEV_ONLY_SONAMES
@@ -718,16 +797,21 @@ if binary.exists():
     #
     # They are the version this package was CUT from; `rust-modules/build.rs` decides what the
     # binary REPORTS, and for anything but `RELEASE=1` that is the next minor with a `-dev` suffix
-    # (`0.5.0` published, `0.6.0-dev` in the tree). That exists so a developer build stops
-    # impersonating the last release in X-Plex-Version, in the Sentry release and on the
-    # diagnostics panel — and it means a version string now has a way to be wrong that no file
-    # comparison can see: a package for the stable id whose binary reports a version no release
-    # will ever carry, or, once this rule exists, a developer build that silently stopped saying so.
+    # on trunk (`0.5.0` published, `0.6.0-dev` in the tree) — or, on a MAINTENANCE LINE (a tracked
+    # `RELEASE_LINE` marker at the repo root, see `expected_dev_version`'s doc and
+    # `rust-modules/src/release_line.rs`), the next PATCH instead (`0.6.1` published, `0.6.2-dev`
+    # in the tree). That exists so a developer build stops impersonating the last release in
+    # X-Plex-Version, in the Sentry release and on the diagnostics panel — and it means a version
+    # string now has a way to be wrong that no file comparison can see: a package for the stable id
+    # whose binary reports a version no release will ever carry, or, once this rule exists, a
+    # developer build that silently stopped saying so.
     #
     # Graded from BOTH sides for the reason DEV_WITNESS is: a witness that cannot fail is not a
     # gate, and the string is compiled in from an env var, i.e. from something a build can lose.
     # The suffix cannot be read off appinfo.json (LG takes three integers, so it never gets there),
-    # so it is recomputed here from the same arithmetic build.rs uses.
+    # so it is recomputed here — by `expected_dev_version`, the SAME rule `build.rs::emit_version`
+    # applies, so this gate and the binary it grades can never quietly diverge on which arithmetic
+    # applies to this checkout.
     #
     # MATCHED WITH THE `plxnative@` PREFIX, not as a bare number, and that is the difference
     # between grading `PLX_VERSION` and grading whatever digits happen to be in .rodata: the About
@@ -735,11 +819,18 @@ if binary.exists():
     # by a page the version mechanism never touched. `telemetry::{crashreport,native,playback}`
     # compose `concat!("plxnative@", env!("PLX_VERSION"))` in every configuration — telemetry is
     # ungated on purpose — so this witnesses the emitted value itself.
-    # The next MINOR with the patch reset, which is what `build.rs` emits and why: trunk is where
-    # features land, so the next release cut from it is a minor (or a major, which nothing here can
-    # predict); a patch comes off an existing minor's own line.
-    _major, _minor, _ = (int(x) for x in appinfo["version"].split("."))
-    DEV_VERSION = f"plxnative@{_major}.{_minor + 1}.0-dev".encode()
+    _release_line_path = ROOT / "RELEASE_LINE"
+    _release_line_content = _release_line_path.read_text() if _release_line_path.exists() else None
+    _dev_version_str, _dev_version_err = expected_dev_version(appinfo["version"], _release_line_content)
+    check(_dev_version_err is None,
+          _dev_version_err or "RELEASE_LINE (if tracked) agrees with appinfo.json's major.minor")
+    if _dev_version_err is not None:
+        # Mis-cut line: already failed above. Fall back to trunk's rule so the checks below still
+        # have a string to grade against, rather than crashing on a None this branch already
+        # reported as broken.
+        _major, _minor, _ = (int(x) for x in appinfo["version"].split("."))
+        _dev_version_str = f"{_major}.{_minor + 1}.0-dev"
+    DEV_VERSION = f"plxnative@{_dev_version_str}".encode()
     #
     # The id is a rule of its own here too, so it sits BESIDE the stamp branch rather than inside
     # it: whatever configuration produced it, the package users install may not claim a version no
@@ -813,7 +904,7 @@ check("Homepage" in control, "control declares a Homepage")
 # dishonest way to silence a warning. See mkipk.py's header for why we do not use ares-package.
 for field in ("webOS-Package-Format-Version", "webOS-Packager-Version"):
     check(field in control, f"control declares {field}")
-check(control.get("License") == "MIT", f'control License == MIT (saw {control.get("License")!r})')
+check(control.get("License") == "GPL-3.0-or-later", f'control License == GPL-3.0-or-later (saw {control.get("License")!r})')
 check("@users.noreply.github.com" in control["Maintainer"] or "@gmail.com" not in control["Maintainer"],
       f'control Maintainer is not a personal mailbox ({control["Maintainer"]})')
 
@@ -890,15 +981,14 @@ print("== compliance artifacts ==")
 # received only the .ipk. release.yml's legal-gate refuses to publish without the first two.
 for f in ("LICENSE", "TRADEMARKS.md", "THIRD-PARTY-NOTICES.md"):
     check((ROOT / f).exists(), f"{f} present")
-# LICENSE must stay VERBATIM MIT. GitHub's `licensee` matches it against known licence texts by
-# similarity, and this file previously carried the trademark reservation appended below the grant —
-# which pushed it under the threshold, so the repository reported its licence as "Other". That
-# misrepresents the terms in the one place most people look. The reservation lives in TRADEMARKS.md
-# now; this assertion is what stops it drifting back.
-_lic = (ROOT / "LICENSE").read_text()
-check(_lic.rstrip().endswith("SOFTWARE."),
-      "LICENSE is verbatim MIT (no appended text — it would read as 'Other' on GitHub)")
-check("TRADEMARK" not in _lic.upper(), "LICENSE carries no trademark reservation (see TRADEMARKS.md)")
+# Pin the complete, unmodified GPL text; application metadata elects or-later.
+import hashlib
+_lic = (ROOT / "LICENSE").read_bytes()
+check(hashlib.sha256(_lic).hexdigest() == "fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0",
+      "LICENSE is the complete verified GPLv3 text")
+check('license = "GPL-3.0-or-later"' in (ROOT / "rust-modules/Cargo.toml").read_text(),
+      "Cargo elects GPL-3.0-or-later")
+check((ROOT / "LICENSING.md").exists(), "LICENSING.md present")
 NEEDED_LICENCES = {
     "LGPL-2.1.txt": "FFmpeg, GLib, glibc — dynamically linked, §6 notice duty",
     "MIT.txt": "Feather/Heroicons and the MIT-elected Rust crates",
@@ -943,7 +1033,7 @@ expected = {
     # appfont-cjk.ttf is the fallback face. Its absence is not a cosmetic loss: every Korean,
     # Japanese and Chinese title in the library becomes tofu, which is LG checklist #6 and #48.
     "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",
-    "THIRD-PARTY-NOTICES.md", "LICENSE", "TRADEMARKS.md", *NEEDED_LICENCES,
+    "THIRD-PARTY-NOTICES.md", "LICENSE", "LICENSING.md", "TRADEMARKS.md", *NEEDED_LICENCES,
 }
 data_tar = ROOT / "ipkroot/data.tar.gz"
 if data_tar.exists():

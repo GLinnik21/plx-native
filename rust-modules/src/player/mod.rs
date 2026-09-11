@@ -7,13 +7,17 @@
 //! docs/engine-port-design.md.
 //!
 //! "Runs on the SDL main thread" is a **compile error to violate** for the two things where it
-//! matters — the ACB/Starfish seam and the `ENGINE` slot. Both take a [`MainThread`] token,
-//! which `plex_run` mints once and passes down; it is `!Send`, so a closure that captured one
-//! cannot be handed to `task::spawn`. The exceptions are the honest ones: the two callbacks
+//! matters — the ACB/Starfish seam and the native session slot. `plex_run` mints ONE
+//! [`MainThread`] token; `boot` moves it into [`adapter::PlayerAdapter`], which owns the session
+//! that was `engine::ENGINE`. The seam still takes `&MainThread` (reached through the adapter),
+//! the slot takes `&mut PlayerAdapter`, and the token is `!Send`, so a closure that captured
+//! either cannot be handed to `task::spawn`. The exceptions are the honest ones: the two callbacks
 //! above are `extern "C"` entry points *from* the library thread and touch only `SHARED`, and
 //! `threads::load_thread` calls `sf_load` off-main by design (see `ffi`).
 #![allow(non_upper_case_globals)]
+pub(crate) mod adapter;
 pub(crate) mod engine;
+pub(crate) mod machine;
 mod ffi;
 mod pump;
 pub(crate) mod report;
@@ -213,15 +217,15 @@ pub(crate) use engine::{
 };
 pub(crate) use pump::{pump, recover_failed_foreground_original, ForegroundOriginalRecovery};
 pub(crate) use shared::PlaybackState;
-pub(crate) fn pause(mt: &MainThread) -> bool {
+pub(crate) fn pause(pa: &mut adapter::PlayerAdapter) -> bool {
     match SHARED.prepare_hls_user_pause() {
         Some(HlsUserPause::AlreadyHeld) => {
             TX.commit_paused(true);
-            acb_mirror_playstate(mt, false);
+            acb_mirror_playstate(pa, false);
             return true;
         }
         Some(HlsUserPause::Issue(token)) => {
-            let accepted = unsafe { ffi::sf_pause(mt) } != 0;
+            let accepted = unsafe { ffi::sf_pause(pa.mt()) } != 0;
             match SHARED.complete_hls_user_pause(token, accepted) {
                 HlsPauseCompletion::Accepted => {}
                 HlsPauseCompletion::Refused => {
@@ -242,11 +246,11 @@ pub(crate) fn pause(mt: &MainThread) -> bool {
     // Publish the feed gate at the same accepted actuator boundary. Leaving this to app.rs after
     // the ACB call let a deadline transaction charge accepted Pause time as active playback.
     TX.commit_paused(true);
-    acb_mirror_playstate(mt, false);
+    acb_mirror_playstate(pa, false);
     true
 } // playback_pause
-pub(crate) fn resume(mt: &MainThread) -> bool {
-    let queued_stream = engine::engine(mt).is_some_and(|eng| eng.uses_stream_queues());
+pub(crate) fn resume(pa: &mut adapter::PlayerAdapter) -> bool {
+    let queued_stream = pa.engine().is_some_and(|eng| eng.uses_stream_queues());
     match SHARED.prepare_hls_user_resume(queued_stream) {
         Some(HlsUserResume::Deferred) => {
             // Feeding may resume, but an initial/seek/recovery certificate still owns the physical
@@ -262,7 +266,7 @@ pub(crate) fn resume(mt: &MainThread) -> bool {
             // Keep Starfish and ACB physically Paused. Opening TX first lets the two AU lanes fill
             // together; their ordinary exact prime certificate owns the eventual Play + ACB
             // Resume. Starting the clock here recreates the pause-to-fill A/V drift race.
-            let Some(eng) = engine::engine(mt) else {
+            let Some(eng) = pa.engine() else {
                 log("player: queued Resume lost its Engine before prime could arm");
                 return false;
             };
@@ -275,7 +279,7 @@ pub(crate) fn resume(mt: &MainThread) -> bool {
             true
         }
         Some(HlsUserResume::Issue(token)) => {
-            let accepted = unsafe { ffi::sf_play(mt) } != 0;
+            let accepted = unsafe { ffi::sf_play(pa.mt()) } != 0;
             match SHARED.complete_hls_prime_play(token, accepted) {
                 HlsPlayCompletion::Accepted { resume_acb } => {
                     if TX.seek_preroll_active() {
@@ -283,7 +287,7 @@ pub(crate) fn resume(mt: &MainThread) -> bool {
                     }
                     TX.commit_paused(false);
                     if resume_acb {
-                        acb_mirror_playstate(mt, true);
+                        acb_mirror_playstate(pa, true);
                     }
                     true
                 }
@@ -318,11 +322,11 @@ pub(crate) fn seek_preroll_active() -> bool {
 
 /// Re-establish the viewer's Pause after the seek prime has decoded its first landed frame. The
 /// transport intent stayed Paused throughout; only this method closes the temporary feed override.
-pub(crate) fn finish_paused_seek(mt: &MainThread) -> bool {
+pub(crate) fn finish_paused_seek(pa: &mut adapter::PlayerAdapter) -> bool {
     if !TX.seek_preroll_active() {
         return true;
     }
-    if !pause(mt) {
+    if !pause(pa) {
         return false;
     }
     TX.finish_seek_preroll();
@@ -343,11 +347,24 @@ pub(crate) fn force_play_result_for_test(result: Option<c_int>) {
 /// leaves the app-owned sink's ACB state stale). Only once the plane is streaming — `Bound` means
 /// setMediaId/LOADED has happened but setMediaVideoData/window/PLAYING has not, so mirroring a user
 /// Resume there would overtake the rest of the ordered bind transaction.
-pub(super) fn acb_mirror_playstate(mt: &MainThread, playing: bool) {
+pub(super) fn acb_mirror_playstate(pa: &mut adapter::PlayerAdapter, playing: bool) {
+    let (eng, mt) = pa.split();
+    let Some(stage) = eng.map(|e| e.stage) else {
+        return;
+    };
+    acb_mirror_playstate_at(mt, stage, playing);
+}
+
+/// [`acb_mirror_playstate`] for a caller that already holds the session's `&mut Engine` and so
+/// cannot ask the adapter for it a second time — `engine::try_prime`, inside the feed. Splitting
+/// the two is what the owned slot forces: with `ENGINE` a `static mut` handing out `&'static mut`,
+/// the prime path re-entered the slot it was already holding, which is the aliasing the token
+/// could only assert was safe.
+pub(super) fn acb_mirror_playstate_at(mt: &MainThread, stage: shared::Stage, playing: bool) {
     if !ACB_OK.load(Relaxed) {
         return;
     }
-    if !engine::engine(mt).is_some_and(|e| acb_playstate_ready(e.stage)) {
+    if !acb_playstate_ready(stage) {
         return;
     }
     unsafe {
@@ -361,6 +378,25 @@ pub(super) fn acb_mirror_playstate(mt: &MainThread, playing: bool) {
 
 fn acb_playstate_ready(stage: shared::Stage) -> bool {
     stage >= shared::Stage::Streaming
+}
+
+/// **Answer the Player machine's video-plane question from the seam** (spec §9), once per frame,
+/// at §3.3 step 8 — before the opaque-region call and the present gate read the bit.
+///
+/// `Stage::Streaming` is the FIRST stage at which the ordered ACB bind transaction has finished:
+/// `setMediaId` → LOADED → `setMediaVideoData` → `setDisplayWindow` → PLAYING. It is the same
+/// predicate [`acb_mirror_playstate`] uses to decide whether the sink can take a PLAYSTATE at all,
+/// deliberately — one definition of "the plane is really ours", not two. No engine means no sink,
+/// so the bit clears on teardown without teardown having to remember to say so.
+///
+/// This is an OBSERVATION of the adapter, not a second owner: it hands the answer to
+/// [`machine::Player::set_video_plane_bound`], which is the only writer and the only publisher.
+pub(crate) fn observe_video_plane(
+    pl: &mut machine::Player,
+    pa: &mut adapter::PlayerAdapter,
+) -> Option<bool> {
+    let bound = pa.engine().is_some_and(|e| acb_playstate_ready(e.stage));
+    pl.set_video_plane_bound(bound)
 }
 
 // ---- transport accessors app.rs / player_hud.rs call ----
@@ -433,8 +469,8 @@ pub(crate) fn abandon_seek() {
 }
 /// true while a seek is resolving (request → reopen/reload → prime → Play): the HUD shows a
 /// spinner and freezes the playhead at `seek_display_ns` instead of wobbling through the reopen.
-pub(crate) fn loading() -> bool {
-    state().is_busy()
+pub(crate) fn loading(ps: &crate::route::PlaybackSession) -> bool {
+    state(ps).is_busy()
 }
 /// true only while the pipeline is actually presenting frames — not resolving, connecting,
 /// buffering or seeking. app.rs gates the heartbeat's `pos=` field on this: on a **direct-play**
@@ -442,11 +478,11 @@ pub(crate) fn loading() -> bool {
 /// branch), so the position reads 0 until the first decoded frame lands at the resume offset.
 /// Logging that pre-roll 0 would show the harness a 0→600 step and read as 600s of "climb"
 /// inside one second — a false PASS on `min_timeline_climb_s`.
-pub(crate) fn is_playing() -> bool {
-    matches!(state(), shared::PlaybackState::Playing)
+pub(crate) fn is_playing(ps: &crate::route::PlaybackSession) -> bool {
+    matches!(state(ps), shared::PlaybackState::Playing)
 }
 /// The derived playback state — the ONE thing the HUD renders from. See `PlaybackState`.
-pub(crate) fn state() -> shared::PlaybackState {
+pub(crate) fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
     // Resolving is DERIVED here rather than stored: the pump owns `pb_state` but only runs once
     // an engine exists, which is false for the whole resolve window. Deriving in the one reader
     // keeps a single writer instead of poking the state in from the frame loop.
@@ -458,7 +494,7 @@ pub(crate) fn state() -> shared::PlaybackState {
     // that owns `pb_state` never runs. Deriving it in the one reader keeps a single writer — the
     // alternative is poking `Error` into the player's state from the frame loop. It sits BELOW the
     // resolve check because a fresh resolve is the thing that retires the last verdict.
-    if crate::route::play_refused() || crate::route::play_resolution_failed() {
+    if crate::route::play_refused(ps) || crate::route::play_resolution_failed(ps) {
         return shared::PlaybackState::Error;
     }
     shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
@@ -472,7 +508,7 @@ pub(crate) fn state() -> shared::PlaybackState {
 ///
 /// Pure. Every part is a product identity or a closed vocabulary: the version every surface shares
 /// (`plex::identity`), the firmware release, the set (model · board · hw — the rule
-/// `ui::stats::device_rows` states: shared by every unit LG built, saying nothing about a
+/// `app::diagnostics::device_rows` states: shared by every unit LG built, saying nothing about a
 /// household) and [`FailureKind::code`], the same string the telemetry channel sends. It never
 /// carries `ErrorShape::detail`, the server's free text, which is the one thing here that could
 /// name a file.
@@ -649,7 +685,7 @@ fn error_shape(
     no_video: bool,
     transcoding: bool,
     sub: crate::plex::serverinfo::Subscription,
-    verdict: Option<&'static str>,
+    verdict: Option<&str>,
     runtime: RuntimeFailure,
 ) -> ErrorShape {
     let no_pass = sub == crate::plex::serverinfo::Subscription::No;
@@ -672,7 +708,10 @@ fn error_shape(
             // surface (the full-screen read-out) is the one that can hold a whole sentence.
             panel: "the server refused the item at /decision — it can neither direct play nor convert it",
             readout: "The server cannot play or convert this file",
-            detail: std::borrow::Cow::Borrowed(v),
+            // OWNED since phase 9: the verdict is borrowed from the caller's session publication
+            // rather than from a `static mut`, so it cannot be lent for `'static`. One allocation,
+            // on the path where a playback has already failed.
+            detail: std::borrow::Cow::Owned(v.to_owned()),
             no_pass: false,
         };
     }
@@ -750,14 +789,14 @@ fn error_shape(
 /// `Error` (the plan's own refusal and the engine it would otherwise have started).
 ///
 /// MAIN THREAD, like every other reader of `route`'s playback state.
-fn playing_subscription() -> crate::plex::serverinfo::Subscription {
-    crate::plex::serverinfo::subscription_of(crate::route::cur_sid())
+fn playing_subscription(ps: &crate::route::PlaybackSession) -> crate::plex::serverinfo::Subscription {
+    crate::plex::serverinfo::subscription_of(crate::route::cur_sid(ps))
 }
 
 /// The live [`ErrorShape`] for `PlaybackState::Error` (main thread — `route::is_transcoding` and
 /// `route::play_verdict` read main-thread state).
-pub(crate) fn error_now() -> ErrorShape {
-    if let Some(arm) = failtest_arm() {
+pub(crate) fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
+    if let Some(arm) = failtest_arm(ps) {
         return arm;
     }
     let demux_failed = SHARED
@@ -768,9 +807,9 @@ pub(crate) fn error_now() -> ErrorShape {
         .load(std::sync::atomic::Ordering::Acquire);
     error_shape(
         SHARED.demux_no_video.load(Relaxed),
-        crate::route::is_transcoding(),
-        playing_subscription(),
-        crate::route::play_verdict(),
+        crate::route::is_transcoding(ps),
+        playing_subscription(&ps),
+        crate::route::play_verdict(ps),
         runtime_failure(
             demux_failed,
             demux_io_failed,
@@ -806,9 +845,9 @@ const FAILTEST_VERDICT: &str =
 /// the capsule reachable and it applies to EVERY server, so the pairing `docs/agent-reference.md`
 /// documents is unaffected — but note the arm still has to be looked at from the player route,
 /// i.e. after a play, which is when `route::cur_sid` names a server at all.
-fn failtest_arm() -> Option<ErrorShape> {
+fn failtest_arm(ps: &crate::route::PlaybackSession) -> Option<ErrorShape> {
     let arm = crate::dev::read("failtest")?;
-    let sub = playing_subscription();
+    let sub = playing_subscription(&ps);
     Some(match arm.trim() {
         "audio" => error_shape(true, true, sub, None, RuntimeFailure::Unknown),
         "novideo" => error_shape(true, false, sub, None, RuntimeFailure::Unknown),
@@ -826,12 +865,12 @@ fn failtest_arm() -> Option<ErrorShape> {
     })
 }
 /// HUD caption for `PlaybackState::Error` (main thread).
-pub(crate) fn error_caption() -> &'static std::ffi::CStr {
-    error_now().caption
+pub(crate) fn error_caption(ps: &crate::route::PlaybackSession) -> &'static std::ffi::CStr {
+    error_now(ps).caption
 }
 /// The same non-empty answer for the diagnostics panel's verdict line.
-pub(crate) fn error_reason() -> &'static str {
-    error_now().panel
+pub(crate) fn error_reason(ps: &crate::route::PlaybackSession) -> &'static str {
+    error_now(ps).panel
 }
 /// Test-only: drive the derived playback state, returning the previous raw value to restore.
 ///
@@ -865,7 +904,7 @@ pub(crate) use engine::aq_caps;
 pub(crate) use engine::feed_leads_ms;
 pub(crate) use ffi::{VP_ACB, VP_EXPORTED, VP_NONE};
 
-/// One consistent read of everything the on-screen diagnostics overlay shows (`ui::stats`).
+/// One consistent read of everything the on-screen diagnostics overlay shows (`app::diagnostics`).
 ///
 /// A struct rather than twenty accessors for one reason: the panel must not tell a story that
 /// never happened. Sampled field-by-field across a frame it could report "no frames" beside a
@@ -1032,7 +1071,7 @@ impl Diag {
     }
 }
 
-pub(crate) fn diag() -> Diag {
+pub(crate) fn diag(ps: &crate::route::PlaybackSession) -> Diag {
     let (fed_v, fed_a) = engine::fed_totals();
     // `vp_window_id` hands back the seam's own static buffer — never NULL, "" when no window was
     // created — so this is a copy of a bounded char[64], not a borrow with a lifetime to reason about.
@@ -1083,7 +1122,7 @@ pub(crate) fn diag() -> Diag {
         video_fps_milli: SHARED.video_fps_milli.load(Relaxed),
         pos_ns: SHARED.playpos_ns.load(Relaxed),
         dur_ns: SHARED.duration_ns.load(Relaxed),
-        source_kbps: crate::route::transport_kbps(),
+        source_kbps: crate::route::transport_kbps(ps),
         abr_mode: SHARED.dg_abr_mode.load(Relaxed),
         abr_kbps: SHARED.dg_abr_kbps.load(Relaxed),
         abr_declared_kbps: SHARED.dg_abr_declared_kbps.load(Relaxed),
@@ -1125,9 +1164,9 @@ pub(crate) fn seek_display_ns() -> i64 {
 ///
 /// `ui/player_hud.rs` deliberately does NOT call this: it needs the same outer two rungs with the
 /// live scrub preview between them, so its expression is a superset rather than a caller.
-pub(crate) fn intended_pos_ns() -> i64 {
+pub(crate) fn intended_pos_ns(ps: &crate::route::PlaybackSession) -> i64 {
     let t = seek_display_ns();
-    if loading() && t >= 0 {
+    if loading(ps) && t >= 0 {
         t
     } else {
         playpos_ns()
@@ -1135,18 +1174,18 @@ pub(crate) fn intended_pos_ns() -> i64 {
 }
 /// request an audio-track switch (Plex audioStreamID); the pump forces a fresh
 /// transcode with that source audio at the current position next tick.
-pub(crate) fn request_audio_switch(_sid: i64) {
-    crate::route::request_user_route_intent(crate::route::UserRouteIntent::Retranscode);
+pub(crate) fn request_audio_switch(ps: &crate::route::PlaybackSession, _sid: i64) {
+    crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::Retranscode);
     SHARED.sub_cues.lock().unwrap().clear(); // the fresh transcode carries no embedded subs
 }
 /// request a NATIVE audio-track switch (direct-play, NO transcode): feed the 0-based `audio_idx`
 /// audio stream from the same MKV with codec `codec`. The pump reloads direct-play at the current
 /// position next tick (switch_audio_native). Used when the item direct-plays and the target track
 /// is a direct-playable codec (aac/ac3/eac3).
-pub(crate) fn request_audio_track(audio_idx: i32, codec: &str) {
-    crate::route::set_stream_acodec(codec); // the reload's Load payload uses this audio codec
+pub(crate) fn request_audio_track(ps: &mut crate::route::PlaybackSession, audio_idx: i32, codec: &str) {
+    crate::route::set_stream_acodec(ps, codec); // the reload's Load payload uses this audio codec
     SHARED.desired_audio_idx.store(audio_idx, Relaxed);
-    crate::route::request_user_route_intent(crate::route::UserRouteIntent::NativeAudioReload);
+    crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::NativeAudioReload);
     SHARED.sub_cues.lock().unwrap().clear();
 }
 /// reset to the default (best) audio stream — called on a new item so a prior track choice
@@ -1170,16 +1209,16 @@ pub(crate) fn set_audio_track(idx: i32) {
 /// request a re-transcode at the current position with the CURRENT audio + subtitle —
 /// used when a subtitle is (de)selected while already transcoding, so the server
 /// re-burns (or drops) it. No-op-ish if not transcoding (the caller gates on that).
-pub(crate) fn request_transcode_refresh() {
-    crate::route::request_user_route_intent(crate::route::UserRouteIntent::Retranscode);
+pub(crate) fn request_transcode_refresh(ps: &crate::route::PlaybackSession) {
+    crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::Retranscode);
     SHARED.sub_cues.lock().unwrap().clear(); // burned/absent in the fresh transcode
 }
 
 /// Restart the current stream at the current movie position so a fresh demux worker captures a
 /// newly-enabled adaptive controller. This mailbox does not itself mutate the route or ask PMS for
 /// another encode; the main-thread pump owns the eventual same-position restart.
-pub(crate) fn request_adaptive_reload() {
-    crate::route::request_user_route_intent(crate::route::UserRouteIntent::AdaptiveReload);
+pub(crate) fn request_adaptive_reload(ps: &crate::route::PlaybackSession) {
+    crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::AdaptiveReload);
 }
 
 pub(crate) fn cancel_adaptive_reload() {
@@ -1201,15 +1240,15 @@ pub(crate) fn pending_adaptive_reload() -> bool {
 /// Route-policy tests share the process-wide player mailbox even though no Engine pumps it.
 /// Empty it between cases so one test's requested handoff cannot become the next test's input.
 #[cfg(test)]
-pub(crate) fn reset_route_requests_for_test() {
-    crate::route::reset_player_control_for_test();
+pub(crate) fn reset_route_requests_for_test(ps: &crate::route::PlaybackSession) {
+    crate::route::reset_player_control_for_test(ps);
 }
 
 /// Request the main-thread HLS→Original pipeline replacement. Used by an explicit Original pick;
 /// the adaptive worker publishes through the same synchronized route-intent controller after its
 /// source probes pass.
-pub(crate) fn request_original_recovery() {
-    crate::route::request_user_route_intent(crate::route::UserRouteIntent::RecoverOriginal);
+pub(crate) fn request_original_recovery(ps: &crate::route::PlaybackSession) {
+    crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::RecoverOriginal);
     SHARED.sub_cues.lock().unwrap().clear();
 }
 
@@ -1292,6 +1331,25 @@ pub(crate) fn active_subtitle(now_ns: i64) -> Option<String> {
         .rev()
         .find(|c| c.track == sel && now_ns >= c.start_ns && now_ns < c.end_ns)
         .map(|c| c.text.clone())
+}
+
+/// **The IDENTITY of the text cue active at `now_ns`** — its start, or 0 for none.
+///
+/// [`active_subtitle`] clones the cue's `String`, which is right for the draw and wrong for the
+/// per-frame motion report that has to run whether or not the frame draws (spec §8.3): a subtitle
+/// appearing or vanishing is a whole-screen content change with no spring behind it, and before
+/// phase 9 nothing reported it because the player route presented unconditionally. `start_ns` is a
+/// sufficient identity — two cues of one track cannot share a start.
+pub(crate) fn subtitle_cue_id(now_ns: i64) -> i64 {
+    let sel = SHARED.desired_sub_idx.load(Relaxed);
+    if sel < 0 {
+        return 0;
+    }
+    let cues = SHARED.sub_cues.lock().unwrap();
+    cues.iter()
+        .rev()
+        .find(|c| c.track == sel && now_ns >= c.start_ns && now_ns < c.end_ns)
+        .map_or(0, |c| c.start_ns)
 }
 
 /// Image-subtitle store (PGS/VobSub). The demux (D) thread decodes the SELECTED track's
@@ -1468,6 +1526,12 @@ fn source_fps_milli(h: &[u8]) -> Option<i64> {
 ///
 /// Not SDL ticks: this is read on the pipeline's own callback thread, and the value is only ever
 /// differenced, so a private origin is enough and owes SDL nothing.
+///
+/// **Private to `player::` again.** It was widened to `pub(crate)` earlier in phase 9 so
+/// `route::decision`'s `auto_last_switch` aging could stamp from it; that stamp now comes from the
+/// Player machine's frame tick (`machine::Player::set_now`, spec §4.1), which is the loop's own
+/// `fr.now` and therefore cannot disagree with the frame it belongs to. The remaining readers are
+/// the pump's silence watchdog and the host clock sink, both inside this module.
 fn vclock_ms() -> u32 {
     use std::sync::OnceLock;
     use std::time::Instant;
@@ -1501,7 +1565,7 @@ pub(crate) fn vplane_take() -> (u32, u32) {
 /// direct play and a visibly stuttering Dolby Vision direct play all deliver it 5 times a second,
 /// 201 ms apart, to the millisecond. So [`frames`](crate::player::shared::Shared::frames) counts
 /// TICKS, not frames — which is what `pump`'s `frames >= 2` gate really means (≈400 ms of
-/// playback, not two pictures) and what `ui::stats` really shows.
+/// playback, not two pictures) and what `app::diagnostics` really shows.
 ///
 /// The consequence for diagnosis: this callback can say the pipeline still believes it is
 /// presenting, and cannot say the picture is smooth. The video plane's real cadence is not
@@ -2055,9 +2119,9 @@ mod tests {
         }
         let _restore = Restore(old_paused);
         let before = ffi::play_calls_for_test();
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut pa = adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() });
 
-        assert!(resume(&mt));
+        assert!(resume(&mut pa));
 
         assert_eq!(
             ffi::play_calls_for_test(),
@@ -2383,28 +2447,27 @@ mod tests {
     /// capsule appeared on a failure nothing about a subscription explains, which is the confident
     /// wrong answer `error_shape`'s tristate rule exists to prevent.
     ///
-    /// Registry, subscription slots and `route`'s playing identity are all crate globals, so this
-    /// holds `testlock::serial()` and puts every one of them back on the way OUT — the discipline
-    /// `serverinfo`'s own multi-server test states, and the reason its `Fresh` guard has a `Drop`.
+    /// Registry and subscription slots are still crate globals, so this holds `testlock::serial()`
+    /// and puts them back on the way OUT — the discipline `serverinfo`'s own multi-server tests
+    /// state, and the reason its `Fresh` guard has a `Drop`. **`route`'s playing identity is no
+    /// longer among them** (phase 9): the session is this test's own local, so it is restored by
+    /// being dropped, and the guard no longer has to put it back.
     #[test]
     fn the_failure_read_out_states_the_playing_items_server_not_the_current_one() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         use crate::plex::serverinfo::{store_for_test, Subscription as Sub};
         struct Fresh {
-            _g: std::sync::MutexGuard<'static, ()>,
-            sid: crate::plex::ServerId,
+            _g: crate::testlock::Serial,
         }
         impl Drop for Fresh {
             fn drop(&mut self) {
-                crate::route::swap_cur_sid_for_test(self.sid);
                 crate::plex::reset_servers_for_test();
             }
         }
         let g = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
-        let _fresh = Fresh {
-            _g: g,
-            sid: crate::route::swap_cur_sid_for_test(crate::plex::ServerId::UNSET),
-        };
+        let _fresh = Fresh { _g: g };
+        crate::route::swap_cur_sid_for_test(&mut ps, crate::plex::ServerId::UNSET);
 
         let reg =
             |m: &str, host: &str| crate::plex::register_for_test(m, host, 32400, "tok", "cid");
@@ -2418,16 +2481,16 @@ mod tests {
         // …and browsing a share does NOT re-point `current`, which is the whole trap
         assert!(crate::plex::set_current(ours));
 
-        crate::route::swap_cur_sid_for_test(theirs);
+        crate::route::swap_cur_sid_for_test(&mut ps, theirs);
         assert_eq!(
-            playing_subscription(),
+            playing_subscription(&ps),
             Sub::No,
             "the borrowed film's own server is the one that failed"
         );
         let e = error_shape(
             true,
             true,
-            playing_subscription(),
+            playing_subscription(&ps),
             None,
             RuntimeFailure::Unknown,
         );
@@ -2440,9 +2503,9 @@ mod tests {
 
         // the inverse polarity: playing from OUR Pass'd server while `current` sits on the share
         assert!(crate::plex::set_current(theirs));
-        crate::route::swap_cur_sid_for_test(ours);
+        crate::route::swap_cur_sid_for_test(&mut ps, ours);
         assert_eq!(
-            playing_subscription(),
+            playing_subscription(&ps),
             Sub::Yes,
             "the current server's answer is not this item's"
         );
@@ -2450,7 +2513,7 @@ mod tests {
             !error_shape(
                 true,
                 true,
-                playing_subscription(),
+                playing_subscription(&ps),
                 None,
                 RuntimeFailure::Unknown
             )
@@ -2460,13 +2523,13 @@ mod tests {
 
         // before the first play there is no playing server, and "we have not heard" is the honest
         // answer — never slot 0's, and never a blamed subscription
-        crate::route::swap_cur_sid_for_test(crate::plex::ServerId::UNSET);
-        assert_eq!(playing_subscription(), Sub::Unknown);
+        crate::route::swap_cur_sid_for_test(&mut ps, crate::plex::ServerId::UNSET);
+        assert_eq!(playing_subscription(&ps), Sub::Unknown);
         assert!(
             !error_shape(
                 true,
                 true,
-                playing_subscription(),
+                playing_subscription(&ps),
                 None,
                 RuntimeFailure::Unknown
             )

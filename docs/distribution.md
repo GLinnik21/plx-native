@@ -1,3 +1,7 @@
+> Historical distribution research below is retained as dated analysis. The current license
+> is GPL-3.0-or-later; see `../LICENSING.md` and `../THIRD-PARTY-NOTICES.md`. Earlier MIT
+> recommendations below do not describe the current tree.
+
 # Distribution: what it takes to ship this publicly
 
 Researched 2026-08-01 against live primary sources (webosbrew apps-repo + schemas, LG developer
@@ -513,7 +517,7 @@ world-readable `/tmp` on the TV across many runs.
 - `sshpass -p alpine` (`Makefile:24-25`) — **not a secret.** `alpine` is the published webosbrew
   dev-mode root password; the repo's own skill says so. Publishable. It does teach an insecure
   default and will authenticate against *any* rooted webOS TV a contributor points `TV=` at.
-- `192.0.2.20` / `192.0.2.21` — RFC1918, low risk, but they are the maintainer's home topology,
+- `TV_HOST` / `PMS_HOST` — RFC1918, low risk, but they are the maintainer's home topology,
   they are the defaults every contributor inherits, **and one of them gets baked into the binary**.
   **FIXED 2026-08-02.** `git ls-files | xargs grep '192\.168\.0\.'` is now empty outside this
   section, which keeps its citations on purpose. The TV's address moved to the gitignored
@@ -530,7 +534,7 @@ world-readable `/tmp` on the TV across many runs.
 
 **What a public build would leak (verified by `strings` on `pkg/plxnative` and inside the ipk):**
 
-1. `192.0.2.21` — `PMS_HOST` from `config.local.h` is compiled in. *(Only used on the
+1. `PMS_HOST` — `PMS_HOST` from `config.local.h` is compiled in. *(Only used on the
    `/tmp/plxnative-token` automation branch — `app.rs:436-438` — so a public build with no
    `config.local.h` compiles the `"YOUR_PMS_HOST"` placeholder and never uses it. Still, don't ship a
    binary built on this machine.)*

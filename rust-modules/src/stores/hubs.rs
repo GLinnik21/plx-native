@@ -26,9 +26,8 @@ pub(crate) fn take_results() -> Vec<HubsResult> {
 }
 
 pub(crate) fn land(result: &HubsResult) {
-    let before = crate::pms::catalog_gen();
-    crate::pms::apply_landing(result);
-    super::note(StoreId::Hubs, crate::pms::catalog_gen() != before);
+    let changed = crate::pms::land(result);
+    super::note(StoreId::Hubs, changed);
 }
 
 fn tick(dt: f32) {
@@ -42,34 +41,21 @@ pub(crate) fn apply(cmd: HubsCmd) -> bool {
     super::apply(super::StoreCmd::Hubs(cmd))
 }
 
-/// The store's own step, reached only through [`super::apply`].
+/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
+/// `pms::run` — its four arms called `pub(crate)` mutators across this module boundary, which is
+/// exactly what a new screen could have done too; the mutators are private to `pms.rs` now and
+/// this is their only door.
 pub(super) fn run(cmd: HubsCmd) -> bool {
-    let answer = match cmd {
-        HubsCmd::RefetchHubs => {
-            crate::pms::request_refetch_hubs();
-            true
-        }
-        HubsCmd::Retry => {
-            crate::pms::request_retry();
-            true
-        }
-        HubsCmd::Reset => {
-            crate::pms::reset();
-            true
-        }
-        HubsCmd::EditItem { sid, rk, edit } => crate::pms::edit_item(sid, &rk, edit),
-    };
+    // `crate::pms`'s statics are a crate global reached from both `apply` above and
+    // `crate::stores::apply(StoreCmd::Hubs(..))` directly (some fixtures deliver a `StoreCmd`
+    // without going through this module's `apply`) — guard the one point both funnel through, even
+    // though `pms::run`'s own arms each delegate to a `crate::pms` function that asserts on its
+    // own. See `lib.rs::testlock` and D5.
+    #[cfg(test)]
+    crate::testlock::assert_held("the hubs store (apply)");
+    let answer = crate::pms::run(cmd);
     super::bump(StoreId::Hubs);
     answer
-}
-
-/// Legacy callers' combined pass: land, back off, refetch. The owned machine's Pump only ticks;
-/// its arrivals come through `AppMsg::HubsResult` and [`land`]. `pms::pump` reports no change of its own,
-/// so the notice is raised on its catalog generation moving instead.
-pub(crate) fn pump(dt: f32) {
-    let before = crate::pms::catalog_gen();
-    crate::pms::pump(dt);
-    super::note(StoreId::Hubs, crate::pms::catalog_gen() != before);
 }
 
 impl<H: Host> Machine<H> for HubsStore {

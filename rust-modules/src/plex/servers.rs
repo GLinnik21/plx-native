@@ -376,6 +376,10 @@ pub fn current() -> ServerId {
 /// Point `client()` at another registered server. `false` (and no change) for an id that names
 /// no client — retargeting to nothing would turn every `client()` into a panic.
 pub fn set_current(id: ServerId) -> bool {
+    // `CURRENT` is a crate global; a test that flips it outside `crate::testlock::serial()` lands
+    // in the middle of some other module's test — see `lib.rs::testlock`.
+    #[cfg(test)]
+    crate::testlock::assert_held("the plex server registry (set_current)");
     let ok = client_for(id).is_some();
     if ok {
         // Release, pairing with `current()`'s Acquire: publishes the slot store that
@@ -418,8 +422,8 @@ pub fn roster_gen() -> u32 {
 /// **Not every published field moves it**, and the exception is deliberate:
 /// [`commit_reachability_if_current`] can merge a fresher machine NAME — the server naming itself,
 /// on a path that runs per request — without bumping this. A cache that needs to follow that has
-/// the facts POINTER to key on (`ui::search::field::Key` does exactly that, and it is how a name
-/// landing reaches the Search scope line); making a per-request commit move a counter that
+/// the facts POINTER to key on (`search::scope::Key`'s own `facts` fingerprint does exactly that,
+/// and it is how a name landing reaches the Search scope line); making a per-request commit move a counter that
 /// `pms::sync_roster` rebuilds Home's whole source table on would be a poor trade for a field Home
 /// does not draw.
 pub fn facts_gen() -> u32 {
@@ -790,6 +794,11 @@ pub(crate) fn register_with_client_id(
     token: &str,
     client_id: &str,
 ) -> ServerId {
+    // Same crate-global registry guard as `register_lazy` (which this reaches through
+    // `register_origin_with_client_id`) — named directly here too, since this is the entry point
+    // D5 names and `register_lazy`'s own assertion is one call away rather than at this frame.
+    #[cfg(test)]
+    crate::testlock::assert_held("the plex server registry (register_with_client_id)");
     register_origin_with_client_id(machine_id, &Origin::http(host, port), token, client_id)
 }
 
@@ -824,6 +833,12 @@ fn register_lazy(
     pin: Option<&ResolvePin>,
     client_id: &dyn Fn() -> String,
 ) -> ServerId {
+    // The registry's SLOTS/COUNT/ACTIVE/CURRENT tables are crate globals — a test reaching this
+    // through `register_with_client_id`/`register_origin_with_client_id`/
+    // `register_pinned_with_client_id` without `crate::testlock::serial()` writes them outside the
+    // lock, exactly what `lib.rs::testlock` exists to catch.
+    #[cfg(test)]
+    crate::testlock::assert_held("the plex server registry (register)");
     // Recorded BEFORE the client is published, so no request made through the new pointer can
     // reach `curlio` ahead of the table entry it will look for. Once per (host, port); the
     // log line below names the pin only when it is new, so a token-only re-registration of the
@@ -915,7 +930,7 @@ fn register_lazy(
     );
     COUNT.store(n + 1, Ordering::Release); // after the pointer: a visible count implies a live slot
     activate(id);
-    // Address only — the machineIdentifier is a permanent household fingerprint (see `ui::stats`)
+    // Address only — the machineIdentifier is a permanent household fingerprint (see `app::diagnostics`)
     // and the event log is what users send us. `log_form` rather than `base`, for the reason the
     // re-point line above gives.
     crate::log(&format!(
@@ -1034,6 +1049,9 @@ pub(crate) fn finish_profile_switch(installed: &[ServerId]) {
 /// It does NOT free anything and does not lower [`COUNT`] — see the module doc on why a slot number
 /// is never handed out twice.
 pub(crate) fn revoke_all() {
+    // Same crate-global registry `register_lazy`/`set_current` guard — see `lib.rs::testlock`.
+    #[cfg(test)]
+    crate::testlock::assert_held("the plex server registry (revoke_all)");
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let n = COUNT.load(Ordering::Acquire);
     let floor = FLOOR.load(Ordering::Acquire);
@@ -1072,6 +1090,7 @@ pub(crate) fn revoke_all() {
 /// to ask `client_opt()` gets `Some(a client whose port closed when that test returned)`.
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
+    crate::testlock::assert_held("the plex server registry (reset)");
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     for s in SLOTS.iter() {
         s.store(std::ptr::null_mut(), Ordering::Release);
@@ -1111,7 +1130,7 @@ mod tests {
     /// then spawns a discovery worker for it, so servers left behind here would have another
     /// module's tests dialling `10.0.0.1` on a background thread. The reset happens while the lock
     /// is still held (a struct's own `Drop` runs before its fields').
-    struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             reset_for_test();

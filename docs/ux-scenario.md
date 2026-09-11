@@ -319,7 +319,7 @@ covers the user's own servers and any shared with the account; Plex Discover / W
 results are deliberately out of scope, by decision rather than by omission.
 
 *The scope line in the figure is redacted: it names a real server. The substitute is the app's own
-string for a server that reports no name (`ui/search/field.rs::scope_text`), so the figure shows a
+string for a server that reports no name (`screens/search/render.rs::scope_text`), so the figure shows a
 state the app really produces.*
 
 ### 5.6 Card context menu
@@ -409,7 +409,12 @@ app; BACK no longer does, anywhere.
 
 When playback cannot start, the app does not fail silently and does not show a spinner forever. It
 draws a full-screen read-out: a warning mark, a headline, **the reason in plain language**, the
-server's own verdict beneath it where there is one, and the way out — *"Press BACK to return"*.
+server's own verdict beneath it where there is one, and BOTH ways out, each with its key cap so it
+survives a phone photograph — *"Press **OK** to choose quality or retry"* above *"Press **BACK** to
+return"*. The first is the recovery path: it opens the same quality ladder the `…` menu does, on the
+rung this playback is already using, so picking that rung is a plain retry and picking another
+starts the same item under a different policy. A failure is therefore terminal for the pipeline,
+not a trap for the viewer.
 
 The figure is a real server verdict (*"Cannot convert this item. Implementation for video encoder
 'hevc' not found."*). The screen is shaped to survive being photographed off a panel and pasted into
@@ -544,7 +549,13 @@ from**. For an episode that is the **show page, scrolled to the episode that pla
 generic show root. The final position is reported to the server on the way out, so the item resumes
 where it was left, on this client or any other, and Continue Watching is refreshed shortly after.
 
-While a playback **failure** owns the frame (§5.10), BACK is the only key that acts.
+While a playback **failure** owns the frame (§5.10), exactly three keys act and everything else
+is swallowed, because nothing else on that frame is drawn: **OK** opens the shared quality ladder on
+its current rung (picking that rung is a plain retry), **BACK** and **Stop** leave the playback, and
+**EXIT** ends the app as it does everywhere. Both of the first two are printed on the read-out
+itself. This line said "BACK is the only key that acts" and was true only by accident: the arm that
+implemented the OK escape carried a guard it could never satisfy, so OK fell through to the ordinary
+transport toggle instead — restructure phase 12 (PX-PLAYER) is where that was found and fixed.
 
 ### 6.5 The state mark — what the HUD shows instead of buttons
 

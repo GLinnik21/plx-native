@@ -650,8 +650,14 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
-        Glass::CACHED.panel(p, self.frame(), 0.0, PANEL_RADIUS);
-        self.table.draw(p, self.frame());
+        let measure = f.measure;
+        // The panel's own share, named for `/tmp/plxnative-cpuprof` beside the page's `lb.*`
+        // phases: the frosted ground plus its rows, so a slow frame while the Sort/Filter menu is
+        // up can be read as the PANEL or as the host under it rather than as one `main.ui` total.
+        crate::ui::profile::phase("lb.menu", || {
+            Glass::CACHED.panel(p, self.frame(), 0.0, PANEL_RADIUS);
+            self.table.draw(p, self.frame(), measure);
+        });
         for row in &self.rows {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &row.key, f.cx, At::Drawn) {
                 f.stop(

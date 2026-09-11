@@ -27,7 +27,7 @@
 //!    file instead of eight.
 //! 3. **Nothing enters the payload that is not already allowed on a photograph.** The envelope is
 //!    built from `Diag`, `webos::Info` and `devcaps::Caps` — numbers, bools, enums and short
-//!    platform strings — under the same no-URL / no-credential / no-identity rule `ui::stats`
+//!    platform strings — under the same no-URL / no-credential / no-identity rule `app::diagnostics`
 //!    states at length, and every ring record passes [`snapshot::scrub`] on the way out on top of
 //!    the `redact_tokens` it already passed on the way in. See [`snapshot`].
 //!
@@ -131,11 +131,11 @@ pub(crate) fn is_trigger_key(_sym: u32, _wcode: u32) -> bool {
 /// It sits at the TOP of the chain, above every modal, on purpose — the screen a tester most
 /// wants a snapshot of is the playback failure read-out, whose own arm `continue`s on every key.
 #[inline]
-pub(crate) fn key_press(_sym: u32, _wcode: u32) -> bool {
+pub(crate) fn key_press(_sym: u32, _wcode: u32, _ps: &crate::route::PlaybackSession) -> bool {
     #[cfg(feature = "lab-diagnostics")]
     {
         if is_trigger_key(_sym, _wcode) {
-            request_upload("key");
+            request_upload("key", _ps);
             return true;
         }
     }
@@ -146,11 +146,14 @@ pub(crate) fn key_press(_sym: u32, _wcode: u32) -> bool {
 /// is distinguishable from one taken with the remote (which is how the colour-button question gets
 /// settled — see `docs/lab-diagnostics.md` §7).
 ///
-/// **Main thread only**: `player::diag()` is main-thread by contract. The blocking work happens on
+/// **Main thread only**: `player::diag` is main-thread by contract. The blocking work happens on
 /// a worker.
-pub(crate) fn request_upload(_reason: &str) {
+///
+/// The session is a PARAMETER for the reason every other `player::diag` caller's is (phase 9):
+/// there is no `route::decision::SESSION` global left to read it out of, and the loop owns it.
+pub(crate) fn request_upload(_reason: &str, _ps: &crate::route::PlaybackSession) {
     #[cfg(feature = "lab-diagnostics")]
-    upload::request(_reason);
+    upload::request(_reason, _ps);
 }
 
 /// Should the lab entry appear in the account menu / player overflow? False in every build that
@@ -180,9 +183,10 @@ pub(crate) fn update(_now: u32) {
     crate::ui::lab_toast::update(_now);
 }
 
-/// Draw the toast, over everything, on every route.
+/// Draw the toast, over everything, on every route. `stats` is the diagnostics read-out's frame
+/// when it is on screen: the toast sits immediately below it, and neither may cover the other.
 #[inline]
-pub(crate) fn draw() {
+pub(crate) fn draw(_stats: Option<crate::ui::Rect>) {
     #[cfg(feature = "lab-diagnostics")]
-    crate::ui::lab_toast::draw();
+    crate::ui::lab_toast::draw(_stats);
 }

@@ -38,17 +38,19 @@
 //! list.** `fetch_playing_item(sid, rk) -> Option<PlayingItem>` performs a BLOCKING `plex::client`
 //! network call (`route.rs`'s one caller runs it on the resolve WORKER, never the main thread); a
 //! screen must route it through a request/pump, never call it from `step`/`draw`. `sync_now_playing()`
-//! mutates `NOW` and has exactly two callers, both already inside the WRITE surface below
-//! (`load_detail_now`, `install_landed_detail`) — no external caller reaches it directly today, and
-//! none should start to; it is internal machinery of `LoadDetailNow`/the detail landing, not a
-//! third thing a screen names.
+//! mutates `NOW` and its one remaining caller is already inside the WRITE surface below
+//! (`install_landed_detail`) — no external caller reaches it directly today, and none should start
+//! to; it is internal machinery of the async detail landing, not a third thing a screen names.
+//! (Phase 12/D7: `MetadataCmd::LoadDetailNow`/`metadata::load_detail_now` — a synchronous
+//! `sync_now_playing` caller of their own — were deleted here. `app/input.rs`'s `activate_card`
+//! was the last direct caller; it now issues `RequestDetail` and defers its play-vs-open decision
+//! to a landing-driven continuation (`input::menu_play_tick`), so the blocking load has no
+//! caller left at all.)
 //!
 //! ## 2. The WRITE surface — every [`MetadataCmd`] variant, and what it wraps
 //!
 //! - `RequestDetail{sid, rk}` → `metadata::request_detail` — supersede any in-flight load, fetch
 //!   off-thread; lands through the identity-keyed `DETAIL_LANDING` and `pump_detail`.
-//! - `LoadDetailNow{sid, rk}` → `metadata::load_detail_now` — the BLOCKING load, for a caller that
-//!   acts on the item in the same frame (also calls `sync_now_playing` internally).
 //! - `Clear` → `metadata::clear` — drop the loaded item, supersede everything in flight.
 //! - `LoadSeason(usize)` → `metadata::load_season` — flip the season strip optimistically, fetch
 //!   the episodes off-thread (debounced landing through `pump_season`).
@@ -99,10 +101,12 @@
 //! `Spot` has exactly one reader — the same page, restored — which is tier 2's own definition
 //! ("what an evicted entry remounts from"). The player's origin makes the same point structurally:
 //! spec §5.1 already says the origin is `EntryId` + `Descriptor = (ScreenArg, ReturnState)`, and
-//! today's pre-migration equivalent (`ui::trail::Node::Detail{sid, rk, spot}` — identity plus
-//! position, bundled) is EXACTLY that pair with `spot` on the `ReturnState` half: `(sid, rk)` is
+//! the pre-migration equivalent (`ui::trail::Node::Detail{sid, rk, spot}` — identity plus
+//! position, bundled) was EXACTLY that pair with `spot` on the `ReturnState` half: `(sid, rk)` is
 //! identity (`ScreenArg`), `spot` is position (`ReturnState`). Keeping `Spot` in tier 3 would put
 //! position data on the identity side of that pair, which is the distinction §5.1 exists to draw.
+//! **Phase 12 (D1) made that split literal**: the trail is deleted, the identity is
+//! `ContentArg::Detail{sid, rk}` and the `Spot` is `PageMemory::Detail`'s, on the entry.
 //!
 //! **The mechanism** (landed this phase, in `ui/machine.rs`/`ui/screen.rs`, NOT this module — this
 //! module owns the DECISION and the DATA SHAPE, not the generic plumbing): the layer rule still
@@ -117,9 +121,10 @@
 //! Filmography contribute their own identity/return payloads. The container hashes these even
 //! after eviction, and delivers `RestoreMemory` before `Enter(Restored)` for both live and
 //! remounted bodies. Hosts without screen-specific state still use `()`.
-//! `a_detail_return_names_the_item_that_was_mounted`
-//! (`app/mod.rs`) is unaffected by any of this — it grades `app::nav::return_page`'s `Node`
-//! identity comparison, which never touched `Spot` — and must keep passing unmodified.
+//! `a_detail_return_names_the_item_that_was_mounted` is unaffected by any of this — it graded
+//! `app::nav::return_page`'s `Node` identity comparison, which never touched `Spot`, and grades
+//! the `EntryId` origin that replaced it. It moved with its subject in D1: it is
+//! `app::playback::player_return_tests`' now, not `app/mod.rs`'s.
 
 use crate::plex::ServerId;
 use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
@@ -130,8 +135,6 @@ use super::{note, StoreEv, StoreId};
 pub(crate) enum MetadataCmd {
     /// Supersede any in-flight load and fetch `(sid, rk)` off-thread; lands through `pump_detail`.
     RequestDetail { sid: ServerId, rk: String },
-    /// The BLOCKING load, for the callers that act on the item in the same frame.
-    LoadDetailNow { sid: ServerId, rk: String },
     /// Close the page: drop the item and supersede everything in flight.
     Clear,
     /// The season strip: flip optimistically, fetch the episodes off-thread.
@@ -146,6 +149,23 @@ pub(crate) enum MetadataCmd {
     MarkSkipped(crate::metadata::Marker),
     RetirePlaying,
     RetirePlayingItem,
+    /// Install the copies resolved for `(sid, rk)` by the alt-sources worker — the Also-Available
+    /// panel's own store, addressed separately from the loaded item because a resolve lands one
+    /// round trip later than the page mounts (D3: `metadata::alt_install` had no `Cmd` at all
+    /// before this). Production only ever reaches `alt_install` through `pump_alt_sources`
+    /// landing a real resolve (same-file call, not this `Cmd`) — this variant exists so tests can
+    /// seed the store the way a landed resolve would, without a private-fn escape hatch.
+    #[cfg(test)]
+    AltInstall {
+        sid: ServerId,
+        rk: String,
+        copies: Vec<crate::metadata::AltCopy>,
+    },
+    /// Re-read every retained copy's credit from the registry — `metadata::alt_restamp_owners`,
+    /// test-only for the same reason as `AltInstall`: production reaches it from
+    /// `pump_alt_sources` directly (a facts-epoch move), never as a user command.
+    #[cfg(test)]
+    AltRestampOwners,
 }
 
 pub(crate) struct MetadataStore;
@@ -155,51 +175,17 @@ pub(crate) fn apply(cmd: MetadataCmd) -> bool {
     super::apply(super::StoreCmd::Metadata(cmd))
 }
 
-/// The store's own step, reached only through [`super::apply`].
+/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
+/// `metadata::run` — its arms called ten `pub(crate)` mutators across this module boundary;
+/// those ten are private to `metadata.rs` now and this is their only door.
 pub(super) fn run(cmd: MetadataCmd) -> bool {
-    let answer = match cmd {
-        MetadataCmd::RequestDetail { sid, rk } => {
-            crate::metadata::request_detail(sid, &rk);
-            true
-        }
-        MetadataCmd::LoadDetailNow { sid, rk } => {
-            crate::metadata::load_detail_now(sid, &rk);
-            true
-        }
-        MetadataCmd::Clear => {
-            crate::metadata::clear();
-            true
-        }
-        MetadataCmd::LoadSeason(i) => {
-            crate::metadata::load_season(i);
-            true
-        }
-        MetadataCmd::LoadSeasonNow(i) => {
-            crate::metadata::load_season_now(i);
-            true
-        }
-        MetadataCmd::SetNowPlaying(np) => {
-            crate::metadata::set_now_playing(np);
-            true
-        }
-        MetadataCmd::SetWatchedLocal { sid, rk, on } => crate::metadata::set_watched_local(sid, &rk, on),
-        MetadataCmd::InstallPlaying(p) => {
-            crate::metadata::install_playing(p);
-            true
-        }
-        MetadataCmd::MarkSkipped(m) => {
-            crate::metadata::mark_skipped(m);
-            true
-        }
-        MetadataCmd::RetirePlaying => {
-            crate::metadata::retire_playing();
-            true
-        }
-        MetadataCmd::RetirePlayingItem => {
-            crate::metadata::retire_playing_item();
-            true
-        }
-    };
+    // `crate::metadata`'s statics are a crate global reached from both `apply` above and
+    // `crate::stores::apply(StoreCmd::Metadata(..))` directly (some fixtures deliver a `StoreCmd`
+    // without going through this module's `apply`) — guard the one point both funnel through. See
+    // `lib.rs::testlock` and D5.
+    #[cfg(test)]
+    crate::testlock::assert_held("the metadata store (apply)");
+    let answer = crate::metadata::run(cmd);
     super::bump(StoreId::Metadata);
     answer
 }
@@ -211,8 +197,8 @@ pub(crate) fn pump_detail() -> bool {
 pub(crate) fn pump_season() -> bool {
     note(StoreId::Metadata, crate::metadata::pump_season())
 }
-pub(crate) fn pump_alt_sources() {
-    crate::metadata::pump_alt_sources();
+pub(crate) fn pump_alt_sources() -> bool {
+    note(StoreId::Metadata, crate::metadata::pump_alt_sources())
 }
 
 impl<H: Host> Machine<H> for MetadataStore {

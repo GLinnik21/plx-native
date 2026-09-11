@@ -1,6 +1,6 @@
 //! **Favorite libraries, as one screen mounted twice** (restructure spec §6.2 "Onboard ×2",
 //! phase 5b; the words, the draft model and the design argument are `ui/onboard.rs`'s, moved).
-//! First run mounts it as a PAGE (`Route::Onboard`, between the picker and Home, on the
+//! First run mounts it as a PAGE (`AppArg::Onboard`, between the picker and Home, on the
 //! hero-keyed ground, crumb *Who's watching?*, one action *Start watching*); Settings mounts the
 //! same type as a page of the surface's own stack (crumb *Settings*, *Done* only once the draft
 //! differs). The type is generic over the bundle's host, which is what lets one impl serve both.
@@ -34,7 +34,12 @@ const ACTION: &CStr = c"Start watching";
 const DONE: &CStr = c"Done";
 const RETRY: &CStr = c"Try again";
 const CRUMB_SETTINGS: &str = "Settings";
-const CRUMB_PROFILES: &str = crate::screens::profiles::TITLE;
+// Duplicated rather than `crate::screens::profiles::TITLE` — same pattern as `CRUMB_SETTINGS`
+// above and as `legal.rs`/`consent.rs`'s own `CRUMB_SETTINGS`: a breadcrumb label is vocabulary a
+// screen owns for itself, not a naming of the sibling that happens to share the same words, and
+// the sibling gate (ci/check-deps.sh, §2.1) treats `crate::screens::<sibling>` as exactly that
+// naming regardless of which item is read off it.
+const CRUMB_PROFILES: &str = "Who's watching?";
 
 /// Does first run ask this at all?
 pub(crate) fn asks() -> bool {
@@ -67,7 +72,13 @@ pub(crate) struct OnboardScreen {
     table_epoch: u32,
     entry_pins: Vec<(usize, bool)>,
     draft: Vec<(usize, bool)>,
+    /// The empty-roster spinner clock, in ms — cached each tick from
+    /// [`phase_clock`](Self::phase_clock)'s `advance`.
     phase_ms: f32,
+    /// The underlying clock for [`phase_ms`](Self::phase_ms) (`motion::Phase`, phase 12 D4):
+    /// reports `Motion` from inside its own `advance` rather than the raw `+= dt` this used to be,
+    /// with `fx.note(Motion)` a separate line further down `step`.
+    phase_clock: crate::ui::motion::Phase,
     pop: CtlPop<1>,
     ground: RouteGround,
     state: OnboardState,
@@ -155,6 +166,7 @@ impl OnboardScreen {
             entry_pins: if settings { base.clone() } else { Vec::new() },
             draft: base,
             phase_ms: 0.0,
+            phase_clock: crate::ui::motion::Phase::default(),
             pop: CtlPop::new(),
             ground: if settings { RouteGround::new() } else { super::family::pre_home_ground() },
             state: OnboardState {
@@ -441,7 +453,6 @@ impl<H: AppLike> Machine<H> for OnboardScreen {
         match ev {
             ScreenEvent::Tick(t) => {
                 let dt = t.dt();
-                self.phase_ms += dt * 1000.0;
                 // The roster half of the pump: sources and their sections land on workers that
                 // only the Library screen otherwise schedules. **Called directly rather than
                 // through `fx` as an `AppFx::Store`, and deliberately so** — unlike `RetryDiscovery`
@@ -466,7 +477,7 @@ impl<H: AppLike> Machine<H> for OnboardScreen {
                 self.pop.step(band, dt);
                 self.table.update(dt, RouteLayout::screen().sectioned_table().h);
                 if self.table.n_rows() == 0 {
-                    fx.note(crate::ui::present::PresentEvent::Motion); // the spinner
+                    self.phase_ms = self.phase_clock.advance(*t, &mut fx.present()); // the spinner
                 }
                 Handled::Yes
             }
@@ -565,7 +576,7 @@ impl<H: AppLike> Machine<H> for OnboardScreen {
             // re-addresses it to the surface's own outer instance — which means the correction
             // is generated (and so queued) strictly AFTER the sibling default `Enter` for that
             // same mount has already been read out into the SAME batch. This screen has no such
-            // surface in front of it on the first-run path: `Route::Onboard` mounts directly as a
+            // surface in front of it on the first-run path: `AppArg::Onboard` mounts directly as a
             // page of the app's own OUTER stack (`app/bridge.rs`'s `AppMounter::mount`), so a
             // correction pushed from ITS constructor would land in the exact same lifecycle batch
             // as the container's own default — `stack.rs::apply`'s `[Life::Mount(new),
@@ -652,7 +663,7 @@ impl<H: AppLike> Screen<H> for OnboardScreen {
             if self.settings { SETTINGS_TITLE } else { TITLE },
             &body,
         )
-        .paint(p);
+        .paint(p, f.measure);
         let labels = self.labels();
         let pal = if self.settings { palette() } else { self.ground.palette() };
         let mut band = BandPart {
@@ -743,7 +754,7 @@ mod tests {
     }
     impl Drop for TempSession {
         fn drop(&mut self) {
-            crate::browse::reset();
+            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             // the inner guard's own Drop runs after this and takes the redirect back
         }
     }
@@ -856,7 +867,7 @@ mod tests {
     #[test]
     fn the_band_expresses_forward_back_and_commit_as_distinct_states() {
         let _g = crate::testlock::serial();
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         assert!(
             OnboardScreen::first_run(EntryId(0)).has_band(),
             "first run always offers its commit"
@@ -874,12 +885,12 @@ mod tests {
         s.toggle_row(0);
         assert!(s.has_band(), "Done appears after an edit");
 
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         assert!(
             OnboardScreen::settings(EntryId(0)).has_band(),
             "Retry is a real action even on a pristine editor"
         );
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// **Issue 9 reproduction, first run.** Before the draft model, a toggle wrote through to the
@@ -1082,7 +1093,7 @@ mod tests {
     #[test]
     fn the_last_pinned_library_cannot_be_turned_off() {
         let _g = crate::testlock::serial();
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::browse::seed_pins_for_test(&[true, false]);
         let mut s = OnboardScreen::first_run(EntryId(0));
         assert!(s.draft_rows()[0].pinned, "section 0 starts as the only pinned library");
@@ -1096,7 +1107,7 @@ mod tests {
         s.toggle_row(0);
         assert!(!s.draft_rows()[0].pinned, "with a second library on, the first is free to turn off");
 
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// **Drives the REAL BACK/Cancel path through `step`**, not a stand-in for it — first run's
@@ -1159,7 +1170,7 @@ mod tests {
         // takes one of these; this one was written without it. `plex::session::TempSession`'s own
         // doc is the full account of why the guard exists.
         let _t = TempSession::new("armed-verb");
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         let mut s = OnboardScreen::first_run(EntryId(0));
         assert_eq!(s.action_kind(), ActionKind::Retry, "nothing discovered yet");
 
@@ -1195,7 +1206,7 @@ mod tests {
             .iter()
             .any(|st| matches!(st.fx, Fx::App(AppFx::Loop(LoopReq::OnboardDone)))));
 
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// **First run corrects a mismatched default seat to the band** — the `ScreenEvent::Enter`
@@ -1213,7 +1224,7 @@ mod tests {
     #[test]
     fn first_run_corrects_a_default_seat_on_the_table_to_the_band() {
         let _g = crate::testlock::serial();
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         let mut s = OnboardScreen::first_run(EntryId(0));
         let default_seat = ScreenEvent::Enter(Enter::Fresh {
             focus: FocusTarget::ContainerGroup(TABLE_GROUP),
@@ -1244,7 +1255,7 @@ mod tests {
         let mut s = OnboardScreen::settings(EntryId(0));
         let (_, effs) = step_ev(&mut s, &default_seat, None);
         assert!(effs.is_empty(), "the Settings editor's default seat on the table is the one it wants");
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// **Ported from TWO old tests with byte-identical bodies** —
@@ -1267,11 +1278,40 @@ mod tests {
     /// of the old pair made on its own: this asserts the "cannot answer" behaviour for BOTH
     /// flavours by construction, where the old suite asserted it for exactly one, by accident,
     /// under two different names.
+    /// **The frozen-animator regression class, closed for the empty-roster spinner (phase 12
+    /// D4).** `phase_ms` used to be a raw `+= dt` accumulator with a separate, easy-to-forget
+    /// `fx.note(Motion)` a few lines below it. Now it is `motion::Phase`, which reports from
+    /// inside its own `advance`. An `OnboardScreen::first_run` over a reset `browse` store starts
+    /// with zero rows, which is exactly the spinner's own gate (`self.table.n_rows() == 0`), so
+    /// this drives it through the real `Machine::step` `Tick` path.
+    #[test]
+    fn the_empty_roster_spinner_reports_motion_on_every_tick() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("no-library-yet-spinner");
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        let mut s = OnboardScreen::first_run(EntryId(0));
+        assert_eq!(s.table.n_rows(), 0, "a reset browse store starts with no rows");
+        let m = crate::ui::fixture::FixtureMeasure;
+        let cxv = test_cx(&m, None);
+        let mut present = Present::new();
+        let _ = present.take(0);
+        let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
+        for ms in [16, 32, 48] {
+            let mut fx = Effects::new(&mut buf, MachineId::Instance(InstanceId(0)), &mut present);
+            let ev = ScreenEvent::Tick(crate::ui::machine::Tick { ms, dt_us: 16_667 });
+            Machine::<InnerHost>::step(&mut s, &ev, &cxv, &mut fx);
+            assert!(
+                present.take(ms),
+                "an empty-roster spinner must present every frame it is on screen (ms={ms})"
+            );
+        }
+    }
+
     #[test]
     fn commit_and_back_both_refuse_to_answer_before_a_real_library_lands() {
         let _g = crate::testlock::serial();
         let _t = TempSession::new("no-library-yet");
-        crate::browse::reset(); // no discovered libraries at all, in either flavour
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset); // no discovered libraries at all, in either flavour
 
         // First run: `commit`'s own doc says why a re-queue rather than a refusal is the honest
         // shape — "the skip is honest precisely because it records what the screen was showing
@@ -1373,7 +1413,7 @@ mod tests {
                 .is_none(),
             "…and must record nothing — nothing here is an answer the user gave"
         );
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// **DOWN off the last library reaches the action pill.** Reported: "on screens containing a
@@ -1454,7 +1494,7 @@ mod tests {
             .expect("the band places");
         let back = crate::ui::focus::geometric(&groups, BAND_GROUP, band_from.rect, crate::ui::screen::Dir::Up);
         assert_eq!(back.map(|g| g.id), Some(TABLE_GROUP), "UP off the band returns to the table");
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// **A press the user walked away from must not swallow the next one.** Codex review,
@@ -1511,6 +1551,6 @@ mod tests {
             Some(ActionKind::Start),
             "the row's activation does not read, let alone consume, the pill's own arm record"
         );
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 }

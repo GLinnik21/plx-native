@@ -11,7 +11,7 @@ device verification item rather than an unimplemented transport.
 **Anonymisation — read this before adding an example anywhere in the repo.** Addresses, ports,
 tokens, machine identifiers, the owner's username and their library names are deliberately **not**
 recorded here or in any fixture, doc comment, commit message or PR body — the same redaction rule
-`ui/stats.rs` applies to the diagnostics panel, and for a stronger reason: **this repository is
+`app/diagnostics.rs` applies to the diagnostics panel, and for a stronger reason: **this repository is
 public, and none of that data is ours.** It belongs to the person who shared their server.
 
 This paragraph stood here, in these words, while the repo published the friend's handle, their
@@ -29,8 +29,8 @@ now used throughout — and the only ones to use in new work — are:
 | any public address | `203.0.113.9` / `198.51.100.7` (TEST-NET-3 / TEST-NET-2) |
 | a machine identifier | `aaaabbbb…` runs, never a real 40-hex id |
 
-Several are deliberately the **same character length** as what they replaced, because `ui/home.rs`
-asserts text widths against them. The live values live only in the gitignored
+Several are deliberately the **same character length** as what they replaced, because the owned
+Home's tests (`screens/home/tests.rs`) assert text widths against them. The live values live only in the gitignored
 `tests/manifest.local.json` and `src/config.local.h`, which is the whole reason those files are
 gitignored.
 
@@ -204,7 +204,7 @@ re-verified 2026-08-13 and all but one still hold:**
 | `metadata.rs:1291-1307` | `pump_season`'s `d.rk != r.rk` ownership test |
 | `browse.rs:32-36` | `BrowseSection.key: i64` — **verified collision**: both servers have section `1` |
 | `route.rs:35` | `MACHINE_ID`, "cached once", feeds the PlayQueue `server://` uri |
-| `ui/trail.rs:42-59` | `Node::Detail{rk}` — navigation history itself is server-less |
+| ~~`ui/trail.rs:42-59`~~ | `Node::Detail{rk}` — navigation history itself was server-less. **Retired with the file** (restructure phase 12, D1): the app keeps no second history, and a page's identity is its `AppArg` — `ContentArg::Detail{sid, rk}` carries the `plex::ServerId` the fix would have added, so the concern is structurally closed rather than outstanding |
 
 Already server-agnostic, needing no work: `img.rs`, `player/engine.rs` + `threads.rs` (they consume
 a full URL), `plex/discover.rs`, and the single `X-Plex-Client-Identifier` — one device on N servers
@@ -324,9 +324,10 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
   only surface listing every GRANTED library, so a non-favourite has a way back. **As of phase 5b
   (2026-09-07) that is no longer one mechanism for both entry points**: the screen itself moved off
   the `static mut` `ui::onboard` module onto an owned `Screen` impl, `screens::onboard`'s
-  `OnboardScreen`, mounted twice (spec §6.2) — first-run still arrives as `Route::Onboard` (the
-  route this paragraph describes), but reached from Settings it is now a *page* of the Settings
-  family (`SettingsPage::Favourites`) rather than a second value the app's route enum takes, so the
+  `OnboardScreen`, mounted twice (spec §6.2) — first-run still arrives as its own page
+  (`AppArg::Onboard`, the route this paragraph describes), but reached from Settings it is now a
+  *page* of the Settings family (`SettingsPage::Favourites`) rather than a second value the app's
+  page alphabet takes, so the
   once/sec heartbeat's `route=` field no longer reads `onboard` for the Settings-opened case — only
   for the first-run one. A picker that could
   turn into an editor would let a library be un-favourited from inside the list of favourites and
@@ -553,8 +554,8 @@ Step 1's registry now has its first real consumer, and deliverable A of the desi
   — one level, one tick, no words. The editor was its own route (*Favorite libraries*,
   `ui::onboard`) until phase 5b (2026-09-07); reached from Settings it is now a PAGE of the
   Settings family (`SettingsPage::Favourites`, hosting `screens::onboard`'s owned `OnboardScreen`)
-  rather than a second value the route enum takes — deliverable A above has the mechanism, and
-  first-run alone still arrives as `Route::Onboard`. Either way it remains the one surface listing
+  rather than a second value the page alphabet takes — deliverable A above has the mechanism, and
+  first-run alone still arrives as `AppArg::Onboard`. Either way it remains the one surface listing
   every GRANTED library, so a non-favourite has a way back. The chip itself now heads the Library's
   document rather than leading a toolbar. `TableView` gained the two things it was missing for it: a drawn `Section::accessory`
   (declared but never painted before) and `Section::dim`.
@@ -593,7 +594,7 @@ per source, off the SDL thread).
   both servers in this household hold a `ratingKey` 4, so a fan-out matched on the key marks a
   different film watched on the other machine — confidently, and with a 200 back.
 - **No resume position is ever COPIED between servers. Only the watched flag travels.** This is the
-  subtle half, and it is the half `ui/alt_sources.rs` reasons out: an offset is about a file you are
+  subtle half, and it is the half `screens/alt_sources.rs` reasons out: an offset is about a file you are
   streaming from one host, which is also why that panel NAVIGATES to the other copy rather than
   swapping it under you. `unscrobble` is fanned out too — it is the other end of one control, and
   clearing the claim is still a claim about the title — but no `viewOffset` is read or pushed
@@ -892,9 +893,9 @@ Then, per cache:
   hold the item, so the copies are kept and only their `owner` is re-read. Two riders, both found
   the round after: `install` regrades the incoming list as well, because a resolve dispatched before
   the correction lands after it and no epoch downstream looks again; and an OPEN panel is rebuilt,
-  because `open` materialises `TABLE`/`DESTS` once and `draw` renders that snapshot — so the rows
+  because the surface materialises its `TableView` once and `draw` renders that snapshot — so the rows
   keep their old text *and their old order* otherwise, and the order is not cosmetic, `owner` is the
-  own-before-a-friend's tiebreak. The one place `AltCopy::owner` is decided is `alt_sources::regrade`,
+  own-before-a-friend's tiebreak. The one place `AltCopy::owner` is decided is `metadata::alt_regrade`,
   applied at both boundaries, and skipped whole while the `/tmp/plxnative-shared` stand-in owns the
   list (its entire purpose is to fabricate a borrowed copy on a slot the registry calls ours).
 

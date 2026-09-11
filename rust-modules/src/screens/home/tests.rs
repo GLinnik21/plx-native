@@ -1845,3 +1845,48 @@ fn parent_read_only_api_projects_engine_focus_without_setters() {
     s.redraw_focused(&mut frame, None);
     crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
 }
+
+#[test]
+fn the_hero_carousel_auto_advance_reports_motion_on_every_tick_while_armed() {
+    // D4 (phase 12): `hero_auto`'s countdown itself is deliberately UNCHANGED arithmetic — it is
+    // hashed `LogicalState` across three committed replay fixtures, and moving it onto
+    // `motion::Ramp` measurably diverged the hash (`tests/focusfp.sh --replay`, flow 1). What DID
+    // change is the actual bug this conversion exists to catch: the countdown never reported
+    // `Motion`, so a hero left mid-count-down on an otherwise-settled screen could silently freeze
+    // under `ui::idle`'s present gate, exactly like the `Xfade`/`Spinner` cases the module doc
+    // already names. `tick` now notes `Motion` explicitly every frame the countdown runs.
+    let _guard = crate::testlock::serial();
+    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot();
+    assert!(
+        snapshot.view().hero_count() > 1,
+        "the auto-advance branch only arms with more than one hero slot"
+    );
+    let mut s = screen(snapshot.view());
+    let (_, _, motion) = step(
+        &mut s,
+        snapshot.view(),
+        None,
+        &ScreenEvent::Tick(Tick {
+            ms: 16,
+            dt_us: 16_000,
+        }),
+    );
+    assert!(
+        motion,
+        "the hero countdown must report Motion on every tick while the carousel auto-advance is armed"
+    );
+    // A second tick, still short of HERO_AUTO_S, keeps reporting motion rather than going quiet
+    // once started.
+    let (_, _, motion_again) = step(
+        &mut s,
+        snapshot.view(),
+        None,
+        &ScreenEvent::Tick(Tick {
+            ms: 32,
+            dt_us: 16_000,
+        }),
+    );
+    assert!(motion_again, "the ramp must keep reporting motion on the next tick too");
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+}

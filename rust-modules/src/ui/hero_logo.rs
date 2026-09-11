@@ -25,6 +25,7 @@
 //! need the store to distinguish `P_FAILED`/absent from `P_WANT`/`P_LOADING` first. The swap is a
 //! cut, but nothing around it MOVES, which is the part that used to read as a glitch.
 use crate::ui::label::{HAlign, Label, VAlign};
+use crate::ui::machine::Measure;
 use crate::ui::{theme, Painter, Rect};
 use std::os::raw::c_int;
 
@@ -143,7 +144,7 @@ impl<'a> HeroLogo<'a> {
     /// anchor line, and `band.h` should be [`band_h`] of the same rung. Ink is [`theme::TEXT_PRIMARY`]
     /// for both the logo tint and the fallback text (the value all three sites passed already).
     /// Draws only through `p`, so the caller's cascade alpha fades logo and fallback identically.
-    pub fn draw(&self, p: Painter, band: Rect) {
+    pub fn draw(&self, p: Painter, band: Rect, measure: &dyn Measure) {
         // The hero draws the item the shelf under it has focused, and that shelf is the server
         // being browsed — so its clearLogo is asked of the current server. An item that came from
         // somewhere else (a merged Continue Watching row) names its own, once items carry one.
@@ -155,7 +156,9 @@ impl<'a> HeroLogo<'a> {
             return;
         }
         let (_, _, _, sz) = self.rung.bounds();
-        let line = crate::text::elide(self.title, band.w, sz, 1, false);
+        let line = crate::text::elide_by(self.title, band.w, false, |t| {
+            measure.width_str(t, sz, true)
+        });
         // `cs` must outlive the draw — `Label` holds a non-owning pointer (ui/CLAUDE.md's first gotcha)
         let Ok(cs) = std::ffi::CString::new(line) else {
             return;
@@ -174,7 +177,7 @@ mod tests {
     use LogoRung::{Compact, Hero};
 
     // `fit`/`place`/`band_h` are pure f32 arithmetic over their arguments — no GL, no SDL_ttf, no
-    // crate globals — so unlike `ui/home.rs`'s tests these are ordinary parallel ones, needing
+    // crate globals — so unlike the catalog-backed Home tests these are ordinary parallel ones, needing
     // neither `testlock::serial()` nor a module mutex. Everything downstream (`HeroLogo::draw` →
     // `ui::tex::logo_src` + `text::elide`) is deliberately NOT tested here: it reaches GL and the
     // font, and `text_cap_band`'s host fallback would measure the fallback rather than the device

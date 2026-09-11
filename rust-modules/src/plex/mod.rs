@@ -34,7 +34,7 @@ mod transcoder;
 
 // The server's self-description (version + Plex Pass tristate), refreshed by `install` on every
 // session path. pub(crate) because it is a DIAGNOSTICS surface with readers outside this layer
-// (`ui::stats`, `player::error_shape`) — and deliberately nothing else: see its module doc for
+// (`app::diagnostics`, `player::error_shape`) — and deliberately nothing else: see its module doc for
 // why subscription state must never become a routing input.
 pub(crate) mod serverinfo;
 

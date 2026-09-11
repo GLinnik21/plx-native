@@ -13,7 +13,7 @@
 use std::borrow::Cow;
 use std::ops::Deref;
 
-use super::frame::Budget;
+use super::frame::{Budget, RenderReport};
 use super::machine::{
     Chrome, Cx, Effects, EntryId, FocusKey, GroupId, Host, InputEvent, InstanceId, Leave,
     LogicalState, Machine, PartId, PressId, PressRead, RequestId, ScreenId, StoreOrd, Tick,
@@ -104,6 +104,67 @@ pub enum RenderStrategy {
     VideoPlane,
 }
 
+/// The [`Scrim::lift`] of a surface with nothing to lift — a named `fn` rather than a closure, so
+/// [`Scrim::NONE`] can be a `const`. (`popover::Opener::NONE` carries its own twin of this for the
+/// legacy popovers; the two disappear together when the last of those becomes a surface.)
+fn no_lift(_: f32, _: Option<crate::gfx::GlassFace>) {}
+
+/// **The modal dim a surface asks its HOST PAGE for** (spec §6.2, §8.3), and the one element it
+/// lifts back out of that dim.
+///
+/// It is a REQUEST rather than a drawing, and that is the whole of why this type exists. The dim
+/// sits between the page and the surface's own glass, so it is part of what that glass looks
+/// through — which means it has to be on the framebuffer *before* the host snapshot is taken, i.e.
+/// inside the page pass, several call frames away from the surface that owns it. The surface
+/// therefore states its weight here and the container
+/// ([`ModalStack::draw_scrims`](crate::ui::containers::modal::ModalStack::draw_scrims)) draws it,
+/// in one place, for every surface, in phase order.
+///
+/// A surface that wants no dim overrides nothing: [`Screen::scrim`] defaults to [`Scrim::NONE`].
+#[derive(Clone, Copy)]
+pub struct Scrim {
+    /// Peak ink alpha at full appear. The container multiplies it by the surface's own appear
+    /// spring and by `nav::page_alpha`, so the dim ramps with the panel and dips with a route
+    /// change exactly as `Popover::scrim` did.
+    pub alpha: f32,
+    /// Re-draw the element this surface was opened FROM, ABOVE the dim — the profile chip, a
+    /// focused card. A SECOND draw rather than a cut-out (`popover::Popover::scrim_lifting` has
+    /// the visual argument), and a bare `fn` — rather than a closure — because only the element's
+    /// own screen knows where it landed and how to paint it, and this is minted as a `const` on
+    /// that screen's own `Screen::scrim`.
+    ///
+    /// The two arguments are the shared top bar's render VALUES this frame (the chip's focus
+    /// unfurl, and the bar's glass face if it has one) — [`ModalStack::draw_scrims`] gets them from
+    /// [`crate::ui::dispatch::Rig::scrim_chip_read`] and hands them to every lift it calls (spec
+    /// phase 12, PX-WIDGETS). A bare `fn` cannot borrow the `Bridge` that owns those values, so they
+    /// cross as plain `Copy` arguments instead of through a `static`; a surface with nothing to lift
+    /// ([`Scrim::NONE`], [`Scrim::dim`]) simply ignores them (`no_lift`).
+    ///
+    /// [`ModalStack::draw_scrims`]: crate::ui::containers::modal::ModalStack::draw_scrims
+    pub lift: fn(f32, Option<crate::gfx::GlassFace>),
+}
+
+impl Scrim {
+    /// No dim and nothing to lift — every page, and every surface that draws its own ground.
+    pub const NONE: Scrim = Scrim {
+        alpha: 0.0,
+        lift: no_lift,
+    };
+
+    /// A dim of `alpha` with nothing lifted out of it.
+    pub const fn dim(alpha: f32) -> Scrim {
+        Scrim {
+            alpha,
+            lift: no_lift,
+        }
+    }
+
+    /// A dim of `alpha` with `lift` re-drawn above it.
+    pub const fn lifting(alpha: f32, lift: fn(f32, Option<crate::gfx::GlassFace>)) -> Scrim {
+        Scrim { alpha, lift }
+    }
+}
+
 /// The screen (§6.1). `step` is the only entrance that mutates logical state after construction.
 pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// The heartbeat word — byte-identical to today's route word (§15.3).
@@ -112,6 +173,37 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn crumb(&self, cx: &Cx<'_, H>) -> Option<Cow<'_, str>>;
     /// RENDER resources only.
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>);
+    /// **A REFRESHING backdrop's cadence, resolved before the host page draws** — the second
+    /// prepare, and the only one that cannot happen in [`Screen::prepare`].
+    ///
+    /// A surface whose glass re-sources its backdrop (`Glass::DYNAMIC_BACKDROP`) has to decide
+    /// whether to do so at a slot with a boundary on each side: after the host-user latch that
+    /// tells "the page changed" from "I changed", and before the frame's blur SOURCE pass is
+    /// sampled, so an invalidation raised here reaches this frame's own source rather than the
+    /// next one's. `prepare` runs at the dispatcher's step 9, inside the frame, which is neither.
+    ///
+    /// Two facts, because neither is the screen's to know. `underlay_changed` is what the CALLER
+    /// believes about the page (`app/run.rs` hands the dispatcher
+    /// `underlay_moving || idle::present_dirty()`), and `appear_settled` is the CONTAINER's answer
+    /// about this surface's own appear spring, which it owns — a page, having no such spring, is
+    /// asked with `true`. The decision itself is one shared function, `popover::glass_refresh`,
+    /// which subtracts the own-damage ledger from the caller's belief: it cannot tell "the page
+    /// under me changed" from "the key I just swallowed raised an invalidate", and both set the
+    /// same process-wide flag.
+    ///
+    /// A screen with a CACHED ground, or none at all, wants nothing here and inherits this no-op.
+    ///
+    /// `glass` is the frame plan's ONE shared refresh cadence (spec §8.3, phase 11): a refreshing
+    /// backdrop prepares against it rather than against a process-wide clock, which is what makes
+    /// two owners opened on different presents share one schedule instead of compounding into a
+    /// refresh every frame.
+    fn prepare_present(
+        &mut self,
+        _glass: &mut crate::ui::frame::glass::GlassPlan,
+        _underlay_changed: bool,
+        _appear_settled: bool,
+    ) {
+    }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>);
     fn render(&self) -> RenderStrategy;
     /// Whether remounting an evicted child surface can read this page's identity-matched data.
@@ -129,9 +221,28 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn hit_source(&self) -> HitSource {
         HitSource::Engine
     }
-    /// The bytes of render this screen holds (its backing textures), for the `RenderSet` check.
-    fn render_bytes(&self) -> usize {
-        0
+    /// **The render this screen holds of its own** — how many backing textures, and their bytes —
+    /// for the frame's [`RenderSet`](crate::ui::frame::RenderSet) check (§8.3).
+    ///
+    /// The default is [`RenderReport::NONE`] and it is the truthful answer for almost every screen
+    /// here: they draw immediate-mode, and the textures they put on the panel come from shared
+    /// pools (`ui::tex`'s posters, `ui::icons`, the glyph cache, the ONE `popover::host`
+    /// `FrameCache` a covered host is served from, the blur chain) which are counted once, where
+    /// they live, and never per screen that samples them. Override this only where the screen's
+    /// own code called `upload_rgba` and its own code will call `delete_tex` — today that is
+    /// `screens::login` (the QR bitmap) and `screens::player` (the PGS/VobSub display set). The
+    /// inventory and the ceiling's derivation are in `ui/frame/render_set.rs`.
+    ///
+    /// Pure, like every other query on this trait: answering allocates nothing and uploads
+    /// nothing.
+    fn render_report(&self) -> RenderReport {
+        RenderReport::NONE
+    }
+    /// **The modal dim this SURFACE asks its host page for** — see [`Scrim`]. A page answers
+    /// [`Scrim::NONE`] and so does every surface that draws its own ground; the container asks
+    /// only surfaces, and only ones whose host is cached rather than replaced.
+    fn scrim(&self) -> Scrim {
+        Scrim::NONE
     }
     /// An `Opaque` surface's ground has drawn at full strength: the fold may REPLACE the host
     /// from here (§6.2 `Surface::ground_ready`). The dispatcher copies it onto the surface after
@@ -310,7 +421,8 @@ pub struct Link {
 }
 
 /// Who answers a direction for this screen (§7.6): the engine, or the legacy ladders — for a
-/// `LegacyPage` the engine and the hit map are INERT.
+/// screen that answers `Legacy` the engine and the hit map are INERT. The player is the last
+/// one that does (phase 12); the blank route-word page that used to be the other went in 10.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FocusSource {
     Engine,
@@ -614,6 +726,17 @@ pub struct DrawFrame<'a, 'views, H: Host> {
     pub chrome_alpha: f32,
     pub view_tab: Option<u32>,
     pub blur_amount: f32,
+    /// The ROUTE-level nav dip's page alpha this frame was built with (spec §14 phase 8) — what
+    /// `ui::nav::page_alpha()` answered at the one per-frame read the application made, carried
+    /// alongside `page_alpha` rather than folded only into it. A container (a `RouteSurface`'s
+    /// own appear motion, a `NavStack`'s push/pop transition) is free to overwrite `page_alpha`
+    /// with its own LOCAL alpha for the page/surface it draws — surfaces do, at
+    /// `dispatch.rs`'s `f.page_alpha = s.motion.appear` — and a screen that also needs the outer
+    /// route fade (Settings' scrim wants both: its own appear AND the page fading beneath it;
+    /// Detail's hero-button ambient sample must not run while a route change is still in flight)
+    /// reads this field instead, so it survives that overwrite. Never mutated after
+    /// construction — the one write is `with_navigation`.
+    pub nav_page_alpha: f32,
     pub press: PressRead,
     stops: Vec<Stop<H::Elem>>,
 }
@@ -631,12 +754,20 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
             chrome_alpha: nav.chrome_alpha,
             view_tab: nav.view_tab,
             blur_amount: nav.blur_amount,
+            nav_page_alpha: nav.page_alpha,
             press: cx.press,
             stops: Vec::new(),
         }
     }
 
     /// Carry this frame's presentation into a nested frame, including any container alpha.
+    ///
+    /// Deliberately carries the (possibly container-overwritten) `page_alpha`, not
+    /// `nav_page_alpha` — a nested frame (a page pushed inside a surface's own stack, say) is a
+    /// new LOCAL cascade and should not re-inherit the outer route fade as its own `page_alpha`
+    /// a second time; a screen that needs the route fade at any depth reads `nav_page_alpha`
+    /// directly, which every nested `DrawFrame` still carries unchanged since nothing but
+    /// `with_navigation` ever writes it.
     pub fn navigation(&self) -> NavPresentation {
         NavPresentation {
             page_alpha: self.page_alpha,
@@ -813,6 +944,46 @@ mod draw_frame_tests {
             assert_eq!((back.x, back.y), (0.0, 100.0));
         }
         assert!(ClipScope::current().is_none());
+    }
+
+    /// Spec §14 phase 8: `nav_page_alpha` is the ROUTE-level nav dip's page alpha this frame was
+    /// built with, and it must survive a container overwriting `page_alpha` with its own local
+    /// motion — exactly what `dispatch.rs`'s surface branch does (`f.page_alpha = s.motion.appear`)
+    /// so a surface's OWN appear animation, not the outer route fade, drives layout/hit-testing
+    /// through `page_alpha`. Before this field existed, a screen that also needed the outer fade
+    /// (Settings' scrim, Detail's ambient-sample gate) had nowhere to read it but the `ui::nav`
+    /// statics directly — this is the value that replaces that live read.
+    #[test]
+    fn nav_page_alpha_survives_a_containers_local_page_alpha_overwrite() {
+        let m = crate::ui::fixture::FixtureMeasure;
+        let store = crate::ui::fixture::FixtureView::default();
+        let cx = cx(&m, &store);
+        let navigation = NavPresentation {
+            page_alpha: 0.42,
+            chrome_alpha: 1.0,
+            view_tab: None,
+            blur_amount: 0.0,
+        };
+        let mut f = DrawFrame::with_navigation(&cx, Painter::root(), navigation);
+        assert_eq!(f.nav_page_alpha, 0.42);
+        assert_eq!(f.page_alpha, 0.42, "at construction the two start equal");
+        // a surface's own appear motion overwrites `page_alpha` in place, as dispatch.rs does.
+        f.page_alpha = 0.9;
+        assert_eq!(f.page_alpha, 0.9);
+        assert_eq!(f.nav_page_alpha, 0.42, "the outer route fade must survive the overwrite");
+    }
+
+    /// `DrawFrame::new` (no explicit navigation) is `NavPresentation::default()`, whose
+    /// `page_alpha` is 1.0 — the same rest value `ui::nav::page_alpha()` answers when no route
+    /// transition is in flight, so a screen built through the plain constructor sees the same
+    /// "at rest" value from `nav_page_alpha` that it used to read live.
+    #[test]
+    fn nav_page_alpha_defaults_to_the_route_fades_rest_value() {
+        let m = crate::ui::fixture::FixtureMeasure;
+        let store = crate::ui::fixture::FixtureView::default();
+        let cx = cx(&m, &store);
+        let f = DrawFrame::new(&cx, Painter::root());
+        assert_eq!(f.nav_page_alpha, 1.0);
     }
 }
 

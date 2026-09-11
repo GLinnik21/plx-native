@@ -166,8 +166,17 @@ pub struct Ramp {
 }
 
 impl Ramp {
+    /// Arm the ramp so that THIS tick's own delta already counts toward it — backdating `at_ms`
+    /// by `t`'s own `dt_us` rather than anchoring at `t.ms` itself. Every caller starts a `Ramp`
+    /// lazily from inside the very `tick`/`advance` call that first needs it (the `len_ms == 0`
+    /// sentinel idiom), so without the backdating the FIRST `advance` on the same tick always
+    /// reads `el = 0` (progress 0.0) — silently dropping one frame's worth of progress versus the
+    /// raw `dt` accumulator this replaced, which decremented on the very tick that armed it. A
+    /// caller that starts from one event (`FocusMoved`, with its own `cx.tick`) and advances from
+    /// a LATER tick is unaffected in practice — the backdate is at most one frame's `dt_us` — but
+    /// makes the same-tick arithmetic exact when the two coincide.
     pub fn start(&mut self, t: Tick, len_ms: u32) {
-        self.at_ms = t.ms;
+        self.at_ms = t.ms.wrapping_sub(t.dt_us / 1000);
         self.len_ms = len_ms.max(1);
         self.running = true;
     }
@@ -184,6 +193,47 @@ impl Ramp {
         }
         present.note(PresentEvent::Motion);
         el as f32 / self.len_ms as f32
+    }
+}
+
+/// An UNBOUNDED clock-driven phase — a spinner's own spin, an escape-offer stall timer — where
+/// [`Ramp`] does not fit because there is no fixed length to reach 1.0 at. Anchored to wall-clock
+/// `Tick.ms` rather than an accumulated per-frame `dt`, so there is no drift from summing float
+/// deltas over the minutes a login screen can sit waiting, and a caller that skips a frame (the
+/// thing it drives was not on screen that frame) loses nothing: the next call still reads real
+/// elapsed wall time rather than a paused one.
+///
+/// Reports `Motion` on every `advance` call, matching [`Ramp`]'s idiom generalised to a clock with
+/// no natural stop: whether the phase should currently be reported is the CALLER's question,
+/// answered by whether it calls `advance` this frame at all (`screens::login`'s spinner phase is
+/// only advanced while `control_has_spinner` is true, exactly the guard that used to gate its own
+/// `fx.note(Motion)`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Phase {
+    at_ms: u32,
+    running: bool,
+}
+
+impl Phase {
+    /// Reset the clock to start counting from `t` — `advance` reads ~0 the next time it is called
+    /// at this same tick. For a phase that restarts on some external event (a QR code replaced,
+    /// a wait that moved to a new stage) rather than running for the screen's whole lifetime.
+    pub fn reset(&mut self, t: Tick) {
+        self.at_ms = t.ms;
+        self.running = true;
+    }
+
+    /// Milliseconds elapsed since the last [`reset`](Self::reset) — or, if never reset, since the
+    /// FIRST `advance` call, so a freshly constructed `Phase` needs no `Tick` at construction time
+    /// and starts counting from whenever its owner first calls this. Reports `Motion` on every
+    /// call.
+    pub fn advance(&mut self, t: Tick, present: &mut PresentHandle<'_>) -> f32 {
+        if !self.running {
+            self.at_ms = t.ms;
+            self.running = true;
+        }
+        present.note(PresentEvent::Motion);
+        t.ms.wrapping_sub(self.at_ms) as f32
     }
 }
 
@@ -343,5 +393,40 @@ mod tests {
         assert_eq!(r.advance(Tick { ms: 250, dt_us: 0 }, &mut ph), 1.0);
         assert!(!r.running);
         assert!(!present.take(250), "a finished ramp does not");
+    }
+
+    #[test]
+    fn a_phase_reports_motion_from_inside_advance_and_starts_lazily() {
+        let mut present = Present::new();
+        let _ = present.take(0);
+        let mut ph_clock = Phase::default();
+        // never explicitly `reset` — the first `advance` call anchors it, so a freshly constructed
+        // `Phase` (what every screen's `Default`-derived state gets) needs no `Tick` up front.
+        let mut ph = PresentHandle(&mut present);
+        let e0 = ph_clock.advance(Tick { ms: 1_000, dt_us: 0 }, &mut ph);
+        assert_eq!(e0, 0.0, "the anchoring call reads zero elapsed");
+        assert!(present.take(1_000), "advance reports motion");
+        let mut ph = PresentHandle(&mut present);
+        let e1 = ph_clock.advance(Tick { ms: 1_400, dt_us: 0 }, &mut ph);
+        assert_eq!(e1, 400.0);
+        assert!(present.take(1_400), "advance reports motion every call, unbounded");
+    }
+
+    #[test]
+    fn a_phase_reset_restarts_the_clock_from_the_given_tick() {
+        let mut present = Present::new();
+        let _ = present.take(0);
+        let mut ph_clock = Phase::default();
+        let mut ph = PresentHandle(&mut present);
+        assert_eq!(ph_clock.advance(Tick { ms: 5_000, dt_us: 0 }, &mut ph), 0.0);
+        let mut ph = PresentHandle(&mut present);
+        assert_eq!(ph_clock.advance(Tick { ms: 5_300, dt_us: 0 }, &mut ph), 300.0);
+        ph_clock.reset(Tick { ms: 6_000, dt_us: 0 });
+        let mut ph = PresentHandle(&mut present);
+        assert_eq!(
+            ph_clock.advance(Tick { ms: 6_050, dt_us: 0 }, &mut ph),
+            50.0,
+            "reset re-anchors rather than continuing the old count"
+        );
     }
 }

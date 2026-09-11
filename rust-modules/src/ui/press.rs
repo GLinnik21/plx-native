@@ -5,7 +5,7 @@
 //! held — so a HELD OK is a measurable long-press ([`held_ms`]/[`is_long`]), not a tap. The design
 //! (`Home Screen.dc.html`) fakes down/up with a fixed `setTimeout`; the real remote gives us both
 //! edges, so we use them. That long press is what opens the **item context menu** on a home shelf
-//! card and on the detail page's episode still (`ui/item_menu.rs`) — see [`LONG_MS`].
+//! card and on the detail page's episode still (`screens/item_menu.rs`) — see [`LONG_MS`].
 //!
 //! ONE control is pressed at a time (always the currently focused one), so one value suffices — `App.input.press`, the only owner (restructure spec §2.2); draw code reads its published snapshot —
 //! the renderer multiplies the focused tile's scale by [`scale`] while [`is_active`]. Focus can't move
@@ -65,7 +65,7 @@ const MAX_HOLD_MS: u32 = 1000;
 /// A hold at least this long is a long press: it is NO LONGER a tap, so the normal activation is
 /// cancelled ([`tick`]'s latch) and the press just holds + springs back without activating.
 ///
-/// This is the threshold the **item context menu** opens on (`ui/item_menu.rs`, via `app.rs`'s
+/// This is the threshold the **item context menu** opens on (`screens/item_menu.rs`, via `app.rs`'s
 /// per-frame press block reading [`is_long`] while the key is still DOWN) — on a home shelf card and
 /// on the detail page's episode still. On a screen with no hold action the latch still fires and the
 /// long press stays a deliberate no-op, which is why the cancellation lives here rather than at the
@@ -221,7 +221,7 @@ impl Press {
     /// The focused CARD has been held down at least [`LONG_MS`] RIGHT NOW (still in the press). Always
     /// `false` inside a [`begin_ctl`] press — a control face has no hold gesture, so the caller's whole
     /// held-menu chain short-circuits on this one test instead of each of its arms declining in turn.
-    /// **This is the one the hold menu opens on** (`app.rs`'s press block → `ui::item_menu`): firing
+    /// **This is the one the hold menu opens on** (`app.rs`'s press block → `screens::item_menu`): firing
     /// while the key is still down is what makes it read as a hold rather than a delayed tap.
     pub fn is_long(&self, now: u32) -> bool {
         let s = self;

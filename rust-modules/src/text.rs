@@ -3,6 +3,11 @@
 //! locking). Uses gfx's link_program/use_prog (crate path). Mostly GL/TTF FFI —
 //! the retui text backend.
 //!
+//! The glyph cache is an LRU **with a hot window** since phase 11 (spec §8.1): an entry drawn
+//! within the last eight frames is not evicted while any colder slot exists, and the case where
+//! every slot is hot gives way rather than refusing — counted, not silent. See [`evict_slot`],
+//! [`begin_frame`] and [`take_evicted_hot`].
+//!
 //! # The fallback chain, and why the unit of work is a RUN
 //!
 //! Inter carries 2853 codepoints — Latin, Cyrillic, Greek — and no Hangul, Kana or Han at all, so
@@ -202,7 +207,7 @@ static mut TLF_FADE: c_int = 0;
 /// `y1 > y0` is then false) means "off": the shader's gate skips the multiply rather than relying
 /// on a sentinel width like the horizontal band's, because a vertical band has no natural "past
 /// the string" edge to sentinel against. See [`draw_text_fade`] and `ui::widgets::edge_feather`'s
-/// replacement note in `ui::person_bio` for why this exists — a scrolling viewport's edge used to
+/// replacement note in `screens::person_bio` for why this exists — a scrolling viewport's edge used to
 /// be an OPAQUE panel-coloured gradient painted over the glass, which read as a grey band rather
 /// than the text dissolving.
 static mut TLF_VTOP: c_int = 0;
@@ -231,6 +236,13 @@ struct TCacheEntry {
     ink_t: c_int,
     ink_b: c_int,
     use_: c_uint,
+    /// The [`TFRAME`] this entry was last drawn on — 0 for "never, this session".
+    ///
+    /// `use_` is a use ORDER and answers "least recently used"; this answers "is it ON SCREEN
+    /// NOW", which is a different question and the only one the occupancy rule (§8.1) can be
+    /// written against. Both are kept because both are asked: the hot window picks the CANDIDATES,
+    /// `use_` picks between them.
+    last_frame: c_uint,
 }
 impl TCacheEntry {
     const ZERO: TCacheEntry = TCacheEntry {
@@ -245,6 +257,7 @@ impl TCacheEntry {
         ink_t: 0,
         ink_b: 0,
         use_: 0,
+        last_frame: 0,
     };
 }
 
@@ -267,6 +280,97 @@ fn key_hash(s: &[u8], sz: c_int, bold: c_int) -> u64 {
 const TCACHE: usize = 160;
 static mut TCACHE_A: [TCacheEntry; TCACHE] = [TCacheEntry::ZERO; TCACHE];
 static mut TCLOCK: c_uint = 0;
+
+/// **The glyph cache's OCCUPANCY instruments** (spec §8.1), main-render-thread only like the cache
+/// they describe.
+///
+/// [`TFRAME`] is a frame serial advanced by [`begin_frame`], [`TLIVE`] is how many distinct entries
+/// have been touched since that call, and [`TEVICTED_HOT`] counts the evictions the hot rule could
+/// not honour. They exist because the LRU alone cannot see the failure that matters here: a screen
+/// with more distinct strings than the cache has slots evicts exactly the entries it is about to
+/// ask for again, one `TTF_RenderUTF8_Blended` plus a full-surface ink scan plus an upload apiece,
+/// every frame, for as long as it is on screen. That is invisible in `use_` and invisible in the
+/// frame rate until it is already bad.
+static mut TFRAME: c_uint = 0;
+/// Has [`begin_frame`] ever been called? Until it has, [`TFRAME`] is 0, every entry's `last_frame`
+/// reads as "this frame", and the hot rule would refuse every eviction while the counter counted
+/// all of them — so the rule stays OFF and the cache behaves exactly as it did before phase 11.
+/// **The one call site in the loop is wired at integration**; see [`begin_frame`].
+static mut TFRAME_ARMED: bool = false;
+static mut TLIVE: u32 = 0;
+static mut TEVICTED_HOT: u32 = 0;
+
+/// An entry drawn within this many frames is HOT and is not evicted while any colder slot exists.
+///
+/// Eight at 60 Hz is ~133 ms — comfortably longer than a route cross-fade's dip and than the
+/// stretch either side of a modal capture, which are the moments two screens' text is alive at
+/// once, and short enough that a string genuinely left behind by a navigation is evictable within
+/// a fifth of a second.
+const TCACHE_HOT_FRAMES: c_uint = 8;
+
+/// **Start a frame for the glyph cache**: advance the frame serial and clear the live count.
+///
+/// It arms the hot rule the first time it is called. The ONE call site is the loop's draw entry
+/// (`app/run.rs`, immediately before `draw` on a PRESENTING iteration): a frame that does not
+/// present rasterises nothing, so the serial counts drawn frames and "touched within 8 frames"
+/// means eight frames the cache could actually have been consulted on — not eight settled loop
+/// iterations, after which everything on a still screen would read as cold.
+pub(crate) fn begin_frame() {
+    unsafe {
+        TFRAME = TFRAME.wrapping_add(1).max(1);
+        TFRAME_ARMED = true;
+        TLIVE = 0;
+    }
+}
+
+/// **How many distinct cache entries this frame has touched** — its occupancy.
+///
+/// The number a prewarm would have to be refused against: §8.1's bound is
+/// `live_this_frame + prewarmed > TCACHE - 32`. **There is no prewarm path in this tree** — the
+/// only `warm` in the image caches is `ui::tex`'s, for posters and clearLogos, and nothing renders
+/// text ahead of a draw — so that comparison has no caller and none is invented here. This is the
+/// half of it that can be true today: the measurement, for the heartbeat and for the moment a
+/// prewarm does exist.
+///
+/// It counts an entry the first time it is touched in a frame, whether that touch was a HIT or a
+/// fresh store: the question is how much of the cache this frame is standing on, and a string
+/// rendered this frame occupies its slot exactly as one that was already there does.
+#[allow(dead_code)] // no caller yet: see this function's doc — there is no prewarm path to bound,
+// and the heartbeat's occupancy field is another lane's wiring
+pub(crate) fn live_this_frame() -> u32 {
+    unsafe { *addr_of!(TLIVE) }
+}
+
+/// Take the count of entries evicted while still hot, and reset it (the heartbeat's
+/// `evicted_hot`, read on every heartbeat by `app/run.rs`). Zero on a settled screen is the
+/// property worth watching; a burst of new strings on a cold open is where it can move.
+pub(crate) fn take_evicted_hot() -> u32 {
+    unsafe {
+        let n = *addr_of!(TEVICTED_HOT);
+        TEVICTED_HOT = 0;
+        n
+    }
+}
+
+/// Mark an entry as drawn on this frame, counting it once per frame for [`live_this_frame`].
+fn touch(e: &mut TCacheEntry) {
+    unsafe {
+        let f = *addr_of!(TFRAME);
+        if e.last_frame != f {
+            e.last_frame = f;
+            TLIVE = TLIVE.saturating_add(1);
+        }
+    }
+}
+
+/// [`evict_slot`], plus the counting the pure half deliberately does not do.
+unsafe fn take_slot(cache: &[TCacheEntry; TCACHE]) -> usize {
+    let (slot, forced) = evict_slot(cache, *addr_of!(TFRAME), *addr_of!(TFRAME_ARMED));
+    if forced {
+        TEVICTED_HOT = TEVICTED_HOT.saturating_add(1);
+    }
+    slot
+}
 
 use crate::log;
 
@@ -735,6 +839,7 @@ unsafe fn text_tex(
             {
                 TCLOCK = TCLOCK.wrapping_add(1);
                 e.use_ = TCLOCK;
+                touch(e);
                 return (e.tex, e.w, e.h, e.ink_t, e.ink_b);
             }
         }
@@ -800,6 +905,45 @@ unsafe fn text_tex(
     cache_store(s_bytes, hash, sz, bold, tex, sw, sh, ink_t, ink_b)
 }
 
+/// **Which slot a new entry takes**, and the whole of the eviction policy — pure, over the array,
+/// so it can be graded by a host test that renders nothing.
+///
+/// Today's rule, unchanged by this extraction: the first EMPTY slot, else the least recently used
+/// (lowest `use_`, the [`TCLOCK`] serial). `use_` is a use ORDER and knows nothing about frames, so
+/// this cannot tell an entry drawn on this very frame from one last drawn a minute ago — which is
+/// what the occupancy bound the phase-11 plan asks for (§8.1) has to fix.
+fn evict_slot(cache: &[TCacheEntry; TCACHE], frame: c_uint, armed: bool) -> (usize, bool) {
+    let hot = |e: &TCacheEntry| {
+        // `last_frame == 0` is "never touched this session", which is cold however new the cache
+        // is; the serial itself starts at 1 (`begin_frame`) so the two cannot be confused.
+        armed && e.last_frame != 0 && frame.wrapping_sub(e.last_frame) < TCACHE_HOT_FRAMES
+    };
+    let mut lru = 0usize;
+    let mut lru_use = c_uint::MAX;
+    let mut cold = None::<usize>;
+    let mut cold_use = c_uint::MAX;
+    for (i, e) in cache.iter().enumerate() {
+        if e.tex == 0 {
+            return (i, false);
+        }
+        if e.use_ < lru_use {
+            lru_use = e.use_;
+            lru = i;
+        }
+        if !hot(e) && e.use_ < cold_use {
+            cold_use = e.use_;
+            cold = Some(i);
+        }
+    }
+    match cold {
+        Some(i) => (i, false),
+        // Every slot is on screen. Forward progress beats the rule — refusing to store would
+        // re-render this string on every frame for as long as the screen is up — so the LRU goes
+        // anyway and the caller counts it.
+        None => (lru, true),
+    }
+}
+
 /// Evict the LRU slot and install a freshly uploaded texture in it, returning what `text_tex`
 /// returns. Split out because there are now TWO ways to get a texture — one
 /// `TTF_RenderUTF8_Blended`, or a composite of several — and exactly one cache to put it in.
@@ -816,18 +960,7 @@ unsafe fn cache_store(
     ink_b: c_int,
 ) -> (c_uint, c_int, c_int, c_int, c_int) {
     let cache = &mut *addr_of_mut!(TCACHE_A);
-    let mut slot = 0usize;
-    let mut oldest = c_uint::MAX;
-    for i in 0..TCACHE {
-        if cache[i].tex == 0 {
-            slot = i;
-            break;
-        }
-        if cache[i].use_ < oldest {
-            oldest = cache[i].use_;
-            slot = i;
-        }
-    }
+    let slot = take_slot(cache);
     if cache[slot].tex != 0 {
         glDeleteTextures(1, &cache[slot].tex);
     }
@@ -854,6 +987,10 @@ unsafe fn cache_store(
     cache[slot].ink_b = ink_b;
     TCLOCK = TCLOCK.wrapping_add(1);
     cache[slot].use_ = TCLOCK;
+    // The slot's `last_frame` is deliberately NOT reset first: a slot recycled mid-frame was
+    // already counted by whoever touched it, and counting it twice would let `live_this_frame`
+    // exceed the number of slots there are.
+    touch(&mut cache[slot]);
     (tex, sw, sh, ink_t, ink_b)
 }
 
@@ -1427,5 +1564,135 @@ mod tests {
         ] {
             assert_partitions(s);
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_policy_tests {
+    //! **The glyph cache's EVICTION policy, without a font, a GL context or a television.**
+    //!
+    //! `evict_slot` is the whole of it and is pure over the array, so the rule can be graded here;
+    //! what these cannot see is the rasterization on the other side of it, which is a device
+    //! question exactly as the run splitter's is.
+    use super::*;
+
+    /// A cache of `n` occupied slots whose `use_` serials are the given ones (in slot order), the
+    /// rest empty.
+    fn cache_with(uses: &[c_uint]) -> [TCacheEntry; TCACHE] {
+        let mut c = [TCacheEntry::ZERO; TCACHE];
+        for (i, u) in uses.iter().enumerate() {
+            c[i].tex = i as c_uint + 1;
+            c[i].use_ = *u;
+        }
+        c
+    }
+
+    /// A cache with every slot occupied, `use_` ascending and every entry drawn on frame 100.
+    fn full_cache() -> [TCacheEntry; TCACHE] {
+        let mut c = [TCacheEntry::ZERO; TCACHE];
+        for (i, e) in c.iter_mut().enumerate() {
+            e.tex = i as c_uint + 1;
+            e.use_ = 1_000 + i as c_uint;
+            e.last_frame = 100;
+        }
+        c
+    }
+
+    /// An empty slot is always taken before anything is evicted, and it is the FIRST one.
+    #[test]
+    fn a_free_slot_is_taken_before_anything_is_evicted() {
+        let mut c = cache_with(&[10, 11, 12]);
+        assert_eq!(evict_slot(&c, 100, true).0, 3, "the first empty slot");
+        for e in c.iter_mut() {
+            e.tex = 1;
+            e.use_ = 9;
+            e.last_frame = 1;
+        }
+        c[7].use_ = 1;
+        assert_eq!(evict_slot(&c, 100, true).0, 7, "full: the least recently used");
+    }
+
+    /// **An entry drawn within the last eight frames is not evictable** (§8.1's occupancy rule).
+    ///
+    /// `use_` is a use ORDER: it cannot tell an entry that is on screen RIGHT NOW from one last
+    /// drawn a minute ago, so a screen holding more distinct strings than the cache has slots
+    /// evicts exactly the entries it is about to ask for again — the thrash this cache exists to
+    /// prevent, at one `TTF_RenderUTF8_Blended` plus a full-surface ink scan plus an upload apiece.
+    #[test]
+    fn a_hot_text_entry_is_never_evicted_within_eight_frames() {
+        let mut c = full_cache();
+        c[0].use_ = 1; // the LRU by use order — and on screen this frame
+        c[40].last_frame = 92; // eight frames back: outside the window
+        c[41].last_frame = 93; // seven: inside it
+        let (slot, forced) = evict_slot(&c, 100, true);
+        assert_eq!(slot, 40, "the coldest entry outside the hot window, not the LRU");
+        assert!(!forced, "…and nothing hot was evicted");
+
+        // Redraw 40 and the only remaining candidate is 41, seven frames back — INSIDE the
+        // window, so still hot. Nothing is evictable and the rule gives way rather than refuse.
+        c[40].last_frame = 100;
+        let (slot, forced) = evict_slot(&c, 100, true);
+        assert_eq!(slot, 0, "no cold slot left: the LRU goes after all");
+        assert!(forced, "…and that is the forced case, counted rather than silent");
+    }
+
+    /// **If every slot is hot the LRU goes anyway, and it is COUNTED.** Forward progress beats the
+    /// rule — refusing to store would re-render that string on every frame forever — but a screen
+    /// that cannot fit its own text in 160 slots is a fact worth having, so it rides the heartbeat
+    /// (`evicted_while_hot`) instead of passing in silence.
+    #[test]
+    fn evicted_while_hot_counts_each_forced_eviction() {
+        let _g = crate::testlock::serial();
+        let mut c = full_cache();
+        c[13].use_ = 1;
+        let (slot, forced) = evict_slot(&c, 100, true);
+        assert_eq!(slot, 13, "every slot is hot: fall back to the least recently used");
+        assert!(forced, "…and say so");
+
+        take_evicted_hot(); // whatever an earlier test left behind
+        begin_frame();
+        unsafe {
+            let f = *addr_of!(TFRAME);
+            for e in c.iter_mut() {
+                e.last_frame = f;
+            }
+            take_slot(&c);
+            take_slot(&c);
+        }
+        assert_eq!(take_evicted_hot(), 2, "each forced eviction counts once");
+        assert_eq!(take_evicted_hot(), 0, "…and the take resets it");
+    }
+
+    /// **Occupancy is per ENTRY per frame**: touching the same one twice is one occupied slot, and
+    /// the count starts again with the frame. It can therefore never exceed [`TCACHE`], which is
+    /// what makes `live_this_frame + prewarmed > TCACHE - 32` a sentence about the same quantity
+    /// on both sides.
+    #[test]
+    fn the_live_count_counts_each_entry_once_per_frame() {
+        let _g = crate::testlock::serial();
+        begin_frame();
+        let mut a = TCacheEntry::ZERO;
+        let mut b = TCacheEntry::ZERO;
+        touch(&mut a);
+        touch(&mut a);
+        assert_eq!(live_this_frame(), 1, "the same entry twice is one occupied slot");
+        touch(&mut b);
+        assert_eq!(live_this_frame(), 2);
+        begin_frame();
+        assert_eq!(live_this_frame(), 0, "a new frame starts the count again");
+        touch(&mut a);
+        assert_eq!(live_this_frame(), 1);
+    }
+
+    /// The hot window is inert until the loop starts calling [`begin_frame`]: with no frame
+    /// counter every entry looks touched on frame 0, every eviction would read as forced, and the
+    /// counter would say nothing.
+    #[test]
+    fn the_hot_window_is_inert_until_the_frame_counter_is_armed() {
+        let mut c = full_cache();
+        c[9].use_ = 1;
+        let (slot, forced) = evict_slot(&c, 100, false);
+        assert_eq!(slot, 9, "unarmed: the plain LRU, exactly as before phase 11");
+        assert!(!forced, "…and nothing reported as forced");
     }
 }

@@ -19,6 +19,7 @@ mod geometry_tests;
 mod identity_tests;
 
 use crate::metadata::{Detail, Spot};
+use crate::screens::registry::PlayIntent;
 use crate::plex::ServerId;
 use crate::stores::metadata::{apply as apply_metadata, MetadataCmd};
 use crate::stores::viewstate::{apply as apply_viewstate, ViewStateCmd};
@@ -28,8 +29,8 @@ use crate::ui::frame::Budget;
 use crate::ui::hero_logo::{HeroLogo, LogoRung};
 use crate::ui::label::HAlign;
 use crate::ui::machine::{
-    Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent, InputKind, Key,
-    Leave, LogicalState, Machine,
+    Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
+    Leave, LogicalState, Machine, Tick,
 };
 use crate::ui::present::{PresentEvent, Provenance};
 use crate::ui::screen::{
@@ -43,7 +44,7 @@ use crate::ui::widgets::{
 use crate::ui::{hero_alpha, theme, Env, Painter, Rect, Spring, View};
 use std::borrow::Cow;
 
-use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory};
+use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel};
 
 const FIRST_ITEM_ELEM: u32 = 2048;
 
@@ -54,7 +55,7 @@ const EP_SCALE_MAX: usize = 40;
 const K_SCROLL: f32 = crate::ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
 
-pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;6],season:opt<u64>},episode:opt<str>,season_requested:bool}>,panel:u8}";
+pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;6],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
 
 const _: () = assert!(hero::HERO_ELEM_RANGE_END == season::SEASON_ELEM_RANGE_START);
 const _: () = assert!(season::SEASON_ELEM_RANGE_END == episodes::EPISODES_ELEM_RANGE_START);
@@ -83,6 +84,12 @@ pub(crate) struct DetailScreen {
 
     // Logical decisions. None is a focus cursor.
     pending_season: Option<usize>,
+    /// Elapsed seconds of the current settle, hashed as part of logical state (`LogicalState::
+    /// write`). Deliberately still a raw per-frame increment (phase 12 D4 did NOT move this onto
+    /// `motion::Ramp`): a `Ramp`'s absolute-`Tick.ms` math computes the same real quantity through
+    /// a different float operation sequence that measurably diverges the hash against the
+    /// committed replay fixtures. The `tick` arm that advances it explains the fix that DID land —
+    /// the dwell timer now reports `Motion`, which it never did before.
     season_settle: f32,
     restore_intent: Option<RestoreIntent>,
 
@@ -101,7 +108,11 @@ pub(crate) struct DetailScreen {
     season_metrics: season::Metrics,
     about_rows: about::Rows,
     ground: AmbientWash,
+    /// Skeleton spinner clock, in ms — cached each tick from [`spin_phase`](Self::spin_phase)'s
+    /// `advance`. Render-only, never hashed.
     spin_ms: f32,
+    /// The underlying clock for [`spin_ms`](Self::spin_ms) (`motion::Phase`, phase 12 D4).
+    spin_phase: crate::ui::motion::Phase,
 }
 
 impl DetailScreen {
@@ -143,6 +154,7 @@ impl DetailScreen {
             about_rows: about::Rows::new(),
             ground,
             spin_ms: 0.0,
+            spin_phase: crate::ui::motion::Phase::default(),
         }
     }
 
@@ -342,6 +354,7 @@ impl DetailScreen {
                 self.section_top(2, d) - self.scroll.pos,
                 self.episode_scroll.pos,
                 self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0) * f.press.scale,
+                f.measure,
             ),
             Some(Located::Related(i)) => related::draw_focused(
                 f.painter,
@@ -350,6 +363,7 @@ impl DetailScreen {
                 i,
                 self.section_top(3, d) - self.scroll.pos,
                 f.press.scale,
+                f.measure,
             ),
             _ => {}
         }
@@ -445,10 +459,12 @@ impl DetailScreen {
         } else {
             return None;
         };
-        Self::locate_local(local)
+        Self::locate_local(local, self.tracks_available())
     }
 
-    fn locate_local(elem: u32) -> Option<Located> {
+    /// `tracks` is [`Self::tracks_available`] — the page's own answer, threaded in because this is
+    /// an associated fn and because the About footer's element range is exactly what it decides.
+    fn locate_local(elem: u32, tracks: bool) -> Option<Located> {
         if let Some(c) = hero::HeroCtl::of_elem(elem) {
             return Some(Located::Hero(c));
         }
@@ -464,7 +480,7 @@ impl DetailScreen {
         if let Some(i) = cast::locate(elem) {
             return Some(Located::Cast(i));
         }
-        about::locate(elem, crate::ui::tracks_panel::is_available()).map(Located::About)
+        about::locate(elem, tracks).map(Located::About)
     }
 
     fn focused_index(&self, focus: Option<FocusKey<u32>>, group: GroupId) -> Option<usize> {
@@ -528,7 +544,7 @@ impl DetailScreen {
             3 if !d.related.is_empty() => related::elem(clamp(intent.spot.col, d.related.len())),
             4 if d.credits_len() > 0 => cast::elem(clamp(intent.spot.col, d.credits_len())),
             5 => Some(
-                if intent.spot.col > 0 && crate::ui::tracks_panel::is_available() {
+                if intent.spot.col > 0 && self.tracks_available() {
                     about::LANGUAGES_ELEM
                 } else {
                     about::CARD_ELEM
@@ -643,7 +659,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                     elem: ElemKind::Card,
                 }),
                 5 => {
-                    let tracks = crate::ui::tracks_panel::is_available();
+                    let tracks = self.tracks_available();
                     out.push(GroupSpec {
                         id: about::ABOUT_GROUP,
                         kind: GroupKind::Column,
@@ -713,7 +729,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 row_move(i, self.detail().map(|d| d.credits_len()).unwrap_or(0), dir)
                     .and_then(cast::elem)
             }
-            Located::About(i) => match (i, dir, crate::ui::tracks_panel::is_available()) {
+            Located::About(i) => match (i, dir, self.tracks_available()) {
                 (0, Dir::Down, true) => Some(about::LANGUAGES_ELEM),
                 (1, Dir::Up, _) => Some(about::CARD_ELEM),
                 _ => None,
@@ -935,7 +951,9 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
         };
         FocusKey {
             entry: self.entry,
-            elem: Self::locate_local(elem).and_then(|located| self.key_of(located)).unwrap_or(hero::ELEM_PLAY),
+            elem: Self::locate_local(elem, self.tracks_available())
+                .and_then(|located| self.key_of(located))
+                .unwrap_or(hero::ELEM_PLAY),
         }
     }
 }
@@ -952,7 +970,7 @@ impl DetailScreen {
             Located::Related(i) => d.is_some_and(|d| i < d.related.len().min(512)),
             Located::Cast(i) => d.is_some_and(|d| i < d.credits_len().min(512)),
             Located::About(0) => d.is_some(),
-            Located::About(1) => d.is_some() && crate::ui::tracks_panel::is_available(),
+            Located::About(1) => d.is_some() && self.tracks_available(),
             Located::About(_) => false,
         }
     }
@@ -997,7 +1015,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                self.tick(t.dt(), cx, fx);
+                self.tick(*t, cx, fx);
                 Handled::Yes
             }
             ScreenEvent::Enter(_) => {
@@ -1085,9 +1103,6 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                     self.restore_intent = None;
                     self.return_pending = false;
                 }
-                if let Some(handled) = self.panel_input(input, fx) {
-                    return handled;
-                }
                 if matches!(
                     input.kind,
                     InputKind::Key {
@@ -1132,14 +1147,17 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
             }
+            // The *Also available* surface committed a row. It names the destination; this page
+            // performs the navigation, exactly as it did while the panel reported an `Action`.
+            ScreenEvent::App(AppMsg::AltSourceOpen(arg)) => {
+                self.content(fx, ContentReq::Present(arg.clone()));
+                Handled::Yes
+            }
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
                 self.pending_season = None;
                 self.season_settle = 0.0;
                 self.restore_intent = None;
                 self.return_pending = false;
-                crate::ui::alt_sources::reset(ServerId::UNSET, "");
-                crate::ui::about_panel::hide();
-                crate::ui::tracks_panel::hide();
                 if self.detail().is_some() {
                     apply_metadata(MetadataCmd::Clear);
                 }
@@ -1174,14 +1192,15 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let p = f.painter;
+        let nav_page_alpha = f.nav_page_alpha;
         let d = self.detail();
         self.draw_backdrop(p, d);
         let hero_vis = hero_alpha(self.scroll.pos, HERO_FADE);
         if hero_vis > 0.01 {
-            self.draw_hero(p.translate(0.0, -self.scroll.pos).alpha(hero_vis), f, d);
+            self.draw_hero(p.translate(0.0, -self.scroll.pos).alpha(hero_vis), f, d, nav_page_alpha);
         }
         if let Some(d) = d {
-            self.draw_compact_title(p, d, hero_vis);
+            self.draw_compact_title(p, d, hero_vis, f.measure);
             let focus = f
                 .focus
                 .current
@@ -1217,6 +1236,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                                 _ => None,
                             },
                             |i| self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0),
+                            f.measure,
                         );
                         if crate::metadata::season_loading() {
                             crate::ui::widgets::Spinner::new(
@@ -1238,6 +1258,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                             Some(Located::Related(i)) => Some(i),
                             _ => None,
                         },
+                        f.measure,
                     ),
                     4 => cast::draw(
                         p,
@@ -1248,10 +1269,16 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                             Some(Located::Cast(i)) => Some(i),
                             _ => None,
                         },
+                        f.measure,
                     ),
-                    5 => self
-                        .about_rows
-                        .draw(p, d, top, f.focus.current.map(|k| k.elem)),
+                    5 => self.about_rows.draw(
+                        p,
+                        d,
+                        top,
+                        f.focus.current.map(|k| k.elem),
+                        self.tracks_available(),
+                        f.measure,
+                    ),
                     _ => {}
                 }
             }
@@ -1267,10 +1294,9 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
         }
 
         self.record_stops(f);
-        crate::ui::alt_sources::draw();
-        crate::ui::about_panel::draw_scrim();
-        crate::ui::about_panel::draw();
-        crate::ui::tracks_panel::draw();
+        // **This page draws no panel at all any more.** All three of its own — *Also available*,
+        // *Track information* and *About* — are `ModalStack` surfaces since phase 10, so the
+        // container draws each after this page, with its scrim, on its own appear spring.
     }
 
     fn render(&self) -> RenderStrategy {
@@ -1375,7 +1401,7 @@ impl DetailScreen {
         }
     }
 
-    fn draw_hero<H: ContentLike>(&self, p: Painter, cx: &Cx<'_, H>, d: Option<&Detail>) {
+    fn draw_hero<H: ContentLike>(&self, p: Painter, cx: &Cx<'_, H>, d: Option<&Detail>, nav_page_alpha: f32) {
         use crate::ui::detail_layout::{HERO_TEXT_W, TITLE_BOTTOM};
 
         let (_, rk, _) = self.art_identity(d);
@@ -1392,14 +1418,15 @@ impl DetailScreen {
                 HERO_TEXT_W,
                 band,
             ),
+            cx.measure,
         );
 
         let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_view = crate::ui::hero_synopsis(&synopsis, &lead);
         let chain = self.hero_chain();
         if let Some(d) = d {
-            self.draw_identity_line(p, d, chain.meta_y);
-            self.draw_ratings(p, d, chain.ratings_y);
+            self.draw_identity_line(p, d, chain.meta_y, cx.measure);
+            self.draw_ratings(p, d, chain.ratings_y, cx.measure);
         }
         if !synopsis.is_empty() {
             synopsis_view.draw(
@@ -1408,13 +1435,13 @@ impl DetailScreen {
             );
         }
         if let Some(d) = d {
-            hero::draw_facts(p, d, chain.facts_y);
+            hero::draw_facts(p, d, chain.facts_y, cx.measure);
             hero::draw_people(p, d, chain.btn_y);
         }
-        self.draw_buttons(p, cx, chain.btn_y);
+        self.draw_buttons(p, cx, chain.btn_y, nav_page_alpha);
     }
 
-    fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32) {
+    fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn crate::ui::machine::Measure) {
         let ordinal = (d.kind == "episode" && d.season > 0 && d.index > 0)
             .then(|| crate::ui::fmt::episode_ordinal(d.season, d.index))
             .unwrap_or_default();
@@ -1456,6 +1483,7 @@ impl DetailScreen {
                 &res,
                 None,
                 crate::ui::widgets::BadgeStyle::Filled,
+                measure,
             ) + theme::space::XS;
         }
         for (present, label) in [
@@ -1464,13 +1492,19 @@ impl DetailScreen {
             (d.audio.iter().any(|s| s.ad), "AD"),
         ] {
             if present {
-                x += crate::ui::widgets::keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY)
+                x += crate::ui::widgets::keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)
                     + theme::space::XS;
             }
         }
     }
 
-    fn draw_ratings(&self, p: Painter, d: &Detail, y: f32) {
+    fn draw_ratings(
+        &self,
+        p: Painter,
+        d: &Detail,
+        y: f32,
+        measure: &dyn crate::ui::machine::Measure,
+    ) {
         let (top, base) = crate::text::text_cap_band(theme::size::LABEL, 1);
         let cy = y + (top + base) * 0.5;
         let mut x = crate::ui::consts::MARGIN_X;
@@ -1491,16 +1525,16 @@ impl DetailScreen {
                     suffix: crate::ui::fmt::rating_suffix(r.art),
                 })
                 .collect();
-            let width = crate::ui::widgets::rating_group_w(provider, &cells);
+            let width = crate::ui::widgets::rating_group_w(provider, &cells, measure);
             if x + width > crate::ui::consts::SCR_W - crate::ui::consts::MARGIN_X {
                 break;
             }
-            x += crate::ui::widgets::rating_group(p, x, cy, provider, &cells) + 32.0;
+            x += crate::ui::widgets::rating_group(p, x, cy, provider, &cells, measure) + 32.0;
             i = end;
         }
     }
 
-    fn draw_buttons<H: ContentLike>(&self, p: Painter, cx: &Cx<'_, H>, y: f32) {
+    fn draw_buttons<H: ContentLike>(&self, p: Painter, cx: &Cx<'_, H>, y: f32, nav_page_alpha: f32) {
         let set = self.hero_set();
         let widths = hero::hero_widths(
             cx.measure,
@@ -1518,8 +1552,7 @@ impl DetailScreen {
             last.x + last.w - crate::ui::consts::MARGIN_X,
             hero::CD,
         ];
-        let may_read =
-            crate::ui::nav::page_alpha() >= 0.999 && hero_alpha(self.scroll.pos, HERO_FADE) > 0.99;
+        let may_read = may_sample_control_ground(nav_page_alpha, hero_alpha(self.scroll.pos, HERO_FADE));
         let palette = crate::gfx::sample_control_ground(row, may_read)
             .map(ControlPalette::ambient)
             .unwrap_or_default();
@@ -1568,7 +1601,7 @@ impl DetailScreen {
         }
     }
 
-    fn draw_compact_title(&self, p: Painter, d: &Detail, hero_visible: f32) {
+    fn draw_compact_title(&self, p: Painter, d: &Detail, hero_visible: f32, measure: &dyn crate::ui::machine::Measure) {
         if hero_visible >= 0.99 {
             return;
         }
@@ -1595,6 +1628,7 @@ impl DetailScreen {
                     crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
                     band,
                 ),
+                measure,
             );
     }
 
@@ -1625,7 +1659,7 @@ impl DetailScreen {
                     .filter_map(|i| cast::elem(i).map(|e| (e, Activate::Press))),
             );
             elems.push((about::CARD_ELEM, Activate::Press));
-            if crate::ui::tracks_panel::is_available() {
+            if self.tracks_available() {
                 elems.push((about::LANGUAGES_ELEM, Activate::Press));
             }
         }
@@ -1673,6 +1707,34 @@ fn play_resume_ns(from_start: bool, resume_ms: i64, duration_ms: i64) -> i64 {
         0
     } else {
         crate::metadata::resume_ns(resume_ms, duration_ms)
+    }
+}
+
+/// Is it safe to sample the panel behind the hero buttons for the ambient control palette this
+/// frame (spec §14 phase 8)? Only once BOTH the route-level nav dip (`nav_page_alpha`,
+/// `DrawFrame::nav_page_alpha` — replaces the old live `ui::nav::page_alpha()` read) and the
+/// hero's own scroll fade have fully settled — a frame either is still fading through is not a
+/// stable backdrop to sample: `sample_control_ground` caches its result across frames
+/// (`CONTROL_GROUND_SAMPLE_EVERY`), so a sample taken mid-transition would be read back for
+/// several frames after the transition ends, on a real device screen this cannot be tested on.
+fn may_sample_control_ground(nav_page_alpha: f32, hero_alpha: f32) -> bool {
+    nav_page_alpha >= 0.999 && hero_alpha > 0.99
+}
+
+#[cfg(test)]
+mod may_sample_control_ground_tests {
+    use super::may_sample_control_ground;
+
+    #[test]
+    fn requires_both_the_route_dip_and_the_hero_fade_to_have_settled() {
+        assert!(may_sample_control_ground(1.0, 1.0), "fully settled: safe to sample");
+        assert!(!may_sample_control_ground(0.5, 1.0), "a route change in flight must not sample");
+        assert!(!may_sample_control_ground(1.0, 0.5), "a scrolling hero must not sample either");
+        assert!(!may_sample_control_ground(0.5, 0.5), "neither settled: must not sample");
+        // the exact thresholds this frame's caller passes in, at their boundary
+        assert!(!may_sample_control_ground(0.998, 1.0));
+        assert!(may_sample_control_ground(0.999, 1.0));
+        assert!(!may_sample_control_ground(1.0, 0.99));
     }
 }
 
@@ -1830,38 +1892,28 @@ impl LogicalState for DetailScreen {
                 w.bool(false);
             }
         }
-        w.u8(if crate::ui::alt_sources::is_open() {
-            1
-        } else if crate::ui::about_panel::is_open() {
-            2
-        } else if crate::ui::tracks_panel::is_open() {
-            3
-        } else {
-            0
-        });
+        // **No panel byte at all any more.** All three of this page's panels are `ModalStack`
+        // surfaces since phase 10, so which one is up — its argument, its `Phase` and its own
+        // instance's hash — is written by `Navigation::write` for the whole tree, and a second
+        // record here would be two producers of one fact (§16.2). The `about_panel_open:u8` this
+        // line held was the last of them, kept explicitly so its retirement would be one deletion.
     }
 
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "detail sid={} pending_season={} settle_us={} restore={} restore_season_sent={} panel={}",
+            "detail sid={} pending_season={} settle_us={} restore={} restore_season_sent={}",
             self.sid.raw(),
             self.pending_season
                 .map(|index| index.to_string())
                 .unwrap_or_else(|| "-".into()),
             (self.season_settle * 1_000_000.0).round() as u64,
             self.restore_intent.is_some(),
+            // No `panel=` field: every surface names itself through `Screen::name` (the
+            // heartbeat's `overlay=` and `Dispatcher::top_surface_name`), and this page owns the
+            // phase of none of them.
             self.restore_intent
                 .as_ref()
                 .is_some_and(|intent| intent.season_requested),
-            if crate::ui::alt_sources::is_open() {
-                "alt"
-            } else if crate::ui::about_panel::is_open() {
-                "about"
-            } else if crate::ui::tracks_panel::is_open() {
-                "tracks"
-            } else {
-                "none"
-            }
         ));
     }
 }
@@ -1917,9 +1969,9 @@ impl DetailScreen {
         }
     }
 
-    fn tick<H: ContentLike>(&mut self, dt: f32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn tick<H: ContentLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let dt = t.dt();
         self.pump_restore();
-        self.spin_ms += dt * 1000.0;
         let d = self.detail();
         let loaded = d.is_some();
         if let Some(d) = d {
@@ -2020,13 +2072,17 @@ impl DetailScreen {
         }
 
         self.scroll.step(self.scroll_target, K_SCROLL, dt);
-        crate::ui::alt_sources::pump();
-        crate::ui::alt_sources::update(dt);
-        crate::ui::about_panel::update(dt);
-        crate::ui::tracks_panel::update(dt);
 
         if self.pending_season.is_some() {
-            self.season_settle += dt;
+            // Spelled as an assignment, not `+= dt`: bit-for-bit identical arithmetic to the
+            // pre-D4 accumulator, deliberately UNCHANGED — `season_settle` is HASHED
+            // `LogicalState` (`SHAPE`'s `season_settle:f32`), and a `motion::Ramp`'s absolute-
+            // `Tick.ms` math computes the same real quantity through a different float operation
+            // sequence that measurably diverges the hash (verified against the committed replay
+            // fixtures). What WAS a real bug — this dwell timer never reported `Motion` — is
+            // fixed by the explicit `note` below, with no change to the number itself.
+            self.season_settle = self.season_settle + dt;
+            fx.note(PresentEvent::Motion);
             if self.season_settle >= season::SETTLE_S {
                 let index = self.pending_season.take().unwrap_or(0);
                 self.season_settle = 0.0;
@@ -2050,7 +2106,10 @@ impl DetailScreen {
             self.restore_intent = None;
             self.return_pending = false;
         }
-        if moving || !loaded || crate::metadata::season_loading() {
+        if !loaded {
+            self.spin_ms = self.spin_phase.advance(t, &mut fx.present());
+        }
+        if moving || crate::metadata::season_loading() {
             fx.note(PresentEvent::Motion);
         }
     }
@@ -2067,9 +2126,41 @@ impl DetailScreen {
             .unwrap_or((false, PosterMark::None));
         hero::HeroSet {
             restart,
-            alt: crate::ui::alt_sources::is_available(),
+            alt: self.alt_available(),
             mark,
         }
+    }
+
+    /// **Is a second pinned source holding THIS page's item?** — the *Also available* pill's gate,
+    /// answered by the page from the store, never by asking whether the panel exists.
+    ///
+    /// It is a derived read rather than a cached field on purpose: one owner. The addressed store
+    /// (`metadata::alt_available`) is where the answer lives, a landing raises `StoreChanged` and
+    /// the next layout pass simply asks again — where a copy of the bit here would be a second
+    /// thing to keep in step with the same landing, and the failure mode of that (a hero row with
+    /// four controls' worth of geometry and three drawn) is exactly the class of bug this
+    /// publication exists to remove.
+    pub(crate) fn alt_available(&self) -> bool {
+        crate::metadata::alt_available(self.sid, &self.rk)
+    }
+
+    /// **Is there a file for the *Track information* sheet to describe?** — the Languages column's
+    /// press gate, and the page's own answer about the page's own item.
+    ///
+    /// The RULE is the data's ([`crate::metadata::Detail::has_own_file`], which explains why it is
+    /// `part` and not `is_show`); what this adds is WHOSE item it is applied to. [`Self::detail`] FILTERS the
+    /// store landing by this page's `(sid, rk)`, where the panel's own `is_available()` read
+    /// `metadata::current()` unfiltered — so a Detail page whose fetch had not landed yet answered
+    /// from whatever item was loaded last, which on the way back from a Person page is a different
+    /// film, and which decided the About footer's column count and the element ladder under it.
+    ///
+    /// It is false for the whole mount fetch, which costs nothing: the About footer is drawn from a
+    /// loaded item, so there is no frame on which the Languages column is on screen and this is
+    /// still false. The column does not appear or vanish with the answer — it is always the third
+    /// of four — so a press that arrives early is refused rather than landing on a control that has
+    /// moved.
+    pub(crate) fn tracks_available(&self) -> bool {
+        self.detail().is_some_and(crate::metadata::Detail::has_own_file)
     }
 
     fn named_show(&self) -> bool {
@@ -2081,6 +2172,8 @@ impl DetailScreen {
         match self.locate(elem) {
             Some(Located::Hero(ctl)) => self.activate_hero(ctl, cx, fx),
             Some(Located::Season(i)) => {
+                // A direct press skips the dwell entirely — pre-loading `season_settle` past the
+                // threshold fires on the very NEXT `tick` rather than after a full `SETTLE_S`.
                 self.pending_season = Some(i);
                 self.season_settle = season::SETTLE_S;
             }
@@ -2133,8 +2226,10 @@ impl DetailScreen {
                     );
                 }
             }
-            Some(Located::About(0)) => crate::ui::about_panel::open(),
-            Some(Located::About(1)) => crate::ui::tracks_panel::open(),
+            Some(Located::About(0)) => self.content(fx, ContentReq::Panel(ContentPanel::About)),
+            Some(Located::About(1)) => {
+                self.content(fx, ContentReq::Panel(ContentPanel::Tracks { page: 1 }))
+            }
             _ => {}
         }
         fx.invalidate(Provenance::Input);
@@ -2165,7 +2260,14 @@ impl DetailScreen {
                     );
                     let mut rect = hero::hero_btn_rect_at(set, i, self.hero_chain().btn_y, widths);
                     rect.y -= self.scroll.pos;
-                    crate::ui::alt_sources::open_for(self.sid, &self.rk, rect);
+                    // The ANCHOR travels on the argument, bit for bit, so the surface places
+                    // itself off the pill without the page or a static holding a `Rect` for it.
+                    self.content(
+                        fx,
+                        ContentReq::Panel(ContentPanel::AltSources {
+                            anchor: [rect.x, rect.y, rect.w, rect.h].map(f32::to_bits),
+                        }),
+                    );
                 }
             }
             hero::HeroCtl::MarkWatched | hero::HeroCtl::MarkUnwatched => {
@@ -2204,25 +2306,21 @@ impl DetailScreen {
                 ),
             }
         } else {
-            let started = self.selected().map_or_else(
-                || {
-                    crate::route::request_play(
-                        crate::route::item_sid(d.sid),
-                        &d.rk,
-                        &d.part,
-                        &d.vcodec,
-                        &d.acodec,
-                        &d.title,
-                        "",
-                    )
+            let play = self.selected().map_or_else(
+                || PlayIntent::Item {
+                    sid: crate::route::item_sid(d.sid),
+                    rk: d.rk.clone(),
+                    part: d.part.clone(),
+                    vcodec: d.vcodec.clone(),
+                    acodec: d.acodec.clone(),
+                    title: d.title.clone(),
+                    context: String::new(),
                 },
-                crate::route::request_play_movie,
+                PlayIntent::Movie,
             );
-            if started {
-                let resume_ns = play_resume_ns(from_start, d.resume_ms, d.dur_ms);
-                self.content(fx, ContentReq::Play { resume_ns });
-            }
-            started
+            let resume_ns = play_resume_ns(from_start, d.resume_ms, d.dur_ms);
+            self.content(fx, ContentReq::Play { play, resume_ns });
+            true
         }
     }
 
@@ -2280,101 +2378,21 @@ impl DetailScreen {
             detail_rk: d.rk.clone(),
         };
         apply_metadata(MetadataCmd::SetNowPlaying(Some(now_playing)));
-        let started = crate::route::request_play(
-            crate::route::item_sid(sid),
-            &play_rk,
-            &part,
-            &vcodec,
-            &acodec,
-            &title,
-            &context,
-        );
-        if started {
-            self.content(fx, ContentReq::Play { resume_ns });
-        }
-        started
+        let play = PlayIntent::Item {
+            sid: crate::route::item_sid(sid),
+            rk: play_rk,
+            part,
+            vcodec,
+            acodec,
+            title,
+            context,
+        };
+        self.content(fx, ContentReq::Play { play, resume_ns });
+        true
     }
 
     fn content<H: ContentLike>(&self, fx: &mut Effects<'_, H>, req: ContentReq) {
         fx.push(Fx::App(AppFx::Content(req)));
     }
 
-    fn panel_input<H: ContentLike>(
-        &mut self,
-        event: &InputEvent<u32>,
-        fx: &mut Effects<'_, H>,
-    ) -> Option<Handled> {
-        if crate::ui::alt_sources::is_open() {
-            match event.kind {
-                InputKind::Key {
-                    key: Key::Back,
-                    edge: Edge::Down,
-                    ..
-                } => crate::ui::alt_sources::close(),
-                InputKind::Key {
-                    key: Key::Ok,
-                    edge: Edge::Down,
-                    ..
-                } => {
-                    if let crate::ui::alt_sources::Action::Open { sid, rk } =
-                        crate::ui::alt_sources::on_ok()
-                    {
-                        self.content(fx, ContentReq::Present(ContentArg::Detail { sid, rk }));
-                    }
-                }
-                InputKind::Key {
-                    sym,
-                    edge: Edge::Down | Edge::Repeat,
-                    ..
-                } => crate::ui::alt_sources::move_focus(sym as i32),
-                InputKind::Pointer { x, y, .. } => crate::ui::alt_sources::pointer_focus(x, y),
-                InputKind::Click { x, y, .. } => {
-                    if let crate::ui::alt_sources::Action::Open { sid, rk } =
-                        crate::ui::alt_sources::click(x, y)
-                    {
-                        self.content(fx, ContentReq::Present(ContentArg::Detail { sid, rk }));
-                    }
-                }
-                _ => {}
-            }
-            fx.invalidate(Provenance::Input);
-            return Some(Handled::Yes);
-        }
-        if crate::ui::about_panel::is_open() {
-            match event.kind {
-                InputKind::Key {
-                    key: Key::Back,
-                    edge: Edge::Down,
-                    ..
-                } => crate::ui::about_panel::close(),
-                InputKind::Key {
-                    key: Key::Ok,
-                    edge: Edge::Down,
-                    ..
-                } => crate::ui::about_panel::on_ok(),
-                InputKind::Click { x, y, .. } => crate::ui::about_panel::click(x, y),
-                _ => {}
-            }
-            fx.invalidate(Provenance::Input);
-            return Some(Handled::Yes);
-        }
-        if crate::ui::tracks_panel::is_open() {
-            match event.kind {
-                InputKind::Key {
-                    key: Key::Back,
-                    edge: Edge::Down,
-                    ..
-                } => crate::ui::tracks_panel::close(),
-                InputKind::Key {
-                    sym,
-                    edge: Edge::Down | Edge::Repeat,
-                    ..
-                } => crate::ui::tracks_panel::move_focus(sym as i32),
-                _ => {}
-            }
-            fx.invalidate(Provenance::Input);
-            return Some(Handled::Yes);
-        }
-        None
-    }
 }

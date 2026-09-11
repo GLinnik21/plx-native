@@ -29,7 +29,7 @@ use crate::ui::frame::Budget;
 use crate::ui::label::HAlign;
 use crate::ui::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key,
-    LogicalState, Machine, Measure,
+    LogicalState, Machine, Measure, Tick,
 };
 use crate::ui::route_screen::{RouteGround, RouteLayout};
 use crate::ui::screen::{
@@ -323,16 +323,30 @@ impl LogicalState for LoginState {
 
 pub(crate) struct LoginScreen {
     entry: EntryId,
-    /// Free-running rotation clock for the spinner. Render-only, never hashed.
+    /// Free-running rotation clock for the spinner, in ms — cached each tick from
+    /// [`spin_phase`](Self::spin_phase)'s `advance`. Render-only, never hashed.
     spin_ms: f32,
-    /// How long the CURRENT wait has been on screen — reset by `tick` whenever [`Wait`] changes.
+    /// How long the CURRENT wait has been on screen, in ms — cached each tick from
+    /// [`phase_clock`](Self::phase_clock)'s `advance`, reset whenever [`Wait`] changes.
     phase_ms: f32,
+    /// The underlying clocks for [`spin_ms`](Self::spin_ms)/[`phase_ms`](Self::phase_ms)
+    /// (`motion::Phase` — spec phase 12 D4): an UNBOUNDED clock-driven animator reports `Motion`
+    /// from inside its own `advance`, the way [`motion::Ramp`](crate::ui::motion::Ramp) does for a
+    /// bounded one, rather than the raw `+= dt` these two fields used to accumulate with
+    /// `fx.note(Motion)` called separately, out of band, below.
+    spin_phase: crate::ui::motion::Phase,
+    phase_clock: crate::ui::motion::Phase,
     wait: Wait,
     /// The uploaded GL texture of Plex's QR PNG (0 until decoded+uploaded) and which generation it
     /// describes. Render resources only — built and freed in [`Screen::prepare`], never in `step`,
     /// so a host test driving `step` alone never touches GL.
     qr_tex: u32,
     qr_tex_gen: u64,
+    /// The pixel size that texture was uploaded at, so [`Screen::render_report`] can state the
+    /// bytes this screen holds of the frame's render residency (§8.3) instead of guessing them:
+    /// the bitmap is whatever plex.tv's PNG decoded to, not a constant. `(0, 0)` while `qr_tex`
+    /// is 0, and the two are set and cleared together.
+    qr_px: (u32, u32),
     /// PNG bytes `tick` captured this frame, awaiting [`Screen::prepare`]'s decode+upload — the
     /// hand-off between "read `crate::auth` once" (step) and "touch GL" (prepare). `None` once
     /// consumed, or when nothing new has been published.
@@ -355,9 +369,12 @@ impl LoginScreen {
             entry,
             spin_ms: 0.0,
             phase_ms: 0.0,
+            spin_phase: crate::ui::motion::Phase::default(),
+            phase_clock: crate::ui::motion::Phase::default(),
             wait: (Phase::Idle, 0),
             qr_tex: 0,
             qr_tex_gen: 0,
+            qr_px: (0, 0),
             qr_png_pending: None,
             phase: Phase::Idle,
             qr_gen: 0,
@@ -435,8 +452,7 @@ impl LoginScreen {
         (self.phase, self.qr_gen)
     }
 
-    fn tick<H: AppLike>(&mut self, dt: f32, fx: &mut Effects<'_, H>) {
-        self.spin_ms += dt * 1000.0;
+    fn tick<H: AppLike>(&mut self, t: Tick, fx: &mut Effects<'_, H>) {
         let had_control = self.has_control();
 
         // ONE sample of `crate::auth` feeds both the wait-restart clock below and every cached
@@ -452,9 +468,24 @@ impl LoginScreen {
         // sign-in from being offered a way out of itself.
         if wait_restarted(self.wait, live) {
             self.wait = live;
+            self.phase_clock.reset(t);
             self.phase_ms = 0.0;
-        } else {
-            self.phase_ms += dt * 1000.0;
+        }
+
+        // Both clocks are `motion::Phase` (spec phase 12 D4): the raw `+= dt` this used to be, and
+        // the `fx.note(Motion)` below it, are now one call each — `advance` both reads the elapsed
+        // ms AND reports motion, so a caller that forgets to note motion for a still-running clock
+        // (the exact "ships frozen" bug class `control_has_spinner`'s own doc names) cannot
+        // separate the two any more. Both clocks are gated on the SAME `control_has_spinner`
+        // condition as the `fx.note` call they replace: `working_phase`/`Phase::Waiting`, the only
+        // phases whose escape thresholds `phase_ms` is timed against, are themselves a SUBSET of
+        // `control_has_spinner`'s true set, so this changes nothing about when the escape offer
+        // can appear — it only stops accumulating (freezes, harmlessly, since nothing reads it)
+        // while the spinner is not drawn at all (`Error`/`Deleted`).
+        if control_has_spinner(self.phase) {
+            let mut present = fx.present();
+            self.spin_ms = self.spin_phase.advance(t, &mut present);
+            self.phase_ms = self.phase_clock.advance(t, &mut present);
         }
 
         if self.has_control() && !had_control {
@@ -472,9 +503,6 @@ impl LoginScreen {
                     focus: FocusTarget::ContainerGroup(CONTROL_GROUP),
                 })),
             ));
-        }
-        if control_has_spinner(self.phase) {
-            fx.note(crate::ui::present::PresentEvent::Motion);
         }
     }
 
@@ -533,8 +561,13 @@ impl LoginScreen {
                     // starts another `Creating`), and `tick` only zeroes the clock when the wait's
                     // IDENTITY changes — a fresh code changes it, a re-entered phase may not — so
                     // without this the new attempt could inherit the dead one's age and show its
-                    // way out immediately.
+                    // way out immediately. No `Tick` is in scope in this synchronous handler, so
+                    // this clears the clock to its NOT-STARTED state rather than calling
+                    // `Phase::reset` — the next `tick`'s `advance` then anchors fresh at that
+                    // tick's own time, giving the same "elapsed ms since now" `0.0` this assigned
+                    // directly before.
                     self.phase_ms = 0.0;
+                    self.phase_clock = crate::ui::motion::Phase::default();
                 }
             }
             None => {}
@@ -636,6 +669,7 @@ impl LoginScreen {
             "Sign in to Plex",
             "Use your phone camera to scan the code, or link this television manually with the address and code shown here.",
             theme::size::LABEL,
+            f.measure,
         );
         let right = qr_layout(layout);
 
@@ -681,7 +715,7 @@ impl LoginScreen {
         let wy = right.status.cy();
         let escaping = qr_escape_offered(self.phase_ms);
         let status = waiting_status(self.qr_replaced, escaping);
-        let status_w = crate::text::text_width(status.as_ptr(), theme::size::BODY, 0);
+        let status_w = f.measure.width(status, theme::size::BODY, false);
         let sx = right.status.cx() - (wr * 2.0 + theme::space::SM + status_w) * 0.5;
         Spinner::new(sx + wr, wy, wr)
             .phase(self.spin_ms as u32)
@@ -731,6 +765,7 @@ impl LoginScreen {
         let px = crate::img::img_decode_rgba(png.as_ptr(), png.len() as c_int, &mut w, &mut h);
         if !px.is_null() {
             self.qr_tex = crate::img::img_upload_rgba(px, w, h);
+            self.qr_px = if self.qr_tex != 0 { (w.max(0) as u32, h.max(0) as u32) } else { (0, 0) };
             self.qr_tex_gen = gen;
             crate::img::img_free(px);
         }
@@ -742,6 +777,7 @@ impl LoginScreen {
         }
         crate::gfx::delete_tex(self.qr_tex);
         self.qr_tex = 0;
+        self.qr_px = (0, 0);
         self.qr_tex_gen = live;
     }
 }
@@ -790,7 +826,7 @@ impl<H: AppLike> Machine<H> for LoginScreen {
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             ScreenEvent::Tick(t) => {
-                self.tick(t.dt(), fx);
+                self.tick(*t, fx);
                 Handled::Yes
             }
             ScreenEvent::Activate(_) => {
@@ -836,6 +872,7 @@ impl<H: AppLike> Machine<H> for LoginScreen {
             ScreenEvent::Unmount => {
                 crate::gfx::delete_tex(self.qr_tex);
                 self.qr_tex = 0;
+                self.qr_px = (0, 0);
                 Handled::Yes
             }
             _ => Handled::No,
@@ -878,6 +915,16 @@ impl<H: AppLike> Screen<H> for LoginScreen {
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
+    }
+    /// The QR bitmap is the one render this screen owns (§8.3 rule (c)) — its own `upload_rgba` in
+    /// [`Self::prepare_qr_tex`], its own `delete_tex` on `Unmount`. Everything else here is drawn
+    /// immediate-mode or comes from a shared cache. The size is whatever plex.tv's PNG decoded to,
+    /// which is why it is recorded rather than assumed.
+    fn render_report(&self) -> crate::ui::frame::RenderReport {
+        if self.qr_tex == 0 {
+            return crate::ui::frame::RenderReport::NONE;
+        }
+        crate::ui::frame::RenderReport::one(self.qr_px.0, self.qr_px.1)
     }
     fn focus_source(&self) -> FocusSource {
         FocusSource::Engine
@@ -1069,9 +1116,12 @@ mod tests {
             entry: EntryId(0),
             spin_ms: 0.0,
             phase_ms,
+            spin_phase: crate::ui::motion::Phase::default(),
+            phase_clock: crate::ui::motion::Phase::default(),
             wait: (phase, 0),
             qr_tex: 0,
             qr_tex_gen: 0,
+            qr_px: (0, 0),
             qr_png_pending: None,
             phase,
             qr_gen: 0,
@@ -1259,6 +1309,37 @@ mod tests {
         }
     }
 
+    /// **The frozen-animator regression class, closed for this screen's clock (phase 12 D4).**
+    /// `spin_ms`/`phase_ms` used to be raw `+= dt` accumulators with a SEPARATE, easy-to-forget
+    /// `fx.note(Motion)` a few lines below them — exactly the shape `Xfade`/`Spinner` shipped
+    /// frozen in before (`docs/agent-reference.md`'s idle section). Now both are `motion::Phase`,
+    /// which reports from inside its own `advance`, so this proves the report survives the
+    /// refactor: three real `Tick`s in a row, driven through `Machine::step` exactly as the loop
+    /// drives one, must each present. (The complementary "a settled read-out's clock does not
+    /// report" half is `control_has_spinner`'s own predicate, unchanged by this conversion, and is
+    /// not re-driven here through `resync` — this screen reads the process-global `crate::auth`
+    /// phase on every tick, which other tests in this binary run concurrently against, so forcing
+    /// `Error`/`Deleted` through the real `step` path is exactly the shared-state hazard
+    /// `bare_screen` exists to avoid; see its own doc.)
+    #[test]
+    fn the_spinner_phase_reports_motion_on_every_tick_while_a_control_has_one() {
+        let mut s = LoginScreen::new(EntryId(0));
+        let m = crate::ui::fixture::FixtureMeasure;
+        let cx = test_cx(&m);
+        let mut present = Present::new();
+        let _ = present.take(0);
+        let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
+        for ms in [16, 32, 48] {
+            let mut fx = Effects::new(&mut buf, MachineId::Instance(InstanceId(0)), &mut present);
+            let ev = ScreenEvent::Tick(Tick { ms, dt_us: 16_667 });
+            Machine::<InnerHost>::step(&mut s, &ev, &cx, &mut fx);
+            assert!(
+                present.take(ms),
+                "a live sign-in spinner must present every frame it is on screen (ms={ms})"
+            );
+        }
+    }
+
     fn step_ev(s: &mut LoginScreen, ev: &ScreenEvent<InnerHost>) -> (Handled, Vec<Stamped<InnerHost>>) {
         let m = crate::ui::fixture::FixtureMeasure;
         let cx = test_cx(&m);
@@ -1310,8 +1391,33 @@ mod tests {
     fn unmount_frees_the_qr_texture() {
         let mut s = bare_screen(Phase::Waiting, 0.0);
         s.qr_tex = 999;
+        s.qr_px = (400, 400);
         let (handled, _) = step_ev(&mut s, &ScreenEvent::Unmount);
         assert_eq!(handled, Handled::Yes);
         assert_eq!(s.qr_tex, 0, "an unmounting screen must not leak its GL texture id");
+        assert_eq!(s.qr_px, (0, 0), "…nor go on claiming its bytes in the frame's render set");
+    }
+
+    /// **The QR bitmap is a render this SCREEN owns** — its own `upload_rgba`, its own
+    /// `delete_tex` — so it is one of the two things in the tree that override
+    /// `Screen::render_report` (§8.3 rule (c)); everything else on screen here is drawn
+    /// immediate-mode or comes from a shared pool. `999` stands in for a real GL id for the same
+    /// reason `unmount_frees_the_qr_texture` uses it: a host test uploads nothing.
+    #[test]
+    fn the_qr_bitmap_is_reported_as_this_screens_own_render() {
+        use crate::ui::frame::RenderReport;
+        let mut s = bare_screen(Phase::Waiting, 0.0);
+        assert_eq!(
+            Screen::<InnerHost>::render_report(&s),
+            RenderReport::NONE,
+            "no code yet: this screen holds no render of its own"
+        );
+        s.qr_tex = 999;
+        s.qr_px = (400, 400);
+        assert_eq!(
+            Screen::<InnerHost>::render_report(&s),
+            RenderReport::one(400, 400),
+            "one texture, 400x400 RGBA8 = 640,000 bytes"
+        );
     }
 }

@@ -348,6 +348,19 @@ impl<H: Host> NavStack<H> {
         self.transition.chrome_alpha()
     }
 
+    /// **The DESTINATION of a pending op, if it names one.** The pending selection the shared tab
+    /// strip reads while a transition is in flight (`ui::nav::view_tab`): the capsule travels to
+    /// the pressed pill on the PRESS frame, and the page it names is still fading in. WHICH PILL
+    /// that argument is remains the application's answer.
+    pub fn pending_dest(&self) -> Option<&H::Arg> {
+        match self.pending.as_ref().map(|p| &p.op)? {
+            NavOp::Push(a) | NavOp::Root(a) | NavOp::SelectTab(a) | NavOp::Replace(a) => Some(a),
+            NavOp::PopTo(id) | NavOp::Dismiss(id) => self.entry(*id).map(|e| &e.arg),
+            NavOp::Pop => self.under_top().map(|e| &e.arg),
+            NavOp::Present(_) | NavOp::Cancel => None,
+        }
+    }
+
     /// The entry a `NavOp::Pop` would reveal — what a BACK's chrome question is asked about.
     pub fn under_top(&self) -> Option<&Entry<H>> {
         self.entries.iter().rev().nth(1)

@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::ffi::CStr;
 
 use super::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
-use super::frame::Budget;
+use super::frame::{Budget, RenderReport};
 use super::machine::{
     Addr, Canon, Chrome, Cx, Delivery, Effects, Fx, GroupId, Handled, Host, InputEvent, InputKind,
     Key, LogLine, LogicalState, Machine, MachineId, Measure, NavOp, PartId, PosterKey, RequestId,
@@ -46,13 +46,16 @@ pub enum FixtureArg {
     Legacy,
     /// A page snapped to its grid: the strip is unreachable from it (§6.2).
     Snapped,
+    /// A page whose picture is the hardware VIDEO PLANE (`RenderStrategy::VideoPlane`, §9) — the
+    /// player's shape. It draws a hole in the surface, not a picture.
+    VideoPlane,
 }
 
 impl ScreenArg for FixtureArg {
     fn chrome(&self) -> Chrome {
         match self {
             FixtureArg::Home => Chrome::TabBar,
-            FixtureArg::Page(_) | FixtureArg::Modal => Chrome::None,
+            FixtureArg::Page(_) | FixtureArg::Modal | FixtureArg::VideoPlane => Chrome::None,
             FixtureArg::Legacy | FixtureArg::Snapped => Chrome::TabBar,
         }
     }
@@ -63,6 +66,7 @@ impl ScreenArg for FixtureArg {
             FixtureArg::Modal => ScreenId(3),
             FixtureArg::Legacy => ScreenId(4),
             FixtureArg::Snapped => ScreenId(5),
+            FixtureArg::VideoPlane => ScreenId(6),
         }
     }
     fn title(&self) -> Option<&str> {
@@ -81,6 +85,7 @@ impl LogicalState for FixtureArg {
             Self::Modal => { c.u32(2); }
             Self::Legacy => { c.u32(3); }
             Self::Snapped => { c.u32(4); }
+            Self::VideoPlane => { c.u32(5); }
         }
     }
     fn probe(&self, out: &mut String) { out.push_str("fixture_arg"); }
@@ -296,10 +301,22 @@ impl LogicalState for FixtureState {
     }
 }
 
+/// The page argument whose body steps a REAL spring on every Tick — `gfx::spring`, the integrator
+/// the product's owned screens animate through, so `ui::idle` hears it exactly as it hears the
+/// Library's scroll. One page rather than all of them: a spring in flight keeps the present gate
+/// awake, and every other test in this bundle grades quiet frames.
+pub const ANIMATED_PAGE: u32 = 950;
+
 pub struct FixtureScreen {
     pub arg: FixtureArg,
     pub state: FixtureState,
     row: FixtureRow,
+    /// See [`ANIMATED_PAGE`]. Inert for every other argument.
+    spring: crate::ui::Spring,
+    /// The [`draw_order`] tick this page last drew at. Deliberately NOT part of [`FixtureState`],
+    /// which is the screen's LOGICAL state and feeds the tree's hash: when a page happened to be
+    /// drawn is render bookkeeping and must not move a state hash.
+    pub draw_at: usize,
 }
 
 crate::focusable_via_composed!(FixtureScreen, FixtureHost);
@@ -357,6 +374,7 @@ impl Machine<FixtureHost> for FixtureScreen {
                     FixtureArg::Page(n) => n + 1,
                     FixtureArg::Modal => 200,
                     FixtureArg::Legacy | FixtureArg::Snapped => 300,
+                    FixtureArg::VideoPlane => 400,
                 };
                 fx.push(Fx::Nav(NavOp::Push(FixtureArg::Page(next))));
                 fx.invalidate(Provenance::Input);
@@ -393,6 +411,14 @@ impl Machine<FixtureHost> for FixtureScreen {
                 }
                 Handled::Yes
             }
+            // The PAGE's own spring, through `gfx::spring` — the integrator every owned screen
+            // animates through, and the only one `ui::idle` can see. It reports no `Motion` to the
+            // container's gate on purpose: `screens::library` does not either, which is why
+            // `idle::page_moving` is the only witness that a page under a panel is moving.
+            ScreenEvent::Tick(t) if self.arg == FixtureArg::Page(ANIMATED_PAGE) => {
+                self.spring.step(1.0, 300.0, t.dt());
+                Handled::Yes
+            }
             ScreenEvent::Enter(super::screen::Enter::Fresh { .. }) if self.arg == FixtureArg::Page(2) => {
                 // a structural op emitted from a FRESH Enter: parked for the NEXT frame's commit
                 // (§3.3); a Restored Enter (a pop back onto this page) pushes nothing, or a BACK
@@ -406,6 +432,7 @@ impl Machine<FixtureHost> for FixtureScreen {
 }
 
 impl Screen<FixtureHost> for FixtureScreen {
+    fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
     fn covered_surfaces_ready(&self) -> bool {
         // Page 901 models a remounted owner awaiting an identity-matched store notice.
         self.arg != FixtureArg::Page(901) || self.state.items_seen > 0
@@ -415,6 +442,7 @@ impl Screen<FixtureHost> for FixtureScreen {
             FixtureArg::Home | FixtureArg::Legacy | FixtureArg::Snapped => "home",
             FixtureArg::Page(_) => "detail",
             FixtureArg::Modal => "settings",
+            FixtureArg::VideoPlane => "player",
         }
     }
     fn strip_reachable(&self) -> bool {
@@ -444,6 +472,7 @@ impl Screen<FixtureHost> for FixtureScreen {
         composed_prepare(self, b, cx);
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
+        self.draw_at = draw_order();
         composed_draw(self, f);
     }
     fn render(&self) -> RenderStrategy {
@@ -467,8 +496,35 @@ pub struct FixtureModal {
     entry: super::machine::EntryId,
     /// A foreground spring of the surface's own (the appear pop), reported as motion on Tick.
     pub pop: f32,
+    /// The same pop through `gfx::spring`, so `ui::idle` hears the surface's own motion the way it
+    /// hears a page's — the two halves of the §4.4 attribution have to be gradeable against each
+    /// other, and `ui::motion`'s integrator (the appear spring's) never reaches `ui::idle` at all.
+    /// Held to the `pop` window so a settled surface still makes quiet frames.
+    spring: crate::ui::Spring,
     pub last_draw_alpha: f32,
     pub last_navigation: super::screen::NavPresentation,
+    /// The peak alpha this surface asks its host page to dim to (`Screen::scrim`). 0 = none.
+    pub scrim_alpha: f32,
+    /// The [`draw_order`] tick at which the container ASKED for that dim, and the one at which
+    /// this surface's own `draw` ran. The two together are how a host test observes that the
+    /// scrim landed inside the PAGE PASS rather than with the panel — see
+    /// `a_cached_hosts_snapshot_carries_the_surfaces_scrim`. A `Cell` because `Screen::scrim`
+    /// takes `&self`, exactly as every other query on that trait does.
+    pub scrim_at: std::cell::Cell<usize>,
+    pub draw_at: usize,
+    /// What this surface claims to hold of the frame's render residency (`Screen::render_report`).
+    /// [`RenderReport::NONE`] like every product surface today — a test SETS it, because a rule
+    /// nothing can breach is a rule nothing tests (`the_render_set_is_checked_over_the_whole_frame`).
+    pub render: RenderReport,
+}
+
+/// A monotonic tick the fixture screens stamp their draw-order observations with.
+///
+/// Process-wide and never reset: a test compares two stamps it took itself, so only their ORDER
+/// is meaningful and a previous test's stamps cannot be mistaken for this one's.
+pub fn draw_order() -> usize {
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl FixtureModal {
@@ -481,8 +537,13 @@ impl FixtureModal {
             state: FixtureState::default(),
             entry,
             pop: 0.0,
+            spring: crate::ui::Spring::at(0.0),
             last_draw_alpha: 0.0,
             last_navigation: Default::default(),
+            scrim_alpha: 0.0,
+            scrim_at: std::cell::Cell::new(0),
+            draw_at: 0,
+            render: RenderReport::NONE,
         }
     }
 
@@ -498,6 +559,7 @@ impl FixtureModal {
                             screen: Box::new(FixtureScreen {
                                 arg: e.arg.clone(),
                                 state: FixtureState::default(),
+                                spring: crate::ui::Spring::at(0.0),
                                 row: FixtureRow {
                                     len: 1,
                                     group: GroupId(7),
@@ -506,6 +568,7 @@ impl FixtureModal {
                                     drawn: 0,
                                     kind: ElemKind::Card,
                                 },
+                                draw_at: 0,
                             }),
                             inflight: Vec::new(),
                         });
@@ -619,10 +682,11 @@ impl Machine<FixtureHost> for FixtureModal {
                     Handled::No // depth 0 of its own stack: the container dismisses it
                 }
             }
-            ScreenEvent::Tick(_) => {
+            ScreenEvent::Tick(t) => {
                 // the surface's own foreground spring: reports motion while it settles
                 if self.pop < 1.0 {
                     self.pop = (self.pop + 0.25).min(1.0);
+                    self.spring.step(1.0, 300.0, t.dt());
                     fx.note(super::present::PresentEvent::Motion);
                 }
                 Handled::Yes
@@ -634,6 +698,7 @@ impl Machine<FixtureHost> for FixtureModal {
 
 impl Screen<FixtureHost> for FixtureModal {
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { Some(self) }
     fn name(&self) -> &'static str {
         "settings"
     }
@@ -644,7 +709,12 @@ impl Screen<FixtureHost> for FixtureModal {
         Some(Cow::Borrowed("Settings"))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
+    fn scrim(&self) -> super::screen::Scrim {
+        self.scrim_at.set(draw_order());
+        super::screen::Scrim::dim(self.scrim_alpha)
+    }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
+        self.draw_at = draw_order();
         self.last_draw_alpha = f.page_alpha;
         self.last_navigation = super::screen::NavPresentation {
             page_alpha: f.page_alpha, chrome_alpha: f.chrome_alpha,
@@ -666,6 +736,9 @@ impl Screen<FixtureHost> for FixtureModal {
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
+    }
+    fn render_report(&self) -> RenderReport {
+        self.render
     }
 }
 
@@ -725,6 +798,9 @@ impl Mounter<FixtureHost> for FixtureMounter {
         if *arg == FixtureArg::Modal {
             return Box::new(FixtureModal::new(entry));
         }
+        if *arg == FixtureArg::VideoPlane {
+            return Box::new(VideoPlaneScreen { entry, state: FixtureState::default(), drawn: 0 });
+        }
         let kind = match arg {
             FixtureArg::Page(n) if (500..600).contains(n) => ElemKind::Bare,
             FixtureArg::Page(n) if (600..700).contains(n) => ElemKind::Control,
@@ -733,6 +809,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
         Box::new(FixtureScreen {
             arg: arg.clone(),
             state: FixtureState::default(),
+            spring: crate::ui::Spring::at(0.0),
             row: FixtureRow {
                 len: cx.views.store.items.len().max(3),
                 group: GroupId(1),
@@ -741,7 +818,70 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 drawn: 0,
                 kind,
             },
+            draw_at: 0,
         })
+    }
+}
+
+/// **A page whose picture is the hardware VIDEO PLANE** (§9) — the player's shape, in the harness.
+///
+/// It draws nothing and registers no stop: what the viewer sees is a plane the television
+/// composites UNDER a hole punched in our surface, and the page's whole job is to leave the hole
+/// alone. `drawn` is what a test reads to see whether the page pass reached it.
+pub struct VideoPlaneScreen {
+    pub entry: super::machine::EntryId,
+    pub state: FixtureState,
+    pub drawn: u32,
+}
+
+impl Focusable<FixtureHost> for VideoPlaneScreen {
+    fn groups(&self, _cx: &Cx<'_, FixtureHost>, _out: &mut Vec<GroupSpec>) {}
+    fn group_of(&self, _key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<GroupId> {
+        None
+    }
+    fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, FixtureHost>) -> Step<u32> {
+        Step::Edge
+    }
+    fn place(&self, _key: &u32, _cx: &Cx<'_, FixtureHost>, _at: At) -> Option<Placed> {
+        None
+    }
+    fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+        want
+    }
+    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+        FocusKey { entry: self.entry, elem: 0 }
+    }
+}
+
+impl Machine<FixtureHost> for VideoPlaneScreen {
+    type Ev = ScreenEvent<FixtureHost>;
+    fn step(
+        &mut self,
+        ev: &Self::Ev,
+        _cx: &Cx<'_, FixtureHost>,
+        _fx: &mut Effects<'_, FixtureHost>,
+    ) -> Handled {
+        self.state.events.push(ev.name());
+        Handled::No
+    }
+}
+
+impl Screen<FixtureHost> for VideoPlaneScreen {
+    fn name(&self) -> &'static str {
+        "player"
+    }
+    fn state(&self) -> &dyn LogicalState {
+        &self.state
+    }
+    fn crumb(&self, _cx: &Cx<'_, FixtureHost>) -> Option<Cow<'_, str>> {
+        None
+    }
+    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
+    fn draw(&mut self, _f: &mut DrawFrame<'_, '_, FixtureHost>) {
+        self.drawn += 1;
+    }
+    fn render(&self) -> RenderStrategy {
+        RenderStrategy::VideoPlane
     }
 }
 
@@ -1420,36 +1560,320 @@ fn the_adapter_drain_order_is_the_documented_one() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// §15.1 — the tests written first, present as names; each phase removes its `#[ignore]`
+// §15.1 — the tests written first, present as names. Stores-as-machines (phase 4) and the
+// texture-cache prepare/draw split (phase 3a) have both been on `main` for weeks now, so the
+// three orphaned placeholders below (D6) were re-examined against what actually exists today,
+// each on its own merits — not carried forward as a block.
 // ---------------------------------------------------------------------------------------------
 
-macro_rules! pending {
-    ($phase:literal: $($name:ident),+ $(,)?) => {
-        $(
-            #[test]
-            #[ignore = concat!("spec §15.1: lands in phase ", $phase)]
-            fn $name() {
-                unreachable!("an ignored placeholder; phase {} makes it real", $phase);
-            }
-        )+
-    };
+// `dev_flags_reach_machines_only_as_recorded_sys_results` (was phase 2) — DELETED, not
+// implemented. It named a mechanism that was never built the way its own name describes: a
+// "Sys" adapter/result kind that would let a store or screen learn about an armed `/tmp/plxnative-*`
+// trigger only as a REPLAYED, recorded async result (the same shape an HTTP or store landing takes
+// through the dispatcher's adapter drain), so a recording could pin which flags were live the way
+// it already pins HTTP and store traffic. No such kind exists: `AppFx` (`screens/registry.rs`) has
+// no `Sys` variant, `ui::dispatch::ADAPTER_RANKS` names exactly the eleven data-fetch adapters
+// (`auth, pms, browse, search, metadata/season, person, play, metadata/detail, viewstate,
+// alt_sources, poster`) and no twelfth for triggers, and `dev.rs` — the one door onto `/tmp/plxnative-*`
+// — is read directly at the point a boot or a screen needs a flag (`dev::flag`/`dev::read`), gated
+// on the `devtriggers` feature, never through a store or the adapter machinery (see `AGENTS.md`'s
+// "Dev trigger files" section). The design went a different, simpler way: trigger reads are not
+// modelled as async results at all, so there is nothing for a store's `apply`/`run` to receive and
+// nothing for the recorder to distinguish from a real network landing. What the comment on this
+// placeholder actually wanted — a recording that will not silently replay against a DIFFERENT
+// trigger set than the one it was captured with — is real and tested: `app::recorder::triggers_differ`
+// (`rust-modules/src/app/recorder.rs:631`, exercised at :1028 and :1033) compares the recorded
+// trigger NAMES against the replay's own and refuses the mismatch. There is no second mechanism
+// left to build.
+//
+// `the_source_pass_registers_no_stops_and_mutates_no_render_cache` (was phase 3a) — DELETED, not
+// implemented. Its subject is `ui::tex::Source` (`app::adapters::poster::PosterSource` is the only
+// implementor): the per-draw lookup a poster tile makes to ask "is this key's texture ready, and if
+// not, start fetching it" (`probe`/`warm`), as distinct from the drain/prepare pair the test below
+// pins. Two things rule out a real test of it here. First, there is no SECOND implementor and no
+// fixture stand-in — `ui/fixture.rs` mounts no screen that draws through `tex::Source` at all (its
+// `FixtureRig` owns a bare `TexCache`, never a `Source`), so there is nothing to probe/warm that
+// is not the real poster store. Second, the real one cannot run here: `poster.rs`'s own test module
+// says so in so many words above `only_a_key_that_survives_a_slot_is_fetchable` — "`lookup` itself
+// cannot be called from a host test binary (it reaches `gfx::delete_tex`, and nothing here links
+// GL)" — because an eviction (a full store's LRU victim) frees a live GPU texture. A test that
+// stayed inside a fresh, never-evicting store could dodge that one call, but it would then be
+// proving a fact `PosterSource::probe`/`warm`'s own SIGNATURE already proves at compile time: neither
+// takes a `DrawFrame`, so neither can call `DrawFrame::stop` — there is no runtime path to it, and
+// asserting a type-level impossibility at runtime is not evidence of anything the compiler was not
+// already enforcing. What genuinely IS a render-cache fact about the source pass — that `probe`/
+// `warm` never insert into `TexCache` themselves, only `drain_decoded` + `prepare` do — is exactly
+// what the test below pins, from the other side: `rig.cache.resolve(key)` is `None` right after
+// `accept` and only becomes `Some` once `prepare` has run.
+
+/// **Spec §15.1, phase 3a's other half: the two-phase contract for one poster arrival.**
+///
+/// A decoded poster reaching the app is a plain VALUE (`PosterReady`) accepted into the cache at
+/// whatever point in the frame the adapter drain runs — no GL, no upload, nothing on screen moves
+/// yet. The upload — the only GL call in this whole path — happens later, in PREPARE, and only if
+/// PREPARE actually runs this frame. Collapsing the two (uploading straight out of the drain) would
+/// put a GL call on whichever thread the adapter runs the drain on, which is not guaranteed to be
+/// the render thread by construction; keeping them apart is what lets `poster.rs`'s own `drain_decoded`
+/// stay GL-free (see the doc above it) and pushes every upload through one path this fixture can
+/// pin without linking GL itself (`TexCache`/`StubUploader` here are pure Rust).
+#[test]
+fn a_poster_result_is_accepted_in_the_drain_and_uploaded_in_prepare() {
+    let _g = crate::testlock::serial();
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
+    let mut rig = FixtureRig::new();
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    let r1 = d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+    assert!(r1.presented, "boot always presents the first frame");
+
+    // The drain: an app effect delivers a decoded poster — the rig's `FixtureFx::Poster` arm is
+    // the adapter's own acceptance path (`app_fx` → `Adapters::execute`), so going through
+    // `rig.cache.accept` directly exercises exactly what that arm does, without a second copy of
+    // the plumbing. Accepting must not itself reach the cache's resolved/uploaded state.
+    rig.cache.accept(PosterReady {
+        key: PosterKey(11),
+        result: Ok(Decoded { w: 4, h: 4, rgba: vec![0; 64].into_boxed_slice() }),
+    });
+    assert!(rig.cache.resolve(PosterKey(11)).is_none(), "accepted, not yet uploaded — prepare has not run");
+
+    // Prepare only runs work it is told is queued (`Budget::note_queued`, spec §3.3 step 4); a
+    // real adapter set raises this from the same acceptance, so mirror that here rather than
+    // asserting past the contract the dispatcher itself enforces.
+    d.budget.note_queued(rig.cache.has_pending());
+    let r2 = d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    assert!(r2.presented, "queued prepare work forces a present even with nothing else to draw");
+    assert!(rig.cache.resolve(PosterKey(11)).is_some(), "uploaded in prepare");
+    assert!(!rig.cache.has_pending(), "prepare drained its own queue");
+    d.budget.note_queued(false);
 }
 
-mod phase_2 {
-    // `a_worker_wakes_the_present_gate_through_the_one_door` is real in `ui/present.rs`;
-    // `a_rebaseline_without_a_divergence_record_is_refused` is real in `tests/test_harness.py`
-    // (the rebaseline is `tools/plxnative-rec`'s, so its test is the tool's). The one left is
-    // the half that needs stores as machines: dev flags as recorded `Sys` results (phase 4's
-    // adapter path); phase 2 records the armed trigger NAMES and refuses a replay whose set
-    // differs (`app::recorder::triggers_differ`).
-    pending!("2":
-        dev_flags_reach_machines_only_as_recorded_sys_results,
+/// How many frames the level BELOW the top page has drawn.
+fn below_drawn(d: &Dispatcher<FixtureHost>) -> u32 {
+    d.nav
+        .tabs
+        .stack
+        .entries
+        .iter()
+        .rev()
+        .nth(1)
+        .and_then(|e| e.inst.as_ref())
+        .and_then(|i| i.screen.as_any())
+        .and_then(|a| a.downcast_ref::<FixtureScreen>())
+        .map(|p| p.row.drawn)
+        .expect("Home is still on the stack under the player")
+}
+
+/// **Spec §15.1, phase 9 — a page whose picture is the hardware VIDEO PLANE replaces everything
+/// below it, and nothing in that frame takes a snapshot.**
+///
+/// Two halves, and they fail differently on a television.
+///
+/// *Replaces its host.* A push or pop transition draws the level BENEATH the top page so the two
+/// can cross-fade. Under a bound plane there is nothing to cross-fade with: the surface has a hole
+/// punched in it and the television composites the film through it, so a page drawn "underneath"
+/// is drawn OVER the film. `(Frozen, Replaced)` in §6.2's vocabulary — and Frozen matters as much
+/// as Replaced, since a page stepped behind the picture runs its springs out and lands settled,
+/// so the fade back out of the player would begin already over.
+///
+/// *Takes no snapshot.* Four doors read framebuffer 0 back — the frozen-host snapshot
+/// (`popover::host::begin_frame`), Glass, `RouteGround`'s ambient sample and `FrameCache::capture`
+/// — and on this frame framebuffer 0 IS the hole. What each of them would cache is a photograph of
+/// transparent black, served back over the film for as long as the cache lives. Before phase 9 the
+/// only statement of that rule was prose ("never call it on the player route") plus the loop
+/// happening not to call `begin_frame` on one branch; `gfx::video_plane_refuses` is the same rule
+/// where it can be BROKEN, and a shipping debug build panics on it.
+///
+/// Observed RED (simulated — the fix adds the terms the old code had no notion of): deleting the
+/// `&& !video_plane` from `draw_with`'s `draws_below` fails the first half at "the level below a
+/// bound video plane must not draw", and deleting the `video_plane_refuses` call from
+/// `FrameCache::capture` fails the second at "must refuse".
+#[test]
+fn a_video_plane_screen_replaces_its_host_and_takes_no_snapshot() {
+    let _g = crate::testlock::serial();
+    // A transition that DRAWS BELOW while it is in flight (`RoutePush`, the Settings family's).
+    // The default `Immediate` never draws the level under the top one, so on it this test's first
+    // half would be vacuous — it would pass whether or not the rule exists.
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(
+        crate::ui::containers::transition::RoutePush::new(),
+    ));
+    let mut rig = FixtureRig::new();
+
+    // Home, then the player pushed over it — the push transition is what makes the level below
+    // draw at all, so it is the only shape in which "replaces its host" can be observed.
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::VideoPlane));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    assert!(
+        d.nav.tabs.stack.transition.draws_below(),
+        "the fixture: the push is in flight, so an ordinary frame WOULD draw the level below",
     );
+    assert_eq!(
+        d.top_screen().map(|s| s.render()),
+        Some(crate::ui::screen::RenderStrategy::VideoPlane),
+        "the fixture: the player-shaped page is on top",
+    );
+
+    // ---- the plane is NOT bound yet: an ordinary page, an ordinary frame ----
+    assert!(!d.video_plane_frame(), "declaring VideoPlane is not the same as being bound");
+    assert_eq!(
+        *rig.opaque_route_calls.last().unwrap(),
+        false,
+        "…and the compositor is told exactly that, every frame",
+    );
+
+    // ---- the plane binds: the ONE input, from the machine's edge ----
+    d.present.note(crate::ui::present::PresentEvent::VideoPlane(true));
+    assert!(d.video_plane_frame(), "declared AND bound");
+
+    let drew_before_the_plane = below_drawn(&d);
+    let before = rig.opaque_route_calls.len();
+    let r = d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    assert!(r.presented, "a bound plane presents every frame, unconditionally");
+    assert_eq!(
+        &rig.opaque_route_calls[before..],
+        &[true],
+        "step 9 hands the rig the plane's bit, every frame, presented or not",
+    );
+
+    // …the top page drew, and the level below it did NOT.
+    let below_drew = below_drawn(&d);
+    assert_eq!(
+        below_drew, drew_before_the_plane,
+        "the level below a bound video plane must not draw: it would be a page composited OVER \
+         the film, the plane being under a hole in this surface rather than in it",
+    );
+    assert!(
+        !r.ticked.contains(
+            &d.nav
+                .tabs
+                .stack
+                .entries
+                .iter()
+                .rev()
+                .nth(1)
+                .and_then(|e| e.inst.as_ref())
+                .map(|i| i.id)
+                .unwrap()
+        ),
+        "…and it must not be stepped either: a page ticked behind the picture lands settled",
+    );
+
+    // ---- and nothing in such a frame may sample the framebuffer ----
+    //
+    // The draw arms the flag for its own length and restores it, so by here it is down again.
+    assert!(
+        !crate::gfx::video_plane_frame(),
+        "the flag is armed for the LENGTH OF THE DRAW and restored, like the page freeze",
+    );
+    let was = crate::gfx::set_video_plane_frame(true);
+    assert!(
+        crate::gfx::video_plane_refuses("Glass::backdrop"),
+        "the one door must refuse while a video-plane frame is being drawn",
+    );
+    crate::gfx::set_video_plane_frame(was);
+    assert!(
+        !crate::gfx::video_plane_refuses("FrameCache::capture"),
+        "and off such a frame it must be open again, or every other route loses its snapshots",
+    );
+
+    // Each of the FOUR doors the spec names has to go through it. Pinned from source, because a
+    // host test cannot drive them for real - `FrameCache::capture` refuses on a 0x0 viewport,
+    // Glass needs a GL context and `popover::host` needs both, so an assertion on their return
+    // values would pass with the guard deleted. This cannot.
+    for (file, door) in [
+        ("src/gfx.rs", "video_plane_refuses(\"FrameCache::capture\")"),
+        ("src/gfx.rs", "video_plane_refuses(\"Glass::backdrop\")"),
+        ("src/ui/popover.rs", "video_plane_refuses(\"popover::host::begin_frame\")"),
+        ("src/ui/route_screen.rs", "video_plane_refuses(\"RouteGround::draw_host\")"),
+    ] {
+        let src =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))
+                .unwrap_or_else(|e| panic!("read {file}: {e}"));
+        assert!(
+            src.contains(door),
+            "{file} must take the video-plane refusal at {door} - a door that samples \
+             framebuffer 0 without it caches a photograph of the punch-through hole",
+        );
+    }
 }
 
-mod phase_3a {
-    pending!("3a":
-        a_poster_result_is_accepted_in_the_drain_and_uploaded_in_prepare,
-        the_source_pass_registers_no_stops_and_mutates_no_render_cache,
+/// **Spec §12.1 — an app switch PARKS the tree, and the loop is what says so.**
+///
+/// webOS sends `0x103`/`0x104` when it takes the screen and `0x105`/`0x106` when it gives it back.
+/// The container library has had the whole mechanism since it landed — `Navigation::suspend`
+/// delivers `ScreenEvent::Suspend` to every mounted body and sets `Navigation.suspended`,
+/// `Dispatcher::suspend` parks it for the next NAV COMMIT — and until phase 9 **nothing called
+/// either**. Two owned screens answer the event: Settings forwards it down its own stack, and
+/// Search drops the television's keyboard, which the compositor tears down without telling the app
+/// (a field left `editing` comes back drawing a caret over a keyboard that is gone). Both were
+/// answering an event that could not arrive.
+///
+/// Two claims, and the second is the one a library test alone cannot make.
+///
+/// Observed RED (simulated — the loop's arms did not exist to compile against): deleting
+/// `self.parked_life.extend(life)` from `Dispatcher::suspend` fails the first at "every mounted
+/// body must hear it"; deleting `app.pages.suspend();` from `app/run.rs`'s background arm fails the
+/// second.
+#[test]
+fn an_app_switch_suspends_every_body_and_the_loop_is_what_delivers_it() {
+    let _g = crate::testlock::serial();
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
+    let mut rig = FixtureRig::new();
+
+    // Home, with a modal surface over it: a page AND a surface, so "every body" means something.
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    assert!(!d.nav.suspended, "the fixture starts awake");
+
+    // ---- 0x103/0x104 ----
+    d.suspend();
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    assert!(d.nav.suspended, "the tree must record that it is parked");
+    let heard = |d: &Dispatcher<FixtureHost>, what: &str| -> usize {
+        d.nav
+            .tabs
+            .stack
+            .entries
+            .iter()
+            .filter_map(|e| e.inst.as_ref())
+            .filter_map(|i| i.screen.as_any())
+            .filter_map(|a| a.downcast_ref::<FixtureScreen>())
+            .filter(|p| p.state.events.iter().any(|e| *e == what))
+            .count()
+    };
+    assert_eq!(
+        heard(&d, "suspend"),
+        1,
+        "every mounted body must hear `Suspend` — the page did not",
+    );
+
+    // ---- 0x105/0x106 ----
+    d.resume();
+    d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+    assert!(!d.nav.suspended, "…and the foreground edge un-parks it");
+    assert_eq!(heard(&d, "resume"), 1, "every mounted body must hear `Resume`");
+
+    // The second claim: the LOOP calls them. No host test can drive `app::run` — it needs a live
+    // SDL window — so this is pinned from its source, in the two arms that own the question.
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+    )
+    .expect("read run.rs");
+    let bg = src
+        .find("et == 0x103 || et == 0x104")
+        .expect("the background arm");
+    let fg = src
+        .find("et == 0x105 || et == 0x106")
+        .expect("the foreground arm");
+    assert!(
+        src[bg..fg].contains("bridge::background(&mut app.pages);"),
+        "the BACKGROUND arm must park the container tree, or Settings and Search answer an event \
+         that never arrives",
+    );
+    assert!(
+        src[fg..].contains("bridge::foreground(&mut app.pages);"),
+        "…and the FOREGROUND arm must un-park it, or the tree stays parked for the rest of the run",
     );
 }

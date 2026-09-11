@@ -5,7 +5,7 @@
 //! the app "had no idea such a thing existed" — the reviewer derived the cause from the server's
 //! own transcoder logs. The Plex Pass audit (`docs/plex-pass-audit.md`) names the bug class this
 //! kills: a claim true on the development environment (a Pass'd server) asserted as universal.
-//! This module is the app finally *knowing*, so `ui::stats` can print it and
+//! This module is the app finally *knowing*, so `app::diagnostics` can print it and
 //! `player::error_shape` can name the cause in words.
 //!
 //! **Visibility only, never behavior.** Nothing here may feed a routing or profile decision —
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn one_servers_plex_pass_is_never_read_as_the_others() {
         use super::super::servers;
-        struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+        struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
         impl Drop for Fresh {
             fn drop(&mut self) {
                 servers::reset_for_test();

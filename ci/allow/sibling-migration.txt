@@ -1,0 +1,35 @@
+# count: 0
+# The `sibling` gate's MIGRATION list (spec §2.1, §0 criterion 2): one entry per FILE that still
+# names a sibling under `crate::screens::`, matched by path alone, shrinking with each phase and
+# EMPTY when the criterion is met. `crate::screens::registry` is the shared vocabulary and is
+# allowed by the gate itself, so it never appears here.
+#
+# Phase 12 (P4-STAT) closed the four `screens::family` entries this list used to carry
+# (consent.rs, detail/geometry_tests.rs, detail/identity_tests.rs, settings.rs): each now reaches
+# `family`/`legal` via `super::`/`super::super::`, which the gate's absolute-path regex does not
+# match, so all four have zero non-exempt hits. `family` itself is still shared vocabulary (the
+# Settings family's `SettingsPage`, `NoInit`, the ground palette) rather than a screen.
+#
+# Phase 12 (wave-0 integration) closed the last two:
+# - `screens/onboard.rs` named `crate::screens::profiles::TITLE` for its own breadcrumb constant.
+#   Fixed the same way `CRUMB_SETTINGS` already sat right beside it (and the way `legal.rs`/
+#   `consent.rs` spell their own `CRUMB_SETTINGS`): the label is duplicated locally rather than
+#   read off the sibling, because a breadcrumb string is vocabulary a screen owns for itself, not
+#   a naming of the sibling that happens to share the words.
+# - `screens/detail/tests.rs` carried two tests (`ok_on_another_copy_asks_for_that_servers_page_
+#   and_leaves_this_one_alone`, `ok_on_the_copy_you_are_on_dismisses_and_navigates_nowhere`) plus
+#   three exclusive helper fns (`alt_panel`/`key_down`/`drive`) driving
+#   `crate::screens::alt_sources::AltSourcesScreen::step` with raw `SDLK_DOWN`/`SDLK_RETURN` key
+#   events. That mechanism was retired by P2's Engine conversion (`AltSourcesScreen` now answers
+#   `FocusSource::Engine`/`HitSource::Engine`; `step`'s `ScreenEvent::Input` arm only reads
+#   `Key::Back` any more, so both tests failed for real once the merged tree could link far enough
+#   to run them — `Handled::No` on the raw Down/Ok presses, no `commit`, and the asserted
+#   `Fx::Nav(NavOp::Dismiss(..))` effect never appears). This was a STALE TEST, not a product
+#   defect: `screens/alt_sources_tests.rs`'s own `focus_and_hit` module already carries the
+#   replacement coverage for the identical observable (which row a commit opens, that dismiss
+#   always fires), driven the current way through `Activate`/`FocusMoved`, in
+#   `activating_another_row_reports_that_copy_and_dismisses` and
+#   `activating_the_current_row_only_dismisses` — see that module's own header comment, which
+#   already documented this exact pair as superseded and was simply never followed up by deleting
+#   them. Deleted rather than relocated: relocating a test that asserts a retired mechanism would
+#   only move the failure, not fix it.

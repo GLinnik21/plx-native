@@ -189,7 +189,7 @@ pub mod size {
     /// Dense engineering read-outs whose primary job is comparing many bounded numeric fields in
     /// one photograph.  This is deliberately below [`MICRO`]: diagnostics are opened on purpose
     /// and read as an instrument, not as ordinary couch copy.  It must never migrate into product
-    /// chrome or prose; `ui::stats` is its sole owner.
+    /// chrome or prose; `app::diagnostics` is its sole owner.
     pub const DIAGNOSTIC: c_int = 20;
 }
 
@@ -1147,7 +1147,8 @@ pub const CARD_RING_RAD: f32 = 14.0;
 
 /// **The ALERT PANEL corner** — the full-frame glass sheet a block opens with OK
 /// (`Alert Views.dc.html`), as opposed to the anchored menus a chip or a button drops. Those keep
-/// their own smaller corner (`item_menu` 20, `alt_sources` 20, `account_menu` 24, `glassload` 28):
+/// their own smaller corner (`screens::item_menu` 20, `screens::alt_sources` 20,
+/// `screens::account_menu` 24, `glassload` 28):
 /// a menu hangs off a control and reads as part of it, while an alert owns the middle of the frame
 /// and is its own object.
 ///

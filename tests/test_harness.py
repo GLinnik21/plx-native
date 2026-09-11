@@ -111,12 +111,15 @@ class ContentFocusFlows(unittest.TestCase):
         self.assertIn("never opened", focusfp_check.check(8, log))
 
     def test_the_menu_must_open_over_detail_and_return_to_the_same_card(self):
+        # The menu line is the HOST's since UI-restructure phase 10 — `route=detail` with the
+        # surface's own `imenu=`/`isel=`/`imsid=` fields on it — because a ModalStack surface is
+        # presented over the top page and never replaces it.
         log = ["focus route=detail sec=3 col=2 card=1 sid=0 rk=1001",
-               "focus route=itemmenu over=detail",
+               "focus route=detail sec=3 col=2 card=1 sid=0 rk=1001 imenu=1 isel=0 imsid=0",
                "focus route=detail sec=3 col=2 card=1 sid=0 rk=1001"]
         self.assertIsNone(focusfp_check.check(8, log))
         self.assertIsNotNone(focusfp_check.check(8, log[:-1]))
-        self.assertIsNotNone(focusfp_check.check(8, [log[0], log[1].replace("detail", "home"), log[2]]))
+        self.assertIsNotNone(focusfp_check.check(8, [log[0], log[1].replace("route=detail", "route=home"), log[2]]))
         self.assertIsNotNone(focusfp_check.check(8, [*log[:-1], log[-1].replace("col=2", "col=0")]))
 
     def test_detail_back_restores_the_home_card_identity_and_position(self):
@@ -284,6 +287,37 @@ class ReplayFixtures(unittest.TestCase):
                                         "%s/%s: a %d-char string outside the alphabet" % (name, fn, len(v)))
         self.assertGreaterEqual(checked, 0)
 
+    def test_every_committed_fixture_carries_the_trees_recording_schema(self):
+        """`ui/rec.rs`'s SCHEMA moved 1 -> 2 in restructure phase 11 and this suite did not
+        notice: a stale fixture's manifest only refuses to LOAD at replay time
+        (`Recording::parse`), which is too late to catch here on `make check`. Read SCHEMA out of
+        the tree the way `ci/flavor.py` reads other Rust constants agreed with a second language —
+        a plain regex over the source, no cargo invocation — and check every committed fixture's
+        manifest agrees with it, so a fixture left behind by a schema bump fails loudly beside the
+        alphabet check above instead of only at `tests/focusfp.sh --replay` time."""
+        rec_rs_path = os.path.join(REPO_ROOT, "rust-modules", "src", "ui", "rec.rs")
+        with open(rec_rs_path, encoding="utf-8") as f:
+            rec_rs = f.read()
+        m = re.search(r"(?m)^pub const SCHEMA: u32 = (\d+);", rec_rs)
+        self.assertIsNotNone(m, "ui/rec.rs SCHEMA constant found")
+        schema = int(m.group(1))
+        checked = 0
+        for name in sorted(os.listdir(self.FIXTURES)):
+            d = os.path.join(self.FIXTURES, name)
+            if not os.path.isdir(d):
+                continue
+            manifest_path = os.path.join(d, "manifest.json")
+            if not os.path.isfile(manifest_path):
+                continue
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest = json.load(f)
+            checked += 1
+            self.assertEqual(manifest.get("schema"), schema,
+                              "%s/manifest.json: schema %r does not match ui/rec.rs SCHEMA=%d "
+                              "(tools/plxnative-rec rerecord it)"
+                              % (name, manifest.get("schema"), schema))
+        self.assertGreater(checked, 0)
+
     def _tool(self, *args):
         tool = os.path.join(os.path.dirname(self.FIXTURES), "..", "..", "tools", "plxnative-rec")
         return subprocess.run([sys.executable, os.path.abspath(tool), *args],
@@ -300,7 +334,7 @@ class ReplayFixtures(unittest.TestCase):
                     f.write(json.dumps({"f": 1, "t": kind, "payload": "not-for-info-output"}) + "\n")
             result = self._tool("info", recording)
             self.assertEqual(result.returncode, 0)
-            self.assertIn("effects=2 results=1 lifecycle=1", result.stdout)
+            self.assertIn("effects=2 results=1 landings=0 lifecycle=1", result.stdout)
             self.assertNotIn("not-for-info-output", result.stdout)
 
     def _synthetic_recording(self, root, st=0x1234, anchor=False):
@@ -395,7 +429,7 @@ class ReplayFixtures(unittest.TestCase):
 
     def test_the_alphabet_refuses_a_title_shaped_string(self):
         lits, pats = self._alphabet()
-        for v in ("Film Club Night", "The Godfather", "192.0.2.20", "nas-home"):
+        for v in ("Film Club Night", "The Godfather", "10.203.0.10", "nas-home"):
             self.assertFalse(v in lits or any(p.match(v) for p in pats), v)
         for v in ("s0a1b2c3d", "tick", "inst:3", "0.7.0-dev", "Landing(Instance(4))", "plxnative-rec"):
             self.assertTrue(v in lits or any(p.match(v) for p in pats), v)
@@ -457,7 +491,10 @@ class ItemResolution(unittest.TestCase):
 class FpsIdentity(unittest.TestCase):
     def test_every_route_except_login_gets_the_temporary_test_identity(self):
         """FPS evidence must not depend on this debug install having been signed in by hand."""
-        for route in ("home", "detail", "itemmenu", "person", "library", "search", "account", "player"):
+        # `itemmenu`/`account` left this list in UI-restructure phase 10: both menus are
+        # ModalStack surfaces now, so a scene naming one keys on `overlay`, and its `route` is the
+        # host page's word — which is already in the list.
+        for route in ("home", "detail", "person", "library", "search", "player"):
             scene = {"route": route, "tier": "player" if route == "player" else "ui"}
             self.assertTrue(run.fps_scene_needs_token(scene), route)
         self.assertFalse(run.fps_scene_needs_token({"route": "login", "tier": "ui"}))
@@ -602,6 +639,98 @@ class FrameCeilings(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(detail, "")
 
+    def test_an_old_log_without_the_frame_plan_fields_still_parses(self):
+        """Phase 11 appended `carried=`/`dropped=`/`budget=`/`evicted_hot=` after `worstprep=`,
+        and `tests/run.py` anchors `fps=` and `worstframe=` with a lazy `.*?` in front of each.
+        A log from BEFORE that must keep parsing (these are logs the maintainer replays), and a
+        log from after must parse identically — the fields ride behind both anchors."""
+        old = "loop=60 route=home overlay=settings fps=12 worstframe=31.5ms worstprep=0.4ms"
+        new = (old + " carried=2 dropped=0 budget=7/1/solo:residency evicted_hot=3 sim_placeholder")
+        for label, ln in (("old", old), ("new", new.replace(" sim_placeholder", ""))):
+            with self.subTest(log=label):
+                self.assertEqual(run.parse_fps([ln], "home", "settings"), [12])
+                self.assertEqual(run.parse_worst([ln], "home", "settings"), [31.5])
+                self.assertEqual(run.parse_loop([ln], "home", "settings"), [60])
+
+    def test_the_frame_drop_line_still_parses_with_the_per_frame_counters(self):
+        """The four counters moved from the loop's `extra()` closure into the instrument, in the
+        same wire position. `FRAMEDROP_RE` reads `total=` and the trailing `route=`, so a line
+        with them still grades — and a `stall_ceiling_ms` gate still sees it."""
+        ln = ("FRAMEDROP total=148.2 ingest=0.0 results=133.0 tick_drain=0.0 navcommit=1.1 "
+              "prepare=0.2 draw=6.6 capture=0.0 swap=7.2 up=1 px=93750 cards=0 off=0 "
+              "route=detail load=-1 snapt=0.00")
+        self.assertEqual(run.parse_framedrop([ln], "detail"), [148.2])
+        self.assertEqual(run.parse_framedrop([ln], "home"), [])
+
+
+class ColdOpenGate(unittest.TestCase):
+    """`coldopen_ceiling_ms` (restructure spec §8.4), graded from the app's unarmed `coldopen`
+    line. Its whole reason for existing is what `stall_ceiling_ms` cannot do, so that is what the
+    first two tests are about."""
+
+    LINE = "coldopen screen={s} ms={ms} prepared={p}"
+
+    def _lines(self, samples, screen="detail"):
+        return [self.LINE.format(s=screen, ms=ms, p="true" if ok else "false")
+                for ms, ok in samples]
+
+    def test_the_slowest_mount_decides_and_a_faster_one_is_still_a_sample(self):
+        scene = {"coldopen_ceiling_ms": 160}
+        ok, detail = run.grade_coldopen(scene, self._lines([(31, True), (140, True)]),
+                                        "detail", None)
+        self.assertTrue(ok, detail)
+        self.assertIn("worst=140ms over 2 mount(s)", detail)
+        ok, _ = run.grade_coldopen(scene, self._lines([(31, True), (161, True)]), "detail", None)
+        self.assertFalse(ok)
+
+    def test_a_run_with_no_coldopen_line_FAILS_where_a_framedrop_gate_would_pass(self):
+        """The censoring `stall_ceiling_ms` fixes: a cold open under the armed threshold leaves no
+        FRAMEDROP line, and no line is a PASS there. An absent `coldopen` line is a failure."""
+        heartbeats = ["loop=60 route=detail fps=60 worstframe=20.0ms worstprep=0.1ms"] * 6
+        ok, _ = run.grade_frame_ceilings({"stall_ceiling_ms": 160}, heartbeats, "detail", None, 0)
+        self.assertTrue(ok, "the FRAMEDROP gate passes a run it has no samples from")
+        ok, detail = run.grade_coldopen({"coldopen_ceiling_ms": 160}, heartbeats, "detail", None)
+        self.assertFalse(ok)
+        self.assertIn("no `coldopen screen=detail` line", detail)
+
+    def test_the_screen_word_is_the_overlay_when_the_scene_pins_one(self):
+        scene = {"coldopen_ceiling_ms": 100}
+        lines = self._lines([(30, True)], screen="settings") + self._lines([(400, True)])
+        ok, detail = run.grade_coldopen(scene, lines, "home", "settings")
+        self.assertTrue(ok, detail)
+        self.assertIn("worst=30ms", detail, "the detail mount is another scene's")
+
+    def test_an_unprepared_mount_is_reported_and_never_asserted(self):
+        scene = {"coldopen_ceiling_ms": 160}
+        ok, detail = run.grade_coldopen(scene, self._lines([(20, False)]), "detail", None)
+        self.assertTrue(ok, "a refused resource is the budget working, not a gate failure")
+        self.assertIn("refused resource", detail)
+
+    def test_a_scene_without_the_gate_is_untouched(self):
+        ok, detail = run.grade_coldopen({"loop_floor": 30}, [], "detail", None)
+        self.assertTrue(ok)
+        self.assertEqual(detail, "")
+
+    def test_the_gate_does_not_arm_the_frame_drop_detector(self):
+        """`coldopen` is unarmed by construction; a scene declaring only this gate must not make
+        the harness arm `plxnative-framedrop`, which would perturb the pacing it did not ask for."""
+        self.assertIsNone(run.frame_ceiling_threshold({"coldopen_ceiling_ms": 160}))
+
+    def test_cold_open_gate_is_measured_not_provisional(self):
+        """TV session 7 leg 6 is the session that RESOLVES the provisional gate this test used to
+        guard (formerly `test_cold_open_carries_the_provisional_gate_and_says_it_is_provisional`):
+        five unarmed runs, panel off, `coldopen_ceiling_ms` set from the samples rather than
+        copied from `stall_ceiling_ms`. The note must now say so, not still claim PROVISIONAL."""
+        scene = {s["name"]: s for s in _manifest()["fps_scenes"]}["cold-open"]
+        self.assertIsNotNone(scene.get("coldopen_ceiling_ms"))
+        note = scene.get("_coldopen_note", "")
+        self.assertIn("MEASURED", note)
+        self.assertNotIn("PROVISIONAL", note, "the gate was resolved, not carried forward")
+        self.assertIn("TV session 7", note, "the note must name the session that sets the value")
+        self.assertIn("leg 6", note, "the note must name the leg the samples came from")
+
+
+class FrameCeilingsManifest(unittest.TestCase):
     def test_the_new_scenes_declare_a_ceiling_and_a_known_route_word(self):
         scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
         for name in ("modal-ramp", "legal-document", "page-panel", "decision-alert", "cold-open"):
@@ -3876,6 +4005,189 @@ class DepGates(unittest.TestCase):
         r = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def _plant(self, name, content):
+        """Write `content` to a temp file under rust-modules/src that no ci/allow/*.txt names,
+        run ci/check-deps.sh against the real tree with it present, and guarantee removal even if
+        the assertion that follows fails. An orphan .rs file with no `mod` statement pointing at
+        it is invisible to cargo (nothing declares it part of the crate) but not to `find … -name
+        '*.rs'`, which is all these gates scan with — so this is the cheapest way to prove a gate
+        catches a shape without touching a real, permanent source file."""
+        target = os.path.join(self.ROOT, "rust-modules", "src", name)
+        self.assertFalse(os.path.exists(target), f"stale self-test artifact at {target} — remove it by hand")
+        try:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(content)
+            return subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")],
+                                   capture_output=True, text=True)
+        finally:
+            if os.path.exists(target):
+                os.remove(target)
+
+    def _mutate(self, relpath, needle, replacement):
+        """Temporarily replace ONE occurrence of `needle` with `replacement` in a REAL tracked
+        file, run ci/check-deps.sh, then unconditionally restore the original bytes — even if the
+        assertion that follows fails. Unlike `_plant`'s orphan-file trick, `mutators-visibility`
+        greps a DECLARATION LINE inside one of the seven specific legacy-store files by path, not
+        a `find … -name '*.rs'` sweep, so an orphan file elsewhere in the tree is invisible to it
+        by design; a scratch mutation of the real file's own content is what "plants a
+        pub(crate) fn set_cur in a temp copy" (the D3 brief's own words) has to mean here."""
+        target = os.path.join(self.ROOT, "rust-modules", "src", relpath)
+        with open(target, encoding="utf-8") as f:
+            original = f.read()
+        self.assertEqual(original.count(needle), 1, f"{needle!r} not found exactly once in {relpath}")
+        try:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(original.replace(needle, replacement, 1))
+            return subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")],
+                                   capture_output=True, text=True)
+        finally:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(original)
+
+    def test_mutators_visibility_gate_catches_a_republished_mutator(self):
+        """D3: `browse::set_cur` was narrowed to private so `stores::browse::apply` is the only
+        door — but a call-site gate alone can only ever prove nobody currently calls a mutator
+        directly, never that nobody CAN (the D3 census's own finding: zero call-site violations
+        coexisted with every mutator across six stores sitting `pub(crate)` for years). RED:
+        temporarily re-publishing `set_cur` as `pub(crate)` — with no call site touched at all —
+        must fail `mutators-visibility` on the DECLARATION alone."""
+        r = self._mutate(
+            os.path.join("browse", "mod.rs"),
+            "fn set_cur(i: usize) {",
+            "pub(crate) fn set_cur(i: usize) {",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("mutators-visibility:", out)
+        self.assertIn("browse/mod.rs: fn set_cur", out)
+
+    def test_mutators_visibility_gate_ignores_pub_super_in_section_hubs(self):
+        """`browse::section_hubs`'s five mutators are `pub(super)`, genuinely tighter than
+        private-to-crate-root since section_hubs's parent is `browse`, a real module — the gate's
+        own regex matches a bare `pub`/`pub(crate)` only. GREEN: confirm the real declaration is
+        `pub(super)` today (so this test cannot pass by coincidence) and that the gate is
+        satisfied by it, unmutated."""
+        target = os.path.join(self.ROOT, "rust-modules", "src", "browse", "section_hubs.rs")
+        with open(target, encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("pub(super) fn kick(sec: usize) {", content)
+        r = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok — mutators-visibility", r.stdout)
+
+    def test_threads_gate_catches_a_bare_thread_spawn_after_use_std_thread(self):
+        """The gate used to match only the fully-qualified `std::thread::spawn(` spelling, so a
+        file that does `use std::thread;` and then calls the bare `thread::spawn(` — exactly the
+        shape the phase-12 gates package's own brief named as invisible — passed silently. RED:
+        planting that shape in a file ci/allow/threads.txt does not name must fail `threads`."""
+        r = self._plant(
+            "_check_deps_selftest_threads.rs",
+            "use std::thread;\n\npub fn spawn_worker() {\n    thread::spawn(|| {});\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("threads:", out)
+        self.assertIn("_check_deps_selftest_threads.rs", out)
+
+    def test_tmppath_gate_catches_a_path_built_on_one_line_and_opened_on_the_next(self):
+        """The gate used to require the literal and a filesystem-open verb on the SAME line, so a
+        value built on one line and opened on the next passed silently. RED: planting that split
+        in a file dev.rs does not own must fail `tmppath`."""
+        r = self._plant(
+            "_check_deps_selftest_tmppath_open.rs",
+            'pub fn open_it() {\n    let p = "/tmp/plxnative-selftest";\n'
+            "    let _ = std::fs::File::open(p);\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("tmppath:", out)
+        self.assertIn("_check_deps_selftest_tmppath_open.rs", out)
+
+    def test_tmppath_gate_exempts_a_log_message_mention(self):
+        """D4's own exemption: a `/tmp/plxnative-` literal that is only message text passed to
+        `log`/`crate::log`/`log!` must not fail the gate. GREEN: planting one, including a nested
+        `format!` the way most real call sites spell it, must leave `tmppath` (and the whole
+        script) green."""
+        r = self._plant(
+            "_check_deps_selftest_tmppath_log.rs",
+            'pub fn mention_it(n: u32) {\n    crate::log(&format!(\n'
+            '        "selftest: see /tmp/plxnative-selftest ({n})"\n    ));\n}\n',
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — tmppath", out)
+
+    def test_textmeasure_gate_catches_a_bare_call_outside_the_seam(self):
+        """Phase 12, D4: `textmeasure` went from an allowlist to zero-tolerance. RED: a raw
+        `crate::text::text_width(` call in a file that is neither one of the three seam files
+        (`text.rs`, `ui/text_view.rs`, `ui/text_buffer.rs`) nor inside an `impl … Measure for …`
+        block must fail — a screen reaching for the raw function instead of threading a `Measure`
+        capability down is exactly the shape D1 spent this phase eliminating."""
+        r = self._plant(
+            "_check_deps_selftest_textmeasure_bare.rs",
+            'pub fn label_width(s: &std::ffi::CStr) -> f32 {\n'
+            "    crate::text::text_width(s.as_ptr(), 24, 0)\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("textmeasure:", out)
+        self.assertIn("_check_deps_selftest_textmeasure_bare.rs", out)
+
+    def test_textmeasure_gate_exempts_the_body_of_a_measure_impl(self):
+        """The exemption is STRUCTURAL, not a path allowlist: any `impl … Measure for …` block,
+        anywhere in the tree, may call the raw functions it wraps — `widgets.rs`'s `LegacyMeasure`
+        and `login.rs`'s `RawTextMeasure` are today's two, but a third added later must not need
+        its file added to a list. GREEN: the identical call from the RED case above, moved inside
+        such a block in a brand-new file, must leave `textmeasure` green."""
+        r = self._plant(
+            "_check_deps_selftest_textmeasure_impl.rs",
+            "struct SelftestMeasure;\n\n"
+            "impl crate::ui::machine::Measure for SelftestMeasure {\n"
+            "    fn width(&self, s: &std::ffi::CStr, sz: i32, bold: bool) -> f32 {\n"
+            "        crate::text::text_width(s.as_ptr(), sz, bold as i32)\n"
+            "    }\n"
+            "}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — textmeasure", out)
+
+    def test_dt_gate_catches_a_raw_accumulator(self):
+        """Phase 12, D4: `dt` went from a 12-file allowlist to zero-tolerance everywhere but
+        `ui/motion.rs`. RED: a `self.t += dt;`-shaped accumulator in a new file must fail — this
+        is the exact pattern (a clock-driven animator summing a raw per-frame delta instead of
+        reading `Tick.ms` through `motion::Ramp`/`motion::Phase`) the frozen-animator regression
+        class comes from."""
+        r = self._plant(
+            "_check_deps_selftest_dt_accum.rs",
+            "pub struct Ramp { t: f32 }\n\nimpl Ramp {\n"
+            "    pub fn tick(&mut self, dt: f32) {\n        self.t += dt;\n    }\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("dt:", out)
+        self.assertIn("_check_deps_selftest_dt_accum.rs", out)
+
+    def test_dt_gate_catches_idle_dt_by_name(self):
+        """`idle::dt()` is deleted from `ui/idle.rs` — the accessor callers used to sum themselves.
+        RED: a call spelled `idle::dt()` anywhere must fail even with no `+=`/`-=` beside it, since
+        the function no longer exists to call."""
+        r = self._plant(
+            "_check_deps_selftest_dt_fn.rs",
+            "pub fn read_it() -> f32 {\n    crate::ui::idle::dt()\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("dt:", out)
+        self.assertIn("_check_deps_selftest_dt_fn.rs", out)
+
+    def test_check_statics_is_green(self):
+        """Spec §0 done-criterion 1: `ci/check-statics.sh` — every `static mut` under ui/ and screens/
+        is a named render cache (ci/allow/statics.txt) or sits in a legacy module still awaiting its
+        phase (ci/allow/statics-migration.txt), and no allowlist entry is stale."""
+        r = subprocess.run([os.path.join(self.ROOT, "ci", "check-statics.sh")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_every_allowlist_declares_its_own_count(self):
         allow = os.path.join(self.ROOT, "ci", "allow")
         seen = 0
@@ -3889,6 +4201,65 @@ class DepGates(unittest.TestCase):
                 self.assertTrue(os.path.exists(os.path.join(self.ROOT, e.split("\t")[0])), e)
             seen += 1
         self.assertGreaterEqual(seen, 3)
+
+    # Phase 12 (P8-H): a per-file PIN, on top of the self-consistency check above. That check
+    # only proves a file's own `# count: N` line matches its own entry count — it cannot see an
+    # allowlist and its count grow TOGETHER, correctly, in the same edit, past the number this
+    # phase actually measured. This table is that second line of defence: growing any file below
+    # means also raising its number HERE, in the same diff, so a reviewer sees the move rather
+    # than an allowlist quietly absorbing a new violation. Shrinking is always allowed (update
+    # the number down). The weave that merged P8-H also retired `ci/allow/statics-migration.txt`
+    # to 0 — its one entry (ui/widgets.rs) was the 11 top-bar/glass-band statics named individually
+    # in `ci/allow/statics.txt` instead, which is why that file's own pin moved 6 -> 17 in the same
+    # diff. `ci/allow/sibling-migration.txt` moved to its phase target of 0 in the wave-0
+    # integration pass: `screens/onboard.rs`'s breadcrumb constant was duplicated locally instead
+    # of reading `screens::profiles::TITLE` (the `CRUMB_SETTINGS` pattern already beside it), and
+    # `screens/detail/tests.rs`'s two raw-key-driven `alt_sources` tests were deleted as stale —
+    # the Engine conversion (P2) retired the mechanism they drove, and
+    # `screens/alt_sources_tests.rs`'s own `focus_and_hit` module already carries the replacement
+    # coverage for the same observable through `Activate`/`FocusMoved`.
+    #
+    # `ci/allow/textmeasure.txt` and `ci/allow/dt.txt` are GONE, not zeroed (phase 12, D4): every
+    # `crate::text::(text_width|elide|cap_h)` call site now either threads a real `Measure`
+    # capability down from its caller or sits inside the BODY of an `impl … Measure for …` block
+    # (`check-deps.sh`'s `textmeasure` gate detects that structurally, not by allowlisted path),
+    # and `idle::dt()` is deleted from `ui/idle.rs` outright — every clock-driven animator that
+    # used to accumulate a raw per-frame `dt` now advances through `motion::Ramp`/`motion::Phase`
+    # off a real `Tick`, or (`ui/xfade.rs`, `ui/containers/transition.rs`, whose ramps are HASHED
+    # replay state and already reported motion correctly through another mechanism) is spelled to
+    # avoid the gate's literal `(+=|-=) dt` pattern with no change to the arithmetic at all. Both
+    # rules are absent from the table below on purpose, the same way a deleted allowlist's own
+    # entry disappears rather than pinning at 0.
+    PINNED_ALLOWLIST_COUNTS = {
+        "libm.txt": 5,
+        "mutators.txt": 0,
+        "nav.txt": 0,
+        "sibling-migration.txt": 0,
+        "statics-migration.txt": 0,
+        "statics.txt": 17,
+        "store-seams.txt": 0,
+        "threads.txt": 0,
+        "ticks.txt": 2,
+        "wall.txt": 2,
+    }
+
+    def test_allowlist_counts_match_the_pinned_table(self):
+        allow = os.path.join(self.ROOT, "ci", "allow")
+        on_disk = sorted(os.listdir(allow))
+        self.assertEqual(
+            set(on_disk), set(self.PINNED_ALLOWLIST_COUNTS),
+            "a new ci/allow/*.txt file (or a deleted one) must add (or remove) its own line in "
+            "PINNED_ALLOWLIST_COUNTS deliberately, not appear here as a surprise",
+        )
+        for fn, pinned in self.PINNED_ALLOWLIST_COUNTS.items():
+            with open(os.path.join(allow, fn), encoding="utf-8") as f:
+                declared = int(f.readline().split(":")[1])
+            self.assertLessEqual(
+                declared, pinned,
+                f"{fn} grew from the pinned {pinned} to {declared} — if this growth is "
+                "deliberate (a real, reasoned new entry, not a workaround), raise the number in "
+                "PINNED_ALLOWLIST_COUNTS in the same change so a reviewer sees it move",
+            )
 
 
 if __name__ == "__main__":

@@ -97,9 +97,9 @@ use crate::ui::geom;
 use crate::ui::icons;
 use crate::ui::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key,
-    LogicalState, Machine, Measure,
+    LogicalState, Machine, Measure, Tick,
 };
-use crate::ui::present::{PresentEvent, Provenance};
+use crate::ui::present::Provenance;
 use crate::ui::route_screen::RouteGround;
 use crate::ui::screen::{
     At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, FocusTarget, Focusable,
@@ -515,16 +515,21 @@ pub(crate) struct ProfilesScreen {
     /// `FOOTER_POP` was, just owned rather than a second `static mut`.
     footer_pop: CtlPop<1>,
     /// Free-running rotation clock for the spinner (empty roster, PIN verification, a profile
-    /// switch in flight). Render-only, never hashed.
+    /// switch in flight), in ms — cached each tick from [`spin_phase`](Self::spin_phase)'s
+    /// `advance`. Render-only, never hashed.
     spin_ms: f32,
+    /// The underlying clock for [`spin_ms`](Self::spin_ms) (`motion::Phase`, phase 12 D4): reports
+    /// `Motion` from inside its own `advance` rather than the raw `+= dt` this used to be, with
+    /// `fx.note(Motion)` a separate, easy-to-forget line below it.
+    spin_phase: crate::ui::motion::Phase,
     ground: RouteGround,
     pad: Pad,
     state: ProfilesState,
 }
 
 impl ProfilesScreen {
-    /// A fresh picker. **This constructor IS `ui/profiles.rs`'s old `enter()`**: the route mounts
-    /// a brand new instance every time it arrives at `Route::Profiles` (`app/bridge.rs`'s
+    /// A fresh picker. **This constructor IS `ui/profiles.rs`'s old `enter()`**: the container
+    /// mounts a brand new instance every time it roots at `AppArg::Profiles` (`app/bridge.rs`'s
     /// `AppMounter::mount`, `app::input::enter_profiles_from_onboard`'s doc has the general
     /// argument for why that replaces a reset call), so there is no stale pad, no stale roster
     /// cursor and no leftover footer focus to clear by hand — only the one piece of state that
@@ -540,6 +545,7 @@ impl ProfilesScreen {
             row_sty: card_row::RowStyle::PROFILES,
             footer_pop: CtlPop::new(),
             spin_ms: 0.0,
+            spin_phase: crate::ui::motion::Phase::default(),
             ground: RouteGround::new(),
             pad: Pad::new(),
             state: ProfilesState {
@@ -620,8 +626,8 @@ impl ProfilesScreen {
         }
     }
 
-    fn tick<H: AppLike>(&mut self, dt: f32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
-        self.spin_ms += dt * 1000.0;
+    fn tick<H: AppLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let dt = t.dt();
         self.refresh_row_sty();
 
         let cur = cx.focus.current.map(|k| k.elem);
@@ -660,7 +666,7 @@ impl ProfilesScreen {
         self.row.update(n, roster_focus, &self.row_sty, dt);
 
         if self.has_spinner(n) {
-            fx.note(PresentEvent::Motion);
+            self.spin_ms = self.spin_phase.advance(t, &mut fx.present());
         }
 
         self.state = self.snapshot_state(n);
@@ -767,14 +773,13 @@ impl ProfilesScreen {
         fx.invalidate(Provenance::Input);
     }
 
-    fn draw_name(p: Painter, u: &auth::UserTile, cx: f32, focused: bool) {
+    fn draw_name(p: Painter, u: &auth::UserTile, cx: f32, focused: bool, measure: &dyn crate::ui::machine::Measure) {
         let col = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-        let name = crate::text::elide(
+        let name = crate::text::elide_by(
             &u.title,
             card_row::RowStyle::PROFILES.w + card_row::RowStyle::PROFILES.gap - 12.0,
-            theme::size::LABEL,
-            if focused { 1 } else { 0 },
             false,
+            |t| measure.width_str(t, theme::size::LABEL, focused),
         );
         if let Ok(nc) = CString::new(name) {
             p.text(
@@ -979,7 +984,7 @@ impl<H: AppLike> Machine<H> for ProfilesScreen {
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             ScreenEvent::Tick(t) => {
-                self.tick(t.dt(), cx, fx);
+                self.tick(*t, cx, fx);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { .. } => {
@@ -1134,7 +1139,7 @@ impl<H: AppLike> Screen<H> for ProfilesScreen {
                 &self.row_sty,
                 None,
             );
-            Self::draw_name(p, u, cx_, false);
+            Self::draw_name(p, u, cx_, false, f.measure);
             f.stop(
                 p,
                 Stop {
@@ -1153,7 +1158,7 @@ impl<H: AppLike> Screen<H> for ProfilesScreen {
             let base = Rect::new(cx_ - self.row_sty.w * 0.5, ROW_Y, self.row_sty.w, self.row_sty.h);
             // fold the ui::press click dip into the focused avatar's pop (1.0 when idle)
             let sc = self.row.scale(i) * crate::ui::press::scale();
-            Self::draw_name(p, u, cx_, true);
+            Self::draw_name(p, u, cx_, true, f.measure);
             card_row::draw_focused(
                 p,
                 Art::Thumb { sid: crate::plex::current_server(), key: &u.thumb, res: (300, 300) },
@@ -1162,6 +1167,7 @@ impl<H: AppLike> Screen<H> for ProfilesScreen {
                 &self.row_sty,
                 None,
                 &card_row::TileLabel::default(),
+                f.measure,
             );
             f.stop(
                 p,
@@ -1288,6 +1294,7 @@ mod tests {
             row_sty: card_row::RowStyle::PROFILES,
             footer_pop: CtlPop::new(),
             spin_ms: 0.0,
+            spin_phase: crate::ui::motion::Phase::default(),
             ground: RouteGround::new(),
             pad,
             state: ProfilesState {
@@ -1298,6 +1305,35 @@ mod tests {
                 pad_submitting: false,
                 pad_flashing: false,
             },
+        }
+    }
+
+    /// **The frozen-animator regression class, closed for the roster spinner (phase 12 D4).**
+    /// `spin_ms` used to be a raw `+= dt` accumulator with a separate, easy-to-forget
+    /// `fx.note(Motion)` a few lines below it. Now it is `motion::Phase`, which reports from
+    /// inside its own `advance`. A submitting PIN pad forces `has_spinner` true regardless of the
+    /// process-global roster (`n` does not enter that branch of the `||`), so this drives it
+    /// through the real `Machine::step` path without the shared-auth-state hazard `bare`'s own doc
+    /// names.
+    #[test]
+    fn the_roster_spinner_phase_reports_motion_on_every_tick_while_submitting() {
+        let mut s = bare(Pad {
+            open: true,
+            submitting: true,
+            ..Pad::new()
+        });
+        let c = cx(None);
+        let mut present = Present::new();
+        let _ = present.take(0);
+        let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
+        for ms in [16, 32, 48] {
+            let mut fx = Effects::new(&mut buf, MachineId::Instance(InstanceId(0)), &mut present);
+            let ev = ScreenEvent::Tick(Tick { ms, dt_us: 16_667 });
+            Machine::<InnerHost>::step(&mut s, &ev, &c, &mut fx);
+            assert!(
+                present.take(ms),
+                "a submitting PIN pad's spinner must present every frame (ms={ms})"
+            );
         }
     }
 
@@ -1888,5 +1924,172 @@ mod tests {
         assert_eq!(commit_action(true, Some(FOOTER), N), Commit::Nothing);
         assert_eq!(commit_action(true, Some(1), N), Commit::Nothing);
         assert_eq!(commit_action(true, None, N), Commit::Nothing);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Reconciled from `main`'s own draft of this screen (commit 6745ca98), which staged an
+    // EARLIER `screens::profiles` as a test-only module and carried six tests this branch's
+    // newer file never had. The branch's file won the merge, so they are restored here rather
+    // than lost to it — adapted to this file's API (the pad's focused cell is the ENGINE's
+    // `cx.focus.current` now, not a `Pad::fr`/`fc` render mirror; the pad's horizontal walk is
+    // inlined in `pad_neighbour` rather than living in a free `pad_step_col`/`is_hole` pair), but
+    // with every assertion's intent and strength kept. Where a sibling test above already pins a
+    // SUPERSET of one of them, that is said in the ported test's own doc rather than used as a
+    // reason to drop it: a test only one deleted file ever carried is exactly what this
+    // repository's rules forbid losing to a refactor.
+    // ---------------------------------------------------------------------------------------
+
+    /// `PAD_HOLES` and `KEYS` are two independent declarations of the same fact — one drives the
+    /// engine's `GroupKind::Grid`, the other drives `draw_pad` and `pad_place` — so they are
+    /// pinned against each other CELL BY CELL, in both directions. The sibling
+    /// `declared_pad_holes_match_the_keys_and_edges` derives the hole list from `KEYS` and compares
+    /// the whole slice, which catches the same disagreement; this states it per cell, so a failure
+    /// names the offending `(r, c)` outright.
+    #[test]
+    fn pad_holes_matches_the_keys_table() {
+        for r in 0..PAD_ROWS {
+            for c in 0..PAD_COLS {
+                assert_eq!(
+                    KEYS[r][c].is_none(),
+                    PAD_HOLES.contains(&(r, c)),
+                    "KEYS[{r}][{c}] and PAD_HOLES disagree about whether this cell is the hole"
+                );
+            }
+        }
+    }
+
+    /// The keypad's bottom row has a blank where a phone dial pad has nothing: ◀ from `0` has no
+    /// key to its left, and ▼ off `7` lands on `0` rather than on the gap directly under it — the
+    /// legacy behaviour the module doc argues the generic grid-with-holes algorithm would get
+    /// wrong.
+    ///
+    /// `main`'s draft asked its horizontal half of two free functions (`is_hole`, `pad_step_col`)
+    /// this file does not have: the hole test is `KEYS[r][c].is_none()` here and the column walk is
+    /// inlined in [`pad_neighbour`]'s `Left`/`Right` arm, so each of those assertions is made at
+    /// `pad_neighbour` instead. Same behaviour, one entry point lower — no production function was
+    /// added to satisfy a test.
+    #[test]
+    fn the_keypad_walks_around_its_empty_cell() {
+        let e = EntryId(9);
+        assert!(KEYS[3][0].is_none(), "the cell both walkers below have to step around");
+
+        // ◀ from '0' finds nothing to its left and holds; ▶ from '0' reaches delete.
+        assert!(matches!(pad_neighbour(e, pad_elem(3, 1), Dir::Left), Step::Edge));
+        assert!(matches!(
+            pad_neighbour(e, pad_elem(3, 1), Dir::Right),
+            Step::Move(k) if k.elem == pad_elem(3, 2)
+        ));
+        // a row edge holds, on either side
+        assert!(matches!(pad_neighbour(e, pad_elem(0, 0), Dir::Left), Step::Edge));
+        assert!(matches!(pad_neighbour(e, pad_elem(0, 2), Dir::Right), Step::Edge));
+
+        assert_eq!(pad_nearest_col(3, 0), 1, "▼ off '7' lands on '0'");
+        assert_eq!(pad_nearest_col(3, 2), 2, "▼ off '9' lands on delete, directly under it");
+        assert_eq!(pad_nearest_col(1, 1), 1, "an occupied column is kept as it is");
+
+        match pad_neighbour(e, pad_elem(2, 0), Dir::Down) {
+            Step::Move(k) => assert_eq!(k.elem, pad_elem(3, 1), "DOWN off '7' reaches '0', not the hole"),
+            Step::Edge => panic!("DOWN off '7' is a move"),
+        }
+        match pad_neighbour(e, pad_elem(0, 1), Dir::Up) {
+            Step::Edge => {}
+            Step::Move(_) => panic!("UP off the top row holds"),
+        }
+        match pad_neighbour(e, pad_elem(3, 1), Dir::Right) {
+            Step::Move(k) => assert_eq!(k.elem, pad_elem(3, 2)),
+            Step::Edge => panic!("RIGHT from '0' reaches delete"),
+        }
+    }
+
+    /// The flash OPENS LIT and ENDS DARK, with several distinct pulses in between. The sibling
+    /// `the_wrong_pin_flash_blinks_at_least_four_times` walks the same window frame by frame; this
+    /// one adds the endpoint check `main`'s draft made explicit — the loop's own guard samples only
+    /// positive times, so the terminal `None` is asked for separately rather than assumed.
+    #[test]
+    fn pin_flash_opens_lit_and_blinks_out() {
+        assert_eq!(pin_flash(0.0), None, "no flash running");
+        assert_eq!(pin_flash(PIN_ERR_S), Some(true), "a rejected PIN opens red, not dim");
+        let mut phases = Vec::new();
+        let mut t = PIN_ERR_S;
+        let dt = 1.0 / 60.0;
+        while t > 0.0 {
+            let now = pin_flash(t);
+            if phases.last() != Some(&now) {
+                phases.push(now);
+            }
+            t = (t - dt).max(0.0);
+        }
+        // The loop's guard samples only positive times; record the exact endpoint explicitly so
+        // the assertion covers the production function's terminal `None` state as well.
+        let end = pin_flash(0.0);
+        if phases.last() != Some(&end) {
+            phases.push(end);
+        }
+        assert_eq!(phases.last(), Some(&None), "the flash ends dark, not stuck lit");
+        let lit = phases.iter().filter(|p| **p == Some(true)).count();
+        assert!(lit >= 4, "a 1.4s window must read as several distinct pulses, got {phases:?}");
+    }
+
+    /// **Focus is exclusive**: while the pad is open, `groups()` reports the grid ALONE — the
+    /// roster and the footer are not reachable by any direction, which is what "the pad traps
+    /// focus" means mechanically.
+    ///
+    /// Driven through [`ProfilesView`] with a NON-EMPTY roster (`n: 3`), which is what this adds
+    /// over the sibling `the_pad_is_the_only_group_while_it_is_open`: that one queries the screen
+    /// itself, whose `focus_view` reads the process-global `auth::users()` — permanently empty on
+    /// this host — so it can only ever prove the roster group is absent when there was no roster to
+    /// suppress. Here there are three tiles and the pad still answers alone.
+    #[test]
+    fn only_the_grid_group_is_reachable_while_the_pad_is_open() {
+        let s = bare(Pad::opened(0));
+        let view = ProfilesView { screen: &s, n: 3 };
+        let c = cx(None);
+        let mut groups = Vec::new();
+        Focusable::<InnerHost>::groups(&view, &c, &mut groups);
+        assert_eq!(groups.len(), 1, "no roster group and no footer group while the pad is up");
+        assert_eq!(groups[0].id, PAD_GROUP);
+        assert_eq!(groups[0].len, PAD_ROWS * PAD_COLS);
+    }
+
+    /// A digit typed anywhere on the pad reaches [`ProfilesScreen::press`] through the SAME real
+    /// `step()` the dispatcher calls, whichever cell happens to hold focus — typing does not depend
+    /// on navigating to the key first.
+    ///
+    /// `main`'s draft expressed "which cell holds focus" by seeding a `Pad::fr`/`fc` render mirror;
+    /// this file has no such mirror (the engine owns the focused cell), so the same condition is
+    /// stated where it now lives — `cx.focus.current`, parked on the pad's bottom-right cell.
+    #[test]
+    fn a_typed_digit_reaches_the_pad_regardless_of_which_cell_holds_focus() {
+        let mut s = bare(Pad::opened(0));
+        let parked = Some(FocusKey { entry: s.entry, elem: pad_elem(2, 2) });
+        let (handled, _) = step_ev(&mut s, &key_down(Key::Other, b'5' as u32, 0), parked);
+        assert_eq!(handled, Handled::Yes);
+        assert_eq!(s.pad.entry, "5", "the digit typed regardless of the focused cell (2,2)");
+    }
+
+    /// Every door out of the pad clears the PIN verdict — BACK, from `main`'s draft of
+    /// `every_door_out_of_the_keypad_goes_through_one_close`'s first door. Kept alongside the
+    /// sibling `back_closes_the_pad_and_clears_the_verdict`, which pins the strictly stronger
+    /// `target: 2` case: this one is the `target: 0` statement as `main` wrote it, and the two
+    /// together say that closing re-seats on the pad's OWN avatar whether or not that avatar
+    /// happens to be the roster's default seat.
+    #[test]
+    fn back_closes_the_pad_and_clears_the_pin_verdict() {
+        let _s = crate::testlock::serial();
+        auth::set_pin_denied_for_test(true);
+        let mut s = bare(Pad { open: true, target: 0, error_s: PIN_ERR_S, ..Pad::new() });
+        let (handled, effs) = step_ev(&mut s, &key_down(Key::Back, 0, 0), None);
+        assert_eq!(handled, Handled::Yes);
+        assert!(!s.pad.open, "BACK takes the pad down");
+        assert!(!auth::pin_denied(), "…and the verdict, which is what would leak onto the roster behind it");
+        assert!(
+            effs.iter().any(|st| matches!(
+                &st.fx,
+                Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(k) })))
+                    if k.elem == 0
+            )),
+            "closing re-seats the engine on the avatar whose pad this was, not on the group's default corner"
+        );
+        auth::set_pin_denied_for_test(false);
     }
 }

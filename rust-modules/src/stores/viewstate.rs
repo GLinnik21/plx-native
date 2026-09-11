@@ -28,21 +28,17 @@ pub(crate) fn apply(cmd: ViewStateCmd) -> bool {
     super::apply(super::StoreCmd::ViewState(cmd))
 }
 
-/// The store's own step, reached only through [`super::apply`].
+/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
+/// `viewstate::run` — its arms called `pub(crate)` mutators (`request`, `reset`) across this
+/// module boundary; those two are private to `viewstate.rs` now and this is their only door.
 pub(super) fn run(cmd: ViewStateCmd) -> bool {
-    let answer = match cmd {
-        ViewStateCmd::Request {
-            sid,
-            rk,
-            write,
-            detail,
-            guid,
-        } => crate::viewstate::request(sid, &rk, write, detail, &guid),
-        ViewStateCmd::Reset => {
-            crate::viewstate::reset();
-            true
-        }
-    };
+    // `crate::viewstate`'s statics are a crate global reached from both `apply` above and
+    // `crate::stores::apply(StoreCmd::ViewState(..))` directly (some fixtures deliver a
+    // `StoreCmd` without going through this module's `apply`) — guard the one point both funnel
+    // through. See `lib.rs::testlock` and D5.
+    #[cfg(test)]
+    crate::testlock::assert_held("the viewstate store (apply)");
+    let answer = crate::viewstate::run(cmd);
     super::bump(StoreId::ViewState);
     answer
 }
@@ -54,6 +50,16 @@ pub(crate) fn pump() {
     // a landing is what turns "busy" off; the refresh it owes is raised through the stores it
     // touches (hubs, the detail re-read), so the notice here is the queue's own state
     super::note(StoreId::ViewState, busy != crate::viewstate::is_busy());
+}
+
+/// `crate::viewstate::take_detail_refresh`'s door (D3): the frame loop used to call that
+/// `pub(crate)` fn directly, naming `crate::viewstate::` rather than going through this store —
+/// the one confirmed production bypass the D3 census found. The drain itself stays in
+/// `viewstate.rs` (it only reads state [`pump`] above already owns, on the main thread, once a
+/// frame — a landing-adjacent door, not a screen-facing mutator); this is just the sanctioned
+/// path to it.
+pub(crate) fn take_detail_refresh() -> Option<String> {
+    crate::viewstate::take_detail_refresh()
 }
 
 impl<H: Host> Machine<H> for ViewStateStore {

@@ -97,7 +97,7 @@ use host_test_sdl::{
 ///
 /// `cargo test --lib` links a Mach-O binary against no SDL at all, and unlike every other SDL user
 /// in this crate these calls are reachable from ordinary `pub(crate)` functions that a test can
-/// touch — `available()` and `start()` are one `ui::search` call away. An unguarded reference is
+/// touch — `available()` and `start()` are one `screens::search::SearchScreen` call away. An unguarded reference is
 /// therefore an undefined symbol at LINK time, which does not fail one test: it stops the whole
 /// suite building, exactly as `ff.rs`'s `#[link]` directives used to before that module moved to
 /// `dlopen`. SDL is a real link on the device, so the seam here is a `cfg` rather than a `dlopen`.
@@ -254,8 +254,8 @@ pub(crate) fn start() {
 /// Dismiss it. Also idempotent.
 pub(crate) fn stop() {
     unsafe {
-        // Guarded, and not only for symmetry: `ui::search` calls this on every BACK and every
-        // leave, including ones where the field was never edited. Unguarded, that would call
+        // Guarded, and not only for symmetry: `screens::search::SearchScreen` requests this on
+        // every BACK and every leave, including ones where the field was never edited. Unguarded, that would call
         // `SDL_StopTextInput` on a simulator where text events had been on since `SDL_VideoInit`
         // and turn them off for the rest of the process — the decode path below would then be
         // dead, on the one platform where it can be exercised by typing.
@@ -298,14 +298,14 @@ pub(crate) fn stop() {
 /// that clears the editing state from this signal drops the user's typing, which is a total failure
 /// of the feature to avoid a cosmetic one.
 ///
-/// What replaced it is in `ui::search::pump_text`: **an arriving `SDL_TEXTINPUT` is proof the panel
+/// What replaced it is in `screens::search::SearchScreen`: **an arriving `SDL_TEXTINPUT` is proof the panel
 /// is up**, so a commit that lands while the screen thinks it is not editing ADOPTS the panel
 /// instead of being dropped. That signal cannot lie, it needs no polling, and it self-heals every
 /// route into the mismatch rather than the one this was aimed at.
 const _: () = ();
 
 /// Re-take ownership of a panel that is demonstrably already up — see the note above and
-/// `ui::search::pump_text`. Deliberately does NOT call `SDL_StartTextInput` (the panel is up; asking
+/// `screens::search::SearchScreen`. Deliberately does NOT call `SDL_StartTextInput` (the panel is up; asking
 /// for it again re-issues a wayland IME activation for nothing) and deliberately does NOT clear
 /// [`PENDING`], because the whole reason this is being called is that a commit is waiting in it.
 pub(crate) fn adopt() {

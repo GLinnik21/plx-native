@@ -215,7 +215,7 @@ where
 
 /// The shared top strip's pills as DRAWN (their recorded rects): a `Row` group the container
 /// contributes above the page's (spec §6.2). Until the pills come from `Cx`, the rects are read
-/// off the last draw (`widgets::tab_pill_rects`).
+/// off the last draw (`StripRender::pill_rects`, owned by `app::bridge::Bridge`).
 pub struct TabRow<'a> {
     pub rects: &'a [Rect],
     pub group: GroupId,

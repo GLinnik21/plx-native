@@ -38,6 +38,120 @@ fn open_modal(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, style: Styl
     d.nav.modals.top().expect("presented").entry.id
 }
 
+/// **A surface's modal dim is drawn INSIDE THE PAGE PASS, so the host snapshot carries it**
+/// (spec §6.2, §8.3, and `ModalStack::draw_scrims`'s own doc).
+///
+/// The snapshot a Cached host is served from is taken at the end of the page pass, and it is what
+/// the surface's own glass looks through. A dim drawn WITH the panel reaches the visible frame and
+/// never that texture, so the frosted ground comes out at full page brightness inside a dimmed
+/// screen — `account_menu`'s reported bug, answered until now by two hand-placed `draw_scrim()`
+/// calls in the loop's page closure, a list no third panel could join.
+///
+/// What a host test can see of that is the ORDER, which is the property itself: the container asks
+/// the surface for its `Scrim` after the host page has drawn and before the surface's own `draw`.
+/// The capture itself is `popover::host::PagePass`'s drop and needs a GL context, so it is not
+/// what this grades; the loop opens that guard around the whole closure, so "between the page and
+/// the panel" IS "inside the snapshot".
+///
+/// Observed RED before `draw_scrims` was wired into `Dispatcher::draw_with`: with `Screen::scrim`
+/// on the trait but nobody asking, `scrim_at` stayed 0 and the first assertion failed.
+#[test]
+fn a_cached_hosts_snapshot_carries_the_surfaces_scrim() {
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    assert_eq!(d.host_policy().1, HostRender::Cached, "a Sheet caches its host");
+    // The fixture's dim stays 0 for the DRAW: a host test has no GL context, so `draw_scrims`'
+    // paint is unreachable here and the alpha ladder is graded separately, on the pure
+    // `ModalStack::scrims` (`the_scrim_ladder_scales_by_appear_and_the_route_dip` below). Every
+    // eligible surface is ASKED whatever its answer, which is what makes the order observable.
+    d.draw(&mut rig, true);
+
+    let page_at = d.nav.entry(home).unwrap().inst.as_ref().unwrap().screen.as_any().unwrap()
+        .downcast_ref::<crate::ui::fixture::FixtureScreen>().unwrap().draw_at;
+    let modal = modal_of(&d, id);
+    let (scrim_at, panel_at) = (modal.scrim_at.get(), modal.draw_at);
+    assert!(scrim_at > 0, "the container never asked the surface for its scrim");
+    assert!(
+        page_at < scrim_at,
+        "the dim went down before the host page: page={page_at} scrim={scrim_at}"
+    );
+    assert!(
+        scrim_at < panel_at,
+        "the dim went down with the panel rather than in the page pass: \
+         scrim={scrim_at} panel={panel_at}"
+    );
+}
+
+/// The other half of the rule the container owns: the SURFACES pass never asks for a scrim, so a
+/// dim cannot be drawn twice, and a page is never asked at all.
+#[test]
+fn the_page_pass_is_the_only_place_a_scrim_is_asked_for() {
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    d.draw(&mut rig, true);
+    let once = modal_of(&d, id).scrim_at.get();
+    assert!(once > 0, "the page pass asked");
+    // `pages: false` is the loop's SECOND call, over the surfaces alone (`bridge::page_plan`'s
+    // `LegacyThenSurfaces`/`SurfacesOnly`): the page pass did not run, so no dim is owed.
+    d.draw(&mut rig, false);
+    assert_eq!(modal_of(&d, id).scrim_at.get(), once, "a surfaces-only pass draws no dim");
+}
+
+/// An `Opaque` surface is the mechanism's one documented boundary: it REPLACES its host once the
+/// ground is drawn, so there is no page pass to draw into and no snapshot for a dim to belong to
+/// — its dim is composed with its own ground, in its own `draw`.
+#[test]
+fn an_opaque_surface_is_never_asked_for_a_page_scrim() {
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Opaque { snapshot: true }, 16);
+    modal_mut(&mut d, id).scrim_alpha = 0.5;
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    d.draw(&mut rig, true);
+    assert_eq!(
+        modal_of(&d, id).scrim_at.get(),
+        0,
+        "an opaque surface's dim is its own ground's, not the page pass's"
+    );
+    assert!(d.nav.modals.scrims(1.0).is_empty(), "…so it owes the page nothing");
+}
+
+/// The alpha the container computes, without the paint: the surface's declared peak times its own
+/// appear spring times the route transition's dip. A panel left at full strength over a page
+/// fading to the app ground is the one thing on screen saying the transition is not happening
+/// (`Popover::painter`'s rule, carried over), and a surface that declares no dim owes none.
+#[test]
+fn the_scrim_ladder_scales_by_appear_and_the_route_dip() {
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    assert!(d.nav.modals.scrims(1.0).is_empty(), "a surface with no dim declared owes none");
+    modal_mut(&mut d, id).scrim_alpha = 0.5;
+    // mid-ramp: the dim rides the appear spring rather than snapping on with the panel
+    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(0.4);
+    let ramping = d.nav.modals.scrims(1.0);
+    assert_eq!(ramping.len(), 1);
+    assert_eq!(ramping[0].0, id);
+    assert!((ramping[0].1 - 0.2).abs() < 1e-6, "0.5 x 0.4 appear, got {}", ramping[0].1);
+    // …and a route change dips it with the page underneath
+    let dipped = d.nav.modals.scrims(0.5);
+    assert!((dipped[0].1 - 0.1).abs() < 1e-6, "…x 0.5 page alpha, got {}", dipped[0].1);
+    // settled and no transition: exactly what the surface declared
+    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    assert!((d.nav.modals.scrims(1.0)[0].1 - 0.5).abs() < 1e-6);
+}
+
+fn modal_of(d: &Dispatcher<FixtureHost>, id: EntryId) -> &crate::ui::fixture::FixtureModal {
+    d.nav.entry(id).unwrap().inst.as_ref().unwrap().screen.as_any().unwrap()
+        .downcast_ref::<crate::ui::fixture::FixtureModal>().unwrap()
+}
+
+fn modal_mut(d: &mut Dispatcher<FixtureHost>, id: EntryId) -> &mut crate::ui::fixture::FixtureModal {
+    d.nav.entry_mut(id).unwrap().inst.as_mut().unwrap().screen.as_any_mut().unwrap()
+        .downcast_mut::<crate::ui::fixture::FixtureModal>().unwrap()
+}
+
 #[test]
 fn a_request_freezes_inactive_group_cursors_before_focus_moves_during_the_fade() {
     use crate::ui::machine::GroupId;
@@ -434,32 +548,86 @@ fn a_modal_scopes_focus_to_its_own_groups() {
     assert_eq!(d.nav.tabs.stack.depth(), 1, "and no page opened");
 }
 
-/// §8.3: the render set is checked over the WHOLE composition — a Cached host counts the one
-/// shared FrameCache, never a render of its own; a synthetic set over the ceiling fails.
+/// §8.3: the render set is checked over the WHOLE composition, with REAL numbers in all three
+/// rules — a Cached host counts the one shared FrameCache and holds no render of its own; a
+/// surface's own count is whatever that surface reports; the ceiling covers every byte term.
+///
+/// Rules (b) and (c) were both inert until phase 11: `draw_with` pushed a literal `1` per surface,
+/// so "more than one render per surface" could not be spelled, and `Screen::render_bytes` had one
+/// default `{ 0 }` and no override anywhere, so the byte sum was the FrameCache and nothing else.
 #[test]
 fn the_render_set_is_checked_over_the_whole_frame() {
-    use crate::ui::frame::{RenderBreach, RenderSet, FRAME_CACHE_BYTES, RENDER_BYTES_MAX};
+    use crate::ui::frame::{RenderBreach, RenderReport, RenderSet, FRAME_CACHE_BYTES, RENDER_BYTES_MAX};
     let (mut d, mut rig, _) = booted();
     let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
     d.present.note(crate::ui::present::PresentEvent::Damage(crate::ui::present::Provenance::Input));
     let r = d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
     assert!(r.presented);
     assert_eq!(r.render_set.pages, 1);
-    assert_eq!(r.render_set.surfaces, vec![(id, 1)]);
+    assert_eq!(
+        r.render_set.surfaces,
+        vec![(id, 0)],
+        "the surface holds NO render of its own — it is a quad from the shared FrameCache"
+    );
+    assert_eq!(r.render_set.bytes, 0, "…and so owns no bytes either");
     assert_eq!(r.render_set.frame_cache_bytes, FRAME_CACHE_BYTES, "the Cached host is one FrameCache");
     assert!(r.render_set.check().is_ok());
+
+    // (b) with a real number: one texture of the surface's OWN reaches the set as one, and its
+    // bytes reach the sum. A literal cannot do this and a `{ 0 }` default cannot do the second.
+    let own = RenderReport::one(400, 400);
+    modal_mut(&mut d, id).render = own;
+    d.present.note(crate::ui::present::PresentEvent::Damage(crate::ui::present::Provenance::Input));
+    let r = d.frame(&mut rig, tick(64), vec![], vec![], &mut NoTap);
+    assert!(r.presented);
+    assert_eq!(r.render_set.surfaces, vec![(id, 1)], "one render of its own");
+    assert_eq!(r.render_set.bytes, own.bytes, "400x400 RGBA8 = 640,000 bytes");
+    assert!(r.render_set.check().is_ok(), "one render per surface is legal");
+
+    // (b) breached, on numbers the set can now hold. (Driven through the dispatcher by
+    // `a_surface_holding_two_renders_breaches_the_frames_render_set`, which is `should_panic`
+    // because the debug policy for a breach is an assertion.)
+    let two = RenderSet {
+        pages: 1,
+        surfaces: vec![(id, 2)],
+        ..Default::default()
+    };
+    assert_eq!(two.check(), Err(RenderBreach::Surface(id, 2)));
+
+    // (c) every byte term counts: the screens' own renders, the one FrameCache, and the shared
+    // pools `extra_bytes` carries for the loop.
     let over = RenderSet {
         pages: 1,
         surfaces: vec![(id, 1)],
-        bytes: RENDER_BYTES_MAX,
+        bytes: RENDER_BYTES_MAX - FRAME_CACHE_BYTES,
         frame_cache_bytes: FRAME_CACHE_BYTES,
+        extra_bytes: 0,
     };
-    assert!(matches!(over.check(), Err(RenderBreach::Bytes(_))));
+    assert!(over.check().is_ok(), "exactly at the ceiling is not over it");
+    let over = RenderSet { extra_bytes: 1, ..over };
+    assert_eq!(
+        over.check(),
+        Err(RenderBreach::Bytes(RENDER_BYTES_MAX + 1)),
+        "one byte of shared pool past the ceiling is a breach"
+    );
     let three = RenderSet {
         pages: 3,
         ..Default::default()
     };
     assert_eq!(three.check(), Err(RenderBreach::Pages(3)));
+}
+
+/// Rule (b) end to end: a surface reporting two backing renders breaches the frame's set, and the
+/// debug policy for a breach is an ASSERTION (§8.3) — so the frame that draws it dies here rather
+/// than shipping a leak to a television. `on_breach`'s own tests grade the release half.
+#[test]
+#[should_panic(expected = "render set breach")]
+fn a_surface_holding_two_renders_breaches_the_frames_render_set() {
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    modal_mut(&mut d, id).render = crate::ui::frame::RenderReport { textures: 2, bytes: 0 };
+    d.present.note(crate::ui::present::PresentEvent::Damage(crate::ui::present::Provenance::Input));
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
 }
 
 /// §4.4 `MotionScope`: a surface's foreground spring reports `Motion` (so the frame presents)
@@ -471,6 +639,66 @@ fn a_modal_foreground_spring_does_not_invalidate_the_host_snapshot() {
     let r = d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
     assert!(r.presented, "the appear spring and the surface's own pop report motion");
     assert!(!r.underlay_moving, "…none of it attributed to the page");
+}
+
+/// §4.4, the same claim in `ui::idle`'s vocabulary rather than the container gate's: the
+/// dispatcher opens ONE motion scope per surface — around its `ModalStack::tick`, its body's step
+/// and its draw — and NONE around the page's, so `idle::page_moving()` answers "did the HOST move"
+/// on a frame that stepped both.
+///
+/// The other test above grades `FrameReport::underlay_moving`, which a screen reaches only by
+/// calling `fx.note(Motion)`. This one grades the channel an owned screen actually animates
+/// through — `gfx::spring` — which reaches `ui::idle` and nothing else, and which had no
+/// per-surface attribution at all until phase 10: every spring a surface stepped read as the page
+/// moving, and `app/bridge.rs` compensated by scoping the WHOLE dispatcher frame, which lost the
+/// page's own motion in exchange (`a_host_page_spring_under_an_open_panel_is_host_motion`).
+#[test]
+fn a_surface_spring_and_a_page_spring_are_told_apart_by_the_idle_gate() {
+    use crate::ui::fixture::ANIMATED_PAGE;
+    let _serial = crate::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(ANIMATED_PAGE)));
+    let mut ms = 16;
+    d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+
+    // the page alone: its spring is the HOST's motion
+    crate::ui::idle::frame_begin(1.0 / 60.0);
+    ms += 16;
+    d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    assert!(crate::ui::idle::present_moving(), "the animated page steps a spring");
+    assert!(crate::ui::idle::page_moving(), "…and it is the page's own");
+
+    // a Compact surface leaves its host LIVE (`surface_policy`), so this frame steps BOTH bodies
+    let _menu = open_modal(&mut d, &mut rig, Style::Compact, ms + 16);
+    ms += 32;
+    crate::ui::idle::frame_begin(1.0 / 60.0);
+    d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    assert!(crate::ui::idle::present_moving(), "both bodies are still in flight");
+    assert!(
+        crate::ui::idle::page_moving(),
+        "the page under a Compact panel is still the page: its spring is host motion"
+    );
+
+    // …and once the page has settled, the surface's own spring is NOT host motion. `open_modal`
+    // mounted a fresh surface, so its pop window is still open here.
+    for _ in 0..60 {
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        ms += 16;
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    }
+    assert!(!crate::ui::idle::page_moving(), "everything settled");
+    let surface = d.nav.modals.top().expect("the panel is up").entry.id;
+    d.nav.modals.surface_mut(surface).unwrap().entry.inst.as_mut().unwrap()
+        .screen.as_any_mut().and_then(|s| s.downcast_mut::<crate::ui::fixture::FixtureModal>())
+        .expect("the fixture surface").pop = 0.0;
+    crate::ui::idle::frame_begin(1.0 / 60.0);
+    ms += 16;
+    d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    assert!(crate::ui::idle::present_moving(), "the surface's own spring is in flight");
+    assert!(
+        !crate::ui::idle::page_moving(),
+        "…and none of it is attributed to the page underneath"
+    );
 }
 
 /// §5.4: a presenting frame's prepare pass leaves the logical-state hash where it was. The
@@ -529,4 +757,45 @@ fn a_page_dip_commits_at_its_floor_and_a_back_inside_the_window_withdraws_it() {
     }
     assert_eq!(d.nav.tabs.stack.depth(), 1);
     assert_eq!(d.nav.tabs.stack.page_alpha(), 1.0);
+}
+
+/// **`has_pending_navigation` is a question about the PAGE stack**, and [`Navigation::moves_page`]
+/// is the one classifier that answers it — the same one [`Navigation::request`] routes by, so the
+/// guard and the commit cannot disagree about what a parked op is.
+///
+/// Its caller is `app::bridge::sync_page`, which mirrors the committed route onto the tree and
+/// stands down for a frame whose page op the loop already parked. Reading a parked SURFACE op as
+/// one is what stranded the player page under a route that had already left it: `exit_player`
+/// parks a `Dismiss` for the panel that was up and flips the route in the same breath.
+///
+/// [`Navigation::moves_page`]: super::Navigation::moves_page
+/// [`Navigation::request`]: super::Navigation::request
+#[test]
+fn only_a_parked_page_op_counts_as_a_pending_navigation() {
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    assert!(!d.has_pending_navigation(), "a settled tree has nothing parked");
+    let surface = open_modal(&mut d, &mut rig, Style::Compact, 16);
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    assert!(!d.has_pending_navigation(), "presenting a surface does not move the page");
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    d.request(MachineId::Nav, NavOp::Dismiss(surface));
+    assert!(!d.has_pending_navigation(), "…and neither does dismissing one");
+    d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+    let mut ms = 64;
+    for op in [
+        NavOp::Push(FixtureArg::Page(9)),
+        NavOp::Pop,
+        NavOp::Root(FixtureArg::Home),
+        // a `Dismiss` naming a PAGE entry reaches `NavStack::apply`'s `PopTo` arm, so it is one
+        NavOp::Dismiss(home),
+        NavOp::PopTo(home),
+    ] {
+        d.request(MachineId::Nav, op);
+        assert!(d.has_pending_navigation(), "a page op is a pending navigation");
+        let report = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        d.prune(&report.unmounted);
+        ms += 16;
+        assert!(!d.has_pending_navigation(), "…consumed at the commit");
+    }
 }

@@ -25,19 +25,19 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
     crate::browse::seed_letter_counts_for_test(&[("A", 60), ("Z", 60)]);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    frame(&mut d, &mut rig, Route::Library, tick(0), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     Bridge::library_command(
         &mut d,
         crate::screens::registry::LibraryCmd::FocusGrid { row: 2, col: 5 },
     );
     for i in 1..80 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let grid = d.focus().unwrap();
     frame(
         &mut d,
         &mut rig,
-        Route::Library,
+        AppArg::Library,
         tick(80),
         script_key(Key::Right, tick(80)),
     );
@@ -61,13 +61,11 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
         }
     }
     let mut tap = PressTap::default();
-    let trail = super::super::Trail::new();
     for (i, edge) in [(81, Edge::Down), (82, Edge::Up)] {
-        super::frame_with_tap(
+        frame_with_tap(
             &mut d,
             &mut rig,
-            Route::Library,
-            &trail,
+            AppArg::Library,
             tick(i),
             vec![InputEvent {
                 at: tick(i),
@@ -106,7 +104,7 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
     crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    frame(&mut d, &mut rig, Route::Library, tick(0), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     d.nav.next_style = crate::ui::containers::modal::Style::Compact;
     d.request(
@@ -123,7 +121,7 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
         })),
     );
     for i in 1..80 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let menu_entry = match d.nav.input_owner().unwrap() {
         InputOwner::Entry(entry) => entry,
@@ -131,7 +129,7 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
     };
     let first = d.focus().unwrap();
     Bridge::library_command(&mut d, LibraryCmd::SwitchStep(8));
-    frame(&mut d, &mut rig, Route::Library, tick(80), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(80), vec![]);
     let genre_row = d.focus().unwrap();
     assert_eq!(genre_row.entry, menu_entry);
     assert_ne!(
@@ -140,7 +138,7 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
     );
     Bridge::library_command(&mut d, LibraryCmd::SwitchStep(9));
     for i in 81..85 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let row_count = |d: &Dispatcher<AppHost>, rig: &mut Bridge| {
         let parts = CxParts {
@@ -164,7 +162,7 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
     };
     assert_eq!(row_count(&d, &mut rig), 1, "Genre has its All genres row");
     Bridge::library_command(&mut d, LibraryCmd::SwitchStep(10));
-    frame(&mut d, &mut rig, Route::Library, tick(85), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(85), vec![]);
     assert_eq!(
         row_count(&d, &mut rig),
         2,
@@ -172,7 +170,7 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
     );
     Bridge::library_command(&mut d, LibraryCmd::SwitchStep(11));
     for i in 86..166 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     assert_ne!(d.nav.input_owner(), Some(InputOwner::Entry(menu_entry)));
 }
@@ -214,7 +212,7 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     for i in 0..80 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let instance = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     d.emit(
@@ -228,7 +226,7 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
             })),
         ),
     );
-    frame(&mut d, &mut rig, Route::Library, tick(80), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(80), vec![]);
     let mut visited = std::collections::BTreeSet::new();
     let mut shelves = std::collections::BTreeSet::new();
     let mut grid_rows = std::collections::BTreeSet::new();
@@ -256,7 +254,7 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
             break;
         }
         Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::Sweep);
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     assert_eq!(
         visited,

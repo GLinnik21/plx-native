@@ -190,6 +190,7 @@ pub(crate) fn draw(
     scroll: f32,
     focused: Option<(usize, Row)>,
     scale: impl Fn(usize) -> f32,
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     let stale = if crate::metadata::season_loading() {
         STALE_ALPHA
@@ -202,7 +203,7 @@ pub(crate) fn draw(
         if !on_axis(x - scroll, W, crate::ui::consts::SCR_W, 0.0) {
             continue;
         }
-        draw_cell(p, d, i, ep, focused, scale(i));
+        draw_cell(p, d, i, ep, focused, scale(i), measure);
     }
 }
 
@@ -214,6 +215,7 @@ pub(crate) fn draw_focused(
     top: f32,
     scroll: f32,
     scale: f32,
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     let Some(episode) = d.episodes.get(index) else {
         return;
@@ -230,6 +232,7 @@ pub(crate) fn draw_focused(
         episode,
         Some((index, row)),
         scale,
+        measure,
     );
 }
 
@@ -240,6 +243,7 @@ fn draw_cell(
     ep: &Episode,
     focused: Option<(usize, Row)>,
     scale: f32,
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     let x = strip_x(i);
     let row = focused.filter(|(at, _)| *at == i).map(|(_, row)| row);
@@ -276,6 +280,7 @@ fn draw_cell(
         &st.label,
         true,
         st.progress.is_some(),
+        measure,
     );
     if let Some(frac) = st.progress {
         widgets::progress_bar(p, drawn, 12.0, 5.0, frac);
@@ -344,6 +349,7 @@ fn draw_cell(
                 text_top + date_y + (top + baseline) * 0.5,
                 &ep.rating,
                 dim,
+                measure,
             );
         }
     }

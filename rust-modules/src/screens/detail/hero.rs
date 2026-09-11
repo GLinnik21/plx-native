@@ -568,26 +568,29 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
     (bits, n)
 }
 
-fn bit_w(bit: Bit) -> f32 {
+fn bit_w(bit: Bit, measure: &dyn crate::ui::machine::Measure) -> f32 {
     match bit {
-        Bit::Word(text, _, bold) => {
-            crate::text::text_width(text.as_ptr(), theme::size::CAPTION, bold)
-        }
-        Bit::Sep(gap) => {
-            2.0 * gap + crate::text::text_width(c"\u{b7}".as_ptr(), theme::size::CAPTION, 0)
-        }
+        Bit::Word(text, _, bold) => measure.width(text, theme::size::CAPTION, bold != 0),
+        Bit::Sep(gap) => 2.0 * gap + measure.width(c"\u{b7}", theme::size::CAPTION, false),
         Bit::Glyph => FACTS_GLYPH_D,
         Bit::Air(gap) => gap,
-        Bit::Capsule => crate::ui::widgets::pass_capsule_w(),
+        Bit::Capsule => crate::ui::widgets::pass_capsule_w(measure),
     }
 }
 
-fn play_mode_w(d: &Detail, after: bool) -> f32 {
+fn play_mode_w(d: &Detail, after: bool, measure: &dyn crate::ui::machine::Measure) -> f32 {
     let (bits, n) = play_mode_bits(d, after);
-    bits[..n].iter().copied().map(bit_w).sum()
+    bits[..n].iter().copied().map(|b| bit_w(b, measure)).sum()
 }
 
-fn draw_play_mode(p: Painter, d: &Detail, x: f32, y: f32, after: bool) -> f32 {
+fn draw_play_mode(
+    p: Painter,
+    d: &Detail,
+    x: f32,
+    y: f32,
+    after: bool,
+    measure: &dyn crate::ui::machine::Measure,
+) -> f32 {
     let (top, baseline) = crate::text::text_cap_band(theme::size::CAPTION, 0);
     let cy = y + (top + baseline) * 0.5;
     let (bits, n) = play_mode_bits(d, after);
@@ -607,7 +610,7 @@ fn draw_play_mode(p: Painter, d: &Detail, x: f32, y: f32, after: bool) -> f32 {
                     0,
                     0,
                 );
-                bx += bit_w(*bit);
+                bx += bit_w(*bit, measure);
             }
             Bit::Glyph => {
                 crate::ui::icons::draw(
@@ -619,7 +622,7 @@ fn draw_play_mode(p: Painter, d: &Detail, x: f32, y: f32, after: bool) -> f32 {
                 bx += FACTS_GLYPH_D;
             }
             Bit::Air(gap) => bx += gap,
-            Bit::Capsule => bx += crate::ui::widgets::pass_capsule(p, bx, cy, false),
+            Bit::Capsule => bx += crate::ui::widgets::pass_capsule(p, bx, cy, false, measure),
         }
     }
     bx - x
@@ -688,7 +691,7 @@ fn facts_flow(
     dx
 }
 
-pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32) {
+pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn crate::ui::machine::Measure) {
     let (date, extent) = hero_facts(d);
     let extent = extent.as_deref().unwrap_or("");
     let credit = crate::ui::fmt::shared_by(&d.source()).unwrap_or_default();
@@ -696,13 +699,8 @@ pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32) {
         facts_flow(
             &[date.as_str(), if fit.extent { extent } else { "" }],
             if fit.credit { &credit } else { "" },
-            |text, _, size, _| {
-                CString::new(text)
-                    .ok()
-                    .map(|text| crate::text::text_width(text.as_ptr(), size, 0))
-                    .unwrap_or(0.0)
-            },
-            |_, after| play_mode_w(d, after),
+            |text, _, size, _| measure.width_str(text, size, false),
+            |_, after| play_mode_w(d, after, measure),
         )
     };
     let fit = facts_fit(
@@ -712,8 +710,10 @@ pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32) {
     );
     let elided;
     let date = if fit.elide {
-        let budget = (FACTS_R - crate::ui::consts::MARGIN_X - play_mode_w(d, true)).max(0.0);
-        elided = crate::text::elide(&date, budget, theme::size::CAPTION, 0, false);
+        let budget = (FACTS_R - crate::ui::consts::MARGIN_X - play_mode_w(d, true, measure)).max(0.0);
+        elided = crate::text::elide_by(&date, budget, false, |t| {
+            measure.width_str(t, theme::size::CAPTION, false)
+        });
         elided.as_str()
     } else {
         date.as_str()
@@ -737,7 +737,7 @@ pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32) {
                 })
                 .unwrap_or(0.0)
         },
-        |dx, after| draw_play_mode(p, d, crate::ui::consts::MARGIN_X + dx, y, after),
+        |dx, after| draw_play_mode(p, d, crate::ui::consts::MARGIN_X + dx, y, after, measure),
     );
 }
 
@@ -1195,7 +1195,9 @@ mod tests {
             dur_ms: 7_200_000,
             ..Default::default()
         }));
-        assert!(crate::metadata::set_watched_local(sid, "movie", true));
+        assert!(crate::stores::metadata::apply(
+            crate::stores::metadata::MetadataCmd::SetWatchedLocal { sid, rk: "movie".into(), on: true }
+        ));
         let movie = crate::metadata::current().unwrap();
         assert_eq!(hero_mark(movie), PosterMark::Watched);
         assert_eq!(
@@ -1221,7 +1223,9 @@ mod tests {
             }),
             ..Default::default()
         }));
-        assert!(crate::metadata::set_watched_local(sid, "show", true));
+        assert!(crate::stores::metadata::apply(
+            crate::stores::metadata::MetadataCmd::SetWatchedLocal { sid, rk: "show".into(), on: true }
+        ));
         assert_eq!(
             hero_mark(crate::metadata::current().unwrap()),
             PosterMark::InProgress,

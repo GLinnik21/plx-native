@@ -306,11 +306,15 @@ popup menu is too pixelated" was, 2026-08-20 to 2026-08-21.
 
 ## 7. Where it can go today
 
-**Yes:** any popover or sheet over a UI page. Sort, Filter, Sources, item menu, alt sources and
-Account use cached glass through `Popover::panel`. A moving host opts in explicitly through
-`Popover::with_glass(Glass::DYNAMIC_BACKDROP)`. Account intentionally does not: its page state is
-frozen and its completed host frame is copied once into `gfx::FrameCache`, then drawn as one quad
-while the scrim and menu remain live. Cached remains the default, so making the policy reusable
+**Yes:** any popover or sheet over a UI page. All of Sort, Filter, Sources, item menu, alt
+sources, the track sheet and Account draw the same cached frosted ground, but they no longer reach
+it the same way: since the UI restructure moved each onto the container tree (`ModalStack`) they
+call `Glass::CACHED.panel` directly and hold no `Popover` at all, and the surfaces that still hold
+one — About, the person biography and the decision alert — go through `Popover::panel`. Same
+function, same policy, one caller fewer in the middle. A moving host opts in explicitly through
+`Glass::DYNAMIC_BACKDROP` (as `Popover::with_glass`, or as the `Glass` a surface prepares with).
+Account intentionally does not: its page state is frozen and its completed host frame is copied
+once into `gfx::FrameCache`, then drawn as one quad while the scrim and menu remain live. Cached remains the default, so making the policy reusable
 does not silently turn every menu into a recurring capture workload.
 
 **The tab bar is all-or-nothing across Home, Library and Search.** It is *one control* — `nav`'s

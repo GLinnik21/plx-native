@@ -224,8 +224,13 @@ want 10 && { skipped=$((skipped+1)); echo "  [SKIP] 10 root-back: a television f
 # 11 pointer clicks on every stop class incl. a clipped one and one under the tab track
 want 11 && { ran=$((ran+1)); run_flow 11 pointer-stops "" "ck:960,92 sleep:1 ck:133,92 sleep:1 back sleep:1 ck:220,960 sleep:1 ck:1850,960 sleep:1 ck:960,540" 'hubs: landed' || fails=$((fails+1)); }
 # 12 Phase-7 adoption: Filmography owns its own focus scope. A library-matched credit opens Detail, BACK
-# restores the Filmography entry and the next BACK dismisses it to its Person host.
-want 12 && { ran=$((ran+1)); run_flow 12 filmography-detail-return "detail=$RK_MOVIE detailsec=1 detailok filmography personcredits" "sleep:2 down ok sleep:2 back sleep:2 back" 'route=person' || fails=$((fails+1)); }
+# restores the Filmography entry and the next BACK dismisses it to its Person host. `nowan`: the
+# person page's F_PROFILE/F_CREDITS mailboxes still dial discover.provider.plex.tv for real (the
+# `personcredits` seed only stands in for a landing, it does not suppress the fetch `pump` already
+# sent before the seed runs), and against the injected token that call 401s — so this flow's
+# stability otherwise depends on the internet answering that 401 promptly. `nowan` makes the name
+# refuse locally and at once, the same offline reproduction `docs/agent-reference.md` documents.
+want 12 && { ran=$((ran+1)); run_flow 12 filmography-detail-return "detail=$RK_MOVIE detailsec=1 detailok filmography personcredits nowan" "sleep:2 down ok sleep:2 back sleep:2 back" 'route=person' || fails=$((fails+1)); }
 
 echo "=== focusfp: $((ran - fails)) passed, $fails failed of $ran, $skipped skipped ==="
 [ "$fails" -eq 0 ]

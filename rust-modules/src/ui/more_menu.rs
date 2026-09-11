@@ -1,10 +1,11 @@
 //! The player transport's **overflow menu** — the popover behind the third control disc (`…`), on
 //! the same animated [`TableView`] as the subtitle/audio and profile menus. It only REPORTS the
-//! chosen [`Action`]; `app.rs` performs it, exactly as [`crate::ui::account_menu`] does.
+//! chosen [`Action`]; `app.rs` performs it, exactly as the profile menu did before it became
+//! an owned surface ([`crate::screens::account_menu`], restructure phase 10).
 //!
 //! # Why an overflow menu exists at all
 //!
-//! **Stats for nerds**, the diagnostics overlay ([`crate::ui::stats`]), needs a home a stranger can
+//! **Stats for nerds**, the diagnostics overlay ([`crate::app::diagnostics`]), needs a home a stranger can
 //! find, because it is how this app gets bug reports off televisions nobody here owns — every other
 //! diagnostic surface in the codebase (the `/tmp/plxnative-*` triggers, the remote FIFO, the
 //! capture stream) is compiled out of RELEASE builds by the `devtriggers` feature, which is what a
@@ -57,17 +58,21 @@
 //! adaptive one — nothing measures a link or moves a rung on its own.
 #![allow(non_upper_case_globals)]
 use crate::ui::consts::*;
-use crate::ui::popover::Popover;
+use crate::ui::frame::Budget;
+use crate::ui::geom::IndexElem;
+use crate::ui::machine::{Cx, EntryId, FocusKey, GroupId, Host};
+use crate::ui::screen::{
+    Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
+    Hover, Part, Placed, Seat, Step, Stop,
+};
 use crate::ui::table::{Row, Section, TableView};
-use crate::ui::{theme, Rect};
-use std::os::raw::c_int;
-use std::ptr::{addr_of, addr_of_mut};
+use crate::ui::{theme, Painter, Rect};
 
 /// What the highlighted row does on OK.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     None,
-    /// flip [`crate::ui::stats`]'s overlay on/off
+    /// flip [`crate::app::diagnostics`]'s overlay on/off
     ToggleStats,
     /// select a rung of the playback-quality ladder ([`crate::route::set_quality`])
     SetQuality(crate::route::Quality),
@@ -77,42 +82,246 @@ pub enum Action {
     SendDiagnostics,
 }
 
-static mut POP: Popover = Popover::new(); // shared open/appear choreography
-static mut TABLE: TableView = TableView::new(); // main-thread only
-/// The ordered rows captured at [`open`] — the ONE place row order lives, so [`on_ok`]'s index
-/// mapping cannot drift from what was drawn. (`account_menu`'s rationale, and its bug.)
+/// The menu's whole state, owned by the container that mounts this panel — the modal PHASE and the
+/// appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw`
+/// takes the appear fraction as a parameter instead of stepping its own `Popover`.
+pub(crate) struct MoreMenuState {
+    table: TableView, // main-thread only
+    /// The ordered rows captured at construction — the ONE place row order lives, so [`on_ok`]'s
+    /// index mapping cannot drift from what was drawn. (`account_menu`'s rationale, and its bug.)
+    ///
+    /// An owned `Vec` rather than a `&'static [Action]`, because the Quality section's rows are
+    /// BUILT from `route::available_quality_ladder` rather than written out here.
+    rows: Vec<Action>,
+}
+
+impl MoreMenuState {
+    fn open_focused(ps: &crate::route::PlaybackSession, quality: Option<crate::route::Quality>) -> Self {
+        let rows = rows_for();
+        let initial = initial_selection(&rows, quality);
+        // TWO sections, built in ROWS order — see `rows_for`: `TableView::sel` is one flat index over
+        // both, so the split here is presentational and the ORDER is the contract.
+        let mut options = Section::new("Options");
+        let mut quality_sec = Section::new("Quality");
+        for a in &rows {
+            match a {
+                Action::SetQuality(_) => quality_sec = quality_sec.row(row_for(ps, *a)),
+                _ => options = options.row(row_for(ps, *a)),
+            }
+        }
+        let mut table = TableView::new();
+        table.compact = true; // a short action list — BODY labels, like the profile menu
+        table.set_sections(vec![options, quality_sec], initial, false);
+        // `rows` *is* the index→action map, so it must stay one-to-one with what was built above.
+        debug_assert_eq!(rows.len() as i32, table.n_rows());
+        MoreMenuState { table, rows }
+    }
+
+    pub(crate) fn new(ps: &crate::route::PlaybackSession) -> Self {
+        Self::open_focused(ps, None)
+    }
+
+    /// The existing overflow menu, focused directly on the active quality row.
+    ///
+    /// The terminal playback screen has no transport discs, so OK enters the one useful recovery
+    /// section explicitly rather than parking on "Stats for nerds". It is still the SAME TableView
+    /// and action map as the ordinary `…` menu; only the initial cursor differs.
+    pub(crate) fn new_quality(ps: &crate::route::PlaybackSession) -> Self {
+        Self::open_focused(ps, Some(crate::route::quality()))
+    }
+
+    /// The highlighted row, for the focus probe (`crate::focusprobe`) — a READ of the cursor the
+    /// key ladder moves, and the reason it exists: `app.rs`'s UP/DOWN arm for this panel changes
+    /// nothing else, so without this the fingerprint records the panel opening and closing and
+    /// nothing between.
+    pub(crate) fn sel(&self) -> i32 {
+        self.table.sel
+    }
+
+    /// **Write back the engine's own focus cursor** (restructure phase 12): the Column group
+    /// [`MoreMenuPart`] answers is the source of geometry, but the ENGINE owns the current element
+    /// (§7.3 step 5) — the owner's `step` is the only place that mutates in response to a
+    /// `FocusMoved`, and this is `screens::player::overlay::PlayerOverlayScreen::step`'s write.
+    /// Both a D-pad move AND a pointer hover reach here now — hover parks focus THROUGH the engine
+    /// (§7.5), replacing this menu's own `pointer_focus`.
+    pub(crate) fn set_sel(&mut self, i: i32) {
+        self.table.sel = i;
+    }
+
+    /// Commit the highlighted row — dismissing the panel afterward is the container's job now, not
+    /// this method's.
+    pub(crate) fn on_ok(&self) -> Action {
+        let sel = self.table.sel;
+        action_at(&self.rows, sel)
+    }
+
+    /// Bottom-right, above the control row — anchored to the `…` disc that opened it, the way the
+    /// track menu is anchored to the pair beside it. Shares the track menu's right margin
+    /// (`player_hud::CTRL_RIGHT`, the discs' own edge) and its bottom edge, so opening one after the
+    /// other does not make the panel hop.
+    fn panel_rect(&self) -> Rect {
+        let pw = 448.0f32;
+        let px = crate::ui::player_hud::CTRL_RIGHT - pw;
+        let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
+                                    // The ceiling was 320 while this menu held one row, and it was invisible then. With the
+                                    // Quality ladder beside it `measured_height()` can reach 600 when Auto is enabled — two
+                                    // headers, seven rows, a divider, AND the table's own top/bottom padding — so a 320 cap put
+                                    // four of nine rows on screen and
+                                    // silently scrolled the rest, which is a picker whose options you cannot see.
+                                    //
+                                    // The cap is a FRACTION of the room the panel has rather than a subtraction from it: the panel
+                                    // is anchored at `bottom` and grows upward, so `bottom` IS the space, and 0.86 of it leaves a
+                                    // clear margin at the top of the frame while comfortably clearing 600. Reaching for a
+                                    // `bottom - <margin>` literal is what put the first version of this line 4px UNDER the content
+                                    // — the margin was derived from the 560 of content and forgot the 40 of padding, so the last
+                                    // rung was clipped until you scrolled: the same symptom, one row deep instead of five. Past
+                                    // the cap it scrolls, which is what `TableView` is for.
+        let ph = self.table.measured_height().clamp(120.0, bottom * 0.86);
+        Rect::new(px, bottom - ph, pw, ph)
+    }
+
+    pub(crate) fn update(&mut self, dt: f32) {
+        // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
+        let h = self.panel_rect().h;
+        self.table.update(dt, h);
+    }
+
+    pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
+        // rises INTO place from below, toward the disc that opened it — reproduces exactly what
+        // `Popover::painter(0.5, 16.0)` used to draw (scrim + content painter).
+        let dim = theme::scrim_black(0.5 * appear);
+        crate::ui::Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
+        let p = crate::ui::Painter::root()
+            .alpha(appear)
+            .translate(0.0, 16.0 * (1.0 - appear));
+        let r = self.panel_rect();
+        p.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+        self.table.draw(p, r, measure);
+    }
+}
+
+/// **The Engine-shaped view of this popover** (restructure phase 12): one `Column` focus group
+/// over the flat Options+Quality row list, built fresh by
+/// `screens::player::overlay::PlayerOverlayScreen` each frame from a `&MoreMenuState` — the same
+/// borrowed-view shape `ui::table_screen::TablePart`/`ui::geom::Table` use for the other panels
+/// that are already a bare `TableView` in a frame, so this popover answers the same
+/// [`Focusable`]/[`Part`] query protocol they do. Every edge is `Stop`, exactly as
+/// `screens::account_menu::AccountMenuScreen`'s one `Column` group answers — this menu is a
+/// self-contained modal surface with nowhere else for focus to escape to.
 ///
-/// An owned `Vec` rather than the `&'static [Action]` it was, because the Quality section's rows
-/// are BUILT from `route::available_quality_ladder` rather than written out here. Main-thread only, like
-/// `TABLE` beside it, and read through `addr_of!` for the same reason — never as `&ROWS`.
-static mut ROWS: Vec<Action> = Vec::new();
-
-fn table() -> &'static mut TableView {
-    unsafe { &mut *addr_of_mut!(TABLE) }
+/// **`state` is a SHARED reference** — every [`Focusable`] method here is a pure read (`&self`),
+/// and the owning screen's own `Focusable` impl only ever has `&self` too (§7.1: "the engine never
+/// mutates a screen"), so a mutable field would make this type unconstructable from there. The
+/// actual paint (`MoreMenuState::draw`) stays a direct call on the owned `Panel` from
+/// `PlayerOverlayScreen::draw`'s `&mut self`; [`Part::draw`] below only registers stops.
+pub(crate) struct MoreMenuPart<'a> {
+    pub(crate) state: &'a MoreMenuState,
+    pub(crate) entry: EntryId,
+    pub(crate) group: GroupId,
 }
 
-/// The highlighted row, for the focus probe (`crate::focusprobe`) — a READ of the cursor the key
-/// ladder moves, and the reason it exists: `app.rs`'s UP/DOWN arm for this panel changes nothing
-/// else, so without this the fingerprint records the panel opening and closing and nothing between.
-/// Through `addr_of!` rather than the module's own `table()`, which hands out a `&'static mut`.
-pub(crate) fn sel() -> i32 {
-    unsafe { (*addr_of!(TABLE)).sel }
-}
-fn pop() -> &'static mut Popover {
-    unsafe { &mut *addr_of_mut!(POP) }
+impl<H: Host> Focusable<H> for MoreMenuPart<'_>
+where
+    H::Elem: IndexElem,
+{
+    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        out.push(GroupSpec {
+            id: self.group,
+            kind: GroupKind::Column,
+            seat: Seat::Remembered,
+            reachable: AxisMask::VERTICAL,
+            edge: [EdgeRule::Stop; 4],
+            extent: self.state.panel_rect(),
+            len: self.state.rows.len(),
+            elem: ElemKind::Bare,
+        });
+    }
+    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        ((key.index()? as usize) < self.state.rows.len()).then_some(self.group)
+    }
+    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
+        let Some(i) = key.elem.index() else {
+            return Step::Edge;
+        };
+        let delta = match dir {
+            Dir::Up => -1,
+            Dir::Down => 1,
+            _ => return Step::Edge,
+        };
+        match self.state.table.next_selectable(i as i32, delta) {
+            Some(j) => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(j as u32) }),
+            None => Step::Edge,
+        }
+    }
+    fn place(&self, key: &H::Elem, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+        let i = key.index()?;
+        let r = self.state.table.row_frame(self.state.panel_rect(), i as i32)?;
+        Some(Placed {
+            rect: r,
+            rest_rect: r,
+            clip: self.state.panel_rect(),
+            index: Some(i),
+        })
+    }
+    fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        let i = want.elem.index().unwrap_or(0) as i32;
+        FocusKey {
+            entry: self.entry,
+            elem: H::Elem::of_index(self.state.table.settle(i).max(0) as u32),
+        }
+    }
+    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        FocusKey {
+            entry: self.entry,
+            elem: H::Elem::of_index(self.state.table.sel.max(0) as u32),
+        }
+    }
 }
 
-pub fn is_open() -> bool {
-    unsafe { (*addr_of!(POP)).is_open() }
+impl<H: Host> Part<H> for MoreMenuPart<'_>
+where
+    H::Elem: IndexElem,
+{
+    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
+    /// Registers every selectable row's stop (rule 11: hover parks, a click activates — the same
+    /// loop `TablePart::draw` runs over an ordinary page table); the popover's own paint happens
+    /// directly on the owned `MoreMenuState` from `PlayerOverlayScreen::draw` (struct doc above).
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
+        let p = Painter::root();
+        let r = self.state.panel_rect();
+        for i in 0..self.state.table.n_rows() {
+            if self.state.table.next_selectable(i, 0) != Some(i) {
+                continue;
+            }
+            if let Some(row) = self.state.table.row_frame(r, i) {
+                f.stop(
+                    p,
+                    Stop {
+                        key: FocusKey {
+                            entry: self.entry,
+                            elem: H::Elem::of_index(i as u32),
+                        },
+                        rect: row,
+                        rest_rect: row,
+                        clip: r,
+                        hover: Hover::Focus,
+                        activate: Activate::Direct,
+                    },
+                );
+            }
+        }
+    }
 }
 
 /// Every row the menu can offer, in order and ACROSS SECTIONS. A free function (rather than a
-/// literal inside [`open`]) so the index mapping [`on_ok`] relies on is one testable value.
+/// literal inside [`MoreMenuState::open_focused`]) so the index mapping [`MoreMenuState::on_ok`]
+/// relies on is one testable value.
 ///
 /// **The order here is the whole contract**, because [`TableView`]'s `sel` is a single flat index
-/// over every row of every section: this list must be built in exactly the order [`open`] pushes
-/// rows, or a press commits its neighbour. A separator would be a row here too — there is none, and
-/// the debug assert in [`open`] is what would catch one being added on one side only.
+/// over every row of every section: this list must be built in exactly the order
+/// [`MoreMenuState::open_focused`] pushes rows, or a press commits its neighbour. A separator would
+/// be a row here too — there is none, and the debug assert in [`MoreMenuState::open_focused`] is
+/// what would catch one being added on one side only.
 fn rows_for() -> Vec<Action> {
     let mut v = vec![Action::ToggleStats];
     if crate::lab::menu_row_enabled() {
@@ -145,7 +354,7 @@ fn label(a: Action) -> &'static str {
 /// promise of the leading mark an Options row deliberately does not draw.)
 fn is_on(a: Action) -> bool {
     match a {
-        Action::ToggleStats => crate::ui::stats::enabled(),
+        Action::ToggleStats => crate::app::diagnostics::enabled(),
         // a rung is not a switch — see `row_for`, which gives it the leading mark instead
         Action::SetQuality(_) | Action::SendDiagnostics | Action::None => false,
     }
@@ -180,14 +389,14 @@ fn quality_detail(q: crate::route::Quality, source_decodable: bool) -> &'static 
     }
 }
 
-/// One row, drawn in the idiom its ACTION calls for. Free-standing (rather than inline in [`open`])
-/// so the two idioms are decided in one place: a switch gets the trailing word, a picker rung gets
-/// the leading mark, and nothing gets both.
-fn row_for(a: Action) -> Row {
+/// One row, drawn in the idiom its ACTION calls for. Free-standing (rather than inline in
+/// [`MoreMenuState::open_focused`]) so the two idioms are decided in one place: a switch gets the
+/// trailing word, a picker rung gets the leading mark, and nothing gets both.
+fn row_for(ps: &crate::route::PlaybackSession, a: Action) -> Row {
     match a {
         Action::SetQuality(q) => Row::new(label(a))
             .checked(crate::route::quality() == q)
-            .detail(quality_detail(q, crate::route::source_decodable())),
+            .detail(quality_detail(q, crate::route::source_decodable(ps))),
         _ => Row::new(label(a)).toggle(is_on(a)),
     }
 }
@@ -200,88 +409,6 @@ fn initial_selection(rows: &[Action], quality: Option<crate::route::Quality>) ->
                 .and_then(|i| i32::try_from(i).ok())
         })
         .unwrap_or(0)
-}
-
-fn open_focused(quality: Option<crate::route::Quality>) {
-    let rows = rows_for();
-    let initial = initial_selection(&rows, quality);
-    // TWO sections, built in ROWS order — see `rows_for`: `TableView::sel` is one flat index over
-    // both, so the split here is presentational and the ORDER is the contract.
-    let mut options = Section::new("Options");
-    let mut quality = Section::new("Quality");
-    for a in &rows {
-        match a {
-            Action::SetQuality(_) => quality = quality.row(row_for(*a)),
-            _ => options = options.row(row_for(*a)),
-        }
-    }
-    table().compact = true; // a short action list — BODY labels, like the profile menu
-    table().set_sections(vec![options, quality], initial, false);
-    // ROWS *is* the index→action map, so it must stay one-to-one with what was built above.
-    debug_assert_eq!(rows.len() as i32, table().n_rows());
-    // ASSIGN, never `ptr::write`: `ROWS` owns its `Vec` now, and `write` does not drop what was
-    // there — so every `…` press leaked the previous row list. (The `&'static [Action]` this
-    // replaced had nothing to drop, which is why the old spelling was correct and this one is not.)
-    unsafe { *addr_of_mut!(ROWS) = rows };
-    pop().open();
-}
-
-pub fn open() {
-    open_focused(None);
-}
-
-/// Open the existing overflow menu directly on the active quality row.
-///
-/// The terminal playback screen has no transport discs, so OK enters the one useful recovery
-/// section explicitly rather than parking on “Stats for nerds”.  It is still the SAME TableView
-/// and action map as the ordinary `…` menu; only the initial cursor differs.
-pub fn open_quality() {
-    open_focused(Some(crate::route::quality()));
-}
-
-pub fn close() {
-    pop().close();
-}
-
-pub fn move_focus(sym: c_int) {
-    let s = sym as u32;
-    if s == SDLK_UP {
-        table().move_sel(-1);
-    } else if s == SDLK_DOWN {
-        table().move_sel(1);
-    }
-}
-
-/// Pointer hover: focus follows the cursor over the popover rows.
-pub fn pointer_focus(mx: f32, my: f32) {
-    if !is_open() {
-        return;
-    }
-    if let Some(gi) = table().hit_row(panel_rect(), mx, my) {
-        table().sel = gi;
-    }
-}
-
-/// Pointer click: commit the row under the cursor (same as OK); a click elsewhere reports
-/// `Action::None` and the caller dismisses like BACK.
-pub fn click(mx: f32, my: f32) -> Action {
-    if !is_open() {
-        return Action::None;
-    }
-    if let Some(gi) = table().hit_row(panel_rect(), mx, my) {
-        table().sel = gi;
-        return on_ok();
-    }
-    Action::None
-}
-
-/// Commit the highlighted row and close.
-pub fn on_ok() -> Action {
-    let sel = table().sel;
-    close();
-    // BORROW the row list, never `read()` it: `ROWS` owns its `Vec` now, and a `read` would move
-    // the allocation out of the static and drop it at the end of this expression.
-    action_at(unsafe { &*addr_of!(ROWS) }, sel)
 }
 
 /// The row list IS the mapping — a selection outside it is `None` rather than whatever action
@@ -305,52 +432,9 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     ));
 }
 
-/// Bottom-right, above the control row — anchored to the `…` disc that opened it, the way the
-/// track menu is anchored to the pair beside it. Shares the track menu's right margin
-/// (`player_hud::CTRL_RIGHT`, the discs' own edge) and its bottom edge, so opening one after the
-/// other does not make the panel hop.
-fn panel_rect() -> Rect {
-    let pw = 448.0f32;
-    let px = crate::ui::player_hud::CTRL_RIGHT - pw;
-    let bottom = SCR_H - 316.0; // ~28px above the discs, as track_menu
-                                // The ceiling was 320 while this menu held one row, and it was invisible then. With the
-                                // Quality ladder beside it `measured_height()` can reach 600 when Auto is enabled — two
-                                // headers, seven rows, a divider, AND the table's own top/bottom padding — so a 320 cap put
-                                // four of nine rows on screen and
-                                // silently scrolled the rest, which is a picker whose options you cannot see.
-                                //
-                                // The cap is a FRACTION of the room the panel has rather than a subtraction from it: the panel
-                                // is anchored at `bottom` and grows upward, so `bottom` IS the space, and 0.86 of it leaves a
-                                // clear margin at the top of the frame while comfortably clearing 600. Reaching for a
-                                // `bottom - <margin>` literal is what put the first version of this line 4px UNDER the content
-                                // — the margin was derived from the 560 of content and forgot the 40 of padding, so the last
-                                // rung was clipped until you scrolled: the same symptom, one row deep instead of five. Past
-                                // the cap it scrolls, which is what `TableView` is for.
-    let ph = table().measured_height().clamp(120.0, bottom * 0.86);
-    Rect::new(px, bottom - ph, pw, ph)
-}
-
-pub fn update(dt: f32) {
-    if !is_open() {
-        return;
-    }
-    pop().update(dt);
-    // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
-    table().update(dt, panel_rect().h);
-}
-
-pub fn draw() {
-    if !is_open() {
-        return;
-    }
-    let p = pop().painter(0.5, 16.0); // rises INTO place from below, toward the disc that opened it
-    let r = panel_rect();
-    p.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
-    table().draw(p, r);
-}
-
 /// The index→action mapping, which is the only part of a popover that is testable off the main
-/// thread: `open`/`draw` own `static mut TABLE`/`POP` and are deliberately not `Sync`.
+/// thread: a real `MoreMenuState` owns `TableView`/its row list, and both are main-thread-only,
+/// like every other panel's state.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +544,118 @@ mod tests {
         assert_eq!(action_at(&rows, rows.len() as i32), Action::None);
         assert_eq!(action_at(&rows, -1), Action::None);
         assert_eq!(action_at(&[], 0), Action::None);
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    use crate::screens::registry::{AppFx, AppMsg, PageMemory};
+    use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+
+    struct HostFixture;
+    impl Host for HostFixture {
+        type Arg = crate::ui::fixture::FixtureArg;
+        type Fx = AppFx;
+        type Msg = AppMsg;
+        type Elem = u32;
+        type Views<'a> = ();
+        type Init = crate::ui::fixture::FixtureInit;
+        type Memory = PageMemory;
+    }
+
+    fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
+        let measure = crate::ui::fixture::FixtureMeasure;
+        test(&Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &measure,
+            focus: FocusRead::default(),
+            press: PressRead::default(),
+            owner: InputOwner::Entry(entry),
+        })
+    }
+
+    /// A three-row menu (`Stats for nerds` plus two synthetic quality rungs), built the same way
+    /// [`MoreMenuState::open_focused`] does but without a `PlaybackSession` — no row here reads
+    /// one.
+    fn three_row_menu() -> MoreMenuState {
+        let mut sec = Section::new("Options");
+        for label in ["Stats for nerds", "Rung A", "Rung B"] {
+            sec = sec.row(Row::new(label));
+        }
+        let mut table = TableView::new();
+        table.compact = true;
+        table.set_sections(vec![sec], 0, false);
+        MoreMenuState {
+            table,
+            rows: vec![
+                Action::ToggleStats,
+                Action::SetQuality(crate::route::Quality::Original),
+                Action::SetQuality(crate::route::Quality::Auto),
+            ],
+        }
+    }
+
+    /// **UP/DOWN step by one row and clamp at both ends**, over `TableView::next_selectable`,
+    /// exercised here through the real `Focusable` dispatch over `HostFixture`.
+    #[test]
+    fn up_down_step_by_one_and_clamp_at_both_ends() {
+        let e = EntryId(4);
+        let st = three_row_menu();
+        let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            let step = |i: u32, dir: Dir| {
+                match <MoreMenuPart as Focusable<HostFixture>>::neighbour(
+                    &part,
+                    FocusKey { entry: e, elem: i },
+                    dir,
+                    cx,
+                ) {
+                    Step::Move(k) => Some(k.elem),
+                    Step::Edge => None,
+                }
+            };
+            assert_eq!(step(0, Dir::Down), Some(1));
+            assert_eq!(step(1, Dir::Down), Some(2));
+            assert_eq!(step(2, Dir::Down), None, "the last row does not wrap");
+            assert_eq!(step(0, Dir::Up), None, "the first row does not wrap");
+            assert_eq!(step(1, Dir::Up), Some(0));
+            // LEFT/RIGHT are swallowed — this popover is ONE column, matching the old ladder's
+            // `Key::Up | Key::Down => …` arm with no Left/Right case at all.
+            assert!(matches!(step(1, Dir::Left), None));
+        });
+    }
+
+    /// `place` reports exactly the row rect `TableView::row_frame` (and so the old `draw`) would
+    /// paint at.
+    #[test]
+    fn place_matches_the_tables_own_row_frame() {
+        let e = EntryId(4);
+        let st = three_row_menu();
+        let r = st.panel_rect();
+        let want = st.table.row_frame(r, 1);
+        let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            let placed = <MoreMenuPart as Focusable<HostFixture>>::place(&part, &1u32, cx, At::Drawn);
+            assert_eq!(placed.map(|p| (p.rect.x, p.rect.y, p.rect.w, p.rect.h)), want.map(|r| (r.x, r.y, r.w, r.h)));
+        });
+    }
+
+    /// A stale cursor from a shorter previous row set settles onto the last real row —
+    /// `TableView::settle`'s own contract, reached here through `Focusable::reconcile`.
+    #[test]
+    fn a_stale_cursor_settles_onto_a_real_row() {
+        let e = EntryId(4);
+        let st = three_row_menu();
+        let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            let got = <MoreMenuPart as Focusable<HostFixture>>::reconcile(
+                &part,
+                FocusKey { entry: e, elem: 99 },
+                cx,
+            );
+            assert_eq!(got.elem, 2);
+        });
     }
 }

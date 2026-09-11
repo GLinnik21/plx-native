@@ -201,8 +201,13 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   `-dev`** for every other one — `0.6.0` published, `0.7.0-dev` in the tree. The minor rather than the
   patch because development is TRUNK-BASED here: features land on main, so the next release cut from
   it is a minor (or a major, which no build script can predict); a patch is cut from an existing
-  minor's own line, where trunk's number is not the question. It also makes the semver ordering
-  mean something — `0.7.0-dev` precedes `0.7.0`. That is the string every
+  minor's own line, where trunk's number is not the question — this remains exactly true for a
+  checkout of `main` itself, with no marker file. **A checkout of a maintenance line has that
+  input now**, and `build.rs` names the next PATCH there instead: a tracked `RELEASE_LINE` marker
+  at the repo root (`X.Y`, e.g. `0.6`) says "this checkout IS that line, not trunk", so `0.6.0` in
+  `Cargo.toml` plus a present `RELEASE_LINE` reports `0.6.1-dev` rather than `0.7.0-dev`. The file's
+  absence is unconditionally the trunk behaviour above — nothing about a `main` checkout changes.
+  It also makes the semver ordering mean something — `0.7.0-dev` precedes `0.7.0`. That is the string every
   surface reports (X-Plex-Version, the Sentry release, PostHog's `app_version`, the lab snapshot, the
   photographed diagnostics panel); before it, a release commit left the whole tree claiming to BE the
   release it had just cut, and nothing downstream could separate a working tree from the shipped
@@ -444,7 +449,7 @@ which the linking section explains is load-bearing rather than tidy.
   entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
   `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap>` to fault the app deliberately ON the
   television — `segv` is a real null write, the rest are `raise`.
-- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `plex_run` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `nav.rs`), `system.rs` (wayland),
+- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `plex_run` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
   pinned** libavformat shipped beside the binary, *not* the TV's), `stream.rs`/`aq.rs` (HTTP socket
@@ -455,7 +460,10 @@ which the linking section explains is load-bearing rather than tidy.
   token, `ratingKey` space and watch state. `docs/shared-servers.md` is the design note).
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
-  and the remaining legacy screens (`home.rs`/`player_hud.rs`/…); owned content screens live under `screens/`. **`rust-modules/src/ui/CLAUDE.md` is the
+  and, since phase 9 (Player was the last), no legacy screens at all — every route mounts an owned
+  screen under `screens/`; `player_hud.rs`/`track_menu.rs`/`info_panel.rs`/`chapters_panel.rs`/
+  `up_next.rs`/`more_menu.rs` are drawing/state modules `screens::player` composes, the same
+  relationship `widgets.rs` has to other screens. **`rust-modules/src/ui/CLAUDE.md` is the
   contribution guide — read it before touching UI: use tokens + components, never inline colors,
   never raw font sizes (ALL text in the UI takes its size from the `theme::size` token scale — add
   a documented rung when a new role needs one), never hand-place text.** Full design/status:
@@ -494,7 +502,8 @@ which the linking section explains is load-bearing rather than tidy.
   old `crate::browse::set_cur(` spelling on any production line of `ui/` or `app/`. Every applied
   command raises the store's notice, which the shadow container tree delivers to its pages as
   `StoreChanged`. That tree was `app/legacy.rs` through phase 4; phase 5b (2026-09-07) folded its
-  `Dispatcher<AppHost>`, `LegacyPage` and `Dispatcher::store_changed` into `app/bridge.rs` — the
+  `Dispatcher<AppHost>`, its blank route-word page (deleted in phase 10) and
+  `Dispatcher::store_changed` into `app/bridge.rs` — the
   same host module that now also mounts the Settings family's owned screens, so the shadow tree and
   the real one are the same `Dispatcher` rather than two trees kept in sync. The data and the
   workers are still in the legacy modules; the vocabulary is what a migrated screen (5b on) emits
@@ -767,7 +776,20 @@ which the linking section explains is load-bearing rather than tidy.
 - **App-switch lifecycle (was a black-screen bug), handled in `app/run.rs` (the `0x103`–`0x106` arms of the frame loop):** the TV sends SDL app
   events — `0x103`/`0x104` (will/did enter **background**) and `0x105`/`0x106` (will/did enter
   **foreground**). On background during playback the loop **suspends the buffer-feed** (preserving the
-  session) and drops to Home. On foreground `0x106` it tracks one exact Load attempt at a time,
+  session) and **PARKS the page stack**: `Dispatcher::suspend`, which sends `ScreenEvent::Suspend`
+  down every mounted body and moves nothing. **It used to drop to Home and that was a bug**, fixed
+  by restructure phase 12 (D1): writing `route = Home` turned into a `Root(Home)` that RETIRED the
+  player entry and the page it was launched from, so `0x106` minted a fresh player over a stack
+  that was now just Home. Nothing noticed while the two things that would have — the playback
+  session and the player's return target — lived outside the tree; the return target is an
+  `EntryId` on the page beneath the player now, so destroying entries destroys the way back.
+  **Consequence when reading a log: the heartbeat reports `route=player` while the app is
+  backgrounded**, not `route=home`. On foreground `0x106` it un-parks (`Dispatcher::resume`, called
+  on both edges because it is idempotent and webOS promises nothing about their order); the player
+  is still the top entry, because the park moved nothing, so the `show_page(Player)` beside the
+  reload is ordinarily a no-op and is written out only so that a foreground finding the player gone
+  puts it back rather than resuming a session with nothing on screen. It then
+  tracks one exact Load attempt at a time,
   follows reducer-approved superseding or rollback attempts, retries an exact failure without
   repeating route preparation, and applies the saved clock only after `Started`. In-app
   Home/Settings are *overlays* and do **not** fire these — only a real OS app-switch does. Preserve
@@ -784,13 +806,16 @@ which the linking section explains is load-bearing rather than tidy.
   256 KiB durable-record ceiling; the importer still rejects an oversized envelope rather than
   claiming a bound for an arbitrary 256-LWP process. The JSON therefore carries ARM registers and
   real multi-frame stacks for all successfully captured threads, plus modules and both Linux-kernel
-  and webOS firmware context. The pin is **0.16.5** (`ci/build-sentry-native.sh`), and the patch
-  beside it (`vendor/sentry-native/webos-arm32.patch`) is down to what upstream does not do: a
-  `process_vm_readv` wrapper for glibc 2.12, ARM32 registers in the event, a frame-pointer walk that
-  reads BOTH ARM32 frame records — GCC leaves `fp` on the LR slot (`[fp-4]`/`[fp]`), rustc/LLVM on
-  the saved-fp slot (`[fp]`/`[fp+4]`), and one process here holds both — pointer-width stack reads, the 32-frame cap for non-crashed threads,
-  the 30 s handler budget, and two webOS-only escapes in the signal handler (no in-process libunwind,
-  no SDK hooks — both reproduced a recursive SIGSEGV through `getenv`).
+  and webOS firmware context. The pin is **0.16.6** (`ci/build-sentry-native.sh`). The ARM32
+  registers-in-the-event and dual-frame-record walk (GCC leaves `fp` on the LR slot
+  (`[fp-4]`/`[fp]`), rustc/LLVM on the saved-fp slot (`[fp]`/`[fp+4]`), and one process here holds
+  both) and the pointer-width stack reads that make the walk safe on a 32-bit target are now
+  **upstream** (getsentry/sentry-native#2052 and #2053, contributed from this repo, merged
+  2026-09-03/04, released in 0.16.6) — the patch beside the pin
+  (`vendor/sentry-native/webos-arm32.patch`) carries neither any more and is down to what upstream
+  still does not do: a `process_vm_readv` wrapper for glibc 2.12, the 32-frame cap for non-crashed
+  threads, the 30 s handler budget, and two webOS-only escapes in the signal handler (no in-process
+  libunwind, no SDK hooks — both reproduced a recursive SIGSEGV through `getenv`).
   The SDK has **no HTTP transport and writes no minidump**: it launches the
   same `plxnative` binary in spool-only mode, which moves the bounded envelope into the install's
   runtime root. A healthy launch strips path prefixes, rejects request scope and every `user`
@@ -946,7 +971,9 @@ you its own numbers are wrong.
 > it, and a **`PreToolUse` hook** (`.claude/hooks/tv-lock-guard.py`) refuses any Bash command that
 > reaches the set without a lease — including a raw `ssh root@…`, an `scp` into the app directory
 > and a `sshpass` one-liner. Read-only diagnostics are deliberately not blocked:
-> `tv-session.sh log|status`, `tools/crash-report.sh`, `make -s print-*`. With nobody holding the
+> `tv-session.sh log|status`, `tools/crash-report.sh`, `make -s print-*`, and `tests/run.py --list`
+> (it returns before the lock, before any trigger is armed and before anything is deployed, so
+> the guard treats it as a status read — since UI-restructure phase 11). With nobody holding the
 > set a single command takes a short implicit lease rather than failing; **a SESSION should take a
 > real one**, because the gap between two of your own commands is exactly where another lane lands.
 >
@@ -958,7 +985,16 @@ you its own numbers are wrong.
 > access to at most one and send every other lane to `make sim`. Telling two prompts "you own the
 > television exclusively" is *not* a mutex — each is true when written and false the moment the
 > second one starts, which is the 2026-08-21 collision that was caught by luck rather than by
-> anything failing loudly. The skill carries the rest: the shared stash stack that hands one lane
+> anything failing loudly. **A subagent proves which lane it is by prefixing
+> `PLX_TV_LOCK_LANE=<its worktree path>` on every device command it runs**, not by exporting the
+> variable once — the harness reports the SESSION's own checkout as that command's `cwd`
+> regardless of which worktree the agent is actually in, so `tools/tv-lock.sh` (which already
+> reads `PLX_TV_LOCK_LANE`) and the `PreToolUse` guard's `lane_from_command()` (which resolves the
+> prefix, then the hook's own environment, then `cwd`, in that order) have to agree on the same
+> per-command spelling for several subagents to multiplex the one set through the lock, one
+> `tools/tv-lock.sh with --ttl N --wait S -- <one test>` lease per test run.
+>
+> The skill carries the rest: the shared stash stack that hands one lane
 > another lane's work, what a second build tree costs on disk, cutting a worktree from the right
 > base, the gitignored files a lane has to be seeded with, the worker-prompt block, and the
 > collision recovery — stop **one** job, re-run it from scratch, and treat anything measured during
@@ -978,8 +1014,9 @@ batch that documented it. Three numbers have now rotted here, so do not add a fo
 count worth having is the one you take yourself, with
 `cd rust-modules && cargo +nightly test --lib -- --list | grep -c ': test'`. **The per-module counts
 below have the same disease and are worse**, because a stale one reads as precise rather than round
-— several were written when the module was a third its present size (`route.rs` and `ui/home.rs`
-are both well past the numbers they carry). Read those bullets as **what each module covers**,
+— several were written when the module was a third its present size, and two bullets have now
+outlived the file they named: `ui/home.rs` (retired to `screens/home/`) and `route.rs` (split in
+phase 9 into `route/plan.rs` + `route/decision.rs`, below). Read those bullets as **what each module covers**,
 which is stable and is why they are here, and never as a census. **Run it with the same toolchain
 the Makefile does.** A bare
 `cargo test` uses the default toolchain; `make check` uses `cargo +$(RUST_NIGHTLY)`, and the two
@@ -1008,11 +1045,14 @@ you get without waking a television. What it covers today, by module:
     conversion (keyframe detection, parameter-set prepending, truncation instead of panic), and the
     AVIO abort guards (a seek after teardown must not open a second connection — graded on an
     accept COUNT from a counting listener, not a return value).
-  - `route.rs` (8) — direct-play vs transcode **selection policy**: track fallbacks, English over
-    the file's default, the flagged default, part-id parsing, mkv-only direct play.
-  - `ui/home.rs` (5) + `ui/card_row.rs` (4) — **focus/geometry/spring math**: focus packing round
-    trips, row stepping staying inside the shelf array, the pointer hit column matching the drawn
-    card at every snap phase, and the shelf heading's clearance behaviour frame by frame.
+  - `route/plan.rs` (8) — direct-play vs transcode **selection policy**: track fallbacks, English
+    over the file's default, the flagged default, part-id parsing, mkv-only direct play.
+  - `screens/home/tests.rs` + `ui/card_row.rs` — **focus/geometry/spring math**: every strip
+    element decoding to exactly one destination, row stepping staying inside the shelf array, the
+    pointer hit column matching the drawn card at every snap phase, and the shelf heading's
+    clearance behaviour frame by frame. (This bullet read `ui/home.rs` (5) until that file was
+    retired; the contracts moved to the owned screen with the screen — the ledger is
+    `docs/measurements/home-legacy-contract-ledger.md`.)
   - `metadata.rs` (2) + `browse.rs` (2) — **async landing/mailbox invariants**: a detail or season
     response only installs while it is still the one being awaited (a failed `/children` must not
     land as an empty season), and `reset` clearing the single-flight flags and retry backoff.
@@ -1032,10 +1072,23 @@ you get without waking a television. What it covers today, by module:
   **(3) The app's async seams are process-wide**, so some tests are serialized rather than parallel:
   `metadata.rs`'s two take `lib.rs`'s crate-wide `testlock::serial()` (the detail and season
   mailboxes contend across modules — a per-module mutex cannot see that, because the season
-  generation also moves under `pump_detail`), and `ui/home.rs`'s five take that module's own `FOCUS`
-  mutex for `static mut fr`/`fc`. Those locks are load-bearing, not incidental — hold one for the
+  generation also moves under `pump_detail`), and every owned-screen test that seeds a store takes
+  the same crate-wide lock — an owned screen keeps no focus of its own, so there is no module mutex
+  left to take, but `pms`'s catalog statics are still shared. Those locks are load-bearing, not incidental — hold one for the
   whole test in anything new that touches a crate global, and reach for `testlock` (not a fresh
   local mutex) whenever the global is shared across modules.
+  **Since 2026-09-10 the lock also records WHICH THREAD holds it, and the stores ASSERT it.** A
+  mutex nobody is obliged to take is a convention, and a convention broken by one test in two
+  thousand does not fail — it hands some other module's test a wiped store, at a rate that reads
+  as flakiness. `browse::reset`/`append_sections`, `plex::servers::reset_for_test` and the whole
+  app frame (`app::bridge::frame_with_results`, which drains `stores::take_notices` and pumps
+  every store) call `testlock::assert_held`, so an unguarded write is now a deterministic panic in
+  the culprit rather than an intermittent failure in a bystander. That is how
+  `app::chrome::four_libraries_on_two_servers_publish_two_type_destinations` was finally
+  attributed: it lost both library destinations about one full-suite run in six, and the cause was
+  three `app::heartbeat_word_tests` cases that took no lock and derived their word alphabet by
+  running real frames — whose `browse` pump reaches `sync_roster`, which resets the table on any
+  source the live registry does not hold, i.e. on every `browse` fixture in the suite.
 
 **Tier 1.5 — the desktop simulator (`make sim`), which DOES draw pixels on the host.** This tier
 did not exist before 2026-08-14, and the line below used to read "there is no host *runtime*" flatly
@@ -1142,8 +1195,8 @@ resume, the `/:/timeline` reporter — which is also why it needs somebody's lib
 It needs a TV address and nothing else — no token, no ratingKey, no `manifest.local.json`, no
 sharing — so it is the only tier a stranger can run, and it is what separates "the player is
 broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
-the player direct-plays exactly `{h264,hevc}` × `{aac,ac3,eac3}` in mkv/mp4/m4v (`route.rs`'s codec
-gate + `plex::DP_AUDIO_CODECS`) — 2 of the 19 video and 3 of the 19 audio codecs the television's
+the player direct-plays exactly `{h264,hevc}` × `{aac,ac3,eac3}` in mkv/mp4/m4v (`route/plan.rs`'s
+codec gate + `plex::DP_AUDIO_CODECS`) — 2 of the 19 video and 3 of the 19 audio codecs the television's
 own table (`/etc/umediaserver/device_codec_capability_config.json`, which `devcaps.rs` reads)
 claims to decode, everything else being a server transcode BY DESIGN since the Load payload has
 only `H264`/`H265` and `AC3`/`AC3 PLUS`/`AAC`. All six of those payload combinations are covered
@@ -1234,7 +1287,10 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   call `ui::idle::invalidate()` — **a new async landing that repaints must add a call there**, or
   it arrives invisibly until the next keypress. **So must anything that animates from a CLOCK
   rather than a spring** — a millisecond ramp, a phase, a countdown — since `note_spring` cannot see
-  it: `Xfade::tick` (every route dip) and `Spinner::draw` (every loading read-out) both shipped
+  it: `Xfade::tick` (the CONTENT cross-fade — the Library's grid and page, Search's results,
+  Filmography's preview; it was the ROUTE dip too until restructure phase 12 moved that to
+  `ui::containers::transition::PageDip`, which reports from inside its own `tick` by construction)
+  and `Spinner::draw` (every loading read-out) both shipped
   FROZEN before they were made to report, and no fps scene caught it because those grade `loop=`.
   The rest test is visibility — magnitude-relative, capped under a quarter pixel, velocity judged
   as `vel*dt` (the travel this frame) — not a bare epsilon.
@@ -1248,9 +1304,42 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   only update on an ordinary present) and that is expected, not a hang; and **an fps floor taken on a static
   screen now grades nothing**, which is why `fps:home-grid` arms `plxnative-homeosc` and the still
   case is gated by `fps:home-idle`'s `fps_ceiling` instead. `/tmp/plxnative-noidle` turns the
-  gate off (DIAG-exempt, so an A/B does not also change which screen you boot to). The **player
-  route is deliberately excluded** — `system.rs` documents the video plane as *slaved* to our
-  surface, and playback already draws 0 draw calls with the HUD hidden.
+  gate off (DIAG-exempt, so an A/B does not also change which screen you boot to), and
+  `/tmp/plxnative-nobudget` is its twin for the FRAME BUDGET (DIAG for the same reason):
+  admission as it was before phase 11 — the poster quota of three per frame, no time ceiling and
+  no solo frame — so an A/B leg prices the admission rule rather than two builds. **The exclusion
+  is the bound video plane, not the player route** — pre-bind (the Resolving/Loading spinner) and
+  post-unbind (the failure read-out, teardown) player frames are gated exactly like Home, which is
+  why `PlayerScreen::clock_fingerprint` exists: every clock-driven player animator reports motion
+  through it once the route no longer gets a free pass.
+- **The heartbeat's WIRE ORDER, since phase 11** (`diag/heartbeat.rs::heartbeat_tail` is the one
+  definition; anything here that disagrees with it is this file being stale):
+  `loop= route= [overlay=] [pos= play=] [vtick= vgap=] fps= [load= snap= period=] [worstframe=
+  worstprep=] carried= dropped= budget=<admitted>/<refused>[/solo:<class>] evicted_hot= [rec=]
+  [sim=1]`. **Nothing may be inserted ahead of `fps=` or `worstframe=`** — `tests/run.py`'s
+  `FPS_RE` and `WORST_RE` anchor on `loop=`/`route=`/`overlay=` and then reach forward with a lazy
+  `.*?`, so appending is free and inserting is not. The bracketed pairs are conditional;
+  `worstframe=`/`worstprep=` need `plxnative-framedrop`, and the four frame-plan fields do NOT —
+  they print in every build, because each is a counter its owner already keeps rather than a
+  measurement anybody pays for. `budget=`'s `/solo:<class>` third field appears only when a solo
+  take was admitted in that second, so its PRESENCE is the event. There is deliberately no
+  `allocs=`: the restructure spec names one for `hostsim`, this crate has no `GlobalAlloc`, and a
+  counting allocator was not invented to fill a field.
+  **Beside the heartbeat, and not on it: `coldopen screen=<name> ms=<n> prepared=<bool>`**, one
+  line per screen MOUNT, unarmed. `ms` is from the frame that mounted the body to the first frame
+  it both prepared and DREW — so a mount and a first draw in one iteration reads `ms=0`, which is
+  the honest answer and not a broken instrument; `prepared` is whether that frame's budget refused
+  nothing. **This paragraph's reason for excepting the player is now FALSE and unverified in its
+  replacement, both worth stating plainly**: it used to except the PLAYER on the grounds that its
+  page answered `FocusSource::Legacy` and was therefore drawn by the loop rather than by the
+  container; restructure phase 12 (D2) converted `PlayerScreen` to `FocusSource::Engine`, so that
+  reason is gone. Whether `coldopen` now actually fires on a player mount was NOT re-measured by
+  the package that made this change (`make check`'s device/full-suite paths were unavailable in
+  its environment). D1 has since retired the loop's own page dispatch — there is no `Route` and no
+  hand-rolled player draw arm left in `app/run.rs`, so the structural reason to doubt it is gone
+  too — but that is an argument, not a measurement: whether `coldopen` actually fires on a player
+  mount has still not been observed. This is owed to TV session 8 (phase 12's device pass): boot
+  into the player route and read the heartbeat before trusting either answer.
 - **The heartbeat fields were RENAMED 2026-08-01 and the old name was REUSED**, so a log or doc
   predating that reads as the opposite of what it says. Old `FPS=` is today's **`loop=`** (loop
   iterations); old `pres=` is today's **`fps=`** (frames presented). An old `FPS=60` says nothing
@@ -1315,7 +1404,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   signal state" is itself a diagnostic that nothing is decoded on the video plane.
 - **Perf gates:** `./tests/run.py --fps` runs the UI-tier FPS regression scenes (gates per scene in
   `tests/manifest.json`; `--fps-player` adds the player tier), asserting the app's once/sec
-  heartbeat. **Five assertions in two families. Three RATE gates — and picking the wrong one is how a frozen
+  heartbeat. **Six assertions in three families. Three RATE gates — and picking the wrong one is how a frozen
   animation ships:**
   `loop_floor` grades `loop=`, which counts LOOP iterations — it proves the app is alive, and cannot
   see a stopped animation at all; `fps_floor` grades `fps=` and is what proves an animation still
@@ -1323,14 +1412,24 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   other side and proves a still screen stops (`home-idle`, `search-idle`). **And two FRAME-TIME gates (2026-09-06)** — `worst_ceiling_ms`
   (the 2nd-highest post-warmup `worstframe=`) and `stall_ceiling_ms` (the largest `FRAMEDROP`
   total on the route, warmup INCLUDED) — which arm `plxnative-framedrop` themselves and answer
-  what no rate can: one 80 ms frame under a healthy median. The Search pair is the
+  what no rate can: one 80 ms frame under a healthy median. **And, since phase 11, one MOUNT gate:**
+  `coldopen_ceiling_ms`, the slowest `coldopen screen=<word> ms=<n>` of the scene's screen. It
+  exists because `stall_ceiling_ms` CENSORS ITS OWN SAMPLES and could not simply be re-pointed:
+  the frame-drop detector prints only above the threshold `frame_ceiling_threshold` armed it with,
+  so a cold open FASTER than the ceiling leaves no line and `grade_frame_ceilings` passes it as
+  "no FRAMEDROP line" — five runs of `cold-open` in TV session 5 read "no-line PASS, 208.5,
+  no-line PASS, 191.4, 227.8", in which a 30 ms open and a 159 ms one are the same output. The
+  `coldopen` line is UNARMED and unconditional, so one mount is one sample and an absent line
+  fails. Its value on `cold-open` is PROVISIONAL until TV session 7 leg 6 measures it, and the
+  scene's `_coldopen_note` says so. The Search pair is the
   clearest illustration that these are two halves of ONE question — same screen, same trigger, the
   oscillator added or taken away. A scene with no motion and only a `loop_floor`
   gates nothing — **`home-hero` carries an `_idle_gate_note` saying exactly that, and it is the only
   one left**; this line said "three" long after the other two (`home-grid`, `library-scroll`) were
   given oscillators and real `fps_floor`s, which is the fix that note asks for. The other three
   `loop_floor`-only scenes are the player-tier overlays (`info-panel`, `track-menu`, `chapters-panel` — take the list from `./tests/run.py --list --server`, not from here) and need no note, because
-  the present gate excludes the player route. Every run also reports
+  the video plane stays bound for the whole scene, so `fps=` grades neither an animator nor an
+  idle screen. Every run also reports
   **`drift`** (last-third minus first-third mean): sorting used to destroy sample ORDER, so a
   monotone 60→53 decay and a flat 53 were byte-identical output. It is reported, never asserted —
   18–36 s is far too short to gate a thermal ramp on, and **the "the panel thermally throttles"
@@ -1345,8 +1444,12 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   instruments and their structural blind spots are `docs/backdrop-blur-profiling.md`. **A third profiler mode, `/tmp/plxnative-cpuprof` (2026-09-02), times every `ui::profile::phase` on the RENDER THREAD** — inclusive wall time, every phase at once, no `glFinish`, a `~src` suffix for the blur source pass's copy of a phase — and it is the one that can read a frame the frame-drop detector reports as `draw=24ms swap=0.3ms`: on this driver the wait for the GPU lands in the frame's FIRST framebuffer-0 command, i.e. inside `hm.clear`, so a fat `draw=` is not CPU work until this mode says which phase holds it. That is how the Home hero regression was read (`docs/backdrop-blur-profiling.md`, the 2026-09-02 section): 26 ms in `hm.clear`, 2 ms in everything Home actually computes. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
   N ms — the file's content) with an EIGHT-PHASE breakdown — `ingest results tick_drain navcommit
   prepare draw capture swap`, the frame algorithm's names, timed from the TOP of the iteration since
-  2026-09-06 (it used to start after the input half, so a slow key handler was invisible) — plus the
-  upload counts, and adds `worstframe` (the whole iteration, presented frames only) and `worstprep`
+  2026-09-06 (it used to start after the input half, so a slow key handler was invisible) — plus
+  `up=`/`px=`/`cards=`/`off=`, **which are THAT FRAME's counts since phase 11 and were not before**:
+  their only drain was the closure the instrument calls after the threshold check, so a slow
+  frame's counts covered every frame since the previous slow one (the `up=9` in
+  `docs/measurements/tv-session-5-2026-09-10.md` is a reading of the old behaviour). It adds
+  `worstframe` (the whole iteration, presented frames only) and `worstprep`
   (the prepare phase, timed on EVERY iteration) to the heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
   scroll judder headlessly. For a reproducible three-layer account of one FPS scene use
   `./tests/run.py --fps --only <scene> --graphics-profile --profile-phase <phase>`: it preserves
@@ -1373,6 +1476,10 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   (`grid`, `h265`, `playidx`, `ptype`) are named nowhere but their `dev::flag`/`dev::read` call, so
   the path grep alone silently under-reports. This line carried that grep alone and called it
   complete.
+  **Since UI restructure phase 10 the ARMS live in `rust-modules/src/dev/scenarios.rs`, not
+  scattered through `app/{boot,run,content,mod}.rs`** — `dev.rs` stays the one door onto `/tmp`
+  itself, and the catalog command above is unaffected because every `dev::flag`/`dev::read` call
+  moved with its spelling unchanged.
   **Every read goes through `rust-modules/src/dev.rs`, gated on the `devtriggers` cargo feature —
   read that module's doc before adding a trigger, and never open a `/tmp` path directly.** Default
   builds are unchanged; `RELEASE=1` drops the feature, and then `dev::flag` is `false` and
@@ -1400,19 +1507,31 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   inputs through the remote FIFO's own synthesis, grades the state hash frame by frame — every
   mismatch is its own `replay: diverge` line and the run continues — and ends with one `replay:
   done … verdict=SAME|DIVERGED` line; `tests/focusfp.sh --replay` drives it over the committed
-  fixtures. Since 2026-09-07 the recorder also writes one `fo` FOCUS record per frame (entry,
+  fixtures. **The stores still fetch live under a replay, but since phase 11 the frame a result
+  is OBSERVED on is the recorded one** (`ui::landgate`, spec §3.3 step 3): every landing SITE —
+  Home's hubs and each legacy pump's mailbox take — consumes through a schedule of `(frame,
+  arrivals)` pairs per store, an early arrival WAITS for its frame, the due frame polls for a
+  bounded moment, and late/extra/missing ride the summary as `land_diffs`. Before it, flow 12's
+  one recorded landing sat on frame 1 and every replay observed it on frame 0, which — a spring
+  started a frame early never re-converging bit for bit — diverged 927 of 928 frames. Since 2026-09-07 the recorder also writes one `fo` FOCUS record per frame (entry,
   element, group), and the library replay has two MODES: targets — every input replayed with its
   recorded resolution, what `plxnative-recplay` runs — and resolve, which runs the focus engine
   and the hit map for real on every engine page, reports each focus mismatch as its own line and
   CONTINUES from the recording (`ui::replay::run_resolve`; exercised only by the host suite's
   `FixtureHost` pages — nothing wires it to a real screen, so an on-device recording never runs in
-  this mode. That is no longer because every product page is a `LegacyPage`: since phase 5b
+  this mode. That is no longer because every product page is the blank route-word page: since phase 5b
   (2026-09-07) the Settings family and first-run Favourites answer
   `FocusSource::Engine`/`HitSource::Engine` for real, and phase 7 adds Detail, Person and the
   Filmography surface. `tests/fixtures/replay/6-settings-family/` is a committed synthetic simulator
   recording of the first set — replayed the only way `plxnative-recplay` runs anything, in
-  `targets` mode. Engine pages and the remaining `LegacyPage` routes alike replay on device by
-  target only). Both names are `dev::DIAG`, so neither moves the boot screen; both armed at once is
+  `targets` mode. Engine pages replay in `resolve` mode via `FixtureHost` only — **restructure
+  phase 12 (D2) converted the last two holdouts**, `screens::player::PlayerScreen` and its
+  overlay, so `FocusSource::Legacy`/`HitSource::Legacy` no longer answers for ANY product screen
+  (it survives only as `ui/fixture.rs`'s own deliberately-Legacy test double); the player replays
+  on device by target only for the same reason every other Engine screen still does — `resolve`
+  mode is wired to the host suite's `FixtureHost` pages, not to a real screen, so an on-device
+  recording never runs in that mode regardless of which `FocusSource` the route answers. Both names are `dev::DIAG`, so
+  neither moves the boot screen; both armed at once is
   refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
   logs `softfloat: … MATCH|DIVERGE` against the host's pinned hash and writes the table beside
   it; `make softfloat-probe` fetches it), `/tmp/plxnative-url` (override the streamed part
@@ -1496,8 +1615,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   has no shared chrome, a hero backdrop and ambient ground on the far side, and a real teardown at
   the fade floor (`fps:home-detail-nav`). Both boot to Home), and
   `/tmp/plxnative-itemmenu` (snap into the grid, then open the **press-and-hold card context menu**
-  on the focused card — `route=itemmenu`; the interactive path is a real ≥500 ms hold, which no boot
-  trigger can express). Note `/tmp/plxnative-press` is its TAP twin: it now schedules its own release
+  on the focused card — `route=home overlay=itemmenu` since UI-restructure phase 10, when the menu
+  became a `ModalStack` surface and `route=itemmenu` stopped existing; the interactive path is a
+  real ≥500 ms hold, which no boot trigger can express). Note `/tmp/plxnative-press` is its TAP twin: it now schedules its own release
   ~150 ms in, because a down with no up is past `press::LONG_MS` and is a HOLD, not a tap.
   Remote-driving: `/tmp/plxnative-remote` is **not** a trigger — the app mkfifos and drains it
   every frame on every boot (so it never affects the picker; its DIAG entry is a permanent

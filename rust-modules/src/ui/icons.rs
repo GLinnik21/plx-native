@@ -50,7 +50,7 @@ pub enum Icon {
     /// the same object pointing two ways.
     ChevronLeft,
     /// The watch-state ACTIONS, as **filled** discs: a check knocked out of one for "Mark as
-    /// Watched", a minus knocked out of one for "Mark as Unwatched" (`item_menu::state_rows`).
+    /// Watched", a minus knocked out of one for "Mark as Unwatched" (`screens::item_menu::state_rows`).
     /// Filled is the rule, not a preference: it is what stops an ACTION being read as a STATE. The
     /// leading column carries a picker's bare tick or an action's glyph and nothing else — a switch
     /// states itself as a word at the row's trailing edge (`Row::toggle`), so a hollow circle here

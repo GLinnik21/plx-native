@@ -1,12 +1,24 @@
 # Shared UI System — Migration Plan
 
-> **Status (2026-07-18): EXECUTED — both halves are done and merged to main.** The token/
+> **Status (2026-07-18): the token sweep and the initial view-tree milestone were executed and
+> merged to main.** The later structured UI migration continued beyond that milestone; this
+> paragraph is not a claim that the recorder/restore/resolve architecture is closed or that the
+> full plan has been proven end to end. The token/
 > component sweep landed as planned; the **view-tree half below is stale planning-tense** (it
 > predates the executed work and e.g. describes a 5-field `DetailView` that is now ~17 fields).
 > The accurate executed record for the view-tree migration — including the later Step 8
-> (shared scroll/cull/hero infra, stopped after 8.5) — is `docs/ui-viewtree-plan.md` §G. Only
-> the explicitly optional 7b (unified FocusPath) remains unbuilt, by design. This file is kept
+> (shared scroll/cull/hero infra, stopped after 8.5) — is `docs/ui-viewtree-plan.md` §G, accurate
+> through restructure phase 7: §G still describes `ui/home.rs`'s two-pass focused-last grid, and
+> phase 8 (2026-09-09) deleted that file for the engine-owned `screens/home/mod.rs`, whose row in
+> `rust-modules/src/ui/CLAUDE.md` is the current description. Within this view-tree record, only
+> the explicitly optional 7b (unified FocusPath) remains unbuilt, by design. This file does not
+> claim that the broader recorder/restore/resolve architecture or the end-to-end proof plan is
+> complete. It is kept
 > for the design rationale (token values, carve-outs, player-as-reference stance).
+>
+> **§(E) at the foot of this file is the exception and is CURRENT** (2026-09-10): what adding a
+> screen touches today, proven by the two `git diff --name-only` outputs of restructure phase 10's
+> criterion-5 conversions. Read that one; the rest is history.
 
 Extract a shared UI system from the **player screen** (the one screen with a coherent
 design language: `widgets.rs` / `table.rs` / `label.rs` / `icons.rs` / `mod.rs`) and
@@ -405,12 +417,49 @@ about a specific contract, NOT about "it's only a throwaway" — that is never t
    constants. The original carve-out was wrong — the manual `CAST_Y`/`ABOUT_Y` bump needed when
    Related grew was exactly the drift a flow removes.
 3. **player surfaces** (`player_hud.rs` / `track_menu.rs` / `info_panel.rs` /
-   `chapters_panel.rs`): out of scope for this migration. `player_hud`'s absolute `SCR_H-offset`
-   geometry is a **shared pointer-hit-test contract** with `app.rs` (`icon_hit`/`sb_w`) — a tree
-   rewrite would break the Magic-Remote pointer. `draw_clock` (`player_hud.rs:173`) and
-   subtitles are bespoke and not `Label`-expressible. These already consume the component
-   substrate; leave them immediate-mode. The player transport/scrub state machine (~12 `app.rs`
-   locals) is a separate future effort.
+   `chapters_panel.rs`): out of scope for THIS migration (the retui View tree) — still true, and
+   unrelated to what changed underneath it. **AMENDED (restructure phase 12, D2)** — the sentence
+   above described a SHARED pointer-hit-test contract with `app.rs`'s free functions
+   (`icon_hit`/`sb_w`) as a reason a tree rewrite would break the remote's pointer; that contract
+   no longer exists in that shape. `PlayerScreen` (`screens/player/mod.rs`) and its overlay
+   (`screens/player/overlay.rs`) now answer `FocusSource::Engine`/`HitSource::Engine`: HUD hit
+   geometry is collected as `(elem, Rect)` stops at draw time and registered through
+   `DrawFrame::stop`, and the transport key ladder (PAUSE/PLAY/STOP/BACK/UP/DOWN/LEFT/RIGHT/OK)
+   lives in `PlayerScreen::step`, not in a `Route::Player` arm of `app/run.rs`.
+
+   **AMENDED AGAIN (phase 12, PX-PLAYER): the loop's player input path is DELETED, not standing
+   beside the new one.** The paragraph above used to record that `app/run.rs` "still calls the raw
+   `player_hud::failure_quality_hit`/`icon_hit`/`scrub_hit` functions directly" and that "its own
+   hand-rolled `Route::Player` key arms still exist beside `PlayerScreen::step`", and that
+   understated the situation in the way that mattered: those were not two implementations of which
+   one happened to be dormant, they were two implementations LIVE ON ONE PIECE OF STATE —
+   `PlayerScreen::scrub` — because `on_key_up`, `on_auto_repeat` and the loop's per-frame block
+   went on writing it after the page began answering `HitSource::Engine`. What that produced was
+   three shipped regressions: one RIGHT tap issued two seeks, a scrub taken while paused started
+   the film, and a click on the scrub bar toggled play/pause while drag-scrubbing disappeared
+   entirely. All of it is gone — the key arms (failure read-out, UP/DOWN, STOP, LEFT/RIGHT), both
+   pointer blocks, the `SCRUB_LOST_MS` safety commit, the tap debounce, the continuous advance and
+   `app::input::Pointer::drag` — and `key_player_failed`, `key_player_updown`, `key_scrub`,
+   `seed_scrub` and `player_hud::scrub_hit` are deleted with them. `ci/check-deps.sh`'s `hittest`
+   gate is GREEN as of that package.
+
+   **AMENDED A THIRD TIME (phase 12, PX-OVERLAYS): the other gap named above is closed too.** The
+   four overlay components — `track_menu.rs`, `chapters_panel.rs`, `info_panel.rs`,
+   `more_menu.rs` — no longer carry the OLD `move_focus`/`pointer_focus`/`focus_is_ctl` methods
+   that `screens/player/overlay.rs` used to call directly beside the `*Part` wrappers:
+   `screens/player/overlay.rs`'s `Focusable` impl now delegates to whichever panel's `*Part`
+   wrapper is active, `step` no longer moves a cursor by hand (a direction falls through to the
+   engine's `neighbour`/`EdgeRule` unless the panel's own repeat gate is pacing it or the engine
+   just re-delivered the key at the panel's group edge — a tab switch for Tracks, dropping focus
+   to the HUD tabs for Chapters/Info), OK is left to the engine's `Activate`/press machinery, and
+   `draw` registers each row's own stop instead of one whole-screen `Stop`. `ci/check-deps.sh`'s
+   `ladder` gate is 0 across `ui/` + `screens/`. **AMENDED A FOURTH TIME (phase 12, PX-D1): the
+   rest of the backlog is closed.** `route`/`fnlen`/`testmod` were the three gates left red, all
+   three for one reason — `enum Route` still existed — and D1 deleted it along with `app/nav.rs`
+   and `ui/trail.rs`. `check-deps.sh` is green across every gate: no `Route::` in `app/`, no
+   `enum Route` in the tree, `app/run.rs::run` at 104 lines against a 200 budget, `plex_run` at 10,
+   and 0 `#[cfg(test)] mod` blocks in `app/mod.rs`. `draw_clock` and subtitles are still bespoke
+   and not `Label`-expressible, and remain immediate-mode by the same original reasoning.
 
 ---
 
@@ -437,3 +486,146 @@ about a specific contract, NOT about "it's only a throwaway" — that is never t
   `*const c_char`; migrated home/detail call sites (which build Rust `String`s) must keep the
   `CString` in scope for the draw frame — no new hazard, but a per-site cost, already the
   `table.rs` pattern.
+
+---
+
+## (E) WHAT A NEW SCREEN COSTS — restructure phase 10, done-criterion 5
+
+> **Added 2026-09-10, and it is the one section of this file written in the present tense.** The
+> rest is the 2026-07 migration's own record; this is the current answer to "I am adding a screen,
+> what do I have to touch", proven rather than asserted.
+
+The restructure spec's §0 criterion 5 reads: *a new screen touches its own `screens/<name>.rs`,
+`screens/registry.rs`, `dev/scenarios.rs` and `tests/manifest.json` and nothing else.* Two
+conversions were run to prove it — the Detail page's **About** sheet and the Person page's
+**biography** sheet — and this is what `git diff --name-only` said, verbatim.
+
+**About** (`2e5572b8`):
+
+```
+ci/allow/statics-migration.txt
+rust-modules/src/dev/scenarios.rs
+rust-modules/src/screens/about_panel.rs
+rust-modules/src/screens/detail/mod.rs
+rust-modules/src/screens/detail/tests.rs
+rust-modules/src/screens/mod.rs
+rust-modules/src/screens/registry.rs
+rust-modules/src/ui/mod.rs
+tests/manifest.json
+```
+
+**The person's biography** (`1a7c9a46`):
+
+```
+ci/allow/statics-migration.txt
+rust-modules/src/dev/scenarios.rs
+rust-modules/src/screens/mod.rs
+rust-modules/src/screens/person.rs
+rust-modules/src/screens/person_bio.rs
+rust-modules/src/screens/registry.rs
+rust-modules/src/ui/mod.rs
+tests/manifest.json
+```
+
+### The four the criterion names
+
+| file | what it gains |
+|---|---|
+| `screens/<name>.rs` | the screen: its `Screen`/`Machine`/`Focusable`/`LogicalState` impls, its `SHAPE`, its own tests (§15.1 `a_new_screen_is_unit_tested_with_no_sdl` — a host of its own, three lines of it, never a sibling's) |
+| `screens/registry.rs` | the `AppArg` variant, its `ScreenId`, its canon tag, `ARG_SHAPE`, the one `mount` arm, `every_surface_arg`, `SCREEN_SHAPES` + the pin, and — for a page-owned panel — the `ContentPanel` variant and its `surface()` arm |
+| `dev/scenarios.rs` | the headless trigger that reaches it (`/tmp/plxnative-<name>`), which is what makes a capture and an fps scene possible at all |
+| `tests/manifest.json` | the fps scene, keyed on the `overlay=` word the screen's own `Screen::name` prints |
+
+### The four the criterion does not, and why each is honest
+
+* **`screens/mod.rs`** — one `pub(crate) mod` line. A module that is not declared does not exist.
+* **`ui/mod.rs`** and the moved file itself — the RETIREMENT pair, present only for a conversion.
+  A screen written from scratch touches neither.
+* **`ci/allow/statics-migration.txt`** — a conversion RETIRES an entry (9 → 3 over phase 10). It
+  only ever shrinks, and a new screen adds nothing to it.
+* **the HOST page** — `screens/detail/mod.rs`, `screens/person.rs`. This is the one the criterion's
+  wording does not name and the one that cannot be removed: a panel is opened from somewhere, and
+  the page that opens it is the page that stops calling the module it used to draw. Both
+  conversions kept it minimal — the host loses its call sites and its share of the panel's state
+  and gains a `ContentReq::Panel(…)`. (About's diff has a second file of the same screen,
+  `detail/tests.rs`, for one word of an import line: production code stopped naming `InputEvent`
+  when `panel_input` was deleted.)
+
+### What made the list that short — three mechanisms, landed first
+
+The criterion is a claim about STRUCTURE, and it was false before phase 10 for reasons that had
+nothing to do with any screen. Each was fixed in its own commit, before the conversion that
+needed it:
+
+1. **`AppArg`, `ARG_SHAPE`, `ScreenId`, `same_instance`, `every_surface_arg` and the one `mount`
+   match moved from `app/bridge.rs` into `screens/registry.rs`** (`111282ec`), where §2.1 always
+   put them. The blocker was written in `registry.rs`'s own module doc: the argument carries the
+   legacy `Route`, `Route` was `app`-private, and a screen may not name `app::`. So `Route` moved
+   too (`app/nav.rs` re-exported it), and the mounter became
+   generic over the host — the screens were generic already, and the views its arms read arrive
+   through the `*Like` accessors. **Phase 12 (D1) finished the job by deleting the enum rather
+   than relocating it again**: its seven mountable values are flat `AppArg` variants
+   (`Login, Profiles, Onboard, Home, Library, Search, Player`) and the two that could never mount
+   (`Detail`, `Person`) are gone, because a page with an ITEM IDENTITY has always mounted from
+   `AppArg::Content`. `ARG_SHAPE` gained the seven words and `SCREEN_SHAPES_PIN` moved with it.
+2. **`state_fp`'s shape inventory SPLIT** (same commit). Every screen's `SHAPE` is
+   `registry::SCREEN_SHAPES`, pinned in that module; `app/recorder.rs` keeps `APP_SHAPES` — the
+   press machine, the input state, the frame line, the container tree, the PMS fixtures — pinned
+   separately and unmoved by any screen. Without this, every conversion edited `app/recorder.rs`
+   twice: once for the entry and once for the pin.
+3. **The panel→surface map moved to the registry** (`39d51ae8`, `ContentPanel::surface`), and the
+   loop's glass-owner block stopped naming a screen (`3032dbc9`, `Screen::prepare_present` +
+   `Dispatcher::prepare_present`). Both were `app/` files a page-owned panel would otherwise have
+   had to edit for a fact that is not the loop's.
+
+A fourth thing is a GATE rather than a mechanism: `ci/check-deps.sh`'s `layer` rule, added with the
+first of those commits, makes "`screens/` never names `crate::app::`" a grep instead of prose.
+The criterion is only worth as much as the boundary underneath it.
+
+### The recipe, for the next one
+
+1. Write `screens/<name>.rs`: the screen, its `SHAPE`, its tests over a local test host.
+2. In `screens/registry.rs`: add the `AppArg` variant with a FORWARD-allocated `ScreenId` and canon
+   tag (never a vacated one — a retired identity handed to a new screen is a container reusing the
+   wrong instance), extend `ARG_SHAPE`, add the `mount` arm, add it to `every_surface_arg` and to
+   `SCREEN_SHAPES`, and bump `SCREEN_SHAPES_PIN` with a sentence saying what moved.
+3. Declare the module in `screens/mod.rs`.
+4. Add the headless trigger in `dev/scenarios.rs`, presenting through the same door the
+   interactive press uses, and gate it on the host page's own predicate so the trigger cannot open
+   what a press would refuse.
+5. Add the fps scene to `tests/manifest.json`.
+6. Re-record the replay fixtures (`tools/plxnative-rec rerecord`), because the pin moved.
+
+---
+
+## (F) TEST-MODULE HOMES (spec §11) — restructure phase 12, D8
+
+Every `#[cfg(test)] mod` that used to sit in `app/mod.rs` moves to the file that owns the thing it
+grades, so a reader finds a subject's tests beside the subject rather than in the loop's own
+catch-all. Table below is the ACTUAL state, and **it is now complete** — `app/mod.rs` carries zero
+`#[cfg(test)] mod` blocks and `ci/check-deps.sh`'s `testmod` gate is green.
+
+**The four that would not move for two phases all gave the same reason, and it was one reason:**
+they graded something spelled in terms of the `Route` enum and `app/nav.rs`, so moving one into
+`screens/…` would put `crate::app::Route` in a file `ci/check-deps.sh`'s `layer` gate forbids from
+naming `crate::app::` at all — the wall `player_return_tests` hit first (phase 9/P5-E1) and that
+P7-G re-confirmed. **PX-D1 removed the reason rather than working around it.** With `Route` folded into
+`AppArg` (a `screens/` type) and the trail replaced by the container's own stack, each of the four
+had a subject that could be named from its subject's own file, and each landed there — which is
+also the honest reading of the two-phase delay: the blocker was never the tests' homes, it was the
+enum, and every attempt to place them while it existed was going to fail the same gate.
+
+| Test module | Old home | New home | Status |
+|---|---|---|---|
+| `route_tests` | `app/mod.rs` | SPLIT — `app/boot.rs` + `screens/registry.rs` | **done** (PX-D1). It was never one subject: the direct-screen server rule is not a route rule at all and is now `boot::direct_server_tests`, beside `resolve_direct_server`; the profile chip's alphabet is `ScreenArg::chrome`'s, so it is asked of `chrome()` one line below the impl — inside the `layer` gate rather than reaching for `app::input` |
+| `key_layout_tests` | `app/mod.rs` | `app/events.rs` | **done** (PX-D1) — beside `decode_key`/`encode_key` and the raw `SDL_KeyboardEvent` offsets it pins |
+| `heartbeat_word_tests` | `app/mod.rs` | `app/words.rs` (new) | **done** (PX-D1) — moved WITH the alphabet it grades (`route_word`, `every_route`, `overlay_word`, `overlay_suffix`, `NO_OVERLAY`), because the point of those tests is that the two word tables are DERIVED rather than transcribed, and a derivation split across two files is a transcription again |
+| `root_back_tests` | `app/mod.rs` | `app/lifecycle.rs` | **done** (P7-G) |
+| `delete_local_data_tests` | `app/mod.rs` | `app/playback.rs` | **done** (P7-G) |
+| `player_return_tests` | `app/mod.rs` | `app/playback.rs` | **done** (PX-D1), and NOT at the `screens/player/input.rs` this table proposed twice: what it grades is the player's RETURN, which is `enter_player`/`exit_player`'s origin — a container operation the loop performs, so it belongs beside them and the `layer` gate is not in the way |
+| `repeat_gate_tests` | (phase 10, already at) `screens/registry.rs` | stays — beside the `RepeatGate` it grades | **done**, and predates this phase (moved on from `app/playback.rs` in phase 10 when the item context-menu surface needed the same cadence) |
+| `hud_visibility_tests` | `app/playback.rs` | `screens/player/input.rs` | **done**, phase 9 — not one of D8's six named modules, listed here because it is the model the six are meant to follow |
+
+`ci/check-deps.sh`'s `testmod` gate counts `#[cfg(test)] mod` blocks in `app/mod.rs` and requires 0.
+It was red at 4 for two phases and is green now. The gate is the thing to trust rather than this
+table: a count in prose is a measurement nothing re-takes.

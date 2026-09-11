@@ -36,6 +36,17 @@
 //! working code; the re-evaluation declined it and is logged in the decision doc. What that
 //! re-evaluation turned up instead is the divergence above: of the five copies of the idiom, only
 //! two handled a refused spawn. The piece worth sharing was the spawn, not the mailbox.
+//!
+//! **This module is also the allowlist boundary of `ci/check-deps.sh`'s `threads` gate**
+//! (restructure spec §15.2, phase 12): every `std::thread::spawn` call outside this file, in
+//! production code, is a violation — checked file by file across the whole crate, with a
+//! `#[cfg(test)] mod` block excluded (a unit test's own mock TCP/HTTP peer stands in for a real
+//! peer and is not a worker). Verified 2026-09-10: it is already empty, i.e. every real worker
+//! this crate spawns — the demux/media threads, `aq`, `stream`, `imgcache`, `ff`, `http`, `auth`,
+//! `curlio`/`route::decision`, the Plex client/transcoder, `browse`, `player`, `ui::present`,
+//! `ui::landgate` — already calls [`spawn`]/[`spawn_small`], not `std::thread::spawn` directly.
+//! `ci/allow/threads.txt` is that gate's allowlist and it, too, is empty for the same reason; a
+//! new production `thread::spawn` outside this file fails CI rather than waiting for a review.
 
 use std::io;
 use std::marker::PhantomData;
@@ -53,9 +64,12 @@ use std::thread::{Builder, JoinHandle};
 ///   to that module, so the token is the only way in. Bind order (`setMediaId` → `LOADED` →
 ///   `setMediaVideoData` → `setDisplayWindow` → `PLAYING`) is a sequence of calls with no
 ///   locking behind it; a second thread stepping into the middle of it corrupts the sink.
-/// * **the `ENGINE` slot** — `player::engine::engine()`. `static mut`, handed out as
-///   `&'static mut`, with worker threads holding raw pointers into the boxes it owns. Two live
-///   `&mut` to it is instant UB, and nothing else prevents that.
+/// * **the native session slot** — `App.adapters.player`. Until phase 9 that was
+///   `player::engine::ENGINE`, a `static mut` handed out as `&'static mut` with worker threads
+///   holding raw pointers into the boxes it owns: two live `&mut` to it is instant UB, and the
+///   token was the only thing standing between the code and one. It is a FIELD now, so the token
+///   is CONSUMED into [`crate::player::adapter::PlayerAdapter`] and `&mut PlayerAdapter` is the
+///   proof instead — one the borrow checker keeps rather than one a caller can satisfy twice.
 ///
 /// The one deliberate hole: `assume` is callable, so `unsafe { MainThread::assume() }` inside a
 /// worker would defeat this. That is the ceiling of the pattern, not an oversight — what it buys
@@ -69,7 +83,7 @@ impl MainThread {
     /// # Safety
     /// The caller asserts this is the SDL main thread. It is not a memory-safety obligation in
     /// itself — it is the premise every `&MainThread` downstream is trusted on, including the
-    /// aliasing of `ENGINE`, so a false one reintroduces exactly the races this prevents.
+    /// one the Player adapter holds, so a false one reintroduces exactly the races this prevents.
     pub(crate) unsafe fn assume() -> Self {
         MainThread(PhantomData)
     }

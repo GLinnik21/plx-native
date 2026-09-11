@@ -265,14 +265,16 @@ Our rows, adapted (Watchlist doesn't exist yet; see the account domain):
 
 | Row | Status |
 |---|---|
-| **Go to Episode** | `item_menu::Action::GoToItem`; `app::input::apply_item_action` opens that detail entry — exists |
-| **Go to Show** | `item_menu::Action::GoToShow`; `app::input::apply_item_action` opens the show detail entry with the season — exists |
+| **Go to Episode** | `screens::item_menu::Action::GoToItem`; `app::input::apply_item_action` opens that detail entry — exists |
+| **Go to Show** | `screens::item_menu::Action::GoToShow`; `app::input::apply_item_action` opens the show detail entry with the season — exists |
 | — separator — | |
 | **Mark as Watched** | needs `viewCount` on `Episode` (cheap win #2); `scrobble` takes any rating key |
 | **Play from Start** | needs the restart path (cheap win #4) |
 | **Remove from Continue Watching** | needs the hub-removal call — not yet written |
 
-Build it on `ui/popover.rs` + `ui/table.rs`, fired from the existing `press.rs:47` long-press latch.
+Built on `ui/table.rs`, fired from the existing long-press latch (`press::LONG_MS`) — and, since
+UI-restructure phase 10, as an owned `Style::Compact` surface (`screens/item_menu.rs`) on the
+shared `ModalStack` rather than a `ui/popover.rs` `Popover` with a route of its own.
 `ui/table.rs` needs one addition: **a leading-icon column and a separator row** (`ui/icons.rs` already
 rasterises SVG masks). Per `ui/CLAUDE.md`, that belongs in the shared table, not in the menu screen.
 
@@ -1005,9 +1007,9 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* CONFIRMED; one evidence nit. ui/player_hud.rs:81-92 is all literals: `let sz = 36`, `let lh = 48.0`, `let baseline = if hud_up { SCR_H - 300.0 } else { SCR_H - 100.0 }`, `let white = [1.0,1.0,1.0,1.0]`, `wrap(seg, 42)`, `lines.len() < 3`, and a fixed 4-offset 2px black outline. No offset term: player/mod.rs:234-245 `active_subtitle` compares `now_ns >= c.start_ns && now_ns < c.end_ns` raw, and :281-292 `active_bitmap_key` does the same — so the gap covers image subs (PGS/VobSub) too, which the auditor does not say. NIT on the evidence: the ASS-override strip at player/mod.rs:314 is `'{' => whi
 
 - **~~No playback stats / Direct Play vs Transcode read-out in the player~~ — RESOLVED 2026-08-31**
-  `ui::stats` now renders the shared playback Diagnostics overlay for Direct, Original/remux and HLS, and is reachable from the in-player overflow. A dev trigger can still render its device-only state off-player for automated captures, but it is not a global Account setting. It reports the actual delivery/output state, codecs, raster/fps when known, buffer/controller evidence and requested-versus-observed HLS response without exposing server identities.
+  `app::diagnostics` now renders the shared playback Diagnostics overlay for Direct, Original/remux and HLS, and is reachable from the in-player overflow. A dev trigger can still render its device-only state off-player for automated captures, but it is not a global Account setting. It reports the actual delivery/output state, codecs, raster/fps when known, buffer/controller evidence and requested-versus-observed HLS response without exposing server identities.
   *Historical proposal:* rust-modules/src/ui/info_panel.rs (a stats block or a third HUD tab), reading route::is_transcoding/stream_vcodec/stream_acodec and player/shared.rs state.
-  *Historical audit evidence:* the Info card itself still contains catalog metadata rather than live transport data; the implemented surface is the separate `ui::stats` overlay.
+  *Historical audit evidence:* the Info card itself still contains catalog metadata rather than live transport data; the implemented surface is the separate `app::diagnostics` overlay.
 
 - **Pause and resume are not reported to the server until the next 10s tick** — `minor` / `small`  
   The official client posts /:/timeline on every state transition, so 'Now Playing' and any controlling client see pause/resume immediately. Our only in-playback reporter is the 10s loop, which merely samples `TX.paused` when it happens to wake — so the server can show 'playing' for up to 10 seconds after the user pauses, and the resume point on an app kill is up to 10 seconds stale.  
@@ -1464,10 +1466,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* CONFIRMED absent, and the seam analysis is exactly right. player/ffi.rs:19-45 declares 13 sf_* verbs (load/ready/is_load_completed/play/pause/flush/push_eos/set_time_to_decode/set_content_info/send_segment/feed/unload/destroy) + 7 acb_* (create/bind/send_video_data/start/unload/pause/resume) — no rate verb; src/starfish.c:38-68 lists every mangled StarfishMediaAPIs/CustomPipeline symbol bound and `setPlayRate` is not among them; grep for playbackspeed|play_rate|setPlayRate|speed over rust-modules/src and src/*.c returns nothing. The device_risk is if anything understated: BUFFERSTREAM + `conte
 
 - **~~No Playback Information / stats overlay~~ — RESOLVED 2026-08-31**
-  The shared `ui::stats` Diagnostics overlay reports delivery mode, requested and observed quality, source/output picture and codecs, fps, progress, buffer, feed and Auto controller evidence. It is intentionally the same panel on local Direct, Original/remux and HLS so screenshots are comparable.
-  *Historical proposal:* a stats view over player/route/shared state; the landed implementation is `ui/stats.rs` and the shared field-list widget.
+  The shared `app::diagnostics` Diagnostics overlay reports delivery mode, requested and observed quality, source/output picture and codecs, fps, progress, buffer, feed and Auto controller evidence. It is intentionally the same panel on local Direct, Original/remux and HLS so screenshots are comparable.
+  *Historical proposal:* a stats view over player/route/shared state; the landed implementation is `app/diagnostics.rs` and the shared field-list widget.
   *Device:* None known, with one caveat worth designing around: the in-app capture stream cannot see the video plane (capture.rs is UI-plane only), so an on-screen stats overlay is actually the only channel that can correlate UI state with what the panel is showing — which argues for building it. Cost is a few text draws per frame; keep it off the per-frame CString path (use the memo pattern in player_hud.rs:171-192) so it does not cost fill/measure on the A53.  
-  *Historical audit evidence:* the cited absence predates `ui::stats`; fields the platform cannot measure (for example a hardware decoder's own dropped-frame counter) remain explicitly unknown rather than fabricated.
+  *Historical audit evidence:* the cited absence predates `app::diagnostics`; fields the platform cannot measure (for example a hardware decoder's own dropped-frame counter) remain explicitly unknown rather than fabricated.
 
 - **No subtitle appearance settings (size, position, colour, background)** — `major` / `small`  
   The reference client's Subtitles submenu carries size / position / colour / background. Every one of ours is a compile-time constant: size 36, line height 48, pure white, a 4-offset black outline instead of a background box, a fixed baseline that only knows two states (HUD up / HUD down), and a wrap fixed at 42 characters and 3 lines maximum.  
@@ -1645,10 +1647,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* RESOLVED in the current tree; automatic retry policy remains intentionally narrower than detection and explicit recovery.
 
 - **~~No Playback Information / stats overlay exists at all~~ — RESOLVED 2026-08-31**
-  `ui::stats` is a live playback Diagnostics overlay reached through the player's overflow. Its two-column layout presents source/output facts and delivery/control evidence without elision, and uses explicit unknown values where PMS or webOS exposes no measurement. Development automation may open it off-player to capture device facts, without adding that instrument to the profile menu.
-  *Historical proposal:* add a stats panel and thread live route/player facts into it; the current implementation lives in `ui/stats.rs` and is toggled through the player's overflow.
+  `app::diagnostics` is a live playback Diagnostics overlay reached through the player's overflow. Its two-column layout presents source/output facts and delivery/control evidence without elision, and uses explicit unknown values where PMS or webOS exposes no measurement. Development automation may open it off-player to capture device facts, without adding that instrument to the profile menu.
+  *Historical proposal:* add a stats panel and thread live route/player facts into it; the current implementation lives in `app/diagnostics.rs` and is toggled through the player's overflow.
   *Device:* Most of it is cheap: the direct-play/transcode verdict, the codecs actually fed to the Load payload, fps, queue bytes and duration are already in-process. Two fields are genuinely hard on this device. (1) DROPPED FRAMES: nothing counts them - sf_on_event only increments SHARED.frames on a type=0 "presented" callback (player/mod.rs:357-363) and the Starfish/ACB seam in src/starfish.c exposes no decoder-statistics symbol, so a drop count would have to be inferred from fed-vs-presented PTS deltas rather than measured. (2) DECODER hw/sw is a constant here - buffer-feed always decodes on the panel's hardware, so the field is honest but uninteresting. "Buffer ahead" is also nearly meaningless as drawn elsewhere: MAX_FEED_AHEAD_NS is 1.6 s (player/engine.rs:673) with an 8 MB video AU queue (player/engine.rs:39), so the real number is single-digit seconds, not the tens-of-seconds Plex shows. Adding Media width/height/bitrate to the DTO is free (plex/models.rs is all `#[serde(default)]`); a /status/sessions GET for transcodeReason is one more JSON round trip through the existing client and safe.  
-  *Historical audit evidence:* the cited grep and overlay enum described the earlier tree; current reachability is pinned by `ui::stats` and menu tests.
+  *Historical audit evidence:* the cited grep and overlay enum described the earlier tree; current reachability is pinned by `app::diagnostics` and menu tests.
 
 - **No BIF thumbnail preview while scrubbing** — `major` / `large`  
   Plex floats a still from the scrub position above the scrubber, served from /library/parts/<id>/indexes/sd. Our scrubber draws a bar, a knob and two clock labels and nothing else - scrubbing 40 minutes forward is done blind against a frozen picture.  

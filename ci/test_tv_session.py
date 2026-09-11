@@ -293,5 +293,258 @@ class EnsureBinary(unittest.TestCase):
         )
 
 
+class GuestIdentity(unittest.TestCase):
+    """Regression for the 2026-09-10 TV session 5 defect: `up --guest` printed a warning and
+    then silently pushed the OWNER's token anyway, so a real playback wrote progress into the
+    household Plex account (clearing it needed /:/unscrobble, which also reset that item's
+    viewCount -- real data loss, not a test artifact).
+
+    `resolve_identity` is the single place that decision is made now, and it is host-only and
+    pure enough to unit-test directly: it never calls ssh/tv, and its one subprocess
+    (`tests/run.py --print-test-token`, tv-session.sh's re-use of run.py's own managed-user
+    resolution) is replaced here with a fake `python3` on PATH so these cases never touch
+    plex.tv, src/config.local.h or a television.
+    """
+
+    def _run(self, script_body, *, guest_ok):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "tools").mkdir()
+            (root / "tests").mkdir()
+            # content is irrelevant -- the fake python3 below never reads it -- but
+            # resolve_guest_token's `cd "$REPO/tests"` must have somewhere real to land.
+            (root / "tests" / "run.py").write_text("# stub for GuestIdentity tests\n", encoding="utf-8")
+            script_link = root / "tools" / "tv-session.sh"
+            script_link.symlink_to(SCRIPT)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            # Answers the ONE batched `make -s ... print-flavor print-appid print-appdir
+            # print-rundir print-eventlog print-appport print-tv` query the script makes at
+            # parse time, in that exact order -- same shape as EnsureBinary's fake `make` above.
+            (bin_dir / "make").write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' debug com.beb.plxnative.debug /app /run /events 8911 fake-host\n",
+                encoding="utf-8",
+            )
+            (bin_dir / "python3").write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    if [ "$1" = "run.py" ] && [ "$2" = "--print-test-token" ]; then
+                      if [ "{guest_ok}" = "1" ]; then
+                        printf '%s' fake-guest-token-xyz
+                        exit 0
+                      fi
+                      echo 'no test_user in manifest.local.json -- nothing to resolve as a guest identity' >&2
+                      exit 1
+                    fi
+                    exit 0
+                    """
+                ),
+                encoding="utf-8",
+            )
+            for command in bin_dir.iterdir():
+                command.chmod(0o755)
+
+            # `selftest` as $1 is what lets the script's own top-of-file HOST/TV requirement
+            # skip itself (see the script's `[ -n "${HOST:-}" ] || [ "${1:-}" = selftest ]`
+            # guard) -- the same trick cmd_selftest's own invocation relies on.
+            harness = 'source "$1" selftest\n' + script_body
+            environment = os.environ.copy()
+            environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+            result = subprocess.run(
+                ["bash", "-c", harness, "guest-identity", str(script_link)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                check=False,
+                timeout=10,
+            )
+            return result.returncode, result.stdout
+
+    def test_guest_resolves_the_managed_user_token(self):
+        rc, out = self._run(
+            textwrap.dedent(
+                """\
+                guest=1; owner=0; no_token=0; server_set=0; server_slot=""
+                resolve_identity; echo "RC:$?"
+                echo "PUSH_GUEST:$push_guest"
+                echo "PUSH_OWNER:$push_owner"
+                echo "TOKEN:$GUEST_TOKEN"
+                """
+            ),
+            guest_ok="1",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("RC:0", out)
+        self.assertIn("PUSH_GUEST:1", out)
+        self.assertIn("PUSH_OWNER:0", out)
+        self.assertIn("TOKEN:fake-guest-token-xyz", out)
+
+    def test_unresolvable_guest_refuses_and_never_falls_back_to_owner(self):
+        rc, out = self._run(
+            textwrap.dedent(
+                """\
+                guest=1; owner=0; no_token=0; server_set=0; server_slot=""
+                resolve_identity; echo "RC:$?"
+                echo "PUSH_GUEST:$push_guest"
+                echo "PUSH_OWNER:$push_owner"
+                """
+            ),
+            guest_ok="0",
+        )
+        self.assertEqual(rc, 0, out)  # the bash PROCESS exits clean; resolve_identity itself fails
+        self.assertIn("RC:1", out)
+        self.assertIn("PUSH_GUEST:0", out)
+        # THE regression: a failed guest resolution must never leave push_owner=1, which is what
+        # would silently boot the household account instead of refusing.
+        self.assertIn("PUSH_OWNER:0", out)
+        self.assertIn("cannot resolve a guest identity", out)
+        self.assertIn("up --owner", out)
+
+    def test_owner_identity_is_explicit(self):
+        rc, out = self._run(
+            textwrap.dedent(
+                """\
+                guest=0; owner=1; no_token=0; server_set=0; server_slot=""
+                resolve_identity; echo "RC:$?"
+                echo "PUSH_OWNER:$push_owner"
+                echo "DESC:$identity_desc"
+                """
+            ),
+            guest_ok="0",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("RC:0", out)
+        self.assertIn("PUSH_OWNER:1", out)
+        self.assertIn("DESC:owner", out)
+
+    def test_bare_up_identity_defaults_to_owner(self):
+        # Neither --guest nor --owner: this is what a plain `tv-session.sh up` resolves to, and
+        # it must say so (identity_desc) BEFORE cmd_up goes anywhere near the television.
+        rc, out = self._run(
+            textwrap.dedent(
+                """\
+                guest=0; owner=0; no_token=0; server_set=0; server_slot=""
+                resolve_identity; echo "RC:$?"
+                echo "PUSH_OWNER:$push_owner"
+                echo "DESC:$identity_desc"
+                """
+            ),
+            guest_ok="0",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("PUSH_OWNER:1", out)
+        self.assertIn("DESC:owner", out)
+
+    def test_no_token_identity_is_the_stored_session_not_a_fourth_owner_path(self):
+        rc, out = self._run(
+            textwrap.dedent(
+                """\
+                guest=0; owner=0; no_token=1; server_set=0; server_slot=""
+                resolve_identity; echo "RC:$?"
+                echo "PUSH_GUEST:$push_guest"
+                echo "PUSH_OWNER:$push_owner"
+                echo "DESC:$identity_desc"
+                """
+            ),
+            guest_ok="0",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("PUSH_GUEST:0", out)
+        self.assertIn("PUSH_OWNER:0", out)
+        self.assertIn("stored session", out)
+
+    def test_up_refuses_guest_combined_with_a_screen_that_forces_the_stored_session(self):
+        # --screen profiles forces no_token=1 (the picker needs no injected token at all) --
+        # this must REFUSE rather than silently drop --guest and boot the stored session/owner.
+        # Exits before any TV contact, so no `tv`/`tvq`/lock mocking is needed here.
+        rc, out = self._run(
+            'cmd_up --screen profiles --guest\necho "AFTER:$?"\n',
+            guest_ok="1",
+        )
+        self.assertEqual(rc, 1, out)
+        self.assertNotIn("AFTER:", out)  # cmd_up's `exit 1` must end the process, not just return
+        self.assertIn("cannot be combined", out)
+
+
+class HeartbeatWords(unittest.TestCase):
+    """`assert_route` reads the heartbeat's TWO words, not just the page's.
+
+    UI-restructure phase 10 put the account sheet and the press-and-hold card menu on the
+    shared `ModalStack`, so each prints the HOST page as `route=` and its own `Screen::name`
+    as ` overlay=`: `route=home overlay=account`, never the retired `route=account`. This
+    script kept naming the retired words, and because the assertion is `|| true` at its call
+    site the result was not a refusal but something worse -- every `up --screen account`
+    printed a red `wanted route=account, got route=home` over a boot that had in fact
+    landed exactly where it was asked to.
+
+    `tvq` is the one thing here that would touch a television, and a sourced Bash function
+    definition is global, so stubbing it makes the whole comparison host-testable.
+    """
+
+    def _assert_route(self, heartbeat, args):
+        # `tvq` runs its argument as a shell command ON THE TELEVISION, against $EVENTLOG.
+        # The stub runs that SAME command string locally against a real file, so the grep
+        # under test is the script's own -- a stub that just echoed the heartbeat back would
+        # bypass the very expression this is about and pass for the wrong reason.
+        with tempfile.TemporaryDirectory() as directory:
+            log = pathlib.Path(directory) / "plxnative-events.log"
+            log.write_text(f"loop=60 {heartbeat} fps=0\n", encoding="utf-8")
+            body = textwrap.dedent(
+                f"""\
+                EVENTLOG={log}
+                tvq() {{ sh -c "$1"; }}
+                assert_route {args}
+                echo "RC:$?"
+                """
+            )
+            harness = 'source "$1" selftest\n' + body
+            result = subprocess.run(
+                ["bash", "-c", harness, "heartbeat-words", str(SCRIPT)],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                check=False, timeout=10,
+            )
+            return result.stdout
+
+    def test_account_sheet_is_accepted_as_host_page_plus_overlay(self):
+        out = self._assert_route("route=home overlay=account", "home account")
+        self.assertIn("RC:0", out)
+
+    def test_card_menu_is_accepted_as_host_page_plus_overlay(self):
+        out = self._assert_route("route=home overlay=itemmenu", "home itemmenu")
+        self.assertIn("RC:0", out)
+
+    def test_a_bare_host_page_is_not_the_sheet_that_was_asked_for(self):
+        # The surface never opened: the page word alone must NOT satisfy a caller who named
+        # an overlay, or this assertion stops being able to see a refused trigger at all.
+        out = self._assert_route("route=home", "home account")
+        self.assertIn("RC:1", out)
+
+    def test_the_wrong_overlay_is_refused(self):
+        out = self._assert_route("route=home overlay=itemmenu", "home account")
+        self.assertIn("RC:1", out)
+
+    def test_overlay_none_reads_as_no_overlay(self):
+        # The player prints ` overlay=none` when nothing is up; a caller naming no overlay
+        # must still match it, or `--screen player=` starts failing its own route check.
+        out = self._assert_route("route=player overlay=none", "player")
+        self.assertIn("RC:0", out)
+
+    def test_a_page_with_no_overlay_word_still_matches(self):
+        out = self._assert_route("route=home", "home")
+        self.assertIn("RC:0", out)
+
+    def test_a_caller_naming_only_a_page_tolerates_a_surface_over_it(self):
+        # `--screen detail=<rk>` with a panel trigger armed beside it (plxnative-tracks,
+        # plxnative-about) lands on the detail page with that panel up. The caller asked for
+        # the page and got it; comparing an overlay it never named would turn the ordinary way
+        # of reaching a page-owned panel into a permanent red line.
+        out = self._assert_route("route=detail overlay=tracks", "detail")
+        self.assertIn("RC:0", out)
+
+
 if __name__ == "__main__":
     unittest.main()

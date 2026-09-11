@@ -18,7 +18,7 @@ use crate::ui::consts::*;
 use crate::ui::frame::Budget;
 use crate::ui::machine::{
     Canon, Cx, Effects, EntryId, GroupId, Handled, InputEvent, InputKind, Key, LogicalState,
-    Machine, Measure,
+    Machine, Measure, Tick,
 };
 use crate::ui::present::{PresentEvent, Provenance};
 use crate::ui::route_screen::{RouteGround, RouteLayout};
@@ -159,6 +159,12 @@ pub(crate) struct FilmographyScreen {
     tab_c: Vec<CString>,
     preview: Option<(String, String)>,
     pv_want: Option<(String, String)>,
+    /// Seconds the wanted preview has sat unchanged, hashed as logical state (`SHAPE`'s
+    /// `pv_still:f32`). Deliberately still a raw per-frame increment (phase 12 D4 did NOT move
+    /// this onto `motion::Ramp`): a `Ramp`'s absolute-`Tick.ms` math computes the same real
+    /// quantity through a different float operation sequence that measurably diverges the hash
+    /// against the committed replay fixtures. `step_preview`'s own doc explains the fix that DID
+    /// land — the settle timer now reports `Motion`, which it never did before.
     pv_still: f32,
     pv_fade: Xfade,
     ground: RouteGround,
@@ -492,7 +498,13 @@ impl FilmographyScreen {
         card_row::reveal(self.tab_hscroll.pos, lo, hi, f32::MAX)
     }
 
-    fn step_preview(&mut self, dt: f32, focus: Option<crate::ui::machine::FocusKey<u32>>) -> bool {
+    fn step_preview<H: crate::ui::machine::Host>(
+        &mut self,
+        t: Tick,
+        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        fx: &mut Effects<'_, H>,
+    ) -> bool {
+        let dt = t.dt();
         let want = self
             .current_row(focus)
             .and_then(|i| self.rows().get(i))
@@ -504,7 +516,15 @@ impl FilmographyScreen {
         }
         let waiting = want != self.preview;
         if waiting {
-            self.pv_still += dt;
+            // Spelled as an assignment, not `+= dt`: bit-for-bit identical arithmetic to the
+            // pre-D4 accumulator, deliberately UNCHANGED — `pv_still` is HASHED `LogicalState`
+            // (`SHAPE`'s `pv_still:f32`), and a `motion::Ramp`'s absolute-`Tick.ms` math computes
+            // the same real quantity through a different float operation sequence that measurably
+            // diverges the hash (verified against the committed replay fixtures). What WAS a real
+            // bug — this settle timer never reported `Motion` — is fixed by the explicit `note`
+            // below, with no change to the number itself.
+            self.pv_still = self.pv_still + dt;
+            fx.present().note(crate::ui::present::PresentEvent::Motion);
             if self.pv_still >= PV_SETTLE && !self.pv_fade.is_swapping() {
                 self.pv_fade.reload();
             }
@@ -518,7 +538,8 @@ impl FilmographyScreen {
         waiting || self.pv_fade.is_swapping()
     }
 
-    fn tick<H: ContentLike>(&mut self, dt: f32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn tick<H: ContentLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let dt = t.dt();
         if self.dirty {
             self.rebuild(cx.focus.current);
         }
@@ -546,7 +567,7 @@ impl FilmographyScreen {
         let target = self.tab_hscroll_target(cx.measure, tab);
         self.tab_hscroll.step(target, 240.0, dt);
         self.table.update(dt, table_frame().h);
-        let preview_motion = self.step_preview(dt, cx.focus.current);
+        let preview_motion = self.step_preview(t, cx.focus.current, fx);
         if preview_motion || before != (self.tab_hscroll.pos, self.tab_hscroll.vel) {
             fx.note(PresentEvent::Motion);
         }
@@ -586,6 +607,7 @@ impl FilmographyScreen {
             "Filmography",
             &format!("{total} credits · Newest first."),
             theme::size::LABEL,
+            f.measure,
         );
 
         let rects = self.pill_rects(f.measure);
@@ -637,7 +659,7 @@ impl FilmographyScreen {
         }
 
         let frame = table_frame();
-        self.table.draw(p, frame);
+        self.table.draw(p, frame, f.measure);
         if let Some(thumb) = self
             .preview
             .as_ref()
@@ -868,7 +890,7 @@ impl<H: ContentLike> Machine<H> for FilmographyScreen {
                 Handled::Yes
             }
             ScreenEvent::Tick(tick) => {
-                self.tick(tick.dt(), cx, fx);
+                self.tick(*tick, cx, fx);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
@@ -1023,7 +1045,7 @@ mod tests {
         }
     }
 
-    fn screen(entry: u32, _serial: &std::sync::MutexGuard<'_, ()>) -> FilmographyScreen {
+    fn screen(entry: u32, _serial: &crate::testlock::Serial) -> FilmographyScreen {
         let mut s =
             FilmographyScreen::new(EntryId(entry), ServerId::UNSET, format!("person-{entry}"));
         s.name = format!("Person {entry}");
@@ -1178,19 +1200,38 @@ mod tests {
         let mut s = screen(4, &_serial);
         s.preview = Some(("Actor".to_string(), "catalog-Film 0".to_string()));
         s.pv_want = s.preview.clone();
-        let dt = 1.0 / 60.0;
-        let mut since_repeat = 0.0;
+        // One 60Hz frame, the same `Tick` shape every other host test in this lane synthesizes —
+        // this replaces a raw `since_repeat: f32 += dt` accumulator simulating the OS's key
+        // auto-repeat cadence with the same integer-ms `Tick.ms` sequence a real frame loop
+        // produces, which is what `step_preview` itself now reads.
+        const DT_US: u32 = 16_667;
+        let mut present = crate::ui::present::Present::new();
+        let mut out: Vec<Stamped<FilmographyHost>> = Vec::new();
+        let mut ms: u32 = 0;
+        let mut last_repeat_ms: u32 = 0;
         let mut row = 0usize;
         let mut swaps = 0;
         let mut last = s.preview.clone();
+        let mut tick = |s: &mut FilmographyScreen, ms: u32, row: usize| {
+            let row_focus = focus(s, Located::Row(row));
+            let mut fx = Effects::new(
+                &mut out,
+                crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+                &mut present,
+            );
+            s.step_preview(
+                crate::ui::machine::Tick { ms, dt_us: DT_US },
+                Some(row_focus),
+                &mut fx,
+            );
+        };
         for _ in 0..120 {
-            since_repeat += dt;
-            if since_repeat >= 0.110 {
-                since_repeat = 0.0;
+            ms += DT_US / 1000;
+            if ms.wrapping_sub(last_repeat_ms) >= 110 {
+                last_repeat_ms = ms;
                 row = (row + 1).min(39);
             }
-            let row_focus = focus(&s, Located::Row(row));
-            s.step_preview(dt, Some(row_focus));
+            tick(&mut s, ms, row);
             if s.preview != last {
                 swaps += 1;
                 last = s.preview.clone();
@@ -1198,13 +1239,45 @@ mod tests {
         }
         assert_eq!(swaps, 0);
         for _ in 0..60 {
-            let row_focus = focus(&s, Located::Row(row));
-            s.step_preview(dt, Some(row_focus));
+            ms += DT_US / 1000;
+            tick(&mut s, ms, row);
         }
         assert_eq!(
             s.preview,
             Some(("Actor".to_string(), format!("catalog-Film {row}")))
         );
+    }
+
+    /// **The frozen-animator regression class, closed for the poster-preview settle (phase 12
+    /// D4).** `pv_still` used to be a raw `+= dt` accumulator that never reported `Motion` at all
+    /// — `step_preview` now notes it explicitly every frame the settle countdown runs, with the
+    /// arithmetic itself deliberately UNCHANGED (`pv_still` is hashed `LogicalState`; see its own
+    /// doc for why this did NOT move onto `motion::Ramp`). Focus lands on a row the current
+    /// preview does not already show, which is exactly `step_preview`'s `waiting` state — the
+    /// countdown toward swapping the preview art.
+    #[test]
+    fn a_settling_preview_reports_motion_from_inside_advance() {
+        let _serial = crate::testlock::serial();
+        let mut s = screen(5, &_serial);
+        s.preview = Some(("Actor".to_string(), "catalog-Film 0".to_string()));
+        s.pv_want = s.preview.clone();
+        let row_focus = focus(&s, Located::Row(1));
+        let mut present = crate::ui::present::Present::new();
+        let _ = present.take(0);
+        let mut out: Vec<Stamped<FilmographyHost>> = Vec::new();
+        for ms in [16, 32, 48] {
+            let mut fx = Effects::new(
+                &mut out,
+                crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+                &mut present,
+            );
+            let waiting = s.step_preview(Tick { ms, dt_us: 16_667 }, Some(row_focus), &mut fx);
+            assert!(waiting, "focus moved onto a row the preview does not show yet");
+            assert!(
+                present.take(ms),
+                "a settling preview must present every frame it is on screen (ms={ms})"
+            );
+        }
     }
 
     #[test]

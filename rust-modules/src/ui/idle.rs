@@ -37,9 +37,12 @@
 //! **Springs are not the only clock, and that is the standing hazard.** Anything that animates
 //! from raw time — a millisecond ramp, a phase accumulator, a countdown — is invisible to (1) by
 //! construction and must report through (2) itself. Two did not, and both froze in the product:
-//! [`Xfade`](crate::ui::xfade) (every route dip) and [`Spinner`](crate::ui::widgets::Spinner)
+//! [`Xfade`](crate::ui::xfade) (every CONTENT cross-fade — the Library's grid and page, Search's
+//! results, Filmography's preview) and [`Spinner`](crate::ui::widgets::Spinner)
 //! (every loading read-out). They report from their own advance and draw respectively; the reasons
-//! those two sides differ are on each call. `docs/retui-invalidation-design.md` is the accepted
+//! those two sides differ are on each call. `Xfade` was the ROUTE dip too until restructure phase
+//! 12 (D1) lifted that onto [`PageDip`](crate::ui::containers::transition::PageDip), which is
+//! inside the container and reports `Motion` from its own `tick` by construction. `docs/retui-invalidation-design.md` is the accepted
 //! plan for closing the class properly, by making `dt` a capability rather than an `f32`.
 //!
 //! The asymmetry is deliberate: a false "something moved" costs one wasted frame, a false
@@ -54,11 +57,12 @@
 //! (the hero billboard's 8 s auto-flip still flips), and async work still lands on schedule. Those
 //! cost ~0.3% of a core between them; the 16% was the draw.
 //!
-//! It is also **not applied to the player route** — see [`should_present`]'s caller in `app.rs`.
-//! `system.rs`'s `clear_opaque_region` documents the hardware video plane as *slaved* to our
-//! wayland surface, and "we stop presenting for seconds while a plane is slaved to it" is a claim
-//! about this compositor that no amount of reading settles. Home has no video plane active, which
-//! is what makes it the safe place to prove the mechanism.
+//! It is also **not applied while the hardware video plane is bound** — see [`VIDEO_PLANE`],
+//! [`note`] and `Player::video_plane_bound` below, fed by `Player::set_video_plane_bound`'s edges
+//! rather than by which route is on screen. A pre-bind spinner or a post-unbind failure read-out
+//! is an ordinary idle-gated frame; "we stop presenting for seconds while a plane is bound to our
+//! surface" is a claim about this compositor that no amount of reading settles. Home never binds
+//! the plane, which is what makes it the safe place to prove the mechanism.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 
@@ -145,6 +149,17 @@ thread_local! {
     /// judged visible. Same thread-local rationale as `MOVING`.
     static DT: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0 / 60.0) };
 
+    /// A monotonic microsecond clock, advanced once per frame by [`frame_begin`] — for a
+    /// clock-driven leaf that has no `Tick` of its own to hand it (`card_row`'s focused-title
+    /// marquee is the one caller: it advances from inside `draw`, reached through a generic
+    /// `Column::draw_child` trait method and several call sites across three lanes' files, none
+    /// of which carries a `Tick`). Unlike the retired `dt()` accessor this is never SUMMED by a
+    /// caller — a reader takes two readings and subtracts them ([`now_ms`]'s own doc), so no
+    /// caller can accumulate drift the way a per-frame `f32 dt` invited. `u64` microseconds
+    /// rather than `f32` seconds for the same reason `search.rs`'s debounce and `anim.rs`'s probe
+    /// clock convert once rather than sum: exact, with no realistic overflow horizon.
+    static MS_CLOCK_US: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+
     /// Last discrete-damage generation reported through [`should_present`] on this thread. Unlike
     /// `DIRTY`, this is observational: it lets noidle report one-shot damage without consuming the
     /// gate's sticky flag, preserving the rate-only diagnostic contract.
@@ -177,6 +192,16 @@ static PRESENTS: AtomicU32 = AtomicU32::new(0);
 /// Kill switch (`/tmp/plxnative-noidle`), so a device A/B is one file apart and a bad frame on the
 /// panel is one `rm` from being ruled out as this feature's fault.
 static ENABLED: AtomicBool = AtomicBool::new(true);
+/// **Is the hardware video plane bound to our sink?** The gate's only non-damage INPUT (spec §4.4,
+/// [`crate::ui::present::PresentEvent::VideoPlane`]). While it is set every frame presents,
+/// unconditionally: the plane is *slaved* to this wayland surface (`system::clear_opaque_region`),
+/// and "we stop presenting while a plane is slaved to it" is a claim about this compositor that
+/// reading cannot settle.
+///
+/// **It has exactly ONE writer** — [`crate::player::machine::Player::set_video_plane_bound`], on
+/// the bit's EDGES (spec §16 risk 10: a second formula term here is how the two disagree). The
+/// loop must never poke it, and nothing here re-derives it from the route.
+static VIDEO_PLANE: AtomicBool = AtomicBool::new(false);
 
 /// Turn the gate off for this boot. Read once at startup from `/tmp/plxnative-noidle`.
 pub(crate) fn set_enabled(on: bool) {
@@ -185,6 +210,34 @@ pub(crate) fn set_enabled(on: bool) {
 
 pub(crate) fn enabled() -> bool {
     ENABLED.load(Relaxed)
+}
+
+/// **The typed input to the LIVE gate** (spec §4.4). `ui::present::Present` is the machine this
+/// module becomes; until it is swapped in, the two share one vocabulary so they cannot drift, and
+/// a caller says WHAT happened rather than poking a bool.
+///
+/// The mapping onto this module's older doors, in full:
+/// * `VideoPlane(b)` — the one input with state of its own; see [`VIDEO_PLANE`].
+/// * `Damage(_)` / `Fault(_)` — [`invalidate`]. The provenance is dropped: `ui::idle` has no
+///   ledger to record it on (`Present::why` is the machine's, and the recorder reads that one).
+/// * `Motion` — [`invalidate`] as well, deliberately NOT the `MOVING` thread-local. `MOVING` is
+///   the *rest test*'s answer, judged from a spring's own post-step state by [`note_spring`], and
+///   it feeds `page_moving`, which decides whether a frozen host is re-snapshotted and whether the
+///   page wash is dithered. A caller who only knows "something moved" cannot answer those, so it
+///   gets one frame — never a claim about which springs were in flight.
+pub(crate) fn note(ev: crate::ui::present::PresentEvent) {
+    use crate::ui::present::PresentEvent;
+    match ev {
+        PresentEvent::VideoPlane(bound) => VIDEO_PLANE.store(bound, Relaxed),
+        PresentEvent::Damage(_) | PresentEvent::Fault(_) | PresentEvent::Motion => invalidate(),
+    }
+}
+
+/// The gate's current video-plane input. Read by the frame algorithm's step 8/9 consumers — the
+/// opaque-region call and the capture skip — so all of them see ONE value.
+#[inline]
+pub(crate) fn video_plane_bound() -> bool {
+    VIDEO_PLANE.load(Relaxed)
 }
 
 /// Report one spring step. Called from the two integrators in `gfx`, so it sees every animation
@@ -350,14 +403,18 @@ pub(crate) fn wake() {
     WAKE.store(true, Relaxed);
 }
 
-/// Start of an iteration: forget last frame's motion (the update phase is about to re-derive it)
-/// and stamp this frame's `dt` for [`note_spring`].
+/// Start of an iteration: forget last frame's motion (the update phase is about to re-derive it),
+/// stamp this frame's `dt` for [`note_spring`], and advance [`MS_CLOCK_US`] for [`now_ms`] — by
+/// the exact whole-microsecond conversion of `dt`, not a summed `f32`, for the same reason
+/// `search.rs`'s debounce and `anim.rs`'s probe clock do it that way.
 #[inline]
 pub(crate) fn frame_begin(dt: f32) {
     MOVING.with(|m| m.set(false));
     PAGE_MOVING.with(|m| m.set(false));
     UNDERLAY_MOVING.with(|m| m.set(false));
     DT.with(|d| d.set(dt));
+    let dt_us = (dt * 1_000_000.0).round().max(0.0) as u64;
+    MS_CLOCK_US.with(|c| c.set(c.get() + dt_us));
 }
 /// Publish this frame's page-under-everything motion verdict (`app.rs`'s `underlay_moving`) for
 /// [`underlay_moving`]. Once per drawn frame, by `popover::host::begin_frame`.
@@ -372,15 +429,21 @@ pub(crate) fn underlay_moving() -> bool {
     UNDERLAY_MOVING.with(|m| m.get())
 }
 
-/// This frame's `dt`, for a clock-driven animator that has no `dt` of its own to hand it — the
-/// same hazard the module doc calls out for [`Xfade`](crate::ui::xfade::Xfade) and
+/// A monotonic millisecond reading, for a clock-driven animator that has no `Tick` of its own to
+/// hand it — the same hazard the module doc calls out for [`Xfade`](crate::ui::xfade::Xfade) and
 /// [`Spinner`](crate::ui::widgets::Spinner): a millisecond ramp is invisible to [`note_spring`] and
 /// must report through [`invalidate`] itself. `card_row`'s focused-title marquee is the third —
-/// it advances from inside `draw`, which gets no `dt` parameter at all, so it reads this instead of
-/// a fourth screen threading one through five call sites across three lanes' files.
+/// it advances from inside `draw`, reached through a generic `Column::draw_child` trait method
+/// and several call sites across three lanes' files, none of which carries a `Tick` — so it reads
+/// this instead of widening that trait's fixed parameter list.
+///
+/// **Take two readings and subtract them (`u32::wrapping_sub`)**, exactly as `motion::Phase`
+/// does with a real `Tick.ms` — never accumulate a per-frame delta into a running total, which is
+/// the `check-deps.sh` `dt` gate's whole complaint and the reason this replaced a `dt()` accessor
+/// callers used to sum themselves.
 #[inline]
-pub(crate) fn dt() -> f32 {
-    DT.with(|d| d.get())
+pub(crate) fn now_ms() -> u32 {
+    MS_CLOCK_US.with(|c| (c.get() / 1000) as u32)
 }
 
 /// Run one host page's update with an isolated view of spring motion, then merge its result back
@@ -396,8 +459,18 @@ pub(crate) fn scoped_motion<T>(f: impl FnOnce() -> T) -> (T, bool) {
 /// function body rather than a closure — a popover's `update`, which steps three or four springs
 /// through several early returns and would otherwise have to be reindented into a closure to say
 /// the same thing.
+///
+/// **It closes on `Drop` as well as on [`close`](Self::close)**, which is what lets it be held as a
+/// plain guard over a region with early returns — the dispatcher's per-surface step and draw
+/// (§4.4), where the alternative is a `close()` on every path out. Before that it had no `Drop` at
+/// all, so a scope that was dropped rather than closed left [`SCOPE_DEPTH`] raised for the rest of
+/// the frame: every later spring in the app would then report as a popover's, and nothing would
+/// fail — the gate would simply stop seeing the page move. `close` still consumes the guard and
+/// returns the verdict; the `Drop` that follows it is a no-op.
 pub(crate) struct MotionScope {
     before: bool,
+    /// Still raising [`SCOPE_DEPTH`] — false once [`close`](Self::close) has merged it back.
+    open: bool,
 }
 
 impl MotionScope {
@@ -405,11 +478,20 @@ impl MotionScope {
         SCOPE_DEPTH.with(|d| d.set(d.get() + 1));
         Self {
             before: MOVING.with(|m| m.replace(false)),
+            open: true,
         }
     }
 
     /// Merge the scope back into the frame-wide bit and report whether anything inside it moved.
-    pub(crate) fn close(self) -> bool {
+    pub(crate) fn close(mut self) -> bool {
+        self.merge()
+    }
+
+    fn merge(&mut self) -> bool {
+        if !self.open {
+            return false;
+        }
+        self.open = false;
         let before = self.before;
         SCOPE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
         MOVING.with(|m| {
@@ -417,6 +499,12 @@ impl MotionScope {
             m.set(before || own);
             own
         })
+    }
+}
+
+impl Drop for MotionScope {
+    fn drop(&mut self) {
+        let _ = self.merge();
     }
 }
 
@@ -462,7 +550,15 @@ pub(crate) fn should_present(now: u32) -> bool {
     let dirty = dirty || new_damage;
     let changed = moving || dirty || wake || settling;
     PRESENT_DIRTY.with(|c| c.set(dirty));
-    if changed {
+    // The video-plane term is HERE, below every take-and-clear above it, and not `|| fr.player` at
+    // the call site as it was through phase 8. Two reasons, and the second is the bug: a term on
+    // the right of the caller's `||` short-circuits this whole function away on the frames it is
+    // true for, leaving `DIRTY`/`WAKE` set to fire spuriously on the way back out; and the term
+    // itself was the ROUTE, so the frames before the plane binds and after it unbinds — a spinner,
+    // a HUD fade, the failure read-out — were exempted from the gate for no reason the compositor
+    // knows about. They are ordinary idle frames now, which is what makes every player-side
+    // animator's motion report load-bearing.
+    if changed || VIDEO_PLANE.load(Relaxed) {
         return true;
     }
     let keepalive = KEEPALIVE_MS != 0 && now.wrapping_sub(LAST_PRESENT.load(Relaxed)) >= KEEPALIVE_MS;
@@ -523,7 +619,7 @@ mod tests {
     /// The gate's statics are reached from `gfx::spring`, which every other module's spring tests
     /// also drive — so this contends across modules, not just within this file. `testlock`, not a
     /// module-local mutex (see `lib.rs::testlock`).
-    fn fresh() -> std::sync::MutexGuard<'static, ()> {
+    fn fresh() -> crate::testlock::Serial {
         let g = crate::testlock::serial();
         set_enabled(true);
         frame_begin(1.0 / 60.0);
@@ -537,7 +633,114 @@ mod tests {
         WAS_MOVING.with(|c| c.set(false));
         OWN_DAMAGE_N.store(0, Relaxed);
         TAKEN_GEN.store(0, Relaxed);
+        VIDEO_PLANE.store(false, Relaxed);
+        let _ = take_local_damage();
         g
+    }
+
+    /// **Spec §9, §4.4, §16 risk 10 — the whole-frame gate is turned off by the PLANE'S BIT, not
+    /// by the player route, and both of its edges are carried.**
+    ///
+    /// Three separate claims, because three separate things were wrong before phase 9.
+    ///
+    /// 1. *Only while bound.* The term used to be `|| fr.player` at the call site, i.e. "the
+    ///    player SCREEN is up" — true through the whole pre-bind spinner and the whole post-unbind
+    ///    fade, when the compositor has an ordinary UI surface and nothing is slaved to it.
+    /// 2. *The false edge presents.* The frame the plane goes away on is very often one the gate
+    ///    would otherwise skip: the picture is gone and no spring is moving. If that frame is not
+    ///    presented, the surface keeps whatever the last video frame left and the opaque region is
+    ///    asserted for a plane that is no longer there (§3.3 step 9).
+    /// 3. *`opaque_route` is asked on every frame, from the bit.* Pinned from the loop's own source
+    ///    — this is the one consumer a unit test cannot drive, `run` needing a live SDL window.
+    ///
+    /// Observed RED (simulated — the fix changes the signatures the old code called, so the test
+    /// cannot be compiled against 88841d3e): restoring `should_present`'s pre-phase-9 body by
+    /// deleting the `|| VIDEO_PLANE.load(Relaxed)` term fails claim 1 at
+    /// "while the plane is bound every frame presents"; deleting the `!bound` `invalidate()` in
+    /// `Player::set_video_plane_bound` fails claim 2 at "the unbind frame presents"; and putting
+    /// `fr.player` back as `opaque_route`'s argument fails claim 3.
+    #[test]
+    fn the_present_gate_answers_true_only_while_the_plane_is_bound() {
+        let _g = fresh();
+        let mut player = crate::player::machine::Player::new();
+        assert!(!video_plane_bound(), "a fresh machine has no plane");
+
+        invalidate();
+        assert!(should_present(0), "the damage just raised selects this frame");
+        assert!(!should_present(16), "settled, inside the keepalive: nothing to send");
+
+        // ---- the TRUE edge, and what it buys ----
+        player.set_video_plane_bound(true);
+        assert!(video_plane_bound(), "the machine's edge is the gate's only input");
+        for t in [32u32, 48, 64, 80] {
+            assert!(
+                should_present(t),
+                "while the plane is bound every frame presents, unconditionally — nothing about                  this frame moved",
+            );
+        }
+
+        // A LEVEL is not an edge. Writing the same value again must publish nothing: a second
+        // formula term feeding the gate is exactly what risk 10 names.
+        let _ = take_local_damage();
+        player.set_video_plane_bound(true);
+        assert_eq!(
+            take_local_damage(),
+            0,
+            "re-asserting the same bit raised damage — the bit is published on EDGES only",
+        );
+
+        // ---- the FALSE edge, on a frame that would otherwise not present ----
+        // Nothing else has happened: no input, no landing, no spring, and the keepalive is not due
+        // (LAST_PRESENT is 0 and KEEPALIVE_MS is 2000). Without the edge's own report this frame
+        // is skipped, and the last video frame stays on the panel behind a stale opaque region.
+        player.set_video_plane_bound(false);
+        assert!(!video_plane_bound());
+        assert!(
+            should_present(96),
+            "the unbind frame presents even though nothing else about it moved",
+        );
+        assert!(
+            !should_present(112),
+            "…and the frame after it is an ordinary idle frame again, which is the whole point",
+        );
+
+        // ---- claim 3: the loop asks the compositor on EVERY frame, from the bit ----
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+        )
+        .expect("read run.rs");
+        assert!(
+            !src.contains("crate::system::opaque_route(fr.player)"),
+            "the opaque region must not be keyed on the ROUTE — the plane's bit is the question",
+        );
+        // **UNCONDITIONAL.** The claim this pins is not where the call sits relative to the
+        // present decision — spec §3.3 step 9 puts it AFTER, and since phase 11 so does the loop,
+        // because the render cache's upload step now runs on the PRESENTING side of that decision
+        // and this call has to follow it. The claim is that the call is never nested inside an
+        // `if fr.present` block: the false edge after an unbind may land on a frame the gate does
+        // not present, and nothing else in the loop would carry it. This assertion used to be
+        // `call < gate`, which was a proxy for that and stopped being one when the upload moved.
+        //
+        // D1 extracted the prepare window into `prepare_window(app, fr)` to get `run` under its
+        // 200-line budget, so "the loop body's own depth" is now two claims: the call is at
+        // `prepare_window`'s own body depth (four spaces, never inside that function's one
+        // `if fr.present`), and `prepare_window` itself is called at the loop body's (eight).
+        const CALL: &str = "    crate::system::opaque_route(app.player.video_plane_bound);";
+        assert_eq!(
+            src.lines().filter(|l| *l == CALL).count(),
+            1,
+            "`opaque_route` must be called exactly once, unnested — inside `if fr.present` it is \
+             lost on exactly the frames it matters on",
+        );
+        assert!(
+            src.lines().any(|l| l == "        prepare_window(app, fr);"),
+            "…and the window that holds it runs on every iteration, at the loop body's own depth",
+        );
+        let call = src.find(CALL.trim_start()).expect("the call");
+        let draw = src
+            .find("let (_vx, _vy, _vw, _vh) = draw(app, fr);")
+            .expect("the loop's draw");
+        assert!(call < draw, "the compositor is told before the frame is drawn");
     }
 
     /// The host cache's question — did the PAGE change — answered by count: damage raised inside

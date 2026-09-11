@@ -59,7 +59,7 @@
 //!   its rows with.
 //! * **No resume position is ever COPIED from one server to another — only the watched flag
 //!   travels.** This is the subtle half. A resume offset is about a file you are streaming from one
-//!   host, and `ui::alt_sources`' module doc reasons that out at length; that reasoning stands. So
+//!   host, and `screens::alt_sources`' module doc reasons that out at length; that reasoning stands. So
 //!   `unscrobble` IS repeated on the other copies (it is the "unwatched" end of one control, and
 //!   clearing the flag is the same statement about the title), but no `viewOffset` is read here and
 //!   none is pushed anywhere.
@@ -230,7 +230,7 @@ pub(crate) fn is_busy() -> bool {
 /// than a degraded one: the worker looks it up. It is what a watched write FANS OUT on, so that a
 /// title held by more than one source ends up watched on all of them (module doc). It is ignored
 /// for [`Write::RemoveFromDeck`], which stays on the server it was pressed on.
-pub(crate) fn request(
+fn request(
     sid: ServerId,
     rk: &str,
     w: Write,
@@ -428,7 +428,12 @@ fn kick() {
 /// answer, and the refresh is owed either way.
 pub(crate) fn pump() {
     let due = retry_tick();
-    if let Some(done) = MAIL.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay the server's answer is taken
+    // on the frame the recording took it on. The retry tick and `kick` below stay outside it.
+    let landed = crate::stores::take_landing(crate::stores::StoreId::ViewState, || {
+        MAIL.lock().unwrap_or_else(|e| e.into_inner()).take()
+    });
+    if let Some(done) = landed {
         if let Some(r) = unsafe { (*addr_of_mut!(SENT)).take() } {
             crate::log(&format!(
                 "viewstate: rk={} {} ok={} others={}",
@@ -473,6 +478,15 @@ pub(crate) fn pump() {
 }
 
 /// The owning application addresses the refresh to the mounted entry after the write burst.
+///
+/// **D3 classification: landing-adjacent, like [`pump`]/[`land`]-style doors, not a screen-facing
+/// mutator** — it drains `WANT_DETAIL`, which only [`pump`] ever sets, on the main thread, once a
+/// frame, route-unconditional. It stays `pub(crate)` for the same sibling-module reason `pump`
+/// does (the frame loop in `app/run.rs` is not a descendant of this module, so nothing narrower
+/// than crate-wide visibility can reach it at all); what D3 actually fixes is the CALL SITE —
+/// `app/run.rs` used to call this directly instead of through `stores::viewstate`, so it now goes
+/// through [`crate::stores::viewstate::take_detail_refresh`], the sanctioned wrapper, exactly as
+/// it already does for `pump()`.
 pub(crate) fn take_detail_refresh() -> Option<String> {
     if is_busy() { return None; }
     unsafe { (*addr_of_mut!(WANT_DETAIL)).take() }
@@ -618,7 +632,7 @@ fn fanout_targets(origin: (ServerId, &str), answers: &[Answer]) -> Vec<(ServerId
 /// Drop everything — the identity-change twin of `pms::reset`/`browse::reset`, called from the same
 /// place. A queued write belongs to the account that asked for it; one already SENT is on the wire
 /// and simply lands into a mailbox nobody is owed a refresh for.
-pub(crate) fn reset() {
+fn reset() {
     queue().clear();
     *MAIL.lock().unwrap_or_else(|e| e.into_inner()) = None;
     unsafe {
@@ -626,6 +640,23 @@ pub(crate) fn reset() {
         *addr_of_mut!(RETRY_CD) = 0;
         *addr_of_mut!(WANT_HUBS) = false;
         *addr_of_mut!(WANT_DETAIL) = None;
+    }
+}
+
+/// `stores::viewstate`'s one door onto every
+/// [`ViewStateCmd`](crate::stores::viewstate::ViewStateCmd) (D3): the match used to live in
+/// `stores/viewstate.rs::run`, calling `request`/`reset` across the module boundary. Relocating
+/// it here is what lets those two go private.
+pub(crate) fn run(cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
+    use crate::stores::viewstate::ViewStateCmd;
+    match cmd {
+        ViewStateCmd::Request { sid, rk, write, detail, guid } => {
+            request(sid, &rk, write, detail, &guid)
+        }
+        ViewStateCmd::Reset => {
+            reset();
+            true
+        }
     }
 }
 

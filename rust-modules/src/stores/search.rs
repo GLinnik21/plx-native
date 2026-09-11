@@ -32,26 +32,20 @@ pub(crate) fn apply(cmd: SearchCmd) -> bool {
     super::apply(super::StoreCmd::Search(cmd))
 }
 
-/// The store's own step, reached only through [`super::apply`].
+/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
+/// `search::run` — its arms called `pub(crate)` mutators (`set_query`, `reset`,
+/// `set_watched_local`) across this module boundary; those three are private to `search.rs`
+/// now and this is their only door.
 pub(super) fn run(cmd: SearchCmd) -> bool {
-    let answer = match cmd {
-        SearchCmd::SetQuery(q) => {
-            crate::search::set_query(&q);
-            true
-        }
-        SearchCmd::SetQueryScoped { profile_generation, query } => {
-            if profile_generation != crate::plex::session::current_gen() { return false; }
-            crate::search::set_query(&query);
-            true
-        }
-        SearchCmd::RememberRecent { profile_generation, term } => crate::search::recents::remember(profile_generation, &term),
-        SearchCmd::ClearRecents { profile_generation } => crate::search::recents::clear(profile_generation),
-        SearchCmd::Reset => {
-            crate::search::reset();
-            true
-        }
-        SearchCmd::SetWatchedLocal { sid, rk, on } => crate::search::set_watched_local(sid, &rk, on),
-    };
+    // `crate::search`'s statics are a crate global reached from both `apply` above and
+    // `crate::stores::apply(StoreCmd::Search(..))` directly (the dispatcher's own delivery path,
+    // which some fixtures use without going through this module's `apply`) — guard the one point
+    // both funnel through, not each caller, so a test that writes it outside
+    // `crate::testlock::serial()` panics HERE rather than corrupting a bystander test. See
+    // `lib.rs::testlock` and D5.
+    #[cfg(test)]
+    crate::testlock::assert_held("the search store (apply)");
+    let answer = crate::search::run(cmd);
     super::bump(StoreId::Search);
     answer
 }

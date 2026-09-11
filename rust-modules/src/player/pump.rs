@@ -2,7 +2,7 @@
 //! plex_run: the pending-seek handler, the ACB-bind state machine (Stage), and the
 //! feed dispatch. All ACB/Starfish control calls happen here on the main thread.
 use super::engine::{
-    arm_live_clock_prime, drain_aq, engine, feed_both_lanes, feed_sample, Engine, Source,
+    arm_live_clock_prime, drain_aq, feed_both_lanes, feed_sample, Engine, Source,
 };
 use super::shared::{HlsPauseCompletion, HlsPrimeKind, HlsSeekPause, Stage};
 use super::{ffi, ACB_OK, SHARED, TX};
@@ -171,8 +171,8 @@ fn rebuffer_request_is_current(
 /// Stop the INTERNAL A/V clock at a physical reserve boundary while leaving demux and feeding
 /// alive. This is intentionally not `TX.paused`: the viewer did not pause, and the whole point is
 /// to keep acquiring until `try_prime` sees enough measured runway to resume smoothly.
-fn maybe_begin_hls_rebuffer(mt: &MainThread, eng: &mut Engine) {
-    if !crate::route::is_segmented_hls()
+fn maybe_begin_hls_rebuffer(ps: &crate::route::PlaybackSession, mt: &MainThread, eng: &mut Engine) {
+    if !crate::route::is_segmented_hls(ps)
         || eng.stage < Stage::Playing
         || eng.prime_play
         || TX.paused.load(Relaxed)
@@ -295,10 +295,11 @@ fn place_exported(mt: &MainThread, eng: &mut super::engine::Engine) {
 
 /// Mirror Engine-confined observations into `Shared` for diagnostics and handled-error context.
 ///
-/// The read-out cannot call `engine(&MainThread)` itself — that hands out a `&'static mut` to a
-/// `static mut`, and the draw runs inside a frame where the pump's borrow may still be live, so a
-/// second one is instant UB. This is the only bridge, it is one-way, and nothing in the playback
-/// state machine may read these fields back.
+/// The read-out cannot reach the `Engine` itself: the draw runs inside a frame where the pump
+/// holds the adapter's `&mut`, and it holds no `&mut PlayerAdapter` of its own (before phase 9 the
+/// slot was a `static mut` handing out `&'static mut`, so the same call was possible and was
+/// instant UB). This is the only bridge, it is one-way, and nothing in the playback state machine
+/// may read these fields back.
 ///
 /// The stage is a cheap scalar and is always published so an opted-in terminal report does not
 /// depend on whether Stats for Nerds happened to be open. `aq_bytes` takes each queue's pthread
@@ -312,9 +313,10 @@ fn publish_diag(eng: &Engine, now: u32) {
     SHARED.dg_stage.store(eng.stage as u8, Relaxed);
     // Nobody is looking: skip it. `aq_bytes` takes each queue's pthread mutex, and the read-out
     // samples at 2 Hz, so publishing at 60 Hz is 30x more often than anything can observe. Costs
-    // no freshness — the loop order is pump → stats::update → stats::draw, so the frame the panel
+    // no freshness — the loop order is pump → `Diagnostics::update` → `Diagnostics::draw`
+    // (`app/run.rs`), so the frame the panel
     // is switched on has already republished.
-    if !crate::ui::stats::enabled() {
+    if !crate::app::diagnostics::enabled() {
         return;
     }
     let qv = eng.aq_video.as_ref().map_or(0, |q| {
@@ -328,7 +330,7 @@ fn publish_diag(eng: &Engine, now: u32) {
     SHARED.dg_fed_v_pts.store(eng.max_fed_video_pts, Relaxed);
     SHARED.dg_fed_a_pts.store(eng.max_fed_audio_pts, Relaxed);
     // Stamp when the frame count MOVES. The panel needs "how long has it been stuck" and a
-    // photograph has no time axis; stamping here rather than in `ui::stats` is what makes the
+    // photograph has no time axis; stamping here rather than in `app::diagnostics` is what makes the
     // clock measure the STALL rather than how long the panel has been open.
     let f = SHARED.frames.load(Relaxed);
     if LAST_FRAMES.swap(f, Relaxed) != f {
@@ -351,8 +353,8 @@ enum OriginalRollbackPreparation {
     Prepared(crate::route::OriginalRollback),
 }
 
-fn prepare_failed_original_rollback(status: i32) -> OriginalRollbackPreparation {
-    let Some(rollback) = crate::route::rollback_original_recovery() else {
+fn prepare_failed_original_rollback(ps: &mut crate::route::PlaybackSession, status: i32) -> OriginalRollbackPreparation {
+    let Some(rollback) = crate::route::rollback_original_recovery(ps) else {
         return OriginalRollbackPreparation::NotPending;
     };
     let secs = rollback.offset_ns / 1_000_000_000;
@@ -366,7 +368,7 @@ fn prepare_failed_original_rollback(status: i32) -> OriginalRollbackPreparation 
     // where that worker was created. Register a fresh physical HLS session at the recovery
     // position before reloading it; reopening the saved URL pairs a new display base with old media
     // and makes the picture jump backwards while the clock claims it did not.
-    if crate::route::transcode_seek(secs).is_none() {
+    if crate::route::transcode_seek(ps, secs).is_none() {
         super::log("abr: restored HLS encoder but could not rebase it to the recovery position");
         return OriginalRollbackPreparation::RebaseFailed;
     }
@@ -379,11 +381,11 @@ fn prepare_failed_original_rollback(status: i32) -> OriginalRollbackPreparation 
     OriginalRollbackPreparation::Prepared(rollback)
 }
 
-fn recover_from_failed_original() -> Option<crate::route::OriginalRollback> {
+fn recover_from_failed_original(ps: &mut crate::route::PlaybackSession) -> Option<crate::route::OriginalRollback> {
     // Capture before `reload_transcode` clears the engine-scoped HTTP mirror. This sticky pair is
     // the reason a successful HLS rollback can still explain on screen why Original was refused.
     let status = SHARED.dg_http_status.load(Relaxed);
-    match prepare_failed_original_rollback(status) {
+    match prepare_failed_original_rollback(ps, status) {
         OriginalRollbackPreparation::Prepared(rollback) => Some(rollback),
         OriginalRollbackPreparation::NotPending | OriginalRollbackPreparation::RebaseFailed => None,
     }
@@ -402,9 +404,9 @@ pub(crate) enum ForegroundOriginalRecovery {
     Terminal,
 }
 
-pub(crate) fn recover_failed_foreground_original(mt: &MainThread) -> ForegroundOriginalRecovery {
+pub(crate) fn recover_failed_foreground_original(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> ForegroundOriginalRecovery {
     // No HTTP request necessarily happened: do not inherit the previous Engine's sticky status.
-    let rollback = match prepare_failed_original_rollback(0) {
+    let rollback = match prepare_failed_original_rollback(ps, 0) {
         OriginalRollbackPreparation::NotPending => {
             return ForegroundOriginalRecovery::NotOriginal;
         }
@@ -414,7 +416,7 @@ pub(crate) fn recover_failed_foreground_original(mt: &MainThread) -> ForegroundO
         }
         OriginalRollbackPreparation::Prepared(rollback) => rollback,
     };
-    match super::engine::reload_transcode_tracked(mt, rollback.offset_ns) {
+    match super::engine::reload_transcode_tracked(ps, pa, rollback.offset_ns) {
         super::engine::BufferfeedStartOutcome::Launched(attempt) => {
             ForegroundOriginalRecovery::Tracking(attempt)
         }
@@ -455,14 +457,14 @@ fn open_failure_action(
 /// Recover either kind of failed Original open and return the reload position in nanoseconds.
 /// Pending HLS rollback has priority; a failed rollback is terminal rather than silently starting
 /// a third transaction on route state whose encoder restore already failed.
-fn recover_failed_source_route() -> Option<crate::route::OriginalRollback> {
+fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession) -> Option<crate::route::OriginalRollback> {
     let action = open_failure_action(
         crate::route::original_recovery_pending(),
-        crate::route::auto_original_watch().is_some(),
+        crate::route::auto_original_watch(ps).is_some(),
         SHARED.frames.load(Relaxed) == 0,
     );
     match action {
-        OpenFailureAction::RollbackPendingOriginal => recover_from_failed_original(),
+        OpenFailureAction::RollbackPendingOriginal => recover_from_failed_original(ps),
         OpenFailureAction::StartAutoHls => {
             let status = SHARED.dg_http_status.load(Relaxed);
             if status >= 400 {
@@ -471,7 +473,7 @@ fn recover_failed_source_route() -> Option<crate::route::OriginalRollback> {
                 super::note_original_failure(super::ABR_FAILURE_ORIGINAL_OPEN, status);
             }
             let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
-            crate::route::fallback_unopened_auto_to_hls(secs)?;
+            crate::route::fallback_unopened_auto_to_hls(ps, secs)?;
             Some(crate::route::OriginalRollback::without_deferred(
                 secs * 1_000_000_000,
             ))
@@ -498,13 +500,14 @@ fn settle_reload(outcome: super::engine::ReloadOutcome, operation: &str) -> bool
 /// rollback snapshot; a synchronous Load construction failure is the same typed rejection as an
 /// HTTP/demux/Load callback failure and must cross that rollback edge immediately.
 fn start_original_trial_reload(
-    mt: &MainThread,
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
     reload: crate::route::AutoOriginalReload,
     position_ns: i64,
 ) -> bool {
     let outcome = match reload {
-        crate::route::AutoOriginalReload::Direct => super::engine::reload_at(mt, position_ns),
-        crate::route::AutoOriginalReload::Remux => super::engine::reload_transcode(mt, position_ns),
+        crate::route::AutoOriginalReload::Direct => super::engine::reload_at(ps, pa, position_ns),
+        crate::route::AutoOriginalReload::Remux => super::engine::reload_transcode(ps, pa, position_ns),
     };
     if outcome == super::engine::ReloadOutcome::Started {
         return true;
@@ -512,11 +515,11 @@ fn start_original_trial_reload(
     super::log(&format!(
         "abr: Original trial could not start ({outcome:?}); taking explicit rollback edge",
     ));
-    let Some(rollback) = recover_from_failed_original() else {
+    let Some(rollback) = recover_from_failed_original(ps) else {
         set_state(super::shared::PlaybackState::Error);
         return false;
     };
-    let restored = super::engine::reload_transcode(mt, rollback.offset_ns);
+    let restored = super::engine::reload_transcode(ps, pa, rollback.offset_ns);
     if restored == super::engine::ReloadOutcome::Started {
         true
     } else {
@@ -526,9 +529,14 @@ fn start_original_trial_reload(
     }
 }
 
-pub(crate) fn pump(mt: &MainThread, now: u32) {
+pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
     use super::shared::PlaybackState;
-    let eng = match engine(mt) {
+    // ONE `&mut PlayerAdapter`, split into the live session and the seam token. Everything below
+    // that replaces the session (`reload_*`) takes `pa` back, which the borrow checker only allows
+    // where neither half is read afterwards — the "`eng` dangles after it, return immediately"
+    // rule this function used to state in three comments and enforce by hand.
+    let (eng, mt) = pa.split();
+    let eng = match eng {
         Some(e) => e,
         None => {
             set_state(PlaybackState::Idle);
@@ -544,13 +552,13 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     // The media thread may have returned from sf_load immediately, but it is not allowed to make
     // the route Stable before this Engine exists in the main-thread slot. Drain its exact-token
     // result here, after installation and before any worker publication can be accepted.
-    crate::route::drain_route_start_results();
+    crate::route::drain_route_start_results(ps);
     // `sf_load == 0` may leave no callable object, so this must precede the sf_ready wait below;
     // otherwise the pump returns Connecting forever and never consumes the explicit failure.
     if SHARED.load_failed.load(Acquire) {
-        if let Some(rollback) = recover_failed_source_route() {
+        if let Some(rollback) = recover_failed_source_route(ps) {
             let started = settle_reload(
-                super::engine::reload_transcode(mt, rollback.offset_ns),
+                super::engine::reload_transcode(ps, pa, rollback.offset_ns),
                 "HLS rollback after native Load failure",
             );
             let _ = started;
@@ -577,10 +585,10 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     // `teardown(for_reload=true)` on the way into this reload (`SHARED::reset_session`), so a
     // non-zero count here belongs to the new source and to nothing else.
     if crate::route::original_recovery_pending() && SHARED.frames.load(Relaxed) > 0 {
-        crate::route::confirm_original_recovery();
+        crate::route::confirm_original_recovery(ps);
     }
     if SHARED.frames.load(Relaxed) > 0 {
-        crate::route::confirm_resume_presented();
+        crate::route::confirm_resume_presented(ps);
     }
 
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
@@ -596,9 +604,9 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     // flag. Acquire is the matching hand-off; `error_now` can then report the transaction cause
     // instead of racing it into the generic producer bucket.
     if SHARED.demux_io_failed.load(Acquire) {
-        if let Some(rollback) = recover_failed_source_route() {
+        if let Some(rollback) = recover_failed_source_route(ps) {
             let started = settle_reload(
-                super::engine::reload_transcode(mt, rollback.offset_ns),
+                super::engine::reload_transcode(ps, pa, rollback.offset_ns),
                 "HLS rollback after source I/O failure",
             );
             let _ = started;
@@ -609,9 +617,9 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         return;
     }
     if SHARED.demux_failed.load(Acquire) && SHARED.frames.load(Relaxed) == 0 {
-        if let Some(rollback) = recover_failed_source_route() {
+        if let Some(rollback) = recover_failed_source_route(ps) {
             let started = settle_reload(
-                super::engine::reload_transcode(mt, rollback.offset_ns),
+                super::engine::reload_transcode(ps, pa, rollback.offset_ns),
                 "HLS rollback after demux failure",
             );
             let _ = started;
@@ -641,8 +649,9 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                 crate::route::RouteIntent::User(intent) => match intent {
                     crate::route::UserRouteIntent::Retranscode => {
                         let secs = user_target / 1_000_000_000;
-                        if crate::route::retranscode_for(&action.ticket, secs).is_some() {
+                        if crate::route::retranscode_for(ps, &action.ticket, secs).is_some() {
                             crate::route::finish_route_action(
+                                ps,
                                 &action,
                                 crate::route::RouteApplyResult::Prepared,
                             );
@@ -654,12 +663,13 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                                 if pending_seek >= 0 { " + seek" } else { "" },
                             ));
                             settle_reload(
-                                super::engine::reload_transcode(mt, user_target),
+                                super::engine::reload_transcode(ps, pa, user_target),
                                 "user retranscode reload",
                             );
                             return;
                         }
                         crate::route::finish_route_action(
+                            ps,
                             &action,
                             crate::route::RouteApplyResult::Rejected,
                         );
@@ -668,6 +678,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                     crate::route::UserRouteIntent::NativeAudioReload => {
                         let idx = SHARED.desired_audio_idx.load(Relaxed);
                         crate::route::finish_route_action(
+                            ps,
                             &action,
                             crate::route::RouteApplyResult::Prepared,
                         );
@@ -680,16 +691,17 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                             if pending_seek >= 0 { " + seek" } else { "" },
                         ));
                         settle_reload(
-                            super::engine::switch_audio_native(mt, idx, user_target),
+                            super::engine::switch_audio_native(ps, pa, idx, user_target),
                             "native audio reload",
                         );
                         return;
                     }
                     crate::route::UserRouteIntent::AdaptiveReload => {
-                        if crate::route::is_transcoding() {
+                        if crate::route::is_transcoding(ps) {
                             let secs = user_target / 1_000_000_000;
-                            if crate::route::transcode_seek(secs).is_some() {
+                            if crate::route::transcode_seek(ps, secs).is_some() {
                                 crate::route::finish_route_action(
+                                    ps,
                                     &action,
                                     crate::route::RouteApplyResult::Prepared,
                                 );
@@ -701,18 +713,20 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                                     if pending_seek >= 0 { " + seek" } else { "" },
                                 ));
                                 settle_reload(
-                                    super::engine::reload_transcode(mt, user_target),
+                                    super::engine::reload_transcode(ps, pa, user_target),
                                     "adaptive HLS reload",
                                 );
                                 return;
                             }
                             crate::route::finish_route_action(
+                                ps,
                                 &action,
                                 crate::route::RouteApplyResult::Rejected,
                             );
                             super::log("route transition: adaptive transcode reload was rejected");
                         } else {
                             crate::route::finish_route_action(
+                                ps,
                                 &action,
                                 crate::route::RouteApplyResult::Prepared,
                             );
@@ -725,7 +739,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                                 if pending_seek >= 0 { " + seek" } else { "" },
                             ));
                             settle_reload(
-                                super::engine::reload_at(mt, user_target),
+                                super::engine::reload_at(ps, pa, user_target),
                                 "adaptive direct reload",
                             );
                             return;
@@ -734,17 +748,19 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                     crate::route::UserRouteIntent::RecoverOriginal => {
                         let secs = user_target / 1_000_000_000;
                         match crate::route::recover_auto_to_original_for(
+                            ps,
                             &action.ticket,
                             secs,
                             false,
                         ) {
                             Some(reload) => {
                                 crate::route::commit_user_seek();
-                                start_original_trial_reload(mt, reload, user_target);
+                                start_original_trial_reload(ps, pa, reload, user_target);
                                 return;
                             }
                             None => {
                                 crate::route::finish_route_action(
+                                    ps,
                                     &action,
                                     crate::route::RouteApplyResult::Rejected,
                                 );
@@ -764,6 +780,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                             let secs = position_ns / 1_000_000_000;
                             if ticket != action.ticket {
                                 crate::route::finish_route_action(
+                                    ps,
                                     &action,
                                     crate::route::RouteApplyResult::Cancelled,
                                 );
@@ -771,6 +788,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                                 return;
                             }
                             if crate::route::fallback_auto_to_hls_for(
+                                ps,
                                 &action.ticket,
                                 conservative_kbps,
                                 secs,
@@ -778,17 +796,19 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                             .is_some()
                             {
                                 crate::route::finish_route_action(
+                                    ps,
                                     &action,
                                     crate::route::RouteApplyResult::Prepared,
                                 );
                                 crate::route::commit_user_seek();
                                 settle_reload(
-                                    super::engine::reload_transcode(mt, position_ns),
+                                    super::engine::reload_transcode(ps, pa, position_ns),
                                     "automatic Original-to-HLS reload",
                                 );
                                 return;
                             }
                             crate::route::finish_route_action(
+                                ps,
                                 &action,
                                 crate::route::RouteApplyResult::Rejected,
                             );
@@ -804,6 +824,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                             let secs = position_ns / 1_000_000_000;
                             if ticket != action.ticket {
                                 crate::route::finish_route_action(
+                                    ps,
                                     &action,
                                     crate::route::RouteApplyResult::Cancelled,
                                 );
@@ -811,17 +832,19 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                                 return;
                             }
                             match crate::route::recover_auto_to_original_for(
+                                ps,
                                 &action.ticket,
                                 secs,
                                 true,
                             ) {
                                 Some(reload) => {
                                     crate::route::commit_user_seek();
-                                    start_original_trial_reload(mt, reload, position_ns);
+                                    start_original_trial_reload(ps, pa, reload, position_ns);
                                     return;
                                 }
                                 None => {
                                     crate::route::finish_route_action(
+                                        ps,
                                         &action,
                                         crate::route::RouteApplyResult::Rejected,
                                     );
@@ -834,7 +857,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                                     );
                                     crate::route::commit_user_seek();
                                     settle_reload(
-                                        super::engine::reload_transcode(mt, position_ns),
+                                        super::engine::reload_transcode(ps, pa, position_ns),
                                         "retained HLS reopen after rejected Original",
                                     );
                                     return;
@@ -892,7 +915,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                 tgt / 1_000_000_000
             ));
             settle_reload(
-                super::engine::reload_at(mt, tgt),
+                super::engine::reload_at(ps, pa, tgt),
                 "stuck in-place seek reload",
             ); // REPLACES the engine — eng dangles, return
             return;
@@ -903,7 +926,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     // A live transcode has NO Content-Length (file_size stays -1), so gate it on duration
     // only and seek by RESTARTING the transcode at a time &offset (below). Direct-play
     // seeks in place via av_seek.
-    let is_transcode = crate::route::is_transcoding();
+    let is_transcode = crate::route::is_transcoding(ps);
     if stream
         && t >= 0
         && !crate::route::original_recovery_pending()
@@ -923,10 +946,10 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         // dangles after it — return immediately and let the next pump() tick drive the fresh engine.
         if is_transcode {
             let secs = t / 1_000_000_000;
-            if crate::route::transcode_seek(secs).is_some() {
+            if crate::route::transcode_seek(ps, secs).is_some() {
                 crate::route::commit_user_seek();
                 settle_reload(
-                    super::engine::reload_transcode(mt, t),
+                    super::engine::reload_transcode(ps, pa, t),
                     "transcode seek reload",
                 );
             } else {
@@ -949,7 +972,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         // `eng` dangles after it: return immediately.
         if !super::INPLACE_SEEK_OK.load(Relaxed) {
             crate::route::commit_user_seek();
-            settle_reload(super::engine::reload_at(mt, t), "direct seek reload");
+            settle_reload(super::engine::reload_at(ps, pa, t), "direct seek reload");
             return;
         }
         // Pause, user-held seek reuse and eventual prime all share one actuator state. In
@@ -965,7 +988,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                         super::log("seek(in-place): Starfish refused Pause → reload fallback");
                         crate::route::commit_user_seek();
                         settle_reload(
-                            super::engine::reload_at(mt, t),
+                            super::engine::reload_at(ps, pa, t),
                             "seek reload after native Pause refusal",
                         );
                         return;
@@ -974,7 +997,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                         super::log("seek(in-place): stale Pause result → reload fallback");
                         crate::route::commit_user_seek();
                         settle_reload(
-                            super::engine::reload_at(mt, t),
+                            super::engine::reload_at(ps, pa, t),
                             "seek reload after stale Pause",
                         );
                         return;
@@ -994,7 +1017,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
             crate::route::commit_user_seek();
             super::log("seek(in-place): native callback epoch retired → reload fallback");
             settle_reload(
-                super::engine::reload_at(mt, t),
+                super::engine::reload_at(ps, pa, t),
                 "seek reload after retired native epoch",
             );
             return;
@@ -1084,7 +1107,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         // before AAC is present produced silent initial playback that recovered only after a seek
         // (the seek path already primed both lanes). Progressive initial play keeps its proven
         // immediate-start behavior.
-        if prime_before_play(eng.rebase_pending, crate::route::is_segmented_hls()) {
+        if prime_before_play(eng.rebase_pending, crate::route::is_segmented_hls(ps)) {
             eng.prime_play = true;
             super::log("SMP loadCompleted (priming before Play)");
         } else {
@@ -1097,7 +1120,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                 match SHARED.complete_hls_prime_play(token, accepted) {
                     super::shared::HlsPlayCompletion::Accepted { resume_acb } => {
                         if resume_acb {
-                            super::acb_mirror_playstate(mt, true);
+                            super::acb_mirror_playstate_at(mt, eng.stage, true);
                         }
                         super::log("SMP Play");
                     }
@@ -1141,7 +1164,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
             // `rv=1` accepted, 1600 audio AUs fed with `reply=O` and no error of any kind, and the
             // television's own read-out — "Dolby Vision / Dolby Atmos", both lines — photographed
             // in a DISPLAY capture at 11 s. `/tmp/plxnative-noatmosacb` is the way back out.
-            if crate::route::stream_immersive() && !crate::dev::flag("noatmosacb") {
+            if crate::route::stream_immersive(ps) && !crate::dev::flag("noatmosacb") {
                 let rv = unsafe { ffi::acb_send_atmos(mt, id.as_ptr()) };
                 super::log(&format!("atmos: acb setMediaAudioData rv={rv}"));
             }
@@ -1186,7 +1209,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     // issuing Play. NOT while a seek is armed: on a resume the seek is armed before PLAYING, so
     // feeding first would present the file start for a frame before the seek repositions — a
     // visible jump. ----------
-    maybe_begin_hls_rebuffer(mt, eng);
+    maybe_begin_hls_rebuffer(ps, mt, eng);
     if eng.stage >= Stage::Playing && TX.feed_allowed() && TX.seek_to_ns.load(Relaxed) < 0 {
         if stream {
             // Two-lane feed, then the prime attempt — the ordering and the reason both live in

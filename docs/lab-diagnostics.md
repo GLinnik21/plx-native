@@ -35,7 +35,7 @@ Five pieces of this feature already exist, and the design is mostly wiring them 
   ~50 fields) is the exact list this ask enumerates — playback stage, load payload video/audio
   codec, video w/h, position/duration, fed bytes, feed state, `http_status`, `net_rx`, callback
   errors, the whole ABR block, the video-plane mode and `windowId`. Its every field is a number,
-  bool or enum **by rule**: `ui/stats.rs`'s module doc is a written no-URL / no-credential /
+  bool or enum **by rule**: `app/diagnostics.rs`'s module doc is a written no-URL / no-credential /
   no-identity contract for exactly this data, because it is already photographed and posted into
   public issue threads. A snapshot built from `Diag` is redacted by construction.
 * **Device identity.** `webos::info()` (release, codename, api, name, from `/var/run/nyx/os_info.json`),
@@ -153,9 +153,9 @@ The host enqueues through `/v1/control/enqueue` and reads `/v1/control/status`, 
 require a loopback peer address in addition to the bearer. They cannot be reached through the
 router mapping even by somebody who extracted the session secret from the `.ipk`.
 
-Playback mode (Direct Play / Direct Stream / Transcode) is **not** in `Diag` today; it is decided in
-`route.rs`. MVP takes it from the log lines (`load:` and route's own lines are already in the ring);
-promoting it to a `Diag` field is a follow-up, not a blocker.
+Playback mode (Direct Play / Direct Stream / Transcode) is **not** in `Diag` today; it is decided
+in `route/plan.rs`. MVP takes it from the log lines (`load:` and route's own lines are already in
+the ring); promoting it to a `Diag` field is a follow-up, not a blocker.
 
 ---
 
@@ -262,7 +262,7 @@ buys nothing once the channel is confidential and endpoint-authenticated.
 1. **At logging time** — `redact_tokens` in `lib.rs`, already shipped, already unit-tested.
 2. **By construction** — the envelope is built from `Diag`, `webos::Info` and `devcaps::Caps`, all
    of which are numbers/enums/short platform strings. No field of the envelope is a URL, a path, a
-   title, an account id, a server name or a `machineIdentifier`. This is `ui/stats.rs`'s rule,
+   title, an account id, a server name or a `machineIdentifier`. This is `app/diagnostics.rs`'s rule,
    applied to a second consumer, and it is enforced the same way: the envelope is built in one
    file, so adding a field is a deliberate edit to the file that carries the rule.
 3. **At snapshot time** — `snapshot::scrub` runs over every ring record before it is serialised:

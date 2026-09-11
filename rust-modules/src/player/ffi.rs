@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Gleb Linnik
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Own Rust mirror of src/starfish.h, written from the public ABI contract.
 //! player::ffi — the starfish.c seam (sf_* / acb_* verbs). These stay C (the mangled-C++ + ACB
 //! ABI). The library thread calls back into our sf_on_event / acb_on_event (defined in mod.rs).
 //! Signatures mirror `src/starfish.h` exactly; `long` is 32-bit on the arm target -> c_long.
@@ -206,7 +209,7 @@ pub(crate) fn vp_mode() -> c_int {
 }
 
 /// The exported windowId the seam holds, or an empty string when none was created. Diagnostics
-/// only (`ui::stats`): it answers "did the window this firmware needs ever exist?", which is the
+/// only (`app::diagnostics`): it answers "did the window this firmware needs ever exist?", which is the
 /// first thing to check when webOS 5+ plays sound over a black screen. Points at the seam's own
 /// long-lived buffer, so it is never NULL and never owned here. No token — it reads a static char[].
 #[inline]

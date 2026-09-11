@@ -1,5 +1,5 @@
 /* PlxNative — an unofficial native Plex client for LG webOS.
- * Copyright © 2026 Gleb Linnik. Licensed under the MIT Licence; see LICENSE at the repository root.
+ * Copyright © 2026 Gleb Linnik. Licensed under GPL-3.0-or-later; see LICENSE at the repository root.
  *
  * crashtrace-test.c — **actually crash a process, on purpose, and read what the tracer wrote.**
  * Built and run by `make check` with the HOST compiler, linking `src/crashtrace.c` and nothing

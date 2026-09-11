@@ -29,26 +29,20 @@ pub(crate) fn apply(cmd: PersonCmd) -> bool {
     super::apply(super::StoreCmd::Person(cmd))
 }
 
-/// The store's own step, reached only through [`super::apply`].
+/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
+/// `person::run` — its arms called `pub(crate)` mutators (`open`, `close`, `reset`,
+/// `set_watched_local`) across this module boundary; those four are private to `person.rs` now
+/// and this is their only door.
 pub(super) fn run(cmd: PersonCmd) -> bool {
-    match cmd {
-        PersonCmd::Open {
-            sid,
-            key,
-            guid,
-            name,
-            thumb,
-        } => crate::person::open(sid, &key, &guid, &name, &thumb),
-        PersonCmd::Close => crate::person::close(),
-        PersonCmd::Reset => crate::person::reset(),
-        PersonCmd::SetWatchedLocal { sid, rk, on } => {
-            let hit = crate::person::set_watched_local(sid, &rk, on);
-            super::bump(StoreId::Person);
-            return hit;
-        }
-    }
+    // `crate::person`'s statics are a crate global reached from both `apply` above and
+    // `crate::stores::apply(StoreCmd::Person(..))` directly (some fixtures deliver a `StoreCmd`
+    // without going through this module's `apply`) — guard the one point both funnel through. See
+    // `lib.rs::testlock` and D5.
+    #[cfg(test)]
+    crate::testlock::assert_held("the person store (apply)");
+    let answer = crate::person::run(cmd);
     super::bump(StoreId::Person);
-    true
+    answer
 }
 
 /// The page's once-a-frame pass: land every fetch, schedule the next.

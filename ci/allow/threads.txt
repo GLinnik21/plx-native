@@ -1,0 +1,15 @@
+# count: 0
+# `thread::spawn` outside task.rs (spec §15.2/D4): every legitimate worker this phase's Facts
+# list named (aq, stream, imgcache, ff, http, auth, curlio/route-decision, plex client/transcoder,
+# browse, player, ui/present, ui/landgate) was checked individually on 2026-09-10 (phase 12,
+# P8-H) and EVERY ONE already spawns its real worker through `task::spawn`/`task::spawn_small`
+# (task.rs) — confirmed by grep in ff.rs, auth.rs, route/decision.rs, browse/mod.rs, player/mod.rs,
+# with the remaining named files (aq.rs, stream.rs, imgcache.rs, http.rs, plex/client.rs,
+# plex/transcoder.rs, ui/present.rs, ui/landgate.rs) driven from a caller thread that itself
+# already went through task::spawn. The ONLY `thread::spawn` call sites outside task.rs left in
+# the tree are inside `#[cfg(test)] mod` blocks — mock TCP/HTTP servers a unit test spins up to
+# stand in for a peer — which this gate does not scan, the same convention the `mutators` gate
+# above already uses for test code. So the allowlist this rule was expected to need is empty: the
+# invariant already holds in production code. Any NEW non-test `thread::spawn` outside task.rs
+# fails this gate; add a reasoned line here only if task::spawn genuinely cannot fit that caller
+# (documented why), never as a first resort.

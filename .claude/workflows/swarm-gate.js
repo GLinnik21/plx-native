@@ -311,6 +311,7 @@ const FIXED = {
 
 const A = (args && typeof args === 'object' && !Array.isArray(args)) ? args : { task: typeof args === 'string' ? args : '' }
 const TASK = String(A.task || '').trim()
+const REPO = String(A.repo || '').trim()                     // the checkout, ABSOLUTE — pinned into every prompt (v5)
 const MAX_WORKERS = clampInt(A.maxWorkers, 4, 1, 8)
 const MAX_FIX_ROUNDS = clampInt(A.maxFixRounds, 2, 0, 5)      // counts FIX WAVES
 const MAX_PACKAGES = clampInt(A.maxPackages, 8, 1, 24)
@@ -327,16 +328,24 @@ if (!TASK) {
   log('! no `task` argument — nothing to do')
   return { ok: false, verdict: 'BLOCKED', reason: 'swarm-gate needs args.task: a task description or a path to a specification file.', fix_waves_used: 0, reviews_run: 0 }
 }
+if (!REPO.startsWith('/')) {
+  log('! no absolute `repo` argument — refusing to let each agent guess which checkout it is in')
+  return { ok: false, verdict: 'BLOCKED', reason: 'swarm-gate needs args.repo: the ABSOLUTE path of the checkout to work in. Run 3 (wf_a9647e0c-35d) showed why: with a correct cwd, the Haiku probe still prefixed `cd <primary checkout>` on its own and measured a different branch\'s HEAD, so every worker base would have been wrong.', fix_waves_used: 0, reviews_run: 0 }
+}
+// One line every agent sees first. It names a path, never the task, so the probe's trust
+// boundary is intact; and it is the ONLY answer to "which checkout" any agent is allowed to have.
+const REPO_LINE = `REPOSITORY CHECKOUT: ${REPO}\nEvery command runs there (use the absolute path, or \`git -C ${REPO}\`). It is a linked git worktree; the primary checkout and every other worktree are OTHER PEOPLE'S WORK — never cd into them, never read or measure them.`
 
-log(`swarm-gate v2: <=${MAX_WORKERS} concurrent, <=${MAX_FIX_ROUNDS} fix wave(s) => <=${MAX_FIX_ROUNDS + 1} Opus review(s), <=${MAX_PACKAGES} packages, <=${MAX_FINDINGS} findings/wave, ${MAX_RETRIES} retry, lane checks ${LANE_CHECKS ? 'ON' : 'OFF'}`)
+log(`swarm-gate v5 in ${REPO}: <=${MAX_WORKERS} concurrent, <=${MAX_FIX_ROUNDS} fix wave(s) => <=${MAX_FIX_ROUNDS + 1} Opus review(s), <=${MAX_PACKAGES} packages, <=${MAX_FINDINGS} findings/wave, ${MAX_RETRIES} retry, lane checks ${LANE_CHECKS ? 'ON' : 'OFF'}`)
 
 // A null result means the agent was skipped or died after the runtime's own
 // retries. Retrying it here is bounded and explicit, and an exhausted retry is
 // recorded rather than smoothed over.
 async function tryAgent(prompt, opts, what, retries) {
   const max = retries === undefined ? MAX_RETRIES : retries
+  const pinned = `${REPO_LINE}\n\n${prompt}`
   for (let attempt = 0; attempt <= max; attempt++) {
-    const r = await agent(prompt, attempt ? { ...opts, label: `${opts.label} (retry ${attempt})` } : opts)
+    const r = await agent(pinned, attempt ? { ...opts, label: `${opts.label} (retry ${attempt})` } : opts)
     if (r) return r
     if (attempt < max) log(`! ${what} returned nothing — retry ${attempt + 1}/${max}`)
   }
@@ -376,11 +385,11 @@ const PROBE_RETRIES = 1
 const PROBE_PROTOCOL = [
   'You are a measurement probe. You have exactly one job, no context, and no opinion about the result.',
   '',
-  'From the repository root, run these four commands:',
-  '  1. git diff --binary | shasum -a 256 | cut -d" " -f1',
-  '  2. git diff --cached --binary | shasum -a 256 | cut -d" " -f1',
-  '  3. git ls-files --others --exclude-standard | LC_ALL=C sort | while IFS= read -r f; do printf "%s\\n" "$f"; shasum -a 256 "$f"; done | shasum -a 256 | cut -d" " -f1',
-  '  4. git rev-parse HEAD',
+  'Run these four commands EXACTLY as written — the directory is part of the command; do not substitute another path, and do not cd anywhere first:',
+  `  1. cd ${REPO} && git diff --binary | shasum -a 256 | cut -d" " -f1`,
+  `  2. cd ${REPO} && git diff --cached --binary | shasum -a 256 | cut -d" " -f1`,
+  `  3. cd ${REPO} && git ls-files --others --exclude-standard | LC_ALL=C sort | while IFS= read -r f; do printf "%s\\n" "$f"; shasum -a 256 "$f"; done | shasum -a 256 | cut -d" " -f1`,
+  `  4. cd ${REPO} && git rev-parse HEAD`,
   '',
   'Then reply with EXACTLY these four lines and NOTHING else — no prose, no preamble, no code fence, no commentary about what you saw:',
   '',
@@ -448,7 +457,7 @@ function ownWorktree(base, slug) {
     '## Make your own worktree, and VERIFY it before you touch anything',
     'This run does not rely on the harness for isolation, because it has been observed handing workers a tree three weeks stale — six of them at once, every dependency missing. So cut your own from an exact commit:',
     '```sh',
-    `git worktree add -b ${branch} ${path} ${base}`,
+    `git -C ${REPO} worktree add -b ${branch} ${path} ${base}`,
     `cd ${path}`,
     'git rev-parse HEAD    # MUST print ' + base,
     '```',
@@ -561,6 +570,21 @@ if (ifaces.length) {
     ].join('\n'),
     { label: 'contract', phase: 'Contract', model: 'sonnet' }, 'contract freeze',
   )
+  // The freeze COMMITS on the session branch, so the base every wave-1 worker cuts from has
+  // moved. Run 4 (wf_508f8da1-d84) cut A and B2 from the pre-freeze sha and would have merged
+  // them back over the contract they were supposed to compile against. Measure again — with the
+  // same probe, so the dirty digests are compared too: a freeze that touched user work is a
+  // hard failure, not a footnote.
+  if (contract) {
+    phase('Measure')
+    const afterFreeze = await probeDirty('after-contract')
+    const cmp = compareDirty(dirtyBase, afterFreeze, 'after the contract freeze')
+    dirty_checks.push(cmp)
+    if (cmp.ok === false) hard_failures.push(`contract freeze moved the user's uncommitted work: ${cmp.moved.join(', ')}`)
+    if (afterFreeze && afterFreeze.HEAD_SHA) { baseSha = afterFreeze.HEAD_SHA; log(`contract froze at measured HEAD ${baseSha.slice(0, 8)}; wave 1 cuts from there`) }
+    else log('! post-freeze probe unusable; wave 1 would cut from the PRE-freeze base — refusing')
+    if (!afterFreeze || !afterFreeze.HEAD_SHA) hard_failures.push('post-freeze probe unusable: the wave-1 base could not be measured')
+  }
 }
 
 // ============================== 3. Implement ================================
@@ -843,7 +867,7 @@ for (;;) {
   const touched = await tryAgent(
     [
       'You are a measurement probe. One job, no opinion.',
-      `From the repository root, for EACH branch below, run:\n\`git diff --name-only ${fixBase}..<branch>\`\nand return its stdout lines verbatim as \`files\`.`,
+      `For EACH branch below, run EXACTLY:\n\`git -C ${REPO} diff --name-only ${fixBase}..<branch>\`\nand return its stdout lines verbatim as \`files\`.`,
       '', fixResults.map(r => `- ${r.branch}`).join('\n'), '',
       'Change nothing, commit nothing, check out nothing. If a branch is unknown, put the error in that entry\'s `error` and return an empty `files` list. Never guess a filename.',
     ].join('\n'),
@@ -954,8 +978,25 @@ const why = [
 
 log(ok ? `RESULT: PASSED after ${fixWaves} fix wave(s) and ${reviews.length} review(s)` : `RESULT: NOT PASSED — ${why.join('; ')}`)
 
+// The diff a reviewer reads can include commits that are orchestration
+// infrastructure rather than the task itself — e.g. a hand-applied fix to
+// this very workflow script, landed directly on the session branch mid-run
+// (a Contract-phase re-measure commit is exactly this shape: real, correct,
+// and not the task). This branch lands on trunk as ONE squash commit whose
+// message is "the change's own account" (AGENTS.md), so an infra file riding
+// inside that squash reads to `git log`, the release audit and `git bisect`
+// as part of the task unless someone notices and splits it out. Surface it
+// here instead of leaving it to a reviewer to catch by hand every run.
+const harnessFiles = String(integ.diff_stat || '').split('\n')
+  .map(l => l.trim())
+  .filter(l => l.includes('.claude/workflows/'))
+  .map(l => l.split('|')[0].trim())
+  .filter(Boolean)
+if (harnessFiles.length) log(`! diff touches orchestration infra outside the task (${harnessFiles.join(', ')}) — decide at squash time whether to split it out or name it in the message`)
+
 return {
   ok,
+  harness_files_touched: harnessFiles,
   verdict: ok ? 'PASS' : (verdict === 'REPLAN' ? 'REPLAN' : verdict === 'PASS' ? 'FIX' : verdict),
   replan_reason: replanReason,
   not_passed_because: ok ? [] : why,
@@ -977,11 +1018,16 @@ return {
   reviews,
   open_findings: [...openFindings.values()],
   hard_failures,
-  next_step: verdict === 'REPLAN'
-    ? 'The reviewer says the approach itself is wrong. Read `replan_reason` and re-cut the task before spending another fix wave.'
-    : ok
-      ? 'Nothing was pushed and nothing was merged into the default branch — the work sits committed on the working branch for you to land.'
-      : 'Read `not_passed_because`, `open_findings` and `hard_failures`. Re-run with a higher maxFixRounds, or finish the remainder by hand.',
+  next_step: [
+    verdict === 'REPLAN'
+      ? 'The reviewer says the approach itself is wrong. Read `replan_reason` and re-cut the task before spending another fix wave.'
+      : ok
+        ? 'Nothing was pushed and nothing was merged into the default branch — the work sits committed on the working branch for you to land.'
+        : 'Read `not_passed_because`, `open_findings` and `hard_failures`. Re-run with a higher maxFixRounds, or finish the remainder by hand.',
+    harnessFiles.length
+      ? `Also: this branch's diff touches orchestration infra outside the task (${harnessFiles.join(', ')}) — see \`harness_files_touched\`. Squashing lands it inside a commit message that describes the task; split it out onto its own commit first, or name it explicitly in the squash message, rather than letting \`git log\`/bisect/the release audit read it as the task.`
+      : null,
+  ].filter(Boolean).join(' '),
 }
 
 // The preamble every worker and reviewer opens with. Declared last on purpose:

@@ -682,7 +682,17 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 }
             }
             ScreenEvent::FocusMoved { from, to, by } => {
-                if matches!(by, By::Dir | By::Pointer) { self.initial = false; }
+                if matches!(by, By::Dir | By::Pointer) {
+                    self.initial = false;
+                    // A deliberate move is the only focus change the poster wall animates: the
+                    // tile grows from rest over the frames after this, as a shelf's does. A
+                    // restore or a reconcile is left to `GridPart::tick`, which adopts its cell
+                    // at full scale so a page returning from a Detail push lands as it was left.
+                    if let Some(index) = Some(*to).filter(|key| key.entry == self.entry)
+                        .and_then(|key| self.pair.detail.index_of(key.elem)) {
+                        self.pair.detail.pop_from_rest(index);
+                    }
+                }
                 let from_group = from.and_then(|key| <Self as Focusable<H>>::group_of(self, &key.elem, cx));
                 let to_group = <Self as Focusable<H>>::group_of(self, &to.elem, cx);
                 let outcome = self.pair.focus_moved(from_group, to_group, *to);
@@ -751,6 +761,9 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                         row.motion.update(row.elems.len(), col, if row.landscape { &RowStyle::EPISODE } else { &RowStyle::HOME }, dt);
                     }
                     self.scroll.step(self.scroll_target, K_SCROLL, dt);
+                    let grid_focus = focused.filter(|key| key.entry == self.entry)
+                        .and_then(|key| self.pair.detail.index_of(key.elem));
+                    self.pair.detail.tick(grid_focus, dt);
                     self.relayout(focused);
                     if self.initial && self.layout.first().is_some() && self.seed_cursor(cx, fx) {
                         self.initial = false;

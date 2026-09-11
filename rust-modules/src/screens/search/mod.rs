@@ -1,9 +1,15 @@
 //! Owned Search page. Input owns focus; this instance owns editing, motion and render caches.
-//! Integration fixtures mount this implementation; live cutover still awaits native adapter wiring.
+//! This is the production Search implementation: `AppArg::Search` mounts it unconditionally, and
+//! the legacy Search renderer it replaced is deleted entirely.
 mod draft;
-mod layout;
+// `pub(crate)`: exposes `layout::{FIELD, CONTENT_TOP}` to `ui::consts`'s overscan-rects audit,
+// which otherwise has no path to this module's geometry. Replaces the deleted legacy Search
+// renderer's own `FIELD`/`CONTENT_TOP` module-level constants.
+pub(crate) mod layout;
 mod render;
 mod memory;
+#[cfg(test)]
+mod tests;
 pub(crate) use memory::Memory;
 
 use std::borrow::Cow;
@@ -28,6 +34,10 @@ const FIELD_GROUP: GroupId = GroupId(0x5345_4100);
 const RECENTS_GROUP: GroupId = GroupId(0x5345_4101);
 const CLEAR_GROUP: GroupId = GroupId(0x5345_4102);
 const STRIP: GroupId = crate::ui::containers::tabs::STRIP;
+/// The alpha at or under which the owner annotation is invisible: the renderer draws no run
+/// below it, and the instance swaps the word it holds only there — so a handle never changes
+/// under the eye (legacy `the_owner_annotation_swaps_its_words_only_while_it_is_invisible`).
+pub(super) const OWNER_FLOOR: f32 = 0.02;
 const BLINK_MS: u32 = 530;
 const BLINK_US: u32 = BLINK_MS * 1000;
 
@@ -69,6 +79,12 @@ pub(crate) struct SearchScreen {
     owner_alpha: Spring,
     restored: Option<Memory>,
     render: render::Resources,
+    /// Diagnostic-only counter, not part of [`LogicalState::write`]/the state hash — how many
+    /// `Search` `StoreChanged` deliveries this instance has seen. It carries the same name
+    /// (`notices`) the retired route-word page kept its own count under, so `app::bridge`'s generic
+    /// "did a store notice reach the top screen" probes stay readable now that `Route::Search`
+    /// mounts this screen unconditionally.
+    notices: u32,
 }
 
 impl SearchScreen {
@@ -78,7 +94,8 @@ impl SearchScreen {
             keys: Vec::new(), next_elem: 10, rows: Vec::new(), recents: Vec::new(), query_gen: 0,
             recent_clear_pending: false, publication: None, content_dirty: true,
             fade: crate::ui::xfade::Xfade::new(), ground: crate::ui::widgets::PageGround::new(),
-            owner_row: None, owner: String::new(), owner_alpha: Spring::at(0.0), restored: None, render: Default::default() }
+            owner_row: None, owner: String::new(), owner_alpha: Spring::at(0.0), restored: None, render: Default::default(),
+            notices: 0 }
     }
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
     fn real_query(&self) -> bool { crate::search::terms(self.draft.query()).is_some() }
@@ -280,8 +297,9 @@ impl SearchScreen {
 impl<H: SearchLike> Machine<H> for SearchScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        let acknowledged = matches!(ev, ScreenEvent::Mount)
-            || matches!(ev, ScreenEvent::StoreChanged(store, _) if *store == StoreId::Search.ord());
+        let store_changed = matches!(ev, ScreenEvent::StoreChanged(store, _) if *store == StoreId::Search.ord());
+        if store_changed { self.notices += 1; }
+        let acknowledged = matches!(ev, ScreenEvent::Mount) || store_changed;
         self.sync(cx, acknowledged, fx);
         match ev {
             ScreenEvent::RestoreMemory(PageMemory::Search(memory)) => { self.restore(memory); self.sync(cx, true, fx); }
@@ -388,6 +406,62 @@ impl SearchScreen {
         let _clip = f.clip(painter, Rect::new(0.0, floor, SCR_W, SCR_H - floor));
         render::tile(self, row, col, true, f, painter);
     }
+    /// The focus fingerprint's read of this screen's own space (`app::bridge::content_probe`'s
+    /// Search arm) — called only once that caller has already asked the shared bar
+    /// (`app::chrome::ChromeSnapshot::focus`) and found focus `Away` from the chip/strip, i.e.
+    /// actually resting somewhere on this page.
+    ///
+    /// Mirrors the deleted legacy `ui::search::Zone` naming (`Field`/`Recents`/`Results`)
+    /// verbatim, and ADDS `Clear`: the legacy zone folded the Clear control into `Recents` (its
+    /// `View::recent == clear_index()` was the only tell), because a single global cursor was the
+    /// zone's only address space. The owned model gives Clear its own [`GroupId`]
+    /// (`CLEAR_GROUP`), so the zone can just say so instead of asking a reader to compare two
+    /// numbers to reconstruct a fact the model already has.
+    ///
+    /// `row`/`col`/`recent` read `-1` off their own zone, the convention
+    /// `screens::library::LibraryScreen::probe_viewport` already uses for "not there" — not a
+    /// persisted last-visited cursor, which is what the legacy module-level statics held even
+    /// off their own zone (`tests/keytable.json`'s Search rows recorded that quirk directly:
+    /// `row=0 col=0` while `zone=Strip`, because `View::row`/`View::col` were read, never reset,
+    /// regardless of `View::zone`). That value was never a fact about the page; the anchor's
+    /// Search rows move to `-1` in the same commit that adds this method, for that reason.
+    pub(crate) fn probe(&self, focus: Option<FocusKey<u32>>) -> (&'static str, i64, i64, i64, bool) {
+        let elem = focus.filter(|key| key.entry == self.entry).map(|key| key.elem);
+        match elem {
+            Some(FIELD) => ("Field", -1, -1, -1, false),
+            Some(CLEAR) => ("Clear", -1, -1, -1, false),
+            Some(elem) if self.recents.contains(&elem) => {
+                let index = self.recents.iter().position(|e| *e == elem).unwrap_or(0);
+                ("Recents", -1, -1, index as i64, false)
+            }
+            Some(elem) => self.rows.iter().enumerate().find_map(|(row, model)|
+                model.elems.iter().position(|key| *key == elem).map(|col| (row, col)))
+                .map(|(row, col)| {
+                    let card = matches!(self.rows[row].kind, Kind::Movie | Kind::Show | Kind::Episode);
+                    ("Results", row as i64, col as i64, -1, card)
+                }).unwrap_or(("Field", -1, -1, -1, false)),
+            None => ("Field", -1, -1, -1, false),
+        }
+    }
+
+    /// What is currently drawn under the field — the same three-way rule the deleted legacy
+    /// `ui::search::below_of` computed, reproduced over this screen's own fields (`real_query`,
+    /// `recents`, `rows`) instead of two separate module-level reads (`search::query()` and
+    /// `search::shelves()`), because this screen is the one holding both now.
+    pub(crate) fn probe_below(&self) -> &'static str {
+        if !self.real_query() {
+            if self.recents.is_empty() { "Nothing" } else { "Recents" }
+        } else if self.rows.is_empty() { "Nothing" } else { "Results" }
+    }
+
+    pub(crate) fn is_editing(&self) -> bool { self.editing }
+
+    /// How many recent terms are shown — the legacy `clear_index()`'s value
+    /// (`recents::count().min(MAX_RECENTS)`). This model's `recents` vec is built from the same
+    /// capped source (`search::recents::CAP`), so it already holds no more than that, and no
+    /// `.min` is needed to reproduce the number.
+    pub(crate) fn recents_shown(&self) -> usize { self.recents.len() }
+
     fn first_content(&self) -> Option<GroupId> {
         if !self.recents.is_empty() { Some(RECENTS_GROUP) } else { self.rows.first().map(|row| row.group) }
     }
@@ -423,16 +497,14 @@ impl SearchScreen {
     }
     fn tick<H: SearchLike>(&mut self, tick: crate::ui::machine::Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         fx.push(Fx::App(AppFx::StoreWork(crate::stores::StoreWork::BrowseDiscovery)));
-        fx.push(Fx::App(AppFx::StoreWork(crate::stores::StoreWork::Search)));
+        fx.push(Fx::App(AppFx::StoreWork(crate::stores::StoreWork::Search { dt_us: tick.dt_us })));
         if self.step_blink(tick.dt_us) { fx.invalidate(Provenance::Input); }
-        self.hot.step(if self.field_hot(cx) { 1.0 } else { 0.0 }, crate::ui::consts::K_SCALE, tick.dt());
         for row in &mut self.rows {
             let focused = if self.editing { None } else {
                 cx.focus.current.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem))
             };
             row.motion.update(row.elems.len(), focused, &layout::style(row.kind), tick.dt());
         }
-        self.scroll.step(self.scroll_target, crate::ui::consts::K_SCROLL, tick.dt());
         self.fade.tick(tick.dt(), !self.draft.pending() && H::search(cx).state() != crate::search::State::Searching);
         let colours = cx.focus.current.and_then(|key| self.rows.iter().enumerate().find_map(|(row, model)|
             model.elems.iter().position(|elem| *elem == key.elem).and_then(|col|
@@ -448,9 +520,24 @@ impl SearchScreen {
             .map_or("", |source| source.handle.as_str());
         let target_row = target.map(|(row, _)| row);
         let settled = self.owner_row == target_row && self.owner == handle;
-        self.owner_alpha.step(if settled && !self.owner.is_empty() { 1.0 } else { 0.0 },
-            crate::ui::consts::K_SCALE, tick.dt());
-        if !settled && self.owner_alpha.pos < 0.02 {
+        // The three springs this instance owns are stepped through the shared reporting
+        // integrator, so each one keeps the present gate awake exactly while it is visibly
+        // travelling and goes quiet the frame it arrives (`ui/motion.rs`'s rest test —
+        // magnitude-relative, capped under a quarter pixel, velocity judged as this frame's
+        // travel). `Spring::step` reports to `ui::idle` and says nothing to the dispatcher's
+        // own gate, which is the one an owned page is graded on.
+        let hot = if self.field_hot(cx) { 1.0 } else { 0.0 };
+        let owner = if settled && !self.owner.is_empty() { 1.0 } else { 0.0 };
+        {
+            let mut present = fx.present();
+            let (k_scale, k_scroll) = (crate::ui::consts::K_SCALE, crate::ui::consts::K_SCROLL);
+            crate::ui::motion::spring(&mut self.hot.pos, &mut self.hot.vel, hot, k_scale, tick, &mut present);
+            crate::ui::motion::spring(&mut self.scroll.pos, &mut self.scroll.vel, self.scroll_target,
+                k_scroll, tick, &mut present);
+            crate::ui::motion::spring(&mut self.owner_alpha.pos, &mut self.owner_alpha.vel, owner,
+                k_scale, tick, &mut present);
+        }
+        if !settled && self.owner_alpha.pos < OWNER_FLOOR {
             self.owner_row = target_row;
             self.owner.clear(); self.owner.push_str(handle);
             fx.invalidate(Provenance::Input);
@@ -592,8 +679,9 @@ impl LogicalState for SearchScreen {
         }
     }
     fn probe(&self, out: &mut String) {
-        out.push_str(&format!("search entry={} editing={} pending={} rows={} recents={} caret={}",
-            self.entry.0, self.editing, self.draft.pending(), self.rows.len(), self.recents.len(), self.draft.caret()));
+        out.push_str(&format!("search entry={} editing={} pending={} rows={} recents={} caret={} notices={}",
+            self.entry.0, self.editing, self.draft.pending(), self.rows.len(), self.recents.len(), self.draft.caret(),
+            self.notices));
     }
 }
 

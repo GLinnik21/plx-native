@@ -157,7 +157,7 @@ mod tests {
     impl Drop for Reset {
         fn drop(&mut self) {
             reset_for_test();
-            crate::browse::reset();
+            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
             crate::plex::session::set_current(None);
         }
@@ -233,6 +233,45 @@ mod tests {
         assert!(!old.same_publication(&next));
     }
 
+    /// Legacy `ui/search/field.rs`'s `the_memo_key_moves_when_a_source_goes_quiet_or_is_described`,
+    /// on the publication the owned renderer memoises its scope sentence against
+    /// (`render::Resources::prepare` rebuilds the line exactly when `same_publication` is false).
+    ///
+    /// The two inputs that move it are the ones no roster COUNT can see: a source being described
+    /// (its name or the handle it is credited to) and a source going quiet. The counters that must
+    /// NOT move for a pure description are asserted beside them, because a memo keyed on the roster
+    /// alone would hold a sentence naming a machine by a name it no longer has.
+    #[test]
+    fn the_memo_key_moves_when_a_source_goes_quiet_or_is_described() {
+        let _serial = crate::testlock::serial();
+        let _reset = Reset;
+        let (_, share) = fixture();
+        crate::browse::seed_sources_for_test(2, true);
+        let old = snapshot();
+        let before = read_key();
+        assert!(old.sources().iter().all(|source| source.live));
+
+        crate::plex::describe_server(share, "renamed-share", "new-friend", false);
+        let described = snapshot();
+        let after = read_key();
+        assert!(!old.same_publication(&described), "a described source is a new sentence");
+        assert_eq!(described.sources()[1].handle, "new-friend");
+        assert_eq!(
+            (after.roster_gen, after.roster_len, after.roster, after.sections_gen, after.source_list_gen),
+            (before.roster_gen, before.roster_len, before.roster, before.sections_gen, before.source_list_gen),
+            "a pure description moves no roster, section or reachability counter"
+        );
+        assert_ne!(after.facts, before.facts, "…it moves the facts fingerprint, and that is enough");
+
+        crate::browse::seed_sources_for_test(2, false);
+        let quiet = snapshot();
+        assert!(!described.same_publication(&quiet), "a source going quiet is a new sentence");
+        assert!(quiet.sources().iter().all(|source| !source.live));
+        assert!(described.sources().iter().all(|source| source.live),
+            "…and the retained publication keeps saying what it said");
+        assert_ne!(read_key().source_list_gen, after.source_list_gen);
+    }
+
     #[test]
     fn equal_sized_roster_replacement_publishes_new_sources() {
         let _serial = crate::testlock::serial();
@@ -245,7 +284,7 @@ mod tests {
             crate::plex::register_for_test("replacement", "127.0.0.1", 3, "replacement", "scope");
         let other = crate::plex::register_for_test("other", "127.0.0.1", 4, "other", "scope");
         assert_ne!(old_share, replacement);
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         let next = snapshot();
 
         assert_eq!(old.sources().len(), 2);

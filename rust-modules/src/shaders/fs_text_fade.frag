@@ -1,6 +1,6 @@
 // The FADE variant is a SEPARATE program bound only by draw_text_fade (callers: TextView::fade_last
 // - the About card's and person header's MORE dissolve - and TextView::edge_fade - a scrolling
-// viewport's clipped edge, `ui::person_bio`'s bio panel): u_tfade = (from, to) in string-texture
+// viewport's clipped edge, `screens::person_bio`'s bio panel): u_tfade = (from, to) in string-texture
 // uv.x fades the glyph HORIZONTALLY; u_vfadeT / u_vfadeB = (from, to) in ABSOLUTE LOGICAL SCREEN Y
 // fade it VERTICALLY, ramping 0->1 rising through the top band and 1->0 falling through the bottom
 // one. Each band is a uniform pair rather than a bespoke uniform per caller so the three fades can

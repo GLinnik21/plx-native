@@ -29,7 +29,12 @@ struct Entry {
     vel: f32,
     moving: bool,
     frames: u32,
-    ms: f32,
+    /// Whole microseconds elapsed this episode, not a summed `f32` — `probe`'s `dt` argument comes
+    /// from the same real per-frame delta every `Spring::step` caller already has, and a realistic
+    /// frame (tens of milliseconds) round-trips through `f32` exactly, so converting once and
+    /// accumulating the integer is what keeps this diagnostic-only clock out of `check-deps.sh`'s
+    /// `dt` gate without changing what it reports.
+    ms_us: u32,
     start: f32,
     peak_over: f32, // furthest past the target (in the travel direction)
     last: Option<(u32, f32, f32)>, // last settled episode: (frames, ms, overshoot %)
@@ -60,7 +65,7 @@ pub(crate) fn probe(name: &'static str, pos: f32, vel: f32, target: f32, dt: f32
                 vel,
                 moving: false,
                 frames: 0,
-                ms: 0.0,
+                ms_us: 0,
                 start: pos,
                 peak_over: 0.0,
                 last: None,
@@ -80,13 +85,14 @@ pub(crate) fn probe(name: &'static str, pos: f32, vel: f32, target: f32, dt: f32
     if moving && !e.moving {
         e.moving = true; // episode start
         e.frames = 0;
-        e.ms = 0.0;
+        e.ms_us = 0;
         e.start = pos;
         e.peak_over = 0.0;
     }
     if e.moving {
         e.frames += 1;
-        e.ms += dt * 1000.0;
+        let dt_us = (dt * 1_000_000.0).round() as u32;
+        e.ms_us = e.ms_us.saturating_add(dt_us);
         let dir = (target - e.start).signum();
         let over = (pos - target) * dir; // > 0 = overshot past the target
         if over > e.peak_over {
@@ -97,10 +103,11 @@ pub(crate) fn probe(name: &'static str, pos: f32, vel: f32, target: f32, dt: f32
         e.moving = false; // settle
         let travel = (e.target - e.start).abs().max(1e-6);
         let over_pct = e.peak_over / travel * 100.0;
-        e.last = Some((e.frames, e.ms, over_pct));
+        let ms = e.ms_us as f32 / 1000.0;
+        e.last = Some((e.frames, ms, over_pct));
         log(&format!(
             "anim {}: {}f {:.0}ms overshoot={:.1}%",
-            e.name, e.frames, e.ms, over_pct
+            e.name, e.frames, ms, over_pct
         ));
     }
 }

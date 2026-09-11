@@ -21,16 +21,16 @@ exactly these (file: callers):
 
 | store | mutator | callers outside the store |
 |---|---|---|
-| browse | `set_cur`, `note_library_choice`, `kick_letters`, `kick_genres`, `want`, `save_view`, `set_sort_by_key`, `toggle_unwatched`, `set_genre_by_id`, `retry_cur_source`, `recheck_shares`, `pump` | `ui/library.rs` |
-| browse | `apply_pins`, `retry_discovery` | none — closed by phase 5b, same day; see note below (`apply_pins` still direct from `ui/library.rs`'s own tests) |
-| browse | `reset`, `discover_pump` | `app/boot.rs`, `ui/home.rs`, `screens/onboard.rs`, `ui/search/mod.rs`, `ui/search/field.rs` |
-| browse::section_hubs | `kick`, `commit_staged`, `invalidate_all`, `set_watched_local`, `left_the_deck` | `ui/library.rs`, `viewstate.rs` |
+| browse | `set_cur`, `note_library_choice`, `kick_letters`, `kick_genres`, `want`, `save_view`, `set_sort_by_key`, `toggle_unwatched`, `set_genre_by_id`, `retry_cur_source`, `recheck_shares`, `pump` | none direct — reached only through `StoreCmd::Browse` from `screens/library/*` (`stores/browse.rs`'s `Machine::step` is the one caller; `ui/library.rs` was deleted in phase 8) |
+| browse | `apply_pins`, `retry_discovery` | none — closed by phase 5b, same day; see note below (no caller outside `stores/browse.rs` survives: the `ui/library.rs` test fixtures that seeded through `apply_pins` went with that file in phase 8) |
+| browse | `reset`, `discover_pump` | `app/boot.rs`, `screens/onboard.rs` (both direct); `discover_pump` also reached from `screens/home/mod.rs` and `screens/search/mod.rs` via `Fx::App(AppFx::StoreWork(BrowseDiscovery))`, resolved by `app/bridge.rs`'s own dispatch (`ui/home.rs` and `ui/search/` are both deleted) |
+| browse::section_hubs | `kick`, `commit_staged`, `invalidate_all`, `set_watched_local`, `left_the_deck` | `viewstate.rs`; the Library reaches them only through `StoreCmd::Browse` (`stores/browse.rs`'s `Machine::step`) since `ui/library.rs` was deleted in phase 8 |
 | viewstate | `request` | `app/input.rs`, `screens/detail/mod.rs` |
 | person | `open`, `close`, `pump` | `screens/person.rs` |
 | metadata | `request_detail`, `load_detail_now`, `clear`, `load_season`, `set_now_playing`, `set_watched_local`, `pump_season` | `screens/detail/mod.rs`, `app/{input,playback,run}.rs` |
-| metadata | `install_playing`, `mark_skipped`, `pump_detail`, `pump_alt_sources` | `route.rs`, `app/{playback,run}.rs` |
-| search | `set_query`, `reset`, `pump` | `ui/search/mod.rs`, `ui/search/recents.rs` |
-| pms | `request_refetch_hubs`, `request_retry`, `reset`, `pump` | `ui/home.rs`, `app/{boot,run}.rs` |
+| metadata | `install_playing`, `mark_skipped`, `pump_detail`, `pump_alt_sources` | `route/decision.rs`, `app/{playback,run}.rs` |
+| search | `set_query`, `reset`, `pump` | none direct — reached only through `StoreCmd::Search` from the owned `screens/search/mod.rs` (`ui/search/mod.rs` and `ui/search/recents.rs` are both deleted) |
+| pms | `request_refetch_hubs`, `request_retry`, `reset`, `pump` | `app/{boot,run}.rs` (`ui/home.rs` is deleted; the owned Home emits `StoreCmd::Hubs(..)` and never a mutator — see the Phase 8 note below) |
 
 **This table is the census phase 4 sized itself against, and two of its rows were already stale by
 the end of the same day.** Phase 5b (2026-09-07, the Settings-family restructure) retired
@@ -40,9 +40,10 @@ both leave the screen as `Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse
 / RetryDiscovery)))`, exactly the vocabulary spelling §2 below describes, so `stores/browse.rs`'s
 `Machine::step` is now the ONLY direct caller of either — the "one place a legacy mutator is
 called" rule already stated a paragraph down, finally true for this pair rather than aspirational.
-(`ui/library.rs`'s own test fixtures still call `crate::browse::apply_pins` directly to seed a
-known state before asserting against it; that is exercising the raw mutator on purpose, not a gap
-in the migration, and the gate this phase's `mutators` rule enforces skips test code by design.)
+(Until phase 8, `ui/library.rs`'s own test fixtures still called `crate::browse::apply_pins`
+directly to seed a known state; that file is deleted, and the only surviving direct caller is
+`browse/mod.rs`'s own `apply_pins_writes_the_whole_batch_in_one_record`. The gate this phase's
+`mutators` rule enforces skips test code by design.)
 The `reset`/`discover_pump` row is NOT closed the same way — `screens/onboard.rs` still calls both
 directly, unchanged from `ui/onboard.rs`'s own habit, because neither is a `BrowseCmd` variant
 (`reset` has no per-store notice worth raising for a whole-app profile switch, and `discover_pump`
@@ -52,7 +53,12 @@ census columns without reading this note; the table's own count is dead the mome
 this paragraph is the amendment for the one phase that happened to land on the same day.
 
 Phase 7 (2026-09-08) mounted Detail and Person from `screens/` and retired their old `ui/` files;
-the table now names the live callers. Filmography reads
+the table now names the live callers. Phase 8 (2026-09-09) did the same to Home and took two of the
+table's cells with it: `ui/home.rs` is deleted, so it is no caller of anything, and `pms::pump` —
+the "legacy callers' combined pass" it was the last caller of — is deleted with it, along with
+`stores::hubs::pump`. The pms row is `request_refetch_hubs`, `request_retry`, `reset`, called from
+`app/{boot,run}.rs`; the owned Home emits `StoreCmd::Hubs(..)` and never a mutator, and the store's
+own `tick` is what a frame drives now. Filmography reads
 the Person store and reacts to its notices but does not mutate it.
 
 Every one of those calls is followed, in the SAME frame and often in the same statement, by a
@@ -70,14 +76,14 @@ about to establish. That fact is what decides §3 below.
    `ci/check-deps.sh`'s new `mutators` gate refuses the old spelling on every production line
    of `ui/` and `app/` (test modules are skipped by brace depth wherever they sit in a file);
    `ci/allow/mutators.txt` is EMPTY — an entry there would be a debt with a phase number. The
-   player side (`route.rs`, `player/`) already spells its two writes through the vocabulary and
-   joins the gate's scope in phase 9.
+   player side (`route/plan.rs`, `route/decision.rs`, `player/`) already spells its two writes
+   through the vocabulary and joins the gate's scope in phase 9.
 2. **One notice.** Every applied command and every landing that changed the store bumps that
    store's generation and marks it dirty; `stores::take_notices()` drains `(StoreId, gen)` once
    per frame at the loop's drain point (`bridge::frame`, right after NAV COMMIT) into the real
    dispatcher as `Dispatcher::store_changed(ord, gen)`, which delivers `ScreenEvent::StoreChanged`
-   to every live instance. A `LegacyPage` ignores it; a migrated screen (phase 5b) reconciles on
-   it (spec §7.3 step 6).
+   to every live instance. The blank route-word page the unmigrated routes mounted until phase 10
+   ignored it; a migrated screen (phase 5b on) reconciles on it (spec §7.3 step 6).
 3. **The dispatcher path is real.** `AppFx::Store(StoreId, StoreCmd)` is the application's first
    effect: `bridge::Bridge` (the `Rig<AppHost>` impl) turns it into
    `Fx::Deliver(MachineId::Store(ord), Delivery::Machine(AppMsg::Store(cmd)))`, and `Rig::deliver`

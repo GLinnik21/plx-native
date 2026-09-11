@@ -293,3 +293,10 @@ The integrated branch also includes opt-in synthetic rail/pagination fixtures (s
 This backup is for recovery, not a completion or release claim.
 
 Owned Search compiles and runs through integration fixtures, including retained action resolution and guarded return memory. Keyboard hooks and navigation/menu request execution are wired behind the temporary mounter gate, which remains OFF in the live loop. Legacy ingress/lifecycle retirement, complete contract migration, actual controller-flow proof and visual verification remain pending. Host, shipping-feature and ARM checks pass; this is not a completed UI migration.
+
+## Latest recovery checkpoint (2026-09-11)
+
+Source checkpoint: `7200a96970b34fa8014cde7c8b642fe18f248ed3` on `codex/ui-phase12-resume`.
+This section supersedes the historical phase-8 notes above. Phases 0-11 have been integrated on local main; this snapshot includes phase-12 deletion/gate work and the first widgets ownership pass. Host, shipping-feature and lab-diagnostics checks passed on the code baseline; later edits are documentation only.
+
+This is recovery, not a release or completion claim. Chrome ownership fixes are still in a separate worker lane and are NOT included here. Closed product replay, both replay modes in the product harness, final simulator/device proof and carried scheduling findings remain unfinished. Original dirty Claude worktrees are preserved locally and not silently included in this snapshot. No phase-12 ARM or device proof is claimed.

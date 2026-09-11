@@ -1,5 +1,5 @@
 /* PlxNative — an unofficial native Plex client for LG webOS.
- * Copyright © 2026 Gleb Linnik. Licensed under the MIT Licence; see LICENSE at the repository root.
+ * Copyright © 2026 Gleb Linnik. Licensed under GPL-3.0-or-later; see LICENSE at the repository root.
  *
  * crashtrace.h — install the fatal-signal tracer. One entry point, called once from `main`.
  */

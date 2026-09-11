@@ -364,6 +364,26 @@ The same deletion repeats at `library.rs:816/872`, `detail.rs:981/993`, `profile
 
 ## 1.7 Hit-testing — `ui/hit.rs`, and it ships **with** the mechanism, not after
 
+> **BUILT** (verified against the tree 2026-09-10, restructure phase 12). The mechanism below
+> shipped as `ui/hit.rs`'s double-buffered `HitMap`, under the names the restructure spec settled
+> on rather than this sketch's own (`HitId` → a generic `K` key, `Painter::hit` → `DrawFrame::stop`,
+> `top_at` → `HitMap::top_at`, unchanged in spirit: "the last stop whose `rect ∩ clip` contains the
+> point, painter order IS z"). It really is registered FROM the draw with the draw's own rect, so
+> visibility and hittability are the same fact, as this section predicted. It now backs every
+> Screen's click resolution (`FocusSource::Engine`/`HitSource::Engine`, spec's D2) rather than the
+> `app.rs` rect-table idiom this section was written to replace — by restructure phase 12 that
+> idiom is gone from every screen (the last two, the player and its overlay, converted in phase
+> 12), so A1's modal-click-fallthrough bug class (below) is now structurally harder to reintroduce
+> for a converted screen: a modal that draws over the transport and does not register a stop for
+> it makes the transport genuinely unhittable, rather than merely policy the click handler had to
+> remember to apply.
+>
+> **Scope of “BUILT”:** this is the hit-map/focus ownership mechanism only. It does not mean the
+> broader recorder contract is closed: product replay remains live-assisted, `AppInit` does not
+> restore every application/adapter input, `tests/focusfp.sh` has no `--resolve` switch, and
+> `make check` does not close a committed scenario-replay run. Those are separate proof and
+> implementation work, not evidence supplied by D2 or this section.
+>
 > **Revised.** An earlier draft deferred this as over-scoped, on the reasoning that it "explicitly
 > does not cover the two grids, which is where most clicks land." **That premise is false.** Both
 > grids draw each visible tile individually with its `rect` already in scope (`home.rs:491-493`,

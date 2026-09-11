@@ -2,10 +2,13 @@
 //! `Instance`, same `Screen` contract, mounted by the same `Mounter`. The container is the ONE
 //! owner of a surface's PHASE (`Hidden | Opening | Open | Closing`); `Popover`'s `open`/`closing`/
 //! `dismiss`/`visible` flags are what it replaces, one module at a time (§14). `PopoverMotion` is
-//! the appear spring the panel rides; the scrim maths, the `Opener` lift and the painter stay
-//! with the legacy `Popover` until each popover's phase.
+//! the appear spring the panel rides, and [`ModalStack::draw_scrims`] is the modal DIM — both
+//! belonged to the legacy `Popover` and neither does now. The panel painter still does, until each
+//! popover's phase.
 //!
 //! - `input_owner()` = the topmost Opening|Open surface.
+//! - `draw_scrims()` runs inside the PAGE PASS, so a cached host's snapshot carries the dim that
+//!   the surface's own glass looks through — see its doc for the two hand-placed calls it replaces.
 //! - `prune()` is the ONLY place Closing clears, so Closing surfaces step unconditionally (the
 //!   fade must finish whatever the host is doing) — `the_closing_phase_is_stepped_even_when_the_host_is_frozen`.
 //! - `on_miss(style)` is consulted only while the surface is `Open`: a click beside a Compact,
@@ -135,6 +138,33 @@ pub fn surface_policy(style: Style, phase: Phase, ground_ready: bool) -> (HostUp
         (Style::Opaque { snapshot: false }, Phase::Closing) => (U::Live, R::Live),
         (Style::PlayerPanel { .. }, _) => (U::Live, R::Live),
     }
+}
+
+/// **Does this STYLE hold a snapshot of its host?** — the one answer `popover`'s process-wide
+/// `HOST_USERS` counter is driven from (`app/bridge.rs`'s `sync_host`).
+///
+/// DERIVED from [`surface_policy`] rather than restating it as a second `matches!` over `Style`,
+/// and that is the whole point of the function existing. The counter is what arms
+/// `popover::host::page_pass`'s freeze, so a style the table calls `HostRender::Cached` and this
+/// answer calls `false` produces a surface whose host is redrawn in full on every frame it is up
+/// — with nothing failing, because the two statements live three modules apart and nothing
+/// compares them.
+///
+/// **That is exactly what happened to `Style::Compact` (restructure phase 8).** The bridge listed
+/// `Sheet | Opaque { snapshot: true } | Alert` by hand and left Compact out — the one production
+/// Compact surface being the Library's Sort/Filter menu, whose legacy `Popover` had been
+/// `caching_host()` since 2026-09-03, and whose `Style::Compact` doc names `item_menu` (also
+/// `caching_host()`) as its exemplar. Measured on the television, `fps:library-switch`: sustained
+/// 58 ms frames with the whole library page — ambient wash, shelves, poster grid and all their
+/// text — re-rendered under an open menu, `loop=` 43-45 against a floor of 45.
+///
+/// The phase is deliberately NOT a parameter. `HOST_USERS` is an ownership count held from the
+/// surface's first live frame to its release; a per-frame answer would flap as
+/// `Opaque { snapshot: true }` crosses into `Replaced` and the bridge would owe a release it
+/// never took. `Phase::Opening` with no ground drawn is the phase at which every style states
+/// its host policy in full.
+pub fn style_caches_host(style: Style) -> bool {
+    surface_policy(style, Phase::Opening, false).1 != HostRender::Live
 }
 
 /// What a miss beside a surface does, by style — consulted only while `Open`.
@@ -293,11 +323,17 @@ impl<H: Host> ModalStack<H> {
 
     /// One frame: EVERY surface's motion steps — Closing ones unconditionally, whatever the host
     /// fold says — and an Opening surface whose spring settled becomes Open.
+    ///
+    /// **Each surface's step runs in its OWN [`MotionScope`](crate::ui::idle::MotionScope)** (§4.4),
+    /// the `ui::idle` half of the `Present::set_scope(Surface)` the dispatcher already sets around
+    /// it: a panel's appear spring is the PANEL's motion, never the host page's. The scope merges
+    /// back, so it changes who the motion is attributed to and never whether it counts.
     pub fn tick(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
         for s in &mut self.surfaces {
             if s.phase == Phase::Hidden {
                 continue;
             }
+            let _scope = crate::ui::idle::MotionScope::open();
             s.motion.tick(t, present);
             if s.phase == Phase::Opening && s.motion.settled() {
                 s.phase = Phase::Open;
@@ -348,6 +384,71 @@ impl<H: Host> ModalStack<H> {
                 r.max(sr),
             )
         })
+    }
+
+    /// **Every surface's modal dim, drawn INSIDE THE PAGE PASS** (spec §6.2, §8.3) — bottom to
+    /// top, so a later surface's dim recedes the one below it exactly as its panel does.
+    ///
+    /// It is here, and not at each surface's own `draw`, because of WHERE the dim has to land
+    /// rather than what it looks like. The scrim sits between the host page and the surface's
+    /// glass, so it is part of what that glass looks through — and a Cached host is served from
+    /// ONE snapshot taken at the end of the page pass (`popover::host`). A dim drawn with the
+    /// panel reaches the visible frame and never that snapshot, and the frosted ground then comes
+    /// out at full page brightness inside a dimmed screen. That was `account_menu`'s reported bug,
+    /// and the fix was two hand-placed `draw_scrim()` calls in the loop's page closure — a list
+    /// exactly two modules long, which no third panel could join without editing the loop.
+    ///
+    /// **`Style::Opaque` is skipped, and that is the mechanism's one documented boundary rather
+    /// than a second mechanism.** An opaque surface REPLACES its host once its ground is drawn
+    /// (`surface_policy`), so on the frames that matter there is no page pass to draw into and no
+    /// snapshot for the dim to belong to: its dim is part of its own ground, composed with it, in
+    /// its own `draw`. Every style whose host is CACHED — Compact, Sheet, Alert — goes through
+    /// here. `PlayerPanel` is `(Live, Live)` and simply answers [`Scrim::NONE`](crate::ui::screen::Scrim::NONE): behind it is
+    /// punch-through alpha to a hardware plane, and its dim is meant to cover the HUD too, so it
+    /// is drawn with the panel on the player's own path.
+    ///
+    /// `nav_page_alpha` is the route transition's own dip: a panel left at full strength over a
+    /// page fading to the app ground is the one thing on screen saying the transition is not
+    /// happening (`Popover::painter`'s note, kept).
+    ///
+    /// The caller owns the freeze: this paints, so it must run inside a
+    /// `popover::host::live()` scope or a frozen page will refuse every fill.
+    ///
+    /// `chip_read` is the shared top bar's render values this frame
+    /// (`crate::ui::dispatch::Rig::scrim_chip_read`) — every lift called here receives the SAME
+    /// pair, since there is one bar and at most one lift reads it (spec phase 12, PX-WIDGETS): a
+    /// bare `Scrim::lift` fn cannot borrow the rig that owns those values, so they cross as this
+    /// call's own argument instead of through a static.
+    pub fn draw_scrims(&self, nav_page_alpha: f32, chip_read: (f32, Option<crate::gfx::GlassFace>)) {
+        for (_, a, lift) in self.scrims(nav_page_alpha) {
+            let dim = crate::ui::theme::scrim_black(a);
+            crate::ui::Painter::root().rect(crate::ui::Rect::FULL, 0.0, dim, dim, 0.0);
+            (lift)(chip_read.0, chip_read.1);
+        }
+    }
+
+    /// [`draw_scrims`](Self::draw_scrims)'s decision, without the paint: which surfaces owe their
+    /// host a dim this frame, at what alpha, lifting what. Bottom to top.
+    ///
+    /// Split out so the rule is host-testable. A `cargo test --lib` run has no GL context — the
+    /// fixture screens register stops and paint nothing — so the two halves have to be separable
+    /// or neither the alpha ladder nor the draw ORDER could be graded at all. Every eligible
+    /// surface is ASKED (`Screen::scrim`) whatever its answer, which is what makes "the container
+    /// asked me, in the page pass" observable from a fixture that wants no dim.
+    pub fn scrims(&self, nav_page_alpha: f32) -> Vec<(EntryId, f32, fn(f32, Option<crate::gfx::GlassFace>))> {
+        let mut out = Vec::new();
+        for s in &self.surfaces {
+            if s.phase == Phase::Hidden || matches!(s.style, Style::Opaque { .. }) {
+                continue;
+            }
+            let Some(inst) = s.entry.inst.as_ref() else { continue };
+            let scrim = inst.screen.scrim();
+            let a = scrim.alpha * s.motion.appear * nav_page_alpha;
+            if a > 0.0 {
+                out.push((s.entry.id, a, scrim.lift));
+            }
+        }
+        out
     }
 
     /// A miss (a click beside every stop) against the top surface: consulted only while `Open`.

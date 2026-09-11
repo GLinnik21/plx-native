@@ -150,13 +150,17 @@ Semver as this project means it, and **the first question is which LINE you are 
 changed**. Development is trunk-based: `main` cuts **minor** releases — for fixes, diagnostics and
 new capability alike — and **major** when that is the deliberate call. A **patch** belongs to an
 existing minor's own maintenance line and is not cut from trunk, which is why the workflow refuses
-one on `main` rather than quietly publishing it (there is no maintenance-line support yet; adding it
-is the prerequisite for ever cutting a patch). A release that changes only docs or CI does not need
-a version at all.
+one on `main` — trunk releases end in `.0`. **Cutting one from its own line is a dispatch input
+away**: pass `line: release/vX.Y` (e.g. `release/v0.6`) to the workflow's `workflow_dispatch`, and
+`prepare` checks that branch out, bumps and tags it instead of main, enforcing `X.Y.N` with `N>=1`
+against that same branch rather than the `.0` rule. Leave `line` empty for an ordinary trunk cut. A
+release that changes only docs or CI does not need a version at all.
 
 The level also decides what a working tree calls itself, since `rust-modules/build.rs` reports the
 next minor: with `0.5.0` published, every developer build says `0.6.0-dev`, which is a true
-pre-release of the version trunk is actually heading for.
+pre-release of the version trunk is actually heading for. A checkout of a maintenance line reports
+the next PATCH instead, via a tracked `RELEASE_LINE` marker file (`X.Y`) at the repo root — absent
+on `main`, present on the branch a patch is being prepared from.
 
 ### 2. Write BOTH documents before building
 
@@ -227,6 +231,18 @@ local build embeds the local NDK path.
 ```sh
 gh workflow run release.yml -f version=X.Y.Z     # or -f bump=minor (trunk cuts minors)
 gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+```
+
+**A patch is dispatched from its maintenance line, and the dispatch has to name that line TWICE.**
+`-f line=release/vX.Y` tells `prepare` which branch to bump, tag and push; `--ref release/vX.Y`
+tells GitHub which copy of `release.yml` to validate the inputs against. Without the second,
+GitHub reads the workflow file on the DEFAULT branch, and if `main` does not yet carry an input
+the line added, the dispatch is refused with `Unexpected inputs provided: ["line"]` before
+anything runs — which is how v0.6.1's first dispatch died on 2026-09-10, with the `line` input
+still unpushed on `main`. The spelling that works from either state of `main`:
+
+```sh
+gh workflow run release.yml --ref release/vX.Y -f version=X.Y.Z -f line=release/vX.Y
 ```
 
 **There is no flavour input here, and you do not want one.** `release.yml` pins `FLAVOR: stable` in

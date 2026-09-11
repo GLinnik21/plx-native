@@ -44,7 +44,12 @@ impl Draft {
         Some(self.query().to_owned())
     }
 
+    /// A whole-field replacement (a remembered term picked off the list). Sanitized through the
+    /// STORE's own predicate, because the store sanitizes what it is handed: a term carrying a
+    /// control byte would otherwise leave the draft holding text no acknowledgement can ever
+    /// match, i.e. `pending` set for the rest of the visit. The caret is the new end either way.
     pub(super) fn replace(&mut self, query: &str) -> Option<String> {
+        let query = &*crate::search::sanitize_query(query);
         let changed = self.query() != query;
         self.buffer = TextBuffer::new(query.into(), query.len());
         if changed { self.pending = true; }

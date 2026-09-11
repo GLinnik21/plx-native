@@ -207,6 +207,11 @@ pub trait Rig<H: Host> {
     }
     /// Shared chrome draws after its page and before surfaces, using a captured vocabulary.
     fn draw_chrome(&mut self, _arg: &H::Arg, _parts: &CxParts<H::Elem>, _nav: super::screen::NavPresentation) {}
+    /// The shared top bar's render values this frame — `(chip_expand, bar_glass_face)` — for a
+    /// `Scrim::lift` bare `fn` that redraws a piece of that bar over a surface's dim (spec phase
+    /// 12, PX-WIDGETS; today's one caller is the account menu's chip lift). Default `(0.0, None)`
+    /// is correct for any rig with no such bar — a fixture, or a host test.
+    fn scrim_chip_read(&self) -> (f32, Option<crate::gfx::GlassFace>) { (0.0, None) }
     /// Coexistence adapter for a legacy overlay which freezes an owned host (phase 10 retirement).
     fn page_updates(&self) -> bool { true }
     /// The application lifts its legacy host-cache cull before drawing an owned surface.
@@ -264,9 +269,15 @@ pub struct FrameReport {
     pub steps_post: u32,
     pub carried: usize,
     pub queue_hwm: usize,
-    pub mounted: Vec<InstanceId>,
+    /// Bodies mounted this frame, each with its `Screen::name()` — the cold-open clock's START
+    /// (`diag::heartbeat::ColdOpens`). The name rides along because by the time anything
+    /// downstream reads this the body is behind the tree, and asking the tree for it would be a
+    /// second lookup that can fail (the body may already be gone).
+    pub mounted: Vec<(InstanceId, &'static str)>,
     /// Bodies whose Unmount step completed and may now be pruned, not merely queued.
     pub unmounted: Vec<InstanceId>,
+    /// Bodies that DREW this frame, in draw order — the cold-open clock's STOP.
+    pub drawn: Vec<InstanceId>,
     pub dropped_deliveries: u32,
     /// The logical-state hash, on an event frame.
     pub state_hash: Option<u64>,
@@ -305,7 +316,12 @@ pub struct Dispatcher<H: Host> {
     frame: u64,
     carried_streak: u8,
     last_carried: usize,
+    /// Deliveries dropped since the heartbeat last read them (`take_heartbeat_counters`).
     dropped_deliveries: u32,
+    /// The cold-open instrument (spec §8.4). It lives here rather than beside the loop's other
+    /// instruments because both of its events are the dispatcher's — a mount at nav commit and a
+    /// draw in the page/surface pass — and neither is visible from outside one `FrameReport`.
+    cold: crate::diag::heartbeat::ColdOpens,
     render_breach_logged: bool,
     /// The input owner answered `Handled::No` to a BACK: resolve it over its stack at commit.
     pending_back: bool,
@@ -350,6 +366,7 @@ where
             carried_streak: 0,
             last_carried: 0,
             dropped_deliveries: 0,
+            cold: Default::default(),
             render_breach_logged: false,
             pending_back: false,
             last_tick: Tick::default(),
@@ -358,9 +375,10 @@ where
     }
 
     /// Does the dispatcher OWN the input right now (phase 5b, the coexistence seam): the input
-    /// owner is a surface, or a page whose focus comes from the engine — i.e. anything that is
-    /// not a `LegacyPage`. The legacy loop hands its keys and pointer to `frame_with` while this
-    /// answers `true` and keeps them for its own ladders otherwise.
+    /// owner is a surface, or a page whose focus comes from the engine — i.e. anything but a
+    /// screen that still declares `FocusSource::Legacy` (the player, until phase 12). The legacy
+    /// loop hands its keys and pointer to `frame_with` while this answers `true` and keeps them
+    /// for its own ladders otherwise.
     pub fn owns_input(&self) -> bool {
         self.engine_page()
     }
@@ -503,13 +521,39 @@ where
         self.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id)
     }
 
+    /// **The top page's ARGUMENT** — "which page is on top", asked of the container rather than of
+    /// a mirror kept beside it (spec §15.2). It answers before the body is mounted, which
+    /// [`Self::top_screen`] cannot: an entry minted this frame has an argument and no instance
+    /// until the commit's `Mount` step has run.
+    pub fn top_arg(&self) -> Option<&H::Arg> {
+        self.nav.top_page().map(|e| &e.arg)
+    }
+
+    /// …and its `ScreenId`, the identity every argument of one screen shares.
+    pub fn top_id(&self) -> Option<super::machine::ScreenId> {
+        use super::screen::ScreenArg;
+        self.top_arg().map(|a| a.id())
+    }
+
     /// The top page's screen, for a test to read.
     pub fn top_screen(&self) -> Option<&dyn super::screen::Screen<H>> {
         self.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| &*i.screen)
     }
 
+    /// **Is a PAGE navigation already parked for this frame's commit?**
+    ///
+    /// Asked by `app::bridge::sync_page`, whose whole job is to put the committed route's page on
+    /// top: a page op parked by the loop itself (`Nav::Open`'s `Push`, `Nav::Back`'s `Pop`) is
+    /// already that decision, and a second one would duplicate the page. A parked SURFACE op is
+    /// not — `Navigation::moves_page` is the one classifier, so this and the commit that routes
+    /// the op give the same answer. It used to match `Fx::Nav(_)` flatly, which made
+    /// `exit_player`'s `NavOp::Dismiss` of an open player panel suppress the page sync for the
+    /// very frame that carried the post-player route.
     pub fn has_pending_navigation(&self) -> bool {
-        self.parked.iter().any(|(s, _)| matches!(s.fx, Fx::Nav(_)))
+        self.parked.iter().any(|(s, _)| match &s.fx {
+            Fx::Nav(op) => self.nav.moves_page(op),
+            _ => false,
+        })
     }
 
     /// The engine's current focus for the input owner (§7.3 step 5).
@@ -590,6 +634,26 @@ where
         let strip = (is_top_page && page.strip_reachable() && !nav.tabs.strip.is_empty())
             .then(|| (nav.tabs.strip_group(), nav.tabs.strip.as_slice()));
         Some(PageWithStrip { page, strip, strip_fallback: nav.tabs.strip_fallback, entry })
+    }
+
+    /// **Is this frame's picture a hardware VIDEO PLANE?** (spec §9, §16 risk 10.)
+    ///
+    /// TWO terms, and both are required. The top page must ANSWER
+    /// [`RenderStrategy::VideoPlane`] — a declaration about what it draws, not about where it is —
+    /// and the plane must actually be BOUND, which arrives as the gate's
+    /// [`PresentEvent::VideoPlane`](super::present::PresentEvent::VideoPlane) input from the one
+    /// machine that owns that bit. Either term alone is wrong: the player page is up for the whole
+    /// pre-bind spinner and the whole post-unbind read-out, where our surface holds an ordinary
+    /// picture, and a bound plane under some other page is not a thing this tree can produce.
+    ///
+    /// What it decides, in this file: nothing below the top page ticks or draws — `(Frozen,
+    /// Replaced)` in §6.2's vocabulary, applied to everything UNDER the page rather than to the
+    /// page itself — because there is nothing to see under a hole punched in the surface. The
+    /// other half, the four framebuffer-sampling doors, is armed for the length of the draw and
+    /// enforced in `gfx::video_plane_refuses`.
+    pub fn video_plane_frame(&self) -> bool {
+        self.present.video_plane()
+            && self.top_screen().map(|s| s.render()) == Some(super::screen::RenderStrategy::VideoPlane)
     }
 
     /// ONE frame (§3.3): the ten steps in order.
@@ -758,7 +822,6 @@ where
         // 3. adapter results, in the caller's composite-key order (the recorder's order)
         for (addr, msg) in results {
             if !self.nav.is_deliverable(&addr) {
-                self.dropped_deliveries += 1;
                 report.dropped_deliveries += 1;
                 continue;
             }
@@ -794,7 +857,15 @@ where
             .entries
             .iter()
             .rev()
-            .take(if self.nav.tabs.stack.transition.draws_below() { 2 } else { 1 })
+            .take(if self.nav.tabs.stack.transition.draws_below() && !self.video_plane_frame() {
+                2
+            } else {
+                // §9: `(Frozen, …)` on everything below a bound video plane. A page that cannot be
+                // seen must not be stepped either — its springs would run out their travel behind
+                // the picture and land settled, so the cross-fade back out of the player would
+                // begin already over.
+                1
+            })
             .filter_map(|e| e.inst.as_ref())
             .map(|i| i.id)
             .collect();
@@ -880,6 +951,18 @@ where
             self.carried_streak = 0;
         }
         self.last_carried = report.carried;
+        // …and the drops, for the heartbeat's `dropped=`. The field on `self` accumulates until
+        // the heartbeat drains it (`take_heartbeat_counters`), and it is folded HERE, from the
+        // report, rather than beside each `report.dropped_deliveries += 1`: there are eight of
+        // those sites and only one of them ever incremented both, so `Dispatcher::dropped_deliveries`
+        // was a count of undeliverable ADDRESSEES calling itself a count of dropped deliveries.
+        self.dropped_deliveries = self
+            .dropped_deliveries
+            .saturating_add(report.dropped_deliveries);
+        // a body unmounted without ever drawing owes no `coldopen` line (§8.4)
+        for id in &report.unmounted {
+            self.cold.unmounted(id.0);
+        }
         debug_assert!(
             self.carried_streak < CARRY_GROWTH_FRAMES,
             "the effect queue grew for {CARRY_GROWTH_FRAMES} consecutive frames"
@@ -928,7 +1011,22 @@ where
     fn prepare_pass(&mut self, rig: &mut dyn Rig<H>, tick: Tick) {
         self.prepared = true;
         let (_, host_render) = self.nav.modals.host_policy();
+        // The budget's frame opens at the START of the prepare window and nowhere else (§8.1):
+        // the ceiling measures how long THIS window has run, so an origin taken any earlier
+        // charges the window for phases that are not its own.
+        //
+        // **While the legacy loop still owns the product's frame there are two such windows in
+        // one iteration**, sharing the one budget: this pass (the owned screens', which spends
+        // nothing today) and the loop's own around the render cache's upload step, opened later
+        // and therefore the origin the uploads are admitted against. Two openings cost the
+        // instruments nothing — `take_frame_stats` accumulates until its reader drains it, and
+        // `begin_frame` resets only the quotas and the solo latch — and they collapse to one
+        // when the dispatcher owns the whole frame.
         self.budget.begin_frame(rig.now_us());
+        // The cold-open line's `prepared=` term (§8.4): the budget's refusal count as this
+        // frame's prepare window opens, differenced at the draw. Taken here rather than from
+        // `take_frame_stats` because that drain belongs to the heartbeat, once a second.
+        self.cold.note_prepare(self.budget.refused());
         let parts = self.parts(tick);
         {
             let Dispatcher { nav, input, budget, .. } = self;
@@ -956,6 +1054,42 @@ where
         rig.prepare(budget, present);
     }
 
+    /// **Resolve every visible surface's REFRESHING backdrop, before the host page draws.**
+    ///
+    /// A second, narrower prepare, called from the loop's glass-owner block rather than from the
+    /// dispatcher's own frame, because the slot is load-bearing at both ends and neither boundary
+    /// exists inside `prepare_pass`: `popover::host::begin_frame` above it latches the own-damage
+    /// ledger this fold reads, and `gfx::blur_direct_region()` is sampled below it, so an
+    /// invalidation raised here reaches this frame's own blur source instead of the next one's.
+    ///
+    /// The TOP PAGE and every visible surface are asked, in that order. What the container
+    /// contributes is the half a screen cannot know: whether its own appear spring has SETTLED,
+    /// which it owns (`Surface::motion`) — a page, having no such spring, is asked with `true`.
+    /// The decision itself stays one function, `popover::glass_refresh`, in the screen that owns
+    /// the glass policy.
+    ///
+    /// It replaces a call that NAMED one screen (`ui::person_bio::prepare_present`, routed on
+    /// `Route::Person` for a while, then self-gated) — the shape §14 is about: a rule stated in one
+    /// module and enforced by a route test three modules away. A screen with a cached ground, or
+    /// none, inherits the no-op.
+    pub fn prepare_present(
+        &mut self,
+        glass: &mut crate::ui::frame::glass::GlassPlan,
+        underlay_changed: bool,
+    ) {
+        if let Some(inst) = self.nav.tabs.stack.top_mut().and_then(|e| e.inst.as_mut()) {
+            inst.screen.prepare_present(glass, underlay_changed, true);
+        }
+        for s in &mut self.nav.modals.surfaces {
+            if s.phase == crate::ui::containers::modal::Phase::Hidden {
+                continue;
+            }
+            let Some(inst) = s.entry.inst.as_mut() else { continue };
+            let settled = s.motion.settled();
+            inst.screen.prepare_present(glass, underlay_changed, settled);
+        }
+    }
+
     /// Step 10 on a frame the CALLER presents (the legacy loop's own gate, phase 5b): the
     /// prepare pass first if this frame's steps did not run it, then the draw. The surfaces
     /// alone or the whole tree — `pages` says whether the page pass is drawn here too (the
@@ -979,15 +1113,27 @@ where
         let strip_owner = self.owner_entry();
         let navigation = rig.navigation_presentation();
         let (_, host_render) = self.nav.modals.host_policy();
+        // §9: armed for the LENGTH OF THE DRAW, and restored rather than cleared, exactly as the
+        // page freeze is. Every framebuffer-sampling door is refused while it is up.
+        let video_plane = self.video_plane_frame();
+        let was_video_plane = crate::gfx::set_video_plane_frame(video_plane);
         rig.clear_opaque_region();
         let parts = self.parts(tick);
         let Dispatcher { nav, input, .. } = self;
         let mut stops = Vec::new();
-        let mut set = RenderSet::default();
+        let mut set = RenderSet {
+            // the shared poster/logo residency (ui/tex.rs) is the one pool rule (c) sums beside
+            // the screens' own renders and the FrameCache
+            extra_bytes: super::tex::resident_bytes(),
+            ..Default::default()
+        };
         // the page pass: the top page (and, under a push, the level beneath it), unless the
         // host fold REPLACED it
         if pages && host_render != HostRender::Replaced {
-            let draws_below = nav.tabs.stack.transition.draws_below();
+            // §9: `(…, Replaced)` on everything below a bound video plane — the level a push or
+            // pop transition would otherwise draw beneath the top one. Drawing it would put a page
+            // on the panel UNDER a hole, i.e. over the film.
+            let draws_below = nav.tabs.stack.transition.draws_below() && !video_plane;
             let n = nav.tabs.stack.entries.len();
             let top_entry = nav.tabs.stack.top().map(|entry| entry.id);
             let from = if draws_below { n.saturating_sub(2) } else { n.saturating_sub(1) };
@@ -1000,9 +1146,10 @@ where
                     let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), navigation);
                     f.page_alpha *= nav.tabs.stack.transition.page_alpha();
                     inst.screen.draw(&mut f);
+                    report.drawn.push(inst.id);
                     stops.extend(f.into_stops());
                     set.pages += 1;
-                    set.bytes += inst.screen.render_bytes();
+                    set.bytes += inst.screen.render_report().bytes;
                     if top_entry == Some(e.id) && e.arg.chrome() == super::machine::Chrome::TabBar
                         && inst.screen.focus_source() == FocusSource::Engine {
                         let mut chrome_parts = parts.clone();
@@ -1029,6 +1176,18 @@ where
                     }));
                 }
             }
+            // **The surfaces' modal dim, last thing in the page pass** (§6.2, §8.3). It is here
+            // and not with each panel because the dim has to be on the framebuffer BEFORE the
+            // host snapshot is taken — see `ModalStack::draw_scrims`, which owns the rule and the
+            // one style it does not apply to. `surface_scope` is the freeze lift the paint needs:
+            // a page served from its cached quad refuses every fill, and this is the frame's first
+            // `popover::host::live()`, which is also what defines the snapshot as the UNDIMMED
+            // page.
+            {
+                let chip_read = rig.scrim_chip_read();
+                let _scope = rig.surface_scope();
+                nav.modals.draw_scrims(navigation.page_alpha, chip_read);
+            }
         }
         if host_render == HostRender::Cached {
             set.frame_cache_bytes = super::frame::FRAME_CACHE_BYTES;
@@ -1037,6 +1196,11 @@ where
         for s in &mut nav.modals.surfaces {
             if let Some(inst) = s.entry.inst.as_mut() {
                 let _surface_scope = rig.surface_scope();
+                // §4.4: a spring stepped while a SURFACE draws is the panel's, and an
+                // `idle::invalidate` it raises is the panel's damage — the same attribution the
+                // step above gets. The page pass runs in NO scope, so the page's own motion and
+                // damage stay the page's and `popover::host_refresh` can still see them.
+                let _own = crate::ui::popover::own_motion();
                 let Split { views, measure, .. } = rig.split();
                 let mut surface_cx = parts.cx::<H>(views, measure);
                 surface_cx.owner = InputOwner::Entry(s.entry.id);
@@ -1044,27 +1208,41 @@ where
                 let mut f = DrawFrame::with_navigation(&surface_cx, Painter::root(), navigation);
                 f.page_alpha = s.motion.appear;
                 inst.screen.draw(&mut f);
+                report.drawn.push(inst.id);
                 stops.extend(f.into_stops());
-                set.surfaces.push((s.entry.id, 1));
-                set.bytes += inst.screen.render_bytes();
+                // (b) is a count of THIS SURFACE's own backing renders, asked of the surface —
+                // not a literal `1`, which is what made "more than one render per surface"
+                // unspellable and the rule inert. A surface served from the shared FrameCache
+                // owns none and reports 0.
+                let render = inst.screen.render_report();
+                set.surfaces.push((s.entry.id, render.textures));
+                set.bytes += render.bytes;
                 // an Opaque surface's ground has drawn: the fold REPLACES the host from here
                 s.ground_ready = inst.screen.ground_ready();
             }
         }
         // the hit map swaps only on a presented frame (§7.6); a legacy page registers nothing
         let hit_page = self.hit_page();
+        crate::gfx::set_video_plane_frame(was_video_plane);
         if !crate::gfx::blur_source_pass() {
             self.input.hit.fill(if hit_page { stops } else { Vec::new() });
             self.input.hit.swap();
         }
         if let Err(breach) = set.check() {
-            debug_assert!(false, "render set breach: {breach}");
-            if !self.render_breach_logged {
-                self.render_breach_logged = true;
-                rig.log(&format!("dispatch: render set breach: {breach}"));
+            // The policy itself is `frame::on_breach` — assert on the host, log once on a
+            // television — so that both halves are reachable from a test.
+            if let Some(line) = super::frame::on_breach(&breach, &mut self.render_breach_logged) {
+                rig.log(&line);
             }
         }
         report.render_set = set;
+        // §8.4: a mount's clock stops on the first frame the body both prepared and DREW. This
+        // frame prepared (`prepare_pass` ran above, or in the `frame_with` that preceded this
+        // `draw`), so every id in `drawn` that is still pending closes here.
+        let refused_now = self.budget.refused();
+        for id in &report.drawn {
+            self.cold.drawn(id.0, tick.ms, refused_now);
+        }
         if let Some(fault) = self.present.take_fault() {
             rig.log(&format!("dispatch: fault {fault:?}"));
         }
@@ -1327,6 +1505,11 @@ where
                 } else {
                     super::present::Scope::Page
                 });
+                // …and the `ui::idle` half of the same attribution, which is the one a screen's
+                // OWN springs reach: an owned screen animates through `gfx::spring`, which reports
+                // to `ui::idle` and not to this gate (the Library notes no `Motion` at all). Held
+                // for the body — a guard, so the early return below cannot leak the scope.
+                let _own = is_surface.then(crate::ui::popover::own_motion);
                 let Some(inst) = nav.instance_mut(id) else {
                     present.set_scope(super::present::Scope::Page);
                     report.dropped_deliveries += 1;
@@ -1693,6 +1876,8 @@ where
             let mut fx = Effects::new(&mut out, MachineId::Instance(id), present);
             mounter.mount(id, &entry.arg, &entry.ret, &cx, &mut fx)
         };
+        // read before the body moves into the tree — the cold-open clock's start (§8.4)
+        let name = screen.name();
         if let Some(entry) = self.nav.entry_mut(eid) {
             entry.inst = Some(Instance {
                 id,
@@ -1706,7 +1891,8 @@ where
             fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::Mount)),
         });
         post.extend(out);
-        report.mounted.push(id);
+        report.mounted.push((id, name));
+        self.cold.mounted(id.0, name, parts.tick.ms);
     }
 
     /// Register a request as in flight for an instance (the app's registry calls this when it
@@ -1762,6 +1948,18 @@ where
         self.dropped_deliveries
     }
 
+    /// The heartbeat's `carried=`/`dropped=` (§8.4), once a second: the queue depth the LAST
+    /// frame of the second carried forward, and every delivery dropped since the previous read.
+    /// `carried` is a level and is not reset; `dropped` is a count and is.
+    pub fn take_heartbeat_counters(&mut self) -> (usize, u32) {
+        (self.last_carried, std::mem::take(&mut self.dropped_deliveries))
+    }
+
+    /// The `coldopen` lines this frame closed (§8.4), for the loop's report block to log.
+    pub fn take_cold_open_lines(&mut self) -> Vec<String> {
+        self.cold.take_lines()
+    }
+
     pub fn viewport() -> Rect {
         Rect::FULL
     }
@@ -1782,6 +1980,59 @@ where
 /// choose one) and one screen with a `Nav(Back)` rule on its LEFT edge, carrying an inner DEPTH
 /// it walks down exactly as `screens::settings::RouteSurface` walks its own stack: it HANDLES a
 /// BACK while it has depth and DECLINES one at its root.
+/// The cold-open instrument's dispatcher half (spec §8.4): the mount that starts the clock and
+/// the first prepared+drawn frame that stops it. The arithmetic and the line's shape are pinned in
+/// `diag::heartbeat`; what is pinned HERE is that the two events are wired to the right places and
+/// that the word on the line is the screen's own `Screen::name()`.
+#[cfg(test)]
+mod cold_open_tests {
+    use super::*;
+    use crate::ui::fixture::{tick, FixtureArg, FixtureHost, FixtureRig};
+    use crate::ui::machine::MachineId;
+
+    #[test]
+    fn one_mount_produces_exactly_one_cold_open_line_naming_that_screen() {
+        let _g = crate::testlock::serial();
+        let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
+        let mut rig = FixtureRig::new();
+
+        // boot: Home is requested, mounts at nav commit and draws in the same frame
+        d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+        let r = d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+        assert_eq!(r.mounted.len(), 1);
+        assert_eq!(r.mounted[0].1, "home", "the report carries the screen's own name");
+        assert!(r.drawn.contains(&r.mounted[0].0), "it drew in the frame it mounted in");
+        assert_eq!(
+            d.take_cold_open_lines(),
+            vec!["coldopen screen=home ms=0 prepared=true".to_string()],
+        );
+
+        // …and never again for that instance, however many frames it goes on drawing for
+        d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+        d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+        assert!(d.take_cold_open_lines().is_empty(), "one line per MOUNT, not per frame");
+
+        // A second screen mounted later reports its own word — and its own CLOCK, which is the
+        // half `ms=0` above cannot show. This mount lands on a frame the present gate refuses
+        // (a structural op that damaged nothing), so the body has not drawn yet and owes no line;
+        // the next frame that presents is the one it opens on, 16 ms later.
+        d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(1)));
+        let r2 = d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+        assert_eq!(r2.mounted.len(), 1);
+        assert!(!r2.presented && r2.drawn.is_empty(), "the mount frame drew nothing");
+        assert!(d.take_cold_open_lines().is_empty(), "a mount that has not drawn owes no line");
+        d.present.note(crate::ui::present::PresentEvent::Damage(
+            crate::ui::present::Provenance::Input,
+        ));
+        let r3 = d.frame(&mut rig, tick(64), vec![], vec![], &mut NoTap);
+        assert!(r3.presented, "damage opened the gate");
+        assert_eq!(
+            d.take_cold_open_lines(),
+            vec!["coldopen screen=detail ms=16 prepared=true".to_string()],
+        );
+    }
+}
+
 #[cfg(test)]
 mod edge_back_tests {
     use std::borrow::Cow;

@@ -1,0 +1,18 @@
+# count: 0
+# Entries key by `<path relative to rust-modules/src>::<fn name>`, e.g. `metadata.rs::land_x` —
+# NOT by path alone like every other ci/allow/*.txt, because a bare-path entry here would exempt
+# a whole legacy module's worth of mutators for one worker-seam function.
+#
+# Legacy-module mutators the mutators-visibility gate (ci/check-deps.sh) permits to stay
+# pub(crate)/pub — WORKER-THREAD LANDING SEAMS ONLY: a pub(crate) fn a spawned worker closure
+# calls directly across the module boundary to land its result, where no narrower visibility is
+# possible because the closure itself lives in a different translation unit's scope. The D3
+# census (2026-09-10/11, docs/stores-as-machines.md) checked every task::spawn_small site in the
+# six legacy stores and found none of this shape today: every worker closure calls a PRIVATE,
+# same-file helper (e.g. metadata.rs's `land_detail`) to stuff its result into a mailbox, and the
+# mailbox is drained on the main thread by a PUMP (`pump`/`tick`/`land`/`discover_pump`), which is
+# a different, already-permanent exception (see check-deps.sh's own comment on the mutators-
+# visibility gate) and does not belong on this list. This file exists for the day a future
+# store's worker closure DOES call a pub fn directly instead of a private in-file helper. Not the
+# place for any other kind of pub(crate) exception — see check-deps.sh's comment on `pms::reset`
+# for why that one is tracked as an open item instead of waived here.

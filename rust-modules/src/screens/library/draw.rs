@@ -45,14 +45,30 @@ mod layer_tests {
 
 impl LibraryScreen {
     pub(super) fn draw_page<H: LibraryLike>(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+        // **The Library's own phase names**, in the `hm.*`/`st.*` family — `/tmp/plxnative-cpuprof`
+        // times each on the render thread (inclusive wall, no `glFinish`, every phase at once) and
+        // `--graphics-profile --profile-phase <name>` samples one. They exist because the owned
+        // screen shipped with NONE: the 2026-09-09 `fps:library-switch` profile read `frame.ui`
+        // 24.5 ms and `main.ui` 22.4 with nothing named beneath, so the whole page was one opaque
+        // block and the only attribution left was the draw-MASK census, which can subtract a class
+        // but cannot say which part of the screen spent it.
+        //
+        // `lb.ground` is the full-screen wash the mask census implicated (masking `ambient` moved
+        // `loop=` 43-45 → 57); `lb.document` brackets the chips, the shelf band and the status
+        // read-out with `lb.shelves` inside it for the card rows alone; `lb.grid` is the poster
+        // wall's windowed rows and `lb.rail` the letter rail.
         crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
-        self.ground.draw(f.painter.alpha(f.page_alpha), Rect::FULL);
+        crate::ui::profile::phase("lb.ground", || {
+            self.ground.draw(f.painter.alpha(f.page_alpha), Rect::FULL);
+        });
         let layout = self.pair.layout();
         let alpha = self.page_fade.alpha() * self.grid_fade.alpha();
         layers(|layer| match layer {
-            Layer::Grid => draw_faded_part_at(&mut self.pair.detail, f, layout.detail, alpha),
-            Layer::Document => self.draw_document(f),
-            Layer::Rail => {
+            Layer::Grid => crate::ui::profile::phase("lb.grid", || {
+                draw_faded_part_at(&mut self.pair.detail, f, layout.detail, alpha)
+            }),
+            Layer::Document => crate::ui::profile::phase("lb.document", || self.draw_document(f)),
+            Layer::Rail => crate::ui::profile::phase("lb.rail", || {
                 // Decoration derives from the CURRENT engine key; no remembered cursor is copied.
                 let index = f.focus.current.filter(|key| key.entry == self.entry)
                     .and_then(|key| self.pair.detail.index_of(key.elem));
@@ -60,7 +76,7 @@ impl LibraryScreen {
                 f.page_alpha = parent * alpha;
                 self.pair.master.draw_with_current(f, layout.master, index);
                 f.page_alpha = parent;
-            },
+            }),
         });
     }
 
@@ -85,21 +101,23 @@ impl LibraryScreen {
                     .mix(focused, selected).draw(&env, p);
             }
         }
-        for (index, row) in self.shelves.iter().enumerate() {
-            let Some(shelf) = H::section_hubs(f.cx).shelves().get(index) else { continue };
-            let origin = self.layout.shelf_y(index, self.scroll.pos);
-            if !shelf_on_screen(origin, self.layout.shelf_pitch(index)) { continue; }
-            card_row::draw_heading(p, &shelf.title, "", MARGIN_X,
-                origin - crate::ui::consts::TITLE_DY - row.motion.lift(), layout::GRID_RIGHT - MARGIN_X);
-            let focused = f.focus.current.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
-            for col in 0..row.elems.len() {
-                if focused == Some(col) { continue; }
-                self.draw_shelf_tile(index, col, false, f);
+        crate::ui::profile::phase("lb.shelves", || {
+            for (index, row) in self.shelves.iter().enumerate() {
+                let Some(shelf) = H::section_hubs(f.cx).shelves().get(index) else { continue };
+                let origin = self.layout.shelf_y(index, self.scroll.pos);
+                if !shelf_on_screen(origin, self.layout.shelf_pitch(index)) { continue; }
+                card_row::draw_heading(p, &shelf.title, "", MARGIN_X,
+                    origin - crate::ui::consts::TITLE_DY - row.motion.lift(), layout::GRID_RIGHT - MARGIN_X, f.measure);
+                let focused = f.focus.current.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
+                for col in 0..row.elems.len() {
+                    if focused == Some(col) { continue; }
+                    self.draw_shelf_tile(index, col, false, f);
+                }
+                if let Some(col) = focused {
+                    self.draw_shelf_tile(index, col, true, f);
+                }
             }
-            if let Some(col) = focused {
-                self.draw_shelf_tile(index, col, true, f);
-            }
-        }
+        });
         if self.layout.grid_head {
             for elem in [SORT, FILTER] {
                 let chip = self.toolbar_chip(elem, f.cx);
@@ -109,7 +127,7 @@ impl LibraryScreen {
                 }
             }
             card_row::draw_heading(p, "All", "", MARGIN_X,
-                CONTENT_TOP + self.layout.grid_block_top() - self.scroll.pos, layout::GRID_RIGHT - MARGIN_X);
+                CONTENT_TOP + self.layout.grid_block_top() - self.scroll.pos, layout::GRID_RIGHT - MARGIN_X, f.measure);
         }
         if self.readout == Readout::Loading {
             // Preserve the Library's standalone loading spinner, outside either content fade.
@@ -172,12 +190,12 @@ impl LibraryScreen {
         let resume = if shelf.landscape { None } else { item.resume_frac() };
         if focused {
             card_row::draw_focused(p, art, rect, scale, style, resume,
-                &shelf_label(shelf, col).revealed(model.motion.band_reveal()));
+                &shelf_label(shelf, col).revealed(model.motion.band_reveal()), f.measure);
         } else {
             card_row::draw_tile(p, art, rect, scale, style, resume);
         }
         if shelf.landscape {
-            crate::ui::widgets::still_overlay(p, item, rect, style.tile_radius(rect, scale), shelf.is_continue);
+            crate::ui::widgets::still_overlay(p, item, rect, style.tile_radius(rect, scale), shelf.is_continue, f.measure);
         }
     }
 

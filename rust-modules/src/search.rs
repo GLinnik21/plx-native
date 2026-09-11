@@ -1,7 +1,8 @@
-//! search — the search screen's data layer (the store `ui/search/` draws).
+//! search — the search screen's data layer (the store the owned `screens::search::SearchScreen` draws).
 //!
 //! One query, fanned out across every registered source, merged into typed shelves and pumped once
-//! a frame while the screen is up. The types down to [`shelves`] are what `ui/search/` draws;
+//! a frame while the screen is up. The types down to [`shelves`] are what `screens::search::render`
+//! draws;
 //! everything below the *fetch plumbing* banner is the machine that fills them. [`terms`] is the
 //! one predicate the screen shares with the store — see its doc before writing a second one.
 //!
@@ -29,8 +30,9 @@
 //!
 //! The merge is **round robin** ([`merge`]), not source-by-source the way Home groups its shelves.
 //! Home groups because a shelf there BELONGS to a source and adjacency is what says so; a search
-//! shelf is genuinely mixed (`ui/search/results.rs`: the heading "cannot claim an owner — the
-//! owner annotation follows FOCUS"), so concatenating would bury a friend's best match behind
+//! shelf is genuinely mixed (the deleted legacy `ui/search/results.rs`'s own reasoning, carried
+//! onto the owned `screens::search::mod.rs`'s `OWNER_FLOOR`: the owner annotation follows FOCUS,
+//! not a fixed shelf owner), so concatenating would bury a friend's best match behind
 //! twenty-three worse ones of ours. There is no cross-server relevance score to sort on — the only
 //! ranking any server hands over is the order of its own list — so taking one from each in turn is
 //! the most each server's ranking can be honoured at once.
@@ -352,7 +354,7 @@ pub(crate) fn query() -> &'static str {
 ///   keyboard: `len()` would put a one-letter Cyrillic or CJK query over a floor the server will
 ///   still answer nothing to, spending a round trip per keystroke on a guaranteed empty response.
 ///
-/// `pub(crate)` so `ui/search/` asks instead of re-deriving it. "Is a search on screen", "may this
+/// `pub(crate)` so the owned `screens::search::mod.rs` asks instead of re-deriving it. "Is a search on screen", "may this
 /// term be filed in the recents", and "is a fetch owed" are the SAME question, and a screen that
 /// spells its own copy of the test can disagree with the store about whether a search is happening
 /// at all — a results region drawn over a store parked on [`State::Idle`], which never asked
@@ -362,8 +364,25 @@ pub(crate) fn terms(q: &str) -> Option<&str> {
     (t.chars().count() >= MIN_QUERY).then_some(t)
 }
 
+/// The query's own drawability invariant: no control byte reaches the store. **NUL is the one
+/// that bites** — it survives every `String` operation on the way in from a boot trigger's file
+/// and `CString::new` refuses it at the far end, so the field's run and the empty statement both
+/// blank over a query the app still believes it is holding. Borrowed when there is nothing to
+/// remove, which is every keystroke: the television's panel cannot commit one
+/// (`textinput::decode_text_at` ends its string AT the NUL) and a remembered term is refused by
+/// `recents::usable`, so the seed path is the only way one gets in — and that path now enters
+/// through the STORE rather than through a screen's mount.
+pub(crate) fn sanitize_query(q: &str) -> std::borrow::Cow<'_, str> {
+    if q.chars().any(char::is_control) {
+        std::borrow::Cow::Owned(q.chars().filter(|c| !c.is_control()).collect())
+    } else {
+        std::borrow::Cow::Borrowed(q)
+    }
+}
+
 /// Replace the query. Idempotent on an unchanged string, so a caller may hand it every frame.
-pub(crate) fn set_query(q: &str) {
+fn set_query(q: &str) {
+    let q = &*sanitize_query(q);
     // Two different changes, and only one of them is news for the SERVER: the field draws the raw
     // string (so a typed space must repaint), while the fetch is addressed to the trimmed one (so
     // that same space must not supersede an answer that is still correct). Collapsing the two
@@ -394,7 +413,7 @@ pub(crate) fn set_query(q: &str) {
             };
             // …and the debounce restarts with it: the fetch is owed to the LAST keystroke, not to
             // the first one of the burst.
-            *addr_of_mut!(SETTLE) = 0.0;
+            *addr_of_mut!(SETTLE_US) = 0;
             *addr_of_mut!(ARMED) = real_query;
         }
     }
@@ -416,6 +435,7 @@ pub(crate) fn query_gen() -> u32 {
 /// Publish a bounded catalog through the real retained-view boundary, without network work.
 #[cfg(test)]
 pub(crate) fn publish_shelves_for_test(shelves: Vec<Shelf>) {
+    crate::testlock::assert_held("the search store (publish_shelves_for_test)");
     // A published catalog represents completed source answers, not merely painted rows over
     // still-pending requests. Keep it valid when a real owned-screen Tick pumps the store.
     VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
@@ -449,7 +469,7 @@ pub(crate) fn shelves() -> &'static [Shelf] {
 /// Editing both by the same rule is the same result at the same cost as the walk itself.
 ///
 /// Returns whether anything matched. **MAIN THREAD.**
-pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
+fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
     let mut hit = false;
     let mut flip = |it: &mut Item| {
         if let Item::Media(m) = it {
@@ -483,6 +503,10 @@ pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
 /// bursts, so this is a shade longer — a five-letter word costs ONE round trip rather than four.
 /// It is the whole reason the "called as the user types" endpoint is affordable at all.
 const SETTLE_S: f32 = 0.25;
+
+/// [`SETTLE_S`] in whole microseconds — the unit [`SETTLE_US`] actually accumulates in, so the
+/// debounce is an exact integer comparison rather than a summed `f32`.
+const SETTLE_US_TARGET: u32 = (SETTLE_S * 1_000_000.0) as u32;
 
 /// Items asked for **per hub** — `plex-openapi.json`: "The number of items to return per hub. 3 if
 /// not specified", which is why the parameter is always sent at all.
@@ -588,9 +612,16 @@ static IN_FLIGHT: [AtomicBool; NSRC] = [const { AtomicBool::new(false) }; NSRC];
 /// [`Source::retry_cd`].
 const RETRY_FRAMES: u32 = 120;
 
-/// Seconds the current query has held still, and whether it is still owed a fetch. Main thread
-/// only, advanced by [`pump`] — the `season_settle` accumulator, one screen over.
-static mut SETTLE: f32 = 0.0;
+/// Microseconds the current query has held still, and whether it is still owed a fetch. Main
+/// thread only, advanced by [`pump`] — the `season_settle` accumulator's cousin one screen over,
+/// but WHOLE MICROSECONDS rather than a summed `f32`: [`pump`]'s `dt` argument already comes from
+/// a real `Tick.dt_us` (`stores::search::pump`'s own caller reads it off `parts.tick`), and a
+/// per-frame delta that size round-trips through `f32` exactly, so converting it back once and
+/// accumulating the integer is what removes the drift `check-deps.sh`'s `dt` gate exists to catch
+/// — without this debounce needing a `motion::Ramp` of its own (it is not logical state, not
+/// hashed and not replayed; see the retired `ci/allow/dt.txt`'s header for why it was ever this
+/// gate's lowest-stakes entry).
+static mut SETTLE_US: u32 = 0;
 static mut ARMED: bool = false;
 
 /// What one source's finished fetch delivers. `None` means the fetch FAILED (transport, parse, or
@@ -740,7 +771,7 @@ pub(crate) fn pump(dt: f32) -> bool {
             supersede();
             unsafe {
                 *addr_of_mut!(SHELVES) = None;
-                *addr_of_mut!(SETTLE) = 0.0;
+                *addr_of_mut!(SETTLE_US) = 0;
                 *addr_of_mut!(ARMED) = true;
             }
         } else {
@@ -749,9 +780,13 @@ pub(crate) fn pump(dt: f32) -> bool {
     }
     unsafe {
         if *addr_of!(ARMED) {
-            let s = &mut *addr_of_mut!(SETTLE);
-            *s += dt;
-            if *s >= SETTLE_S {
+            // Realistic per-frame deltas (tens of milliseconds) round-trip through `f32` exactly,
+            // so converting once here and accumulating the whole-microsecond integer is exact —
+            // see `SETTLE_US`'s doc for why that, and not a summed `f32`, is what this reads.
+            let dt_us = (dt * 1_000_000.0).round() as u32;
+            let s = &mut *addr_of_mut!(SETTLE_US);
+            *s = s.saturating_add(dt_us);
+            if *s >= SETTLE_US_TARGET {
                 *addr_of_mut!(ARMED) = false;
                 if let Some(q) = terms(query()) {
                     crate::log(&format!(
@@ -771,7 +806,12 @@ pub(crate) fn pump(dt: f32) -> bool {
                 *cd -= 1;
             }
         }
-        let taken = SLOT[i].lock().unwrap_or_else(|e| e.into_inner()).take();
+        // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay a source's answer is
+        // taken on the frame the recording took it on. The debounce above and `maybe_spawn` below
+        // are outside it, so the query still goes out when it went out.
+        let taken = crate::stores::take_landing(crate::stores::StoreId::Search, || {
+            SLOT[i].lock().unwrap_or_else(|e| e.into_inner()).take()
+        });
         if let Some(m) = taken {
             // the take ALWAYS releases the single-flight claim, whatever the landing turns out to
             // be — dropping a stale one without this is how the flag latches forever
@@ -1169,15 +1209,46 @@ fn tag_hit(t: &crate::plex::Tag, sid: ServerId, favs: &[(ServerId, i64, bool)]) 
 
 /// Drop everything — the account changed, so both the query and the results belong to someone
 /// else. Called beside `browse::reset()`.
-pub(crate) fn reset() {
+fn reset() {
     supersede();
     VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
     unsafe {
         *addr_of_mut!(QUERY) = None;
         *addr_of_mut!(SHELVES) = None;
         *addr_of_mut!(STATE) = State::Idle;
-        *addr_of_mut!(SETTLE) = 0.0;
+        *addr_of_mut!(SETTLE_US) = 0;
         *addr_of_mut!(ARMED) = false;
+    }
+}
+
+/// `stores::search`'s one door onto every [`SearchCmd`](crate::stores::search::SearchCmd) (D3):
+/// the match used to live in `stores/search.rs::run`, calling `set_query`/`reset`/
+/// `set_watched_local` across the module boundary. Relocating it here is what lets those three
+/// go private; `RememberRecent`/`ClearRecents`/`SetQueryScoped` still address `search::recents`
+/// and `search::scope`, which stay `pub(crate)` (out of this package's scope, per the census).
+pub(crate) fn run(cmd: crate::stores::search::SearchCmd) -> bool {
+    use crate::stores::search::SearchCmd;
+    match cmd {
+        SearchCmd::SetQuery(q) => {
+            set_query(&q);
+            true
+        }
+        SearchCmd::SetQueryScoped { profile_generation, query } => {
+            if profile_generation != crate::plex::session::current_gen() { return false; }
+            set_query(&query);
+            true
+        }
+        SearchCmd::RememberRecent { profile_generation, term } => {
+            crate::search::recents::remember(profile_generation, &term)
+        }
+        SearchCmd::ClearRecents { profile_generation } => {
+            crate::search::recents::clear(profile_generation)
+        }
+        SearchCmd::Reset => {
+            reset();
+            true
+        }
+        SearchCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(sid, &rk, on),
     }
 }
 
@@ -1206,7 +1277,7 @@ mod tests {
     /// raised, and the next module to register a server without resetting first would find its own
     /// slot numbering shifted under it. The reset runs while the lock is still held (a struct's own
     /// `Drop` runs before its fields').
-    struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             crate::plex::reset_servers_for_test();
@@ -1517,7 +1588,7 @@ mod tests {
         let gen1 = GEN.load(Ordering::SeqCst);
         pump(0.016);
         assert_eq!(GEN.load(Ordering::SeqCst), gen1, "it settles");
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// The other half, and the one that costs nothing to get wrong until a user types: with NO
@@ -1547,7 +1618,7 @@ mod tests {
             crate::browse::sections_gen(),
             "…but the snapshot is current, so the next query does not open by re-arming"
         );
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     // ---- favourites RANK, and never filter (§6) --------------------------------------------
@@ -1965,7 +2036,7 @@ mod tests {
         assert_eq!(state_from(&[empty(), failed()], true), State::Ready);
     }
 
-    /// [`terms`] is THE predicate — the store's own gate and the one `ui/search/` asks — so it is
+    /// [`terms`] is THE predicate — the store's own gate and the one the owned `screens::search::mod.rs` asks — so it is
     /// graded here rather than at each screen that used to re-spell it. Two properties, both of
     /// which a re-spelling has got wrong: the trim (the FIELD's spaces are not part of what is being
     /// looked for) and the floor counted in CHARACTERS, since a two-letter Cyrillic query is four
@@ -1989,6 +2060,32 @@ mod tests {
             "one letter, two bytes — a byte count would have asked"
         );
         assert_eq!(terms("ко"), Some("ко"));
+    }
+
+    /// **A control byte in a seeded query never reaches the store**, and NUL is the one that
+    /// bites: it survives every `String` operation on the way in from a boot trigger's file, and
+    /// `CString::new` refuses it at the far end — so the field's run and the empty statement both
+    /// blank over a query the app still believes it is holding. Filtered at [`set_query`], the one
+    /// entrance to the query, rather than at a seeding CALLER: the owned Search screen seeds
+    /// through `stores::search::SearchCmd`, so a filter living at the legacy mount would have been
+    /// deleted with it (legacy `a_control_byte_in_the_seed_never_reaches_the_query`).
+    #[test]
+    fn a_control_byte_in_a_seeded_query_never_reaches_the_store() {
+        let _g = fresh();
+        set_query("wal\0lace");
+        assert_eq!(query(), "wallace");
+        assert!(
+            std::ffi::CString::new(query()).is_ok(),
+            "…so every run drawn from it can be drawn at all"
+        );
+        set_query("a\tb\nc");
+        assert_eq!(query(), "abc", "a hand-edited file's tab or newline is not a query");
+        set_query("wallace ");
+        assert_eq!(
+            query(),
+            "wallace ",
+            "an ordinary trailing space is the FIELD's own text and survives"
+        );
     }
 
     /// The query state machine: below `MIN_QUERY` nothing is asked at all, at it the screen goes
@@ -2311,4 +2408,7 @@ pub(crate) fn settling() -> bool {
 }
 
 #[cfg(test)]
-pub(crate) fn debounce_elapsed_for_test() -> f32 { unsafe { *addr_of!(SETTLE) } }
+pub(crate) fn debounce_elapsed_for_test() -> f32 {
+    crate::testlock::assert_held("the search store (debounce_elapsed_for_test)");
+    unsafe { *addr_of!(SETTLE_US) as f32 / 1_000_000.0 }
+}

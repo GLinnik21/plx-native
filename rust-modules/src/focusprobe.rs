@@ -25,7 +25,7 @@
 //! gate would hold every screen presenting forever, which would destroy the very idle behaviour a
 //! harness built on this is meant to be able to observe.
 //!
-//! **Redaction.** The event log is pasted into public issue threads (`ui/stats.rs`'s module doc has
+//! **Redaction.** The event log is pasted into public issue threads (`app/diagnostics.rs`'s module doc has
 //! the reasoning, and `dev.rs`'s `DevServer::describe` has the incident). So the line carries
 //! indices, enum tags, booleans, and — as the only identity — rating keys and the registry SLOT
 //! number of a server. No title, no path, no URL, no server name, address or `machineIdentifier`,
@@ -34,7 +34,7 @@
 //! through [`push_rk`], which copies ASCII alphanumerics and nothing else.
 //!
 //! **Diffable.** Fixed field order, one line, no timestamps, no addresses, and no float is ever
-//! printed — the two spring positions that decide a branch (`home::snap_pos`, and the target beside
+//! printed — the two spring positions that decide a branch (Home's grid-dive snap, and the target beside
 //! it) are reduced to the booleans the code itself compares them as. A field's PRESENCE is a
 //! function of [`Screen`] alone, so two lines for the same screen always carry the same keys.
 //!
@@ -50,9 +50,9 @@
 //! costs **~7.3 µs**. That one number is worth knowing before adding a field: **~6.4 µs of it is a
 //! single filesystem `stat`**, inside [`crate::ui::player_hud::transport_hidden`] →
 //! `player_hud::busy` → `dev::flag("failtest")`. The rest of the player's seventeen fields together
-//! cost ~0.9 µs. It is paid deliberately: `transport_hidden` is the exact predicate the key
-//! ladder's player arms test, and the alternative is a second derivation of a rule that module
-//! keeps in one place. The player route is also the one route the idle gate excludes, so it draws
+//! cost ~0.9 µs. It is paid deliberately: `transport_hidden` is the exact predicate
+//! `PlayerScreen::handle_key` tests before any transport arm, and the alternative is a second
+//! derivation of a rule that module keeps in one place. The player route is also the one route the idle gate excludes, so it draws
 //! at full rate and 7 µs is ~0.04% of a 16.7 ms frame.
 //!
 //! # Arming it
@@ -135,15 +135,6 @@ pub(crate) enum Screen {
     },
     /// the home hero + grid
     Home,
-    /// the top-left profile popover, over whichever of the bar-wearing screens its chip was
-    /// pressed on
-    Account {
-        over: Host,
-    },
-    /// the press-and-hold card menu, over whichever screen the hold happened on
-    ItemMenu {
-        over: Host,
-    },
     Library,
     Detail,
     Person,
@@ -155,56 +146,13 @@ pub(crate) enum Screen {
     },
 }
 
-/// Which live screen a POPOVER is sitting on — the probe's mirror of `app.rs`'s private `MenuHost`
-/// and `BarHost`, mapped by the same exhaustive `match` that maps `Route`.
-///
-/// A type and not a bool: the card menu had exactly two hosts and the fingerprint spelled them
-/// `over_detail: bool`, which stops being expressible the moment there is a third. Every host is a
-/// [`Screen`] in its own right, so the popover's line is the HOST's fields plus the panel's — see
-/// [`Host::screen`].
-///
-/// ONE type for both popovers, deliberately, even though [`Screen::Account`] can only ever name the
-/// three bar-wearing hosts while [`Screen::ItemMenu`] uses all five: the fact being recorded is the
-/// same fact — "which page is live under this panel" — and `app.rs` is where the narrowing already
-/// lives, in `BarHost` itself. A second three-variant enum here would be a second vocabulary for one
-/// question, and the `over=` word is what a reader joins on either way.
-#[derive(Clone, Copy)]
-pub(crate) enum Host {
-    Home,
-    Detail,
-    Library,
-    Search,
-    Person,
-}
-
-impl Host {
-    /// The word printed after `over=`. Anything reading a schema off a `route=itemmenu` or
-    /// `route=account` line needs it, because one route word now covers several different field
-    /// sets.
-    fn word(self) -> &'static str {
-        match self {
-            Host::Home => "home",
-            Host::Detail => "detail",
-            Host::Library => "library",
-            Host::Search => "search",
-            Host::Person => "person",
-        }
-    }
-    /// The host as the screen it is — the popover sits on a LIVE screen, so the host's own focus is
-    /// still part of the state (the tile the menu is about is the one still focused behind it) and
-    /// its fields are exactly that screen's. Never [`Screen::ItemMenu`] and never
-    /// [`Screen::Account`], which is what stops [`push_fields`]' one level of recursion from being a
-    /// loop — a popover cannot be its own host.
-    fn screen(self) -> Screen {
-        match self {
-            Host::Home => Screen::Home,
-            Host::Detail => Screen::Detail,
-            Host::Library => Screen::Library,
-            Host::Search => Screen::Search,
-            Host::Person => Screen::Person,
-        }
-    }
-}
+// (`enum Host` and its `word`/`screen` impls stood here — the probe's mirror of `app.rs`'s private
+// `MenuHost`, which turned `route=itemmenu` into ` over=<host>` plus one level of recursion into
+// that host screen's own fields. It served BOTH popovers until phase 10, when each in turn became
+// a `ModalStack` surface: a surface's host is the top PAGE, which the line already names as
+// `route=`, and each panel's own fields ride on `content` like the player's four and the Library
+// menu's — `app::bridge::content_probe`. With no popover left that is a route, there is nothing
+// for this type to answer about.)
 
 /// The player HUD's focus cursor, plus whether the transport is on screen at all.
 ///
@@ -238,11 +186,11 @@ crate::dev::latched_flag!(
 ///
 /// Call once per frame, AFTER the frame's input has been handled and the screen drawn, so what is
 /// recorded is the state a key press has already moved rather than the state it is about to.
-pub(crate) fn sample(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
+pub(crate) fn sample(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
     if !armed() {
         return;
     }
-    let line = fingerprint_content(route, screen, hud, ctrl, content);
+    let line = fingerprint_content(ps, route, screen, hud, ctrl, content);
     static LAST: Mutex<Option<String>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if last.as_deref() == Some(line.as_str()) {
@@ -260,22 +208,22 @@ pub(crate) fn sample(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, c
 /// one of those screens fingerprints as its route word and nothing else. `app::recorder`'s
 /// `state_hash` folds `Dispatcher::state_hash` in beside this line for exactly that reason; a
 /// replay graded on this alone would call a press that opened the wrong family page `SAME`.
-pub(crate) fn line(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
-    fingerprint_content(route, screen, hud, ctrl, content)
+pub(crate) fn line(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
+    fingerprint_content(ps, route, screen, hud, ctrl, content)
 }
 
 /// Build the line. Split out from [`sample`] so its determinism and its grammar are host-testable
 /// without a log file or a change-detection state.
 #[cfg(test)]
-fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> String {
-    fingerprint_content(route, screen, hud, ctrl, "")
+fn fingerprint(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> String {
+    fingerprint_content(ps, route, screen, hud, ctrl, "")
 }
 
-fn fingerprint_content(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
+fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
     let mut s = String::with_capacity(192);
     s.push_str("focus route=");
     s.push_str(route);
-    push_fields(&mut s, screen, hud, ctrl, content);
+    push_fields(ps, &mut s, screen, hud, ctrl, content);
     // The tvOS click, which is route-agnostic: an OK over a card arms a press and the activation
     // commits from the per-frame loop on the spring-back, so "a press is in flight" is a state the
     // ladder put the app into and a state the NEXT key cancels.
@@ -283,10 +231,10 @@ fn fingerprint_content(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot,
     s
 }
 
-/// One screen's own fields. Split out of [`fingerprint`] so [`Screen::ItemMenu`] can spend it on its
+/// One screen's own fields. Split out of [`fingerprint`] so a popover ROUTE could spend it on its
 /// HOST — the popover's line is the host's state plus the panel's, and there is no other way to say
 /// that without five copies of the host arms.
-fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
+fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
     match screen {
         Screen::Login { has_control } => {
             // The phase is still most of this screen's state — it is a projection of the auth
@@ -312,88 +260,42 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, cont
             let _ = write!(s, " list={} row={row}", b(list));
         }
         Screen::Home => s.push_str(content),
-        Screen::Account { over } => {
-            // The HOST is named, for [`Screen::ItemMenu`]'s reason one screen over: the profile chip
-            // is shared CHROME, so this popover stands on any of the three bar-wearing pages and
-            // `route=account` is one word for three different field sets. It printed Home's fields
-            // outright while Home was the only screen whose chip could be pressed — so an account
-            // menu opened from the Library fingerprinted as though the user were standing on Home,
-            // and a harness diffing two presses across it read the wrong screen's cursor.
-            let _ = write!(s, " over={}", over.word());
-            push_fields(s, over.screen(), hud, ctrl, content);
-            let _ = write!(
-                s,
-                " acct={} asel={}",
-                b(crate::ui::account_menu::is_open()),
-                crate::ui::account_menu::sel()
-            );
-        }
-        Screen::ItemMenu { over } => {
-            // The HOST is named on the line, because `route=itemmenu` is one word for FIVE different
-            // field sets: the popover sits on a LIVE screen, so the host's own focus is still part
-            // of the state (the tile the menu is about is the one still focused behind it), and no
-            // two hosts have the same fields to print. Anything reading a schema off this line needs
-            // `over=` as well as `route=`.
-            let _ = write!(s, " over={}", over.word());
-            push_fields(s, over.screen(), hud, ctrl, content);
-            let _ = write!(
-                s,
-                " imenu={} isel={} imsid=",
-                b(crate::ui::item_menu::is_open()),
-                crate::ui::item_menu::sel()
-            );
-            push_sid(s, crate::ui::item_menu::item_sid());
-        }
         Screen::Library => s.push_str(content),
         Screen::Detail | Screen::Person => s.push_str(content),
-        Screen::Search => {
-            // The whole state machine, from the snapshot the screen's own regions already draw off
-            // (`search::view`) — so the fingerprint and the picture are built from one read. `zone`
-            // is what the ladder's arms branch on, `editing` gates the field's caret AND freezes the
-            // shelves, and `row`/`col`/`recent` are three cursors the ladder moves independently.
-            // `shift` is a float and deliberately absent: it is derived from the focused row, so it
-            // carries nothing the row does not, and a spring position would make this line jitter.
-            let v = crate::ui::search::view();
-            let _ = write!(
-                s,
-                " zone={:?} editing={} row={} col={} recent={} pill={} card={} below={:?} clear={}",
-                v.zone,
-                b(v.editing),
-                v.row,
-                v.col,
-                v.recent,
-                // the pill under the ring, from the SHARED bar's one answer. Still `pill=<int>` and
-                // still -1 off the strip: `zone=` on this same line already tells the chip apart
-                // from focus being off the bar, and `tests/keytable.json` is a recorded device
-                // golden — renaming a field there costs a TV run to regenerate, for no new fact.
-                match crate::ui::search::top_focus() {
-                    crate::ui::widgets::TopFocus::Pill(i) => i as i64,
-                    _ => -1,
-                },
-                b(crate::ui::search::focus_is_card()),
-                crate::ui::search::below(),
-                crate::ui::search::clear_index()
-            );
+        // Owned like Library/Detail/Person: the content string is built generically by the
+        // caller (`super::bridge::content_probe`, from the mounted `SearchScreen`'s own
+        // `LogicalState::probe` output), not read off a legacy global here.
+        Screen::Search => s.push_str(content),
+        // The panels' own fields ride on `content`, for the same reason Library's, Detail's and
+        // Search's do: since restructure phase 9 each is the state of a MOUNTED INSTANCE
+        // (`screens::player::overlay`), and this module cannot reach into the container — the
+        // caller (`app::bridge::content_probe`) builds them from the surface that is up.
+        Screen::Player { overlay } => {
+            push_player(ps, s, overlay, hud, ctrl);
+            s.push_str(content);
         }
-        Screen::Player { overlay } => push_player(s, overlay, hud, ctrl),
     }
 }
 
 
 /// The player: the HUD cursor, what the control row currently holds, and each panel's own state.
-fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
+fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
+    // `upnext` is the PLAYER INSTANCE's countdown since phase 9, so it arrives on `content` with
+    // the panels' fields rather than being read off a module global here.
     let slot = match ctrl {
         ControlSlot::Discs => "discs",
         ControlSlot::Skip(_) => "skip",
         ControlSlot::UpNext(_) => "upnext",
     };
-    // `hidden` is `player_hud::transport_hidden()`, read here for the reason `app.rs` reads it:
-    // its arm `continue`s unconditionally, so while it is true the four overlay arms below it are
-    // unreachable and every key but BACK is swallowed. A characterization run that could not see
-    // this field would record those arms as dead code rather than as shadowed ones.
+    // `hidden` is `player_hud::transport_hidden()`, read here for the reason
+    // `PlayerScreen::handle_key` reads it: it is that page's FIRST test, so while it is true every
+    // transport arm beneath it is unreachable and only the read-out's two DRAWN escapes — OK to
+    // the quality ladder, BACK out — plus EXIT do anything. A characterization run that could not
+    // see this field would record those arms as dead code rather than as shadowed ones.
+    // (Phase 12, PX-PLAYER: the loop does not read this predicate at all any more.)
     let _ = write!(
         s,
-        " ov={} hud={} f={} btn={} tab={} slot={} items={} hidden={} upnext={}",
+        " ov={} hud={} f={} btn={} tab={} slot={} items={} hidden={}",
         overlay,
         b(hud.visible),
         hud.focus,
@@ -401,37 +303,20 @@ fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
         hud.tab,
         slot,
         ctrl.items(),
-        b(crate::ui::player_hud::transport_hidden()),
-        b(crate::ui::up_next::armed())
+        b(crate::ui::player_hud::transport_hidden(ps))
     );
-    // The panels: whether each is open, ITS HIGHLIGHTED ROW, and for the track menu the two tracks
-    // already committed. The row is what makes the overlay arms characterizable at all — each has
-    // an UP/DOWN branch that moves a cursor and changes nothing else, so with only the open flags
-    // this line recorded a panel appearing and disappearing with a hole between. The `sel()`
-    // readers were added for this and do nothing else. `tracks` is the detail page's
-    // Track-information panel, whose cursor is a PAGE rather than a row — same reasoning, and
-    // without it a paging press is invisible here (it moves nothing but that number).
+    // Whether this item HAS chapters at all — a fact about the item, not about a panel, which is
+    // why it stays here while each overlay's own open flag and cursor arrive on `content` from the
+    // surface (`app::bridge::content_probe`).
+    //
+    // The detail page's *Track information* sheet used to be written here too, as
+    // `tracks=`/`tpage=`. It never belonged: no Detail panel can be up on the player route, so
+    // those two fields were constant for the whole of every player recording while the page that
+    // opens the sheet recorded nothing. They are on `content_probe`'s Detail line now.
     let _ = write!(
         s,
-        " menu={} msel={} taudio={} tsub={} info={} isel={} infolast={} chap={} csel={} haschap={} more={} osel={}",
-        b(crate::ui::track_menu::is_open()),
-        crate::ui::track_menu::sel(),
-        crate::ui::track_menu::active_audio(),
-        crate::ui::track_menu::active_sub(),
-        b(crate::ui::info_panel::is_open()),
-        crate::ui::info_panel::sel(),
-        b(crate::ui::info_panel::at_last()),
-        b(crate::ui::chapters_panel::is_open()),
-        crate::ui::chapters_panel::sel(),
-        b(crate::ui::chapters_panel::has_chapters()),
-        b(crate::ui::more_menu::is_open()),
-        crate::ui::more_menu::sel()
-    );
-    let _ = write!(
-        s,
-        " tracks={} tpage={}",
-        b(crate::ui::tracks_panel::is_open()),
-        crate::ui::tracks_panel::sel()
+        " haschap={}",
+        b(crate::ui::chapters_panel::has_chapters())
     );
 }
 
@@ -525,27 +410,12 @@ mod tests {
             ("onboard", Screen::Onboard { list: true, row: 0 }),
             ("onboard", Screen::Onboard { list: false, row: -1 }),
             ("home", Screen::Home),
-            // one per bar-wearing HOST, for the `itemmenu` rows' reason below
-            ("account", Screen::Account { over: Host::Home }),
-            (
-                "account",
-                Screen::Account {
-                    over: Host::Library,
-                },
-            ),
-            ("account", Screen::Account { over: Host::Search }),
-            // one per HOST — the popover's field set is its host's, so five hosts are five
-            // different `route=itemmenu` lines and the grammar assertions have to see all of them
-            ("itemmenu", Screen::ItemMenu { over: Host::Home }),
-            ("itemmenu", Screen::ItemMenu { over: Host::Detail }),
-            (
-                "itemmenu",
-                Screen::ItemMenu {
-                    over: Host::Library,
-                },
-            ),
-            ("itemmenu", Screen::ItemMenu { over: Host::Search }),
-            ("itemmenu", Screen::ItemMenu { over: Host::Person }),
+            // (three `account` rows, one per bar-wearing HOST, stood here. The profile menu is a
+            // `ModalStack` surface since phase 10: its host is the top PAGE, which this line
+            // already names as `route=`, and its own fields ride on `content` — so there is no
+            // `Screen::Account` and no second field set for a grammar assertion to cover.)
+            // (five `itemmenu` rows, one per HOST, stood beside them and went the same way in
+            // the same phase — its `imenu=`/`isel=`/`imsid=` fields are on `content` now too.)
             ("library", Screen::Library),
             ("detail", Screen::Detail),
             ("person", Screen::Person),
@@ -563,10 +433,11 @@ mod tests {
     /// which read process-global stores that other modules' tests mutate.
     #[test]
     fn a_fingerprint_is_stable_while_nothing_moves() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         for (rn, sc) in every_screen() {
-            let a = fingerprint(rn, sc, hud(), ControlSlot::Discs);
-            let b = fingerprint(rn, sc, hud(), ControlSlot::Discs);
+            let a = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs);
+            let b = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs);
             assert_eq!(a, b, "{rn} fingerprinted differently twice in a row");
         }
     }
@@ -576,9 +447,10 @@ mod tests {
     /// bring a space, a URL or path would bring a slash, and either would fail here.
     #[test]
     fn the_line_is_one_ordered_row_of_safe_key_value_pairs() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         for (rn, sc) in every_screen() {
-            let line = fingerprint(rn, sc, hud(), ControlSlot::Discs);
+            let line = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs);
             assert!(
                 !line.contains('\n'),
                 "{rn}: a fingerprint is ONE line: {line}"
@@ -606,9 +478,10 @@ mod tests {
     /// two fingerprints key by key instead of re-parsing a variable schema.
     #[test]
     fn one_screen_always_carries_the_same_keys() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         let keys = |rn, sc, ctrl| {
-            fingerprint(rn, sc, hud(), ctrl)
+            fingerprint(&ps, rn, sc, hud(), ctrl)
                 .split(' ')
                 .skip(1)
                 .filter_map(|f| f.split_once('=').map(|(k, _)| k.to_string()))
@@ -637,7 +510,7 @@ mod tests {
             "the control row's occupant changed the SCHEMA, not just a value"
         );
         // …and a HUD cursor move is a value change, never a key change
-        let moved = fingerprint(
+        let moved = fingerprint(&ps, 
             "player",
             Screen::Player { overlay: "none" },
             Hud {
@@ -660,9 +533,10 @@ mod tests {
     /// one assertion that fails if a future edit prints a constant where a getter belongs.
     #[test]
     fn moving_the_hud_cursor_changes_the_line() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         let at = |f, btn, tab| {
-            fingerprint(
+            fingerprint(&ps, 
                 "player",
                 Screen::Player { overlay: "none" },
                 Hud {
@@ -691,7 +565,7 @@ mod tests {
         );
         assert_ne!(
             at(0, 0, 0),
-            fingerprint(
+            fingerprint(&ps, 
                 "player",
                 Screen::Player { overlay: "info" },
                 Hud {
@@ -716,9 +590,10 @@ mod tests {
     /// `moving_the_hud_cursor_changes_the_line` above, for this screen's own one cursor.
     #[test]
     fn the_login_screens_stalled_control_appearing_is_observable() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
-        let without = fingerprint("login", Screen::Login { has_control: false }, hud(), ControlSlot::Discs);
-        let with = fingerprint("login", Screen::Login { has_control: true }, hud(), ControlSlot::Discs);
+        let without = fingerprint(&ps, "login", Screen::Login { has_control: false }, hud(), ControlSlot::Discs);
+        let with = fingerprint(&ps, "login", Screen::Login { has_control: true }, hud(), ControlSlot::Discs);
         assert_ne!(
             without, with,
             "the login screen's escape/retry/restart control appearing is not observable"

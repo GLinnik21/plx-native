@@ -51,6 +51,16 @@ pub struct Resolution<K> {
     pub miss: bool,
 }
 
+/// Does this stop's VISIBLE part cover the point? `rect ∩ clip` is §7.6's expression, and the
+/// area test is the half `Rect::contains` cannot give: that predicate is inclusive on both edges,
+/// so a stop culled to nothing still answers at its own corner and a stop clipped entirely away
+/// — whose intersection collapses onto the clip's edge — answers along that line. Neither is on
+/// screen, and a control the user cannot see must not be pressable.
+fn covers<K>(stop: &Stop<K>, x: f32, y: f32) -> bool {
+    let visible = stop.rect.intersect(stop.clip);
+    visible.w > 0.0 && visible.h > 0.0 && visible.contains(x, y)
+}
+
 pub struct HitMap<K> {
     front: Vec<Stop<K>>,
     back: Vec<Stop<K>>,
@@ -100,10 +110,7 @@ impl<K: Copy + Eq> HitMap<K> {
 
     /// The topmost stop whose visible part contains the point.
     pub fn top_at(&self, x: f32, y: f32) -> Option<&Stop<K>> {
-        self.front
-            .iter()
-            .rev()
-            .find(|s| s.rect.intersect(s.clip).contains(x, y))
+        self.front.iter().rev().find(|s| covers(s, x, y))
     }
 
     /// A D-pad press: hover is suppressed until the pointer travels.
@@ -122,8 +129,8 @@ impl<K: Copy + Eq> HitMap<K> {
                 self.dpad_mode = false;
             }
         }
-        let hit = self.front.iter().rev().find(|s| owner == Some(s.key.entry)
-            && s.rect.intersect(s.clip).contains(x, y)).copied();
+        let hit = self.front.iter().rev()
+            .find(|s| owner == Some(s.key.entry) && covers(s, x, y)).copied();
         let mut r = Resolution {
             hit: hit.map(|s| s.key),
             focus: None,
@@ -209,6 +216,46 @@ mod tests {
         let r = m.resolve(Some(EntryId(1)), PointerKind::Click, 300.0, 100.0, None);
         assert_eq!(r.hit, None, "inside the rect, outside the clip");
         assert!(r.miss);
+    }
+
+    /// **A stop with no visible area is not a target**, which `Rect::contains` alone does not
+    /// give: it is inclusive, so a zero-size rect answers at exactly its own corner, and a stop
+    /// clipped entirely away collapses ONTO its clip's edge and answers along that line. Both are
+    /// stops the user cannot see — a card culled to nothing, and a tile scrolled fully under the
+    /// top chrome (legacy `ui/search`'s `a_zero_size_or_stale_region_rect_is_not_hittable` and
+    /// `a_tile_scrolled_under_the_chrome_is_not_a_pointer_target`, carried HERE because the rule
+    /// belongs to the map rather than to one page).
+    #[test]
+    fn a_stop_with_no_visible_area_is_not_a_target() {
+        let mut m = HitMap::new();
+        m.fill(vec![stop(1, Rect::new(400.0, 400.0, 0.0, 0.0), Rect::FULL)]);
+        m.swap();
+        assert_eq!(
+            m.top_at(400.0, 400.0).map(|s| s.key.elem),
+            None,
+            "a zero-size stop is not a target"
+        );
+        let r = m.resolve(Some(EntryId(1)), PointerKind::Click, 400.0, 400.0, None);
+        assert!(r.hit.is_none() && r.miss, "…and a click on it is a miss");
+
+        // Fully above a clip floor: the intersection is a zero-height line ON the floor.
+        let floor = Rect::new(0.0, 150.0, 1920.0, 930.0);
+        m.fill(vec![stop(2, Rect::new(100.0, 20.0, 250.0, 130.0), floor)]);
+        m.swap();
+        assert_eq!(
+            m.top_at(200.0, 150.0).map(|s| s.key.elem),
+            None,
+            "a fully clipped stop answers on no edge"
+        );
+        // …while a stop straddling the floor is still a target on the part that is drawn.
+        m.fill(vec![stop(3, Rect::new(100.0, 100.0, 250.0, 130.0), floor)]);
+        m.swap();
+        assert_eq!(m.top_at(200.0, 200.0).map(|s| s.key.elem), Some(3));
+        assert_eq!(
+            m.top_at(200.0, 120.0).map(|s| s.key.elem),
+            None,
+            "above the floor is chrome, not the page"
+        );
     }
 
     /// The map is double-buffered: the back map registered by a frame that did not present is

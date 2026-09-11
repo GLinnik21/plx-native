@@ -313,6 +313,31 @@ while it may be inside `http_open`, so a stop during a stalled reopen blocks the
 up to the 2 s connect or 15 s recv deadline. Same reversal trigger applies: bisect
 `seek_inplace_h264` before and after.
 
+**Re-verified, restructure phase 12 (2026-09-10) — its NARROW half holds; the REVERSAL is the
+part that follows.** `ci/check-deps.sh` gained a `threads` gate as part of the phase's D4 work:
+every `std::thread::spawn` call site outside `task.rs`, in production code, across the WHOLE
+crate — checked file by file, not sampled — and every single one is inside a `#[cfg(test)] mod`
+block (a unit test's own mock TCP/HTTP peer, never a real worker). That confirms the spawn-panic
+argument that motivated `task.rs` unchanged: the invariant held, it is now enforced by CI rather
+than by review alone (`ci/allow/threads.txt`), and there is nothing to reverse in THAT half.
+
+**But the broader premise above — "the migration finished without the primitive, so the five
+hand-rolled mailboxes were sound" — assumed a screen it no longer describes, and that IS
+reversed.** It pictured at most one live instance of a given screen, so a generation guard
+("is this the newest request") and "is this the entry that asked" were the same fact. The
+restructure's `NavStack` retires that picture on purpose: `ui/containers/stack.rs`'s `CAP`
+eviction keeps an evicted entry's `EntryId` and `ReturnState` but drops its BODY
+(`an_evicted_entry_keeps_its_focus_identity_on_remount`), and the container can hold several
+entries — including two of the same screen kind — live at once. A bare generation guard
+(`metadata.rs`'s single `CURRENT` slot, `land_detail`'s `gen` check) still only answers "is this
+the newest request", which is no longer guaranteed to be the request the entry now asking about
+issued. Nothing has been observed to MISDELIVER as a result — a superseded landing is discarded,
+not misrouted, and a remounted entry re-requests against the single `CURRENT` slot rather than
+trusting stale data — so this is not a known bug; it is the argument's foundation coming out from
+under it, not (yet) its outcome. The five copies stay sound only as long as "the newest request"
+and "the entry that is asking" stay the same fact, which a stack that can hold, evict and remount
+several instances no longer guarantees for every caller by construction.
+
 ### Step 4 — `MainThread` token, LANDED (2026-07-29)
 
 Shipped in the form finding #4 argued for — **a `!Send` ZST passed as an argument**, minted once
@@ -332,6 +357,15 @@ used: `ffi.rs`'s `extern "C"` block moved into a private `mod sys`, so the token
 are the only way in, and `ENGINE`'s four raw `addr_of` touches became four token-taking accessors.
 `start_bufferfeed` is the proof this mattered — it was the one function whose `mt` the compiler
 flagged as unused, precisely because it reached the static directly instead of through `engine()`.
+
+**Superseded for the slot, 2026-09-10 (UI restructure phase 9).** `ENGINE` is no longer a `static
+mut` and the four accessors are gone: the slot is a FIELD, `App.adapters.player`, and
+`player::adapter::PlayerAdapter::new` **consumes** the one token `plex_run` mints. So the token is
+no longer an argument that ASSERTS main-thread confinement for the session — holding
+`&mut PlayerAdapter` IS the confinement, and the borrow checker keeps it. The seam half of this
+finding is unchanged: `ffi.rs`'s wrappers still take `&MainThread`, reached as `pa.mt()`. What the
+change buys beyond tidiness is below, under `reload_transcode` — that "`eng` dangles" wrinkle was a
+comment and three hand-written `return`s, and is now a borrow the compiler refuses.
 
 **Verified with teeth, both directions.** A temporary `task::spawn("evil", move || pause(mt))`
 fails to compile (`*const () cannot be shared between threads safely`), and the host test
@@ -396,7 +430,9 @@ The other half stands. "Self-DoS'd before" is not rhetoric: the
 There is also a structural wrinkle the plan did not name: `reload_transcode` **replaces the
 ENGINE**, so `eng` dangles and both arms `return` immediately — a deferred continuation would have
 to resume against an engine that no longer exists, which is precisely the "cannot be expressed as a
-two-state enum" shape.
+two-state enum" shape. (Since phase 9 that wrinkle is checked rather than asserted: `pump` holds
+the live session as a borrow of `App.adapters.player`, and `reload_transcode` wants the adapter
+back, so a path that used the stale `eng` afterwards does not compile.)
 
 **But none of that was ever measured or written down as a decision, so it is an open question.**
 What is missing is a number. Nobody has measured what these two arms actually cost on the main

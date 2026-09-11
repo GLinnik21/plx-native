@@ -476,7 +476,7 @@ fails as if the *player* regressed and every piece of evidence points at the app
 with one cue at t=0 kept its codec, language and forced flag and verified clean, while
 `subtitle_text_srt` (which seeds 843 s) failed on the television as `no sub cue`, i.e. as a
 demuxer regression. The same for PGS and its 600 s seed. A DV file with `el_present_flag=1`
-verified clean while `route.rs` would refuse to direct-play it. A `hev1` copy of the mp4
+verified clean while `route/plan.rs` would refuse to direct-play it. A `hev1` copy of the mp4
 verified clean. A re-encode with **no burn-in at all** verified clean, and `fixtures.json`
 still recorded the layout, because that field came from the spec and was never read back.
 

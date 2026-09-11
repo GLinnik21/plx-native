@@ -1,7 +1,26 @@
 //! Plex library fetch/parse into the private catalog (was src/pms.c), read by the UI
-//! via movie()/hub_item()/hero_pool_item(), plus urlenc_str (shared by posters/route).
+//! via the retained publication (`hubs_snapshot()` → `HubsView`) and movie()/hub_item(), plus
+//! urlenc_str (shared by posters/route).
 //! The fetch + JSON parse go through the typed `crate::plex` client (serde DTOs) — no
 //! hand-built paths or `Value` scraping here.
+//!
+//! **This is the data module `stores::hubs` (`docs/stores-as-machines.md`) is a machine over** —
+//! `stores::hubs::apply(HubsCmd)` is the vocabulary a screen calls, and its own `run` forwards
+//! each variant straight into `request_refetch_hubs`/`request_retry`/`reset`/`edit_item` here,
+//! exactly as `stores::browse::run` forwards into `crate::browse`. **Those forwarding targets
+//! cannot be scoped narrower than `pub(crate)`, and that is a fact about Rust module topology,
+//! not an oversight**: `pms` and `stores` are both top-level children of the crate root, so
+//! neither is an ancestor of the other, and `pub(in path)` requires `path` to name an ancestor of
+//! the ITEM's own module. There is no visibility keyword that means "visible to `stores::hubs`
+//! and nobody else" for an item defined here. What IS enforceable, and is: (1) anything with no
+//! caller outside this file at all — `hub_state` — is plain private, not `pub(crate)`; (2) every
+//! mutator `stores::hubs` (or a test) can reach — `request_refetch_hubs`, `request_retry`,
+//! `edit_item`, `tick`, `apply_landing`, `reset`, and the `_for_test` seeds — asserts
+//! `crate::testlock::held()` under `#[cfg(test)]` before it touches a global (see `lib.rs::testlock`
+//! and D5), which is the runtime half of the same contract a compile-time visibility keyword
+//! cannot express across two sibling modules. `ci/allow/mutators.txt`'s `# count: 0` already
+//! proves no PRODUCTION line outside `pms`/`stores::hubs` spells the old direct-call form; this
+//! is the part that keyword-level `pub(super)` genuinely cannot add on top of that count.
 use crate::plex::ServerId;
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
@@ -16,7 +35,7 @@ pub(crate) mod initial;
 const PMS_MAX_MOVIES: usize = 256;
 
 /// Shelves Home holds at most, across every source — the number of rows the grid can actually
-/// address (`ui::home::MAX_HUBS` is this constant, so the budget can never quietly stop matching
+/// address (the owned Home's `MAX_HUBS` is this constant, so the budget can never quietly stop matching
 /// the array it is budgeting for).
 ///
 /// It matters far more with two servers than it ever did with one. The truncation is in SHELF
@@ -25,12 +44,12 @@ const PMS_MAX_MOVIES: usize = 256;
 /// source got a row. That is starvation, and it is what [`allot`] exists to prevent.
 pub(crate) const MAX_SHELVES: usize = 16;
 
-/// Cards one shelf holds at most — the number the grid can address (`ui::home::MAX_ITEMS` is this
+/// Cards one shelf holds at most — the number the grid can address (the owned Home's `MAX_ITEMS` is this
 /// constant, for the same reason [`MAX_SHELVES`] is).
 ///
 /// It was unreachable with one server, because `/hubs?count=12` bounds every shelf at 12. The
 /// MERGED deck is what reaches it: three sources' Continue Watching is up to 36 cards, and
-/// `ui::home`'s focus ring and its OK dispatch clamp differently past this number — the ring stops
+/// the home grid's focus ring and its OK dispatch clamp differently past this number — the ring stops
 /// at the last addressable card while the press opens whatever column the raw index names. Cap the
 /// data and the two can never disagree.
 pub(crate) const MAX_SHELF_ITEMS: usize = 24;
@@ -158,7 +177,7 @@ pub(crate) fn movie(i: usize) -> Option<&'static PmsMovie> {
 /// "off-catalog".
 ///
 /// The item menu's Play-from-Start was the other caller and is not one any more: it carries the row
-/// it was opened on (`ui::item_menu::ITEM`), because a Library, Search or person-page tile is in no
+/// it was opened on (`screens::registry::ItemMenuArg`'s row), because a Library, Search or person-page tile is in no
 /// hub at all and this answered -1 for every one of them.
 pub(crate) fn index_of_rk(sid: ServerId, rk: &str) -> c_int {
     catalog()
@@ -343,10 +362,6 @@ struct HeroSlot {
     idx: usize,
     source: String,
 }
-fn pool() -> &'static Vec<HeroSlot> {
-    &published_home().heroes
-}
-
 /// A retained publication, independent of subsequent store commits. Cloning copies one Arc,
 /// never a movie or string. The status is captured alongside the catalog, including failed
 /// fetches which keep the previous content and therefore do not move its generation.
@@ -370,7 +385,6 @@ impl HubsSnapshot {
 /// Frame-borrowed Home data. Every reference is tied to the retained publication, not a static
 /// catalog that an effect could replace. The bridge owns the snapshot; screens only get this.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(test), allow(dead_code))] // Phase 8: remove when the owned Home consumer is mounted.
 pub(crate) struct HubsView<'a> {
     data: &'a HomeCatalog,
     pub(crate) generation: u32,
@@ -378,7 +392,6 @@ pub(crate) struct HubsView<'a> {
 }
 
 #[derive(Clone, Copy)]
-#[cfg_attr(not(test), allow(dead_code))] // Phase 8 Home view contract, exercised by the retained-view tests.
 pub(crate) struct HubRef<'a> {
     pub(crate) identity: Option<HubIdentity<'a>>,
     pub(crate) title: &'a str,
@@ -389,14 +402,12 @@ pub(crate) struct HubRef<'a> {
 /// Provider identities are tagged: a listing key cannot collide with an identifier that
 /// happens to contain the same bytes. Neither display text nor position participates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(not(test), allow(dead_code))] // Phase 8 Home identity contract.
 pub(crate) enum HubIdentity<'a> {
     ContinueWatching,
     Identifier { sid: ServerId, id: &'a str },
     Key { sid: ServerId, key: &'a str },
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // Removed with the owned Home consumer.
 fn stable_hub_identity<'a>(row: &'a HubRow, items: &[PmsMovie]) -> Option<HubIdentity<'a>> {
     if row.len == 0 { return None; }
     let sid = items.get(row.start)?.sid;
@@ -407,13 +418,11 @@ fn stable_hub_identity<'a>(row: &'a HubRow, items: &[PmsMovie]) -> Option<HubIde
 }
 
 #[derive(Clone, Copy)]
-#[cfg_attr(not(test), allow(dead_code))] // Phase 8 Home view contract.
 pub(crate) struct HeroRef<'a> {
     pub(crate) item: &'a PmsMovie,
     pub(crate) source: &'a str,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // Removed with the owned Home consumer.
 impl<'a> HubsView<'a> {
     pub(crate) fn hub_count(self) -> usize { self.data.hubs.len() }
     pub(crate) fn hero_count(self) -> usize { self.data.heroes.len() }
@@ -430,22 +439,6 @@ impl<'a> HubsView<'a> {
         let slot = self.data.heroes.get(index)?;
         Some(HeroRef { item: self.data.items.get(slot.idx)?, source: &slot.source })
     }
-}
-
-/// number of items in the rotating hero pool
-pub(crate) fn hero_pool_len() -> usize {
-    pool().len()
-}
-/// hero-pool item `i`, or None
-pub(crate) fn hero_pool_item(i: usize) -> Option<&'static PmsMovie> {
-    movie(pool().get(i)?.idx)
-}
-/// Handle of the server hero-pool page `i` came from ("friend"), or **empty** for the signed-in
-/// user's own — see [`HeroSlot`]. The hero's meta line draws no run at all for the empty case
-/// (`ui::home::meta_source_flow`), so a single-server library pays nothing for this. Borrowed on the
-/// same terms as [`hub_title`]: main-thread only, valid until the next hub commit.
-pub(crate) fn hero_pool_source(i: usize) -> &'static str {
-    pool().get(i).map(|s| s.source.as_str()).unwrap_or("")
 }
 
 /// **Own items first — an ORDERING, not a filter** (Shared Sources, deliverable C).
@@ -475,40 +468,14 @@ fn own_items_first(pool: &mut Vec<HeroSlot>) {
 pub(crate) fn hub_count() -> usize {
     hubs().len()
 }
-/// title of hub `i` (e.g. "Continue Watching") — borrowed from the main-thread hub table (the
-/// per-frame shelf-title draw shouldn't clone a String per row; HUBS only changes on a re-fetch).
-pub(crate) fn hub_title(i: usize) -> &'static str {
-    hubs().get(i).map(|h| h.title.as_str()).unwrap_or("")
-}
-/// Handle of the server hub `i` came from ("friend"), or **empty** for the signed-in user's own
-/// server — see [`HubRow::source`]. Borrowed on the same terms as [`hub_title`]: main-thread only,
-/// valid until the next hub commit.
-pub(crate) fn hub_source(i: usize) -> &'static str {
-    hubs().get(i).map(|h| h.source.as_str()).unwrap_or("")
-}
-
-/// Locale-independent Home group identity. Non-merged rows belong to the server that supplied
-/// their items; Continue Watching is one merged group regardless of which server sorts first.
-/// Missing provider identities remain absent rather than masquerading as stable row positions.
-pub(crate) fn hub_identity(i: usize) -> Option<(Option<ServerId>, &'static str)> {
-    hub_identity_in(hubs().get(i)?, catalog())
-}
-
-fn hub_identity_in<'a>(hub: &'a HubRow, items: &[PmsMovie]) -> Option<(Option<ServerId>, &'a str)> {
-    if hub.hub_id.is_empty() || hub.len == 0 { return None; }
-    let first = items.get(hub.start)?;
-    let server = (hub.hub_id != "home.continue").then_some(first.sid);
-    Some((server, &hub.hub_id))
-}
-/// item count in hub `i`
+/// Item count in hub `i`, read straight off the published catalog. Test-only: production reads
+/// the retained publication ([`HubsView::hub`]), and this is what other modules' store and
+/// dispatcher tests assert a landing with.
+#[cfg(test)]
 pub(crate) fn hub_len(i: usize) -> usize {
     hubs().get(i).map(|h| h.len).unwrap_or(0)
 }
-/// whether hub `i` is the merged Continue Watching shelf (its tiles play directly on OK, so the
-/// home grid stamps the play-hint badge on them). Matched on the locale-independent hubIdentifier.
-pub(crate) fn hub_is_continue(i: usize) -> bool {
-    matches!(hub_identity(i), Some((None, "home.continue")))
-}
+
 /// item `col` of hub `hub`, or None
 pub(crate) fn hub_item(hub: usize, col: usize) -> Option<&'static PmsMovie> {
     let h = hubs().get(hub)?;
@@ -524,7 +491,12 @@ pub(crate) fn hub_item(hub: usize, col: usize) -> Option<&'static PmsMovie> {
 ///
 /// No reconcile call here, and none is owed anywhere: [`commit`] performs the re-selection and the
 /// repaint itself, at the only moment the catalog those surfaces index into actually moves.
-pub(crate) fn request_refetch_hubs() {
+fn request_refetch_hubs() {
+    // The source table and HUB_GEN are crate globals; a test reaching this outside
+    // `crate::testlock::serial()` writes them in the middle of some other module's test — see
+    // `lib.rs::testlock`.
+    #[cfg(test)]
+    crate::testlock::assert_held("the pms hub catalog (request_refetch_hubs)");
     HUB_GEN.fetch_add(1, Ordering::SeqCst); // supersede every retry already in flight
     sync_roster();
     let mut srcs = lock_srcs();
@@ -562,7 +534,10 @@ pub(crate) enum LocalEdit {
 ///
 /// This is one half of a pair and is useless alone: it is what the user SEES, and the refetch the
 /// write's landing kicks is what the server SAYS. Where they disagree the refetch wins, silently.
-pub(crate) fn edit_item(sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
+fn edit_item(sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
+    // Same crate-global catalog guard as `request_refetch_hubs` — see `lib.rs::testlock`.
+    #[cfg(test)]
+    crate::testlock::assert_held("the pms hub catalog (edit_item)");
     let mut srcs = lock_srcs();
     let mut hit = false;
     for s in srcs.iter_mut() {
@@ -1158,7 +1133,11 @@ pub(crate) fn backoff_secs(fails: u32) -> f32 {
 /// case where every one of them failed. That is the whole point of the fold: "Can't reach your Plex
 /// server", drawn because a friend's machine is asleep, is a lie about the library that is working.
 /// No source at all (before the first install) is Loading — nothing to show is not an answer.
-pub(crate) fn hub_state() -> HubState {
+// Only `hubs_snapshot` and this module's own tests read the fold; nothing outside `pms.rs` names
+// it, so it stays module-private — the D3 hardening this file's other mutators cannot get (a
+// sibling of `stores`, not a child of it, so `pub(crate)` is the tightest visibility Rust allows
+// them; see the doc above `edit_item`/`reset`/`tick` et al.).
+fn hub_state() -> HubState {
     let s = lock_srcs();
     if s.iter().any(|x| x.state == HubState::Ready) {
         HubState::Ready
@@ -1506,17 +1485,13 @@ fn retry_now(s: &mut Src) {
 /// The Retry control's kick: try every source again NOW, from the bottom of the ladder — a person
 /// who asks for it should never be made to sit out a 30-second automatic wait. A no-op for any
 /// source whose fetch is already in flight.
-pub(crate) fn request_retry() {
+fn request_retry() {
+    // Same crate-global catalog guard as `request_refetch_hubs` — see `lib.rs::testlock`.
+    #[cfg(test)]
+    crate::testlock::assert_held("the pms hub catalog (request_retry)");
     for s in lock_srcs().iter_mut() {
         retry_now(s);
     }
-}
-
-/// Once-a-frame main-thread tick: land finished fetches, then count each source down to its next
-/// automatic attempt. Driven through the Hubs store's route-gated pump, so it runs while Home
-/// is the screen that cares (and never spawns a background fetch behind the player).
-pub(crate) fn pump(dt: f32) {
-    pump_with_landings(dt, take_landings);
 }
 
 /// Move the worker mailbox into one owned batch. No source or catalog state changes here, and
@@ -1525,10 +1500,11 @@ pub(crate) fn take_landings() -> Vec<Landing> {
     std::mem::take(&mut *RESULTS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// Apply one explicitly supplied batch through the live landing rules. The supplier runs after
-/// roster reconciliation, exactly where the live mailbox used to be drained. Keeping it separate
-/// lets an adapter observe or substitute arrivals without a second state-application path.
-/// This is NOT an offline replay mode: retry scheduling and worker spawning remain live.
+/// Apply one explicitly supplied batch through the live landing rules — land finished fetches,
+/// then count each source down to its next automatic attempt. The supplier runs after roster
+/// reconciliation, exactly where the live mailbox used to be drained. Keeping it separate lets an
+/// adapter observe or substitute arrivals without a second state-application path. This is NOT an
+/// offline replay mode: retry scheduling and worker spawning remain live.
 fn pump_with_landings(dt: f32, take: impl FnOnce() -> Vec<Landing>) {
     step_landings(Some(dt), take);
 }
@@ -1536,13 +1512,51 @@ fn pump_with_landings(dt: f32, take: impl FnOnce() -> Vec<Landing>) {
 /// The owned store's tick never consumes the worker mailbox. Arrivals are delivered separately
 /// by the dispatcher; a worker finishing during its drain belongs to the next frame's ingest.
 pub(crate) fn tick(dt: f32) {
+    // Same crate-global catalog guard as `request_refetch_hubs` — see `lib.rs::testlock`.
+    #[cfg(test)]
+    crate::testlock::assert_held("the pms hub catalog (tick)");
     pump_with_landings(dt, Vec::new);
 }
 
 /// An addressed arrival may update the catalog behind another page, but must not advance retry
 /// timers or start a new hubs fetch there. The visible Home alone owes the store's tick.
-pub(crate) fn apply_landing(landing: &Landing) {
+fn apply_landing(landing: &Landing) {
+    #[cfg(test)]
+    crate::testlock::assert_held("the pms hub catalog (apply_landing)");
     step_landings(None, || vec![landing.clone()]);
+}
+
+/// `stores::hubs`'s landing door (D3): `apply_landing` is private to this file, so the one
+/// out-of-module caller (the dispatcher's `AppMsg::HubsResult` delivery, main thread) comes
+/// through here instead of naming the mutator directly. Returns whether the catalog's
+/// generation moved, which is what decides the store's own notice.
+pub(crate) fn land(landing: &Landing) -> bool {
+    let before = catalog_gen();
+    apply_landing(landing);
+    catalog_gen() != before
+}
+
+/// `stores::hubs`'s one door onto every [`HubsCmd`](crate::stores::hubs::HubsCmd) (D3): the
+/// match used to live in `stores/hubs.rs::run`, calling four `pub(crate)` mutators across the
+/// module boundary. Relocating the match here is what lets those four go private — `stores::
+/// hubs::run` still holds the `testlock` funnel-point assertion and now just delegates.
+pub(crate) fn run(cmd: crate::stores::hubs::HubsCmd) -> bool {
+    use crate::stores::hubs::HubsCmd;
+    match cmd {
+        HubsCmd::RefetchHubs => {
+            request_refetch_hubs();
+            true
+        }
+        HubsCmd::Retry => {
+            request_retry();
+            true
+        }
+        HubsCmd::Reset => {
+            reset();
+            true
+        }
+        HubsCmd::EditItem { sid, rk, edit } => edit_item(sid, &rk, edit),
+    }
 }
 
 fn step_landings(dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>) {
@@ -1629,7 +1643,7 @@ fn step_landings(dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>) {
 /// row with no landscape artwork (it would make a blank billboard), and a distinct `rk` per row,
 /// since the pool dedups by item IDENTITY and n rows sharing the empty key are ONE film to it. A
 /// fixture of bare defaults therefore committed shelves with an EMPTY pool — a Home that has
-/// content but cannot page — and `ui::home`'s pager test needs somewhere to page to. A fixture
+/// content but cannot page — and the Home pager test needs somewhere to page to. A fixture
 /// that cannot express the app's ordinary state quietly limits what can be tested through it.
 #[cfg(test)]
 fn build_test(n: usize) -> SourceBuild {
@@ -1655,6 +1669,7 @@ fn build_test(n: usize) -> SourceBuild {
 /// cannot reach for real (a live server answering, or refusing) are exactly the ones worth pinning.
 #[cfg(test)]
 pub(crate) fn seed_for_test(items: usize, state: HubState) {
+    crate::testlock::assert_held("the pms hub catalog (seed_for_test)");
     reset();
     let mut s = Src::new(ServerId::UNSET, String::new());
     s.state = state;
@@ -1676,7 +1691,15 @@ pub(crate) fn seed_for_test(items: usize, state: HubState) {
 /// called from the same place (`install_pms`). Now that a failed fetch KEEPS the previous build,
 /// a profile switch whose fetch fails would otherwise leave the previous user's shelves on screen;
 /// this is the one place that must still wipe them.
-pub(crate) fn reset() {
+///
+/// Private since D3's follow-up: `app/bridge.rs` and `app/recorder.rs` (nine `#[cfg(test)] mod
+/// tests` call sites between them) were the last two direct callers, both now routed through
+/// `stores::hubs::apply(HubsCmd::Reset)` — `HubsCmd` already had the variant and `pms::run`
+/// already matched it, so closing this was a caller-site swap alone, no new enum surface.
+fn reset() {
+    // Same crate-global catalog guard as `request_refetch_hubs` — see `lib.rs::testlock`.
+    #[cfg(test)]
+    crate::testlock::assert_held("the pms hub catalog (reset)");
     HUB_GEN.fetch_add(1, Ordering::SeqCst); // a worker still running belongs to the old identity
     *RESULTS.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
     *lock_srcs() = Vec::new();
@@ -1693,6 +1716,7 @@ pub(crate) fn reset() {
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 pub(crate) fn queue_test_landing(items: Option<usize>) -> u32 {
+    crate::testlock::assert_held("the pms hub catalog (queue_test_landing)");
     let srcs = lock_srcs();
     let source = &srcs[0];
     let seq = source.seq;
@@ -1707,6 +1731,7 @@ pub(crate) fn queue_test_landing(items: Option<usize>) -> u32 {
 
 #[cfg(test)]
 pub(crate) fn reverse_test_shelves() {
+    crate::testlock::assert_held("the pms hub catalog (reverse_test_shelves)");
     let mut sources = lock_srcs();
     for source in sources.iter_mut() {
         if let Some(build) = source.last.as_mut() {
@@ -1720,6 +1745,7 @@ pub(crate) fn reverse_test_shelves() {
 
 #[cfg(test)]
 pub(crate) fn seed_grid_for_test(rows: usize, items: usize) {
+    crate::testlock::assert_held("the pms hub catalog (seed_grid_for_test)");
     seed_for_test(items, HubState::Ready);
     let mut sources = lock_srcs();
     let source = sources[0].last.as_mut().unwrap();
@@ -1735,6 +1761,7 @@ pub(crate) fn seed_grid_for_test(rows: usize, items: usize) {
 
 #[cfg(test)]
 pub(crate) fn reverse_test_hubs() {
+    crate::testlock::assert_held("the pms hub catalog (reverse_test_hubs)");
     let mut sources = lock_srcs();
     for source in sources.iter_mut() {
         if let Some(build) = source.last.as_mut() { build.shelves.reverse(); }
@@ -1746,6 +1773,7 @@ pub(crate) fn reverse_test_hubs() {
 
 #[cfg(test)]
 pub(crate) fn remove_test_item(rk: &str) {
+    crate::testlock::assert_held("the pms hub catalog (remove_test_item)");
     let mut sources = lock_srcs();
     for source in sources.iter_mut() {
         if let Some(build) = source.last.as_mut() {
@@ -1762,12 +1790,62 @@ mod tests {
     use super::*;
 
     // NB every test that touches the catalog statics holds the crate-wide serial lock: they are
-    // read from other modules' tests too (`ui::home` walks `hub_len`), which a module-local mutex
-    // cannot see. `reset()` doubles as the teardown.
+    // read from other modules' tests too, which a module-local mutex cannot see. `reset()` doubles
+    // as the teardown.
+    //
+    // The catalog READERS below were production API while the retired legacy Home walked the
+    // statics directly; the owned Home reads the retained publication instead ([`HubsView`]), so
+    // they live here, phrased exactly as they were, and this module's contracts are unchanged by
+    // the retirement.
     //
     // No test here may leave a source in a state `pump` would KICK (not Ready, not fetching, no
     // backoff owed): a kick reaches for `plex::client_for`, and a slot another module's test
     // registered would send a real worker at a real address.
+
+    /// Land whatever the workers left, then tick — the combined pass the legacy Home drove each
+    /// frame. Production splits it (the adapter drains with [`take_landings`] and applies through
+    /// [`apply_landing`]; the store's [`tick`] only counts down), so it survives here as the one
+    /// driver these landing/back-off contracts are phrased in.
+    fn pump(dt: f32) {
+        pump_with_landings(dt, take_landings);
+    }
+
+    fn pool() -> &'static Vec<HeroSlot> {
+        &published_home().heroes
+    }
+    /// number of items in the rotating hero pool
+    fn hero_pool_len() -> usize {
+        pool().len()
+    }
+    /// hero-pool item `i`, or None
+    fn hero_pool_item(i: usize) -> Option<&'static PmsMovie> {
+        movie(pool().get(i)?.idx)
+    }
+    /// Handle of the server hero-pool page `i` came from ("friend"), or **empty** for the
+    /// signed-in user's own — see [`HeroSlot`]. The hero's meta line draws no run at all for the
+    /// empty case (`screens::home::meta_source_flow`), so a single-server library pays nothing for
+    /// this.
+    fn hero_pool_source(i: usize) -> &'static str {
+        pool().get(i).map(|s| s.source.as_str()).unwrap_or("")
+    }
+    /// title of hub `i` (e.g. "Continue Watching")
+    fn hub_title(i: usize) -> &'static str {
+        hubs().get(i).map(|h| h.title.as_str()).unwrap_or("")
+    }
+    /// Handle of the server hub `i` came from ("friend"), or **empty** for the signed-in user's
+    /// own server — see [`HubRow::source`].
+    fn hub_source(i: usize) -> &'static str {
+        hubs().get(i).map(|h| h.source.as_str()).unwrap_or("")
+    }
+    /// whether hub `i` is the merged Continue Watching shelf (its tiles play directly on OK, so
+    /// the home grid stamps the play-hint badge on them). Matched on the locale-independent
+    /// hubIdentifier, through the one identity function the publication itself uses.
+    fn hub_is_continue(i: usize) -> bool {
+        hubs()
+            .get(i)
+            .and_then(|h| stable_hub_identity(h, catalog()))
+            .is_some_and(|id| matches!(id, HubIdentity::ContinueWatching))
+    }
 
     fn sid(slot: u16) -> ServerId {
         ServerId::from_raw(slot)
@@ -2100,18 +2178,20 @@ mod tests {
 
     #[test]
     fn home_group_identity_uses_provider_and_server_not_title_or_position() {
-        let mut hub = HubRow { title: "Recent movies".into(), hub_id: "home.movies.recent".into(),
+        let id = "home.movies.recent";
+        let mut hub = HubRow { title: "Recent movies".into(), hub_id: id.into(),
             key: String::new(), source: "Alice".into(), start: 0, len: 1 };
         let items = vec![row(0, "a"), row(1, "b"), row(0, "c")];
-        assert_eq!(hub_identity_in(&hub, &items), Some((Some(sid(0)), "home.movies.recent")));
+        let want = |slot| Some(HubIdentity::Identifier { sid: sid(slot), id });
+        assert_eq!(stable_hub_identity(&hub, &items), want(0));
         hub.title = "Localized title".into();
         hub.source = "Renamed owner".into();
         hub.start = 2;
-        assert_eq!(hub_identity_in(&hub, &items), Some((Some(sid(0)), "home.movies.recent")));
+        assert_eq!(stable_hub_identity(&hub, &items), want(0));
         hub.start = 1;
-        assert_eq!(hub_identity_in(&hub, &items), Some((Some(sid(1)), "home.movies.recent")));
+        assert_eq!(stable_hub_identity(&hub, &items), want(1));
         hub.hub_id.clear();
-        assert_eq!(hub_identity_in(&hub, &items), None);
+        assert_eq!(stable_hub_identity(&hub, &items), None);
     }
 
     #[test]
@@ -2119,9 +2199,9 @@ mod tests {
         let mut hub = HubRow { title: "Continue Watching".into(), hub_id: "home.continue".into(),
             key: String::new(), source: String::new(), start: 0, len: 1 };
         let items = vec![row(0, "a"), row(1, "b")];
-        assert_eq!(hub_identity_in(&hub, &items), Some((None, "home.continue")));
+        assert_eq!(stable_hub_identity(&hub, &items), Some(HubIdentity::ContinueWatching));
         hub.start = 1;
-        assert_eq!(hub_identity_in(&hub, &items), Some((None, "home.continue")));
+        assert_eq!(stable_hub_identity(&hub, &items), Some(HubIdentity::ContinueWatching));
     }
     /// A source's projection: `(lastViewedAt, rk)` deck entries plus whole shelves.
     fn built(slot: u16, cw: &[(i64, &str)], shelves: Vec<Shelf>) -> SourceBuild {
@@ -3281,7 +3361,7 @@ mod tests {
     }
 
     /// The merged deck is capped at what the grid can ADDRESS. Three sources' Continue Watching is
-    /// up to 36 cards, and past `MAX_SHELF_ITEMS` `ui::home`'s focus ring and its OK dispatch clamp
+    /// up to 36 cards, and past `MAX_SHELF_ITEMS` the home grid's focus ring and its OK dispatch clamp
     /// differently — the ring stops at the last addressable card while the press opens whatever
     /// column the raw index names. Unreachable with one server, which is why the cap lives here now.
     #[test]

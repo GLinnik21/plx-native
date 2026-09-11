@@ -49,7 +49,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
     crate::browse::seed_items_for_test(120);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    frame(&mut d, &mut rig, Route::Library, tick(0), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     let page = d.nav.top_page().unwrap().id;
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     let listing = rig.listing.view().id().unwrap();
@@ -70,28 +70,25 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
         )),
     );
     for i in 1..40 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let menu = d.focus().unwrap().entry;
     assert_ne!(menu, page);
-    let trail = super::super::Trail::new();
     let mut trace = Trace::default();
-    super::frame_with_tap(
+    frame_with_tap(
         &mut d,
         &mut rig,
-        Route::Library,
-        &trail,
+        AppArg::Library,
         tick(40),
         script_key(Key::Ok, tick(40)),
         &mut trace,
     );
     let mut request_frame = None;
     for i in 41..80 {
-        super::frame_with_tap(
+        frame_with_tap(
             &mut d,
             &mut rig,
-            Route::Library,
-            &trail,
+            AppArg::Library,
             tick(i),
             vec![],
             &mut trace,
@@ -108,11 +105,10 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
         "the test must press BACK before the fade floor"
     );
     assert!(!rig.listing.view().unwatched());
-    super::frame_with_tap(
+    frame_with_tap(
         &mut d,
         &mut rig,
-        Route::Library,
-        &trail,
+        AppArg::Library,
         tick(request_frame + 1),
         script_key(Key::Back, tick(request_frame + 1)),
         &mut trace,
@@ -128,11 +124,10 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
         "BACK did not leave Library"
     );
     for i in request_frame + 2..request_frame + 60 {
-        super::frame_with_tap(
+        frame_with_tap(
             &mut d,
             &mut rig,
-            Route::Library,
-            &trail,
+            AppArg::Library,
             tick(i),
             vec![],
             &mut trace,

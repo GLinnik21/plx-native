@@ -124,14 +124,20 @@ ships, because `-Z build-std` is what ships.
    on Darwin the same call makes `connect_timeout` report *success* on a socket that never
    connected. A socket assertion passing here is evidence about macOS.
 3. **Some tests are serialized on crate globals**, not parallel. `metadata.rs`'s take `lib.rs`'s
-   crate-wide `testlock::serial()`; `ui/home.rs`'s take that module's `FOCUS` mutex for its
-   `static mut fr`/`fc`. `ui/xfade.rs` is the cautionary case, and its own module doc says why:
+   crate-wide `testlock::serial()`, and so does every owned-screen test that seeds a store —
+   an owned screen keeps no focus of its own (the `FocusEngine` does), but `pms`'s catalog statics
+   are shared across modules. `ui/xfade.rs` is the cautionary case, and its own module doc says why:
    pure value semantics **with one exception that costs them their parallelism** — `tick` reports
    to `ui::idle`'s process-global dirty flag, which `ui::idle`'s own "a settled screen does not
    repaint" assertions read. Without the lock they fail *other modules'* tests intermittently,
    which is the worst shape a flake can take. **Anything you make report to the frame gate inherits
    that obligation**, and reach for `testlock` rather than a fresh local mutex when the global is
-   shared across modules.
+   shared across modules. Since 2026-09-10 the lock records the holding THREAD and the stores
+   assert it (`testlock::assert_held` in `browse::reset`/`append_sections`,
+   `plex::servers::reset_for_test` and the app frame trunk), so a write without the guard is a
+   deterministic panic in the offending test instead of an intermittent failure in a bystander —
+   which is how the `app::chrome` strip flake was finally attributed to three unguarded
+   `app::heartbeat_word_tests` cases.
 
 ### Tier 1.5 — the simulator
 
@@ -207,12 +213,12 @@ knows the set is theirs.
 
 | what you changed | run, in order | what those tiers CANNOT see |
 |---|---|---|
-| **pure logic** — `route.rs`, `plex/`, `metadata.rs`, `browse.rs`, `aq.rs`, `stream.rs` parsing, `ff.rs` helpers | `make check` (+ a new test) → `make sim-shot` if a screen reads it | the native libraries; Linux syscall semantics; whether the value reaches a pixel |
+| **pure logic** — `route/plan.rs`, `plex/`, `metadata.rs`, `browse.rs`, `aq.rs`, `stream.rs` parsing, `ff.rs` helpers | `make check` (+ a new test) → `make sim-shot` if a screen reads it | the native libraries; Linux syscall semantics; whether the value reaches a pixel |
 | **UI layout / spacing / colour / a new screen** (`ui/`) | `make check` → `make sim-shot SIM_W=1920 SIM_H=1080` (`ui-sim`) → **one device capture, looked at** | the fps tier is blind to pixels (the 2026-08-13 watched-mark bug); a FITTED sim shot is 960x540 on a 1x display, layout evidence only — which is what `SIM_W`/`SIM_H` exist for |
 | **text rasterization, fonts, the `theme::size` ladder** | `tools/font-hint-audit.py` → device capture | **the simulator is disqualified** — different FreeType; `make check` never rasterizes anything |
 | **anything ANIMATED, or repainting from a CLOCK** | two host tests (runs / rests) → `--fps` with a real `fps_floor`, plus an `fps_ceiling` if the screen settles | `loop_floor` cannot see a stopped animation at all; the simulator cannot see rate |
 | **frame rate / perf** | `profile-tv`: `./tests/run.py --fps` unarmed, or one scene with `--graphics-profile` for pacing + IRQ + HWCNT | never the simulator; only the profile's production leg has quotable FPS; `drift` is reported, never asserted |
-| **player pipeline, demux, Starfish/ACB, the Load payload** | `make check` (pure `ff.rs` logic) → `./tests/run.py` (synthetic) → `--server` if selection is involved | the synthetic tier bypasses `metadata → plan → apply_plan` and false-PASSes an unread trigger via `engine`'s `_ =>` arm |
+| **player pipeline, demux, Starfish/ACB, the Load payload, `route/decision.rs`** | `make check` (pure `ff.rs` logic) → `./tests/run.py` (synthetic) → `--server` if selection is involved | the synthetic tier bypasses `metadata → plan → apply_plan` and false-PASSes an unread trigger via `engine`'s `_ =>` arm |
 | **track selection, resume, markers, Up Next, `/:/timeline`** | `./tests/run.py --server` — **only** | the synthetic tier reaches none of these; a bare `./tests/run.py` is not evidence about any of them |
 | **FFI / linkage / `dynlib!`** | `tools/fwcompat.py` → `make check` → **`make sim` or `make macapp`** → device | **there is no link error any more**; and the device cannot see an Apple-ABI variadic bug — see below |
 | **the release feature configuration** | `cargo +nightly check --lib --no-default-features` → `make RELEASE=1` | `make check`, `make` and `make sim` all build DEV features; a broken `RELEASE=1` is invisible to every one of them |
@@ -237,8 +243,10 @@ every `floor` in the suite still passes.
 
 **Anything that animates from a CLOCK rather than a spring** — a millisecond ramp, a phase, a
 countdown — must call `ui::idle::invalidate()` itself. `note_spring` cannot see it, and both
-`Xfade::tick` (every route dip) and `Spinner::draw` (every loading read-out) **shipped FROZEN**
-before they were made to report. No fps scene caught either, because those graded `loop=`. The same
+`Xfade::tick` (every CONTENT cross-fade) and `Spinner::draw` (every loading read-out) **shipped
+FROZEN** before they were made to report. (`Xfade` drove the ROUTE dip too until restructure phase
+12 lifted that onto `ui::containers::transition::PageDip`, which reports from inside its own
+`tick`.) No fps scene caught either, because those graded `loop=`. The same
 applies to a new async landing that repaints: without an `invalidate()` it arrives invisibly until
 the next keypress.
 

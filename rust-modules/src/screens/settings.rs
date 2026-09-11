@@ -67,6 +67,22 @@ const PARENT_TRAVEL: f32 = 0.35;
 const CHILD_LEAD: f32 = 0.22;
 const SCRIM_A: f32 = theme::alert::SCRIM_A;
 
+/// The `Family::Settings` scrim's ink alpha: the surface's own appear (`local_alpha`, the
+/// `RouteSurface`'s `page_alpha` after its container's overwrite) composed with the ROUTE-level
+/// nav dip beneath it (`nav_page_alpha`, `DrawFrame::nav_page_alpha` — spec §14 phase 8), so the
+/// scrim never reads as present-but-undimmed while a Home↔Library route change is still fading
+/// underneath a Settings surface that is itself already fully open.
+fn settings_scrim_alpha(local_alpha: f32, nav_page_alpha: f32) -> f32 {
+    SCRIM_A * local_alpha * nav_page_alpha
+}
+
+/// The `Family::Settings` entrance cascade's alpha: same composition as
+/// [`settings_scrim_alpha`], undivided by `SCRIM_A` — what the ground and the pages themselves
+/// draw through.
+fn settings_entrance_alpha(local_alpha: f32, nav_page_alpha: f32) -> f32 {
+    local_alpha * nav_page_alpha
+}
+
 /// The push spring, with the page it is carrying OUT on a pop.
 struct Push {
     pos: f32,
@@ -714,12 +730,14 @@ impl<H: AppLike> Screen<H> for RouteSurface {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let a = f.page_alpha;
         let root = Painter::root();
-        crate::screens::family::set_palette(self.ground.palette());
+        // `super::family` here matches this file's own `use super::family::{inner_cx, table_focus,
+        // InnerHost, SettingsPage};` above — `family` is shared vocabulary, not a sibling screen.
+        super::family::set_palette(self.ground.palette());
         match self.kind {
             Family::Settings => {
                 // the scrim over the live host while the modal fades in; invisible under the
                 // opaque ground at rest and what fades out over the host on dismissal
-                let dim = theme::scrim_black(SCRIM_A * a * crate::ui::nav::page_alpha());
+                let dim = theme::scrim_black(settings_scrim_alpha(a, f.nav_page_alpha));
                 root.rect(Rect::FULL, 0.0, dim, dim, 0.0);
                 crate::ui::profile::phase("st.ground", || self.ground.draw_host(root.alpha(a)));
             }
@@ -729,7 +747,7 @@ impl<H: AppLike> Screen<H> for RouteSurface {
         }
         self.ground_ready = a >= 0.995;
         let entrance = match self.kind {
-            Family::Settings => root.alpha(a * crate::ui::nav::page_alpha()),
+            Family::Settings => root.alpha(settings_entrance_alpha(a, f.nav_page_alpha)),
             Family::FirstRunConsent => root.alpha(a).translate(Rect::FULL.w * (1.0 - a), 0.0),
         };
         self.draw_pages(f, entrance);
@@ -843,8 +861,22 @@ impl LogicalState for RootState {
     }
 }
 
+/// Does this television have an account? — asked by [`RootPage::rebuild`], so twice per Settings
+/// open (construction, then `ScreenEvent::Enter`) and once more on every return from a child page.
+///
+/// **Through [`peek`](crate::plex::session::peek), never [`load`](crate::plex::session::load).**
+/// The two differ in exactly one respect and it is the one that matters on a press path: `load`
+/// mints a `client_id` when there is none and re-persists a plaintext session, so a READ turns
+/// into `write_atomic` — a temp file, `sync_all`, a rename and a second `sync_all` on the
+/// directory. That is the boot path's bargain, and `session.rs` says so in as many words ("it is
+/// not one on a path a keypress can reach", "do not add a per-frame reader of this file"). This
+/// call site was on the wrong side of it: on a television whose key manager is unusable — which
+/// is this one — every open of the Settings modal paid two flash writes with four fsyncs on the
+/// frame that mounts it, worth 150-180 ms of `navcommit` in the sessions where the flash was slow
+/// (`fps:modal-ramp`, device-measured 2026-09-09;
+/// `opening_settings_never_writes_the_session_file` is the account).
 fn signed_in() -> bool {
-    crate::plex::session::load()
+    crate::plex::session::peek()
         .account(crate::plex::session::current().as_ref())
         .signed_in
 }
@@ -1031,6 +1063,34 @@ mod tests {
     use crate::ui::screen::By;
     use crate::ui::present::Present;
 
+    /// Spec §14 phase 8: `Family::Settings`'s scrim/entrance composition reads
+    /// `DrawFrame::nav_page_alpha` rather than the `ui::nav` statics — these two pin the
+    /// arithmetic itself (the wiring at the two call sites is a straight field read, checked by
+    /// the compiler and by every existing draw test in this module staying green). A route dip
+    /// in flight (a non-1.0 `nav_page_alpha`) must dim the scrim and the entrance exactly as
+    /// much as the surface's own appear does — before this field existed, both call sites read
+    /// the live global instead of whatever a host test's `DrawFrame` carried, so a test built on
+    /// the OLD shape could not have told a wired composition from an ignored parameter; a
+    /// process-wide static is either at rest (1.0, indistinguishable from the identity) or being
+    /// driven by a second test racing this one (`testlock::serial()`'s whole reason for existing
+    /// — see `docs/../test-suite-global-pollution.md`), never a controlled non-1.0 value a test
+    /// can set.
+    #[test]
+    fn settings_scrim_and_entrance_alpha_compose_local_and_nav_page_alpha() {
+        assert_eq!(settings_scrim_alpha(1.0, 1.0), SCRIM_A);
+        assert_eq!(settings_entrance_alpha(1.0, 1.0), 1.0);
+        // the surface is fully open (local 1.0) but the route beneath it is mid-dip (0.5): both
+        // the scrim and the entrance must read the dip, not just the surface's own appear.
+        assert_eq!(settings_scrim_alpha(1.0, 0.5), SCRIM_A * 0.5);
+        assert_eq!(settings_entrance_alpha(1.0, 0.5), 0.5);
+        // the surface is itself still appearing (local 0.5) over a route at rest (1.0).
+        assert_eq!(settings_scrim_alpha(0.5, 1.0), SCRIM_A * 0.5);
+        assert_eq!(settings_entrance_alpha(0.5, 1.0), 0.5);
+        // both in flight at once multiply, never clamp or pick a max.
+        assert_eq!(settings_scrim_alpha(0.5, 0.4), SCRIM_A * 0.2);
+        assert_eq!(settings_entrance_alpha(0.5, 0.4), 0.2);
+    }
+
     // A `static`, not a `const`: `Cx::measure` needs a genuine `&'static dyn Measure`, and a
     // `static` gives one outright rather than leaning on constant-promotion rules at the borrow
     // site inside `cx` below.
@@ -1164,6 +1224,47 @@ mod tests {
     /// (the redirected path is a crate global); every test below takes it first.
     fn scratch_session(tag: &str) -> crate::plex::session::TempSession {
         crate::plex::session::TempSession::new(tag)
+    }
+
+    /// **OPENING SETTINGS MUST NOT WRITE THE SESSION FILE.** Device-measured, 2026-09-09:
+    /// `fps:modal-ramp` (open and dismiss the Settings modal every 1500 ms) read a `worstframe`
+    /// of 188-210 ms against a 75 ms ceiling, with `FRAMEDROP` putting 150-181 ms of it in
+    /// `navcommit=` — the dispatcher's POST-COMMIT DRAIN, which is where this surface's mount and
+    /// its root page's `ScreenEvent::Enter` run.
+    ///
+    /// [`RootPage::rebuild`] asks [`signed_in`] whether this television has an account, once at
+    /// construction and again on `Enter`, so TWICE per open. That question used to go through
+    /// [`crate::plex::session::load`] — the read-modify-WRITE door, whose own doc says a read that
+    /// can turn into a save "is not [an acceptable trade] on a path a keypress can reach", and
+    /// "do not add a per-frame reader of this file". On this television the key manager is
+    /// unusable ("session protection: no usable key manager; using the 0600 file fallback"), so
+    /// every `load` takes the plaintext branch and re-persists: `write_atomic`, i.e. a temp file,
+    /// `sync_all`, a rename and a second `sync_all` on the directory. Two flash writes with four
+    /// fsyncs, synchronously, on the frame that opens the modal. Instrumented on the set the same
+    /// day: 23 `load`s in one 18 s run, `saves=1 plaintext=1` on every one, 6-15 ms each in that
+    /// session and ~75 ms each in the sessions that failed — which is also why the symptom is
+    /// BIMODAL, and why it bisected to a range containing no functional change at all.
+    ///
+    /// The assertion is the file's INODE, not its mtime: `write_atomic` renames a fresh temp file
+    /// into place, so a write always moves it, whatever a filesystem's timestamp resolution.
+    /// Watched red against `session::load()` — the inode changed on the mount.
+    #[test]
+    fn opening_settings_never_writes_the_session_file() {
+        use std::os::unix::fs::MetadataExt;
+        let _g = crate::testlock::serial();
+        let sess = scratch_session("surface-no-session-write");
+        let file = sess.path();
+        let before = std::fs::metadata(&file).expect("the scratch session exists");
+        let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+        step(&mut s, ScreenEvent::Mount, None);
+        let after = std::fs::metadata(&file).expect("the scratch session still exists");
+        assert_eq!(
+            before.ino(),
+            after.ino(),
+            "opening Settings rewrote the session file: a flash write with two fsyncs on the \
+             frame the modal mounts (fps:modal-ramp, 150 ms of navcommit)"
+        );
+        assert_eq!(before.len(), after.len(), "and nothing about its contents moved either");
     }
 
     /// Mounting the surface at its `Root` page runs the inner stack's own lifecycle (§3.4) and

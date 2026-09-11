@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """keytable.py — the key ladder's behaviour, as a table you can diff.
 
-`app.rs`'s key handler is ~676 lines and 19 arms, and no host test executes any of it: it lives
-inside the SDL event loop. Its correctness is also ORDER-dependent by design — an earlier guard
-subsumes a later one (`Route::Player{..} && transport_hidden()` swallows every key but BACK, so
-the four overlay arms below it are unreachable while it holds). Reordering compiles, keeps the
-suite green, and silently changes behaviour.
+The loop's key handler lives inside the SDL event loop, so no host test executes any of it. Its
+correctness is also ORDER-dependent by design — an earlier guard subsumes a later one it overlaps
+with — and reordering compiles, keeps the suite green, and silently changes behaviour.
+
+No arm count is given, and no example guard: the ladder has been shrinking one migration at a time
+(three arms left it in restructure phase 5b, every remaining player arm in phase 12), so both rot
+here without anything failing. The clearest example used to be the player's failure read-out, whose
+guard swallowed every key the read-out did not draw; that precedence is now the first condition of
+`PlayerScreen::handle_key` rather than an arm's height in a chain.
 
 So before that ladder is touched, its behaviour has to be written down. This drives the SIMULATOR
 through (screen x key) and records, for every press, the focus fingerprint before and after — i.e.
