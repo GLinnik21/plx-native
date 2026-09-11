@@ -264,6 +264,7 @@ const TOP_FIELDS: &[&str] = &[
     "exception",
     "threads",
     "debug_meta",
+    "breadcrumbs",
 ];
 /// `user` survives with exactly its `id`, and only when that id has the shape this app mints
 /// (`telemetry::is_minted_id`): the crash-report identifier `sdk::start` put on the scope. Email,
@@ -388,6 +389,9 @@ fn sanitise_event(event: &mut serde_json::Value, event_id: &str) {
     {
         retain_fields(sdk, SDK_FIELDS);
     }
+    if let Some(breadcrumbs) = event.get_mut("breadcrumbs") {
+        *breadcrumbs = super::window::sanitise(breadcrumbs);
+    }
     sanitise_user(event);
     if let Some(exception) = event
         .get_mut("exception")
@@ -504,6 +508,7 @@ pub(crate) const PREVIEW_USER_ID: &str = "<crash report id>";
 pub(crate) fn preview_event() -> Vec<u8> {
     let mut event = serde_json::json!({
         "event_id": "<random id for this crash>",
+        "breadcrumbs": super::window::preview(),
         "timestamp": "<crash time>",
         "platform": "native",
         "level": "fatal",
@@ -718,6 +723,8 @@ mod sdk {
             hardware_revision: *const c_char,
         );
         fn plx_sentry_set_user_id(id: *const c_char);
+        fn plx_sentry_window_breadcrumb(stage: *const c_char, playing: c_int,
+            major: c_int, minor: c_int, patch: c_int, display: c_int, surface: c_int);
     }
 
     /// Put the crash-report identifier on the SDK scope as `user.id`, or clear it. Each call makes
@@ -730,6 +737,17 @@ mod sdk {
         let id = id.filter(|id| !id.is_empty()).and_then(cstring);
         unsafe {
             plx_sentry_set_user_id(id.as_ref().map_or(std::ptr::null(), |id| id.as_ptr()));
+        }
+    }
+
+    pub(super) fn record_window(observation: super::super::window::Observation) {
+        if !ACTIVE.load(Ordering::Acquire) { return; }
+        let Some(stage) = cstring(observation.stage.code()) else { return; };
+        let version = observation.version.map(|v| v.map(c_int::from)).unwrap_or([-1; 3]);
+        let bit = |v: Option<bool>| v.map(c_int::from).unwrap_or(-1);
+        unsafe {
+            plx_sentry_window_breadcrumb(stage.as_ptr(), bit(observation.playing),
+                version[0], version[1], version[2], bit(observation.display), bit(observation.surface));
         }
     }
 
@@ -800,7 +818,7 @@ mod sdk {
                 sentry_options_set_dist(options, dist.as_ptr());
             }
             sentry_options_set_auto_session_tracking(options, 0);
-            sentry_options_set_max_breadcrumbs(options, 0);
+            sentry_options_set_max_breadcrumbs(options, super::super::window::LIMIT);
             sentry_options_set_debug(options, 0);
             sentry_options_set_crash_reporting_mode(options, 1); // NATIVE, no minidump
             if sentry_init(options) == 0 {
@@ -860,6 +878,16 @@ fn set_user(id: Option<&str>) {
 #[cfg(not(all(target_os = "linux", target_arch = "arm")))]
 fn set_user(_id: Option<&str>) {}
 
+/// Sparse breadcrumbs use the already-running, consent-gated native capture backend. Its
+/// transport is disabled; these leave the device only with a later crash event.
+pub(crate) fn record_window(observation: super::window::Observation) {
+    #[cfg(all(target_os = "linux", target_arch = "arm"))]
+    sdk::record_window(observation);
+    #[cfg(not(all(target_os = "linux", target_arch = "arm")))]
+    let _ = (observation.stage, observation.playing, observation.version,
+        observation.display, observation.surface);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -908,6 +936,25 @@ mod tests {
         ] {
             assert!(!envelope_filename(bad), "accepted {bad}");
         }
+    }
+
+    #[test]
+    #[ignore = "requires the envelope produced by ci/window-breadcrumb-probe.c on the TV"]
+    fn device_window_breadcrumbs_survive_the_real_importer() {
+        let path = std::env::var("PLX_WINDOW_PROBE_ENVELOPE").expect("set PLX_WINDOW_PROBE_ENVELOPE");
+        let bytes = std::fs::read(path).unwrap();
+        let (_, body, _) = event_from_envelope(&bytes).expect("device envelope must import");
+        let event: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let values = event["breadcrumbs"]["values"].as_array().unwrap();
+        assert_eq!(values.len(), super::super::window::LIMIT);
+        let stages: Vec<_> = values.iter().rev().take(3).map(|v| v["message"].as_str().unwrap()).collect();
+        assert_eq!(stages, ["first_frame", "wm_ready", "did_foreground"]);
+        assert_eq!(values[values.len() - 2]["data"]["surface"], true);
+        assert_eq!(values[values.len() - 2]["data"]["sdl_patch"], 5);
+        let json = String::from_utf8(body).unwrap();
+        assert!(!json.contains("example.invalid"));
+        assert!(!json.contains("/tmp/"));
+        assert!(values.iter().all(|v| v.get("timestamp").and_then(serde_json::Value::as_str).is_some()));
     }
 
     #[test]

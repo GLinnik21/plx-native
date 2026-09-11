@@ -38,6 +38,46 @@ extern "C" {
     fn g_main_context_iteration(ctx: *mut c_void, may_block: c_int) -> c_int;
 }
 
+/// Whether SDL has completed foreground entry. This gate is independent of idle damage:
+/// queued uploads, animations, the video plane and noidle must never authorize a background
+/// EGL swap. SDL/Mali owns additional Wayland proxies that clearing our borrowed handles cannot
+/// protect. Owned by the app's main loop, and never inferred from the current UI route.
+pub(crate) struct WindowActivity {
+    active: bool,
+    first_frame: bool,
+}
+
+impl WindowActivity {
+    pub(crate) const fn new() -> Self { Self { active: true, first_frame: true } }
+
+    pub(crate) fn event(&mut self, event: u32) {
+        match event {
+            0x103 | 0x104 => self.active = false,
+            0x106 => { self.active = true; self.first_frame = true; }
+            _ => {} // WILL foreground does not yet authorize rendering.
+        }
+    }
+
+    pub(crate) fn allow_present(&self, requested: bool) -> bool {
+        self.active && requested
+    }
+
+    pub(crate) fn begin_present(&self, playing: bool) {
+        if self.first_frame {
+            crate::telemetry::window::record(crate::telemetry::window::Observation::step(
+                crate::telemetry::window::Stage::FirstFrame, Some(playing)));
+        }
+    }
+
+    pub(crate) fn presented(&mut self, playing: bool) {
+        if self.first_frame {
+            self.first_frame = false;
+            crate::telemetry::window::record(crate::telemetry::window::Observation::step(
+                crate::telemetry::window::Stage::FirstSwapComplete, Some(playing)));
+        }
+    }
+}
+
 static mut G_WL_SURFACE: *mut c_void = std::ptr::null_mut();
 static mut G_WL_DISPLAY: *mut c_void = std::ptr::null_mut();
 
@@ -64,6 +104,27 @@ pub(crate) fn clear_opaque_region() {
     }
 }
 
+/// Null the Wayland surface and display pointers on app background.
+///
+/// SDL owns these client-side proxies; our references must not outlive an active window.
+/// Background notifications revoke the borrow before any later frame can marshal through it.
+/// This does not destroy SDL's objects. Foreground reacquires them from SDL, and resets the
+/// opaque-region cache so a replacement surface receives its own request.
+pub(crate) fn sys_release_wayland() {
+    unsafe {
+        let had_surface = !G_WL_SURFACE.is_null();
+        G_WL_SURFACE = std::ptr::null_mut();
+        G_WL_DISPLAY = std::ptr::null_mut();
+        #[cfg(not(feature = "hostsim"))]
+        {
+            G_OPAQUE_SENT = -1;
+        }
+        if had_surface {
+            log("wm: released borrowed Wayland handles");
+        }
+    }
+}
+
 /// Service the glib main context that luna-service2 replies arrive on.
 ///
 /// A no-op on the simulator: glib is not linked and there is no luna bus to pump, so the loop
@@ -80,6 +141,8 @@ pub(crate) fn ls2_pump() {
 }
 
 pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
+    crate::telemetry::window::record(crate::telemetry::window::Observation::step(
+        crate::telemetry::window::Stage::WmQuery, None));
     unsafe {
         let mut wmbuf = [0u8; 512];
         // SDL_VERSION(&wm->version): major/minor/patch (u8) at offset 0.
@@ -127,20 +190,12 @@ pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
             "FB bits: alpha={abits} red={rbits} depth={dbits} stencil={sbits} \
              (config alpha={a} depth={d} stencil={s})"
         ));
-        // The wayland grab is webOS-only, and on a desktop it is not merely useless but UNSOUND.
-        // The union is read as `*mut c_void` pairs at a 4-byte offset, which is fine for the
-        // television's 32-bit pointers and a misaligned 64-bit dereference anywhere else — the
-        // simulator aborted here with "address must be a multiple of 0x8" before drawing a frame.
-        // There is also nothing to grab: SDL's cocoa backend reports SDL_SYSWM_COCOA, no wayland
-        // surface exists, and no video plane sits underneath needing to show through.
+        // The Wayland query is webOS-only. Desktop SDL reports a different backend with a
+        // different union layout, and has no hardware video plane needing this request.
+        // update_wayland_info reads unaligned because the oversized byte buffer has no pointer
+        // alignment guarantee, and rejects any non-Wayland subsystem before reading the union.
         #[cfg(not(feature = "hostsim"))]
-        if SDL_GetWindowWMInfo(winp, wmbuf.as_mut_ptr() as *mut c_void) != 0 {
-            // info union @ offset 8: {wl_display*, wl_surface*, ...}; members
-            // share offset 0, so read the first two pointers directly.
-            let info = wmbuf.as_ptr().add(8) as *const *mut c_void;
-            G_WL_DISPLAY = *info.add(0);
-            G_WL_SURFACE = *info.add(1);
-        }
+        update_wayland_info(SDL_GetWindowWMInfo(winp, wmbuf.as_mut_ptr() as *mut c_void), &wmbuf);
         #[cfg(feature = "hostsim")]
         let _ = winp;
         let subsystem = i32::from_ne_bytes([wmbuf[4], wmbuf[5], wmbuf[6], wmbuf[7]]);
@@ -439,3 +494,131 @@ pub(crate) fn opaque_route(player: bool) {
 /// to hint. The simulator keeps the same call site rather than growing a `cfg` at it.
 #[cfg(feature = "hostsim")]
 pub(crate) fn opaque_route(_player: bool) {}
+
+// Publish SDL's borrowed handles. Kept separate from the native query so failed queries can
+// be exercised without loading the television's SDL or marshalling a fake proxy.
+#[cfg(any(not(feature = "hostsim"), test))]
+unsafe fn update_wayland_info(ok: c_int, info: &[u8; 512]) {
+    sys_release_wayland();
+    let subsystem = i32::from_ne_bytes(info[4..8].try_into().unwrap());
+    let (mut display_present, mut surface_present) = (false, false);
+    if ok != 0 && subsystem == 6 { // SDL_SYSWM_WAYLAND
+        let pointers = info.as_ptr().add(8) as *const *mut c_void;
+        let display = pointers.read_unaligned();
+        let surface = pointers.add(1).read_unaligned();
+        display_present = !display.is_null();
+        surface_present = !surface.is_null();
+        if display_present && surface_present {
+            G_WL_DISPLAY = display;
+            G_WL_SURFACE = surface;
+        }
+    }
+    use crate::telemetry::window::{Observation, Stage};
+    let stage = if ok == 0 { Stage::WmFailed }
+        else if subsystem != 6 { Stage::WmWrongBackend }
+        else if G_WL_SURFACE.is_null() { Stage::WmNoSurface }
+        else { Stage::WmReady };
+    crate::telemetry::window::record(Observation { stage, playing: None,
+        version: Some([info[0], info[1], info[2]]),
+        display: Some(display_present), surface: Some(surface_present) });
+}
+
+#[cfg(test)]
+mod wayland_tests {
+    use super::*;
+
+    #[test]
+    fn background_blocks_every_present_request_until_did_foreground() {
+        let mut window = WindowActivity::new();
+        assert!(window.allow_present(true));
+        assert!(!window.allow_present(false));
+        for _ in 0..3 {
+            for event in [0x103, 0x104, 0x105, 0x200] {
+                window.event(event);
+                // The request may include a bound plane, queued uploads, noidle or keepalive.
+                assert!(!window.allow_present(true), "event {event:x} permits a background swap");
+            }
+            window.event(0x106);
+            assert!(window.allow_present(true));
+            assert!(!window.allow_present(false));
+        }
+        // Some platforms send only DID background. It must be sufficient on its own.
+        window.event(0x104);
+        assert!(!window.allow_present(true));
+    }
+
+    #[test]
+    fn failed_refresh_cannot_reuse_a_previous_surface() {
+        let _guard = crate::testlock::serial();
+        unsafe {
+            let mut display = 0u8;
+            let mut surface = 0u8;
+            G_WL_DISPLAY = std::ptr::addr_of_mut!(display).cast();
+            G_WL_SURFACE = std::ptr::addr_of_mut!(surface).cast();
+            update_wayland_info(0, &[0; 512]);
+            let (display, surface) = (G_WL_DISPLAY, G_WL_SURFACE);
+            G_WL_DISPLAY = std::ptr::null_mut();
+            G_WL_SURFACE = std::ptr::null_mut();
+            assert!(display.is_null() && surface.is_null(),
+                "a failed SDL query must revoke both borrowed handles");
+        }
+    }
+
+    #[test]
+    fn background_release_and_foreground_refresh_replace_the_borrow() {
+        let _guard = crate::testlock::serial();
+        unsafe {
+            let mut display = 0u8;
+            let mut surface = 0u8;
+            let display_ptr = std::ptr::addr_of_mut!(display).cast::<c_void>();
+            let surface_ptr = std::ptr::addr_of_mut!(surface).cast::<c_void>();
+            let mut info = [0u8; 512];
+            info[4..8].copy_from_slice(&6i32.to_ne_bytes());
+            let pointers = info.as_mut_ptr().add(8) as *mut *mut c_void;
+            pointers.write_unaligned(display_ptr);
+            pointers.add(1).write_unaligned(surface_ptr);
+            update_wayland_info(1, &info);
+            let acquired = (G_WL_DISPLAY, G_WL_SURFACE);
+            #[cfg(not(feature = "hostsim"))]
+            { G_OPAQUE_SENT = 1; }
+            sys_release_wayland();
+            sys_release_wayland(); // WILL + DID background is idempotent.
+            #[cfg(not(feature = "hostsim"))]
+            { let sent = G_OPAQUE_SENT; assert_eq!(sent, -1); }
+            let released = (G_WL_DISPLAY, G_WL_SURFACE);
+            clear_opaque_region(); // No native marshal can run after revocation.
+            let mut replacement = 0u8;
+            let replacement_ptr = std::ptr::addr_of_mut!(replacement).cast::<c_void>();
+            pointers.add(1).write_unaligned(replacement_ptr);
+            update_wayland_info(1, &info);
+            let refreshed = (G_WL_DISPLAY, G_WL_SURFACE);
+            sys_release_wayland();
+            assert_eq!(acquired, (display_ptr, surface_ptr));
+            assert!(released.0.is_null() && released.1.is_null());
+            assert_eq!(refreshed, (display_ptr, replacement_ptr));
+        }
+    }
+
+    #[test]
+    fn foreign_or_incomplete_wm_info_cannot_supply_wayland_handles() {
+        let _guard = crate::testlock::serial();
+        unsafe {
+            for subsystem in [0i32, 4, 6] {
+                let mut info = [0u8; 512];
+                info[4..8].copy_from_slice(&subsystem.to_ne_bytes());
+                // A foreign backend with two non-null pointers, or Wayland with no surface.
+                let mut display = 0u8;
+                let mut surface = 0u8;
+                let pointers = info.as_mut_ptr().add(8) as *mut *mut c_void;
+                pointers.write_unaligned(std::ptr::addr_of_mut!(display).cast());
+                if subsystem != 6 {
+                    pointers.add(1).write_unaligned(std::ptr::addr_of_mut!(surface).cast());
+                }
+                update_wayland_info(1, &info);
+                let handles = (G_WL_DISPLAY, G_WL_SURFACE);
+                sys_release_wayland();
+                assert!(handles.0.is_null() && handles.1.is_null());
+            }
+        }
+    }
+}

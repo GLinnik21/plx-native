@@ -49,6 +49,13 @@ details to Sentry in Germany. A report may include the signal, code addresses, t
 internal component labels, app and webOS versions, television model and hardware compatibility
 details needed to reproduce and symbolicate the failure.
 
+A native crash report may also contain the last 16 window diagnostic steps: entering or leaving
+background, querying the native window, and beginning or completing the first frame after return.
+These steps include technical timestamps, fixed labels, whether playback was active, whether display/surface handles were
+available, and SDL's version numbers. They contain no window addresses or viewing content.
+They are collected only while crash reporting is enabled and accompany a crash rather than being
+sent as usage events. Disabling crash reports removes the local trace.
+
 Every crash and error report carries a **Crash report ID**: a random identifier created on this
 television when you turn crash reports on, sent as the report's `user.id`. It exists so that
 repeated crashes under one Crash report ID are counted once rather than once each — Sentry's

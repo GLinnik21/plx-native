@@ -1045,6 +1045,7 @@ pub(crate) unsafe fn boot(
         fps_shown,
         play_prev,
         running,
+        window_activity: crate::system::WindowActivity::new(),
         #[cfg(feature = "devtools")]
         buffer_flip_count,
         down_sym,

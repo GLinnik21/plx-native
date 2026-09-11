@@ -237,6 +237,7 @@ pub(crate) struct App {
     fps_shown: i32,
     play_prev: Option<(i64, u32)>,
     running: bool,
+    window_activity: crate::system::WindowActivity,
     #[cfg(feature = "devtools")]
     buffer_flip_count: u8,
     /// The sym we believe is PHYSICALLY DOWN right now — set by a fresh key-down, cleared by its

@@ -270,16 +270,22 @@ pub(crate) unsafe fn run(app: &mut App) {
         // itself still spends ~99% of its time with the HUD auto-hidden, where the frame is
         // already 0 draw calls.
         //
-        // **The decision is taken ONCE and has TWO terms** (spec §3.3 step 8): the gate above,
-        // and whether the frame budget holds queued prepare work. The second term is what makes
+        // **The foreground demand is taken ONCE and has TWO terms** (spec §3.3 step 8): the
+        // gate above, and whether the frame budget holds queued prepare work. The second term is what makes
         // the upload step below legal on the presenting side of the decision — a texture waiting
         // to be uploaded is itself a reason to present, so nothing sits in the queue behind a
         // settled screen. It was inert before phase 11: nothing in the product ever published a
         // queue to the budget, so `has_queued_work()` was permanently false and the upload had to
         // run BEFORE the decision (and invalidate) to happen at all.
         crate::ui::tex::note_queued(&mut app.pages.budget);
-        fr.present = crate::ui::idle::should_present(fr.now) || app.pages.budget.has_queued_work();
+        // Lifecycle is a hard outer gate: even noidle, a bound plane or queued uploads must
+        // not reach EGL/Mali while SDL's window is backgrounded.
+        fr.present = app.window_activity.allow_present(
+            crate::ui::idle::should_present(fr.now) || app.pages.budget.has_queued_work());
         app.rec.present(fr.present);
+        if fr.present {
+            app.window_activity.begin_present(fr.player);
+        }
         // ---- step 9's UPLOAD, on the presenting side of the decision ---------------------
         //
         // The render cache's upload step under the frame budget (§3.3 step 9, §10: "a frame that
@@ -335,6 +341,7 @@ pub(crate) unsafe fn run(app: &mut App) {
             #[cfg(feature = "hostsim")]
             crate::shot::maybe_capture(_vx, _vy, _vw, _vh);
             SDL_GL_SwapWindow(app.win);
+            app.window_activity.presented(fr.player);
             // One increment, then nothing: re-ask EGL for the back buffer's AGE after real
             // presents have happened. The boot reading is 0 by construction. See `egl.rs`.
             crate::egl::late_probe();
@@ -443,6 +450,8 @@ fn ingest_text(app: &mut App, text: &str, panel: bool, source: crate::ui::machin
 /// One polled event. Shared by ordinary polling and ordered FIFO/replay ingestion.
 unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
     let et = rd_u32(&app.ev, 0);
+    app.window_activity.event(et);
+    crate::telemetry::window::lifecycle(et, matches!(app.route, Route::Player));
     // INPUT while a popover holds the page frozen is the POPOVER's: every invalidate
     // such an event raises — the one below, and whatever its handler adds — is
     // attributed to it, so the frozen host is not re-rendered on every key-up
@@ -532,6 +541,9 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         // Outside the player guard below on purpose: this is the OS taking the screen from
         // whatever is on it, not a fact about playback.
         app.pages.suspend();
+        // Revoke our borrowed SDL proxies before another frame can use them while backgrounded.
+        // SDL owns their lifetime; foreground must query its current window again.
+        crate::system::sys_release_wayland();
         if matches!(app.route, Route::Player) && !app.player.lifecycle.awaiting_load() {
             // INTENDED, not published: this snapshot is the only thing the foreground
             // restore has, and `suspend_bufferfeed` below drops the pending seek target
@@ -578,6 +590,9 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         // `Navigation::resume` is idempotent, so the pair is safe and a lost one is not.
         app.pages.resume();
         if et == 0x106 {
+            // Reacquire only on DID foreground, before playback restoration and rendering.
+            crate::system::sys_grab_wayland(app.win);
+            crate::ui::idle::invalidate();
             let activation = drive_foreground(
                 &mut app.player.lifecycle,
                 &mut app.player.session,
