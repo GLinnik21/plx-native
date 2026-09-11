@@ -2104,7 +2104,9 @@ pub(crate) fn detail_request_status(sid: crate::plex::ServerId, rk: &str) -> Opt
 #[cfg(test)]
 pub(crate) fn begin_detail_for_test(sid: crate::plex::ServerId, rk: &str) -> u32 {
     crate::testlock::assert_held("the detail store (begin_detail_for_test)");
-    begin_detail_request(sid, rk).0
+    let (gen, _, admission) = begin_detail_request(sid, rk);
+    admission.expect("synthetic detail request must have a reserved completion");
+    gen
 }
 
 #[cfg(test)]
@@ -2139,16 +2141,16 @@ fn supersede_detail() -> u32 {
 /// the worker (and from the tests, which is the point of it being a named function).
 fn land_detail(sid: crate::plex::ServerId, rk: &str, gen: u32, d: Option<Detail>) {
     let addr = detail_addr(gen);
-    if DETAIL_LANDING.put(addr, (sid, rk.to_string()), d).is_err() {
-        // the data lane is full: the NEWEST result is what goes (re-requestable), and the
-        // addressee still hears exactly one event for the request
-        DETAIL_LANDING.dropped(addr);
-    }
+    // Full has already queued one Dropped terminal. Unknown/duplicate results queue nothing;
+    // cancelled worker completions acknowledge only their own retained reservation.
+    let _ = DETAIL_LANDING.put(addr, (sid, rk.to_string()), d);
 }
 
 /// Mint the request: supersede the season, bump the generation, record what the page awaits
 /// and admit the request. The spawn is the caller's; a refused one is `refused` back.
-fn begin_detail_request(sid: crate::plex::ServerId, rk: &str) -> (u32, crate::ui::machine::Addr) {
+fn begin_detail_request(sid: crate::plex::ServerId, rk: &str) -> (
+    u32, crate::ui::machine::Addr, Result<(), crate::ui::landing::AdmissionError>,
+) {
     use std::sync::atomic::Ordering;
     // drop any season fetch in flight for the OLD item — its landing would patch the new one
     supersede_season();
@@ -2158,12 +2160,14 @@ fn begin_detail_request(sid: crate::plex::ServerId, rk: &str) -> (u32, crate::ui
     DETAIL_LANDING.clear();
     *DETAIL_WANT.lock().unwrap_or_else(|e| e.into_inner()) = Some((sid, rk.to_string()));
     let addr = detail_addr(gen);
-    if !DETAIL_LANDING.admit(addr) {
-        // beyond the admission cap: the refusal is on the control lane already and the pump
-        // settles the spinner off it
+    let admission = DETAIL_LANDING.admit(addr);
+    if admission.is_err() {
+        // Rejected admission owns no queued terminal: settle this new generation synchronously.
+        // clear() cancelled previous workers but kept their reservations until acknowledgement.
+        DETAIL_DONE.store(gen, Ordering::SeqCst);
         crate::log(&format!("detail: request rk={rk} REFUSED — {} in flight", DETAIL_LANDING.inflight(addr.to)));
     }
-    (gen, addr)
+    (gen, addr, admission)
 }
 
 /// MAIN THREAD, NON-BLOCKING. Supersedes any in-flight load and spawns the fetch; the result
@@ -2173,22 +2177,32 @@ fn begin_detail_request(sid: crate::plex::ServerId, rk: &str) -> (u32, crate::ui
 /// must not read the current server (see the fetch block's note), and the page being opened may
 /// belong to a machine that is not the current one at all.
 fn request_detail(sid: crate::plex::ServerId, rk: &str) {
-    let (gen, addr) = begin_detail_request(sid, rk);
-    if DETAIL_LANDING.inflight(addr.to) == 0 {
-        return; // admission refused it; the pump answers the Refused record
-    }
-    let rk = rk.to_string();
-    let spawned = crate::task::spawn_small("detail", move || {
-        // the landing is filled OUTSIDE the guard so a panicking fetch still lands (as None) —
-        // otherwise detail_loading() would report an in-flight fetch forever
-        let d = catch_unwind(|| fetch_full(sid, &rk)).unwrap_or(None);
-        land_detail(sid, &rk, gen, d);
+    request_detail_with_spawn(sid, rk, |gen| {
+        let rk = rk.to_string();
+        crate::task::spawn_small("detail", move || {
+            finish_detail_fetch(sid, &rk, gen, || fetch_full(sid, &rk));
+        })
     });
-    if !spawned {
+}
+
+/// Shared admission/spawn path; tests inject a spawn outcome without starting network workers.
+fn request_detail_with_spawn(sid: crate::plex::ServerId, rk: &str, spawn: impl FnOnce(u32) -> bool) {
+    let (gen, addr, admission) = begin_detail_request(sid, rk);
+    if admission.is_err() { return; }
+    if !spawn(gen) {
         // no worker means nothing will ever land on its own: the refusal record is what settles
         // the spinner (`pump_detail`), exactly one event for the request (§5.2)
-        DETAIL_LANDING.refused(addr);
+        let _ = DETAIL_LANDING.refused(addr);
     }
+}
+
+fn finish_detail_fetch(
+    sid: crate::plex::ServerId, rk: &str, gen: u32,
+    fetch: impl FnOnce() -> Option<Detail> + std::panic::UnwindSafe,
+) {
+    // Publish outside the catch so fetch failure/unwind still acknowledges this reservation.
+    let d = catch_unwind(fetch).unwrap_or(None);
+    land_detail(sid, rk, gen, d);
 }
 
 /// `stores::metadata`'s one door onto every [`MetadataCmd`](crate::stores::metadata::MetadataCmd)
@@ -2261,8 +2275,9 @@ pub(crate) fn pump_detail() -> bool {
         DETAIL_LANDING.take_for(
             &|_| true,
             &|k| match &want {
-                // the item the page awaits, by SERVER and key — a same-numbered item on another
-                // server is a different film (§5.2's identity rule)
+                // A wrong key is a discarded terminal; it cannot settle this item's spinner.
+                // A later valid success requires a NEW admitted request, never another terminal
+                // for the discarded Addr. Server identity is part of the key (§5.2).
                 Some((sid, rk)) => k.0 == *sid && k.1 == *rk,
                 None => true,
             },
@@ -3880,14 +3895,16 @@ mod tests {
         let _serial = crate::testlock::serial();
         // Other serialized tests may leave a request pending; serialization is not a reset.
         // Reproduce that predecessor deterministically rather than depend on suite ordering.
-        begin_detail_request(crate::plex::ServerId::UNSET, "previous-test-request");
+        let previous = begin_detail_for_test(crate::plex::ServerId::UNSET, "previous-test-request");
         clear();
+        // This synthetic worker is now finished; cancellation alone cannot release it.
+        land_detail(crate::plex::ServerId::UNSET, "previous-test-request", previous, None);
         // idle: nothing requested, nothing loading, nothing to pump
         assert!(!detail_loading(), "the isolated fixture is not loading anything");
         assert!(!pump_detail(), "an empty mailbox pumps nothing");
 
         // a request is in flight until its landing is pumped
-        let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        let gen = begin_detail_for_test(crate::plex::ServerId::UNSET, "movie-1");
         assert!(
             detail_loading(),
             "a bumped generation with DONE behind it reads as in flight"
@@ -3898,8 +3915,8 @@ mod tests {
         assert!(!detail_loading(), "pumping the landing settles the spinner");
 
         // SUPERSEDED: a second request means the first one's landing is stale and must be dropped
-        let old = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-        let new = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        let old = begin_detail_for_test(crate::plex::ServerId::UNSET, "stale-show");
+        let new = begin_detail_for_test(crate::plex::ServerId::UNSET, "fresh-show");
         landing(old, "stale-show");
         assert!(
             !pump_detail(),
@@ -3921,7 +3938,7 @@ mod tests {
         assert_eq!(cur_rk().as_deref(), Some("fresh-show"));
 
         // a FAILED fetch (None) settles the spinner but keeps the previously loaded item
-        let g = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        let g = begin_detail_for_test(crate::plex::ServerId::UNSET, "fresh-show");
         land_detail(crate::plex::ServerId::UNSET, "fresh-show", g, None);
         assert!(!pump_detail(), "a failed fetch reports no fresh item");
         assert_eq!(
@@ -3933,7 +3950,7 @@ mod tests {
 
         // CLOSING THE PAGE supersedes: a load requested on the way in must not repopulate
         // CURRENT behind whatever screen is mounted now.
-        let inflight = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        let inflight = begin_detail_for_test(crate::plex::ServerId::UNSET, "arrived-after-close");
         clear();
         assert!(!detail_loading(), "clear() settles the in-flight fetch");
         landing(inflight, "arrived-after-close");
@@ -3951,7 +3968,8 @@ mod tests {
         clear();
         let a = crate::plex::ServerId::from_raw(0);
         let b = crate::plex::ServerId::from_raw(1);
-        let (gen, addr) = begin_detail_request(a, "7");
+        let gen = begin_detail_for_test(a, "7");
+        let addr = detail_addr(gen);
         assert!(detail_loading());
         let before = DETAIL_LANDING.dropped_for(addr.to);
         land_detail(
@@ -3968,6 +3986,8 @@ mod tests {
         assert_eq!(cur_rk(), None);
         assert!(detail_loading(), "…and the page is still waiting for its own");
         assert_eq!(DETAIL_LANDING.dropped_for(addr.to), before + 1, "counted");
+        assert_eq!(DETAIL_LANDING.inflight(addr.to), 0, "wrong key is a discarded terminal");
+        let gen = begin_detail_for_test(a, "7");
         land_detail(
             a,
             "7",
@@ -3992,12 +4012,62 @@ mod tests {
         let _serial = crate::testlock::serial();
         clear();
         let a = crate::plex::ServerId::from_raw(0);
-        let (_gen, addr) = begin_detail_request(a, "9");
+        request_detail_with_spawn(a, "9", |_| false);
+        let addr = detail_addr(DETAIL_GEN.load(Ordering::SeqCst));
         assert!(detail_loading());
-        DETAIL_LANDING.refused(addr);
+        assert_eq!(DETAIL_LANDING.inflight(addr.to), 1, "OS refusal reserves its queued terminal");
         assert!(!pump_detail(), "no item arrived");
         assert!(!detail_loading(), "but the refusal settled the wait");
         assert_eq!(DETAIL_LANDING.inflight(addr.to), 0);
+        clear();
+    }
+
+    #[test]
+    fn rapid_detail_supersedes_bound_spawns_and_settle_capacity_refusal() {
+        let _serial = crate::testlock::serial();
+        clear();
+        let sid = crate::plex::ServerId::UNSET;
+        let mut workers = Vec::new();
+        for _ in 0..4 {
+            request_detail_with_spawn(sid, "old", |gen| { workers.push(gen); true });
+            assert!(detail_loading());
+        }
+        assert_eq!(workers.len(), 4);
+        request_detail_with_spawn(sid, "latest-refused", |_| panic!("refused admission must not spawn"));
+        assert!(!detail_loading(), "capacity refusal settles synchronously");
+        assert_eq!(detail_request_status(sid, "latest-refused"), Some(false));
+        assert_eq!(DETAIL_LANDING.inflight(detail_addr(0).to), 4);
+        assert!(DETAIL_LANDING.is_empty(), "no queued capacity refusal");
+        for gen in workers {
+            landing(gen, "old");
+            assert!(!pump_detail());
+            assert!(current().is_none(), "old completion must not install");
+            assert!(!detail_loading());
+        }
+        assert_eq!(DETAIL_LANDING.inflight(detail_addr(0).to), 0);
+        let mut next = None;
+        request_detail_with_spawn(sid, "fresh", |gen| { next = Some(gen); true });
+        assert!(detail_loading());
+        landing(next.unwrap(), "fresh");
+        assert!(pump_detail());
+        assert_eq!(cur_rk().as_deref(), Some("fresh"));
+        assert!(!detail_loading());
+        clear();
+    }
+
+    #[test]
+    fn a_panicking_detail_fetch_acknowledges_and_settles_its_request() {
+        let _serial = crate::testlock::serial();
+        clear();
+        let sid = crate::plex::ServerId::UNSET;
+        request_detail_with_spawn(sid, "panic", |gen| {
+            finish_detail_fetch(sid, "panic", gen, || panic!("synthetic fetch panic"));
+            true
+        });
+        assert!(detail_loading(), "terminal waits for pump");
+        assert!(!pump_detail());
+        assert!(!detail_loading());
+        assert_eq!(DETAIL_LANDING.inflight(detail_addr(0).to), 0);
         clear();
     }
 

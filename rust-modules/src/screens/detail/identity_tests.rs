@@ -179,6 +179,8 @@ fn retained_detail_back_keeps_the_engine_key_until_its_own_landing() {
     frame(&mut d, &mut rig, 64);
     assert_eq!(d.focus(), Some(key), "another item's notice cannot complete restoration");
     assert_eq!(crate::metadata::detail_request_status(ServerId::UNSET, "a"), Some(true));
+    // The wrong-key completion was discarded; retry under a fresh admitted address.
+    let request = crate::metadata::begin_detail_for_test(ServerId::UNSET, "a");
     assert!(crate::metadata::land_detail_for_test(ServerId::UNSET, "a", request, Some(item("a", true))));
     d.store_changed(StoreId::Metadata.ord(), 80);
     frame(&mut d, &mut rig, 80);

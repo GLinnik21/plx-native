@@ -89,15 +89,26 @@ about to establish. That fact is what decides §3 below.
    `Fx::Deliver(MachineId::Store(ord), Delivery::Machine(AppMsg::Store(cmd)))`, and `Rig::deliver`
    steps the store. A migrated screen emits the effect; a legacy screen calls the shim. Both end in
    the same `step`.
-4. **`Landing` is complete** (spec §5.2): per-addressee admission (`inflight_cap`), `Refused` and
-   `Dropped` on the control lane, per-landing drop counters, and the four §15.1 tests
-   (`the_landing_cap_drops_the_newest_and_hashes_the_count`,
-   `a_full_landing_replies_dropped_and_retires_inflight`, `a_refused_spawn_lands_a_refusal_event`,
-   `a_same_rating_key_on_a_different_server_is_skipped`).
+4. **`Landing` reserves one terminal per exact admitted address** (spec §5.2, R2Q1 clarification).
+   Both a per-addressee cap and a total cap bound running requests plus undrained terminals.
+   `admit` returns typed `Duplicate` or `Capacity`; the requester handles rejection synchronously,
+   without spawning or queueing a refusal. Unlimited rejected attempts cannot have a bounded
+   queued answer each. OS spawn refusal AFTER admission remains a reserved `Refused` terminal.
+   A full data lane atomically queues one `Dropped` terminal in arrival order; duplicate/unknown
+   publications cannot complete a second request. `clear` discards queued terminals but only
+   cancels running reservations: their workers queue sequenced, payload-free acknowledgements;
+   reservations retire and cancellation drops are counted when the main thread drains or clears
+   those terminals, which are never delivered to the addressee.
+   Metadata propagates the admission outcome directly and settles a rejected new generation's
+   spinner immediately. Drop counters include discarded terminals per canonical MachineId;
+   full queued-payload hashing and explicit progress/terminal streams remain separate work.
 5. **The detail mailbox carries identity.** `metadata`'s one-slot `DETAIL_SLOT` becomes a
    `Landing` keyed on `(ServerId, ratingKey)`: a landing for a different server's item of the same
    number is skipped rather than installed, which is the gap the spec's evidence line names
    (`DetailResult` at metadata.rs:2021 carried no `(sid, rk)`).
+   A wrong-key result is a discarded terminal: it releases its reservation but does not settle
+   the awaited item's spinner. A subsequent valid success must belong to a newly admitted
+   request; a second terminal for the discarded address is ignored.
 6. **A store's step is O(result size).** `browse` sized a section's item vector to the listing's
    `totalSize` on the main thread when the first page landed — `Vec<Option<PmsMovie>>` of every
    item in the library, allocated in the drain. The store is chunked by PAGE now (`SecItems`): the
