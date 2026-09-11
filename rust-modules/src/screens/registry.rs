@@ -35,6 +35,7 @@ use crate::ui::screen::{Mounter, ReturnState, Screen};
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub(crate) enum AppFx {
     Session(crate::auth::SessionCmd),
+    SessionEffect(crate::auth::owner::SessionFx),
     /// A store command, executed as a `Deliver` to the store machine in the same drain.
     Store(StoreId, StoreCmd),
     /// Poll only the store work this visible route owns, after its read-only step returns.
@@ -843,6 +844,9 @@ pub(crate) trait AuthLike: AppLike + Sized {
 
 /// The application's messages (spec §3.1).
 pub(crate) enum AppMsg {
+    Session(crate::auth::owner::SessionEvent),
+    RestartReply { correlation: u32, accepted: bool },
+    BackReply { correlation: u32, resumed: bool },
     Store(StoreCmd),
     StoreWork(StoreWork),
     HubsResult(crate::stores::hubs::HubsResult),

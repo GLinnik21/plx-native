@@ -26,25 +26,49 @@ use std::sync::Mutex;
 
 /// The signed-in profile, in-memory for the UI (the Home profile chip reads this). Set by the boot
 /// gate (from the stored session) and on every profile switch, so it survives an offline boot.
-static CURRENT: Mutex<Option<UserRef>> = Mutex::new(None);
-/// Bumped on every [`set_current`]; per-frame readers (the Home profile chip) snapshot by
-/// generation instead of re-cloning the UserRef every frame.
-static CURRENT_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static CURRENT: Mutex<Option<std::sync::Arc<CurrentProfile>>> = Mutex::new(None);
+
+/// Immutable worker publication. Identity and its explicit owner-assigned generation are one
+/// record, so a reader that needs both can retain one snapshot across subsequent publications.
+pub(crate) struct CurrentProfile {
+    pub user: Option<UserRef>,
+    pub generation: u32,
+}
+
+pub(crate) fn current_snapshot() -> std::sync::Arc<CurrentProfile> {
+    CURRENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().cloned()
+        .unwrap_or_else(|| std::sync::Arc::new(CurrentProfile { user: None, generation: 0 }))
+}
+
+/// Resource-side capability; constructing it borrows, but does not duplicate or retain, the
+/// engine's MainThread token. The Session adapter holds it and supplies the owner's generation.
+pub(crate) struct ProfilePublisher {
+    _main_thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl ProfilePublisher {
+    pub(crate) fn new(_mt: &crate::task::MainThread) -> Self {
+        Self { _main_thread: std::marker::PhantomData }
+    }
+    pub(crate) fn publish(&mut self, user: Option<UserRef>, generation: u32) {
+        *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(std::sync::Arc::new(CurrentProfile { user, generation }));
+    }
+}
 
 /// Install the active profile for the UI (or clear it on sign-out with `None`).
 pub fn set_current(u: Option<UserRef>) {
-    if let Ok(mut g) = CURRENT.lock() {
-        *g = u;
-    }
-    CURRENT_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut current = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
+    let generation = current.as_ref().map_or(0, |snapshot| snapshot.generation).wrapping_add(1);
+    *current = Some(std::sync::Arc::new(CurrentProfile { user: u, generation }));
 }
 /// The active profile (name + avatar), if any. Empty title = the owner with no Plex Home selection.
 pub fn current() -> Option<UserRef> {
-    CURRENT.lock().ok().and_then(|g| g.clone())
+    current_snapshot().user.clone()
 }
 /// The profile generation (see [`set_current`]).
 pub fn current_gen() -> u32 {
-    CURRENT_GEN.load(std::sync::atomic::Ordering::Relaxed)
+    current_snapshot().generation
 }
 
 /// Session file locations, best first — see [`crate::paths::session_candidates`] for why this is a

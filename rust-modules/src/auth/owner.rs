@@ -4,9 +4,47 @@
 use super::{Phase, Picker, UserTile};
 use crate::plex::session::{Session as PersistedSession, UserRef};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use crate::ui::machine::{Addr, Canon, LogicalState, MachineId};
+
+pub(crate) const SESSION_DATA_RECORDS: usize = 64;
+pub(crate) const SESSION_OWNER_RESERVATIONS: u32 = 32;
+pub(crate) const SESSION_TOTAL_RESERVATIONS: u32 = 32;
+pub(crate) const SESSION_TRANSFER_RECORDS: usize = SESSION_DATA_RECORDS + SESSION_TOTAL_RESERVATIONS as usize;
+
+/// A credit for one distinct transferred record, not a worker-completion acknowledgement.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Receipt {
+    pub arrival: u64,
+    #[serde(with = "super::observation::address")]
+    pub addr: Addr,
+    pub key: SessionWorkKey,
+}
+
+impl Receipt {
+    pub fn of(envelope: &SessionEnvelope) -> Self {
+        Self { arrival: envelope.arrival, addr: envelope.addr, key: envelope.key }
+    }
+    fn write(&self, w: &mut Canon) {
+        self.addr.to.write_canon(w);
+        w.u32(self.addr.req.0).u64(self.arrival).u64(self.key.epoch);
+        write_op(w, self.key.op);
+    }
+}
+
+fn write_op(w: &mut Canon, op: SessionOp) {
+    match op {
+        SessionOp::Login => { w.u8(0); }
+        SessionOp::Rediscover => { w.u8(1); }
+        SessionOp::HomeRoster => { w.u8(2); }
+        SessionOp::ServerRoster => { w.u8(3); }
+        SessionOp::ProfileSwitch => { w.u8(4); }
+        SessionOp::Endpoint(sid) => { w.u8(5).u32(u32::from(sid)); }
+        SessionOp::Ready => { w.u8(6); }
+        SessionOp::Picker => { w.u8(7); }
+    }
+}
 
 /// Delivery keeps the exact request even though generic non-instance delivery drops its outer
 /// request field. The application verifies the outer address before constructing this event.
@@ -15,6 +53,7 @@ pub(crate) struct SessionEnvelope {
     #[serde(with = "super::observation::address")]
     pub addr: Addr,
     pub key: SessionWorkKey,
+    pub admission: AdmissionId,
     pub arrival: u64,
     pub terminal: bool,
     pub lifecycle: Option<ServerLifecycle>,
@@ -26,6 +65,21 @@ pub(crate) enum SessionArrival {
     Data(#[serde(with = "super::observation::arc")] Arc<super::observation::Observation>),
     Refused,
     Dropped,
+}
+
+impl SessionEnvelope {
+    fn write(&self, w: &mut Canon) {
+        Receipt::of(self).write(w);
+        w.u32(self.admission.0).bool(self.terminal);
+        w.option(self.lifecycle, |w, life| {
+            w.u32(u32::from(life.sid)).u32(life.instance_gen).u32(life.token_gen);
+        });
+        match &self.outcome {
+            SessionArrival::Data(data) => { w.u8(0); data.write(w); }
+            SessionArrival::Refused => { w.u8(1); }
+            SessionArrival::Dropped => { w.u8(2); }
+        }
+    }
 }
 
 /// Resource-side producer contract. Auth workers name this domain trait, never app/ or a
@@ -51,6 +105,7 @@ pub(crate) enum SessionWork {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ProfilePublication {
+    pub epoch: u64,
     pub profile: Option<UserRef>,
     pub scope: ProfileScope,
 }
@@ -97,10 +152,6 @@ pub(crate) enum CoordinatorAction {
     SignInCompleted,
     SignInCancelled,
     SignInFailed { phase: Phase },
-    ActivateProfile,
-    ShowLogin,
-    ShowProfiles,
-    ShowHome,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -142,6 +193,7 @@ pub(crate) struct PendingCommit {
     pub arrival: u64,
     pub terminal: bool,
     pub writes_credentials: bool,
+    pub receipt: Option<Receipt>,
     pub delta: CommitDelta,
 }
 
@@ -204,18 +256,38 @@ pub(crate) struct SessionReadReply {
     pub value: SessionReadValue,
 }
 
+/// One launch per checked request. The explicit result state distinguishes "accepted, no
+/// observations yet" from a never-admitted request; an arrival watermark cannot do that.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AdmissionId(pub u32);
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum AdmissionState {
+    NotRequested,
+    Awaiting(AdmissionId),
+    Accepted(AdmissionId),
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct AdmissionReply {
+    #[serde(with = "super::observation::address")]
+    pub addr: Addr,
+    pub key: SessionWorkKey,
+    pub correlation: AdmissionId,
+    pub accepted: bool,
+}
+
 /// Every variant is data. Closures, native Clients and MainThread cannot enter logical effects.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum SessionFx {
     Commit { req: u32, epoch: u64, arrival: u64, plan: CommitPlan },
-    Defer(SessionEnvelope),
+    Pump,
+    Acknowledge(Vec<Receipt>),
     Retire { req: u32 },
     Ready { epoch: u64, scope: ProfileScope, server: crate::plex::session::ServerRef, token: String },
     Capture { req: u32, epoch: u64, request: SessionReadRequest },
-    Work { req: u32, key: SessionWorkKey, input: SessionWork },
+    Work { req: u32, key: SessionWorkKey, admission: AdmissionId, input: SessionWork },
     Cancel { requests: Vec<u32>, epoch: u64 },
-    Credentials { req: u32, epoch: u64, expected: Identity, patch: CredentialPatch },
-    Registry { req: u32, epoch: u64, plan: RegistryPlan },
     PublishProfile(ProfilePublication),
     Erase { req: u32, epoch: u64 },
     Coordinator(CoordinatorAction),
@@ -232,6 +304,8 @@ pub(crate) enum SessionEvent {
     Result(SessionEnvelope),
     Commit(CommitReply),
     Read(SessionReadReply),
+    Pump,
+    Admission(AdmissionReply),
 }
 
 impl CredentialPatch {
@@ -297,6 +371,7 @@ pub(crate) struct Pending {
     pub last_arrival: Option<u64>,
     pub phase: StreamPhase,
     pub capture: Option<CaptureIntent>,
+    pub admission: AdmissionState,
 }
 
 /// Only the owner may allocate this generation; adapters publish the supplied value verbatim.
@@ -327,6 +402,10 @@ pub(crate) struct SessionInit {
     pub next_req: u32,
     pub pending: BTreeMap<u32, Pending>,
     pub pending_commit: Option<PendingCommit>,
+    pub inbox: VecDeque<SessionEnvelope>,
+    /// Covers both the queued Fx::Pump and its eventual typed delivery. Cancellation does not
+    /// forget a marker already in the dispatcher; it can safely pump a newer current inbox.
+    pub pump_pending: bool,
     pub active_profile: Option<UserRef>,
     pub profile_scope: ProfileScope,
     pub delete_leftovers: usize,
@@ -339,28 +418,42 @@ impl SessionInit {
             pin_code: String::new(), qr_png: Vec::new(), users: Vec::new(), error: String::new(),
             pin_denied: false, authorized_in_flow: false, signin_active: false, apply_pending: false,
             code_replaced: false, qr_gen: 0, next_qr: 0, epoch: 1, next_req: 0,
-            pending: BTreeMap::new(), pending_commit: None, active_profile: None, profile_scope: ProfileScope(0),
+            pending: BTreeMap::new(), pending_commit: None, inbox: VecDeque::new(), pump_pending: false,
+            active_profile: None, profile_scope: ProfileScope(0),
             delete_leftovers: 0 }
     }
 }
 
-fn write_user(w: &mut Canon, user: &UserRef) {
+pub(super) fn write_user(w: &mut Canon, user: &UserRef) {
     w.u64(user.id as u64).str(&user.uuid).str(&user.title).str(&user.thumb).str(&user.token);
 }
 
-fn write_server(w: &mut Canon, server: &crate::plex::session::ServerRef) {
+pub(super) fn write_tile(w: &mut Canon, user: &UserTile) {
+    w.u64(user.id as u64).str(&user.uuid).str(&user.title).str(&user.thumb)
+        .bool(user.protected).bool(user.admin);
+}
+
+pub(super) fn write_profile(w: &mut Canon, profile: &crate::plex::session::ProfileCreds) {
+    w.str(&profile.uuid);
+    write_user(w, &profile.user);
+    write_server(w, &profile.server);
+    write_sources(w, &profile.sources);
+    w.option(profile.pin.as_ref(), |w, pin| { w.str(&pin.salt).str(&pin.hash).u32(pin.iters); });
+}
+
+pub(super) fn write_server(w: &mut Canon, server: &crate::plex::session::ServerRef) {
     w.str(&server.name).str(&server.machine_id).str(&server.address)
         .u64(server.port as u64).str(&server.token).str(&server.origin_url);
     write_tier(w, server.tier);
 }
 
-fn write_tier(w: &mut Canon, tier: Option<crate::plex::probe::Location>) {
+pub(super) fn write_tier(w: &mut Canon, tier: Option<crate::plex::probe::Location>) {
     use crate::plex::probe::Location;
     w.u8(match tier { None => 0, Some(Location::Local) => 1,
         Some(Location::Remote) => 2, Some(Location::Relay) => 3 });
 }
 
-fn write_sources(w: &mut Canon, sources: &[crate::plex::session::SourceRef]) {
+pub(super) fn write_sources(w: &mut Canon, sources: &[crate::plex::session::SourceRef]) {
     w.seq(sources.len());
     for s in sources {
         w.str(&s.machine_id).str(&s.name).str(&s.shared_by).bool(s.owned)
@@ -370,7 +463,7 @@ fn write_sources(w: &mut Canon, sources: &[crate::plex::session::SourceRef]) {
 }
 
 /// Explicit field encoding. Serde is only the private init round-trip, never the state hash.
-fn write_persisted(w: &mut Canon, s: &PersistedSession) {
+pub(super) fn write_persisted(w: &mut Canon, s: &PersistedSession) {
     w.str(&s.client_id).str(&s.account_token);
     write_server(w, &s.server);
     write_user(w, &s.user);
@@ -381,13 +474,7 @@ fn write_persisted(w: &mut Canon, s: &PersistedSession) {
             .bool(user.protected).bool(user.admin);
     }
     w.seq(s.profiles.len());
-    for profile in &s.profiles {
-        w.str(&profile.uuid);
-        write_user(w, &profile.user);
-        write_server(w, &profile.server);
-        write_sources(w, &profile.sources);
-        w.option(profile.pin.as_ref(), |w, pin| { w.str(&pin.salt).str(&pin.hash).u32(pin.iters); });
-    }
+    for profile in &s.profiles { write_profile(w, profile); }
     // Preferences are captured input retained by the controller, not authority for disk writes.
     // Include their exact captured values in init/canonical state even though patches never write
     // them over a newer store-owned value.
@@ -443,22 +530,18 @@ impl LogicalState for SessionInit {
         w.seq(self.pending.len());
         for (&req, pending) in &self.pending {
             w.u32(req).u64(pending.key.epoch);
-            match pending.key.op {
-                SessionOp::Login => { w.u8(0); }
-                SessionOp::Rediscover => { w.u8(1); }
-                SessionOp::HomeRoster => { w.u8(2); }
-                SessionOp::ServerRoster => { w.u8(3); }
-                SessionOp::ProfileSwitch => { w.u8(4); }
-                SessionOp::Endpoint(sid) => { w.u8(5).u32(sid as u32); }
-                SessionOp::Ready => { w.u8(6); }
-                SessionOp::Picker => { w.u8(7); }
-            }
+            write_op(w, pending.key.op);
             w.str(&pending.expected.client_id).str(&pending.expected.account_token)
                 .str(&pending.expected.profile_uuid);
             w.option(pending.lifecycle, |w, life| { w.u32(life.sid as u32)
                 .u32(life.instance_gen).u32(life.token_gen); });
             w.option(pending.last_arrival, |w, arrival| { w.u64(arrival); });
             w.u8(match pending.phase { StreamPhase::Running => 0, StreamPhase::ProfileSeated => 1 });
+            match pending.admission {
+                AdmissionState::NotRequested => { w.u8(0); }
+                AdmissionState::Awaiting(id) => { w.u8(1).u32(id.0); }
+                AdmissionState::Accepted(id) => { w.u8(2).u32(id.0); }
+            }
             w.option(pending.capture.as_ref(), |w, capture| match capture {
                 CaptureIntent::Login => { w.u8(0); }
                 CaptureIntent::Profile { tile, pin } => {
@@ -472,6 +555,7 @@ impl LogicalState for SessionInit {
         w.option(self.pending_commit.as_ref(), |w, commit| {
             w.u32(commit.req).u64(commit.epoch).u64(commit.arrival).bool(commit.terminal)
                 .bool(commit.writes_credentials);
+            w.option(commit.receipt.as_ref(), |w, receipt| receipt.write(w));
             let delta = &commit.delta;
             w.option(delta.credentials.as_ref(), |w, patch| {
                 write_persisted(w, &patch.merge_into(&PersistedSession::default()));
@@ -495,6 +579,8 @@ impl LogicalState for SessionInit {
                 .bool(delta.profile_seated);
             w.option(delta.ready, |w, ready| { w.bool(ready); });
         });
+        w.bool(self.pump_pending).seq(self.inbox.len());
+        for envelope in &self.inbox { envelope.write(w); }
     }
     fn probe(&self, out: &mut String) {
         use std::fmt::Write;
@@ -550,16 +636,56 @@ impl SessionSnapshot {
 pub(crate) struct SessionMachine {
     state: SessionInit,
     publication: Arc<SessionSnapshot>,
+    subhash: u64,
+    logical_dirty: bool,
 }
 
 impl SessionMachine {
     pub fn from_init(state: SessionInit) -> Self {
+        assert!(state.inbox.len() + usize::from(state.pending_commit.as_ref().is_some_and(|c| c.receipt.is_some()))
+            <= SESSION_TRANSFER_RECORDS, "invalid Session transfer state");
+        let mut canon = Canon::new();
+        state.write(&mut canon);
+        let subhash = canon.finish();
         let publication = Arc::new(SessionSnapshot::from_state(&state));
-        Self { state, publication }
+        Self { state, publication, subhash, logical_dirty: true }
     }
     pub fn snapshot_init(&self) -> SessionInit { self.state.clone() }
     pub fn read(&self) -> SessionRead<'_> { self.publication.read() }
     pub fn publication(&self) -> Arc<SessionSnapshot> { Arc::clone(&self.publication) }
+    pub fn subhash(&self) -> u64 { self.subhash }
+    pub fn take_logical_dirty(&mut self) -> bool { std::mem::take(&mut self.logical_dirty) }
+
+    fn refresh_subhash(&mut self) {
+        let mut canon = Canon::new();
+        self.state.write(&mut canon);
+        let next = canon.finish();
+        if next != self.subhash {
+            self.subhash = next;
+            self.logical_dirty = true;
+        }
+    }
+
+    pub fn ready_is_current(&self, epoch: u64, scope: ProfileScope) -> bool {
+        self.state.epoch == epoch && self.state.profile_scope == scope
+            && self.state.phase == Phase::Ready && !self.state.apply_pending
+    }
+
+    pub fn publication_is_current(&self, publication: &ProfilePublication) -> bool {
+        publication.epoch == self.state.epoch && publication.scope == self.state.profile_scope
+    }
+
+    pub fn read_is_current(&self, req: u32, epoch: u64, request: SessionReadRequest) -> bool {
+        if epoch != self.state.epoch { return false; }
+        let Some(pending) = self.state.pending.get(&req) else { return false };
+        if pending.key.epoch != epoch || !pending.expected.matches(&self.state.persisted) { return false; }
+        match (&pending.capture, request) {
+            (Some(CaptureIntent::Login), SessionReadRequest::LoginClientId)
+            | (Some(CaptureIntent::Profile { .. }), SessionReadRequest::ProfilePolicy) => true,
+            (Some(CaptureIntent::Endpoint { sid: a }), SessionReadRequest::Endpoint { sid: b }) => *a == b,
+            _ => false,
+        }
+    }
 
     /// Read-only authorization at effect execution, after any carried cancellation command.
     /// The Bridge borrows this owner while the adapter performs the synchronous commit; no
@@ -585,7 +711,7 @@ impl SessionMachine {
         pending.last_arrival = Some(arrival);
         let epoch = pending.key.epoch;
         self.state.pending_commit = Some(PendingCommit { req, epoch, arrival, terminal,
-            writes_credentials: plan.credentials.is_some(), delta });
+            writes_credentials: plan.credentials.is_some(), receipt: None, delta });
         emit(SessionFx::Commit { req, epoch, arrival, plan });
         true
     }
@@ -628,6 +754,8 @@ impl SessionMachine {
                 SessionOp::HomeRoster | SessionOp::ServerRoster | SessionOp::Endpoint(_) | SessionOp::Picker => {}
             }
             emit(SessionFx::Retire { req: reply.req });
+            if let Some(receipt) = commit.receipt { emit(SessionFx::Acknowledge(vec![receipt])); }
+            self.schedule_pump(emit);
             self.replace_publication();
             return true;
         }
@@ -650,18 +778,13 @@ impl SessionMachine {
             let pending = self.state.pending.get_mut(&reply.req).unwrap();
             pending.expected = Identity::of(&self.state.persisted);
             pending.phase = StreamPhase::ProfileSeated;
+            self.cancel_obsolete_interests(reply.req, emit);
         }
         if delta.complete_signin && std::mem::take(&mut self.state.signin_active) {
             emit(SessionFx::Coordinator(CoordinatorAction::SignInCompleted));
         }
         if delta.activate_profile {
-            // Preserve the publication counter's existing u32 wrapping semantics; this is now
-            // its sole decision writer rather than an independent atomic fetch_add publisher.
-            self.state.profile_scope.0 = self.state.profile_scope.0.wrapping_add(1);
-            self.state.active_profile = Some(self.state.persisted.user.clone());
-            emit(SessionFx::PublishProfile(ProfilePublication {
-                profile: self.state.active_profile.clone(), scope: self.state.profile_scope,
-            }));
+            self.publish_profile(Some(self.state.persisted.user.clone()), emit);
             emit(SessionFx::Ready { epoch: self.state.epoch, scope: self.state.profile_scope,
                 server: self.state.persisted.server.clone(), token: self.state.persisted.pms_token().into() });
         }
@@ -669,6 +792,8 @@ impl SessionMachine {
             self.state.pending.remove(&reply.req);
             emit(SessionFx::Retire { req: reply.req });
         }
+        if let Some(receipt) = commit.receipt { emit(SessionFx::Acknowledge(vec![receipt])); }
+        self.schedule_pump(emit);
         self.replace_publication();
         true
     }
@@ -678,30 +803,147 @@ impl SessionMachine {
         emit(SessionFx::Retire { req });
     }
 
+    fn emit_work(&mut self, req: u32, input: SessionWork, emit: &mut impl FnMut(SessionFx)) {
+        let pending = self.state.pending.get_mut(&req).expect("owned work request");
+        let admission = AdmissionId(req);
+        pending.admission = AdmissionState::Awaiting(admission);
+        emit(SessionFx::Work { req, key: pending.key, admission, input });
+    }
+
+    pub fn work_is_current(&self, req: u32, key: SessionWorkKey, admission: AdmissionId) -> bool {
+        key.epoch == self.state.epoch && self.state.pending.get(&req).is_some_and(|pending|
+            pending.key == key && pending.capture.is_none()
+                && pending.admission == AdmissionState::Awaiting(admission)
+                && pending.expected.matches(&self.state.persisted))
+    }
+
+    fn apply_admission(&mut self, reply: AdmissionReply, emit: &mut impl FnMut(SessionFx)) -> bool {
+        if reply.addr.to != MachineId::Session || reply.key.epoch != self.state.epoch { return false; }
+        let req = reply.addr.req.0;
+        let Some(pending) = self.state.pending.get_mut(&req) else { return false };
+        if pending.key != reply.key || pending.admission != AdmissionState::Awaiting(reply.correlation) { return false; }
+        if reply.accepted {
+            pending.admission = AdmissionState::Accepted(reply.correlation);
+        } else {
+            // This is an unsequenced, never-admitted refusal. Accepted requests (including ones
+            // without a first observation) cannot enter this branch.
+            match pending.key.op {
+                SessionOp::Login => self.fail_login("Couldn't start sign-in. Try again.", emit),
+                SessionOp::Rediscover => self.fail_login("Couldn't restart server discovery. Try again.", emit),
+                SessionOp::ProfileSwitch => {
+                    self.state.phase = Phase::Profiles;
+                    self.state.error = "Couldn't switch profile. Try again.".into();
+                }
+                _ => {}
+            }
+            self.retire(req, emit);
+            self.replace_publication();
+        }
+        self.schedule_pump(emit);
+        true
+    }
+
     fn advance_epoch(&mut self, emit: &mut impl FnMut(SessionFx)) -> Option<u64> {
         let epoch = self.state.epoch.checked_add(1)?;
         let requests = self.state.pending.keys().copied().collect();
+        self.discard_owned_envelopes(emit);
         self.state.pending.clear();
-        self.state.pending_commit = None;
         self.state.epoch = epoch;
         emit(SessionFx::Cancel { requests, epoch });
         Some(epoch)
     }
 
+    fn owns_receipt(&self, receipt: Receipt) -> bool {
+        self.state.inbox.iter().any(|record| Receipt::of(record) == receipt)
+            || self.state.pending_commit.as_ref().and_then(|commit| commit.receipt) == Some(receipt)
+    }
+
+    fn schedule_pump(&mut self, emit: &mut impl FnMut(SessionFx)) {
+        if !self.state.inbox.is_empty() && self.state.pending_commit.is_none() && !self.state.pump_pending {
+            self.state.pump_pending = true;
+            emit(SessionFx::Pump);
+        }
+    }
+
+    fn discard_owned_envelopes(&mut self, emit: &mut impl FnMut(SessionFx)) {
+        let mut receipts: Vec<_> = self.state.inbox.drain(..).map(|record| Receipt::of(&record)).collect();
+        if let Some(receipt) = self.state.pending_commit.take().and_then(|commit| commit.receipt) {
+            receipts.push(receipt);
+        }
+        // Keep pump_pending: the marker may still be an App effect or a carried typed event.
+        // Carried envelope receipts are not ours yet and therefore are NOT acknowledged here.
+        if !receipts.is_empty() { emit(SessionFx::Acknowledge(receipts)); }
+    }
+
+    fn ingest(&mut self, envelope: &SessionEnvelope, emit: &mut impl FnMut(SessionFx)) -> bool {
+        let receipt = Receipt::of(envelope);
+        if self.owns_receipt(receipt) { return true; }
+        if !self.accepts_header(envelope) {
+            emit(SessionFx::Acknowledge(vec![receipt]));
+            return true;
+        }
+        // The adapter admits only receipt-bearing records from an accepted resource. This can
+        // also confirm acceptance if its small admission reply is still carried in the queue.
+        self.state.pending.get_mut(&envelope.addr.req.0).unwrap().admission = AdmissionState::Accepted(envelope.admission);
+        let active = usize::from(self.state.pending_commit.as_ref().is_some_and(|commit| commit.receipt.is_some()));
+        assert!(self.state.inbox.len() + active < SESSION_TRANSFER_RECORDS, "Session transfer credit invariant");
+        // Do not advance last_arrival here: that is the processing watermark, not receipt
+        // admission. Advancing it would make the FIFO head reject its own first delivery.
+        self.state.inbox.push_back(envelope.clone());
+        if self.state.pending_commit.is_none() && !self.state.pump_pending { self.pump_one(emit); }
+        true
+    }
+
+    fn pump_one(&mut self, emit: &mut impl FnMut(SessionFx)) {
+        if self.state.pending_commit.is_some() { return; }
+        let Some(envelope) = self.state.inbox.pop_front() else { return };
+        let receipt = Receipt::of(&envelope);
+        if self.accepts(&envelope) {
+            if !self.apply_qr_observation(&envelope, emit) {
+                self.apply_resource_observation(&envelope, emit);
+            }
+        }
+        if let Some(commit) = &mut self.state.pending_commit {
+            assert!(commit.req == receipt.addr.req.0 && commit.epoch == receipt.key.epoch
+                && commit.arrival == receipt.arrival, "Session commit receipt mismatch");
+            commit.receipt = Some(receipt);
+        } else {
+            emit(SessionFx::Acknowledge(vec![receipt]));
+        }
+        self.schedule_pump(emit);
+    }
+
     fn publish_profile(&mut self, profile: Option<UserRef>, emit: &mut impl FnMut(SessionFx)) {
+        // This is the sole scope allocator. Resource publication will store this explicit value
+        // rather than independently incrementing another generation.
         self.state.profile_scope.0 = self.state.profile_scope.0.wrapping_add(1);
         self.state.active_profile = profile;
         emit(SessionFx::PublishProfile(ProfilePublication {
-            profile: self.state.active_profile.clone(), scope: self.state.profile_scope,
+            epoch: self.state.epoch, profile: self.state.active_profile.clone(), scope: self.state.profile_scope,
         }));
+    }
+
+    fn cancel_obsolete_interests(&mut self, retained: u32, emit: &mut impl FnMut(SessionFx)) {
+        let requests: Vec<_> = self.state.pending.iter().filter_map(|(&req, pending)|
+            (req != retained && !pending.expected.matches(&self.state.persisted)).then_some(req)).collect();
+        if requests.is_empty() { return; }
+        for req in &requests { self.state.pending.remove(req); }
+        let mut receipts = Vec::new();
+        self.state.inbox.retain(|record| {
+            if requests.contains(&record.addr.req.0) {
+                receipts.push(Receipt::of(record));
+                false
+            } else { true }
+        });
+        emit(SessionFx::Cancel { requests, epoch: self.state.epoch });
+        if !receipts.is_empty() { emit(SessionFx::Acknowledge(receipts)); }
     }
 
     fn refresh_roster(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool {
         if self.state.persisted.account_token.is_empty() { return false; }
         let Some(req) = self.allocate(SessionOp::ServerRoster, None) else { return false };
-        emit(SessionFx::Work { req, key: self.state.pending[&req].key,
-            input: SessionWork::ServerRoster { session: self.state.persisted.clone(),
-                expected: Identity::of(&self.state.persisted) } });
+        self.emit_work(req, SessionWork::ServerRoster { session: self.state.persisted.clone(),
+            expected: Identity::of(&self.state.persisted) }, emit);
         true
     }
 
@@ -729,10 +971,9 @@ impl SessionMachine {
         }
         self.refresh_roster(emit);
         if let Some(req) = self.allocate(SessionOp::HomeRoster, None) {
-            emit(SessionFx::Work { req, key: self.state.pending[&req].key,
-                input: SessionWork::HomeRoster { client_id: self.state.persisted.client_id.clone(),
-                    account_token: self.state.persisted.account_token.clone(),
-                    expected: Identity::of(&self.state.persisted) } });
+            self.emit_work(req, SessionWork::HomeRoster { client_id: self.state.persisted.client_id.clone(),
+                account_token: self.state.persisted.account_token.clone(),
+                expected: Identity::of(&self.state.persisted) }, emit);
         }
         self.replace_publication();
         true
@@ -860,7 +1101,7 @@ impl SessionMachine {
         };
         let pending = self.state.pending.get_mut(&req).unwrap();
         pending.capture = None;
-        emit(SessionFx::Work { req, key: pending.key, input });
+        self.emit_work(req, input, emit);
         true
     }
 
@@ -1028,8 +1269,8 @@ impl SessionMachine {
             self.state.authorized_in_flow) == super::RetryKind::Discovery;
         let fresh_attempt = fresh_login || super::restart_is_a_new_attempt(self.state.signin_active);
         let requests = self.state.pending.keys().copied().collect();
+        self.discard_owned_envelopes(emit);
         self.state.pending.clear();
-        self.state.pending_commit = None;
         self.state.epoch = epoch;
         emit(SessionFx::Cancel { requests, epoch });
         if discovery {
@@ -1061,7 +1302,7 @@ impl SessionMachine {
             self.state.pending.get_mut(&req).unwrap().capture = Some(CaptureIntent::Login);
             emit(SessionFx::Capture { req, epoch, request: SessionReadRequest::LoginClientId });
         } else {
-            emit(SessionFx::Work { req, key: SessionWorkKey { epoch, op }, input });
+            self.emit_work(req, input, emit);
         }
         self.replace_publication();
         true
@@ -1159,7 +1400,7 @@ impl SessionMachine {
         self.state.pending.insert(req, Pending {
             key: SessionWorkKey { epoch: self.state.epoch, op },
             expected: Identity::of(&self.state.persisted), lifecycle,
-            last_arrival: None, phase: StreamPhase::Running, capture: None,
+            last_arrival: None, phase: StreamPhase::Running, capture: None, admission: AdmissionState::NotRequested,
         });
         Some(req)
     }
@@ -1171,6 +1412,7 @@ impl SessionMachine {
         let Some(pending) = self.state.pending.get(&envelope.addr.req.0) else { return false; };
         pending.key == envelope.key && pending.key.epoch == self.state.epoch
             && pending.capture.is_none()
+            && matches!(pending.admission, AdmissionState::Awaiting(id) | AdmissionState::Accepted(id) if id == envelope.admission)
             && pending.last_arrival.is_none_or(|last| envelope.arrival > last)
     }
 
@@ -1232,22 +1474,20 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
                 self.replace_publication();
                 true
             }
-            SessionEvent::Result(envelope) => {
-                if !self.accepts_header(envelope) { false }
-                else if self.state.pending_commit.is_some() {
-                    emit(SessionFx::Defer(envelope.clone()));
-                    true
-                } else {
-                    self.apply_qr_observation(envelope, &mut emit)
-                        || self.apply_resource_observation(envelope, &mut emit)
-                }
-            }
+            SessionEvent::Result(envelope) => self.ingest(envelope, &mut emit),
             SessionEvent::Commit(reply) => self.apply_commit_reply(*reply, &mut emit),
             SessionEvent::Read(reply) => self.apply_read(reply, &mut emit),
+            SessionEvent::Admission(reply) => self.apply_admission(*reply, &mut emit),
+            SessionEvent::Pump => {
+                self.state.pump_pending = false;
+                self.pump_one(&mut emit);
+                true
+            }
         };
         if !Arc::ptr_eq(&before, &self.publication) {
             fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session));
         }
+        self.refresh_subhash();
         if handled { Handled::Yes } else { Handled::No }
     }
 }
@@ -1256,8 +1496,84 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
 mod tests {
     use super::*;
 
+    struct OwnerHost;
+    impl crate::ui::machine::Host for OwnerHost {
+        type Arg = crate::ui::fixture::FixtureArg;
+        type Fx = SessionFx;
+        type Msg = SessionEvent;
+        type Elem = u32;
+        type Views<'a> = SessionRead<'a>;
+        type Init = SessionInit;
+        type Memory = ();
+    }
+    impl SessionHost for OwnerHost {
+        fn session_effect(effect: SessionFx) -> SessionFx { effect }
+    }
+
+    fn step(owner: &mut SessionMachine, event: SessionEvent) -> Vec<SessionFx> {
+        use crate::ui::machine::{Cx, Effects, Fx, InputOwner, EntryId, Machine, Tick};
+        let publication = owner.publication();
+        let cx = Cx::<OwnerHost> { views: publication.read(), tick: Tick::default(),
+            measure: &crate::ui::fixture::FixtureMeasure, press: Default::default(),
+            focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
+        let mut present = crate::ui::present::Present::new();
+        let mut effects = Vec::new();
+        owner.step(&event, &cx, &mut Effects::new(&mut effects, MachineId::Session, &mut present));
+        effects.into_iter().map(|effect| match effect.fx {
+            Fx::App(effect) => effect,
+            _ => panic!("Session emitted a non-domain effect"),
+        }).collect()
+    }
+
     fn captured_session() -> SessionInit {
         SessionInit::captured(PersistedSession { client_id: "synthetic-client".into(), ..Default::default() })
+    }
+
+    #[test]
+    fn busy_commit_retains_second_valid_result_in_canonical_owner_state() {
+        let mut owner = SessionMachine::from_init(captured_session());
+        let a = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        let b = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        for req in [a, b] {
+            owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        }
+        let make = |req, arrival| SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch: 1, op: SessionOp::ServerRoster }, arrival,
+            admission: AdmissionId(req),
+            terminal: false, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Registry(
+                super::super::RegistryProgress::Install { epoch: 1,
+                    expected: Some(super::super::SessionIdentity::of(&captured_session().persisted)),
+                    sources: Vec::new(), primary: None }))),
+        };
+        let first = step(&mut owner, SessionEvent::Result(make(a, 1)));
+        assert!(first.iter().any(|effect| matches!(effect, SessionFx::Commit { req, .. } if *req == a)));
+        let publication = owner.publication();
+        let mut canon = Canon::new();
+        owner.write(&mut canon);
+        let before = canon.finish();
+        assert_eq!(owner.subhash(), before);
+        assert!(owner.take_logical_dirty());
+        assert!(!owner.take_logical_dirty());
+        let second = make(b, 2);
+        step(&mut owner, SessionEvent::Result(second.clone()));
+        let mut canon = Canon::new();
+        owner.write(&mut canon);
+        let retained_hash = canon.finish();
+        assert_ne!(before, retained_hash, "valid busy work must be retained in canonical owner state, not self-redelivered");
+        assert_eq!(owner.subhash(), retained_hash, "the cached subhash must include retained work");
+        assert!(owner.take_logical_dirty(), "logical dirty is independent of UI publication damage");
+        assert!(Arc::ptr_eq(&publication, &owner.publication()));
+
+        let duplicate = step(&mut owner, SessionEvent::Result(second));
+        assert!(duplicate.is_empty(), "a duplicate must not ACK the active original's receipt");
+        assert_eq!(owner.subhash(), retained_hash);
+        assert!(!owner.take_logical_dirty(), "ignored duplicate must not dirty the cached state");
+        assert!(Arc::ptr_eq(&publication, &owner.publication()));
+
+        let restored = SessionMachine::from_init(owner.snapshot_init());
+        assert_eq!(restored.subhash(), retained_hash, "init must retain the busy FIFO and commit receipt");
     }
 
     fn qr_event(owner: &SessionMachine, req: u32, arrival: u64,
@@ -1265,6 +1581,7 @@ mod tests {
         SessionEnvelope {
             addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
             key: owner.state.pending[&req].key,
+            admission: AdmissionId(req),
             arrival, terminal, lifecycle: None,
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Login(progress))),
         }
@@ -1422,9 +1739,11 @@ mod tests {
         init.epoch = 0x1_0000_0001;
         let mut owner = SessionMachine::from_init(init);
         let req = owner.allocate(SessionOp::Login, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
         let mut envelope = SessionEnvelope {
             addr: Addr { to: MachineId::Session, req: RequestId(req) },
             key: SessionWorkKey { epoch: 1, op: SessionOp::Login },
+            admission: AdmissionId(req),
             arrival: 0, terminal: true, lifecycle: None, outcome: SessionArrival::Dropped,
         };
         assert!(!owner.accepts(&envelope), "low epoch bits are not identity");

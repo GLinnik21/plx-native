@@ -127,6 +127,12 @@ impl crate::screens::registry::AuthLike for AppHost {
     fn auth<'a>(cx: &Cx<'a, Self>) -> crate::auth::SessionRead<'a> { cx.views.auth }
 }
 
+impl crate::auth::owner::SessionHost for AppHost {
+    fn session_effect(effect: crate::auth::owner::SessionFx) -> AppFx {
+        AppFx::SessionEffect(effect)
+    }
+}
+
 impl crate::stores::StoreEffectHost for AppHost {
     fn endpoint_refresh(request: crate::stores::EndpointRefresh) -> AppFx {
         AppFx::Session(crate::auth::SessionCmd::RequestEndpoint { sid: request.sid })
@@ -200,6 +206,7 @@ impl ConsentMachine {
 pub(crate) struct Bridge {
     session: crate::auth::SessionMachine,
     session_adapter: super::adapters::session::SessionAdapter,
+    session_ready: Option<(u64, crate::auth::owner::ProfileScope, crate::plex::session::ServerRef, String)>,
     mounter: AppMounter,
     /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
     /// [`Bridge::publish_playback`] from the loop, once per iteration.
@@ -286,6 +293,7 @@ impl Bridge {
         Self {
             session: crate::auth::SessionMachine::from_init(init),
             session_adapter,
+            session_ready: None,
             mounter: AppMounter::default(),
             playback: crate::route::PlaybackSession::IDLE,
             playback_live: false,
@@ -848,6 +856,26 @@ impl Rig<AppHost> for Bridge {
         }
     }
     fn deliver(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
+        if let AppMsg::Session(event) = msg {
+            use crate::auth::owner::SessionEvent;
+            if to != MachineId::Session { return Handled::No; }
+            match event {
+                SessionEvent::Result(envelope) if !self.session_adapter.admitted(envelope) => return Handled::No,
+                SessionEvent::Admission(reply) if !reply.accepted
+                    && self.session_adapter.resource_admitted(reply) => return Handled::No,
+                SessionEvent::Command(crate::auth::owner::Command::BackAtRoot { .. })
+                    if !self.session_adapter.claim_root_press() => return Handled::No,
+                _ => {}
+            }
+            // The owner reads its retained publication, not a borrow through its own mutable
+            // field. Every other view still comes from this same Bridge frame boundary.
+            let publication = self.session.publication();
+            let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
+                hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
+                section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            }, self.measure);
+            return self.session.step(event, &cx, fx);
+        }
         let store = match msg {
             AppMsg::Store(cmd) => cmd.store(),
             AppMsg::StoreWork(work) => work.store(),
@@ -958,6 +986,7 @@ impl Bridge {
         out: &mut Effects<'_, AppHost>, execute: impl FnOnce(crate::auth::SessionCmd)) {
         match fx {
             AppFx::Session(command) => execute(command),
+            AppFx::SessionEffect(effect) => self.session_effect(effect, out),
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
                 MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),
@@ -969,6 +998,70 @@ impl Bridge {
             AppFx::Search(req) => self.search_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Player(req) => self.player_reqs.push(req),
             AppFx::ItemMenu(req) => self.item_menu_reqs.push(req),
+        }
+    }
+
+    /// Resource execution returns typed deliveries to the existing FIFO. In particular a
+    /// commit acknowledgement never recursively steps the owner outside drain/carry budgets.
+    fn session_effect(&mut self, effect: crate::auth::owner::SessionFx, out: &mut Effects<'_, AppHost>) {
+        use crate::auth::owner::{SessionEvent, SessionFx, AdmissionReply};
+        use crate::ui::machine::{Addr, RequestId};
+        let mut deliver = |event| out.push(Fx::Deliver(MachineId::Session,
+            Delivery::Machine(AppMsg::Session(event))));
+        match effect {
+            SessionFx::Commit { req, epoch, arrival, plan } => {
+                if let Some(permit) = self.session.commit_permit(req, epoch, arrival) {
+                    let reply = self.session_adapter.commit(permit, &plan);
+                    deliver(SessionEvent::Commit(reply));
+                }
+            }
+            SessionFx::Pump => deliver(SessionEvent::Pump),
+            SessionFx::Acknowledge(receipts) => {
+                self.session_adapter.acknowledge(&receipts);
+            }
+            SessionFx::Retire { req } => self.session_adapter.cancel(RequestId(req)),
+            SessionFx::Cancel { requests, .. } => {
+                for req in requests { self.session_adapter.cancel(RequestId(req)); }
+            }
+            SessionFx::Capture { req, epoch, request } => {
+                if self.session.read_is_current(req, epoch, request) {
+                    deliver(SessionEvent::Read(self.session_adapter.capture(req, epoch, request)));
+                }
+            }
+            SessionFx::Work { req, key, admission, input } => {
+                if self.session.work_is_current(req, key, admission) {
+                    let reply = self.session_adapter.start_work(RequestId(req), key, admission, input)
+                        .err().unwrap_or(AdmissionReply { addr: Addr { to: MachineId::Session, req: RequestId(req) },
+                            key, correlation: admission, accepted: true });
+                    deliver(SessionEvent::Admission(reply));
+                }
+            }
+            SessionFx::PublishProfile(publication) => {
+                if self.session.publication_is_current(&publication) {
+                    self.session_adapter.publish_profile(publication);
+                }
+            }
+            SessionFx::Ready { epoch, scope, server, token } => {
+                if self.session.ready_is_current(epoch, scope) {
+                    self.session_ready = Some((epoch, scope, server, token));
+                }
+            }
+            // Erase is ordered work, not a stale asynchronous completion: a subsequent login
+            // may already have advanced the epoch, but cannot skip deleting old credentials.
+            SessionFx::Erase { .. } => {
+                self.session_ready = None;
+                self.session_adapter.erase();
+            }
+            SessionFx::Coordinator(action) => self.session_adapter.coordinator(action),
+            SessionFx::RestartReply { to, accepted } => out.push(Fx::Deliver(
+                MachineId::Instance(InstanceId(to.instance)), Delivery::Screen(ScreenEvent::Async(
+                    RequestId(to.correlation), AppMsg::RestartReply { correlation: to.correlation, accepted })))),
+            SessionFx::BackReply { to, resumed } => {
+                self.session_adapter.finish_back(resumed);
+                out.push(Fx::Deliver(MachineId::Instance(InstanceId(to.instance)),
+                    Delivery::Screen(ScreenEvent::Async(RequestId(to.correlation),
+                        AppMsg::BackReply { correlation: to.correlation, resumed }))));
+            }
         }
     }
 }
@@ -1012,7 +1105,7 @@ pub(crate) fn frame_with_tap(
     inputs: Vec<InputEvent<u32>>,
     tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
-    frame_with_results(d, rig, tick, inputs, take_live_results, tap)
+    frame_ingest(d, rig, tick, inputs, Bridge::take_live_results, tap)
 }
 
 pub(crate) type AppResults = Vec<(crate::ui::machine::Addr, AppMsg)>;
@@ -1021,7 +1114,7 @@ pub(crate) type AppResults = Vec<(crate::ui::machine::Addr, AppMsg)>;
 /// the legacy pumps' mailboxes, so it goes through `ui::landgate`: under a replay the arrival
 /// waits for the frame the recording delivered it on (§3.3 step 3). Off a replay, one relaxed
 /// atomic load and the same call.
-pub(crate) fn take_live_results() -> AppResults {
+pub(crate) fn take_hubs_results() -> AppResults {
     let mut results =
         crate::ui::landgate::take_all(StoreId::Hubs.ord(), crate::stores::hubs::take_results);
     results.sort_by_key(|result| result.request_id());
@@ -1032,6 +1125,18 @@ pub(crate) fn take_live_results() -> AppResults {
         },
         AppMsg::HubsResult(result),
     )).collect()
+}
+
+impl Bridge {
+    fn take_live_results(&mut self) -> AppResults {
+        // Landing sequence within auth is authoritative. Do not sort it by request ID:
+        // profile Ready and its late roster can be separated by other requests' progress.
+        let mut results: AppResults = self.session_adapter.take_results().into_iter()
+            .map(|envelope| (envelope.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope))))
+            .collect();
+        results.extend(take_hubs_results());
+        results
+    }
 }
 
 /// One dispatcher path for live or supplied adapter results. The supplier runs at ingest, after
@@ -1055,6 +1160,17 @@ pub(crate) fn frame_with_results(
     tick: Tick,
     inputs: Vec<InputEvent<u32>>,
     take: impl FnOnce() -> AppResults,
+    tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
+) -> (&'static str, FrameReport) {
+    frame_ingest(d, rig, tick, inputs, |_| take(), tap)
+}
+
+fn frame_ingest(
+    d: &mut Dispatcher<AppHost>,
+    rig: &mut Bridge,
+    tick: Tick,
+    inputs: Vec<InputEvent<u32>>,
+    take: impl FnOnce(&mut Bridge) -> AppResults,
     tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
     #[cfg(test)]
@@ -1085,7 +1201,13 @@ pub(crate) fn frame_with_results(
     if surface && !inputs.is_empty() {
         crate::ui::popover::note_own_damage();
     }
-    let results = take();
+    let results = take(rig);
+    let session_records: Vec<_> = results.iter().filter_map(|(addr, message)| match message {
+        AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope)) => Some((*addr, envelope.clone())),
+        _ => None,
+    }).collect();
+    rig.session_adapter.validate_supplied(&session_records)
+        .expect("Session ingest requires an exactly addressed, admitted transfer batch");
     let report = d.frame_with(rig, tick, inputs, results, tap, false);
     d.prune(&report.unmounted);
     rig.sync_host(d);
@@ -2252,6 +2374,123 @@ fn _measure_is_object_safe(m: &dyn Measure, s: &CStr) -> f32 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn session_registry_then_terminal_waits_for_queued_commit_replies() {
+        use crate::auth::owner::{AdmissionId, AdmissionState, Identity, Pending, SessionOp,
+            SessionWorkKey, StreamPhase};
+        use crate::auth::{AuthProgress, LoginProgress, RegistryProgress};
+        use crate::ui::machine::RequestId;
+        let _guard = crate::testlock::serial();
+        for (success, carry) in [(true, false), (false, false), (true, true), (false, true)] {
+            let mut rig = Bridge::for_test(|| 0);
+            let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
+                client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
+                ..Default::default()
+            });
+            init.phase = crate::auth::Phase::Discovering;
+            init.next_req = 1;
+            let key = SessionWorkKey { epoch: init.epoch, op: SessionOp::Login };
+            init.pending.insert(1, Pending { key, expected: Identity::of(&init.persisted),
+                lifecycle: None, last_arrival: None, phase: StreamPhase::Running, capture: None,
+                admission: AdmissionState::Awaiting(AdmissionId(1)) });
+            rig.session_adapter = super::super::adapters::session::SessionAdapter::fixture_with(init.persisted.clone());
+            rig.session = crate::auth::SessionMachine::from_init(init);
+            rig.session_adapter.launch(RequestId(1), key, true, |job| { job(); true }, move |output| {
+                for _ in 0..2 {
+                    assert!(output.progress(AuthProgress::Registry(RegistryProgress::Install {
+                        epoch: key.epoch, expected: None, sources: Vec::new(), primary: None,
+                    })).is_ok());
+                }
+                let terminal = if success {
+                    LoginProgress::SignedIn { epoch: key.epoch, server: crate::plex::session::ServerRef {
+                        machine_id: "synthetic-server".into(), address: "192.0.2.1".into(),
+                        port: 32400, token: "synthetic-server-token".into(), ..Default::default()
+                    }, sources: Vec::new(), users: Vec::new() }
+                } else {
+                    LoginProgress::Failed { epoch: key.epoch, message: "synthetic failure".into() }
+                };
+                assert!(output.complete(AuthProgress::Login(terminal)).is_ok());
+            }).unwrap();
+            let records = rig.session_adapter.take_results();
+            assert_eq!(records.len(), 3);
+            assert!(rig.session_adapter.fixture_resources().registry_writes.is_empty());
+            let results = records.into_iter().map(|envelope| (envelope.addr,
+                AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope)))).collect();
+            let mut dispatcher = Dispatcher::<AppHost>::new();
+            if carry {
+                // Consume the real pre+post budgets so A's commit effect, the terminal, and
+                // B retained behind A must survive into the next frame. No test-only drain.
+                for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 2 {
+                    dispatcher.emit(MachineId::Nav, Fx::Deliver(MachineId::Session,
+                        Delivery::Machine(AppMsg::Session(crate::auth::owner::SessionEvent::Command(
+                            crate::auth::owner::Command::DismissPinError)))));
+                }
+            }
+            let report = dispatcher.frame_with(&mut rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
+            if carry {
+                assert!(report.carried > 0, "the regression must actually exercise cross-frame carry");
+                let retained = rig.session.snapshot_init();
+                assert!(retained.pending_commit.is_some());
+                assert_eq!(retained.inbox.len(), 1);
+                assert!(rig.session_adapter.fixture_resources().registry_writes.is_empty());
+                dispatcher.frame_with(&mut rig, Tick { ms: 16, dt_us: 16_000 }, Vec::new(), Vec::new(), &mut NoTap, false);
+            }
+            assert_eq!(rig.session_adapter.fixture_resources().registry_writes.len(), 2,
+                "both commit-bearing progress observations must precede the terminal");
+            assert_eq!(rig.session.read().0.phase,
+                if success { crate::auth::Phase::Ready } else { crate::auth::Phase::Error });
+            let state = rig.session.snapshot_init();
+            assert!(state.pending_commit.is_none());
+            assert!(state.pending.is_empty());
+            assert!(state.inbox.is_empty());
+            assert!(!state.pump_pending);
+        }
+    }
+
+    #[test]
+    fn session_replies_cross_the_production_queued_drain_with_exact_correlation() {
+        use crate::auth::owner::{Command, ReplyTo, SessionEvent};
+        use crate::ui::dispatch::Tap;
+        struct Replies(Vec<(u32, u32, bool)>);
+        impl Tap<AppHost> for Replies {
+            fn effect(&mut self, _: u64, stamped: &crate::ui::machine::Stamped<AppHost>) {
+                if let Fx::Deliver(MachineId::Instance(instance),
+                    Delivery::Screen(ScreenEvent::Async(req, message))) = &stamped.fx {
+                    match message {
+                        AppMsg::RestartReply { correlation, accepted } => {
+                            assert_eq!(req.0, *correlation);
+                            self.0.push((instance.0, *correlation, *accepted));
+                        }
+                        AppMsg::BackReply { correlation, resumed } => {
+                            assert_eq!(req.0, *correlation);
+                            self.0.push((instance.0, *correlation, *resumed));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // This existing constructor captures other global store publications. This test is
+        // dispatch evidence, not the still-owed lock-free two-Bridge fixture proof.
+        let _guard = crate::testlock::serial();
+        let mut rig = Bridge::for_test(|| 0);
+        let mut dispatcher = Dispatcher::<AppHost>::new();
+        let mut replies = Replies(Vec::new());
+        for command in [
+            Command::RestartWait { phase: crate::auth::Phase::Waiting, qr_generation: 9,
+                reply: ReplyTo { instance: 41, correlation: 7 } },
+            Command::BackAtRoot { reply: ReplyTo { instance: 42, correlation: 8 } },
+        ] {
+            dispatcher.emit(MachineId::Nav, Fx::Deliver(MachineId::Session,
+                Delivery::Machine(AppMsg::Session(SessionEvent::Command(command)))));
+        }
+        assert!(replies.0.is_empty());
+        dispatcher.frame_with(&mut rig, Tick::default(), Vec::new(), Vec::new(), &mut replies, false);
+        assert_eq!(replies.0, [(41, 7, false), (42, 8, false)]);
+        assert_eq!(rig.session_adapter.fixture_resources().back_results, [false]);
+        assert_eq!(rig.session.read().0.phase, crate::auth::Phase::Idle);
+    }
+
+    #[test]
     fn session_frame_read_borrows_the_bridge_publication() {
         use crate::screens::registry::AuthLike;
         let _guard = crate::testlock::serial();
@@ -2842,7 +3081,7 @@ mod tests {
         crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
         crate::pms::queue_test_landing(Some(5));
-        let captured = take_live_results().pop().unwrap();
+        let captured = take_hubs_results().pop().unwrap();
         let AppMsg::HubsResult(result) = captured.1 else { unreachable!() };
         let payload = crate::pms::record::encode(&result);
         let decoded = crate::pms::record::decode(payload, |_| None).unwrap();

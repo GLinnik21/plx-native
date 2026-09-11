@@ -20,7 +20,7 @@
 //!
 //! **The landing SCHEDULE (phase 11, §3.3 step 3).** The stores still fetch live during a replay,
 //! but the frame a result is OBSERVED on is no longer whatever the network and the thread
-//! scheduler produced. Every landing SITE — Home's hubs through `bridge::take_live_results`, and
+//! scheduler produced. Every landing SITE — Home's hubs through `bridge::take_hubs_results`, and
 //! each legacy pump's mailbox take (`metadata` detail/season/alt-sources, `person`, `viewstate`,
 //! `browse`'s four, `search`'s per-source slot) — consumes its mailbox through `ui::landgate`,
 //! which during a replay holds an EARLY arrival until the frame the recording consumed it on. A
@@ -993,7 +993,7 @@ mod tests {
         let mut seen = Vec::new();
         for f in 0..4u64 {
             crate::ui::landgate::begin_frame(f);
-            if !super::super::bridge::take_live_results().is_empty() {
+            if !super::super::bridge::take_hubs_results().is_empty() {
                 seen.push(f);
             }
         }
@@ -1014,7 +1014,7 @@ mod tests {
         crate::ui::landgate::arm_replay(vec![]);
         crate::pms::queue_test_landing(Some(4));
         crate::ui::landgate::begin_frame(5);
-        assert_eq!(super::super::bridge::take_live_results().len(), 1);
+        assert_eq!(super::super::bridge::take_hubs_results().len(), 1);
         assert_eq!(
             crate::ui::landgate::take_diffs(),
             vec![(5, crate::stores::StoreId::Hubs.ord().0, crate::ui::landgate::Diff::Extra)]

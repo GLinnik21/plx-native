@@ -25,6 +25,86 @@ pub(crate) struct EndpointFact {
 }
 
 impl Observation {
+    pub(crate) fn write(&self, w: &mut crate::ui::machine::Canon) {
+        use owner::{write_profile, write_server, write_sources, write_tile, write_user};
+        match self {
+            Self::Login(progress) => {
+                w.u8(0);
+                match progress {
+                    LoginProgress::CodeReplacing { epoch } => { w.u8(0).u64(*epoch); }
+                    LoginProgress::CodeReady { epoch, code, qr_png } => {
+                        w.u8(1).u64(*epoch).str(code).seq(qr_png.len());
+                        for byte in qr_png { w.u8(*byte); }
+                    }
+                    LoginProgress::Authorized { epoch, token } => { w.u8(2).u64(*epoch).str(token); }
+                    LoginProgress::Failed { epoch, message } => { w.u8(3).u64(*epoch).str(message); }
+                    LoginProgress::SignedIn { epoch, server, sources, users } => {
+                        w.u8(4).u64(*epoch); write_server(w, server); write_sources(w, sources);
+                        w.seq(users.len()); for user in users { write_tile(w, user); }
+                    }
+                }
+            }
+            Self::Registry(progress) => {
+                w.u8(1);
+                match progress {
+                    RegistryProgress::Activate { epoch, expected, candidate } => {
+                        w.u8(0).u64(*epoch); w.option(expected.as_ref(), write_identity);
+                        w.str(&candidate.machine_id).str(&candidate.token).str(&candidate.name)
+                            .str(&candidate.credit).bool(candidate.owned).str(&candidate.origin.base())
+                            .str(&candidate.address);
+                        owner::write_tier(w, Some(candidate.location)); w.bool(candidate.ipv6);
+                    }
+                    RegistryProgress::Settled { epoch, expected, probe } => {
+                        w.u8(1).u64(*epoch); w.option(expected.as_ref(), write_identity); write_probe(w, probe);
+                    }
+                    RegistryProgress::Install { epoch, expected, sources, primary } => {
+                        w.u8(2).u64(*epoch); w.option(expected.as_ref(), write_identity);
+                        write_sources(w, sources); w.option(*primary, |w, p| { w.u64(p as u64); });
+                    }
+                }
+            }
+            Self::HomeRoster(progress) => {
+                w.u8(2).u64(progress.epoch); write_identity(w, &progress.expected);
+                w.option(progress.users.as_ref(), |w, users| {
+                    w.seq(users.len()); for user in users { write_tile(w, user); }
+                });
+            }
+            Self::ServerRoster(progress) => {
+                w.u8(3).u64(progress.epoch); write_identity(w, &progress.expected);
+                match &progress.outcome {
+                    ServerRosterOutcome::Unreachable => { w.u8(0); }
+                    ServerRosterOutcome::NoReachable => { w.u8(1); }
+                    ServerRosterOutcome::Reconcile { resources, found, household, settled } => {
+                        w.u8(2); write_resources(w, resources); write_sources(w, found);
+                        w.seq(household.len()); for id in household { w.u64(*id as u64); }
+                        write_probes(w, settled);
+                    }
+                }
+            }
+            Self::Endpoint(progress) => {
+                w.u8(4).u64(progress.epoch); write_identity(w, &progress.expected);
+                w.u32(u32::from(progress.sid)).str(&progress.machine_id);
+                w.option(progress.fresh.as_ref(), |w, source| write_sources(w, std::slice::from_ref(source)));
+            }
+            Self::ProfileSwitch(progress) => {
+                w.u8(5).u64(progress.epoch); write_identity(w, &progress.expected);
+                match &progress.outcome {
+                    ProfileSwitchOutcomeProgress::Failed { error, pin_denied } => { w.u8(0).str(error).bool(*pin_denied); }
+                    ProfileSwitchOutcomeProgress::Ready { delta, probes } => {
+                        w.u8(1); write_server(w, &delta.server); write_sources(w, &delta.sources);
+                        write_user(w, &delta.user); w.option(delta.cache.as_ref(), write_profile);
+                        write_probes(w, probes);
+                    }
+                }
+            }
+            Self::ProfileRoster(progress) => {
+                w.u8(6).u64(progress.epoch); write_identity(w, &progress.expected);
+                write_resources(w, &progress.resources); write_sources(w, &progress.reached);
+                write_probes(w, &progress.probes);
+            }
+        }
+    }
+
     pub(crate) fn matches_request(&self, pending: &owner::Pending, terminal: bool) -> bool {
         use owner::{SessionOp, StreamPhase};
         let (epoch, expected, compatible) = match self {
@@ -83,6 +163,37 @@ impl Observation {
             }), p.lifecycle),
         };
         (observation, None)
+    }
+}
+
+fn write_identity(w: &mut crate::ui::machine::Canon, identity: &SessionIdentity) {
+    w.str(&identity.client_id).str(&identity.account_token).str(&identity.profile_uuid)
+        .u8(match identity.authority { SessionAuthority::Controller => 0, SessionAuthority::Persisted => 1 });
+}
+
+fn write_probe(w: &mut crate::ui::machine::Canon, probe: &SettledProbe) {
+    w.str(&probe.machine_id).u8(match probe.outcome {
+        Outcome::Reachable => 0, Outcome::WrongServer => 1, Outcome::Unauthorized => 2, Outcome::Unreachable => 3,
+    });
+    owner::write_tier(w, probe.tier);
+}
+
+fn write_probes(w: &mut crate::ui::machine::Canon, probes: &[SettledProbe]) {
+    w.seq(probes.len()); for probe in probes { write_probe(w, probe); }
+}
+
+fn write_resources(w: &mut crate::ui::machine::Canon, resources: &[Resource]) {
+    w.seq(resources.len());
+    for resource in resources {
+        w.str(&resource.name).str(&resource.client_identifier).str(&resource.provides)
+            .bool(resource.owned).str(&resource.access_token);
+        w.option(resource.source_title.as_ref(), |w, title| { w.str(title); });
+        w.u64(resource.owner_id as u64).bool(resource.home).bool(resource.presence)
+            .bool(resource.public_address_matches).bool(resource.https_required).seq(resource.connections.len());
+        for connection in &resource.connections {
+            w.str(&connection.protocol).str(&connection.address).u64(connection.port as u64)
+                .str(&connection.uri).bool(connection.local).bool(connection.relay).bool(connection.ipv6);
+        }
     }
 }
 

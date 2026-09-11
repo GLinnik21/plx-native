@@ -1239,9 +1239,51 @@ pub(crate) struct ClientLifecycle {
 }
 
 impl ClientLifecycle {
+    pub(crate) fn capture(client: &'static crate::plex::Client) -> Self {
+        Self { client, token_gen: client.token_gen() }
+    }
     pub(crate) fn logical(self, sid: u16) -> owner::ServerLifecycle {
         owner::ServerLifecycle { sid, instance_gen: self.client.instance_gen(), token_gen: self.token_gen }
     }
+    pub(crate) fn is_current(self, expected: owner::ServerLifecycle) -> bool {
+        self.logical(expected.sid) == expected && crate::plex::commit_if_current(
+            ServerId::from_raw(expected.sid), self.client, self.token_gen, || ()).is_some()
+    }
+}
+
+/// Native registry effects executed only by the Session resource adapter, after its borrowed
+/// owner permit and (for an endpoint) exact captured Client lifecycle have been validated.
+pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
+    match plan {
+        owner::RegistryPlan::Activate { source, ipv6 } => {
+            let Some(origin) = source.origin() else { return false };
+            let Some(location) = source.tier else { return false };
+            apply_candidate_activation(CandidateActivation {
+                machine_id: source.machine_id.clone(), token: source.token.clone(),
+                name: source.name.clone(), credit: source.shared_by.clone(), owned: source.owned,
+                origin, address: source.address.clone(),
+                location, ipv6: *ipv6,
+            });
+        }
+        owner::RegistryPlan::Install { sources, primary, replace } => {
+            if *replace { crate::plex::revoke_for_profile_switch(); }
+            let installed = install_roster(sources, *primary);
+            if *replace { crate::plex::finish_profile_switch(&installed); }
+        }
+        owner::RegistryPlan::Endpoint { expected, source } => {
+            let Some(origin) = source.origin() else { return false };
+            let id = register_observed_origin(&source.machine_id, &origin, &source.token, source.resolve_pin().as_ref());
+            if id.raw() != expected.sid { return false; }
+            if let (Some(tier), Some(client)) = (source.tier, crate::plex::client_for(id)) {
+                client.set_connection(tier, crate::plex::IpVersion::of_host(&source.address));
+            }
+            crate::plex::describe_server(id, &source.name, &source.shared_by, source.owned);
+            crate::plex::publish_probe_result(id, Outcome::Reachable);
+        }
+        owner::RegistryPlan::Probe(probe) => publish_settled_probe(probe),
+        owner::RegistryPlan::Revoke => crate::plex::revoke_all(),
+    }
+    true
 }
 
 /// Worker-owned terminal guarantee. Dropping on success, any early return, or unwind publishes
