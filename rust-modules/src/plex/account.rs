@@ -104,21 +104,26 @@ impl AccountClient {
     /// `pub(super)` so the sibling op file `discover.rs` can add its `impl AccountClient` block on
     /// top of this ONE transport + identity choke point instead of hand-rolling a second one.
     pub(super) fn get<T: DeserializeOwned>(&self, url: &str) -> Option<T> {
-        let resp = crate::net::https_get(url, &self.headers());
-        note_contact(url, resp.is_some());
-        decode("GET", url, resp?)
+        decode("GET", url, self.get_raw(url).ok()?)
+    }
+
+    fn get_raw(&self, url: &str) -> Result<crate::net::Resp, crate::net::RequestFailure> {
+        let resp = crate::net::request_evidence(url, &self.headers(), "GET", None,
+            crate::net::API, false, None, None);
+        note_response_contact(url, &resp);
+        resp
     }
 
     fn post<T: DeserializeOwned>(&self, url: &str) -> Option<T> {
-        let resp = self.post_raw(url)?;
+        let resp = self.post_raw(url).ok()?;
         decode("POST", url, resp)
     }
 
-    /// The transport half of [`AccountClient::post`]: `None` is a request that never completed,
-    /// `Some` is whatever the service said, status and all.
-    fn post_raw(&self, url: &str) -> Option<crate::net::Resp> {
-        let resp = crate::net::https_post(url, &self.headers(), b"");
-        note_contact(url, resp.is_some());
+    /// Complete responses or safe incomplete-response evidence. No body ceiling is enabled here.
+    fn post_raw(&self, url: &str) -> Result<crate::net::Resp, crate::net::RequestFailure> {
+        let resp = crate::net::request_evidence(url, &self.headers(), "POST", Some(b""),
+            crate::net::API, false, None, None);
+        note_response_contact(url, &resp);
         resp
     }
 
@@ -139,30 +144,11 @@ impl AccountClient {
     /// pin from a bad moment**, and an `Option` cannot. See [`PinPoll::Gone`].
     pub fn poll_pin(&self, id: i64) -> PinPoll {
         let url = format!("{PLEX_TV}/api/v2/pins/{id}");
-        let Some(resp) = crate::net::https_get(&url, &self.headers()) else {
-            return PinPoll::Unreachable;
-        };
-        let status = resp.status;
-        // `decode` owns the logging for both of its failures, so this only has to say what the
-        // status MEANS for a pin: whether there is still something to wait for.
-        //
-        // **[`PinToken`], not [`Pin`], and the narrowness is the point.** This response is the one
-        // place the account credential can ever appear, and a poll that cannot parse it is
-        // indistinguishable from a poll that was never answered — which is the whole shape of the
-        // bug this module is being changed for. `Pin` also carries `id`, `code` and `expiresIn`,
-        // none of which the poll uses and any of which could change TYPE on the service side (a
-        // number arriving as a string is exactly what PMS does elsewhere); that would fail the
-        // whole deserialization and hide a token that was sitting right there. Creation still
-        // takes the wide DTO, because it genuinely needs those fields and its failure is immediate
-        // and visible.
-        match decode::<PinToken>("GET", &url, resp) {
-            Some(p) => match p.auth_token {
-                Some(t) if !t.is_empty() => PinPoll::Authorized(t),
-                _ => PinPoll::Pending,
-            },
-            None if pin_is_gone(status) => PinPoll::Gone,
-            None => PinPoll::Unreachable,
-        }
+        // Polling did not update the reachability memo; preserve that policy.
+        let response = crate::net::request_evidence(&url, &self.headers(), "GET", None,
+            crate::net::API, false, None, None);
+        poll_response(&url, response)
+            .expect("uncapped account request cannot report a local body limit")
     }
 
     // ---- server discovery ----
@@ -192,30 +178,89 @@ impl AccountClient {
     /// user, ignored otherwise.
     ///
     /// **Graded, because the caller has to tell "plex.tv said no" from "plex.tv never answered".**
-    /// The first is a verdict about the PIN or the token and ends the switch; the second is a
-    /// fact about the network at this instant, and `auth::switch_thread` answers it from the
-    /// credentials this television cached the last time the same profile was seated online.
+    /// The first is a verdict about the PIN or token and ends the switch; the second is a fact
+    /// about the network, answered from previously cached credentials by the profile worker.
     /// An `Option` folded those into one `None`, which is how a house with no internet could not
-    /// pick a profile at all (2026-09-06).
+    /// pick a profile at all (2026-09-06). A received 4xx remains authoritative even if its body
+    /// could not finish. The uncapped domain API is unchanged; enabling limits later requires
+    /// a distinct domain failure path rather than projecting a local policy failure to offline.
     pub fn switch_user(&self, uuid: &str, pin: Option<&str>) -> SwitchOutcome {
         let q = match pin {
             Some(p) if !p.is_empty() => format!("?pin={p}"),
             _ => String::new(),
         };
         let url = format!("{PLEX_TV}/api/v2/home/users/{uuid}/switch{q}");
-        let Some(resp) = self.post_raw(&url) else {
-            return SwitchOutcome::Unreachable;
-        };
-        let status = resp.status;
-        match decode::<SwitchedUser>("POST", &url, resp) {
+        switch_response(&url, self.post_raw(&url))
+            .expect("uncapped account request cannot report a local body limit")
+    }
+}
+
+fn response_status(response: &Result<crate::net::Resp, crate::net::RequestFailure>) -> Option<u16> {
+    match response { Ok(resp) => Some(resp.status), Err(failure) => failure.status }
+}
+
+/// A size policy failure has no authority to say the service is offline. Keep it fallible for
+/// future limited callers; today's public methods pass max_body=None and cannot reach this Err.
+fn complete_response(response: Result<crate::net::Resp, crate::net::RequestFailure>)
+    -> Result<Option<crate::net::Resp>, crate::net::RequestFailure> {
+    match response {
+        Ok(resp) => Ok(Some(resp)),
+        Err(failure) if failure.body_limit.is_some() => Err(failure),
+        Err(_) => Ok(None),
+    }
+}
+
+fn poll_response(url: &str, response: Result<crate::net::Resp, crate::net::RequestFailure>)
+    -> Result<PinPoll, crate::net::RequestFailure> {
+        if let Some(status) = response_status(&response).filter(|status| pin_is_gone(*status)) {
+            log_status_failure("GET", url, status);
+            return Ok(PinPoll::Gone);
+        }
+        let Some(resp) = complete_response(response)? else { return Ok(PinPoll::Unreachable); };
+        // Gone statuses are handled before body decoding, including incomplete responses;
+        // decode logs complete HTTP/body failures using the same safe status logger.
+        //
+        // **[`PinToken`], not [`Pin`], and the narrowness is the point.** This response is the one
+        // place the account credential can ever appear, and a poll that cannot parse it is
+        // indistinguishable from a poll that was never answered — which is the whole shape of the
+        // bug this module is being changed for. `Pin` also carries `id`, `code` and `expiresIn`,
+        // none of which the poll uses and any of which could change TYPE on the service side (a
+        // number arriving as a string is exactly what PMS does elsewhere); that would fail the
+        // whole deserialization and hide a token that was sitting right there. Creation still
+        // takes the wide DTO, because it genuinely needs those fields and its failure is immediate
+        // and visible.
+        Ok(match decode::<PinToken>("GET", url, resp) {
+            Some(p) => match p.auth_token {
+                Some(t) if !t.is_empty() => PinPoll::Authorized(t),
+                _ => PinPoll::Pending,
+            },
+            None => PinPoll::Unreachable,
+        })
+}
+
+fn switch_response(url: &str, response: Result<crate::net::Resp, crate::net::RequestFailure>)
+    -> Result<SwitchOutcome, crate::net::RequestFailure> {
+        if let Some(status @ 400..=499) = response_status(&response) {
+            log_status_failure("POST", url, status);
+            return Ok(SwitchOutcome::Refused(status));
+        }
+        let Some(resp) = complete_response(response)? else { return Ok(SwitchOutcome::Unreachable); };
+        Ok(match decode::<SwitchedUser>("POST", url, resp) {
             Some(u) if !u.auth_token.is_empty() => SwitchOutcome::Switched(u),
             // A completed request the service declined, or one it answered with a body that is
             // not a switched user. 4xx is plex.tv's verdict (401 is the wrong PIN); anything
             // else — a 5xx, a 2xx that did not parse — is the service failing us, which for the
             // caller's purposes is the same as not answering: retryable, and answerable offline.
-            _ if (400..500).contains(&status) => SwitchOutcome::Refused(status),
             _ => SwitchOutcome::Unreachable,
-        }
+        })
+}
+
+fn note_response_contact(url: &str, response: &Result<crate::net::Resp, crate::net::RequestFailure>) {
+    match response {
+        Ok(_) => note_contact(url, true),
+        Err(failure) if failure.status.is_some() => note_contact(url, true),
+        Err(failure) if failure.body_limit.is_some() => {}, // no observation about reachability
+        Err(_) => note_contact(url, false),
     }
 }
 
@@ -223,10 +268,158 @@ impl AccountClient {
 pub enum SwitchOutcome {
     /// 2xx with a token: the profile's own credential.
     Switched(SwitchedUser),
-    /// plex.tv completed the request and declined it, with this status. 401 is a wrong PIN.
+    /// plex.tv returned an authoritative 4xx refusal, even if its response body did not
+    /// complete; 401 is a wrong-PIN verdict when a PIN was submitted.
     Refused(u16),
     /// No usable answer: a transport failure, a 5xx, or a 2xx body that did not parse.
     Unreachable,
+}
+
+#[cfg(test)]
+pub(crate) fn test_refusal_evidence(status: u16, response: Result<crate::net::Resp, crate::net::RequestFailure>) {
+    evidence_tests::assert_refusal_evidence(status, response);
+}
+
+#[cfg(test)]
+mod evidence_tests {
+    use super::*;
+    use crate::net::{RequestError, RequestFailure, Resp};
+
+    const SWITCH: &str = "https://plex.tv/api/v2/home/users/synthetic/switch";
+
+    fn failure(status: Option<u16>, body_limit: Option<usize>) -> Result<Resp, RequestFailure> {
+        Err(RequestFailure { cause: RequestError::Transport, status, body_limit })
+    }
+
+    fn http2_reset_policy(status: u16) {
+        let _serial = crate::testlock::serial();
+        for rc in [16, 55, 92] {
+            assert_refusal_evidence(status, crate::net::test_response_failure(rc, 0, status.into(), false));
+        }
+    }
+
+    pub(super) fn assert_refusal_evidence(status: u16, response: Result<Resp, RequestFailure>) {
+        crate::testlock::assert_held("auth response policy test");
+        let failure = response.as_ref().err().copied().expect("incomplete HTTP response");
+        set_unreachable_for_test(true);
+        note_response_contact(SWITCH, &response);
+        let became_unreachable = plex_tv_recently_unreachable();
+        // Restore globals before an expected RED assertion can unwind.
+        *LAST_UNREACHABLE.lock().unwrap() = None;
+        *LAST_REACHABLE.lock().unwrap() = None;
+        assert!(!became_unreachable, "HTTP/2 refusal must not poison the outage memo");
+        assert!(matches!(switch_response(SWITCH, response), Ok(SwitchOutcome::Refused(s)) if s == status));
+        if pin_is_gone(status) {
+            assert!(matches!(poll_response(SWITCH, Err(failure)), Ok(PinPoll::Gone)));
+        }
+    }
+
+    #[test]
+    fn http2_reset_401_remains_refused() { http2_reset_policy(401); }
+    #[test]
+    fn http2_reset_403_remains_refused() { http2_reset_policy(403); }
+    #[test]
+    fn http2_reset_404_remains_gone() { http2_reset_policy(404); }
+    #[test]
+    fn http2_reset_410_remains_gone() { http2_reset_policy(410); }
+
+    #[test]
+    fn incomplete_refusal_survives_real_transport_and_preserves_contact() {
+        let _serial = crate::testlock::serial();
+        assert!(crate::net::global_init());
+        for status in [401, 403, 404, 410] {
+          for limit in [None, Some(4)] {
+            let reply = format!("HTTP/1.1 {status} Refused\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nshort");
+            crate::net::with_test_response(reply.into_bytes(), false, |url| {
+                let client = AccountClient::new("synthetic-client", None);
+                let response = if let Some(limit) = limit {
+                    crate::net::request_evidence(url, &client.headers(), "POST", Some(b""), crate::net::API, false, Some(limit), None)
+                } else { client.post_raw(url) };
+                assert_eq!(response_status(&response), Some(status));
+                set_unreachable_for_test(true);
+                // Logical service identity is fixed; transport above is loopback only.
+                note_response_contact(SWITCH, &response);
+                assert!(!plex_tv_recently_unreachable());
+                assert!(matches!(switch_response(SWITCH, response), Ok(SwitchOutcome::Refused(s)) if s == status));
+            });
+          }
+        }
+        *LAST_UNREACHABLE.lock().unwrap() = None;
+        *LAST_REACHABLE.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn limits_remain_non_offline_and_refusal_or_gone_takes_precedence() {
+        let _serial = crate::testlock::serial();
+        for status in [401, 403] {
+            assert!(matches!(switch_response(SWITCH, failure(Some(status), Some(32))), Ok(SwitchOutcome::Refused(s)) if s == status));
+        }
+        for status in [404, 410] {
+            for limit in [None, Some(32)] {
+                assert!(matches!(poll_response(SWITCH, failure(Some(status), limit)), Ok(PinPoll::Gone)));
+            }
+        }
+        for status in [None, Some(200), Some(500)] {
+            *LAST_UNREACHABLE.lock().unwrap() = None;
+            *LAST_REACHABLE.lock().unwrap() = None;
+            let response = failure(status, Some(32));
+            note_response_contact(SWITCH, &response);
+            assert!(!plex_tv_recently_unreachable(), "size policy is not an outage");
+            assert_eq!(plex_tv_recently_reachable(), status.is_some());
+            assert!(switch_response(SWITCH, response).is_err(), "must not become offline-eligible Unreachable");
+            assert!(poll_response(SWITCH, failure(status, Some(32))).is_err());
+        }
+        note_response_contact(SWITCH, &failure(None, None));
+        assert!(plex_tv_recently_unreachable(), "genuine no-response failure retains old policy");
+        let previous = *LAST_UNREACHABLE.lock().unwrap();
+        note_response_contact(SWITCH, &failure(None, Some(32)));
+        assert_eq!(*LAST_UNREACHABLE.lock().unwrap(), previous, "local limit must not refresh an old outage memo");
+        *LAST_UNREACHABLE.lock().unwrap() = None;
+        *LAST_REACHABLE.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn complete_response_policy_and_provider_decoding_are_unchanged() {
+        let _serial = crate::testlock::serial();
+        let malformed = Ok(Resp { status: 200, body: b"not json".to_vec() });
+        note_response_contact(SWITCH, &malformed);
+        assert!(plex_tv_recently_reachable());
+        assert!(matches!(switch_response(SWITCH, malformed), Ok(SwitchOutcome::Unreachable)));
+        assert!(matches!(switch_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec() })), Ok(SwitchOutcome::Switched(_))));
+        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":null}"#.to_vec() })), Ok(PinPoll::Pending)));
+        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec() })), Ok(PinPoll::Authorized(_))));
+        assert!(crate::net::global_init());
+        for body in [br#"[{"provides":"server","connections":null}]"#.as_slice(), br#"{"users":[]}"#.as_slice()] {
+            let mut reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+            reply.extend_from_slice(body);
+            crate::net::with_test_response(reply, false, |url| {
+                let client = AccountClient::new("synthetic-client", None);
+                if body[0] == b'[' { assert_eq!(client.get::<Vec<Resource>>(url).unwrap().len(), 1); }
+                else { assert!(client.get::<HomeUsers>(url).unwrap().users.is_empty()); }
+            });
+        }
+        *LAST_UNREACHABLE.lock().unwrap() = None;
+        *LAST_REACHABLE.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn an_overflowing_valid_prefix_is_never_a_token_or_grant_response() {
+        let _serial = crate::testlock::serial();
+        assert!(crate::net::global_init());
+        for prefix in [br#"{"authToken":"synthetic-secret"}"#.as_slice(), br#"[{"accessToken":"synthetic-secret"}]"#.as_slice()] {
+            let mut body = prefix.to_vec(); body.extend([b' '; 128]);
+            let mut reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+            reply.extend(body);
+            crate::net::with_test_response(reply, false, |url| {
+                let response = crate::net::request_evidence(url, &[], "GET", None, crate::net::API, false, Some(prefix.len()), None);
+                let failure = switch_response(SWITCH, response).err().expect("prefix cannot authorize");
+                assert_eq!(failure.status, Some(200));
+                assert_eq!(failure.body_limit, Some(prefix.len()));
+                assert!(!format!("{failure:?}").contains("synthetic-secret"));
+                assert!(complete_response(Err(failure)).is_err(), "DTO parser cannot receive the prefix");
+            });
+        }
+    }
 }
 
 // ---- plex.tv reachability, remembered ----
@@ -366,28 +559,12 @@ fn pin_is_gone(status: u16) -> bool {
 /// something that may be an identity. The status is what separates those two, and this function is
 /// where it exists.
 ///
-/// Not every plex.tv status in the app comes through here: `auth.rs`'s QR-PNG fetch calls
-/// `net::https_get` directly and grades `r.ok()` itself. Every *typed* call does — both this
-/// file's and `discover.rs`'s, which is the point of `get` being the one door.
+/// QR uses `net::https_get_public` and grades `r.ok()` itself. Switch refusal and poll Gone
+/// classify received status before decoding, including incomplete responses. Every typed body
+/// decoded here (including `discover.rs`) belongs to a complete transfer; failures carry no prefix.
 fn decode<T: DeserializeOwned>(verb: &str, url: &str, resp: crate::net::Resp) -> Option<T> {
     if !resp.ok() {
-        // 401/403 earns a word of its own because the app has nowhere else to say it: the request
-        // arrived, and what plex.tv refused is the IDENTITY it carried — the token `headers()`
-        // attached. Downstream that becomes a verdict about a server or a network (see this
-        // function's doc for the exact copy), so the distinction has to be drawn in the line that
-        // still knows it.
-        let hint = match resp.status {
-            401 | 403 => " — plex.tv refused this identity (token no longer valid?)",
-            _ => "",
-        };
-        // Tagged for the CLIENT (`account:`) and not for the host, because the host is already in
-        // the shape and the two services share this door — `discover.provider.plex.tv` lines would
-        // otherwise read as coming from plex.tv proper.
-        crate::log(&format!(
-            "account: {verb} {} -> HTTP {}{hint}",
-            endpoint_shape(url),
-            resp.status
-        ));
+        log_status_failure(verb, url, resp.status);
         return None;
     }
     match serde_json::from_slice::<T>(&resp.body) {
@@ -411,6 +588,26 @@ fn decode<T: DeserializeOwned>(verb: &str, url: &str, resp: crate::net::Resp) ->
             None
         }
     }
+}
+
+fn log_status_failure(verb: &str, url: &str, status: u16) {
+    // 401/403 earns a word of its own because the app has nowhere else to say it: the request
+    // arrived, and what plex.tv refused is the IDENTITY it carried — the token `headers()`
+    // attached. Downstream that becomes a verdict about a server or a network (see this
+    // function's doc for the exact copy), so the distinction has to be drawn in the line that
+    // still knows it.
+    let hint = match status {
+        401 | 403 => " — plex.tv refused this identity (token no longer valid?)",
+        _ => "",
+    };
+    // Tagged for the CLIENT (`account:`) and not for the host, because the host is already in
+    // the shape and the two services share this door — `discover.provider.plex.tv` lines would
+    // otherwise read as coming from plex.tv proper.
+    crate::log(&format!(
+        "account: {verb} {} -> HTTP {}{hint}",
+        endpoint_shape(url),
+        status
+    ));
 }
 
 /// The **shape** of one of this client's URLs, for a log line: host + path, every id-shaped segment
