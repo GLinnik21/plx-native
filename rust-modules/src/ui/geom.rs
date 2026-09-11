@@ -165,7 +165,7 @@ where
         });
     }
     fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        ((key.index()? as i32) < self.table.n_rows()).then_some(self.group)
+        (key.index()? < self.table.n_rows().max(0) as u32).then_some(self.group)
     }
     fn neighbour(&self, k: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
         let Some(i) = k.elem.index() else {

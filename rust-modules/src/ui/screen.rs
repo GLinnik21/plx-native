@@ -516,8 +516,21 @@ pub fn composed_reconcile<H: Host, T: Composed<H> + ?Sized>(
     want: FocusKey<H::Elem>,
     cx: &Cx<'_, H>,
 ) -> FocusKey<H::Elem> {
-    // the element may no longer PLACE (a shelf that shrank under it): every part is asked, and
-    // the first answer that places is the reconciliation
+    // The owning part gets first repair, even when the old key still places: it may need
+    // slot-to-item promotion or separator repair. An unrelated table must not clamp a valid
+    // footer key into its own last row before the footer sees it.
+    for (id, _) in s.layout(cx) {
+        let part = s.part(id);
+        if part.group_of(&want.elem, cx).is_some() {
+            let r = part.reconcile(want, cx);
+            if part.place(&r.elem, cx, At::SpringTarget).is_some() {
+                return r;
+            }
+            break;
+        }
+    }
+    // Unknown/removed owner or an unplaceable repair: retain the ordered fallback. A
+    // disappearing footer must recover into the table rather than preserve an invalid key.
     for (id, _) in s.layout(cx) {
         let part = s.part(id);
         let r = part.reconcile(want, cx);

@@ -1840,16 +1840,17 @@ mod tests {
                 assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: registry::BAND }), "stage {stage} mount");
                 frame(&mut d, &mut rig, 32, vec![]);
                 assert_eq!(d.focus().unwrap().elem, registry::BAND);
-                for direction in [Key::Left, Key::Down] {
+                for (round, direction) in [Key::Left, Key::Down].into_iter().enumerate() {
+                    let ms = 48 + round as u32 * 64;
                     seat(&mut d, id, 1); // Privacy policy, not a guessed geometric starting point.
-                    frame(&mut d, &mut rig, 48, vec![key(direction, tick(48))]);
+                    frame(&mut d, &mut rig, ms, vec![key(direction, tick(ms))]);
                     assert!(registry::band_index(d.focus().unwrap().elem).is_some(), "stage {stage}, {direction:?}");
                     seat(&mut d, id, registry::BAND);
-                    frame(&mut d, &mut rig, 64, vec![key(Key::Right, tick(64))]);
+                    frame(&mut d, &mut rig, ms + 16, vec![key(Key::Right, tick(ms + 16))]);
                     assert_eq!(d.focus().unwrap().elem, registry::BAND + 1);
-                    frame(&mut d, &mut rig, 80, vec![]);
+                    frame(&mut d, &mut rig, ms + 32, vec![]);
                     assert_eq!(d.focus().unwrap().elem, registry::BAND + 1);
-                    frame(&mut d, &mut rig, 96, vec![key(Key::Left, tick(96))]);
+                    frame(&mut d, &mut rig, ms + 48, vec![key(Key::Left, tick(ms + 48))]);
                     assert_eq!(d.focus().unwrap().elem, registry::BAND);
                 }
                 assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)));
@@ -1882,7 +1883,9 @@ mod tests {
             let _g = crate::testlock::serial();
             for stage in [0, 1] {
                 let (mut d, mut rig, id) = consent_opened(SettingsPage::ConsentStage(stage));
-                for elem in [registry::BAND, registry::BAND + 1] {
+                for (round, elem) in [registry::BAND, registry::BAND + 1].into_iter().enumerate() {
+                    let ms = 32 + round as u32 * 32;
+                    let unchanged_path = path(&d, id);
                     let focused = FocusKey { entry: id, elem };
                     let c = cx(None);
                     let screen = &d.nav.entry(id).unwrap().inst.as_ref().unwrap().screen;
@@ -1892,7 +1895,7 @@ mod tests {
                         clip: placed.clip, hover: Hover::Focus, activate: Activate::Press }]);
                     d.input.hit.swap();
                     d.input.hit.dpad_mode = false;
-                    frame(&mut d, &mut rig, 32, vec![InputEvent { at: tick(32), source: Source::Script,
+                    frame(&mut d, &mut rig, ms, vec![InputEvent { at: tick(ms), source: Source::Script,
                         kind: InputKind::Pointer { x: placed.rect.cx(), y: placed.rect.cy(), hit: None } }]);
                     assert_eq!(d.focus(), Some(focused));
                     let instance = d.nav.instance_of(id).unwrap();
@@ -1900,13 +1903,53 @@ mod tests {
                     // page does not answer on hold, so neither consent choice is made or saved.
                     d.emit(MachineId::Input, Fx::Deliver(MachineId::Instance(instance),
                         Delivery::Press { id: PressId(1), key: focused, held: true }));
-                    let report = d.frame_with(&mut rig, tick(48), vec![], vec![], &mut NoTap, false);
+                    let report = d.frame_with(&mut rig, tick(ms + 16), vec![], vec![], &mut NoTap, false);
                     assert_eq!(report.dropped_deliveries, 0, "a valid button was refused by press identity validation");
                     assert_eq!(d.focus(), Some(focused));
-                    assert!(path(&d, id).contains("/consent:"));
+                    assert_eq!(path(&d, id), unchanged_path, "holding must not answer or advance the stage");
                     assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)));
                 }
             }
+        }
+
+        #[test]
+        fn composed_owner_favourites_footer_survives_left_down_and_idle_frames() {
+            let _g = crate::testlock::serial();
+            let _session = scratch_session("composed-owner-favourites");
+            struct ResetSources;
+            impl Drop for ResetSources {
+                fn drop(&mut self) {
+                    crate::browse::reset();
+                    crate::plex::reset_servers_for_test();
+                }
+            }
+            let _reset = ResetSources;
+            crate::plex::reset_servers_for_test();
+            let a = crate::plex::register_for_test("focus-a", "127.0.0.1", 9, "synthetic", "focus-test");
+            let b = crate::plex::register_for_test("focus-b", "127.0.0.1", 9, "synthetic", "focus-test");
+            // The existing fixture pins client identities and marks sections/counts complete:
+            // the real Onboard Tick can poll discovery without spawning network work.
+            crate::browse::seed_registered_table_for_test([a, b]);
+            let pins = crate::browse::favorite_sections();
+            let (mut d, mut rig, id) = consent_opened(SettingsPage::Favourites);
+            seat(&mut d, id, 0);
+            frame(&mut d, &mut rig, 32, vec![key(Key::Ok, tick(32))]); // local draft only
+            for (round, direction) in [Key::Left, Key::Down].into_iter().enumerate() {
+                let ms = 48 + round as u32 * 32;
+                let screen = &d.nav.entry(id).unwrap().inst.as_ref().unwrap().screen;
+                let mut groups = Vec::new();
+                screen.groups(&cx(None), &mut groups);
+                let table = groups.iter().find(|g| g.id == GroupId(0)).unwrap();
+                assert!(table.len > 0, "actual Favourites rows must exist");
+                assert!(groups.iter().any(|g| g.id == GroupId(1) && g.len == 1), "draft offers Done");
+                seat(&mut d, id, table.len as u32 - 1);
+                frame(&mut d, &mut rig, ms, vec![key(direction, tick(ms))]);
+                assert_eq!(d.focus().unwrap().elem, registry::BAND, "{direction:?} reaches Done after reconciliation");
+                frame(&mut d, &mut rig, ms + 16, vec![]);
+                assert_eq!(d.focus().unwrap().elem, registry::BAND);
+            }
+            assert_eq!(crate::browse::favorite_sections(), pins, "draft navigation cannot persist pins");
+            assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)));
         }
 
         /// **The composition, at depth.** Signed out, the Settings root's rows are Privacy & data
