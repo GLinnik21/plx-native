@@ -7646,6 +7646,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // fabricated one.
         let mut play_prev: Option<(i64, u32)> = None;
         let mut running = true;
+        let mut window_activity = crate::system::WindowActivity::new();
         // Dev-only panel proof: advance a red/green counter phase only after SDL_GL_SwapWindow
         // returns. Hold each colour for 30 swaps: per-buffer alternation blends yellow at 60 Hz,
         // while this ~2 Hz change is human-visible and still freezes immediately with presentation.
@@ -7937,10 +7938,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         SDL_GetTicks()
                     ));
                 }
+                window_activity.event(et);
+                crate::telemetry::window::lifecycle(et, matches!(route, Route::Player { .. }));
                 if et == SDL_QUIT {
                     running = false;
                 } else if et == 0x103 || et == 0x104 {
                     // WILL/DID ENTER BACKGROUND
+                    crate::system::sys_release_wayland();
                     log(&format!(
                         "LIFECYCLE: background (playing={})",
                         matches!(route, Route::Player { .. }) as i32
@@ -7996,6 +8000,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         foreground.awaiting_load() as i32
                     ));
                     if et == 0x106 {
+                        crate::system::sys_grab_wayland(win);
+                        crate::ui::idle::invalidate();
                         let activation = drive_foreground(
                             &mut foreground,
                             ForegroundInput::DidForeground,
@@ -10925,7 +10931,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // mounts. It invalidates from inside `alt_sources::install`, since a landing that grows
             // the actions row must be drawn without waiting for a keypress.
             crate::metadata::pump_alt_sources();
-            crate::posters::poster_pump(3); // invalidates from inside, per texture installed
+            if window_activity.allow_present(true) {
+                crate::posters::poster_pump(3); // leave decoded uploads queued while backgrounded
+            }
             let fd_pc_pump = if framedrop_on {
                 SDL_GetPerformanceCounter()
             } else {
@@ -10957,12 +10965,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // `should_present` is on the LEFT so the short-circuit can never skip it: it
             // takes-and-clears the discrete flag, and on the player route (which always presents)
             // a skipped take would leave a stale flag to fire spuriously on the way back out.
-            let present = crate::ui::idle::should_present(now) || player;
+            // Lifecycle is a hard outer gate, including the player and noidle overrides.
+            let present = window_activity.allow_present(crate::ui::idle::should_present(now) || player);
             // Hoisted: the frame-drop detector reads these after the gate. Seeded to the pump
             // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
             let (mut fd_pc_draw, mut fd_pc_cap, mut fd_pc_swap) =
                 (fd_pc_pump, fd_pc_pump, fd_pc_pump);
             if present {
+                window_activity.begin_present(player);
                 // EXPERIMENT (`/tmp/plxnative-egldamage`), no-op without the trigger. FIRST, before
                 // any GL command of this frame: `EGL_KHR_partial_update` only permits a damage
                 // region to be declared before rendering begins. See `egl.rs`.
@@ -11379,6 +11389,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 #[cfg(feature = "hostsim")]
                 crate::shot::maybe_capture(vx, vy, vw, vh);
                 SDL_GL_SwapWindow(win);
+                window_activity.presented(player);
                 // One increment, then nothing: re-ask EGL for the back buffer's AGE after real
                 // presents have happened. The boot reading is 0 by construction. See `egl.rs`.
                 crate::egl::late_probe();

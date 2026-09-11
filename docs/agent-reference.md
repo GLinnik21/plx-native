@@ -687,8 +687,11 @@ which the linking section explains is load-bearing rather than tidy.
 - **Wayland transparency** (`system.rs`)**:** the UI surface is forced to a 32-bit RGBA config and
   made non-opaque by driving the wayland proxy directly (`wl_proxy_marshal(surface, 4, NULL)` =
   set_opaque_region NULL), re-asserted each frame while playing, so the video plane shows through.
-  The TV's SDL is 2.0.4 (no transparency hint). (`sys_grab_wayland` also over-allocates the
-  `SDL_SysWMinfo` buffer — the fork writes a larger struct than the headers declare.)
+  The dev TV reports SDL 2.0.5 (no transparency hint). `sys_grab_wayland` over-allocates the
+  `SDL_SysWMinfo` buffer because the fork writes a larger struct than the headers declare.
+  Background notifications revoke the borrowed Wayland handles and block presentation and poster
+  uploads. DID foreground reacquires the handles and invalidates the UI before rendering resumes.
+  A failed or non-Wayland query leaves both handles null.
 - **Deploy uses a tmp+mv dance** (`plxnative.new` → `mv`) so scp succeeds while the old binary is
   still executing (avoids `ETXTBSY`). The TV drops to standby after a few idle minutes, so a deploy
   can die mid-scp — when scripting around `make deploy`, md5-compare local vs on-TV binary after

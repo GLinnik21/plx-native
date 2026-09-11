@@ -164,7 +164,9 @@ const REASK_CHANGES: &[(u32, &str)] = &[
 // Revision 5 describes the explicit Details report, its bounded cold/fresh storage evidence,
 // event-specific receipt and in-memory fallback. Each one-off is consented at its own updated
 // confirmation; standing Errors/Usage collection and their accepted scopes are unchanged.
-pub(crate) const NOTICE_REVISION: u32 = 5;
+// Revision 6 describes sparse window-lifecycle machine state attached to the existing native
+// crash report. Its purpose remains crash diagnosis; no additional report or usage event.
+pub(crate) const NOTICE_REVISION: u32 = 6;
 
 /// The Crash reports channel's collected-data scope. Grew at 4 (playback error report), 5
 /// (sign-in error report) and 6 (storage facts — `StorageError`, and `session_storage` riding the
