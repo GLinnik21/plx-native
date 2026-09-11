@@ -406,6 +406,20 @@ pub struct MediaPart {
     pub stream: Vec<Stream>,
 }
 
+impl MediaPart {
+    /// Veto: a remux that copies video is forbidden only when a video `Stream` on this part
+    /// is `decision=transcode`. Silence is not a video re-encode — missing `Stream[]`, `copy`,
+    /// unnamed, or any other spelling leave copy allowed. Library metadata omits
+    /// `Stream.decision`; this reader is for `/decision` bodies. `Part.decision=transcode` is a
+    /// container change: TrueHD-only and Profile 5 are `Part=transcode` with video `copy`
+    /// (`docs/pms-api.md`).
+    pub fn video_forbids_copy(&self) -> bool {
+        self.stream
+            .iter()
+            .any(|s| s.stream_type == 1 && s.decision == "transcode")
+    }
+}
+
 /// D-2: channels/title/hearingImpaired/audioDescription/forced are real PMS fields the spec
 /// omits — kept here. Plex 0/1 booleans stay i64; the app tests `!= 0`.
 #[derive(Deserialize, Default)]
@@ -426,6 +440,10 @@ pub struct Stream {
     pub key: String,
     #[serde(default)]
     pub codec: String,
+    /// `/decision` only: this lane's verdict — `"directplay"` | `"transcode"` | `"copy"`.
+    /// [`MediaPart::video_forbids_copy`] is the playback reader; a library metadata body omits it.
+    #[serde(default)]
+    pub decision: String,
     #[serde(default)]
     pub language: String,
     #[serde(rename = "languageCode", default)]
@@ -978,6 +996,33 @@ mod tests {
                 mc.transcode_decision_text.as_str()
             ),
             ("", "")
+        );
+    }
+
+    /// `Part.decision=transcode` is a container change. A remux that copies video is forbidden
+    /// only when the VIDEO stream itself is `transcode` — the measured P5 shape was video `copy`.
+    #[test]
+    fn a_transcode_part_forbids_copy_only_when_the_video_stream_is_transcode() {
+        let copy: super::MediaPart = serde_json::from_slice(
+            br#"{"decision":"transcode","Stream":[{"streamType":1,"decision":"copy"},{"streamType":2,"decision":"transcode"}]}"#,
+        )
+        .expect("parse");
+        assert!(
+            !copy.video_forbids_copy(),
+            "audio transcode + video copy is a remux"
+        );
+
+        let video_tc: super::MediaPart = serde_json::from_slice(
+            br#"{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode"}]}"#,
+        )
+        .expect("parse");
+        assert!(video_tc.video_forbids_copy());
+
+        let unnamed: super::MediaPart =
+            serde_json::from_slice(br#"{"decision":"transcode"}"#).expect("parse");
+        assert!(
+            !unnamed.video_forbids_copy(),
+            "a part with no Stream[] cannot claim the video must re-encode"
         );
     }
 

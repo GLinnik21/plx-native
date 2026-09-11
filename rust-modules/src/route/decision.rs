@@ -4821,25 +4821,26 @@ fn apply_quality_choice(ps: &mut PlaybackSession, q: Quality) {
     crate::player::request_transcode_refresh(ps);
 }
 
-pub(super) fn measure_remote_original(
-    client: &crate::plex::Client,
-    part_key: &str,
-    logical_session: &str,
-    source_kbps: i64,
-) -> Option<crate::abr::CapacityObservation> {
+/// **One bounded measurement of the actual file, as an observation and nothing more.** It reports
+/// bytes, active duration and whether the target was reached, because all three decide how much
+/// the measurement is worth: a 40 KiB read that finished instantly honestly reports a huge rate
+/// and proves nothing. What it does NOT do is decide anything — [`crate::abr::bootstrap`] owns the
+/// admission rule, so the policy is stated once and is host-testable without a network.
+///
+/// `None` means there is nothing to reason from (no source bitrate, or the transfer never
+/// returned), which is deliberately distinct from a completed slow probe.
+pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> Option<crate::abr::CapacityObservation> {
     let Some(plan) = remote_probe_plan(source_kbps) else {
         crate::player::log(
             "auto: remote Original unavailable — source bitrate is unknown; using HLS",
         );
         return None;
     };
-    // Use the playback's own identity. If the bounded GET establishes a Streaming Resource, the
-    // winning route — Original or the initial HLS encoder — exact-reuses it. A throwaway
-    // `source-N` forces an exact miss and makes PMS run a second AdHoc admission decision whose
-    // 500 says nothing about transport capacity.
-    let url = client.direct_play_url(part_key, logical_session).to_url();
+    // `url` already names the playback's own identity. Direct play samples the Part; a remux
+    // Original samples start.mkv. A throwaway `source-N` forces an exact miss and makes PMS run a
+    // second AdHoc admission decision whose 500 says nothing about transport capacity.
     let sample = match crate::curlio::sample_throughput_result(
-        &url,
+        url,
         plan.target_bytes,
         std::time::Duration::from_millis(plan.budget_ms),
         std::time::Duration::from_millis(plan.budget_ms),
@@ -4867,23 +4868,78 @@ pub(super) fn measure_remote_original(
     })
 }
 
-/// Ask PMS whether `rk` should direct-play (Some(true) → serve the raw Part) or transcode
-/// (Some(false) → start.mkv). None when the server returns no usable Media decision, so the
-/// caller falls back to the local codec test. Registers the session as a side effect.
+/// PMS 1.43 503s a Part GET after a transcode MDE. The Original we would actually play is a
+/// codec-copy remux, so the Remote capacity sample has to be that `start.mkv`, under the same
+/// session identity a direct Part probe uses.
+///
+/// Encoder spin-up stays inside the existing 4s probe budget; a miss fails toward HLS rather
+/// than waiting longer. First-byte wait on this sample is the remux coming up, not a measure of
+/// transport capacity.
+pub(super) fn measure_remote_remux(
+    client: &crate::plex::Client,
+    rk: &str,
+    session: &str,
+    audio_stream_id: i64,
+    subtitle_stream_id: i64,
+    source_kbps: i64,
+) -> Option<crate::abr::CapacityObservation> {
+    let spec = transcode_spec(
+        rk,
+        session,
+        session,
+        true,
+        false,
+        crate::plex::TranscodeOffset::Fresh,
+        audio_stream_id,
+        subtitle_stream_id,
+        None,
+        crate::plex::TranscodeDelivery::ProgressiveMkv,
+    );
+    if client.transcode_decision(&spec).is_none() {
+        crate::player::log("auto: remote remux preflight had no /decision; using HLS");
+        return None;
+    }
+    let sample = measure_remote_original(&client.transcode_start_url(&spec).to_url(), source_kbps);
+    if sample.is_none() {
+        // Same playback identity the HLS/remux that follows will register. closeResourceSession=1
+        // would 503 that next start; physical-stop keeps the Streaming Resource.
+        let _ = client.transcode_stop_physical(session);
+    }
+    sample
+}
+
+/// MDE handshake result. `None` from [`server_decision`] means the body was missing or unusable:
+/// the caller must not Original, but remux is still allowed. `Part.decision=transcode` is a
+/// container change, not a video-copy veto — see [`crate::plex::MediaPart::video_forbids_copy`].
+pub(super) struct MdeVerdict {
+    pub(super) original: bool,
+    pub(super) video_forbids_copy: bool,
+}
+
+/// Ask PMS whether `rk` should direct-play (`original`) or go through start.mkv. None when the
+/// server returns no usable Media decision: the caller must not Original (PMS 1.43 503s a Part
+/// without a registered decision) but may still remux or re-encode via a separate
+/// `transcode_decision`. Registers the session as a side effect.
 ///
 /// Takes the `Client` rather than looking one up: this runs on the resolve worker, and `rk` is only
 /// an item on the server the caller resolved from this playback's captured `ServerId`.
-pub(super) fn server_decision(c: &crate::plex::Client, rk: &str, session: &str) -> Option<bool> {
-    let mc = match c.mde_decision(rk, session) {
+pub(super) fn server_decision(
+    c: &crate::plex::Client,
+    rk: &str,
+    session: &str,
+    audio_stream_id: i64,
+    subtitle_stream_id: i64,
+) -> Option<MdeVerdict> {
+    let mc = match c.mde_decision(rk, session, audio_stream_id, subtitle_stream_id) {
         Some(mc) => mc,
         None => {
-            // failed fetch OR unparseable (XML/truncated) body — keep the fallback visible
-            // in the event log, like the old raw-body scan did
-            crate::player::log("decision: no/unparseable response -> local heuristic");
+            // failed fetch OR unparseable (XML/truncated) body — no Original Part
+            crate::player::log("decision: no/unparseable response -> no Original");
             return None;
         }
     };
-    // Part.decision is the authoritative verdict (Media/container carry none)
+    // Part.decision is the Original-vs-not verdict (Media/container carry none). Video copy
+    // is the VIDEO stream's own decision — Part=transcode + video=copy is a remux.
     let part = match mc
         .metadata
         .first()
@@ -4893,29 +4949,46 @@ pub(super) fn server_decision(c: &crate::plex::Client, rk: &str, session: &str) 
         Some(p) => p,
         None => {
             crate::player::log(&format!(
-                "decision: no media (general={:?}) -> local heuristic",
+                "decision: no media (general={:?}) -> no Original",
                 mc.general_decision_code
             ));
             return None;
         }
     };
-    let direct = part.decision == "directplay";
+    let original = part.decision == "directplay";
+    let video_forbids_copy = part.video_forbids_copy();
+    let video = part
+        .stream
+        .iter()
+        .find(|s| s.stream_type == 1)
+        .map(|s| s.decision.as_str())
+        .unwrap_or("-");
     crate::player::log(&format!(
-        "decision: part={} general={:?} mde={:?} -> {}",
+        "decision: part={} video={video} general={:?} mde={:?} -> {}",
         part.decision,
         mc.general_decision_code,
         mc.mde_decision_code,
-        if direct { "DIRECT PLAY" } else { "TRANSCODE" }
+        if original {
+            "DIRECT PLAY"
+        } else if video_forbids_copy {
+            "TRANSCODE"
+        } else {
+            "REMUX"
+        }
     ));
-    Some(direct)
+    Some(MdeVerdict {
+        original,
+        video_forbids_copy,
+    })
 }
 
 /// Select the audio + subtitle streams server-side for the current part before a
-/// transcode. The transcoder encodes the part's SELECTED audio and BURNS its SELECTED
-/// subtitle (our client profile advertises no soft-sub support, so Plex's decision is
-/// always burn) — a query-param subtitleStreamID does NOT suppress a default-selected
-/// sub, only the PUT does. So we PUT subtitleStreamID=0 to keep subs OFF (no burn), or
-/// the chosen id to burn it; audioStreamID only when the user switched (else keep default).
+/// transcode. The transcoder encodes the part's SELECTED audio and, when a subtitle id is
+/// non-zero, BURNS that subtitle (query-param subtitleStreamID does NOT suppress a
+/// default-selected sub, only the PUT does). The direct-play profile advertises text and
+/// client-rendered bitmap codecs; burn is still the remux/re-encode path when we PUT a
+/// positive subtitle id. We PUT subtitleStreamID=0 to keep subs OFF (no burn), or the chosen
+/// id to burn it; audioStreamID only when the user switched (else keep default).
 ///
 /// `sid` names the server that owns `part` — the resolve worker passes the id it was given, and the
 /// in-playback callers pass [`cur_sid`]. A `Part.id` is server-local, so a PUT sent to the wrong
@@ -5608,7 +5681,9 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
         String::new()
     };
     let resolve_failed = plan.url.is_empty() && plan.verdict.is_none();
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::InstallPlaying(plan.playing));
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::InstallPlaying(
+        plan.playing,
+    ));
     // main thread only — `up_next()`/`with_queue()` lend out of this (see their docs). The rows
     // arrive already projected: the worker never retained a `Metadata` tree to install here.
     { let s = &mut *ps; {
@@ -6198,6 +6273,17 @@ mod tests {
             present: true,
             profile: 8,
             bl_compat: 1,
+            el_present: false,
+            ..crate::metadata::Dovi::NONE
+        }
+    }
+
+    /// Same provenance as `plan::tests::p5`: single-layer IPT-PQ with no HDR10 fallback.
+    fn p5() -> crate::metadata::Dovi {
+        crate::metadata::Dovi {
+            present: true,
+            profile: 5,
+            bl_compat: 0,
             el_present: false,
             ..crate::metadata::Dovi::NONE
         }
@@ -7280,7 +7366,10 @@ mod tests {
             .expect("a granted transaction mints one physical Load attempt");
         assert!(settle_route_start(&mut ps, attempt, RouteStartResult::Started));
         assert_eq!(
-            PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase,
+            PLAYER_CONTROL
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .phase,
             ControlPhase::Stable,
             "the replayed Load settles into an ordinary publishable route",
         );
@@ -8108,9 +8197,10 @@ mod tests {
             "cid-probe-cold",
         );
         let client = crate::plex::client_for(sid).expect("test server installed");
-        let sample =
-            measure_remote_original(client, "/library/parts/1/file.mkv", "cold-logical", 320)
-                .expect("completed cold sample");
+        let url = client
+            .direct_play_url("/library/parts/1/file.mkv", "cold-logical")
+            .to_url();
+        let sample = measure_remote_original(&url, 320).expect("completed cold sample");
         assert!(sample.completed);
 
         let requests = rx.recv().expect("captured cold requests");
@@ -8172,6 +8262,7 @@ mod tests {
 
 
     // ---- pick_dp_subtitle: the read-back half of put_selection -------------------------------
+
 
 
 
@@ -8369,6 +8460,1510 @@ mod tests {
             source_decodable(&ps),
             "and the session carries the same silence"
         );
+    }
+
+    const MDE_DIRECTPLAY: &[u8] =
+        br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#;
+    const MDE_TRANSCODE: &[u8] =
+        br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode"}]}]}]}}"#;
+    /// Part.decision=transcode, video copied, audio transcoded — the measured TrueHD-only shape.
+    const MDE_TRANSCODE_COPY: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"copy"},{"streamType":2,"decision":"transcode"}]}]}]}]}}"#;
+    /// Part.decision=transcode AND the video lane itself is transcode (bit depth, …).
+    const MDE_TRANSCODE_VIDEO: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode"}]}]}]}]}}"#;
+    const EMPTY_MC: &[u8] = br#"{"MediaContainer":{}}"#;
+
+    fn drain_http(socket: &mut std::net::TcpStream) -> String {
+        use std::io::{BufRead, BufReader, Read};
+        let mut reader = BufReader::new(socket.try_clone().expect("clone"));
+        let mut first = String::new();
+        reader.read_line(&mut first).expect("request line");
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("header");
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                content_length = v.trim().parse().unwrap_or(0);
+            }
+        }
+        if content_length > 0 {
+            let mut body = vec![0; content_length];
+            let _ = reader.read_exact(&mut body);
+        }
+        first
+    }
+
+    /// Exact `key=value` on a request-line query, so `subtitleStreamID=0` cannot match `88001`.
+    fn query_param<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+        let query = line.split_once('?')?.1;
+        let query = query.split_whitespace().next().unwrap_or(query);
+        query.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k == key).then_some(v)
+        })
+    }
+
+    fn write_json(socket: &mut std::net::TcpStream, body: &[u8]) {
+        use std::io::Write;
+        write!(
+            socket,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+        )
+        .expect("headers");
+        socket.write_all(body).expect("body");
+    }
+
+    /// Loopback PMS that answers PlayQueue / PUT / `/decision` long enough for `build_stream`.
+    fn plan_pms(
+        n: usize,
+        mde_body: &'static [u8],
+    ) -> (
+        i32,
+        std::sync::mpsc::Receiver<Vec<String>>,
+        std::thread::JoinHandle<()>,
+    ) {
+        plan_pms_inner(n, mde_body, None)
+    }
+
+    /// Same as [`plan_pms`], plus a bounded `start.mkv` body so Remote Auto can probe a remux.
+    /// A Part GET is 503 — that is PMS 1.43 after a transcode MDE, and the test grades that we
+    /// never ask.
+    fn plan_pms_with_start_mkv(
+        n: usize,
+        mde_body: &'static [u8],
+        start_bytes: usize,
+    ) -> (
+        i32,
+        std::sync::mpsc::Receiver<Vec<String>>,
+        std::thread::JoinHandle<()>,
+    ) {
+        plan_pms_inner(n, mde_body, Some(start_bytes))
+    }
+
+    fn plan_pms_inner(
+        n: usize,
+        mde_body: &'static [u8],
+        start_bytes: Option<usize>,
+    ) -> (
+        i32,
+        std::sync::mpsc::Receiver<Vec<String>>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port() as i32;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+            let mut requests = Vec::new();
+            while requests.len() < n && std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut socket, _)) => {
+                        // The listener is nonblocking; on macOS the accepted fd inherits that,
+                        // and a parallel suite can accept before the request line is buffered.
+                        socket
+                            .set_nonblocking(false)
+                            .expect("blocking accepted socket");
+                        let first = drain_http(&mut socket);
+                        if start_bytes.is_some() && first.contains("/library/parts/") {
+                            use std::io::Write;
+                            write!(
+                                socket,
+                                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .expect("503");
+                        } else if let Some(bytes) =
+                            start_bytes.filter(|_| first.contains("start.mkv"))
+                        {
+                            use std::io::Write;
+                            if bytes == 0 {
+                                write!(
+                                    socket,
+                                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                )
+                                .expect("empty start.mkv");
+                            } else {
+                                write!(
+                                    socket,
+                                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {bytes}\r\nConnection: close\r\n\r\n",
+                                    bytes.saturating_sub(1),
+                                    bytes.saturating_mul(2),
+                                )
+                                .expect("start.mkv headers");
+                                socket
+                                    .write_all(&vec![0x55; bytes])
+                                    .expect("start.mkv body");
+                            }
+                        } else if first.contains("/decision?")
+                            && first.contains("hasMDE=1")
+                            && first.contains("directPlay=1")
+                            && query_param(&first, "subtitles") != Some("none")
+                        {
+                            // PMS 1.43.4: hasMDE+directPlay with a selected subtitle and
+                            // subtitles=auto (the default when omitted) is HTTP 400.
+                            use std::io::Write;
+                            write!(
+                                socket,
+                                "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .expect("400");
+                        } else {
+                            let body = if first.contains("/decision?") {
+                                mde_body
+                            } else {
+                                EMPTY_MC
+                            };
+                            write_json(&mut socket, body);
+                        }
+                        requests.push(first);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(4));
+                    }
+                    Err(error) => panic!("accept plan request: {error}"),
+                }
+            }
+            tx.send(requests).expect("publish plan requests");
+        });
+        (port, rx, handle)
+    }
+
+    fn fourk_item(
+        sid: ServerId,
+        audio: Vec<crate::metadata::Stream>,
+    ) -> crate::metadata::PlayingItem {
+        fourk_item_with_subs(sid, audio, Vec::new())
+    }
+
+    fn fourk_item_with_subs(
+        sid: ServerId,
+        audio: Vec<crate::metadata::Stream>,
+        subs: Vec<crate::metadata::Stream>,
+    ) -> crate::metadata::PlayingItem {
+        crate::metadata::PlayingItem {
+            sid,
+            rk: "rk-4k".into(),
+            audio,
+            subs,
+            video_fps: 23.976,
+            width: 3840,
+            height: 2160,
+            bitrate: 48_000,
+            dovi: crate::metadata::Dovi::NONE,
+            markers: Vec::new(),
+            chapters: Vec::new(),
+        }
+    }
+
+    fn eac3_track() -> crate::metadata::Stream {
+        crate::metadata::Stream {
+            id: 36014,
+            index: 1,
+            lang_code: "eng".into(),
+            codec: "eac3".into(),
+            channels: 6,
+            default: true,
+            selected: true,
+            profile: "dolby digital plus + dolby atmos".into(),
+            ..Default::default()
+        }
+    }
+
+    fn selected_sub(id: i64, codec: &str) -> crate::metadata::Stream {
+        crate::metadata::Stream {
+            id,
+            index: 0,
+            lang_code: "eng".into(),
+            codec: codec.into(),
+            selected: true,
+            ..Default::default()
+        }
+    }
+
+    /// PMS 1.43 503s a Part GET whose session has no MDE decision. A 4K HEVC+EAC3 title used
+    /// to skip `/decision` because EAC3 is a direct-play audio codec; the plan URL must not
+    /// be that part until MDE has registered the session.
+    #[test]
+    fn original_hevc_eac3_registers_mde_before_returning_the_part() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
+        let sid = crate::plex::register_for_test(
+            "mde-dp-test",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-dp-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        let decision = requests
+            .iter()
+            .find(|line| line.contains("/decision?"))
+            .unwrap_or_else(|| panic!("MDE was never asked: {requests:?}"));
+        assert!(decision.contains("hasMDE=1"), "{decision}");
+        assert!(decision.contains("directPlay=1"), "{decision}");
+        assert!(decision.contains("audioStreamID=36014"), "{decision}");
+        assert_eq!(
+            query_param(decision, "subtitleStreamID"),
+            Some("0"),
+            "no selectable embedded sub → explicit 0: {decision}"
+        );
+        assert_eq!(
+            query_param(decision, "subtitles"),
+            Some("none"),
+            "MDE must name client-rendered mode; auto 400s a selected sub: {decision}"
+        );
+        assert!(
+            plan.url.contains("/library/parts/36013/"),
+            "admitted Original is the raw part: {}",
+            plan.url
+        );
+        assert!(
+            !plan.url.contains("start.mkv"),
+            "MDE said directplay, so this is not a transcode: {}",
+            plan.url
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// Smart-DP used to skip MDE so a TrueHD default would not veto the AC3 sibling. The
+    /// `/decision` query must name that sibling; otherwise PMS evaluates TrueHD and the part
+    /// GET 503s or the title is sent to a video-downscaling transcode.
+    #[test]
+    fn smart_dp_names_the_ac3_sibling_on_mde() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
+        let sid = crate::plex::register_for_test(
+            "mde-smart-dp",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-smart-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.cached_item = Some(fourk_item(
+            sid,
+            vec![
+                crate::metadata::Stream {
+                    id: 1,
+                    index: 0,
+                    lang_code: "eng".into(),
+                    codec: "truehd".into(),
+                    channels: 8,
+                    default: true,
+                    selected: true,
+                    ..Default::default()
+                },
+                crate::metadata::Stream {
+                    id: 2,
+                    index: 1,
+                    lang_code: "eng".into(),
+                    codec: "ac3".into(),
+                    channels: 6,
+                    ..Default::default()
+                },
+            ],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "truehd",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        let decision = requests
+            .iter()
+            .find(|line| line.contains("/decision?"))
+            .unwrap_or_else(|| panic!("MDE was never asked: {requests:?}"));
+        assert!(
+            decision.contains("audioStreamID=2"),
+            "MDE must see the AC3 sibling, not TrueHD: {decision}"
+        );
+        assert_eq!(
+            query_param(decision, "subtitleStreamID"),
+            Some("0"),
+            "{decision}"
+        );
+        assert!(plan.url.contains("/library/parts/36013/"), "{}", plan.url);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// OpenAPI: a Part GET whose decision is a transcode is HTTP 503. Honour MDE rather than
+    /// returning the part URL the local codec test would have chosen. A `/decision` body that
+    /// names no video stream cannot claim the video must re-encode, so this unnamed shape remuxes.
+    #[test]
+    fn mde_transcode_does_not_return_the_part_url() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(4, MDE_TRANSCODE);
+        let sid = crate::plex::register_for_test(
+            "mde-tc-test",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-tc-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            requests
+                .iter()
+                .any(|line| line.contains("hasMDE=1") && line.contains("directPlay=1")),
+            "the first ask is still the MDE handshake: {requests:?}"
+        );
+        assert!(
+            plan.url.contains("start.mkv"),
+            "MDE said transcode, so the plan must not GET the part: {}",
+            plan.url
+        );
+        assert!(
+            !plan.url.contains("/library/parts/36013/"),
+            "a transcode decision must not be served as Original: {}",
+            plan.url
+        );
+        assert!(
+            plan.remux,
+            "Part.decision=transcode with no Stream[] cannot claim a video re-encode: {}",
+            plan.url
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// HEVC+TrueHD with no AAC/AC3/EAC3 sibling: MDE transcodes the part (TrueHD is not in the
+    /// profile) but the video can still be copied. A Part-level veto would re-encode 4K for an
+    /// audio problem.
+    #[test]
+    fn mde_transcode_for_truehd_only_still_remuxes() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(4, MDE_TRANSCODE_COPY);
+        let sid = crate::plex::register_for_test(
+            "mde-truehd",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-truehd-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.cached_item = Some(fourk_item(
+            sid,
+            vec![crate::metadata::Stream {
+                id: 36014,
+                index: 1,
+                lang_code: "eng".into(),
+                codec: "truehd".into(),
+                channels: 8,
+                default: true,
+                selected: true,
+                ..Default::default()
+            }],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "truehd",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            requests
+                .iter()
+                .any(|line| line.contains("/decision?") && line.contains("hasMDE=1")),
+            "MDE was still asked: {requests:?}"
+        );
+        assert!(
+            !plan.url.contains("/library/parts/36013/"),
+            "TrueHD-only cannot Original: {}",
+            plan.url
+        );
+        assert!(
+            plan.remux,
+            "TrueHD-only must codec-copy remux, not re-encode 4K: {}",
+            plan.url
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// A video-stream `transcode` (bit depth past the profile, …) is the copy veto. Remux here
+    /// would ship pixels the decoder cannot take.
+    #[test]
+    fn mde_video_stream_transcode_forbids_remux() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(4, MDE_TRANSCODE_VIDEO);
+        let sid = crate::plex::register_for_test(
+            "mde-vid-tc",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-vid-tc-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            requests
+                .iter()
+                .any(|line| line.contains("/decision?") && line.contains("hasMDE=1")),
+            "MDE was still asked: {requests:?}"
+        );
+        assert!(
+            !plan.url.contains("/library/parts/36013/"),
+            "video transcode must not Original: {}",
+            plan.url
+        );
+        assert!(
+            !plan.remux,
+            "video-stream transcode forbids a codec-copy remux"
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// Declared Profile 5 can Original, but a remux copy carries no `DolbyHdrInfo`. MDE's
+    /// video=`copy` (the measured P5 shape) must not override `no_video_copy`.
+    #[test]
+    fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(4, MDE_TRANSCODE_COPY);
+        let sid = crate::plex::register_for_test(
+            "mde-p5-copy",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-p5-copy-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        let mut item = fourk_item(sid, vec![eac3_track()]);
+        item.dovi = p5();
+        env.cached_item = Some(item);
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            requests
+                .iter()
+                .any(|line| line.contains("/decision?") && line.contains("hasMDE=1")),
+            "declared P5 still asks MDE: {requests:?}"
+        );
+        assert!(
+            !plan.remux,
+            "a P5 remux is the IPT-PQ bitstream with no declaration: {}",
+            plan.url
+        );
+        assert!(
+            plan.no_video_copy,
+            "the copy permission has to be withdrawn or PMS copies anyway"
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// Remote Auto used to probe the Part after MDE registered transcode, which 503s, so bootstrap
+    /// fell through to HLS and re-encoded 4K for an audio-only veto. The probe has to sample the
+    /// remux `start.mkv` we would actually play.
+    #[test]
+    fn remote_auto_truehd_remux_probes_start_mkv_not_the_part() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        if !crate::net::global_init() || !crate::curlio::available() {
+            return;
+        }
+        restore_quality(Quality::Auto);
+        let probe_bytes = crate::abr::source_probe_plan(320, crate::abr::PROBE_BUDGET_MS)
+            .expect("tiny source still has a probe object")
+            .target_bytes;
+        let (port, rx, server) = plan_pms_with_start_mkv(6, MDE_TRANSCODE_COPY, probe_bytes);
+        let sid = crate::plex::register_for_test(
+            "mde-remote-truehd",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-remote-truehd-client",
+        );
+        crate::plex::client_for(sid)
+            .expect("registered")
+            .set_link(crate::plex::probe::Location::Remote);
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        let mut item = fourk_item(
+            sid,
+            vec![crate::metadata::Stream {
+                id: 36014,
+                index: 1,
+                lang_code: "eng".into(),
+                codec: "truehd".into(),
+                channels: 8,
+                default: true,
+                selected: true,
+                ..Default::default()
+            }],
+        );
+        item.bitrate = 320;
+        env.cached_item = Some(item);
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "truehd",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            requests
+                .iter()
+                .any(|line| line.contains("/decision?") && line.contains("hasMDE=1")),
+            "MDE was still asked: {requests:?}"
+        );
+        assert!(
+            !requests
+                .iter()
+                .any(|line| line.contains("GET /library/parts/")),
+            "a Part GET after transcode MDE is 503: {requests:?}"
+        );
+        assert!(
+            requests.iter().any(|line| line.contains("start.mkv")),
+            "Remote Auto must probe the remux: {requests:?}"
+        );
+        assert!(
+            plan.remux,
+            "TrueHD-only Remote Auto must codec-copy remux, not HLS-encode 4K: {}",
+            plan.url
+        );
+        assert!(
+            plan.url.contains("start.mkv"),
+            "the installed route is the remux: {}",
+            plan.url
+        );
+        assert!(
+            !requests.iter().any(|line| line.contains("/transcode/universal/stop")),
+            "a successful remux Original leaves the session for the play-path decision: {requests:?}"
+        );
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// TrueHD default `id=1` is what `env.audio_sid` still carries at resolve start.
+    /// MDE, the remux probe, the play-path PUT, and the installed start.mkv must all name the
+    /// AC3 sibling `id=2` that smart-DP will actually feed.
+    #[test]
+    fn remote_auto_truehd_remux_probe_names_the_ac3_sibling_not_env_audio_sid() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        if !crate::net::global_init() || !crate::curlio::available() {
+            return;
+        }
+        restore_quality(Quality::Auto);
+        let probe_bytes = crate::abr::source_probe_plan(320, crate::abr::PROBE_BUDGET_MS)
+            .expect("tiny source still has a probe object")
+            .target_bytes;
+        let (port, rx, server) = plan_pms_with_start_mkv(6, MDE_TRANSCODE_COPY, probe_bytes);
+        let sid = crate::plex::register_for_test(
+            "mde-remote-truehd-ids",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-remote-truehd-ids-client",
+        );
+        crate::plex::client_for(sid)
+            .expect("registered")
+            .set_link(crate::plex::probe::Location::Remote);
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.audio_sid = 1;
+        let mut item = fourk_item(
+            sid,
+            vec![
+                crate::metadata::Stream {
+                    id: 1,
+                    index: 0,
+                    lang_code: "eng".into(),
+                    codec: "truehd".into(),
+                    channels: 8,
+                    default: true,
+                    selected: true,
+                    ..Default::default()
+                },
+                crate::metadata::Stream {
+                    id: 2,
+                    index: 1,
+                    lang_code: "eng".into(),
+                    codec: "ac3".into(),
+                    channels: 6,
+                    ..Default::default()
+                },
+            ],
+        );
+        item.bitrate = 320;
+        env.cached_item = Some(item);
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "truehd",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        let mde = requests
+            .iter()
+            .find(|line| line.contains("/decision?") && line.contains("hasMDE=1"))
+            .unwrap_or_else(|| panic!("MDE was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(mde, "audioStreamID"),
+            Some("2"),
+            "MDE must see the AC3 sibling, not env.audio_sid=1: {mde}"
+        );
+        let remux_probe = requests
+            .iter()
+            .find(|line| {
+                line.contains("start.mkv")
+                    || (line.contains("/decision?")
+                        && line.contains("directPlay=0")
+                        && !line.contains("hasMDE=1"))
+            })
+            .unwrap_or_else(|| panic!("remux probe was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(remux_probe, "audioStreamID"),
+            Some("2"),
+            "remux probe must name the AC3 sibling, not env.audio_sid=1: {remux_probe}"
+        );
+        let put = requests
+            .iter()
+            .find(|line| line.contains("PUT /library/parts/"))
+            .unwrap_or_else(|| panic!("play-path PUT was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(put, "audioStreamID"),
+            Some("2"),
+            "PUT must select the AC3 sibling, not env.audio_sid=1: {put}"
+        );
+        assert!(
+            plan.url.contains("start.mkv"),
+            "Remote Auto remux installs start.mkv: {}",
+            plan.url
+        );
+        assert_eq!(
+            query_param(&plan.url, "audioStreamID"),
+            Some("2"),
+            "playback URL must name the AC3 sibling, not env.audio_sid=1: {}",
+            plan.url
+        );
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// 720p denies remux, so the encoder can transcode the selected DTS. Putting the smart-DP
+    /// AC3 sibling here replaced English with the Russian default (reproduced on PMS 1.43.4).
+    #[test]
+    fn a_720p_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        restore_quality(Quality::P720);
+        let (port, rx, server) = plan_pms(3, EMPTY_MC);
+        let sid = crate::plex::register_for_test(
+            "reencode-selected-dts",
+            "127.0.0.1",
+            port,
+            "token",
+            "reencode-selected-dts-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.quality = Quality::P720;
+        env.src_kbps = 48_000;
+        env.audio_sid = 0;
+        env.cached_item = Some(fourk_item(
+            sid,
+            vec![
+                crate::metadata::Stream {
+                    id: 2663,
+                    index: 0,
+                    lang_code: "rus".into(),
+                    codec: "ac3".into(),
+                    channels: 6,
+                    default: true,
+                    ..Default::default()
+                },
+                crate::metadata::Stream {
+                    id: 2669,
+                    index: 1,
+                    lang_code: "eng".into(),
+                    codec: "dca".into(),
+                    channels: 6,
+                    selected: true,
+                    ..Default::default()
+                },
+            ],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "dca",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            !plan.remux,
+            "720p must re-encode, not copy: {}",
+            plan.url
+        );
+        assert!(
+            plan.url.contains("start.mkv"),
+            "re-encode installs start.mkv: {}",
+            plan.url
+        );
+        let put = requests
+            .iter()
+            .find(|line| line.contains("PUT /library/parts/"))
+            .unwrap_or_else(|| panic!("play-path PUT was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(put, "audioStreamID"),
+            Some("2669"),
+            "PUT must keep selected English DTS, not the Russian AC3 sibling: {put}"
+        );
+        assert_eq!(
+            query_param(&plan.url, "audioStreamID"),
+            Some("2669"),
+            "start.mkv must name that DTS, not the AC3 sibling: {}",
+            plan.url
+        );
+        assert_eq!(plan.audio_sid, 2669);
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// 720p with a selected flag that only echoes the Russian default must still PUT English,
+    /// the same sibling smart-DP / pref-lang would copy. Treating that echo as a pick would
+    /// open The Morning Show in the foreign dub at 720p.
+    #[test]
+    fn a_720p_reencode_does_not_put_a_default_echo_over_english() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        restore_quality(Quality::P720);
+        let (port, rx, server) = plan_pms(3, EMPTY_MC);
+        let sid = crate::plex::register_for_test(
+            "reencode-default-echo",
+            "127.0.0.1",
+            port,
+            "token",
+            "reencode-default-echo-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.quality = Quality::P720;
+        env.src_kbps = 48_000;
+        env.audio_sid = 0;
+        env.cached_item = Some(fourk_item(
+            sid,
+            vec![
+                crate::metadata::Stream {
+                    id: 10975,
+                    index: 0,
+                    lang_code: "rus".into(),
+                    codec: "eac3".into(),
+                    channels: 6,
+                    default: true,
+                    selected: true,
+                    ..Default::default()
+                },
+                crate::metadata::Stream {
+                    id: 10976,
+                    index: 1,
+                    lang_code: "eng".into(),
+                    codec: "eac3".into(),
+                    channels: 6,
+                    ..Default::default()
+                },
+            ],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            !plan.remux,
+            "720p must re-encode, not copy: {}",
+            plan.url
+        );
+        assert!(
+            plan.url.contains("start.mkv"),
+            "re-encode installs start.mkv: {}",
+            plan.url
+        );
+        let put = requests
+            .iter()
+            .find(|line| line.contains("PUT /library/parts/"))
+            .unwrap_or_else(|| panic!("play-path PUT was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(put, "audioStreamID"),
+            Some("10976"),
+            "PUT must keep English, not the echoed Russian default: {put}"
+        );
+        assert_eq!(
+            query_param(&plan.url, "audioStreamID"),
+            Some("10976"),
+            "start.mkv must name English, not the echoed Russian default: {}",
+            plan.url
+        );
+        assert_eq!(plan.audio_sid, 10976);
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// 720p can transcode unselected English DTS when the smart-DP sibling is a foreign AC3.
+    /// Treating pref-lang as DP-only would keep the Russian copy the encoder does not need.
+    #[test]
+    fn a_720p_reencode_puts_pref_lang_dts_not_the_foreign_ac3_sibling() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        restore_quality(Quality::P720);
+        let (port, rx, server) = plan_pms(3, EMPTY_MC);
+        let sid = crate::plex::register_for_test(
+            "reencode-pref-lang-dts",
+            "127.0.0.1",
+            port,
+            "token",
+            "reencode-pref-lang-dts-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.quality = Quality::P720;
+        env.src_kbps = 48_000;
+        env.audio_sid = 0;
+        env.cached_item = Some(fourk_item(
+            sid,
+            vec![
+                crate::metadata::Stream {
+                    id: 2663,
+                    index: 0,
+                    lang_code: "rus".into(),
+                    codec: "ac3".into(),
+                    channels: 6,
+                    default: true,
+                    selected: true,
+                    ..Default::default()
+                },
+                crate::metadata::Stream {
+                    id: 2669,
+                    index: 1,
+                    lang_code: "eng".into(),
+                    codec: "dca".into(),
+                    channels: 6,
+                    ..Default::default()
+                },
+            ],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "dca",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            !plan.remux,
+            "720p must re-encode, not copy: {}",
+            plan.url
+        );
+        assert!(
+            plan.url.contains("start.mkv"),
+            "re-encode installs start.mkv: {}",
+            plan.url
+        );
+        let put = requests
+            .iter()
+            .find(|line| line.contains("PUT /library/parts/"))
+            .unwrap_or_else(|| panic!("play-path PUT was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(put, "audioStreamID"),
+            Some("2669"),
+            "PUT must name pref-lang English DTS, not the Russian AC3 sibling: {put}"
+        );
+        assert_eq!(
+            query_param(&plan.url, "audioStreamID"),
+            Some("2669"),
+            "start.mkv must name that DTS, not the AC3 sibling: {}",
+            plan.url
+        );
+        assert_eq!(plan.audio_sid, 2669);
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// Relay Auto cannot Original, so bootstrap installs HLS. The play-path PUT and start.m3u8
+    /// must still name selected English DTS, not the Russian AC3 sibling a remux would copy.
+    #[test]
+    fn a_auto_hls_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        restore_quality(Quality::Auto);
+        let (port, rx, server) = plan_pms(3, EMPTY_MC);
+        let sid = crate::plex::register_for_test(
+            "reencode-auto-hls-dts",
+            "127.0.0.1",
+            port,
+            "token",
+            "reencode-auto-hls-dts-client",
+        );
+        crate::plex::client_for(sid)
+            .expect("registered")
+            .set_link(crate::plex::probe::Location::Relay);
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.quality = Quality::Auto;
+        env.src_kbps = 48_000;
+        env.audio_sid = 0;
+        env.cached_item = Some(fourk_item(
+            sid,
+            vec![
+                crate::metadata::Stream {
+                    id: 2663,
+                    index: 0,
+                    lang_code: "rus".into(),
+                    codec: "ac3".into(),
+                    channels: 6,
+                    default: true,
+                    ..Default::default()
+                },
+                crate::metadata::Stream {
+                    id: 2669,
+                    index: 1,
+                    lang_code: "eng".into(),
+                    codec: "dca".into(),
+                    channels: 6,
+                    selected: true,
+                    ..Default::default()
+                },
+            ],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "dca",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            !plan.remux,
+            "Relay Auto must HLS-encode, not copy: {}",
+            plan.url
+        );
+        assert!(
+            plan.url.contains("start.m3u8"),
+            "Relay Auto installs start.m3u8: {}",
+            plan.url
+        );
+        let put = requests
+            .iter()
+            .find(|line| line.contains("PUT /library/parts/"))
+            .unwrap_or_else(|| panic!("play-path PUT was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(put, "audioStreamID"),
+            Some("2669"),
+            "PUT must keep selected English DTS, not the Russian AC3 sibling: {put}"
+        );
+        assert_eq!(
+            query_param(&plan.url, "audioStreamID"),
+            Some("2669"),
+            "start.m3u8 must name that DTS, not the AC3 sibling: {}",
+            plan.url
+        );
+        assert_eq!(plan.audio_sid, 2669);
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// A remux probe that registers `/decision` and then gets no `start.mkv` body must
+    /// physical-stop (`closeResourceSession=0`) so the HLS `/decision` on the same identity
+    /// is not 503'd. Closing the Streaming Resource would.
+    #[test]
+    fn remote_auto_failed_remux_sample_physical_stops_before_hls() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        if !crate::net::global_init() || !crate::curlio::available() {
+            return;
+        }
+        restore_quality(Quality::Auto);
+        let (port, rx, server) = plan_pms_with_start_mkv(8, MDE_TRANSCODE_COPY, 0);
+        let sid = crate::plex::register_for_test(
+            "mde-remote-truehd-stop",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-remote-truehd-stop-client",
+        );
+        crate::plex::client_for(sid)
+            .expect("registered")
+            .set_link(crate::plex::probe::Location::Remote);
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        let mut item = fourk_item(
+            sid,
+            vec![crate::metadata::Stream {
+                id: 36014,
+                index: 1,
+                lang_code: "eng".into(),
+                codec: "truehd".into(),
+                channels: 8,
+                default: true,
+                selected: true,
+                ..Default::default()
+            }],
+        );
+        item.bitrate = 320;
+        env.cached_item = Some(item);
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "truehd",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            requests.iter().any(|line| line.contains("start.mkv")),
+            "the remux probe still ran: {requests:?}"
+        );
+        let stop = requests
+            .iter()
+            .find(|line| line.contains("/transcode/universal/stop"))
+            .unwrap_or_else(|| panic!("failed remux sample must /stop: {requests:?}"));
+        assert_eq!(
+            query_param(stop, "closeResourceSession"),
+            Some("0"),
+            "physical-stop keeps the Streaming Resource for the HLS that follows: {stop}"
+        );
+        assert!(
+            !requests.iter().any(|line| {
+                line.contains("/transcode/universal/stop")
+                    && query_param(line, "closeResourceSession") == Some("1")
+            }),
+            "closeResourceSession=1 would 503 the next start: {requests:?}"
+        );
+        assert!(
+            !plan.remux,
+            "no remux sample → Auto falls through to HLS: {}",
+            plan.url
+        );
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// An empty / unusable MDE body must not fall back to Original — that Part GET 503s on 1.43.
+    /// Remux/re-encode via a separate registering decision is still allowed.
+    #[test]
+    fn unreachable_mde_does_not_return_the_part_url() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(4, EMPTY_MC);
+        let sid = crate::plex::register_for_test(
+            "mde-empty",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-empty-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            requests
+                .iter()
+                .any(|line| line.contains("/decision?") && line.contains("hasMDE=1")),
+            "MDE was still asked: {requests:?}"
+        );
+        assert!(
+            plan.url.contains("start.mkv"),
+            "no usable MDE → remux/re-encode, not Original: {}",
+            plan.url
+        );
+        assert!(
+            !plan.url.contains("/library/parts/36013/"),
+            "unreachable MDE must not serve the Part: {}",
+            plan.url
+        );
+        assert!(
+            plan.remux,
+            "HEVC+EAC3 with unreachable MDE still codec-copy remuxes: {}",
+            plan.url
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// Selected embedded SRT is client-rendered on Original. MDE must name that stream id
+    /// *and* `subtitles=none`: 1.43.4 400s hasMDE+directPlay with a selected subtitle and
+    /// the default `auto`. The mock PMS rejects that shape, so omitting the mode fail-closes
+    /// into remux + PUT sub=0 (the selected subtitle disappears).
+    #[test]
+    fn selected_embedded_srt_names_id_and_client_rendered_mode_on_mde() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
+        let sid = crate::plex::register_for_test(
+            "mde-srt",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-srt-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.cached_item = Some(fourk_item_with_subs(
+            sid,
+            vec![eac3_track()],
+            vec![selected_sub(55001, "srt")],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        let decision = requests
+            .iter()
+            .find(|line| line.contains("/decision?"))
+            .unwrap_or_else(|| panic!("MDE was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(decision, "subtitleStreamID"),
+            Some("55001"),
+            "MDE must evaluate the SRT track Original will render: {decision}"
+        );
+        assert_eq!(
+            query_param(decision, "subtitles"),
+            Some("none"),
+            "client-rendered mode; auto is the 1.43.4 400: {decision}"
+        );
+        assert!(
+            plan.url.contains("/library/parts/36013/"),
+            "selected SRT must stay Original, not remux: {}",
+            plan.url
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// Selected PGS is client-rendered on Original; MDE must see that stream id (and the profile
+    /// must list pgs) so the decision stays directplay.
+    #[test]
+    fn selected_pgs_names_subtitle_stream_id_on_mde() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
+        let sid =
+            crate::plex::register_for_test("mde-pgs", "127.0.0.1", port, "token", "mde-pgs-client");
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.cached_item = Some(fourk_item_with_subs(
+            sid,
+            vec![eac3_track()],
+            vec![selected_sub(99001, "pgs")],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        let decision = requests
+            .iter()
+            .find(|line| line.contains("/decision?"))
+            .unwrap_or_else(|| panic!("MDE was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(decision, "subtitleStreamID"),
+            Some("99001"),
+            "MDE must evaluate the PGS track Original will render: {decision}"
+        );
+        assert_eq!(
+            query_param(decision, "subtitles"),
+            Some("none"),
+            "named bitmap still client-rendered, not auto/burn: {decision}"
+        );
+        assert!(
+            plan.url.contains("/library/parts/36013/"),
+            "PGS + EAC3 stays Original when MDE allows: {}",
+            plan.url
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// A selected external sidecar is not in the container — Original leaves subs off. MDE must
+    /// see subtitleStreamID=0 so it does not force a burn/transcode for a sub we will not render.
+    #[test]
+    fn external_selected_sub_sends_subtitle_stream_id_zero_on_mde() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
+        let sid = crate::plex::register_for_test(
+            "mde-ext-sub",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-ext-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.cached_item = Some(fourk_item_with_subs(
+            sid,
+            vec![eac3_track()],
+            vec![{
+                let mut s = selected_sub(88001, "srt");
+                s.external = true;
+                s
+            }],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        let decision = requests
+            .iter()
+            .find(|line| line.contains("/decision?"))
+            .unwrap_or_else(|| panic!("MDE was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(decision, "subtitleStreamID"),
+            Some("0"),
+            "sidecar is not burned on Original: {decision}"
+        );
+        assert_ne!(
+            query_param(decision, "subtitleStreamID"),
+            Some("88001"),
+            "must not advertise the external id: {decision}"
+        );
+        assert!(
+            plan.url.contains("/library/parts/36013/"),
+            "MDE with subs off stays Original: {}",
+            plan.url
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// Selected embedded `mov_text` (iTunes MP4) is client-rendered; the profile lists it so
+    /// MDE must see the stream id and stay Original rather than re-encoding.
+    #[test]
+    fn selected_mov_text_names_subtitle_stream_id_on_mde() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
+        let sid = crate::plex::register_for_test(
+            "mde-mov-text",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-mov-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.cached_item = Some(fourk_item_with_subs(
+            sid,
+            vec![eac3_track()],
+            vec![selected_sub(77001, "mov_text")],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        let decision = requests
+            .iter()
+            .find(|line| line.contains("/decision?"))
+            .unwrap_or_else(|| panic!("MDE was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(decision, "subtitleStreamID"),
+            Some("77001"),
+            "MDE must evaluate the mov_text track Original will render: {decision}"
+        );
+        assert!(
+            plan.url.contains("/library/parts/36013/"),
+            "mov_text + EAC3 stays Original when MDE allows: {}",
+            plan.url
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// PMS reports DVD bitmaps as `dvd_subtitle`; listing only `dvd` would MDE-transcode and
+    /// then forbid remux. The stream id must land on `/decision`.
+    #[test]
+    fn selected_dvd_subtitle_names_subtitle_stream_id_on_mde() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
+        let sid = crate::plex::register_for_test(
+            "mde-dvd-sub",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-dvd-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.cached_item = Some(fourk_item_with_subs(
+            sid,
+            vec![eac3_track()],
+            vec![selected_sub(66001, "dvd_subtitle")],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        let decision = requests
+            .iter()
+            .find(|line| line.contains("/decision?"))
+            .unwrap_or_else(|| panic!("MDE was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(decision, "subtitleStreamID"),
+            Some("66001"),
+            "MDE must evaluate the dvd_subtitle track: {decision}"
+        );
+        assert!(
+            plan.url.contains("/library/parts/36013/"),
+            "dvd_subtitle + EAC3 stays Original when MDE allows: {}",
+            plan.url
+        );
+        crate::plex::reset_servers_for_test();
     }
 
     /// The gate's verdict reaches the session, and it is the SOURCE codec that decides it.
