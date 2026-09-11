@@ -28,6 +28,7 @@ pub mod icons;
 pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it stops repainting
 pub mod info_panel;
 pub mod item_menu; // press-and-hold card context menu (Go to Show / Mark as Watched / Play from Start)
+pub(crate) mod jail_repair;
 #[cfg(feature = "lab-diagnostics")]
 pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — see `crate::lab`)
 pub mod label;

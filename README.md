@@ -72,7 +72,10 @@ If your set is in the middle, [tell me what happened](https://github.com/GLinnik
 
 You need a Plex account and server, and a way to install unsigned apps: the
 [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel) or LG Developer Mode. You do
-**not** need a rooted TV — the app runs in LG's normal sandbox like anything else on the set.
+**not** normally need a rooted TV — the app runs in LG's normal sandbox. Some Realtek sets
+need a [sandbox repair for native video](docs/native-video-sandbox.md). The in-app repair
+requires rooted Homebrew Channel access. An experimental
+[non-root Developer Mode guide](docs/non-root-video-sandbox.md) covers LG’s signed configuration option.
 
 Grab the `.ipk` from the [latest release](https://github.com/GLinnik21/plx-native/releases) and
 install it with the Homebrew Channel or

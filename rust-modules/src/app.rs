@@ -5513,29 +5513,50 @@ unsafe fn key_item_menu(
 /// picture. Nothing that is not drawn may be driven — the rule `ControlSlot::UpNext` states and
 /// `up_next::card_active` already keeps for the post-play card.
 ///
-/// Two exceptions are painted on the read-out: BACK returns, while OK opens the shared quality
-/// ladder on its current rung.  Selecting that rung is a plain retry; selecting another starts the
-/// same item under the new policy.  A failure is therefore terminal for the Engine, not a trap for
-/// the viewer.
+/// BACK returns. For ordinary failures, OK opens the shared quality ladder on its current rung:
+/// selecting that rung retries, and selecting another starts the same item under the new policy.
+/// The sandbox failure instead offers an explicit repair confirmation while its repair is idle;
+/// running or terminal repair outcomes have no forward action.
 ///
 /// This arm's guard still swallows Menu / Info / Chapters while the transport is absent.  It
 /// explicitly exempts the More route it opened, so only that visible recovery panel reaches the
 /// ordinary modal key arm beneath it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FailedKeyAction {
-    ChooseQuality,
+    Primary,
     Return,
     Ignore,
 }
 
 fn failed_key_action(ok: bool, back: bool) -> FailedKeyAction {
     if ok {
-        FailedKeyAction::ChooseQuality
+        FailedKeyAction::Primary
     } else if back {
         FailedKeyAction::Return
     } else {
         FailedKeyAction::Ignore
     }
+}
+
+fn failure_primary(
+    repair: &mut crate::ui::jail_repair::Controller,
+    route: &mut Route,
+) {
+    let error = crate::player::error_now();
+    match crate::ui::jail_repair::primary_action(error.kind, repair.state()) {
+        crate::ui::jail_repair::PrimaryAction::Quality => {
+            crate::ui::more_menu::open_quality();
+            *route = Route::Player { overlay: Overlay::More };
+        }
+        crate::ui::jail_repair::PrimaryAction::Repair => repair.open(),
+        crate::ui::jail_repair::PrimaryAction::None => {}
+    }
+}
+
+fn jail_failure_subject(route: Route) -> bool {
+    matches!(route, Route::Player { .. })
+        && crate::ui::player_hud::transport_hidden()
+        && crate::player::error_now().kind == crate::player::FailureKind::JailMissingRtkmem
 }
 
 fn key_player_failed(
@@ -5546,16 +5567,14 @@ fn key_player_failed(
     play_from: &Node,
     refresh_hubs_at: &mut u32,
     trail: &mut Trail,
+    repair: &mut crate::ui::jail_repair::Controller,
 ) {
     match failed_key_action(is_ok(sym), is_back(sym, wcode)) {
-        FailedKeyAction::ChooseQuality => {
-            crate::ui::more_menu::open_quality();
-            *route = Route::Player {
-                overlay: Overlay::More,
-            };
-        }
+        FailedKeyAction::Primary => failure_primary(repair, route),
         FailedKeyAction::Return => {
-            if matches!(modal_of(*route), Modal::None) {
+            if crate::player::error_now().kind == crate::player::FailureKind::JailMissingRtkmem
+                || matches!(modal_of(*route), Modal::None)
+            {
                 exit_player(mt, route, play_from, refresh_hubs_at, trail);
             } else {
                 close_player_overlays();
@@ -5576,7 +5595,7 @@ mod failed_player_input_tests {
     fn a_terminal_failure_has_a_forward_escape_and_a_back_escape() {
         assert_eq!(
             failed_key_action(true, false),
-            FailedKeyAction::ChooseQuality
+            FailedKeyAction::Primary
         );
         assert_eq!(failed_key_action(false, true), FailedKeyAction::Return);
         assert_eq!(failed_key_action(false, false), FailedKeyAction::Ignore);
@@ -7395,6 +7414,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // Settings/Consent/Legal's `on_updown`/`on_left_right` — see `on_auto_repeat`'s doc.
         let mut modal_repeat = RepeatGate::IDLE;
         let mut hud = HudState::IDLE;
+        let mut jail_repair = crate::ui::jail_repair::Controller::new();
         let mut marker_tried = false; // dev: the /tmp/plxnative-marker jump has been resolved
         let mut foreground = ForegroundLifecycle::IDLE;
         let mut repause_at = 0i64;
@@ -7894,17 +7914,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         );
                         continue;
                     }
-                    // A failure owns the frame, except for the recovery-quality popover it opened
-                    // itself.  Stale Menu / Info / Chapters panels remain unreachable; More is the
-                    // one drawn and drivable escape promised by the failure read-out.
+                    if jail_failure_subject(route) && jail_repair.visible() {
+                        let _ = jail_repair.key(
+                            mt,
+                            sym == SDLK_LEFT,
+                            sym == SDLK_RIGHT,
+                            is_ok(sym),
+                            is_back(sym, wcode),
+                        );
+                        continue;
+                    }
+                    // A failure owns the frame, except for the recovery-quality popover an ordinary
+                    // failure opened itself. A jail failure never exposes More; even a stale More
+                    // route is swallowed here and its hidden controls remain unreachable.
                     if matches!(route, Route::Player { .. })
                         && crate::ui::player_hud::transport_hidden()
-                        && !matches!(
-                            route,
-                            Route::Player {
-                                overlay: Overlay::More
-                            }
-                        )
+                        && (!matches!(route, Route::Player { overlay: Overlay::More })
+                            || jail_failure_subject(route))
                     {
                         key_player_failed(
                             mt,
@@ -7914,6 +7940,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             &play_from,
                             &mut refresh_hubs_at,
                             &mut trail,
+                            &mut jail_repair,
                         );
                         continue;
                     }
@@ -8118,6 +8145,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     ptr.prev_mx = mx;
                     ptr.prev_my = my;
+                    if jail_failure_subject(route) && jail_repair.visible() {
+                        continue;
+                    }
                     if matches!(route, Route::Player { .. }) {
                         // Player owns this arm before the generic per-route hover ladder below, so
                         // the overflow popover must be dispatched here.  Otherwise its later
@@ -8253,6 +8283,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::press::cancel();
                         ok_armed = false;
                     }
+                    if jail_failure_subject(route) && jail_repair.visible() {
+                        let (cx, cy) = ptr_xy(&ev);
+                        let _ = jail_repair.press_at(mt, cx, cy);
+                        continue;
+                    }
                     // Rule 11's click half. These two used to `continue` unconditionally, which
                     // is why Privacy & Data answered neither hover nor click: an answer pill, a
                     // Done, a document row and a delete-confirmation answer were all unclickable.
@@ -8286,24 +8321,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         continue;
                     }
                     // …and the pointer's half of the same rule.  The erased transport geometry is
-                    // still inert, but the read-out now exposes one real target: choose quality.
-                    // Once that opens More, the popover owns clicks through the ordinary modal arm
-                    // below; every other click on the failed frame remains nothing.
+                    // still inert, but the read-out exposes one real primary target: quality for an
+                    // ordinary failure, repair confirmation for an idle jail failure. Both key and
+                    // pointer use `failure_primary`; every other failed-frame click remains inert.
                     if matches!(route, Route::Player { .. })
                         && crate::ui::player_hud::transport_hidden()
-                        && !matches!(
-                            route,
-                            Route::Player {
-                                overlay: Overlay::More
-                            }
-                        )
+                        && (!matches!(route, Route::Player { overlay: Overlay::More })
+                            || jail_failure_subject(route))
                     {
                         let (cx, cy) = ptr_xy(&ev);
                         if crate::ui::player_hud::failure_quality_hit(cx, cy) {
-                            crate::ui::more_menu::open_quality();
-                            route = Route::Player {
-                                overlay: Overlay::More,
-                            };
+                            failure_primary(&mut jail_repair, &mut route);
                         }
                         continue;
                     }
@@ -8692,6 +8720,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 } else if et == SDL_MOUSEWHEEL {
                     last_input = SDL_GetTicks();
+                    if jail_failure_subject(route) && jail_repair.visible() {
+                        continue;
+                    }
                     if last_input.wrapping_sub(ptr.last_wheel) > 250 {
                         ptr.last_wheel = last_input;
                         // **The host reads a DIFFERENT offset, and this one is not the LG-fork
@@ -10388,6 +10419,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             crate::ui::legal::update(dt);
             crate::ui::consent::update(dt);
             crate::ui::settings::update(dt);
+            let jail_subject = jail_failure_subject(route);
+            jail_repair.update(jail_subject, dt);
             // Self-gated on `Popover::visible`, NOT on the route — the same rule the draw sites
             // below obey, and for the same reason. These two popovers are also ROUTES, so
             // dismissing one flips `route` back to its host page on the press frame while the
@@ -10659,11 +10692,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // HUD) keeps its message instead of vanishing with the 4.5 s linger. AFTER the
                             // transport, so it is never dimmed by the scrim; BEFORE the overlay panels
                             // below, so an open Info card / Chapters strip still covers it.
-                            crate::ui::player_hud::draw_readout(busy, now);
+                            crate::ui::player_hud::draw_readout(busy, now, jail_repair.state());
+                            jail_repair.draw();
                             // Stale content panels are gated on the SAME failure as the transport.
-                            // More is the deliberate exception: the failed read-out opens that shared
-                            // quality picker as its recovery path, so it must remain visible and
-                            // drivable over the black failure ground.
+                            // More is the ordinary-failure exception: its read-out opens that shared
+                            // quality picker as recovery. Jail failures suppress even a stale More.
                             let panels = !crate::ui::player_hud::transport_hidden();
                             if panels
                                 && matches!(
@@ -10700,7 +10733,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 Route::Player {
                                     overlay: Overlay::More
                                 }
-                            ) {
+                            ) && (!crate::ui::player_hud::transport_hidden()
+                                || crate::player::error_now().kind
+                                    != crate::player::FailureKind::JailMissingRtkmem)
+                            {
                                 crate::ui::more_menu::draw();
                             }
                             // LAST, over everything including the centred "Buffering…" read-out whose

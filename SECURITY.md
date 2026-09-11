@@ -20,6 +20,15 @@ you in the release note unless you ask me not to.
 The app, its packaging, and the host-side tools in `tools/` and `ci/`. Concretely, the things worth
 looking at:
 
+- **The native-video sandbox repair.** On the affected Realtek sandbox failure, a viewer can
+  explicitly confirm a repair through Homebrew Channel's local `exec` service. The app itself
+  stays unprivileged; the existing Homebrew Channel service must already run as root. The
+  request runs LG's jailer with its `native` profile for this install only, after validating
+  the app id and exact installation path. It accepts no shell command from a server, media
+  item, or text input. No repair runs automatically at boot or on a playback attempt, and
+  only one repair attempt is admitted per process. A timeout does not prove the remote
+  command stopped, so it never automatically retries. Bypassing confirmation, targeting
+  another application, or injecting shell syntax into this operation is in scope.
 - **The `/tmp` trigger surface.** `/tmp` is mode 1777 in webOS's production jail, so any co-resident
   process can create files there. Roughly forty `plxnative-*` files change behaviour, and three are
   outright takeovers — `plxnative-token` beats the signed-in session, `plxnative-servers` injects a

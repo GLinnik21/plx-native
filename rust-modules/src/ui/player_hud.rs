@@ -720,7 +720,11 @@ fn readout_frame() -> Rect {
 /// `is_busy()`, hence not covered by `app.rs`'s `|| player::loading()` HUD pin — "Playback failed"
 /// disappeared 4.5 s in with the HUD linger, leaving exactly the silent black screen the read-out
 /// exists to prevent. A read-out is not transport chrome.
-pub(crate) fn draw_readout(busy: Busy, now: u32) {
+pub(crate) fn draw_readout(
+    busy: Busy,
+    now: u32,
+    jail_repair: crate::webos::jail_repair::State,
+) {
     let Busy::Readout(kind, caption) = busy else {
         return;
     };
@@ -731,7 +735,7 @@ pub(crate) fn draw_readout(busy: Busy, now: u32) {
         // spinner overlay. The caption is not drawn here: the verdict line is constant by design
         // ("lands at the same y in all three variants, so a user who has seen it once recognises
         // it before reading") and the caption's suffix is re-derived as the reason.
-        return draw_failed_readout(Painter::root());
+        return draw_failed_readout(Painter::root(), jail_repair);
     }
     StatusOverlay::new(readout_frame(), caption, kind)
         .phase(now)
@@ -767,11 +771,11 @@ const FR_HINT_GAP: f32 = 56.0;
 /// bottom band and below the BACK line's pointer exclusion (the test pins both).
 const FR_SUPPORT_TOP: f32 = FR_HINT_TOP + FR_HINT_GAP + theme::space::XL;
 
-/// Pointer target for the only forward action on a failed playback.
+/// Pointer target for the forward action on a failed playback.
 ///
 /// The visible line is a key-cap hint rather than a large button, but Magic Remote users still
-/// need the same escape as D-pad users.  The broad centred band includes the whole “choose quality
-/// or retry” sentence and deliberately excludes the BACK line beneath it.
+/// need the same escape as D-pad users. The broad centred band includes either the quality/retry or
+/// sandbox-repair sentence and deliberately excludes the BACK line beneath it.
 const FR_QUALITY_HIT: Rect = Rect::new(570.0, FR_HINT_TOP - 12.0, 780.0, 54.0);
 
 pub(crate) fn failure_quality_hit(x: f32, y: f32) -> bool {
@@ -793,8 +797,29 @@ fn fr_line(p: Painter, text: &std::ffi::CStr, top: f32, sz: i32, bold: i32, col:
     );
 }
 
-fn draw_failed_readout(p: Painter) {
+fn draw_failed_readout(p: Painter, jail_repair: crate::webos::jail_repair::State) {
     let e = crate::player::error_now();
+    let jail = e.kind == crate::player::FailureKind::JailMissingRtkmem;
+    let (readout, detail) = if jail {
+        use crate::webos::jail_repair::State;
+        match jail_repair {
+            State::Idle => (
+                "This TV’s sandbox blocks access to /dev/rtkmem",
+                "Repair needs rooted Homebrew Channel access · Help: github.com/GLinnik21/plx-native/issues/74",
+            ),
+            State::Running => ("Repairing sandbox…", ""),
+            State::Repaired => (
+                "Sandbox repaired",
+                "Fully close and reopen PlxNative before trying playback again.",
+            ),
+            State::Failed(failure) => (
+                failure.message(),
+                "Help: github.com/GLinnik21/plx-native/issues/74",
+            ),
+        }
+    } else {
+        (e.readout, e.detail.as_ref())
+    };
     // The GROUND, first: `Player Screen.dc.html` gives the failed variant `inset:0; background:#000`
     // — a full-bleed opaque black — and it is one quad. Without it this layout stood on whatever the
     // video plane happened to be holding: `app.rs` clears the graphics plane to alpha 0 on the player
@@ -823,8 +848,8 @@ fn draw_failed_readout(p: Painter) {
     // the reason slot: line one is the reason; line two is EITHER the server's own sentence (a
     // `/decision` refusal) or — only ever on a known-free server — the subscription FACT. Never
     // both: see `FR_SLOT_LINE2`.
-    if !e.readout.is_empty() {
-        if let Ok(c) = std::ffi::CString::new(e.readout) {
+    if !readout.is_empty() {
+        if let Ok(c) = std::ffi::CString::new(readout) {
             fr_line(
                 p,
                 &c,
@@ -835,7 +860,7 @@ fn draw_failed_readout(p: Painter) {
             );
         }
     }
-    if !e.detail.is_empty() {
+    if !detail.is_empty() {
         // The SERVER's sentence, quoted verbatim at CAPTION/tertiary: quieter than the reason above
         // it because it is supporting evidence, and a size below it because it is the only line here
         // whose length we do not control. `max_lines(2)` is the honest clamp — one wrap keeps the
@@ -843,7 +868,7 @@ fn draw_failed_readout(p: Painter) {
         // one-line elide would cut exactly the words worth reading. A second line paints past the
         // reserved slot into the gap above the hint, which is paint, not layout: the hint's y is a
         // constant and does not move.
-        crate::ui::text_view::TextView::new(&e.detail, theme::size::CAPTION, theme::TEXT_TERTIARY)
+        crate::ui::text_view::TextView::new(detail, theme::size::CAPTION, theme::TEXT_TERTIARY)
             .h(crate::ui::label::HAlign::Center)
             .max_lines(2)
             .draw(
@@ -871,15 +896,26 @@ fn draw_failed_readout(p: Painter) {
         let cy = line_top + (baseline - cap_top) * 0.5;
         crate::ui::widgets::pass_capsule(p, x + ww + GAP, cy, true);
     }
-    // Both exits stay visible.  OK enters the shared quality ladder (selecting the current rung is
-    // a plain retry); BACK still leaves the player.  The key caps are what survive a phone photo.
-    draw_hint_with_keycap(
-        p,
-        c"Press",
-        c"OK",
-        c"to choose quality or retry",
-        FR_HINT_TOP,
-    );
+    // BACK always stays visible. OK names the currently available recovery: the quality ladder
+    // for ordinary failures, or sandbox repair while idle. Running and terminal repairs have no
+    // forward action. The key caps must remain legible in a phone photo.
+    match crate::ui::jail_repair::primary_action(e.kind, jail_repair) {
+        crate::ui::jail_repair::PrimaryAction::Quality => draw_hint_with_keycap(
+            p,
+            c"Press",
+            c"OK",
+            c"to choose quality or retry",
+            FR_HINT_TOP,
+        ),
+        crate::ui::jail_repair::PrimaryAction::Repair => draw_hint_with_keycap(
+            p,
+            c"Press",
+            c"OK",
+            c"to repair the sandbox",
+            FR_HINT_TOP,
+        ),
+        crate::ui::jail_repair::PrimaryAction::None => {}
+    }
     draw_hint_with_keycap(
         p,
         c"Press",

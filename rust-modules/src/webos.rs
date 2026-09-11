@@ -34,6 +34,8 @@
 //! shape for something that must never keep the app from booting.
 use std::sync::OnceLock;
 
+pub(crate) mod jail_repair;
+
 const OS_INFO: &str = "/var/run/nyx/os_info.json";
 
 /// What the set said about itself. Owned strings rather than borrows into the file, because the
@@ -111,6 +113,7 @@ pub(crate) fn probe() {
     let _ = INFO.set(info);
     probe_hw();
     probe_jail();
+    jail_repair::probe_if_armed();
 }
 
 // ---- which SET this is, as opposed to which webOS ---------------------------------------------

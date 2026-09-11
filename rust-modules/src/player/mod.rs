@@ -770,29 +770,19 @@ fn runtime_failure(
 /// legibility from a phone photograph, same bar as every other arm here; the remedy's detail goes
 /// in `detail`.
 ///
-/// **The remedy text was wrong from 2026-08 until this fix, and it was a real claim, not a
-/// hedge**: it told the reader that reinstalling through the Homebrew Channel "should carry the
-/// jailer fix that adds the missing device file" — citing PR #202
-/// (webosbrew/webos-homebrew-channel). PR #202 merged 2024-12-25, but PR #211 reverted it on
-/// 2025-02-26, and it never shipped in any tagged Homebrew Channel release (v0.7.2 predates the
-/// merge, v0.7.3 postdates the revert) — so nobody who reinstalled through the channel on this
-/// screen's advice ever actually got the fix. A k5lp reporter did exactly that, on channel v0.7.3,
-/// and still hit this refusal. PR #202 stays cited because it is still the community record of the
-/// *condition* — that the `native_devmode` jail on k5lp/k3lp omits `/dev/rtkmem` — which remains
-/// true; only the claimed remedy was false. The surviving community-tier remedy is LG's own signed
-/// `jail_app.conf`, installed by `mariotaku/kodi.addon.webos-jailer-fix`, which requires a full
-/// power-cycle (unplug ~10s) to take effect — named here as where the community has looked, not as
-/// something this app verifies or stands behind.
+/// The former Kodi-only workaround copy is gone. The confirmed repair now runs LG's native jailer
+/// profile only after an explicit confirmation. The issue #74 transcript records the command
+/// creating the missing node; the reporter separately confirmed playback afterward. The evidence
+/// and limits are kept in `docs/native-video-sandbox.md`; this shape stays within the read-out's
+/// two-line detail budget.
 fn jail_error_shape() -> ErrorShape {
     ErrorShape {
         kind: FailureKind::JailMissingRtkmem,
         caption: c"Playback failed — this TV's sandbox blocks native video",
-        panel: "this install's sandbox does not give the app /dev/rtkmem, found on this chassis to crash native video (community-tier finding)",
+        panel: "this install's sandbox blocks access to /dev/rtkmem; PlxNative can offer a confirmed repair through rooted Homebrew Channel access",
         readout: "This set's sandbox does not give the app /dev/rtkmem",
         detail: std::borrow::Cow::Borrowed(
-            "Found, on this chassis, to crash native video apps (community record: webosbrew/webos-homebrew-channel PR #202). \
-             Reinstalling through the Homebrew Channel does NOT fix this — that jailer change was reverted before any release shipped it. \
-             The community's own workaround, unverified here, is the mariotaku/kodi.addon.webos-jailer-fix add-on, which needs a full power-cycle to take effect.",
+            "Repair requires a rooted TV and Homebrew Channel access. See github.com/GLinnik21/plx-native/issues/74 for help.",
         ),
         no_pass: false,
     }

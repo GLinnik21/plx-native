@@ -25,7 +25,7 @@ Two routes, and one of them is better:
 
 **Developer Mode expires.** LG ends a Dev Mode session after about 1000 hours and *uninstalls the apps installed through it* when it does. dev-manager-desktop can renew the session before that happens; the Homebrew Channel has no expiry at all. This is the whole reason for the ranking.
 
-**You do not need a rooted television.** The app runs in LG's normal sandbox: an unprivileged uid, chrooted, under the stock jail profile, with no capabilities and no `requiredPermissions` declared. Root matters only for the development loop, not for using it.
+**Normal use does not require a rooted television.** The app runs as an unprivileged uid inside LG's sandbox, with no capabilities and no `requiredPermissions` declared. Some Realtek sets have an incomplete sandbox that blocks native video; the [in-app issue #74 repair](native-video-sandbox.md) requires rooted Homebrew Channel access. For unrooted Developer Mode installs, the [signed-configuration guide](non-root-video-sandbox.md) describes a separate option that still needs confirmation on the affected hardware.
 
 ## Checking what you downloaded
 
