@@ -183,10 +183,8 @@ impl TempSession {
     /// observable at all; leaving the profile unset is the neutral start, since a test that cares
     /// which profile it is says so with [`TempSession::watching`].
     pub(crate) fn new(tag: &str) -> TempSession {
-        let dir = std::env::temp_dir().join(format!(
-            "plxnative-session-{}-{tag}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("plxnative-session-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a writable temp dir");
         redirect_for_test(Some(dir.join("auth.json")));
@@ -350,6 +348,16 @@ pub struct Session {
     /// instead of making the credentials file fail to parse.
     #[serde(default, deserialize_with = "de_soft_playback_quality")]
     pub(crate) playback_quality: Option<PlaybackQuality>,
+    /// **Automatically Sign In** — skip the boot who's-watching picker and enter as
+    /// [`Session::user`]. Install-wide, not per profile: the boot gate reads it before anyone is
+    /// seated this run. Absence is **off**, which is today's picker. Enabling it from Settings
+    /// while a profile is already active is an explicit opt-in to skip that profile's PIN on the
+    /// next launch; BACK out of the picker still refuses a protected resume when this is off.
+    ///
+    /// Soft-parsed so a hand-edited or future-shaped value costs the preference, never the
+    /// credentials.
+    #[serde(default, deserialize_with = "de_soft_bool")]
+    pub(crate) auto_sign_in: bool,
     /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
     /// rendered on this television, so a route in the Settings/first-run family that opens
     /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
@@ -391,6 +399,17 @@ pub(crate) fn record_last_hero(blur: [[f32; 3]; 4]) -> bool {
 /// never rendered one.
 pub(crate) fn last_hero() -> Option<[[f32; 3]; 4]> {
     load().last_hero_blur
+}
+
+/// Persist Automatically Sign In through [`update`], so a concurrent roster/recents write cannot
+/// lose the switch. Returns whether the file was rewritten.
+pub(crate) fn set_auto_sign_in(on: bool) -> bool {
+    update(|cur| {
+        if cur.auto_sign_in == on {
+            return None;
+        }
+        Some(cur.with_auto_sign_in(on))
+    })
 }
 
 /// The persisted playback-quality modes. The spelling on disk is explicit rather than derived
@@ -931,6 +950,17 @@ where
     Ok(serde_json::from_value::<Option<PlaybackQuality>>(v).unwrap_or(None))
 }
 
+/// A preference switch: garbage degrades to off rather than failing the enclosing [`Session`].
+fn de_soft_bool<'de, D>(d: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(false);
+    };
+    Ok(v.as_bool().unwrap_or(false))
+}
+
 impl Session {
     /// Record (or replace) the cached credentials for one profile — the online switch's write.
     pub fn remember_profile(&mut self, creds: ProfileCreds) {
@@ -971,9 +1001,9 @@ impl Session {
         if uuid.is_empty() {
             return None;
         }
-        self.profiles
-            .iter()
-            .find(|p| p.uuid == uuid && !p.user.token.is_empty() && !p.server.origin().host().is_empty())
+        self.profiles.iter().find(|p| {
+            p.uuid == uuid && !p.user.token.is_empty() && !p.server.origin().host().is_empty()
+        })
     }
 
     /// The effective persisted playback quality. Absence is the literal legacy migration rule:
@@ -987,6 +1017,36 @@ impl Session {
         let mut next = self.clone();
         next.playback_quality = Some(quality);
         next
+    }
+
+    pub(crate) fn auto_sign_in(&self) -> bool {
+        self.auto_sign_in
+    }
+
+    /// Record the Settings switch while leaving every unrelated session field intact.
+    pub(crate) fn with_auto_sign_in(&self, on: bool) -> Self {
+        let mut next = self.clone();
+        next.auto_sign_in = on;
+        next
+    }
+
+    /// Interactive boot with a multi-user Plex Home shows the who's-watching picker unless
+    /// Automatically Sign In is on and a profile is already seated.
+    ///
+    /// `force_pick` is `/tmp/plxnative-pickuser`: it wins even on an automated boot. An empty
+    /// `user.uuid` still raises the picker when the switch is on — that is the abandoned-at-picker
+    /// session whose PMS token falls back to the owner.
+    pub(crate) fn boot_shows_picker(&self, automated: bool, force_pick: bool) -> bool {
+        if !self.can_go_local() || self.home_users.len() <= 1 {
+            return false;
+        }
+        if force_pick {
+            return true;
+        }
+        if automated {
+            return false;
+        }
+        !(self.auto_sign_in && !self.user.uuid.is_empty())
     }
 
     /// True once we have a LAN server + a usable PMS token — i.e. we can run offline.
@@ -1997,6 +2057,114 @@ mod tests {
         assert_eq!(legacy.playback_quality(), PlaybackQuality::Original);
     }
 
+    /// A missing Automatically Sign In field is today's picker, not an invitation to skip it.
+    #[test]
+    fn a_legacy_session_with_no_auto_sign_in_stays_off() {
+        let s: Session = serde_json::from_str(two_server_json()).expect("the legacy file parses");
+        assert!(
+            !s.auto_sign_in(),
+            "absence is off, which is the picker every existing television already knows"
+        );
+    }
+
+    /// Garbage on a preference switch must not sign the device out.
+    #[test]
+    fn invalid_auto_sign_in_is_soft_and_off() {
+        for value in [r#""yes""#, "null", "1", r#"{"on":true}"#] {
+            let json = format!(
+                r#"{{"client_id":"c","account_token":"acct",
+                     "server":{{"address":"192.168.0.10","port":32400,"token":"t"}},
+                     "auto_sign_in":{value}}}"#
+            );
+            let s: Session = serde_json::from_str(&json)
+                .expect("bad preference metadata cannot fail credentials");
+            assert_eq!(s.account_token, "acct");
+            assert!(s.can_go_local());
+            assert!(!s.auto_sign_in(), "{value}");
+        }
+    }
+
+    fn dialable_home(users: usize, uuid: &str, auto: bool) -> Session {
+        let home_users = (0..users)
+            .map(|i| HomeUserRef {
+                uuid: format!("u-{i}"),
+                title: format!("User {i}"),
+                protected: i == 0,
+                admin: i == 0,
+                ..Default::default()
+            })
+            .collect();
+        Session {
+            client_id: "c".into(),
+            account_token: "acct".into(),
+            server: ServerRef {
+                address: "192.168.0.10".into(),
+                port: 32400,
+                token: "t".into(),
+                ..Default::default()
+            },
+            user: UserRef {
+                uuid: uuid.into(),
+                token: "ut".into(),
+                ..Default::default()
+            },
+            home_users,
+            auto_sign_in: auto,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn boot_shows_picker_table() {
+        let multi_off = dialable_home(2, "u-0", false);
+        assert!(
+            multi_off.boot_shows_picker(false, false),
+            "multi-user interactive still raises the picker when the switch is off"
+        );
+        assert!(
+            !multi_off.boot_shows_picker(true, false),
+            "an automated boot still skips the picker"
+        );
+        assert!(
+            multi_off.boot_shows_picker(true, true),
+            "pickuser forces the picker even on an automated boot"
+        );
+
+        let multi_on = dialable_home(2, "u-0", true);
+        assert!(
+            multi_on.home_users[0].protected,
+            "u-0 is the PIN-protected admin in this fixture"
+        );
+        assert!(
+            !multi_on.boot_shows_picker(false, false),
+            "the switch skips the picker when a profile is seated, PIN included"
+        );
+        assert!(
+            multi_on.boot_shows_picker(false, true),
+            "pickuser still forces the picker when the switch is on"
+        );
+
+        let abandoned = dialable_home(2, "", true);
+        assert!(
+            abandoned.boot_shows_picker(false, false),
+            "an empty uuid still raises the picker so the owner's token is not handed out"
+        );
+
+        let solo = dialable_home(1, "u-0", false);
+        assert!(
+            !solo.boot_shows_picker(false, false),
+            "a one-person account already skips the picker"
+        );
+        assert!(!dialable_home(1, "u-0", true).boot_shows_picker(false, false));
+
+        let mut undialable = dialable_home(2, "u-0", false);
+        undialable.server = ServerRef::default();
+        assert!(
+            !undialable.boot_shows_picker(false, false),
+            "this helper is not the QR path: no local session, no picker"
+        );
+    }
+
     /// The other side of the gate: once an origin IS written down it is what gets dialled, and it
     /// beats the address pair beside it. That is not a tie-break for its own sake — for an https
     /// server the two genuinely differ (the certificate is issued for the `plex.direct` NAME, not
@@ -2639,7 +2807,10 @@ mod tests {
         );
 
         let second = [[0.9, 0.8, 0.7]; 4];
-        assert!(record_last_hero(second), "a genuinely different hero writes");
+        assert!(
+            record_last_hero(second),
+            "a genuinely different hero writes"
+        );
         assert_eq!(last_hero(), Some(second), "…and replaces the stored one");
     }
 
@@ -2750,6 +2921,61 @@ mod tests {
         assert_eq!(landed.account_token, "acct");
         assert_eq!(landed.sources.len(), 1);
         assert_eq!(landed.sources[0].machine_id, "server-a");
+    }
+
+    #[test]
+    fn auto_sign_in_persists_without_replacing_other_session_state() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("auto-sign-in");
+        let mut s = signed_in();
+        s.user.uuid = "u-kid".into();
+        s.sources.push(SourceRef {
+            machine_id: "server-a".into(),
+            token: "server-token".into(),
+            address: "192.168.0.10".into(),
+            port: 32400,
+            ..Default::default()
+        });
+        save(&s);
+        assert!(!peek().auto_sign_in());
+
+        assert!(set_auto_sign_in(true));
+        let landed = peek();
+        assert!(landed.auto_sign_in());
+        assert_eq!(landed.account_token, "acct");
+        assert_eq!(landed.user.uuid, "u-kid");
+        assert_eq!(landed.sources.len(), 1);
+
+        assert!(
+            !set_auto_sign_in(true),
+            "setting the same value again must not touch the file"
+        );
+        assert!(set_auto_sign_in(false));
+        assert!(!peek().auto_sign_in());
+    }
+
+    /// `take_ready` / a profile switch `save` a whole snapshot they loaded at the start of the
+    /// flow. That snapshot must carry the switch, or the next boot forgets it.
+    #[test]
+    fn a_full_save_of_a_switch_snapshot_keeps_auto_sign_in() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("auto-sign-in-save");
+        let mut s = signed_in();
+        s.user.uuid = "u-admin".into();
+        save(&s);
+        assert!(set_auto_sign_in(true));
+
+        let mut snap = peek();
+        snap.user.uuid = "u-kid".into();
+        save(&snap);
+
+        let landed = peek();
+        assert!(
+            landed.auto_sign_in(),
+            "a whole-file replace of a loaded snapshot must not drop the switch"
+        );
+        assert_eq!(landed.user.uuid, "u-kid");
+        assert_eq!(landed.account_token, "acct");
     }
 
     #[test]
@@ -2990,13 +3216,19 @@ mod profile_cache_tests {
     #[test]
     fn a_malformed_verifier_admits_nobody() {
         let none = PinVerifier::default();
-        assert!(!none.verify(""), "an empty record must not match an empty PIN");
+        assert!(
+            !none.verify(""),
+            "an empty record must not match an empty PIN"
+        );
         let mut v = PinVerifier::new("1234");
         v.iters = 0;
         assert!(!v.verify("1234"));
         let mut v = PinVerifier::new("1234");
         v.iters = u32::MAX;
-        assert!(!v.verify("1234"), "an unbounded count is refused before it is run");
+        assert!(
+            !v.verify("1234"),
+            "an unbounded count is refused before it is run"
+        );
         let mut v = PinVerifier::new("1234");
         v.iters = PinVerifier::MAX_ITERS + 1;
         assert!(!v.verify("1234"));
@@ -3015,9 +3247,19 @@ mod profile_cache_tests {
         s.remember_profile(creds("u-kid", "t2", None));
         s.remember_profile(creds("u-admin", "t3", Some("2222")));
         s.remember_profile(creds("", "t4", None));
-        assert_eq!(s.profiles.len(), 2, "replace by uuid; an empty uuid is never cached");
+        assert_eq!(
+            s.profiles.len(),
+            2,
+            "replace by uuid; an empty uuid is never cached"
+        );
         assert_eq!(s.cached_profile("u-admin").unwrap().user.token, "t3");
-        assert!(s.cached_profile("u-admin").unwrap().pin.as_ref().unwrap().verify("2222"));
+        assert!(s
+            .cached_profile("u-admin")
+            .unwrap()
+            .pin
+            .as_ref()
+            .unwrap()
+            .verify("2222"));
         assert!(s.cached_profile("u-kid").unwrap().pin.is_none());
         assert!(s.cached_profile("u-nobody").is_none());
         assert!(s.cached_profile("").is_none());
@@ -3025,7 +3267,13 @@ mod profile_cache_tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Session = serde_json::from_str(&json).unwrap();
         assert_eq!(back.profiles.len(), 2);
-        assert!(back.cached_profile("u-admin").unwrap().pin.as_ref().unwrap().verify("2222"));
+        assert!(back
+            .cached_profile("u-admin")
+            .unwrap()
+            .pin
+            .as_ref()
+            .unwrap()
+            .verify("2222"));
         assert_eq!(back.cached_profile("u-kid").unwrap().server.port, 32400);
     }
 
@@ -3034,31 +3282,73 @@ mod profile_cache_tests {
         let mut s = Session::default();
         s.remember_profile(creds("u-admin", "t1", Some("1111")));
         s.remember_profile(creds("u-kid", "t2", None));
-        s.user = UserRef { uuid: "u-admin".into(), token: "t9".into(), ..Default::default() };
-        s.server = ServerRef { machine_id: "m2".into(), address: "10.0.0.9".into(), port: 32400, token: "t9".into(), ..Default::default() };
-        s.sources = vec![SourceRef { machine_id: "m2".into(), token: "t9".into(), address: "10.0.0.9".into(), port: 32400, ..Default::default() }, SourceRef { machine_id: "share".into(), token: "s".into(), address: "10.0.0.7".into(), port: 32400, ..Default::default() }];
+        s.user = UserRef {
+            uuid: "u-admin".into(),
+            token: "t9".into(),
+            ..Default::default()
+        };
+        s.server = ServerRef {
+            machine_id: "m2".into(),
+            address: "10.0.0.9".into(),
+            port: 32400,
+            token: "t9".into(),
+            ..Default::default()
+        };
+        s.sources = vec![
+            SourceRef {
+                machine_id: "m2".into(),
+                token: "t9".into(),
+                address: "10.0.0.9".into(),
+                port: 32400,
+                ..Default::default()
+            },
+            SourceRef {
+                machine_id: "share".into(),
+                token: "s".into(),
+                address: "10.0.0.7".into(),
+                port: 32400,
+                ..Default::default()
+            },
+        ];
         assert!(s.refresh_profile_record(), "a stale record changes");
         assert!(!s.refresh_profile_record(), "a current one does not");
         let c = s.cached_profile("u-admin").unwrap();
         assert_eq!(c.user.token, "t9");
         assert_eq!(c.server.machine_id, "m2");
         assert_eq!(c.sources.len(), 2, "the share found late is in the record");
-        assert!(c.pin.as_ref().unwrap().verify("1111"), "the verifier survives");
-        assert_eq!(s.cached_profile("u-kid").unwrap().user.token, "t2", "other records untouched");
+        assert!(
+            c.pin.as_ref().unwrap().verify("1111"),
+            "the verifier survives"
+        );
+        assert_eq!(
+            s.cached_profile("u-kid").unwrap().user.token,
+            "t2",
+            "other records untouched"
+        );
         s.user.uuid = "u-nobody".into();
         assert!(!s.refresh_profile_record());
-        assert_eq!(s.profiles.len(), 2, "no record for the active user: nothing invented");
+        assert_eq!(
+            s.profiles.len(),
+            2,
+            "no record for the active user: nothing invented"
+        );
     }
 
     #[test]
     fn an_unusable_entry_is_not_offered() {
         let mut s = Session::default();
         s.remember_profile(creds("u-empty", "", None));
-        assert!(s.cached_profile("u-empty").is_none(), "no token, nothing to seat");
+        assert!(
+            s.cached_profile("u-empty").is_none(),
+            "no token, nothing to seat"
+        );
         let mut c = creds("u-noorigin", "t", None);
         c.server = ServerRef::default();
         s.remember_profile(c);
-        assert!(s.cached_profile("u-noorigin").is_none(), "no primary, nothing to seat");
+        assert!(
+            s.cached_profile("u-noorigin").is_none(),
+            "no primary, nothing to seat"
+        );
     }
 
     /// The shapes the APP writes — a real primary with a tier and an https origin, a roster
@@ -3111,8 +3401,15 @@ mod profile_cache_tests {
         });
         let bytes = serde_json::to_vec_pretty(&s).unwrap();
         let back: Session = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(back.profiles.len(), 1, "{}", String::from_utf8_lossy(&bytes));
-        let c = back.cached_profile("u-admin").expect("the record is offered back");
+        assert_eq!(
+            back.profiles.len(),
+            1,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let c = back
+            .cached_profile("u-admin")
+            .expect("the record is offered back");
         assert_eq!(c.server.tier, Some(Location::Local));
         assert!(c.pin.as_ref().unwrap().verify("1234"));
     }
@@ -3120,12 +3417,16 @@ mod profile_cache_tests {
     /// A file written before the field existed parses with an empty cache, never fails.
     #[test]
     fn a_legacy_file_has_an_empty_cache() {
-        let back: Session = serde_json::from_str(r#"{"client_id":"c","account_token":"a"}"#).unwrap();
+        let back: Session =
+            serde_json::from_str(r#"{"client_id":"c","account_token":"a"}"#).unwrap();
         assert!(back.profiles.is_empty());
         let back: Session = serde_json::from_str(
             r#"{"client_id":"c","profiles":[{"uuid":"u","user":{"token":"t"},"server":{"address":"10.0.0.1","port":"nope"}}, 7]}"#,
         )
         .unwrap();
-        assert!(back.profiles.is_empty(), "a malformed entry costs the entry, not the session");
+        assert!(
+            back.profiles.is_empty(),
+            "a malformed entry costs the entry, not the session"
+        );
     }
 }

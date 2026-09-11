@@ -219,92 +219,91 @@ pub(crate) enum BootTo {
     Profiles,
 }
 
-    // Everything that has to happen when the server `plex::client()` answers with CHANGES —
-    // whether because a new identity signed in or because the user walked into another source.
-    // EVERY store below is keyed to whichever server was current when it was filled, and none
-    // of them carries a server in its keys, so leaving one behind means server A's ratingKeys
-    // being fetched from server B: the same catalog index opening a different film.
+// Everything that has to happen when the server `plex::client()` answers with CHANGES —
+// whether because a new identity signed in or because the user walked into another source.
+// EVERY store below is keyed to whichever server was current when it was filled, and none
+// of them carries a server in its keys, so leaving one behind means server A's ratingKeys
+// being fetched from server B: the same catalog index opening a different film.
 pub(crate) fn activate_server() {
-        // the browse store must never carry the previous user's (or server's) cached grid,
-        // watched-state angles, or section tabs forward
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-        // …and the search store, for the same reason: a query, its results and the recent
-        // terms are all one person's.
-        crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
-        // …and the hub twin: a FAILED fetch now keeps the catalog it already had (so one
-        // wifi hiccup can't blank a populated Home), which makes this the one place that
-        // must still wipe it — otherwise a profile switch whose fetch fails would leave the
-        // previous user's shelves on screen.
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Reset); // ditto for an open person page's shelves
-                                // …and any view-state write still queued or owed a refresh. It belongs to the account
-                                // that pressed it, and the refresh it owes would land on shelves this reset just wiped.
-        crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
-        // Catalog activation is request-only. Home and section discovery both use their
-        // existing worker/mailbox pumps, so a remote endpoint cannot park the SDL loop here.
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs);
-        crate::stores::browse::discover_pump();
-        log("pms: catalog activation queued");
+    // the browse store must never carry the previous user's (or server's) cached grid,
+    // watched-state angles, or section tabs forward
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    // …and the search store, for the same reason: a query, its results and the recent
+    // terms are all one person's.
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+    // …and the hub twin: a FAILED fetch now keeps the catalog it already had (so one
+    // wifi hiccup can't blank a populated Home), which makes this the one place that
+    // must still wipe it — otherwise a profile switch whose fetch fails would leave the
+    // previous user's shelves on screen.
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::person::apply(crate::stores::person::PersonCmd::Reset); // ditto for an open person page's shelves
+                                                                           // …and any view-state write still queued or owed a refresh. It belongs to the account
+                                                                           // that pressed it, and the refresh it owes would land on shelves this reset just wiped.
+    crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
+    // Catalog activation is request-only. Home and section discovery both use their
+    // existing worker/mailbox pumps, so a remote endpoint cannot park the SDL loop here.
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs);
+    crate::stores::browse::discover_pump();
+    log("pms: catalog activation queued");
 }
 
-    // Install the PMS client (the read layer AND the playback path) as the CURRENT server,
-    // then fetch the catalog. Used by the boot gate and again when a login resolves; a later
-    // call for the same address just swaps the token (profile switch).
-    // Takes an ORIGIN and not a `(host, port)` pair: the pair cannot say `https`, and the host
-    // a certificate is issued for is the `plex.direct` NAME rather than the address behind it
-    // (`plex::origin`). Discovery and persisted sessions may supply either scheme; the client
-    // routes control and media requests through the matching transport.
+// Install the PMS client (the read layer AND the playback path) as the CURRENT server,
+// then fetch the catalog. Used by the boot gate and again when a login resolves; a later
+// call for the same address just swaps the token (profile switch).
+// Takes an ORIGIN and not a `(host, port)` pair: the pair cannot say `https`, and the host
+// a certificate is issued for is the `plex.direct` NAME rather than the address behind it
+// (`plex::origin`). Discovery and persisted sessions may supply either scheme; the client
+// routes control and media requests through the matching transport.
 pub(crate) fn install_pms(
     origin: &crate::plex::Origin,
     token: &str,
     tier: Option<crate::plex::probe::Location>,
     pin: Option<&crate::plex::ResolvePin>,
 ) {
-        crate::plex::install(origin, token, pin); // a (re)install is a login / profile switch
-                                             // `install` may re-point the slot by publishing a fresh Client, whose link starts
-                                             // unknown. Restore the persisted/raced winner only after that publication.
-        if let Some(link) = tier {
-            crate::plex::client()
-                .set_connection(link, crate::plex::IpVersion::of_host(origin.host()));
-        }
-        // Every additional server this boot was handed credentials for joins the REGISTRY
-        // beside it — the granted roster `browse` addresses its section table by. Registration
-        // is not activation: `install` above has already made the session's own server current,
-        // and `register` deliberately does not steal that, so a share appears as a source to
-        // browse rather than as a server the app has switched to.
-        //
-        // AFTER `install`, so slot 0 is always the session's own server and the roster reads in
-        // the order the Sources list wants to draw it. Registering here (rather than at the boot
-        // gate) also means a profile switch re-registers them, which is what keeps a share in
-        // the roster across a switch — and it must precede `activate_server`, whose refetch is
-        // what turns a newly registered source into shelves and section tabs.
-        for s in crate::dev::servers()
-            .unwrap_or_default()
-            .iter()
-            .filter(|s| s.usable())
-        {
-            // `usable()` IS `origin().is_some()`, so this `else` cannot be taken; it is a
-            // `continue` rather than an `expect` because an injected server has never been
-            // allowed to cost more than itself.
-            let Some(origin) = s.origin() else { continue };
-            let id = crate::plex::register_origin(
-                &s.machine_id,
-                &origin,
-                &s.token,
-                s.resolve_pin().as_ref(),
-            );
-            if let Some(tier) = s.tier {
-                // The endpoint may be a LAN conditioner in front of a Remote PMS.  Preserve
-                // the discovery fact the harness supplied; the private proxy address itself
-                // cannot prove Local, and an omitted tier deliberately proves nothing.
-                if let Some(client) = crate::plex::client_for(id) {
-                    client.set_link(tier);
-                }
+    crate::plex::install(origin, token, pin); // a (re)install is a login / profile switch
+                                              // `install` may re-point the slot by publishing a fresh Client, whose link starts
+                                              // unknown. Restore the persisted/raced winner only after that publication.
+    if let Some(link) = tier {
+        crate::plex::client().set_connection(link, crate::plex::IpVersion::of_host(origin.host()));
+    }
+    // Every additional server this boot was handed credentials for joins the REGISTRY
+    // beside it — the granted roster `browse` addresses its section table by. Registration
+    // is not activation: `install` above has already made the session's own server current,
+    // and `register` deliberately does not steal that, so a share appears as a source to
+    // browse rather than as a server the app has switched to.
+    //
+    // AFTER `install`, so slot 0 is always the session's own server and the roster reads in
+    // the order the Sources list wants to draw it. Registering here (rather than at the boot
+    // gate) also means a profile switch re-registers them, which is what keeps a share in
+    // the roster across a switch — and it must precede `activate_server`, whose refetch is
+    // what turns a newly registered source into shelves and section tabs.
+    for s in crate::dev::servers()
+        .unwrap_or_default()
+        .iter()
+        .filter(|s| s.usable())
+    {
+        // `usable()` IS `origin().is_some()`, so this `else` cannot be taken; it is a
+        // `continue` rather than an `expect` because an injected server has never been
+        // allowed to cost more than itself.
+        let Some(origin) = s.origin() else { continue };
+        let id = crate::plex::register_origin(
+            &s.machine_id,
+            &origin,
+            &s.token,
+            s.resolve_pin().as_ref(),
+        );
+        if let Some(tier) = s.tier {
+            // The endpoint may be a LAN conditioner in front of a Remote PMS.  Preserve
+            // the discovery fact the harness supplied; the private proxy address itself
+            // cannot prove Local, and an omitted tier deliberately proves nothing.
+            if let Some(client) = crate::plex::client_for(id) {
+                client.set_link(tier);
             }
-            // the roster's own answer about this server: a handle means someone else's.
-            crate::plex::describe_server(id, &s.name, &s.handle, s.handle.is_empty());
         }
-        activate_server();
+        // the roster's own answer about this server: a handle means someone else's.
+        crate::plex::describe_server(id, &s.name, &s.handle, s.handle.is_empty());
+    }
+    activate_server();
 }
 
 /// Everything before the loop: SDL and the window, GL, text, the poster workers, the boot gate
@@ -527,7 +526,6 @@ pub(crate) unsafe fn boot(
         .to_string_lossy()
         .into_owned();
 
-
     // UI infra + poster workers always come up — the owned login/profiles screens use them too.
     //
     // **No `ui::login::init()` / `ui::profiles::init()` here any more (phase 6 retirement).**
@@ -560,8 +558,10 @@ pub(crate) unsafe fn boot(
     //  1. /tmp/plxnative-login forces the QR login screen (to exercise the flow on demand).
     //  2. /tmp/plxnative-token (the harness / headless runs) beats the stored session — automation
     //     must run as the injected test identity no matter who is signed in on the TV.
-    //  3. A stored session (offline-capable LAN server) → Home, through the who's-watching
-    //     picker first when the account has a multi-user Plex Home roster (interactive boots).
+    //  3. A stored session (offline-capable LAN server) → Home. A multi-user Plex Home roster
+    //     still goes through the who's-watching picker first on interactive boots, unless
+    //     Automatically Sign In is on and a profile is already seated (that skip is an explicit
+    //     opt-in, PIN included). Automated boots and a roster of one still skip the picker.
     //  4. Nothing → the QR sign-in flow (no credentials are compiled in — like a real client).
     // The destination itself is [`BootTo`], at module scope with the rest of the vocabulary.
     //
@@ -600,7 +600,7 @@ pub(crate) unsafe fn boot(
         );
         BootTo::Home
     } else if session.can_go_local() {
-        if session.home_users.len() > 1 && (!automated_boot() || pick_user.is_some()) {
+        if session.boot_shows_picker(automated_boot(), pick_user.is_some()) {
             // Who's watching first. Only the read client is installed here (the avatars proxy
             // through the PMS photo transcoder); the catalog fetch + playback config happen in
             // take_ready once a profile is picked — done now they'd be thrown out on a switch.
@@ -619,11 +619,12 @@ pub(crate) unsafe fn boot(
         } else {
             // The persisted roster FIRST, then the primary. This is the one boot path that does
             // not go through `auth::start_switch` — a stored session with a single Plex Home
-            // user, or any automated run — so without this line it registered exactly one
-            // server and every share was invisible until the next sign-in: no second source in
-            // the Sources panel, no borrowed shelves, nothing to attribute. `install_roster`
-            // leaves `current` alone and sorts owned first, and `install_pms` below retargets to
-            // the session's own server regardless, so ordering cannot land us on a friend's box.
+            // user, an automated run, or Automatically Sign In with a seated profile — so without
+            // this line it registered exactly one server and every share was invisible until the
+            // next sign-in: no second source in the Sources panel, no borrowed shelves, nothing
+            // to attribute. `install_roster` leaves `current` alone and sorts owned first, and
+            // `install_pms` below retargets to the session's own server regardless, so ordering
+            // cannot land us on a friend's box.
             // Before, not after, because `install_pms` ends in the catalog + section fetch that
             // turns a registered source into something on screen.
             crate::auth::install_stored_roster(&session);
@@ -645,7 +646,16 @@ pub(crate) unsafe fn boot(
             // put the dead origin back into the live registry for the rest of this run.
             // Non-destructive on failure; the stored roster above remains available offline.
             crate::auth::refresh_roster();
-            log("boot: stored session — local server (offline-capable)");
+            if session.auto_sign_in()
+                && session.home_users.len() > 1
+                && !session.user.uuid.is_empty()
+                && !automated_boot()
+                && pick_user.is_none()
+            {
+                log("boot: stored session — auto sign-in");
+            } else {
+                log("boot: stored session — local server (offline-capable)");
+            }
             BootTo::Home
         }
     } else {
