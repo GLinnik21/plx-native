@@ -3072,14 +3072,14 @@ fn remove_cleanup_file(path: &std::path::Path, parents: &mut std::collections::B
         crate::log("session: injected cleanup removal failure");
         return false;
     }
-    match std::fs::remove_file(path) {
-        Ok(()) => {
+    match crate::storage::remove_file_or_prove_absent(path) {
+        Ok(crate::storage::RemoveDisposition::Removed) => {
             if let Some(parent) = path.parent() {
                 parents.insert(parent.to_path_buf());
             }
             true
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Ok(crate::storage::RemoveDisposition::Absent) => true,
         Err(error) => {
             crate::log(&format!("session: cleanup could not remove {}: {error}", path.file_name().unwrap_or_default().to_string_lossy()));
             false

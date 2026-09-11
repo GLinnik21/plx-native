@@ -77,24 +77,42 @@ fn cleanup_canonical(store: &impl RecordStore) -> CleanupResult {
     }
 }
 
+fn cleanup_failure_message(stage: &str, path: &Path, error: &std::io::Error) -> String {
+    format!(
+        "telemetry: consent cleanup failed stage={stage} errno={} target={}",
+        error.raw_os_error().unwrap_or(0),
+        path.file_name().unwrap_or_default().to_string_lossy()
+    )
+}
+
+fn log_cleanup_failure(stage: &str, path: &Path, error: &std::io::Error) {
+    crate::log(&cleanup_failure_message(stage, path, error));
+}
+
 fn remove_legacy_sources(paths: impl IntoIterator<Item = PathBuf>) -> CleanupResult {
     let mut parents = std::collections::BTreeSet::new();
     let mut result = CleanupResult::Complete;
     for path in paths {
-        match std::fs::remove_file(&path) {
-            Ok(()) => {
+        match crate::storage::remove_file_or_prove_absent(&path) {
+            Ok(crate::storage::RemoveDisposition::Removed) => {
                 if let Some(parent) = path.parent() {
                     parents.insert(parent.to_path_buf());
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => result = CleanupResult::Failed,
+            Ok(crate::storage::RemoveDisposition::Absent) => {}
+            Err(error) => {
+                log_cleanup_failure("remove_legacy", &path, &error);
+                result = CleanupResult::Failed;
+            }
         }
     }
     for parent in parents {
-        match std::fs::File::open(parent).and_then(|directory| directory.sync_all()) {
+        match std::fs::File::open(&parent).and_then(|directory| directory.sync_all()) {
             Ok(()) => {}
-            Err(_) => result = CleanupResult::Failed,
+            Err(error) => {
+                log_cleanup_failure("sync_legacy_parent", &parent, &error);
+                result = CleanupResult::Failed;
+            }
         }
     }
     result
@@ -518,6 +536,22 @@ mod tests {
                 serde_json::json!({"opaque": "value"}),
             )]),
         }
+    }
+
+    #[test]
+    fn genuine_cleanup_diagnostic_names_stage_errno_and_safe_target() {
+        let error = std::io::Error::from_raw_os_error(libc::EROFS);
+        assert_eq!(
+            cleanup_failure_message(
+                "remove_legacy",
+                Path::new("/media/internal/telemetry.json"),
+                &error,
+            ),
+            format!(
+                "telemetry: consent cleanup failed stage=remove_legacy errno={} target=telemetry.json",
+                libc::EROFS
+            )
+        );
     }
 
     #[test]

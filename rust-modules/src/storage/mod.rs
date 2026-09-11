@@ -465,6 +465,38 @@ fn trusted_root(uid: u32, gid: u32, mode: u32, current_uid: u32) -> bool {
     (uid == current_uid || uid == 0) && mode & 0o002 == 0 && (mode & 0o020 == 0 || gid == 5000)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RemoveDisposition {
+    Removed,
+    Absent,
+}
+
+fn classify_remove_error(
+    error: io::Error,
+    absence_probe: io::Result<()>,
+) -> io::Result<RemoveDisposition> {
+    match absence_probe {
+        // Some read-only filesystems reject unlink from the parent before looking up the child.
+        // Only a no-follow metadata lookup that independently observes no directory entry turns
+        // that failure into successful cleanup. A present symlink is present; an inaccessible or
+        // otherwise unverifiable name retains the original unlink error.
+        Err(probe_error) if probe_error.kind() == io::ErrorKind::NotFound => {
+            Ok(RemoveDisposition::Absent)
+        }
+        Ok(()) | Err(_) => Err(error),
+    }
+}
+
+pub(crate) fn remove_file_or_prove_absent(path: &Path) -> io::Result<RemoveDisposition> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(RemoveDisposition::Removed),
+        Err(error) => classify_remove_error(
+            error,
+            std::fs::symlink_metadata(path).map(|_| ()),
+        ),
+    }
+}
+
 // All child names below are generated internally, with no path separators. Keep the already-open
 // directory descriptor across every operation: swapping the pathname cannot redirect our I/O.
 fn open_at(directory: &File, name: &str, flags: i32, mode: libc::mode_t) -> io::Result<File> {
@@ -744,6 +776,35 @@ fn parse_record(bytes: &[u8], expected: RecordKey) -> Result<Record, StoreError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_unlink_is_complete_only_when_nofollow_metadata_proves_absence() {
+        let readonly_parent = io::Error::from_raw_os_error(libc::EROFS);
+        let absent = Err(io::Error::from(io::ErrorKind::NotFound));
+        assert!(matches!(
+            classify_remove_error(readonly_parent, absent),
+            Ok(RemoveDisposition::Absent)
+        ));
+
+        for probe in [Ok(()), Err(io::Error::from_raw_os_error(libc::EACCES))] {
+            let error = classify_remove_error(io::Error::from_raw_os_error(libc::EROFS), probe)
+                .expect_err("present or unverifiable target must retain unlink failure");
+            assert_eq!(error.raw_os_error(), Some(libc::EROFS));
+        }
+    }
+
+    #[test]
+    fn ordinary_missing_file_is_reported_absent_by_the_production_helper() {
+        let path = std::env::temp_dir().join(format!(
+            "plxnative-cleanup-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            remove_file_or_prove_absent(&path).unwrap(),
+            RemoveDisposition::Absent
+        );
+    }
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     struct Scratch(std::path::PathBuf);
