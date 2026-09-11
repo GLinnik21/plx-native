@@ -66,13 +66,10 @@
 //! engine's geometric search has no other group to find, in any direction, so every key the pad
 //! itself declines (an edge run into a wall) resolves to `Outcome::Nothing` rather than escaping
 //! onto the roster underneath. **Closing it must not leave a verdict from the last attempt
-//! following a fresh picker onto the screen** (the legacy `close_pad`'s own standing warning,
-//! carried forward verbatim): every door out of the pad — BACK, a pointer click outside every
-//! keypad cell, and a completed switch dropping back here on a NON-pin failure — runs through the
-//! one [`ProfilesScreen::close_pad`], which is the only place `auth::dismiss_pin_error` is called
-//! from. A rejected PIN is the one exception that keeps the pad up (the dot row flashes red and
-//! the entry restarts) rather than closing it, because closing on every typo would send the user
-//! back to re-pick the profile for each wrong digit.
+//! following a fresh picker onto the screen.** Every door out of the pad emits typed
+//! [`auth::SessionCmd::DismissPinError`] through [`ProfilesScreen::close_pad`]; the mounter emits
+//! the same command beside a fresh constructor. A rejected PIN is the one exception that keeps the
+//! pad up (the dot row flashes red and the entry restarts) rather than closing it.
 //!
 //! **A pointer click "outside the pad" has no generic answer here and has to be built by hand.**
 //! Unlike a `Popover` on the `ModalStack` (whose `on_miss(style)` policy the container itself
@@ -89,6 +86,7 @@
 
 use std::borrow::Cow;
 use std::ffi::CString;
+use std::sync::Arc;
 
 use crate::auth::{self, Phase};
 use crate::ui::card_row;
@@ -102,14 +100,14 @@ use crate::ui::machine::{
 use crate::ui::present::Provenance;
 use crate::ui::route_screen::RouteGround;
 use crate::ui::screen::{
-    At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, FocusTarget, Focusable,
-    GroupKind, GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat,
-    Step, Stop, Activate,
+    Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, FocusTarget,
+    Focusable, GroupKind, GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent,
+    Seat, Step, Stop,
 };
 use crate::ui::widgets::{self, Art, Button, CtlPop, Spinner};
 use crate::ui::{consts::SCR_H, consts::SCR_W, theme, Env, Painter, Rect, View};
 
-use super::registry::{word, AppFx, AppLike, LoopReq};
+use super::registry::{word, AppFx, AppLike, AppMsg, AuthLike};
 
 /// The screen's own heading.
 // `pub(crate)` for ONE external reader: `screens/onboard.rs` builds the breadcrumb a user
@@ -322,7 +320,12 @@ fn pad_key_rect(measure: &dyn Measure, r: usize, c: usize) -> Rect {
 
 fn pad_extent(measure: &dyn Measure) -> Rect {
     let (_, _, grid_y) = pad_geom(measure);
-    Rect::new(SCR_W as f32 * 0.5 - PAD_GRID_W * 0.5, grid_y, PAD_GRID_W, PAD_GRID_H)
+    Rect::new(
+        SCR_W as f32 * 0.5 - PAD_GRID_W * 0.5,
+        grid_y,
+        PAD_GRID_W,
+        PAD_GRID_H,
+    )
 }
 
 /// LEFT/RIGHT skip a hole IN THE SAME ROW (there is only ever one row to search, so "keep
@@ -345,7 +348,10 @@ fn pad_neighbour(entry: EntryId, elem: u32, dir: Dir) -> Step<u32> {
             let mut cc = c as isize + step;
             while (0..PAD_COLS as isize).contains(&cc) {
                 if KEYS[r][cc as usize].is_some() {
-                    return Step::Move(FocusKey { entry, elem: pad_elem(r, cc as usize) });
+                    return Step::Move(FocusKey {
+                        entry,
+                        elem: pad_elem(r, cc as usize),
+                    });
                 }
                 cc += step;
             }
@@ -358,7 +364,10 @@ fn pad_neighbour(entry: EntryId, elem: u32, dir: Dir) -> Step<u32> {
                 return Step::Edge;
             }
             let rr = rr as usize;
-            Step::Move(FocusKey { entry, elem: pad_elem(rr, pad_nearest_col(rr, c)) })
+            Step::Move(FocusKey {
+                entry,
+                elem: pad_elem(rr, pad_nearest_col(rr, c)),
+            })
         }
     }
 }
@@ -407,7 +416,11 @@ fn pad_place(measure: &dyn Measure, key: u32) -> Option<Placed> {
 /// style contract, asked once: on the very first `Enter` after the pad opens (`Seat::First` still
 /// routes through here, per `FocusEngine::seat_in`), landing on `(0, 0)` ('1') because that cell is
 /// nearest whatever `head_of` (the group's own top-left corner) hands it.
-fn pad_seat(measure: &dyn Measure, entry: EntryId, from: Placed) -> crate::ui::machine::FocusKey<u32> {
+fn pad_seat(
+    measure: &dyn Measure,
+    entry: EntryId,
+    from: Placed,
+) -> crate::ui::machine::FocusKey<u32> {
     use crate::ui::machine::FocusKey;
     let (fx_, fy_) = (from.rect.cx(), from.rect.cy());
     let mut best: Option<(f32, usize, usize)> = None;
@@ -424,23 +437,35 @@ fn pad_seat(measure: &dyn Measure, entry: EntryId, from: Placed) -> crate::ui::m
         }
     }
     let (_, r, c) = best.unwrap_or((0.0, 0, 0));
-    FocusKey { entry, elem: pad_elem(r, c) }
+    FocusKey {
+        entry,
+        elem: pad_elem(r, c),
+    }
 }
 
-fn pad_reconcile(entry: EntryId, want: crate::ui::machine::FocusKey<u32>) -> crate::ui::machine::FocusKey<u32> {
+fn pad_reconcile(
+    entry: EntryId,
+    want: crate::ui::machine::FocusKey<u32>,
+) -> crate::ui::machine::FocusKey<u32> {
     use crate::ui::machine::FocusKey;
     if let Some((r, c)) = pad_rc(want.elem) {
         if KEYS[r][c].is_some() {
             return want;
         }
     }
-    FocusKey { entry, elem: pad_elem(0, 0) }
+    FocusKey {
+        entry,
+        elem: pad_elem(0, 0),
+    }
 }
 
 fn pad_group_spec(measure: &dyn Measure) -> GroupSpec {
     GroupSpec {
         id: PAD_GROUP,
-        kind: GroupKind::Grid { cols: PAD_COLS, holes: PAD_HOLES },
+        kind: GroupKind::Grid {
+            cols: PAD_COLS,
+            holes: PAD_HOLES,
+        },
         seat: Seat::First,
         reachable: AxisMask::BOTH,
         // Self-contained: while the pad is up it is the ONLY group `groups()` answers, so an edge
@@ -462,7 +487,12 @@ fn footer_group_spec(measure: &dyn Measure) -> GroupSpec {
         // geometric search must not land here (`ui/geom.rs`'s `TabRow` sets the same mask for the
         // same reason: a track with one row above it).
         reachable: AxisMask::VERTICAL,
-        edge: [EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Stop],
+        edge: [
+            EdgeRule::Geometric,
+            EdgeRule::Stop,
+            EdgeRule::Stop,
+            EdgeRule::Stop,
+        ],
         extent: footer_rect(measure),
         len: 1,
         elem: ElemKind::Control,
@@ -481,6 +511,7 @@ struct ProfilesState {
     pad_len: u32,
     pad_submitting: bool,
     pad_flashing: bool,
+    next_correlation: Option<u32>,
 }
 impl LogicalState for ProfilesState {
     fn write(&self, w: &mut Canon) {
@@ -489,13 +520,22 @@ impl LogicalState for ProfilesState {
             .u32(self.pad_target)
             .u32(self.pad_len)
             .bool(self.pad_submitting)
-            .bool(self.pad_flashing);
+            .bool(self.pad_flashing)
+            .option(self.next_correlation, |w, correlation| {
+                w.u32(correlation);
+            });
     }
     fn probe(&self, out: &mut String) {
         // the PIN's length, never its digits
         out.push_str(&format!(
-            "profiles n={} pad_open={} target={} pin_len={} submitting={} flashing={}",
-            self.roster_n, self.pad_open, self.pad_target, self.pad_len, self.pad_submitting, self.pad_flashing
+            "profiles n={} pad_open={} target={} pin_len={} submitting={} flashing={} next={:?}",
+            self.roster_n,
+            self.pad_open,
+            self.pad_target,
+            self.pad_len,
+            self.pad_submitting,
+            self.pad_flashing,
+            self.next_correlation,
         ));
     }
 }
@@ -524,6 +564,11 @@ pub(crate) struct ProfilesScreen {
     spin_phase: crate::ui::motion::Phase,
     ground: RouteGround,
     pad: Pad,
+    users: Arc<[auth::UserTile]>,
+    phase: Phase,
+    error: Arc<str>,
+    pin_denied: bool,
+    next_correlation: Option<u32>,
     state: ProfilesState,
 }
 
@@ -533,12 +578,11 @@ impl ProfilesScreen {
     /// `AppMounter::mount`, `app::input::enter_profiles_from_onboard`'s doc has the general
     /// argument for why that replaces a reset call), so there is no stale pad, no stale roster
     /// cursor and no leftover footer focus to clear by hand — only the one piece of state that
-    /// lives OUTSIDE this screen and would otherwise survive a remount: a PIN verdict from
-    /// whatever picker was on screen before this one (`auth::dismiss_pin_error`, the same call
-    /// `close_pad` makes for every other door out of the pad — see that method's doc for why a
-    /// fresh picker must never inherit one).
-    pub(crate) fn new(entry: EntryId) -> Self {
-        auth::dismiss_pin_error();
+    /// lives OUTSIDE this screen and would otherwise survive a remount: the mounter carries a
+    /// typed `DismissPinError` beside construction, while this instance starts with no local PIN
+    /// verdict so its first paint does not wait for that command to drain.
+    pub(crate) fn new(entry: EntryId, auth: auth::SessionRead<'_>) -> Self {
+        let snapshot = auth.0;
         let mut s = Self {
             entry,
             row: card_row::CardRow::new(),
@@ -548,6 +592,13 @@ impl ProfilesScreen {
             spin_phase: crate::ui::motion::Phase::default(),
             ground: RouteGround::new(),
             pad: Pad::new(),
+            users: Arc::clone(&snapshot.users),
+            phase: snapshot.phase,
+            error: Arc::clone(&snapshot.error),
+            // The mounter carries `DismissPinError` beside construction. The local first paint
+            // must already be fresh while that command is still in the drain.
+            pin_denied: false,
+            next_correlation: Some(1),
             state: ProfilesState {
                 roster_n: 0,
                 pad_open: false,
@@ -555,17 +606,17 @@ impl ProfilesScreen {
                 pad_len: 0,
                 pad_submitting: false,
                 pad_flashing: false,
+                next_correlation: Some(1),
             },
         };
         s.ground.reset();
-        s.refresh_row_sty();
-        let n = auth::users().len();
+        let n = s.users.len();
+        s.refresh_row_sty(n);
         s.state = s.snapshot_state(n);
         s
     }
 
-    fn refresh_row_sty(&mut self) {
-        let n = auth::users().len();
+    fn refresh_row_sty(&mut self, n: usize) {
         let (start_x, _) = row_geom(n);
         self.row_sty = card_row::RowStyle::PROFILES;
         self.row_sty.margin_x = start_x;
@@ -590,7 +641,9 @@ impl ProfilesScreen {
     }
 
     fn has_spinner(&self, n: usize) -> bool {
-        (n == 0 && !self.pad.open) || (self.pad.open && self.pad.submitting) || auth::phase() == Phase::Switching
+        (n == 0 && !self.pad.open)
+            || (self.pad.open && self.pad.submitting)
+            || self.phase == Phase::Switching
     }
 
     fn snapshot_state(&self, n: usize) -> ProfilesState {
@@ -601,6 +654,7 @@ impl ProfilesScreen {
             pad_len: self.pad.entry.len() as u32,
             pad_submitting: self.pad.submitting,
             pad_flashing: self.pad.error_s > 0.0,
+            next_correlation: self.next_correlation,
         }
     }
 
@@ -626,9 +680,19 @@ impl ProfilesScreen {
         }
     }
 
-    fn tick<H: AppLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn resync(&mut self, auth: auth::SessionRead<'_>) {
+        let snapshot = auth.0;
+        self.users = Arc::clone(&snapshot.users);
+        self.phase = snapshot.phase;
+        self.error = Arc::clone(&snapshot.error);
+        self.pin_denied = snapshot.pin_denied;
+    }
+
+    fn tick<H: AuthLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let dt = t.dt();
-        self.refresh_row_sty();
+        self.resync(H::auth(cx));
+        let n = self.users.len();
+        self.refresh_row_sty(n);
 
         let cur = cx.focus.current.map(|k| k.elem);
         let footer_focused = !self.pad.open && cur == Some(FOOTER);
@@ -636,16 +700,11 @@ impl ProfilesScreen {
         self.footer_pop.step(footer_focused.then_some(0), dt);
 
         if self.pad.open {
-            // A submitted PIN resolves off-thread (`auth::switch_thread`, not yet converted to
-            // the addressed-progress shape `auth::LoginProgress` gives the sign-in flow — see
-            // that enum's own module doc for the boundary): success routes the app away
-            // (`Phase::Ready`); dropping back to `Phase::Profiles` means the switch failed. Only a
-            // PIN-blaming failure flashes the dots red and stays up — closing the whole pad on a
-            // typo made the user re-pick the profile for every wrong digit — any other failure
-            // ("no access to this server", offline) closes the pad through `close_pad` so the
-            // picker's own error banner can say WHY.
-            if self.pad.submitting && auth::phase() == Phase::Profiles {
-                if auth::pin_denied() {
+            // Transitional compatibility pending an addressed terminal profile reply. The queued
+            // command RED tests below prove that phase/pin publication sampling cannot safely
+            // decide this once Session commands are asynchronous.
+            if self.pad.submitting && self.phase == Phase::Profiles {
+                if self.pin_denied {
                     self.pad.submitting = false;
                     self.pad.entry.clear();
                     self.pad.error_s = PIN_ERR_S;
@@ -657,7 +716,6 @@ impl ProfilesScreen {
             Self::step_pin_flash(&mut self.pad, dt, fx);
         }
 
-        let n = auth::users().len();
         let roster_focus = if !self.pad.open && !footer_focused {
             cur.filter(|&e| (e as usize) < n).map(|e| e as usize)
         } else {
@@ -673,9 +731,8 @@ impl ProfilesScreen {
     }
 
     /// Spend a keypad digit/backspace. Ported from `ui/profiles.rs::press`: typing again cancels a
-    /// wrong-PIN flash, a full PIN hands off to `auth::submit_pin` and the pad STAYS UP with a
-    /// spinner in place of the dots (`ProfilesScreen::tick` watches the flow phase for the
-    /// verdict) — closing here would dump the user back on the picker for every typo.
+    /// wrong-PIN flash, a full PIN emits a typed Session command and the pad STAYS UP with a
+    /// spinner in place of the dots while its result is pending.
     fn press<H: AppLike>(&mut self, k: u8, fx: &mut Effects<'_, H>) {
         if self.pad.submitting {
             return;
@@ -693,23 +750,29 @@ impl ProfilesScreen {
         fx.invalidate(Provenance::Input);
         if self.pad.entry.len() == PIN_LEN {
             let (idx, pin) = (self.pad.target, self.pad.entry.clone());
-            auth::submit_pin(idx, &pin);
+            fx.push(Fx::App(AppFx::Session(auth::SessionCmd::SelectProfile {
+                index: idx,
+                pin: Some(pin),
+            })));
             self.pad.submitting = true;
         }
         self.sync_pin_state();
     }
 
     /// Commit a roster tile (an avatar's `PressCommit`, or the dev `pickuser` trigger by way of
-    /// `app/run.rs`'s own `auth::select_profile` call — that path bypasses this screen entirely
+    /// `app/run.rs`'s own profile-selection command — that path bypasses this screen entirely
     /// and only ever names an UNPROTECTED index; see this lane's report for the open problem a
     /// protected one leaves): protected → open the PIN pad and re-seat focus onto it; else hand
-    /// straight to `auth::select_profile`'s switch worker.
+    /// straight to Session's switch worker.
     fn select<H: AppLike>(&mut self, idx: usize, fx: &mut Effects<'_, H>) {
-        let protected = auth::users().get(idx).map(|u| u.protected).unwrap_or(false);
+        let protected = self.users.get(idx).map(|u| u.protected).unwrap_or(false);
         if protected {
             self.open_pad(idx, fx);
         } else {
-            auth::select_profile(idx);
+            fx.push(Fx::App(AppFx::Session(auth::SessionCmd::SelectProfile {
+                index: idx,
+                pin: None,
+            })));
         }
     }
 
@@ -730,7 +793,8 @@ impl ProfilesScreen {
             me,
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
                 focus: FocusTarget::Elem(crate::ui::machine::FocusKey {
-                    entry: self.entry, elem: pad_elem(0, 0),
+                    entry: self.entry,
+                    elem: pad_elem(0, 0),
                 }),
             })),
         ));
@@ -762,19 +826,57 @@ impl ProfilesScreen {
         let target = self.pad.target as u32;
         self.pad = Pad::new();
         self.sync_pin_state();
-        auth::dismiss_pin_error();
+        self.pin_denied = false;
+        fx.push(Fx::App(AppFx::Session(auth::SessionCmd::DismissPinError)));
         let me = fx.from();
         fx.push(Fx::Deliver(
             me,
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
-                focus: FocusTarget::Elem(crate::ui::machine::FocusKey { entry: self.entry, elem: target }),
+                focus: FocusTarget::Elem(crate::ui::machine::FocusKey {
+                    entry: self.entry,
+                    elem: target,
+                }),
             })),
         ));
         fx.invalidate(Provenance::Input);
     }
 
-    fn draw_name(p: Painter, u: &auth::UserTile, cx: f32, focused: bool, measure: &dyn crate::ui::machine::Measure) {
-        let col = if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
+    fn allocate_reply<H: AppLike>(&mut self, fx: &Effects<'_, H>) -> Option<auth::owner::ReplyTo> {
+        let crate::ui::machine::MachineId::Instance(instance) = fx.from() else {
+            return None;
+        };
+        let correlation = self.next_correlation?;
+        let next = correlation.checked_add(1)?;
+        self.next_correlation = Some(next);
+        Some(auth::owner::ReplyTo {
+            instance: instance.0,
+            correlation,
+        })
+    }
+
+    fn request_root_back<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
+        let Some(reply) = self.allocate_reply(fx) else {
+            self.sync_pin_state();
+            return;
+        };
+        fx.push(Fx::App(AppFx::Session(auth::SessionCmd::BackAtRoot {
+            reply,
+        })));
+        self.sync_pin_state();
+    }
+
+    fn draw_name(
+        p: Painter,
+        u: &auth::UserTile,
+        cx: f32,
+        focused: bool,
+        measure: &dyn crate::ui::machine::Measure,
+    ) {
+        let col = if focused {
+            theme::TEXT_PRIMARY
+        } else {
+            theme::TEXT_SECONDARY
+        };
         let name = crate::text::elide_by(
             &u.title,
             card_row::RowStyle::PROFILES.w + card_row::RowStyle::PROFILES.gap - 12.0,
@@ -796,10 +898,21 @@ impl ProfilesScreen {
 
     fn draw_pad<H: AppLike>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, cur: Option<u32>) {
         let (title_y, dots_y, _) = pad_geom(f.measure);
-        let users = auth::users();
-        let name = users.get(self.pad.target).map(|u| u.title.as_str()).unwrap_or("");
+        let name = self
+            .users
+            .get(self.pad.target)
+            .map(|u| u.title.as_str())
+            .unwrap_or("");
         if let Ok(t) = CString::new(format!("Enter {name}'s PIN")) {
-            p.text(t.as_ptr(), SCR_W as f32 * 0.5, title_y, theme::size::TITLE, theme::TEXT_PRIMARY, 1, 1);
+            p.text(
+                t.as_ptr(),
+                SCR_W as f32 * 0.5,
+                title_y,
+                theme::size::TITLE,
+                theme::TEXT_PRIMARY,
+                1,
+                1,
+            );
         }
         // 4 entry dots — replaced by a spinner while the PIN verifies; a rejected PIN pulses the
         // (all-filled) dots DANGER red, then the entry restarts on the same pad.
@@ -819,7 +932,13 @@ impl ProfilesScreen {
                     Some(lit) => theme::with_a(theme::DANGER, if lit { 1.0 } else { 0.16 }),
                     None => theme::with_a(theme::TEXT_PRIMARY, if filled { 1.0 } else { 0.28 }),
                 };
-                p.rect(Rect::new(dx, dots_y, PAD_DOT, PAD_DOT), PAD_DOT * 0.5, col, col, 0.0);
+                p.rect(
+                    Rect::new(dx, dots_y, PAD_DOT, PAD_DOT),
+                    PAD_DOT * 0.5,
+                    col,
+                    col,
+                    0.0,
+                );
                 dx += PAD_DOT + dgap;
             }
         }
@@ -840,17 +959,34 @@ impl ProfilesScreen {
                     icons::draw(
                         p,
                         icons::Icon::Backspace,
-                        Rect::new(rect.x + (rect.w - d) * 0.5, rect.y + (rect.h - d) * 0.5, d, d),
+                        Rect::new(
+                            rect.x + (rect.w - d) * 0.5,
+                            rect.y + (rect.h - d) * 0.5,
+                            d,
+                            d,
+                        ),
                         ink,
                     );
                 } else if let Ok(lc) = CString::new((*k as char).to_string()) {
-                    let ty = crate::text::text_vcenter_y(theme::size::TITLE, 1, rect.y + rect.h * 0.5);
-                    p.text(lc.as_ptr(), rect.x + rect.w * 0.5, ty, theme::size::TITLE, ink, 1, 1);
+                    let ty =
+                        crate::text::text_vcenter_y(theme::size::TITLE, 1, rect.y + rect.h * 0.5);
+                    p.text(
+                        lc.as_ptr(),
+                        rect.x + rect.w * 0.5,
+                        ty,
+                        theme::size::TITLE,
+                        ink,
+                        1,
+                        1,
+                    );
                 }
                 f.stop(
                     p,
                     Stop {
-                        key: crate::ui::machine::FocusKey { entry: self.entry, elem: pad_elem(r, c) },
+                        key: crate::ui::machine::FocusKey {
+                            entry: self.entry,
+                            elem: pad_elem(r, c),
+                        },
                         rect,
                         rest_rect: rect,
                         clip: Rect::FULL,
@@ -874,12 +1010,17 @@ struct ProfilesView<'a> {
 
 impl std::ops::Deref for ProfilesView<'_> {
     type Target = ProfilesScreen;
-    fn deref(&self) -> &Self::Target { self.screen }
+    fn deref(&self) -> &Self::Target {
+        self.screen
+    }
 }
 
 impl ProfilesScreen {
     fn focus_view(&self) -> ProfilesView<'_> {
-        ProfilesView { screen: self, n: auth::users().len() }
+        ProfilesView {
+            screen: self,
+            n: self.users.len(),
+        }
     }
 }
 
@@ -907,7 +1048,12 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
         let n = self.n;
         Focusable::<H>::group_of(&self.shelf(n), key, cx)
     }
-    fn neighbour(&self, key: crate::ui::machine::FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
+    fn neighbour(
+        &self,
+        key: crate::ui::machine::FocusKey<u32>,
+        dir: Dir,
+        cx: &Cx<'_, H>,
+    ) -> Step<u32> {
         if self.pad.open {
             return pad_neighbour(key.entry, key.elem, dir);
         }
@@ -925,12 +1071,21 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
         }
         if *key == FOOTER {
             let r = footer_rect(cx.measure);
-            return Some(Placed { rect: r, rest_rect: r, clip: Rect::FULL, index: Some(0) });
+            return Some(Placed {
+                rect: r,
+                rest_rect: r,
+                clip: Rect::FULL,
+                index: Some(0),
+            });
         }
         let n = self.n;
         Focusable::<H>::place(&self.shelf(n), key, cx, at)
     }
-    fn reconcile(&self, want: crate::ui::machine::FocusKey<u32>, _cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+    fn reconcile(
+        &self,
+        want: crate::ui::machine::FocusKey<u32>,
+        _cx: &Cx<'_, H>,
+    ) -> crate::ui::machine::FocusKey<u32> {
         if self.pad.open {
             return pad_reconcile(self.entry, want);
         }
@@ -939,10 +1094,16 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
         }
         let n = self.n;
         if n == 0 {
-            return crate::ui::machine::FocusKey { entry: self.entry, elem: FOOTER };
+            return crate::ui::machine::FocusKey {
+                entry: self.entry,
+                elem: FOOTER,
+            };
         }
         if (want.elem as usize) >= n {
-            return crate::ui::machine::FocusKey { entry: self.entry, elem: (n - 1) as u32 };
+            return crate::ui::machine::FocusKey {
+                entry: self.entry,
+                elem: (n - 1) as u32,
+            };
         }
         want
     }
@@ -951,7 +1112,10 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
             return pad_seat(cx.measure, self.entry, from);
         }
         if g == FOOTER_GROUP {
-            return crate::ui::machine::FocusKey { entry: self.entry, elem: FOOTER };
+            return crate::ui::machine::FocusKey {
+                entry: self.entry,
+                elem: FOOTER,
+            };
         }
         let n = self.n;
         Focusable::<H>::seat(&self.shelf(n), g, from, cx)
@@ -965,21 +1129,35 @@ impl<H: AppLike> Focusable<H> for ProfilesScreen {
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
         Focusable::<H>::group_of(&self.focus_view(), key, cx)
     }
-    fn neighbour(&self, key: crate::ui::machine::FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
+    fn neighbour(
+        &self,
+        key: crate::ui::machine::FocusKey<u32>,
+        dir: Dir,
+        cx: &Cx<'_, H>,
+    ) -> Step<u32> {
         Focusable::<H>::neighbour(&self.focus_view(), key, dir, cx)
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
         Focusable::<H>::place(&self.focus_view(), key, cx, at)
     }
-    fn reconcile(&self, key: crate::ui::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+    fn reconcile(
+        &self,
+        key: crate::ui::machine::FocusKey<u32>,
+        cx: &Cx<'_, H>,
+    ) -> crate::ui::machine::FocusKey<u32> {
         Focusable::<H>::reconcile(&self.focus_view(), key, cx)
     }
-    fn seat(&self, group: GroupId, from: Placed, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+    fn seat(
+        &self,
+        group: GroupId,
+        from: Placed,
+        cx: &Cx<'_, H>,
+    ) -> crate::ui::machine::FocusKey<u32> {
         Focusable::<H>::seat(&self.focus_view(), group, from, cx)
     }
 }
 
-impl<H: AppLike> Machine<H> for ProfilesScreen {
+impl<H: AuthLike> Machine<H> for ProfilesScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
@@ -1010,25 +1188,19 @@ impl<H: AppLike> Machine<H> for ProfilesScreen {
                 // mirrors `screens::consent`'s own `PressCommit` arm reading the same field for
                 // the same reason.
                 //
-                // The DECISION is [`commit_action`], a pure function, and the split is not
-                // decoration: every arm below reaches a real worker (`auth::sign_out` and
-                // `select` both start a switch), which is why this module's test doc explains it
-                // presses none of them. The legacy `ui/profiles.rs` could grade the same table
-                // freely because its ladder was a pure `act()`; when that module was deleted the
-                // pin went with it, and the OK table — pill means sign out, tile means switch,
-                // an empty roster means neither — had no analog here. A behaviour that only one
-                // deleted file ever tested is exactly the kind this repository's rules forbid
-                // losing to a refactor, so the decision moved out where it can still be graded.
+                // The DECISION is [`commit_action`], a pure function; each live arm emits a typed
+                // Session command, so the OK table remains gradeable without real account work.
                 //
-                // `auth::users()` is read only on the branch that can need it: the roster length
-                // decides nothing for a footer commit or for one arriving while the pad is open.
+                // The retained roster count is read only on the branch that can need it.
                 let elem = cx.focus.current.map(|k| k.elem);
                 let roster_n = match elem {
-                    Some(e) if !self.pad.open && e != FOOTER => auth::users().len(),
+                    Some(e) if !self.pad.open && e != FOOTER => self.users.len(),
                     _ => 0,
                 };
                 match commit_action(self.pad.open, elem, roster_n) {
-                    Commit::SignOut => auth::sign_out(),
+                    Commit::SignOut => {
+                        fx.push(Fx::App(AppFx::Session(auth::SessionCmd::SignOut)));
+                    }
                     Commit::Select(i) => self.select(i, fx),
                     Commit::Nothing => {}
                 }
@@ -1038,14 +1210,24 @@ impl<H: AppLike> Machine<H> for ProfilesScreen {
             // The pad's own door for a pointer click that lands on NONE of its twelve stops — see
             // the module doc for why this has to be built here rather than reached for a library
             // `OnMiss` policy (the pad is not a container surface).
-            ScreenEvent::Input(InputEvent { kind: InputKind::Click { hit, .. }, .. }) if self.pad.open => {
+            ScreenEvent::Input(InputEvent {
+                kind: InputKind::Click { hit, .. },
+                ..
+            }) if self.pad.open => {
                 if hit.is_none() {
                     self.close_pad(fx);
                 }
                 Handled::Yes
             }
             ScreenEvent::Input(InputEvent {
-                kind: InputKind::Key { key, sym, wcode, edge: Edge::Down, .. },
+                kind:
+                    InputKind::Key {
+                        key,
+                        sym,
+                        wcode,
+                        edge: Edge::Down,
+                        ..
+                    },
                 ..
             }) => {
                 if self.pad.open {
@@ -1066,25 +1248,24 @@ impl<H: AppLike> Machine<H> for ProfilesScreen {
                     // Bare activation
                     return Handled::No;
                 }
-                // BACK leaves the picker the way choosing the already-active profile does:
-                // `auth::cancel` re-arms the resolved-credentials handoff with the persisted
-                // session if there is one, else the loop hands the screen to the television's own
-                // Home — `app::input::login_or_profiles_root_back`'s doc has the full account of
-                // why `auth::cancel`'s answer has to be asked from the loop rather than here (it
-                // needs the same `webos::take_root_press` cooldown `LoopReq::BackAtRoot`'s sibling
-                // screens share, which this screen module may not name).
+                // At root, Session/core owns resume, cooldown and platform handling. This screen
+                // contributes only the addressed typed request.
                 if *key == Key::Back {
-                    fx.push(Fx::App(AppFx::Loop(LoopReq::AuthBackAtRoot)));
+                    self.request_root_back(fx);
                     return Handled::Yes;
                 }
                 Handled::No
             }
+            ScreenEvent::Async(
+                crate::ui::machine::RequestId(request),
+                AppMsg::BackReply { correlation, .. },
+            ) if request == correlation => Handled::Yes,
             _ => Handled::No,
         }
     }
 }
 
-impl<H: AppLike> Screen<H> for ProfilesScreen {
+impl<H: AuthLike> Screen<H> for ProfilesScreen {
     fn name(&self) -> &'static str {
         word::PROFILES
     }
@@ -1111,21 +1292,36 @@ impl<H: AppLike> Screen<H> for ProfilesScreen {
         }
 
         if let Ok(t) = CString::new(TITLE) {
-            p.text(t.as_ptr(), SCR_W as f32 * 0.5, 168.0, theme::size::HERO, theme::TEXT_PRIMARY, 1, 1);
+            p.text(
+                t.as_ptr(),
+                SCR_W as f32 * 0.5,
+                168.0,
+                theme::size::HERO,
+                theme::TEXT_PRIMARY,
+                1,
+                1,
+            );
         }
 
-        let users = auth::users();
+        let users = &self.users;
         let n = users.len();
         let (start_x, slot) = row_geom(n);
         let scroll = self.row.scroll_x();
         let footer_focused = cur == Some(FOOTER);
-        let roster_focus = (!footer_focused).then(|| cur.filter(|&e| (e as usize) < n).map(|e| e as usize)).flatten();
+        let roster_focus = (!footer_focused)
+            .then(|| cur.filter(|&e| (e as usize) < n).map(|e| e as usize))
+            .flatten();
         let extent = Rect::new(0.0, ROW_Y, SCR_W as f32, self.row_sty.h);
 
         let mut focused_i = None;
         for (i, u) in users.iter().enumerate() {
             let cx_ = start_x + i as f32 * slot + self.row_sty.w * 0.5 - scroll;
-            let base = Rect::new(cx_ - self.row_sty.w * 0.5, ROW_Y, self.row_sty.w, self.row_sty.h);
+            let base = Rect::new(
+                cx_ - self.row_sty.w * 0.5,
+                ROW_Y,
+                self.row_sty.w,
+                self.row_sty.h,
+            );
             let sc = self.row.scale(i);
             if roster_focus == Some(i) {
                 focused_i = Some(i);
@@ -1133,7 +1329,11 @@ impl<H: AppLike> Screen<H> for ProfilesScreen {
             }
             card_row::draw_tile(
                 p,
-                Art::Thumb { sid: crate::plex::current_server(), key: &u.thumb, res: (300, 300) },
+                Art::Thumb {
+                    sid: crate::plex::current_server(),
+                    key: &u.thumb,
+                    res: (300, 300),
+                },
                 base.scaled(sc),
                 sc,
                 &self.row_sty,
@@ -1143,7 +1343,10 @@ impl<H: AppLike> Screen<H> for ProfilesScreen {
             f.stop(
                 p,
                 Stop {
-                    key: crate::ui::machine::FocusKey { entry: self.entry, elem: i as u32 },
+                    key: crate::ui::machine::FocusKey {
+                        entry: self.entry,
+                        elem: i as u32,
+                    },
                     rect: base.scaled(sc),
                     rest_rect: base,
                     clip: extent,
@@ -1155,13 +1358,22 @@ impl<H: AppLike> Screen<H> for ProfilesScreen {
         if let Some(i) = focused_i {
             let u = &users[i];
             let cx_ = start_x + i as f32 * slot + self.row_sty.w * 0.5 - scroll;
-            let base = Rect::new(cx_ - self.row_sty.w * 0.5, ROW_Y, self.row_sty.w, self.row_sty.h);
+            let base = Rect::new(
+                cx_ - self.row_sty.w * 0.5,
+                ROW_Y,
+                self.row_sty.w,
+                self.row_sty.h,
+            );
             // fold the ui::press click dip into the focused avatar's pop (1.0 when idle)
             let sc = self.row.scale(i) * crate::ui::press::scale();
             Self::draw_name(p, u, cx_, true, f.measure);
             card_row::draw_focused(
                 p,
-                Art::Thumb { sid: crate::plex::current_server(), key: &u.thumb, res: (300, 300) },
+                Art::Thumb {
+                    sid: crate::plex::current_server(),
+                    key: &u.thumb,
+                    res: (300, 300),
+                },
                 base.scaled(sc),
                 sc,
                 &self.row_sty,
@@ -1172,7 +1384,10 @@ impl<H: AppLike> Screen<H> for ProfilesScreen {
             f.stop(
                 p,
                 Stop {
-                    key: crate::ui::machine::FocusKey { entry: self.entry, elem: i as u32 },
+                    key: crate::ui::machine::FocusKey {
+                        entry: self.entry,
+                        elem: i as u32,
+                    },
                     rect: base.scaled(sc),
                     rest_rect: base,
                     clip: extent,
@@ -1193,7 +1408,10 @@ impl<H: AppLike> Screen<H> for ProfilesScreen {
         f.stop(
             p,
             Stop {
-                key: crate::ui::machine::FocusKey { entry: self.entry, elem: FOOTER },
+                key: crate::ui::machine::FocusKey {
+                    entry: self.entry,
+                    elem: FOOTER,
+                },
                 rect: footer_r,
                 rest_rect: footer_r,
                 clip: Rect::FULL,
@@ -1211,16 +1429,29 @@ impl<H: AppLike> Screen<H> for ProfilesScreen {
         }
 
         // a failed switch (wrong PIN, offline) drops the flow back here with an error
-        let err = auth::error();
-        if !err.is_empty() && auth::phase() == Phase::Profiles {
-            if let Ok(e) = CString::new(err) {
+        if !self.error.is_empty() && self.phase == Phase::Profiles {
+            if let Ok(e) = CString::new(self.error.as_ref()) {
                 let ey = crate::text::text_vcenter_y(theme::size::BODY, 0, ERROR_Y);
-                p.text(e.as_ptr(), SCR_W as f32 * 0.5, ey, theme::size::BODY, theme::TEXT_SECONDARY, 1, 0);
+                p.text(
+                    e.as_ptr(),
+                    SCR_W as f32 * 0.5,
+                    ey,
+                    theme::size::BODY,
+                    theme::TEXT_SECONDARY,
+                    1,
+                    0,
+                );
             }
         }
 
-        if auth::phase() == Phase::Switching {
-            p.rect(Rect::FULL, 0.0, theme::scrim_black(0.88), theme::scrim_black(0.88), 0.0);
+        if self.phase == Phase::Switching {
+            p.rect(
+                Rect::FULL,
+                0.0,
+                theme::scrim_black(0.88),
+                theme::scrim_black(0.88),
+                0.0,
+            );
             Spinner::new(SCR_W as f32 * 0.5, 500.0, 26.0)
                 .phase(self.spin_ms as u32)
                 .tint(theme::TEXT_PRIMARY)
@@ -1264,22 +1495,71 @@ mod tests {
     //! hole walk, its geometry, its digit/backspace state machine, and the doors that close it.
     use super::*;
     use crate::ui::fixture::FixtureMeasure;
-    use crate::ui::machine::{Edge, FocusKey, FocusRead, InputEvent, InputKind, InputOwner, InstanceId, MachineId, PressRead, Source, Stamped, Tick};
+    use crate::ui::machine::{
+        Edge, FocusKey, FocusRead, InputEvent, InputKind, InputOwner, InstanceId, MachineId,
+        PressRead, Source, Stamped, Tick,
+    };
     use crate::ui::present::Present;
+    use std::sync::{Arc, LazyLock};
 
-    use super::super::family::InnerHost;
+    struct SessionHost;
+
+    impl crate::ui::machine::Host for SessionHost {
+        type Arg = super::super::family::SettingsPage;
+        type Fx = AppFx;
+        type Msg = AppMsg;
+        type Elem = u32;
+        type Views<'a> = auth::SessionRead<'a>;
+        type Init = super::super::family::NoInit;
+        type Memory = ();
+    }
+
+    impl AuthLike for SessionHost {
+        fn auth<'a>(cx: &Cx<'a, Self>) -> auth::SessionRead<'a> {
+            cx.views
+        }
+    }
+
+    fn snapshot(phase: Phase, users: Vec<auth::UserTile>) -> auth::owner::SessionSnapshot {
+        auth::owner::SessionSnapshot {
+            phase,
+            qr_generation: 0,
+            code: Arc::from(""),
+            png: Arc::from(Vec::<u8>::new()),
+            code_replaced: false,
+            users: Arc::from(users),
+            error: Arc::from(""),
+            pin_denied: false,
+            profile: None,
+            scope: auth::owner::ProfileScope(0),
+            delete_leftovers: 0,
+        }
+    }
+
+    static EMPTY_SNAPSHOT: LazyLock<auth::owner::SessionSnapshot> =
+        LazyLock::new(|| snapshot(Phase::Profiles, Vec::new()));
 
     static MEASURE: FixtureMeasure = FixtureMeasure;
 
-    fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, InnerHost> {
+    fn cx_with<'a>(
+        focus: Option<FocusKey<u32>>,
+        snapshot: &'a auth::owner::SessionSnapshot,
+    ) -> Cx<'a, SessionHost> {
         Cx {
-            views: (),
+            views: snapshot.read(),
             tick: Tick::default(),
             measure: &MEASURE,
             press: PressRead::default(),
-            focus: FocusRead { current: focus , ..Default::default() },
+            focus: FocusRead {
+                current: focus,
+                ..Default::default()
+            },
             owner: InputOwner::Entry(EntryId(0)),
         }
+    }
+
+    fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, SessionHost> {
+        cx_with(focus, &EMPTY_SNAPSHOT)
     }
 
     /// A screen with no read of `crate::auth` at all (unlike `ProfilesScreen::new`, which calls
@@ -1297,6 +1577,11 @@ mod tests {
             spin_phase: crate::ui::motion::Phase::default(),
             ground: RouteGround::new(),
             pad,
+            users: Arc::from(Vec::<auth::UserTile>::new()),
+            phase: Phase::Profiles,
+            error: Arc::from(""),
+            pin_denied: false,
+            next_correlation: Some(1),
             state: ProfilesState {
                 roster_n: 0,
                 pad_open: false,
@@ -1304,6 +1589,7 @@ mod tests {
                 pad_len: 0,
                 pad_submitting: false,
                 pad_flashing: false,
+                next_correlation: Some(1),
             },
         }
     }
@@ -1325,11 +1611,11 @@ mod tests {
         let c = cx(None);
         let mut present = Present::new();
         let _ = present.take(0);
-        let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
+        let mut buf: Vec<Stamped<SessionHost>> = Vec::new();
         for ms in [16, 32, 48] {
             let mut fx = Effects::new(&mut buf, MachineId::Instance(InstanceId(0)), &mut present);
             let ev = ScreenEvent::Tick(Tick { ms, dt_us: 16_667 });
-            Machine::<InnerHost>::step(&mut s, &ev, &c, &mut fx);
+            Machine::<SessionHost>::step(&mut s, &ev, &c, &mut fx);
             assert!(
                 present.take(ms),
                 "a submitting PIN pad's spinner must present every frame (ms={ms})"
@@ -1337,31 +1623,364 @@ mod tests {
         }
     }
 
-    fn step_ev(s: &mut ProfilesScreen, ev: &ScreenEvent<InnerHost>, focus: Option<FocusKey<u32>>) -> (Handled, Vec<Stamped<InnerHost>>) {
-        let c = cx(focus);
+    fn step_ev(
+        s: &mut ProfilesScreen,
+        ev: &ScreenEvent<SessionHost>,
+        focus: Option<FocusKey<u32>>,
+    ) -> (Handled, Vec<Stamped<SessionHost>>) {
+        step_ev_with(s, ev, focus, &EMPTY_SNAPSHOT, InstanceId(0))
+    }
+
+    fn step_ev_with(
+        s: &mut ProfilesScreen,
+        ev: &ScreenEvent<SessionHost>,
+        focus: Option<FocusKey<u32>>,
+        snapshot: &auth::owner::SessionSnapshot,
+        instance: InstanceId,
+    ) -> (Handled, Vec<Stamped<SessionHost>>) {
+        let c = cx_with(focus, snapshot);
         let mut present = Present::new();
-        let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
+        let mut buf: Vec<Stamped<SessionHost>> = Vec::new();
         let handled = {
-            let mut fx = Effects::new(&mut buf, MachineId::Instance(InstanceId(0)), &mut present);
-            Machine::<InnerHost>::step(s, ev, &c, &mut fx)
+            let mut fx = Effects::new(&mut buf, MachineId::Instance(instance), &mut present);
+            Machine::<SessionHost>::step(s, ev, &c, &mut fx)
         };
         (handled, buf)
     }
 
-    fn key_down(key: Key, sym: u32, wcode: u32) -> ScreenEvent<InnerHost> {
+    fn key_down(key: Key, sym: u32, wcode: u32) -> ScreenEvent<SessionHost> {
         ScreenEvent::Input(InputEvent {
             at: Tick::default(),
             source: Source::Script,
-            kind: InputKind::Key { key, sym, wcode, edge: Edge::Down, at_edge: false },
+            kind: InputKind::Key {
+                key,
+                sym,
+                wcode,
+                edge: Edge::Down,
+                at_edge: false,
+            },
         })
     }
 
-    fn click(hit: Option<u32>) -> ScreenEvent<InnerHost> {
+    fn click(hit: Option<u32>) -> ScreenEvent<SessionHost> {
         ScreenEvent::Input(InputEvent {
             at: Tick::default(),
             source: Source::Script,
-            kind: InputKind::Click { x: 0.0, y: 0.0, hit },
+            kind: InputKind::Click {
+                x: 0.0,
+                y: 0.0,
+                hit,
+            },
         })
+    }
+
+    fn user(title: &str, protected: bool) -> auth::UserTile {
+        auth::UserTile {
+            title: title.into(),
+            protected,
+            uuid: format!("{title}-uuid"),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn constructor_and_ticks_retain_coherent_rosters_per_instance_before_first_tick() {
+        let first_snapshot = snapshot(Phase::Profiles, vec![user("First", false)]);
+        let second_snapshot = snapshot(Phase::Switching, vec![user("Second", true)]);
+        let first = ProfilesScreen::new(EntryId(1), first_snapshot.read());
+        let mut second = ProfilesScreen::new(EntryId(2), second_snapshot.read());
+
+        assert_eq!(first.users[0].title, "First");
+        assert_eq!(
+            first.state.roster_n, 1,
+            "the first paint is seeded synchronously"
+        );
+        assert_eq!(second.users[0].title, "Second");
+        assert_eq!(second.phase, Phase::Switching);
+
+        let replacement = snapshot(
+            Phase::Profiles,
+            vec![user("Third", false), user("Fourth", false)],
+        );
+        step_ev_with(
+            &mut second,
+            &ScreenEvent::Tick(Tick {
+                ms: 16,
+                dt_us: 16_667,
+            }),
+            None,
+            &replacement,
+            InstanceId(2),
+        );
+        assert_eq!(second.users.len(), 2);
+        assert_eq!(second.users[0].title, "Third");
+        assert_eq!(
+            first.users[0].title, "First",
+            "another instance retains its own Arc roster"
+        );
+    }
+
+    #[test]
+    fn selection_pin_and_signout_are_typed_session_commands() {
+        let published = snapshot(
+            Phase::Profiles,
+            vec![user("Open", false), user("Locked", true)],
+        );
+        let mut screen = ProfilesScreen::new(EntryId(3), published.read());
+
+        let (_, select_fx) = step_ev_with(
+            &mut screen,
+            &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
+            Some(FocusKey {
+                entry: EntryId(3),
+                elem: 0,
+            }),
+            &published,
+            InstanceId(17),
+        );
+        assert!(select_fx.iter().any(|st| matches!(
+            &st.fx,
+            Fx::App(AppFx::Session(auth::SessionCmd::SelectProfile {
+                index: 0,
+                pin: None
+            }))
+        )));
+
+        let (_, signout_fx) = step_ev_with(
+            &mut screen,
+            &ScreenEvent::PressCommit(crate::ui::machine::PressId(2)),
+            Some(FocusKey {
+                entry: EntryId(3),
+                elem: FOOTER,
+            }),
+            &published,
+            InstanceId(17),
+        );
+        assert!(signout_fx
+            .iter()
+            .any(|st| matches!(st.fx, Fx::App(AppFx::Session(auth::SessionCmd::SignOut)))));
+
+        screen.select(
+            1,
+            &mut Effects::new(
+                &mut Vec::<Stamped<SessionHost>>::new(),
+                MachineId::Instance(InstanceId(17)),
+                &mut Present::new(),
+            ),
+        );
+        assert!(screen.pad.open);
+        let mut pin_effects = Vec::<Stamped<SessionHost>>::new();
+        let mut present = Present::new();
+        {
+            let mut fx = Effects::new(
+                &mut pin_effects,
+                MachineId::Instance(InstanceId(17)),
+                &mut present,
+            );
+            for digit in b"1234" {
+                screen.press(*digit, &mut fx);
+            }
+        }
+        assert!(pin_effects.iter().any(|st| matches!(
+            &st.fx,
+            Fx::App(AppFx::Session(auth::SessionCmd::SelectProfile { index: 1, pin: Some(pin) }))
+                if pin == "1234"
+        )));
+    }
+
+    #[test]
+    fn a_fresh_pad_cannot_consume_the_previous_instances_pin_denial() {
+        let mut stale = snapshot(Phase::Profiles, vec![user("Locked", true)]);
+        stale.pin_denied = true;
+        let mut screen = ProfilesScreen::new(EntryId(3), stale.read());
+        assert!(
+            !screen.pin_denied,
+            "the carried dismissal may not delay fresh first paint"
+        );
+        screen.pad = Pad {
+            open: true,
+            target: 0,
+            entry: "1234".into(),
+            submitting: true,
+            ..Pad::new()
+        };
+
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Tick(Tick {
+                ms: 16,
+                dt_us: 16_667,
+            }),
+            None,
+            &stale,
+            InstanceId(17),
+        );
+        assert!(
+            screen.pad.submitting,
+            "the old denial is ignored until its dismissal is published"
+        );
+
+        let clear = snapshot(Phase::Profiles, vec![user("Locked", true)]);
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Tick(Tick {
+                ms: 32,
+                dt_us: 16_667,
+            }),
+            None,
+            &clear,
+            InstanceId(17),
+        );
+        let mut denied = snapshot(Phase::Profiles, vec![user("Locked", true)]);
+        denied.pin_denied = true;
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Tick(Tick {
+                ms: 48,
+                dt_us: 16_667,
+            }),
+            None,
+            &denied,
+            InstanceId(17),
+        );
+        assert!(!screen.pad.submitting);
+        assert!(
+            screen.pad.error_s > 0.0,
+            "a denial published after the clear belongs to this pad"
+        );
+    }
+
+    #[test]
+    fn a_new_denial_is_not_lost_when_dismiss_and_switch_publish_between_ticks() {
+        let mut old_denial = snapshot(Phase::Profiles, vec![user("Locked", true)]);
+        old_denial.pin_denied = true;
+        let mut screen = ProfilesScreen::new(EntryId(3), old_denial.read());
+        screen.pad = Pad {
+            open: true,
+            target: 0,
+            entry: "1234".into(),
+            submitting: true,
+            ..Pad::new()
+        };
+
+        // Session may publish the constructor's Dismiss(false) and the new switch's denial(true)
+        // in one drain before the next frame. The screen therefore observes true on both sides;
+        // requiring an intermediate false Tick loses the new request's real reply.
+        let mut new_denial = snapshot(Phase::Profiles, vec![user("Locked", true)]);
+        new_denial.pin_denied = true;
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Tick(Tick {
+                ms: 16,
+                dt_us: 16_667,
+            }),
+            None,
+            &new_denial,
+            InstanceId(17),
+        );
+
+        assert!(
+            !screen.pad.submitting,
+            "the new request's denial must be consumed"
+        );
+        assert!(
+            screen.pad.error_s > 0.0,
+            "the new denial flashes the current pad"
+        );
+    }
+
+    #[test]
+    fn a_carried_select_command_does_not_look_like_an_immediate_switch_failure() {
+        let published = snapshot(Phase::Profiles, vec![user("Locked", true)]);
+        let mut screen = ProfilesScreen::new(EntryId(3), published.read());
+        screen.pad = Pad {
+            open: true,
+            target: 0,
+            entry: "123".into(),
+            ..Pad::new()
+        };
+        let mut effects = Vec::<Stamped<SessionHost>>::new();
+        let mut present = Present::new();
+        {
+            let mut fx = Effects::new(
+                &mut effects,
+                MachineId::Instance(InstanceId(17)),
+                &mut present,
+            );
+            screen.press(b'4', &mut fx);
+        }
+        assert!(screen.pad.submitting);
+        assert!(effects.iter().any(|st| matches!(
+            &st.fx,
+            Fx::App(AppFx::Session(auth::SessionCmd::SelectProfile {
+                index: 0,
+                pin: Some(pin),
+            })) if pin == "1234"
+        )));
+
+        // The command is still in the queue; this is the same publication used by the press.
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Tick(Tick {
+                ms: 16,
+                dt_us: 16_667,
+            }),
+            None,
+            &published,
+            InstanceId(17),
+        );
+
+        assert!(
+            screen.pad.open,
+            "an unchanged pre-command publication is not a switch failure"
+        );
+        assert!(
+            screen.pad.submitting,
+            "the pad waits for an addressed acknowledgement/result"
+        );
+    }
+
+    #[test]
+    fn root_back_uses_the_instance_address_and_checked_correlation_space() {
+        let mut screen = bare(Pad::new());
+        let (_, effects) = step_ev_with(
+            &mut screen,
+            &key_down(Key::Back, 0, 0),
+            None,
+            &EMPTY_SNAPSHOT,
+            InstanceId(83),
+        );
+        assert!(effects.iter().any(|st| matches!(
+            &st.fx,
+            Fx::App(AppFx::Session(auth::SessionCmd::BackAtRoot { reply }))
+                if reply.instance == 83 && reply.correlation == 1
+        )));
+        let (handled, _) = step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(1),
+                AppMsg::BackReply {
+                    correlation: 1,
+                    resumed: false,
+                },
+            ),
+            None,
+            &EMPTY_SNAPSHOT,
+            InstanceId(83),
+        );
+        assert_eq!(handled, Handled::Yes);
+
+        screen.next_correlation = Some(u32::MAX);
+        let (_, exhausted) = step_ev_with(
+            &mut screen,
+            &key_down(Key::Back, 0, 0),
+            None,
+            &EMPTY_SNAPSHOT,
+            InstanceId(83),
+        );
+        assert!(exhausted
+            .iter()
+            .all(|st| !matches!(st.fx, Fx::App(AppFx::Session(_)))));
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1375,10 +1994,13 @@ mod tests {
         step_ev(&mut s, &key_down(Key::Other, b'7' as u32, 0), None);
         assert_eq!(s.state.pad_len, 1);
         assert_eq!(s.state.pad_target, 2);
-        let typed = Screen::<InnerHost>::state(&s).hash();
+        let typed = Screen::<SessionHost>::state(&s).hash();
         step_ev(&mut s, &ScreenEvent::Activate(pad_elem(3, 2)), None);
-        assert_eq!(s.state.pad_len, 0, "delete must publish before returning early");
-        assert_ne!(Screen::<InnerHost>::state(&s).hash(), typed);
+        assert_eq!(
+            s.state.pad_len, 0,
+            "delete must publish before returning early"
+        );
+        assert_ne!(Screen::<SessionHost>::state(&s).hash(), typed);
         assert_eq!(s.state.roster_n, 3);
     }
 
@@ -1387,22 +2009,31 @@ mod tests {
         let mut s = bare(Pad::new());
         s.state.roster_n = 3;
         let mut present = Present::new();
-        let mut effects = Vec::<Stamped<InnerHost>>::new();
+        let mut effects = Vec::<Stamped<SessionHost>>::new();
         {
-            let mut fx = Effects::new(&mut effects, MachineId::Instance(InstanceId(7)), &mut present);
+            let mut fx = Effects::new(
+                &mut effects,
+                MachineId::Instance(InstanceId(7)),
+                &mut present,
+            );
             s.open_pad(2, &mut fx);
         }
         assert!(s.state.pad_open);
         assert_eq!(s.state.pad_target, 2);
-        let event = effects.into_iter().find_map(|st| match st.fx {
-            Fx::Deliver(owner, Delivery::Screen(event @ ScreenEvent::Enter(_))) => {
-                assert_eq!(owner, MachineId::Instance(InstanceId(7)));
-                Some(event)
-            }
-            _ => None,
-        }).expect("opening must reseat the actual mounted instance");
-        assert!(matches!(&event, ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(k) })
-            if k.elem == pad_elem(0, 0)));
+        let event = effects
+            .into_iter()
+            .find_map(|st| match st.fx {
+                Fx::Deliver(owner, Delivery::Screen(event @ ScreenEvent::Enter(_))) => {
+                    assert_eq!(owner, MachineId::Instance(InstanceId(7)));
+                    Some(event)
+                }
+                _ => None,
+            })
+            .expect("opening must reseat the actual mounted instance");
+        assert!(
+            matches!(&event, ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(k) })
+            if k.elem == pad_elem(0, 0))
+        );
         step_ev(&mut s, &event, None);
         assert!(s.pad.open);
         assert_eq!(s.pad.target, 2);
@@ -1413,8 +2044,10 @@ mod tests {
 
     #[test]
     fn closing_pin_publishes_the_closed_state_before_the_next_tick() {
-        let _serial = crate::testlock::serial();
-        let mut s = bare(Pad { entry: "12".into(), ..Pad::opened(2) });
+        let mut s = bare(Pad {
+            entry: "12".into(),
+            ..Pad::opened(2)
+        });
         s.state = s.snapshot_state(3);
         step_ev(&mut s, &key_down(Key::Back, 0, 0), None);
         assert!(!s.state.pad_open);
@@ -1425,12 +2058,21 @@ mod tests {
 
     #[test]
     fn declared_pad_holes_match_the_keys_and_edges() {
-        let holes: Vec<(usize, usize)> = KEYS.iter().flatten().enumerate()
-            .filter_map(|(i, value)| value.is_none().then_some((i / PAD_COLS, i % PAD_COLS))).collect();
+        let holes: Vec<(usize, usize)> = KEYS
+            .iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(i, value)| value.is_none().then_some((i / PAD_COLS, i % PAD_COLS)))
+            .collect();
         assert_eq!(PAD_HOLES, holes.as_slice());
-        assert!(matches!(pad_neighbour(EntryId(1), pad_elem(3, 1), Dir::Right),
-            Step::Move(key) if key.elem == pad_elem(3, 2)));
-        assert!(matches!(pad_neighbour(EntryId(1), pad_elem(0, 0), Dir::Left), Step::Edge));
+        assert!(
+            matches!(pad_neighbour(EntryId(1), pad_elem(3, 1), Dir::Right),
+            Step::Move(key) if key.elem == pad_elem(3, 2))
+        );
+        assert!(matches!(
+            pad_neighbour(EntryId(1), pad_elem(0, 0), Dir::Left),
+            Step::Edge
+        ));
     }
 
     #[test]
@@ -1440,15 +2082,27 @@ mod tests {
         let view = ProfilesView { screen: &s, n: 4 };
         let mut engine = FocusEngine::new();
         let owner = InputOwner::Entry(s.entry);
-        engine.set(owner, FocusKey { entry: s.entry, elem: 2 }, Some(ROSTER_GROUP), crate::ui::screen::By::Restore);
-        assert!(matches!(engine.move_dir(owner, &view, &[], Dir::Down, &cx(None)),
-            Outcome::Moved { to, .. } if to.elem == FOOTER));
+        engine.set(
+            owner,
+            FocusKey {
+                entry: s.entry,
+                elem: 2,
+            },
+            Some(ROSTER_GROUP),
+            crate::ui::screen::By::Restore,
+        );
+        assert!(
+            matches!(engine.move_dir(owner, &view, &[], Dir::Down, &cx(None)),
+            Outcome::Moved { to, .. } if to.elem == FOOTER)
+        );
         for dir in [Dir::Down, Dir::Left, Dir::Right] {
             let _ = engine.move_dir(owner, &view, &[], dir, &cx(None));
             assert_eq!(engine.current(owner).unwrap().elem, FOOTER);
         }
-        assert!(matches!(engine.move_dir(owner, &view, &[], Dir::Up, &cx(None)),
-            Outcome::Moved { to, .. } if to.elem < 4));
+        assert!(
+            matches!(engine.move_dir(owner, &view, &[], Dir::Up, &cx(None)),
+            Outcome::Moved { to, .. } if to.elem < 4)
+        );
     }
 
     #[test]
@@ -1457,7 +2111,13 @@ mod tests {
         let view = ProfilesView { screen: &s, n: 0 };
         let mut engine = crate::ui::focus::FocusEngine::new();
         let owner = InputOwner::Entry(s.entry);
-        engine.enter(owner, &view, FocusTarget::ContainerGroup(ROSTER_GROUP), None, &cx(None));
+        engine.enter(
+            owner,
+            &view,
+            FocusTarget::ContainerGroup(ROSTER_GROUP),
+            None,
+            &cx(None),
+        );
         assert_eq!(engine.current(owner).unwrap().elem, FOOTER);
     }
 
@@ -1465,10 +2125,30 @@ mod tests {
     fn the_roster_neighbour_clamps_at_both_ends() {
         let s = bare(Pad::new());
         let view = ProfilesView { screen: &s, n: 4 };
-        assert!(matches!(Focusable::<InnerHost>::neighbour(&view,
-            FocusKey { entry: s.entry, elem: 0 }, Dir::Left, &cx(None)), Step::Edge));
-        assert!(matches!(Focusable::<InnerHost>::neighbour(&view,
-            FocusKey { entry: s.entry, elem: 3 }, Dir::Right, &cx(None)), Step::Edge));
+        assert!(matches!(
+            Focusable::<SessionHost>::neighbour(
+                &view,
+                FocusKey {
+                    entry: s.entry,
+                    elem: 0
+                },
+                Dir::Left,
+                &cx(None)
+            ),
+            Step::Edge
+        ));
+        assert!(matches!(
+            Focusable::<SessionHost>::neighbour(
+                &view,
+                FocusKey {
+                    entry: s.entry,
+                    elem: 3
+                },
+                Dir::Right,
+                &cx(None)
+            ),
+            Step::Edge
+        ));
     }
 
     /// The cell both walks below have to step over.
@@ -1502,11 +2182,20 @@ mod tests {
         // LEFT from '0' (row 3, col 1) runs into the hole and stops — LEFT/RIGHT skip a hole
         // WITHIN their own row rather than deflecting to a different one, and there is nothing
         // further left of it here.
-        assert!(matches!(pad_neighbour(e, pad_elem(3, 1), Dir::Left), Step::Edge));
+        assert!(matches!(
+            pad_neighbour(e, pad_elem(3, 1), Dir::Left),
+            Step::Edge
+        ));
         // RIGHT from delete (row 3, col 2) has nothing further right.
-        assert!(matches!(pad_neighbour(e, pad_elem(3, 2), Dir::Right), Step::Edge));
+        assert!(matches!(
+            pad_neighbour(e, pad_elem(3, 2), Dir::Right),
+            Step::Edge
+        ));
         // UP from '1' (row 0, col 0), the grid's own top-left corner, leaves entirely.
-        assert!(matches!(pad_neighbour(e, pad_elem(0, 0), Dir::Up), Step::Edge));
+        assert!(matches!(
+            pad_neighbour(e, pad_elem(0, 0), Dir::Up),
+            Step::Edge
+        ));
     }
 
     /// `pad_nearest_col` on its own, over exactly the three cases `ui/profiles.rs`'s retired
@@ -1517,8 +2206,16 @@ mod tests {
     #[test]
     fn pad_nearest_col_deflects_onto_the_nearest_occupied_column() {
         assert_eq!(pad_nearest_col(3, 0), 1, "▼ off 7 lands on 0");
-        assert_eq!(pad_nearest_col(3, 2), 2, "▼ off 9 lands on delete, which is under it");
-        assert_eq!(pad_nearest_col(1, 1), 1, "an occupied column is kept as it is");
+        assert_eq!(
+            pad_nearest_col(3, 2),
+            2,
+            "▼ off 9 lands on delete, which is under it"
+        );
+        assert_eq!(
+            pad_nearest_col(1, 1),
+            1,
+            "an occupied column is kept as it is"
+        );
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1537,8 +2234,14 @@ mod tests {
         let (title_y, dots_y, grid_y) = pad_geom(&m);
         assert!(title_y > 0.0 && title_y < SCR_H as f32);
         assert!(grid_y > title_y, "the keypad sits below the title");
-        assert!(dots_y > title_y && dots_y < grid_y, "the dot row sits between the two");
-        assert!(grid_y + PAD_GRID_H < SCR_H as f32, "the keypad fits on the panel");
+        assert!(
+            dots_y > title_y && dots_y < grid_y,
+            "the dot row sits between the two"
+        );
+        assert!(
+            grid_y + PAD_GRID_H < SCR_H as f32,
+            "the keypad fits on the panel"
+        );
         // The unit's own top edge is `title_y` (the title is the first thing drawn in it) and its
         // bottom edge is `grid_y + PAD_GRID_H` (the keypad is the last) — a centred block puts an
         // EQUAL gap above and below those two edges.
@@ -1582,8 +2285,15 @@ mod tests {
         let m = FixtureMeasure;
         let tw = m.width(c"Sign out", theme::size::BODY, true);
         let r = footer_rect(&m);
-        assert_eq!(r.w, tw + 76.0, "the pill's width must be the measured label plus its own side padding");
-        assert!((r.cx() - SCR_W as f32 * 0.5).abs() < 0.01, "centred on the panel");
+        assert_eq!(
+            r.w,
+            tw + 76.0,
+            "the pill's width must be the measured label plus its own side padding"
+        );
+        assert!(
+            (r.cx() - SCR_W as f32 * 0.5).abs() < 0.01,
+            "centred on the panel"
+        );
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1593,7 +2303,11 @@ mod tests {
     #[test]
     fn a_pin_digit_is_read_from_either_field() {
         assert_eq!(digit_of(b'7' as u32, 0), Some(b'7'), "a dev keyboard's sym");
-        assert_eq!(digit_of(0, 55), Some(b'7'), "the remote's wcode, same digit");
+        assert_eq!(
+            digit_of(0, 55),
+            Some(b'7'),
+            "the remote's wcode, same digit"
+        );
         assert_eq!(digit_of(b'0' as u32, 0), Some(b'0'));
         assert_eq!(digit_of(999, 0), None, "not a digit in either field");
     }
@@ -1617,9 +2331,16 @@ mod tests {
                 phases.push(now);
             }
         }
-        assert_eq!(phases.last(), Some(&None), "the last report returns the dots to their resting ink");
+        assert_eq!(
+            phases.last(),
+            Some(&None),
+            "the last report returns the dots to their resting ink"
+        );
         let lit = phases.iter().filter(|p| **p == Some(true)).count();
-        assert!(lit >= 4, "a 1.4s window must read as several pulses — got {lit} ({phases:?})");
+        assert!(
+            lit >= 4,
+            "a 1.4s window must read as several pulses — got {lit} ({phases:?})"
+        );
     }
 
     /// The flip reports to the dispatcher's `Present`, not to `ui::idle` — the new half of the
@@ -1629,26 +2350,37 @@ mod tests {
     fn a_flash_flip_invalidates_the_present_gate() {
         let mut present = Present::new();
         present.take(0); // drain the fresh gate's own always-dirty first frame
-        let mut pad = Pad { open: true, error_s: PIN_ERR_S, ..Pad::new() };
+        let mut pad = Pad {
+            open: true,
+            error_s: PIN_ERR_S,
+            ..Pad::new()
+        };
         let dt = 1.0 / 60.0;
-        let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
+        let mut buf: Vec<Stamped<SessionHost>> = Vec::new();
         let mut saw_a_flip_invalidate = false;
         while pad.error_s > 0.0 {
             let was = pin_flash(pad.error_s);
             {
-                let mut fx = Effects::new(&mut buf, MachineId::Instance(InstanceId(0)), &mut present);
+                let mut fx =
+                    Effects::new(&mut buf, MachineId::Instance(InstanceId(0)), &mut present);
                 ProfilesScreen::step_pin_flash(&mut pad, dt, &mut fx);
             }
             let now = pin_flash(pad.error_s);
             let asked = present.take(0);
             if now != was {
-                assert!(asked, "the dot row changed colour and did not ask to be drawn");
+                assert!(
+                    asked,
+                    "the dot row changed colour and did not ask to be drawn"
+                );
                 saw_a_flip_invalidate = true;
             } else {
                 assert!(!asked, "a dot row mid-phase asked for a repaint");
             }
         }
-        assert!(saw_a_flip_invalidate, "the loop above never actually crossed a phase boundary");
+        assert!(
+            saw_a_flip_invalidate,
+            "the loop above never actually crossed a phase boundary"
+        );
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1667,14 +2399,26 @@ mod tests {
     /// on profile 0".
     #[test]
     fn back_closes_the_pad_and_clears_the_verdict() {
-        let _s = crate::testlock::serial();
-        auth::set_pin_denied_for_test(true);
-        let mut s = bare(Pad { open: true, target: 2, error_s: PIN_ERR_S, entry: "12".into(), ..Pad::new() });
+        let mut s = bare(Pad {
+            open: true,
+            target: 2,
+            error_s: PIN_ERR_S,
+            entry: "12".into(),
+            ..Pad::new()
+        });
+        s.pin_denied = true;
         let (handled, effs) = step_ev(&mut s, &key_down(Key::Back, 0, 0), None);
         assert_eq!(handled, Handled::Yes);
         assert!(!s.pad.open, "BACK takes the keypad down");
         assert_eq!(s.pad.error_s, 0.0, "…and the flash goes with it");
-        assert!(!auth::pin_denied(), "…and the verdict, which is what leaks onto the roster behind it");
+        assert!(
+            !s.pin_denied,
+            "…and the local verdict, which is what leaks onto the roster behind it"
+        );
+        assert!(effs.iter().any(|st| matches!(
+            st.fx,
+            Fx::App(AppFx::Session(auth::SessionCmd::DismissPinError))
+        )));
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
@@ -1684,7 +2428,6 @@ mod tests {
             "closing returns focus to the PROTECTED profile the pad was opened on (index 2), \
              not wherever the roster's default seat lands"
         );
-        auth::set_pin_denied_for_test(false);
     }
 
     /// **The shared mechanism, tested directly.** All three doors out of the pad — BACK, a
@@ -1698,9 +2441,8 @@ mod tests {
     /// to a caller and fails every door identically.
     #[test]
     fn close_pad_returns_focus_to_its_own_target_not_index_zero() {
-        let _serial = crate::testlock::serial();
         let mut present = Present::new();
-        let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
+        let mut buf: Vec<Stamped<SessionHost>> = Vec::new();
         let mut s = bare(Pad::opened(2));
         {
             let mut fx = Effects::new(&mut buf, MachineId::Instance(InstanceId(0)), &mut present);
@@ -1717,18 +2459,29 @@ mod tests {
         );
     }
 
-    /// With the pad CLOSED, every BACK is the root press — asked of the loop
-    /// (`LoopReq::AuthBackAtRoot`) rather than performed here, exactly as `screens::login::
-    /// LoginScreen`'s own `back_is_always_the_root_press` test states for its sibling screen.
+    /// With the pad CLOSED, every BACK is the typed Session root request.
     #[test]
     fn back_with_the_pad_closed_asks_the_loop_for_the_root_press() {
+        let legacy = super::super::registry::LoopReq::AuthBackAtRoot;
+        assert!(matches!(
+            legacy,
+            super::super::registry::LoopReq::AuthBackAtRoot
+        ));
         let mut s = bare(Pad::new());
         let (handled, effs) = step_ev(&mut s, &key_down(Key::Back, 0, 0), None);
         assert_eq!(handled, Handled::Yes);
         assert!(
-            effs.iter().any(|st| matches!(&st.fx, Fx::App(AppFx::Loop(LoopReq::AuthBackAtRoot)))),
-            "the picker has no panel of its own to close first — BACK asks the loop for the root press"
+            effs.iter().any(|st| matches!(
+                &st.fx,
+                Fx::App(AppFx::Session(auth::SessionCmd::BackAtRoot { reply }))
+                    if reply.instance == 0 && reply.correlation == 1
+            )),
+            "the picker has no panel of its own to close first — BACK asks Session for the root press"
         );
+        assert!(effs.iter().all(|st| !matches!(
+            st.fx,
+            Fx::App(AppFx::Loop(super::super::registry::LoopReq::AuthBackAtRoot))
+        )));
     }
 
     /// A pointer click that resolves onto NONE of the pad's twelve stops (`hit: None`) is the
@@ -1736,15 +2489,26 @@ mod tests {
     /// raw `Click` event rather than a library `OnMiss` policy.
     #[test]
     fn a_pointer_click_outside_every_pad_stop_closes_it_too() {
-        let _s = crate::testlock::serial();
-        auth::set_pin_denied_for_test(true);
         // `target: 2`, not 0 — see `back_closes_the_pad_and_clears_the_verdict`'s doc for why the
         // first avatar cannot distinguish a real fix from the old default-seat bug.
-        let mut s = bare(Pad { open: true, target: 2, error_s: PIN_ERR_S, ..Pad::new() });
+        let mut s = bare(Pad {
+            open: true,
+            target: 2,
+            error_s: PIN_ERR_S,
+            ..Pad::new()
+        });
+        s.pin_denied = true;
         let (handled, effs) = step_ev(&mut s, &click(None), None);
         assert_eq!(handled, Handled::Yes);
         assert!(!s.pad.open, "the pointer's miss takes the keypad down too");
-        assert!(!auth::pin_denied(), "the pointer's door owes the SAME cleanup BACK's does");
+        assert!(
+            !s.pin_denied,
+            "the pointer's door owes the SAME local cleanup BACK's does"
+        );
+        assert!(effs.iter().any(|st| matches!(
+            st.fx,
+            Fx::App(AppFx::Session(auth::SessionCmd::DismissPinError))
+        )));
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
@@ -1753,8 +2517,6 @@ mod tests {
             )),
             "the pointer's door owes the SAME focus-return BACK's does — back to profile 2, not profile 0"
         );
-        auth::set_pin_denied_for_test(false);
-
         // …and a click that DID hit a cell must not also close the pad — that is the Activate
         // event's job, not this one's.
         let mut s2 = bare(Pad::opened(0));
@@ -1773,7 +2535,11 @@ mod tests {
         step_ev(&mut s, &key_down(Key::Other, b'2' as u32, 0), None);
         assert_eq!(s.pad.entry, "12");
         assert!(!s.pad.submitting, "only three digits so far");
-        step_ev(&mut s, &key_down(Key::Other, 0, 55 /* '7' by wcode */), None);
+        step_ev(
+            &mut s,
+            &key_down(Key::Other, 0, 55 /* '7' by wcode */),
+            None,
+        );
         assert_eq!(s.pad.entry, "127");
         // backspace via the delete cell's OWN digit path is not reachable through `digit_of` (it
         // is not in 48..=57) — `press` handles it directly, exercised below through `Activate`.
@@ -1783,7 +2549,12 @@ mod tests {
     /// line, ported from `ui/profiles.rs`.
     #[test]
     fn typing_again_cancels_a_running_wrong_pin_flash() {
-        let mut s = bare(Pad { open: true, error_s: PIN_ERR_S, entry: "1".into(), ..Pad::new() });
+        let mut s = bare(Pad {
+            open: true,
+            error_s: PIN_ERR_S,
+            entry: "1".into(),
+            ..Pad::new()
+        });
         step_ev(&mut s, &key_down(Key::Other, b'2' as u32, 0), None);
         assert_eq!(s.pad.error_s, 0.0);
     }
@@ -1792,9 +2563,18 @@ mod tests {
     /// entry, matching `ui/profiles.rs::pad_key`'s own early return.
     #[test]
     fn only_back_acts_while_a_pin_is_submitting() {
-        let mut s = bare(Pad { open: true, submitting: true, entry: "123".into(), ..Pad::new() });
+        let mut s = bare(Pad {
+            open: true,
+            submitting: true,
+            entry: "123".into(),
+            ..Pad::new()
+        });
         let (handled, _) = step_ev(&mut s, &key_down(Key::Other, b'4' as u32, 0), None);
-        assert_eq!(handled, Handled::Yes, "swallowed, not ignored — nothing behind the pad may act on it");
+        assert_eq!(
+            handled,
+            Handled::Yes,
+            "swallowed, not ignored — nothing behind the pad may act on it"
+        );
         assert_eq!(s.pad.entry, "123", "the digit changed nothing");
         assert!(s.pad.submitting);
     }
@@ -1827,12 +2607,15 @@ mod tests {
         let s = bare(Pad::opened(0));
         let c = cx(None);
         let mut groups = Vec::new();
-        Focusable::<InnerHost>::groups(&s, &c, &mut groups);
+        Focusable::<SessionHost>::groups(&s, &c, &mut groups);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].id, PAD_GROUP);
         assert_eq!(groups[0].elem, ElemKind::Bare);
         assert_eq!(groups[0].len, PAD_ROWS * PAD_COLS);
-        assert!(matches!(groups[0].kind, GroupKind::Grid { cols: PAD_COLS, .. }));
+        assert!(matches!(
+            groups[0].kind,
+            GroupKind::Grid { cols: PAD_COLS, .. }
+        ));
     }
 
     /// With the pad closed and (as every host test's process necessarily has it, per
@@ -1842,34 +2625,43 @@ mod tests {
     /// `ui/focus.rs`'s `move_dir`).
     #[test]
     fn the_sign_out_pill_is_the_only_group_with_no_roster_on_screen() {
-        // `auth::users()` reads the process-global controller — unguarded, this races every other
-        // test in the binary that seeds or clears the roster (`[[test-suite-global-pollution]]`),
-        // exactly as `back_closes_the_pad_and_clears_the_verdict` and
-        // `a_pointer_click_outside_every_pad_stop_closes_it_too` already hold this lock for their
-        // own reads of the shared PIN-denied flag.
-        let _s = crate::testlock::serial();
-        assert!(auth::users().is_empty(), "an unseeded roster is the case under test");
         let s = bare(Pad::new());
         let c = cx(None);
         let mut groups = Vec::new();
-        Focusable::<InnerHost>::groups(&s, &c, &mut groups);
+        Focusable::<SessionHost>::groups(&s, &c, &mut groups);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].id, FOOTER_GROUP);
         assert_eq!(groups[0].elem, ElemKind::Control);
-        assert_eq!(Focusable::<InnerHost>::group_of(&s, &FOOTER, &c), Some(FOOTER_GROUP));
-        let from = Placed { rect: groups[0].extent, rest_rect: groups[0].extent, clip: Rect::FULL, index: None };
-        assert_eq!(Focusable::<InnerHost>::seat(&s, FOOTER_GROUP, from, &c).elem, FOOTER);
+        assert_eq!(
+            Focusable::<SessionHost>::group_of(&s, &FOOTER, &c),
+            Some(FOOTER_GROUP)
+        );
+        let from = Placed {
+            rect: groups[0].extent,
+            rest_rect: groups[0].extent,
+            clip: Rect::FULL,
+            index: None,
+        };
+        assert_eq!(
+            Focusable::<SessionHost>::seat(&s, FOOTER_GROUP, from, &c).elem,
+            FOOTER
+        );
     }
 
     /// `reconcile` never strands focus off the footer when the roster is empty, and clamps a
     /// stale roster index into range rather than losing it entirely otherwise.
     #[test]
     fn reconcile_falls_back_to_the_footer_with_an_empty_roster() {
-        let _s = crate::testlock::serial(); // `auth::users()` is process-global — see the sibling test above
         let s = bare(Pad::new());
         let c = cx(None);
-        let stray = FocusKey { entry: EntryId(0), elem: 3 };
-        assert_eq!(Focusable::<InnerHost>::reconcile(&s, stray, &c).elem, FOOTER);
+        let stray = FocusKey {
+            entry: EntryId(0),
+            elem: 3,
+        };
+        assert_eq!(
+            Focusable::<SessionHost>::reconcile(&s, stray, &c).elem,
+            FOOTER
+        );
 
         // A key already ON the footer must reconcile to ITSELF — a genuinely different branch
         // (`if want.elem == FOOTER { return want; }`) from the empty-roster fallback just above,
@@ -1880,8 +2672,11 @@ mod tests {
         // completely untouched, while the fallback builds a fresh key off `self.entry` and would
         // silently overwrite it.
         let foreign_entry = EntryId(99);
-        let on_footer = FocusKey { entry: foreign_entry, elem: FOOTER };
-        let got = Focusable::<InnerHost>::reconcile(&s, on_footer, &c);
+        let on_footer = FocusKey {
+            entry: foreign_entry,
+            elem: FOOTER,
+        };
+        let got = Focusable::<SessionHost>::reconcile(&s, on_footer, &c);
         assert_eq!(got.elem, FOOTER, "the footer reconciles to itself");
         assert_eq!(
             got.entry, foreign_entry,
@@ -1971,24 +2766,48 @@ mod tests {
     #[test]
     fn the_keypad_walks_around_its_empty_cell() {
         let e = EntryId(9);
-        assert!(KEYS[3][0].is_none(), "the cell both walkers below have to step around");
+        assert!(
+            KEYS[3][0].is_none(),
+            "the cell both walkers below have to step around"
+        );
 
         // ◀ from '0' finds nothing to its left and holds; ▶ from '0' reaches delete.
-        assert!(matches!(pad_neighbour(e, pad_elem(3, 1), Dir::Left), Step::Edge));
+        assert!(matches!(
+            pad_neighbour(e, pad_elem(3, 1), Dir::Left),
+            Step::Edge
+        ));
         assert!(matches!(
             pad_neighbour(e, pad_elem(3, 1), Dir::Right),
             Step::Move(k) if k.elem == pad_elem(3, 2)
         ));
         // a row edge holds, on either side
-        assert!(matches!(pad_neighbour(e, pad_elem(0, 0), Dir::Left), Step::Edge));
-        assert!(matches!(pad_neighbour(e, pad_elem(0, 2), Dir::Right), Step::Edge));
+        assert!(matches!(
+            pad_neighbour(e, pad_elem(0, 0), Dir::Left),
+            Step::Edge
+        ));
+        assert!(matches!(
+            pad_neighbour(e, pad_elem(0, 2), Dir::Right),
+            Step::Edge
+        ));
 
         assert_eq!(pad_nearest_col(3, 0), 1, "▼ off '7' lands on '0'");
-        assert_eq!(pad_nearest_col(3, 2), 2, "▼ off '9' lands on delete, directly under it");
-        assert_eq!(pad_nearest_col(1, 1), 1, "an occupied column is kept as it is");
+        assert_eq!(
+            pad_nearest_col(3, 2),
+            2,
+            "▼ off '9' lands on delete, directly under it"
+        );
+        assert_eq!(
+            pad_nearest_col(1, 1),
+            1,
+            "an occupied column is kept as it is"
+        );
 
         match pad_neighbour(e, pad_elem(2, 0), Dir::Down) {
-            Step::Move(k) => assert_eq!(k.elem, pad_elem(3, 1), "DOWN off '7' reaches '0', not the hole"),
+            Step::Move(k) => assert_eq!(
+                k.elem,
+                pad_elem(3, 1),
+                "DOWN off '7' reaches '0', not the hole"
+            ),
             Step::Edge => panic!("DOWN off '7' is a move"),
         }
         match pad_neighbour(e, pad_elem(0, 1), Dir::Up) {
@@ -2008,7 +2827,11 @@ mod tests {
     #[test]
     fn pin_flash_opens_lit_and_blinks_out() {
         assert_eq!(pin_flash(0.0), None, "no flash running");
-        assert_eq!(pin_flash(PIN_ERR_S), Some(true), "a rejected PIN opens red, not dim");
+        assert_eq!(
+            pin_flash(PIN_ERR_S),
+            Some(true),
+            "a rejected PIN opens red, not dim"
+        );
         let mut phases = Vec::new();
         let mut t = PIN_ERR_S;
         let dt = 1.0 / 60.0;
@@ -2025,9 +2848,16 @@ mod tests {
         if phases.last() != Some(&end) {
             phases.push(end);
         }
-        assert_eq!(phases.last(), Some(&None), "the flash ends dark, not stuck lit");
+        assert_eq!(
+            phases.last(),
+            Some(&None),
+            "the flash ends dark, not stuck lit"
+        );
         let lit = phases.iter().filter(|p| **p == Some(true)).count();
-        assert!(lit >= 4, "a 1.4s window must read as several distinct pulses, got {phases:?}");
+        assert!(
+            lit >= 4,
+            "a 1.4s window must read as several distinct pulses, got {phases:?}"
+        );
     }
 
     /// **Focus is exclusive**: while the pad is open, `groups()` reports the grid ALONE — the
@@ -2045,8 +2875,12 @@ mod tests {
         let view = ProfilesView { screen: &s, n: 3 };
         let c = cx(None);
         let mut groups = Vec::new();
-        Focusable::<InnerHost>::groups(&view, &c, &mut groups);
-        assert_eq!(groups.len(), 1, "no roster group and no footer group while the pad is up");
+        Focusable::<SessionHost>::groups(&view, &c, &mut groups);
+        assert_eq!(
+            groups.len(),
+            1,
+            "no roster group and no footer group while the pad is up"
+        );
         assert_eq!(groups[0].id, PAD_GROUP);
         assert_eq!(groups[0].len, PAD_ROWS * PAD_COLS);
     }
@@ -2061,10 +2895,16 @@ mod tests {
     #[test]
     fn a_typed_digit_reaches_the_pad_regardless_of_which_cell_holds_focus() {
         let mut s = bare(Pad::opened(0));
-        let parked = Some(FocusKey { entry: s.entry, elem: pad_elem(2, 2) });
+        let parked = Some(FocusKey {
+            entry: s.entry,
+            elem: pad_elem(2, 2),
+        });
         let (handled, _) = step_ev(&mut s, &key_down(Key::Other, b'5' as u32, 0), parked);
         assert_eq!(handled, Handled::Yes);
-        assert_eq!(s.pad.entry, "5", "the digit typed regardless of the focused cell (2,2)");
+        assert_eq!(
+            s.pad.entry, "5",
+            "the digit typed regardless of the focused cell (2,2)"
+        );
     }
 
     /// Every door out of the pad clears the PIN verdict — BACK, from `main`'s draft of
@@ -2075,13 +2915,24 @@ mod tests {
     /// happens to be the roster's default seat.
     #[test]
     fn back_closes_the_pad_and_clears_the_pin_verdict() {
-        let _s = crate::testlock::serial();
-        auth::set_pin_denied_for_test(true);
-        let mut s = bare(Pad { open: true, target: 0, error_s: PIN_ERR_S, ..Pad::new() });
+        let mut s = bare(Pad {
+            open: true,
+            target: 0,
+            error_s: PIN_ERR_S,
+            ..Pad::new()
+        });
+        s.pin_denied = true;
         let (handled, effs) = step_ev(&mut s, &key_down(Key::Back, 0, 0), None);
         assert_eq!(handled, Handled::Yes);
         assert!(!s.pad.open, "BACK takes the pad down");
-        assert!(!auth::pin_denied(), "…and the verdict, which is what would leak onto the roster behind it");
+        assert!(
+            !s.pin_denied,
+            "…and the local verdict, which is what would leak onto the roster behind it"
+        );
+        assert!(effs.iter().any(|st| matches!(
+            st.fx,
+            Fx::App(AppFx::Session(auth::SessionCmd::DismissPinError))
+        )));
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
@@ -2090,6 +2941,5 @@ mod tests {
             )),
             "closing re-seats the engine on the avatar whose pad this was, not on the group's default corner"
         );
-        auth::set_pin_denied_for_test(false);
     }
 }

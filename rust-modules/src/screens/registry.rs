@@ -1478,7 +1478,7 @@ pub(crate) struct AppMounter {
 /// it for its own host exactly as the dispatcher instantiates everything else.
 impl<H> Mounter<H> for AppMounter
 where
-    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike,
+    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike,
 {
     fn mount(
         &mut self,
@@ -1486,7 +1486,7 @@ where
         arg: &AppArg,
         ret: &ReturnState<u32, PageMemory>,
         cx: &Cx<'_, H>,
-        _fx: &mut Effects<'_, H>,
+        fx: &mut Effects<'_, H>,
     ) -> Box<dyn Screen<H>> {
         let entry = match cx.owner {
             crate::ui::machine::InputOwner::Entry(e) => e,
@@ -1540,8 +1540,14 @@ where
             // every remaining `app::input`/`app::run` call site drop its own `enter()`-equivalent
             // reset (see `input::enter_profiles_from_onboard`'s doc for the same argument made
             // about `screens::onboard` in 5b).
-            AppArg::Login => Box::new(crate::screens::login::LoginScreen::new(entry)),
-            AppArg::Profiles => Box::new(crate::screens::profiles::ProfilesScreen::new(entry)),
+            AppArg::Login => Box::new(crate::screens::login::LoginScreen::new(entry, H::auth(cx))),
+            AppArg::Profiles => {
+                let screen = crate::screens::profiles::ProfilesScreen::new(entry, H::auth(cx));
+                fx.push(crate::ui::machine::Fx::App(AppFx::Session(
+                    crate::auth::SessionCmd::DismissPinError,
+                )));
+                Box::new(screen)
+            }
             AppArg::Home => {
                 let mut page = crate::screens::home::HomeScreen::new(entry, id);
                 if let PageMemory::Home(memory) = &ret.memory { page.restore(memory); }
