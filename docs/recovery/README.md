@@ -1,3 +1,5 @@
+> This branch additionally contains an unverified, in-progress Session source overlay. See [SESSION-WIP.md](SESSION-WIP.md) for its captured paths and limits. The integration checkpoint described below is the base, not a verification claim about this working overlay.
+
 # UI restructure recovery
 
 These branches preserve the project after a power outage:
