@@ -92,6 +92,10 @@ impl SessionAdapter {
             SessionOp::ServerRoster => ("roster-srv", true),
             SessionOp::ProfileSwitch => ("switch", true),
             SessionOp::Endpoint(_) => ("endpoint", false),
+            SessionOp::Ready | SessionOp::Picker => return Err(SessionEnvelope {
+                addr: Addr { to: MachineId::Session, req }, key, arrival: 0,
+                terminal: true, lifecycle: None, outcome: SessionArrival::Refused,
+            }),
         };
         let spawn = self.spawn;
         self.launch(req, key, stream, |job| spawn(name, job),

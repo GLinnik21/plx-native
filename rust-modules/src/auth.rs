@@ -1268,7 +1268,7 @@ impl Drop for EndpointTerminal {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProfileDelta {
     server: ServerRef,
     sources: Vec<SourceRef>,

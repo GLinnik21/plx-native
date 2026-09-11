@@ -25,6 +25,50 @@ pub(crate) struct EndpointFact {
 }
 
 impl Observation {
+    pub(crate) fn matches_request(&self, pending: &owner::Pending, terminal: bool) -> bool {
+        use owner::{SessionOp, StreamPhase};
+        let (epoch, expected, compatible) = match self {
+            Self::Login(p) => {
+                let login = matches!(pending.key.op, SessionOp::Login | SessionOp::Rediscover);
+                match p {
+                    LoginProgress::CodeReplacing { epoch } | LoginProgress::CodeReady { epoch, .. }
+                    | LoginProgress::Authorized { epoch, .. } =>
+                        (*epoch, None, pending.key.op == SessionOp::Login && !terminal),
+                    LoginProgress::Failed { epoch, .. } | LoginProgress::SignedIn { epoch, .. } =>
+                        (*epoch, None, login && terminal),
+                }
+            }
+            Self::Registry(p) => {
+                let (epoch, expected) = match p {
+                    RegistryProgress::Activate { epoch, expected, .. }
+                    | RegistryProgress::Settled { epoch, expected, .. }
+                    | RegistryProgress::Install { epoch, expected, .. } => (*epoch, expected.as_ref()),
+                };
+                let compatible = match pending.key.op {
+                    SessionOp::Login | SessionOp::Rediscover => expected.is_none(),
+                    SessionOp::ServerRoster => expected.is_some(),
+                    _ => false,
+                };
+                (epoch, expected, compatible && !terminal)
+            }
+            Self::HomeRoster(p) => (p.epoch, Some(&p.expected),
+                pending.key.op == SessionOp::HomeRoster && terminal),
+            Self::ServerRoster(p) => (p.epoch, Some(&p.expected),
+                pending.key.op == SessionOp::ServerRoster && terminal),
+            Self::Endpoint(p) => (p.epoch, Some(&p.expected),
+                pending.key.op == SessionOp::Endpoint(p.sid) && terminal),
+            Self::ProfileSwitch(p) => (p.epoch, Some(&p.expected),
+                pending.key.op == SessionOp::ProfileSwitch && pending.phase == StreamPhase::Running
+                    && (terminal || matches!(p.outcome, ProfileSwitchOutcomeProgress::Ready { .. }))),
+            Self::ProfileRoster(p) => (p.epoch, Some(&p.expected),
+                pending.key.op == SessionOp::ProfileSwitch && pending.phase == StreamPhase::ProfileSeated && terminal),
+        };
+        compatible && epoch == pending.key.epoch && expected.is_none_or(|expected|
+            expected.client_id == pending.expected.client_id
+                && expected.account_token == pending.expected.account_token
+                && expected.profile_uuid == pending.expected.profile_uuid)
+    }
+
     pub(crate) fn from_transport(value: AuthProgress) -> (Self, Option<ClientLifecycle>) {
         let observation = match value {
             AuthProgress::Login(p) => Self::Login(p),
@@ -164,5 +208,15 @@ pub(super) mod address {
             _ => return Err(serde::de::Error::custom("invalid Session delivery address")),
         };
         Ok(Addr { to, req: RequestId(req) })
+    }
+}
+
+pub(super) mod server_id {
+    use super::*;
+    pub fn serialize<S: serde::Serializer>(value: &ServerId, serializer: S) -> Result<S::Ok, S::Error> {
+        value.raw().serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<ServerId, D::Error> {
+        u16::deserialize(deserializer).map(ServerId::from_raw)
     }
 }
