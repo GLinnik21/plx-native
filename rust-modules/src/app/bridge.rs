@@ -1093,6 +1093,9 @@ impl Bridge {
             SessionFx::RestartReply { to, accepted } => out.push(Fx::Deliver(
                 MachineId::Instance(InstanceId(to.instance)), Delivery::Screen(ScreenEvent::Async(
                     RequestId(to.correlation), AppMsg::RestartReply { correlation: to.correlation, accepted })))),
+            SessionFx::SelectionReply { to, accepted, flow_epoch } => out.push(Fx::Deliver(
+                MachineId::Instance(InstanceId(to.instance)), Delivery::Screen(ScreenEvent::Async(
+                    RequestId(to.correlation), AppMsg::SelectionReply { correlation: to.correlation, accepted, flow_epoch })))),
             SessionFx::BackReply { to, resumed } => {
                 self.session_adapter.finish_back(resumed);
                 out.push(Fx::Deliver(MachineId::Instance(InstanceId(to.instance)),

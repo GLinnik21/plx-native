@@ -499,23 +499,45 @@ fn footer_group_spec(measure: &dyn Measure) -> GroupSpec {
     }
 }
 
-/// The screen's own `LogicalState` (§5.4). What it hashes is deliberately narrow: the roster COUNT
-/// (whether the footer is the only reachable group), the pad's open/target/submitting/flashing
-/// facts, and the PIN's LENGTH — **never the digits themselves**, which must never reach a log, a
-/// recording or a divergence report (the same rule `diag/scrub.rs` states for a title: a PIN is
-/// exactly as unloggable, and there is no scrubber standing between this struct and the recorder).
+fn phase_disc(phase: Phase) -> u8 {
+    match phase {
+        Phase::Idle => 0,
+        Phase::Creating => 1,
+        Phase::Waiting => 2,
+        Phase::Discovering => 3,
+        Phase::Profiles => 4,
+        Phase::Switching => 5,
+        Phase::Ready => 6,
+        Phase::Error => 7,
+        Phase::Deleted => 8,
+    }
+}
+
+/// The screen's own `LogicalState` (§5.4): local pad/request state plus the retained Session facts
+/// that reduce an accepted selection ACK. Two instances with the same pending epoch but different
+/// cached publications can take different next transitions, so flow epoch, phase and denial are
+/// part of the canon. The PIN's LENGTH is included, **never its digits**, and the human probe prints
+/// no request correlation or flow epoch.
 struct ProfilesState {
     roster_n: u32,
+    flow_epoch: u64,
+    phase: u8,
+    pin_denied: bool,
     pad_open: bool,
     pad_target: u32,
     pad_len: u32,
     pad_submitting: bool,
     pad_flashing: bool,
     next_correlation: Option<u32>,
+    selection_correlation: Option<u32>,
+    selection_epoch: Option<u64>,
 }
 impl LogicalState for ProfilesState {
     fn write(&self, w: &mut Canon) {
         w.u32(self.roster_n)
+            .u64(self.flow_epoch)
+            .u8(self.phase)
+            .bool(self.pin_denied)
             .bool(self.pad_open)
             .u32(self.pad_target)
             .u32(self.pad_len)
@@ -523,20 +545,66 @@ impl LogicalState for ProfilesState {
             .bool(self.pad_flashing)
             .option(self.next_correlation, |w, correlation| {
                 w.u32(correlation);
+            })
+            .option(self.selection_correlation, |w, correlation| {
+                w.u32(correlation);
+            })
+            .option(self.selection_epoch, |w, epoch| {
+                w.u64(epoch);
             });
     }
     fn probe(&self, out: &mut String) {
         // the PIN's length, never its digits
         out.push_str(&format!(
-            "profiles n={} pad_open={} target={} pin_len={} submitting={} flashing={} next={:?}",
+            "profiles n={} phase={} denied={} pad_open={} target={} pin_len={} submitting={} flashing={} correlation_live={} selection_pending={} selection_accepted={}",
             self.roster_n,
+            self.phase,
+            self.pin_denied,
             self.pad_open,
             self.pad_target,
             self.pad_len,
             self.pad_submitting,
             self.pad_flashing,
-            self.next_correlation,
+            self.next_correlation.is_some(),
+            self.selection_correlation.is_some(),
+            self.selection_epoch.is_some(),
         ));
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PendingSelection {
+    AwaitingAck {
+        correlation: u32,
+        pad: bool,
+    },
+    Accepted {
+        correlation: u32,
+        pad: bool,
+        flow_epoch: u64,
+    },
+}
+
+impl PendingSelection {
+    fn correlation(self) -> u32 {
+        match self {
+            Self::AwaitingAck { correlation, .. } | Self::Accepted { correlation, .. } => {
+                correlation
+            }
+        }
+    }
+
+    fn accepted_epoch(self) -> Option<u64> {
+        match self {
+            Self::AwaitingAck { .. } => None,
+            Self::Accepted { flow_epoch, .. } => Some(flow_epoch),
+        }
+    }
+
+    fn pad(self) -> bool {
+        match self {
+            Self::AwaitingAck { pad, .. } | Self::Accepted { pad, .. } => pad,
+        }
     }
 }
 
@@ -568,7 +636,9 @@ pub(crate) struct ProfilesScreen {
     phase: Phase,
     error: Arc<str>,
     pin_denied: bool,
+    flow_epoch: u64,
     next_correlation: Option<u32>,
+    pending_selection: Option<PendingSelection>,
     state: ProfilesState,
 }
 
@@ -598,15 +668,22 @@ impl ProfilesScreen {
             // The mounter carries `DismissPinError` beside construction. The local first paint
             // must already be fresh while that command is still in the drain.
             pin_denied: false,
+            flow_epoch: snapshot.flow_epoch,
             next_correlation: Some(1),
+            pending_selection: None,
             state: ProfilesState {
                 roster_n: 0,
+                flow_epoch: snapshot.flow_epoch,
+                phase: phase_disc(snapshot.phase),
+                pin_denied: false,
                 pad_open: false,
                 pad_target: 0,
                 pad_len: 0,
                 pad_submitting: false,
                 pad_flashing: false,
                 next_correlation: Some(1),
+                selection_correlation: None,
+                selection_epoch: None,
             },
         };
         s.ground.reset();
@@ -647,14 +724,23 @@ impl ProfilesScreen {
     }
 
     fn snapshot_state(&self, n: usize) -> ProfilesState {
+        let selection_correlation = self.pending_selection.map(PendingSelection::correlation);
+        let selection_epoch = self
+            .pending_selection
+            .and_then(PendingSelection::accepted_epoch);
         ProfilesState {
             roster_n: n as u32,
+            flow_epoch: self.flow_epoch,
+            phase: phase_disc(self.phase),
+            pin_denied: self.pin_denied,
             pad_open: self.pad.open,
             pad_target: self.pad.target as u32,
             pad_len: self.pad.entry.len() as u32,
             pad_submitting: self.pad.submitting,
             pad_flashing: self.pad.error_s > 0.0,
             next_correlation: self.next_correlation,
+            selection_correlation,
+            selection_epoch,
         }
     }
 
@@ -686,11 +772,13 @@ impl ProfilesScreen {
         self.phase = snapshot.phase;
         self.error = Arc::clone(&snapshot.error);
         self.pin_denied = snapshot.pin_denied;
+        self.flow_epoch = snapshot.flow_epoch;
     }
 
     fn tick<H: AuthLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let dt = t.dt();
         self.resync(H::auth(cx));
+        self.reconcile_selection(fx);
         let n = self.users.len();
         self.refresh_row_sty(n);
 
@@ -700,19 +788,6 @@ impl ProfilesScreen {
         self.footer_pop.step(footer_focused.then_some(0), dt);
 
         if self.pad.open {
-            // Transitional compatibility pending an addressed terminal profile reply. The queued
-            // command RED tests below prove that phase/pin publication sampling cannot safely
-            // decide this once Session commands are asynchronous.
-            if self.pad.submitting && self.phase == Phase::Profiles {
-                if self.pin_denied {
-                    self.pad.submitting = false;
-                    self.pad.entry.clear();
-                    self.pad.error_s = PIN_ERR_S;
-                    fx.invalidate(Provenance::Input);
-                } else {
-                    self.close_pad(fx);
-                }
-            }
             Self::step_pin_flash(&mut self.pad, dt, fx);
         }
 
@@ -750,11 +825,7 @@ impl ProfilesScreen {
         fx.invalidate(Provenance::Input);
         if self.pad.entry.len() == PIN_LEN {
             let (idx, pin) = (self.pad.target, self.pad.entry.clone());
-            fx.push(Fx::App(AppFx::Session(auth::SessionCmd::SelectProfile {
-                index: idx,
-                pin: Some(pin),
-            })));
-            self.pad.submitting = true;
+            self.request_selection(idx, Some(pin), true, fx);
         }
         self.sync_pin_state();
     }
@@ -765,14 +836,14 @@ impl ProfilesScreen {
     /// protected one leaves): protected → open the PIN pad and re-seat focus onto it; else hand
     /// straight to Session's switch worker.
     fn select<H: AppLike>(&mut self, idx: usize, fx: &mut Effects<'_, H>) {
+        if self.pending_selection.is_some() {
+            return;
+        }
         let protected = self.users.get(idx).map(|u| u.protected).unwrap_or(false);
         if protected {
             self.open_pad(idx, fx);
         } else {
-            fx.push(Fx::App(AppFx::Session(auth::SessionCmd::SelectProfile {
-                index: idx,
-                pin: None,
-            })));
+            self.request_selection(idx, None, false, fx);
         }
     }
 
@@ -807,11 +878,15 @@ impl ProfilesScreen {
     /// keypad cell, and a non-PIN switch failure (`tick`'s doc) — because the pad is the ONLY
     /// surface that asks about a PIN, so it is the only one that may answer about one: a
     /// `pin_denied` left standing after the keypad is gone is a verdict about a control that is no
-    /// longer on screen. It does not CANCEL a submission still in flight under its own auth epoch
-    /// — a switch the user walked away from can still land, as `Phase::Ready` if the PIN was
-    /// right, or by re-raising the verdict this call just cleared if it was wrong (pre-existing;
-    /// `ui/profiles.rs`'s own `close_pad` doc has the fuller account, unchanged by this port).
+    /// longer on screen. Closing clears this instance's pending correlation, so a late ACK cannot
+    /// settle a reopened pad. It does not cancel Session's accepted flow; a later publication may
+    /// still route the app away, but without a matching local pending epoch its denial cannot be
+    /// assigned to another pad.
     fn close_pad<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
+        self.retire_pad(true, fx);
+    }
+
+    fn retire_pad<H: AppLike>(&mut self, dismiss_pin_error: bool, fx: &mut Effects<'_, H>) {
         // Capture the protected avatar's own index BEFORE `self.pad` is reset — every door out
         // of the pad must drop focus back onto the profile the user was trying to unlock, not
         // wherever the roster's default seat happens to be. `Enter::Fresh { focus:
@@ -825,9 +900,12 @@ impl ProfilesScreen {
         // which is what actually returns focus to the tile the user's attention was on.
         let target = self.pad.target as u32;
         self.pad = Pad::new();
+        self.pending_selection = None;
         self.sync_pin_state();
         self.pin_denied = false;
-        fx.push(Fx::App(AppFx::Session(auth::SessionCmd::DismissPinError)));
+        if dismiss_pin_error {
+            fx.push(Fx::App(AppFx::Session(auth::SessionCmd::DismissPinError)));
+        }
         let me = fx.from();
         fx.push(Fx::Deliver(
             me,
@@ -839,6 +917,121 @@ impl ProfilesScreen {
             })),
         ));
         fx.invalidate(Provenance::Input);
+    }
+
+    fn request_selection<H: AppLike>(
+        &mut self,
+        index: usize,
+        pin: Option<String>,
+        pad: bool,
+        fx: &mut Effects<'_, H>,
+    ) -> bool {
+        if self.pending_selection.is_some() {
+            return false;
+        }
+        let Some(reply) = self.allocate_reply(fx) else {
+            self.sync_pin_state();
+            return false;
+        };
+        self.pending_selection = Some(PendingSelection::AwaitingAck {
+            correlation: reply.correlation,
+            pad,
+        });
+        if pad {
+            self.pad.submitting = true;
+        }
+        fx.push(Fx::App(AppFx::Session(
+            auth::SessionCmd::SelectProfileWithReply { index, pin, reply },
+        )));
+        self.sync_pin_state();
+        true
+    }
+
+    fn selection_reply<H: AppLike>(
+        &mut self,
+        request: u32,
+        correlation: u32,
+        accepted: bool,
+        flow_epoch: u64,
+        fx: &mut Effects<'_, H>,
+    ) {
+        if request != correlation {
+            return;
+        }
+        let Some(PendingSelection::AwaitingAck {
+            correlation: pending,
+            pad,
+        }) = self.pending_selection
+        else {
+            return;
+        };
+        if pending != correlation {
+            return;
+        }
+        if !accepted {
+            self.pending_selection = None;
+            if pad && self.pad.open {
+                self.pad.submitting = false;
+                self.pad.entry.clear();
+            }
+            self.sync_pin_state();
+            fx.invalidate(Provenance::Input);
+            return;
+        }
+        self.pending_selection = Some(PendingSelection::Accepted {
+            correlation,
+            pad,
+            flow_epoch,
+        });
+        self.reconcile_selection(fx);
+        self.sync_pin_state();
+    }
+
+    fn reconcile_selection<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
+        let Some(PendingSelection::Accepted { flow_epoch, .. }) = self.pending_selection else {
+            return;
+        };
+        if self.flow_epoch < flow_epoch {
+            return;
+        }
+        let pad = self.pending_selection.is_some_and(PendingSelection::pad);
+        if self.flow_epoch > flow_epoch {
+            self.pending_selection = None;
+            if pad && self.pad.open {
+                self.retire_pad(false, fx);
+            } else {
+                self.sync_pin_state();
+            }
+            return;
+        }
+        match self.phase {
+            Phase::Switching => {}
+            Phase::Profiles => {
+                self.pending_selection = None;
+                if pad && self.pad.open {
+                    if self.pin_denied {
+                        self.pad.submitting = false;
+                        self.pad.entry.clear();
+                        self.pad.error_s = PIN_ERR_S;
+                        self.sync_pin_state();
+                        fx.invalidate(Provenance::Input);
+                    } else {
+                        self.retire_pad(true, fx);
+                    }
+                } else {
+                    self.sync_pin_state();
+                }
+            }
+            Phase::Ready => {
+                self.pending_selection = None;
+                if pad && self.pad.open {
+                    self.retire_pad(false, fx);
+                } else {
+                    self.sync_pin_state();
+                }
+            }
+            _ => {}
+        }
     }
 
     fn allocate_reply<H: AppLike>(&mut self, fx: &Effects<'_, H>) -> Option<auth::owner::ReplyTo> {
@@ -1258,8 +1451,22 @@ impl<H: AuthLike> Machine<H> for ProfilesScreen {
             }
             ScreenEvent::Async(
                 crate::ui::machine::RequestId(request),
-                AppMsg::BackReply { correlation, .. },
+                AppMsg::BackReply {
+                    correlation,
+                    resumed: _resumed,
+                },
             ) if request == correlation => Handled::Yes,
+            ScreenEvent::Async(
+                crate::ui::machine::RequestId(request),
+                AppMsg::SelectionReply {
+                    correlation,
+                    accepted,
+                    flow_epoch,
+                },
+            ) => {
+                self.selection_reply(*request, *correlation, *accepted, *flow_epoch, fx);
+                Handled::Yes
+            }
             _ => Handled::No,
         }
     }
@@ -1482,11 +1689,9 @@ mod tests {
     //! `digit_of`, `footer_rect`, `pad_geom`) are graded directly, and the live half drives a bare
     //! `ProfilesScreen` — built directly as a struct literal, exactly as `screens::login::
     //! LoginScreen`'s own `bare_screen` helper does — through `Machine::step` with a hand-built
-    //! `Cx`/`Effects`, never through `crate::auth`'s process-global controller: this module's own
-    //! roster/PIN worker calls (`select_profile`, `sign_out`, `submit_pin`) are exactly the arms
-    //! `ui/profiles.rs`'s own test module refused to press ("No test presses OK against the
-    //! singleton"), because they reach a real switch/sign-in worker. What differs from that
-    //! module's split is WHY: there, the ladder was pure `act`/`step_fc` free functions with no
+    //! `Cx`/`Effects` using a local [`AuthLike`] host over explicit immutable Session snapshots.
+    //! Typed commands are inspected as effects and never reach a live account worker. What differs
+    //! from the retired module's split is WHY: there, the ladder was pure `act`/`step_fc` free functions with no
     //! engine at all; here, ordinary navigation (▲▼◀▶ across the roster and the footer) is the
     //! GENERIC engine's job (`ui/focus.rs`'s own exhaustive test suite already grades a `Row`
     //! group's stepping, an `EdgeRule::Geometric` search excluding an unreachable axis, and the
@@ -1522,6 +1727,7 @@ mod tests {
 
     fn snapshot(phase: Phase, users: Vec<auth::UserTile>) -> auth::owner::SessionSnapshot {
         auth::owner::SessionSnapshot {
+            flow_epoch: 0,
             phase,
             qr_generation: 0,
             code: Arc::from(""),
@@ -1534,6 +1740,16 @@ mod tests {
             scope: auth::owner::ProfileScope(0),
             delete_leftovers: 0,
         }
+    }
+
+    fn snapshot_at(
+        flow_epoch: u64,
+        phase: Phase,
+        users: Vec<auth::UserTile>,
+    ) -> auth::owner::SessionSnapshot {
+        let mut snapshot = snapshot(phase, users);
+        snapshot.flow_epoch = flow_epoch;
+        snapshot
     }
 
     static EMPTY_SNAPSHOT: LazyLock<auth::owner::SessionSnapshot> =
@@ -1562,11 +1778,8 @@ mod tests {
         cx_with(focus, &EMPTY_SNAPSHOT)
     }
 
-    /// A screen with no read of `crate::auth` at all (unlike `ProfilesScreen::new`, which calls
-    /// `auth::dismiss_pin_error` on the shared controller) — for grading the pad's own state
-    /// machine and geometry in complete isolation from a process-global other tests in this binary
-    /// may have left in an arbitrary state. Mirrors `screens::login::LoginScreen`'s own
-    /// `bare_screen` helper.
+    /// A screen assembled without a constructor publication, for pure pad geometry/state tests.
+    /// Live read/command tests use the explicit local [`SessionHost`] above.
     fn bare(pad: Pad) -> ProfilesScreen {
         ProfilesScreen {
             entry: EntryId(0),
@@ -1581,15 +1794,22 @@ mod tests {
             phase: Phase::Profiles,
             error: Arc::from(""),
             pin_denied: false,
+            flow_epoch: 0,
             next_correlation: Some(1),
+            pending_selection: None,
             state: ProfilesState {
                 roster_n: 0,
+                flow_epoch: 0,
+                phase: phase_disc(Phase::Profiles),
+                pin_denied: false,
                 pad_open: false,
                 pad_target: 0,
                 pad_len: 0,
                 pad_submitting: false,
                 pad_flashing: false,
                 next_correlation: Some(1),
+                selection_correlation: None,
+                selection_epoch: None,
             },
         }
     }
@@ -1598,9 +1818,8 @@ mod tests {
     /// `spin_ms` used to be a raw `+= dt` accumulator with a separate, easy-to-forget
     /// `fx.note(Motion)` a few lines below it. Now it is `motion::Phase`, which reports from
     /// inside its own `advance`. A submitting PIN pad forces `has_spinner` true regardless of the
-    /// process-global roster (`n` does not enter that branch of the `||`), so this drives it
-    /// through the real `Machine::step` path without the shared-auth-state hazard `bare`'s own doc
-    /// names.
+    /// retained roster (`n` does not enter that branch of the `||`), so this drives it through the
+    /// real `Machine::step` path with an explicit immutable publication.
     #[test]
     fn the_roster_spinner_phase_reports_motion_on_every_tick_while_submitting() {
         let mut s = bare(Pad {
@@ -1683,6 +1902,23 @@ mod tests {
         }
     }
 
+    fn submit_locked(
+        screen: &mut ProfilesScreen,
+        index: usize,
+        instance: InstanceId,
+    ) -> Vec<Stamped<SessionHost>> {
+        let mut effects = Vec::new();
+        let mut present = Present::new();
+        {
+            let mut fx = Effects::new(&mut effects, MachineId::Instance(instance), &mut present);
+            screen.select(index, &mut fx);
+            for digit in b"1234" {
+                screen.press(*digit, &mut fx);
+            }
+        }
+        effects
+    }
+
     #[test]
     fn constructor_and_ticks_retain_coherent_rosters_per_instance_before_first_tick() {
         let first_snapshot = snapshot(Phase::Profiles, vec![user("First", false)]);
@@ -1722,14 +1958,15 @@ mod tests {
 
     #[test]
     fn selection_pin_and_signout_are_typed_session_commands() {
-        let published = snapshot(
+        let published = snapshot_at(
+            10,
             Phase::Profiles,
             vec![user("Open", false), user("Locked", true)],
         );
-        let mut screen = ProfilesScreen::new(EntryId(3), published.read());
+        let mut open_screen = ProfilesScreen::new(EntryId(3), published.read());
 
         let (_, select_fx) = step_ev_with(
-            &mut screen,
+            &mut open_screen,
             &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
             Some(FocusKey {
                 entry: EntryId(3),
@@ -1740,17 +1977,26 @@ mod tests {
         );
         assert!(select_fx.iter().any(|st| matches!(
             &st.fx,
-            Fx::App(AppFx::Session(auth::SessionCmd::SelectProfile {
+            Fx::App(AppFx::Session(auth::SessionCmd::SelectProfileWithReply {
                 index: 0,
-                pin: None
-            }))
+                pin: None,
+                reply,
+            })) if reply.instance == 17 && reply.correlation == 1
         )));
+        assert!(matches!(
+            open_screen.pending_selection,
+            Some(PendingSelection::AwaitingAck {
+                correlation: 1,
+                pad: false
+            })
+        ));
 
+        let mut signout_screen = ProfilesScreen::new(EntryId(4), published.read());
         let (_, signout_fx) = step_ev_with(
-            &mut screen,
+            &mut signout_screen,
             &ScreenEvent::PressCommit(crate::ui::machine::PressId(2)),
             Some(FocusKey {
-                entry: EntryId(3),
+                entry: EntryId(4),
                 elem: FOOTER,
             }),
             &published,
@@ -1760,15 +2006,7 @@ mod tests {
             .iter()
             .any(|st| matches!(st.fx, Fx::App(AppFx::Session(auth::SessionCmd::SignOut)))));
 
-        screen.select(
-            1,
-            &mut Effects::new(
-                &mut Vec::<Stamped<SessionHost>>::new(),
-                MachineId::Instance(InstanceId(17)),
-                &mut Present::new(),
-            ),
-        );
-        assert!(screen.pad.open);
+        let mut locked_screen = ProfilesScreen::new(EntryId(5), published.read());
         let mut pin_effects = Vec::<Stamped<SessionHost>>::new();
         let mut present = Present::new();
         {
@@ -1777,33 +2015,45 @@ mod tests {
                 MachineId::Instance(InstanceId(17)),
                 &mut present,
             );
+            locked_screen.select(1, &mut fx);
+            assert!(locked_screen.pad.open);
             for digit in b"1234" {
-                screen.press(*digit, &mut fx);
+                locked_screen.press(*digit, &mut fx);
             }
         }
         assert!(pin_effects.iter().any(|st| matches!(
             &st.fx,
-            Fx::App(AppFx::Session(auth::SessionCmd::SelectProfile { index: 1, pin: Some(pin) }))
-                if pin == "1234"
+            Fx::App(AppFx::Session(auth::SessionCmd::SelectProfileWithReply {
+                index: 1,
+                pin: Some(pin),
+                reply,
+            })) if pin == "1234" && reply.instance == 17 && reply.correlation == 1
         )));
+        assert!(locked_screen.pad.submitting);
     }
 
     #[test]
     fn a_fresh_pad_cannot_consume_the_previous_instances_pin_denial() {
-        let mut stale = snapshot(Phase::Profiles, vec![user("Locked", true)]);
+        let mut stale = snapshot_at(40, Phase::Profiles, vec![user("Locked", true)]);
         stale.pin_denied = true;
         let mut screen = ProfilesScreen::new(EntryId(3), stale.read());
         assert!(
             !screen.pin_denied,
             "the carried dismissal may not delay fresh first paint"
         );
-        screen.pad = Pad {
-            open: true,
-            target: 0,
-            entry: "1234".into(),
-            submitting: true,
-            ..Pad::new()
-        };
+        let mut effects = Vec::<Stamped<SessionHost>>::new();
+        let mut present = Present::new();
+        {
+            let mut fx = Effects::new(
+                &mut effects,
+                MachineId::Instance(InstanceId(17)),
+                &mut present,
+            );
+            screen.select(0, &mut fx);
+            for digit in b"1234" {
+                screen.press(*digit, &mut fx);
+            }
+        }
 
         step_ev_with(
             &mut screen,
@@ -1817,26 +2067,34 @@ mod tests {
         );
         assert!(
             screen.pad.submitting,
-            "the old denial is ignored until its dismissal is published"
+            "the old denial is ignored while command acceptance is unknown"
         );
 
-        let clear = snapshot(Phase::Profiles, vec![user("Locked", true)]);
         step_ev_with(
             &mut screen,
-            &ScreenEvent::Tick(Tick {
-                ms: 32,
-                dt_us: 16_667,
-            }),
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(1),
+                AppMsg::SelectionReply {
+                    correlation: 1,
+                    accepted: true,
+                    flow_epoch: 41,
+                },
+            ),
             None,
-            &clear,
+            &stale,
             InstanceId(17),
         );
-        let mut denied = snapshot(Phase::Profiles, vec![user("Locked", true)]);
+        assert!(
+            screen.pad.submitting,
+            "the retained read is older than accepted epoch 41"
+        );
+
+        let mut denied = snapshot_at(41, Phase::Profiles, vec![user("Locked", true)]);
         denied.pin_denied = true;
         step_ev_with(
             &mut screen,
             &ScreenEvent::Tick(Tick {
-                ms: 48,
+                ms: 32,
                 dt_us: 16_667,
             }),
             None,
@@ -1852,21 +2110,27 @@ mod tests {
 
     #[test]
     fn a_new_denial_is_not_lost_when_dismiss_and_switch_publish_between_ticks() {
-        let mut old_denial = snapshot(Phase::Profiles, vec![user("Locked", true)]);
+        let mut old_denial = snapshot_at(50, Phase::Profiles, vec![user("Locked", true)]);
         old_denial.pin_denied = true;
         let mut screen = ProfilesScreen::new(EntryId(3), old_denial.read());
-        screen.pad = Pad {
-            open: true,
-            target: 0,
-            entry: "1234".into(),
-            submitting: true,
-            ..Pad::new()
-        };
+        let mut effects = Vec::<Stamped<SessionHost>>::new();
+        let mut present = Present::new();
+        {
+            let mut fx = Effects::new(
+                &mut effects,
+                MachineId::Instance(InstanceId(17)),
+                &mut present,
+            );
+            screen.select(0, &mut fx);
+            for digit in b"1234" {
+                screen.press(*digit, &mut fx);
+            }
+        }
 
         // Session may publish the constructor's Dismiss(false) and the new switch's denial(true)
-        // in one drain before the next frame. The screen therefore observes true on both sides;
-        // requiring an intermediate false Tick loses the new request's real reply.
-        let mut new_denial = snapshot(Phase::Profiles, vec![user("Locked", true)]);
+        // in one drain before the next frame. The accepted epoch makes the two true values
+        // distinguishable without requiring an intermediate false Tick.
+        let mut new_denial = snapshot_at(51, Phase::Profiles, vec![user("Locked", true)]);
         new_denial.pin_denied = true;
         step_ev_with(
             &mut screen,
@@ -1874,6 +2138,24 @@ mod tests {
                 ms: 16,
                 dt_us: 16_667,
             }),
+            None,
+            &new_denial,
+            InstanceId(17),
+        );
+        assert!(
+            screen.pad.submitting,
+            "the terminal E=51 read may arrive before its ACK"
+        );
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(1),
+                AppMsg::SelectionReply {
+                    correlation: 1,
+                    accepted: true,
+                    flow_epoch: 51,
+                },
+            ),
             None,
             &new_denial,
             InstanceId(17),
@@ -1891,14 +2173,8 @@ mod tests {
 
     #[test]
     fn a_carried_select_command_does_not_look_like_an_immediate_switch_failure() {
-        let published = snapshot(Phase::Profiles, vec![user("Locked", true)]);
+        let published = snapshot_at(60, Phase::Profiles, vec![user("Locked", true)]);
         let mut screen = ProfilesScreen::new(EntryId(3), published.read());
-        screen.pad = Pad {
-            open: true,
-            target: 0,
-            entry: "123".into(),
-            ..Pad::new()
-        };
         let mut effects = Vec::<Stamped<SessionHost>>::new();
         let mut present = Present::new();
         {
@@ -1907,15 +2183,19 @@ mod tests {
                 MachineId::Instance(InstanceId(17)),
                 &mut present,
             );
-            screen.press(b'4', &mut fx);
+            screen.select(0, &mut fx);
+            for digit in b"1234" {
+                screen.press(*digit, &mut fx);
+            }
         }
         assert!(screen.pad.submitting);
         assert!(effects.iter().any(|st| matches!(
             &st.fx,
-            Fx::App(AppFx::Session(auth::SessionCmd::SelectProfile {
+            Fx::App(AppFx::Session(auth::SessionCmd::SelectProfileWithReply {
                 index: 0,
                 pin: Some(pin),
-            })) if pin == "1234"
+                reply,
+            })) if pin == "1234" && reply.instance == 17 && reply.correlation == 1
         )));
 
         // The command is still in the queue; this is the same publication used by the press.
@@ -1937,6 +2217,376 @@ mod tests {
         assert!(
             screen.pad.submitting,
             "the pad waits for an addressed acknowledgement/result"
+        );
+
+        let (_, refused) = step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(1),
+                AppMsg::SelectionReply {
+                    correlation: 1,
+                    accepted: false,
+                    flow_epoch: 60,
+                },
+            ),
+            None,
+            &published,
+            InstanceId(17),
+        );
+        assert!(!screen.pad.submitting);
+        assert!(
+            screen.pad.open,
+            "rejection is finite but does not invent a switch failure"
+        );
+        assert!(refused.iter().all(|st| !matches!(
+            st.fx,
+            Fx::App(AppFx::Session(auth::SessionCmd::DismissPinError))
+        )));
+    }
+
+    #[test]
+    fn a_fast_ready_read_seen_before_its_ack_is_consumed_at_that_epoch() {
+        let old = snapshot_at(65, Phase::Profiles, vec![user("Open", false)]);
+        let mut screen = ProfilesScreen::new(EntryId(3), old.read());
+        let (_, effects) = step_ev_with(
+            &mut screen,
+            &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
+            Some(FocusKey {
+                entry: EntryId(3),
+                elem: 0,
+            }),
+            &old,
+            InstanceId(17),
+        );
+        assert!(effects.iter().any(|st| matches!(
+            &st.fx,
+            Fx::App(AppFx::Session(auth::SessionCmd::SelectProfileWithReply {
+                index: 0,
+                pin: None,
+                reply,
+            })) if reply.correlation == 1
+        )));
+
+        let ready = snapshot_at(66, Phase::Ready, vec![user("Open", false)]);
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Tick(Tick {
+                ms: 16,
+                dt_us: 16_667,
+            }),
+            None,
+            &ready,
+            InstanceId(17),
+        );
+        assert!(matches!(
+            screen.pending_selection,
+            Some(PendingSelection::AwaitingAck { .. })
+        ));
+
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(1),
+                AppMsg::SelectionReply {
+                    correlation: 1,
+                    accepted: true,
+                    flow_epoch: 66,
+                },
+            ),
+            None,
+            &ready,
+            InstanceId(17),
+        );
+        assert!(screen.pending_selection.is_none());
+    }
+
+    #[test]
+    fn older_reads_wait_and_a_newer_flow_drops_only_local_pending_state() {
+        let old = snapshot_at(70, Phase::Profiles, vec![user("Locked", true)]);
+        let mut screen = ProfilesScreen::new(EntryId(3), old.read());
+        submit_locked(&mut screen, 0, InstanceId(17));
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(1),
+                AppMsg::SelectionReply {
+                    correlation: 1,
+                    accepted: true,
+                    flow_epoch: 71,
+                },
+            ),
+            None,
+            &old,
+            InstanceId(17),
+        );
+        assert!(matches!(
+            screen.pending_selection,
+            Some(PendingSelection::Accepted { flow_epoch: 71, .. })
+        ));
+
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Tick(Tick {
+                ms: 16,
+                dt_us: 16_667,
+            }),
+            None,
+            &old,
+            InstanceId(17),
+        );
+        assert!(
+            screen.pad.submitting,
+            "a read older than accepted E=71 still waits"
+        );
+
+        let mut superseding = snapshot_at(72, Phase::Profiles, vec![user("Locked", true)]);
+        superseding.pin_denied = true;
+        let (_, effects) = step_ev_with(
+            &mut screen,
+            &ScreenEvent::Tick(Tick {
+                ms: 32,
+                dt_us: 16_667,
+            }),
+            None,
+            &superseding,
+            InstanceId(17),
+        );
+        assert!(screen.pending_selection.is_none());
+        assert!(!screen.pad.open, "the superseded local pad is retired");
+        assert!(
+            effects.iter().all(|st| !matches!(
+                st.fx,
+                Fx::App(AppFx::Session(auth::SessionCmd::DismissPinError))
+            )),
+            "retiring E=71 must not clear the newer E=72 flow's verdict"
+        );
+    }
+
+    #[test]
+    fn closing_and_reopening_the_pad_makes_old_and_foreign_acks_harmless() {
+        let old = snapshot_at(80, Phase::Profiles, vec![user("Locked", true)]);
+        let mut screen = ProfilesScreen::new(EntryId(3), old.read());
+        submit_locked(&mut screen, 0, InstanceId(17));
+        assert_eq!(
+            screen.pending_selection.map(PendingSelection::correlation),
+            Some(1)
+        );
+
+        step_ev_with(
+            &mut screen,
+            &key_down(Key::Back, 0, 0),
+            None,
+            &old,
+            InstanceId(17),
+        );
+        assert!(screen.pending_selection.is_none());
+        submit_locked(&mut screen, 0, InstanceId(17));
+        assert_eq!(
+            screen.pending_selection.map(PendingSelection::correlation),
+            Some(2)
+        );
+
+        for event in [
+            ScreenEvent::Async(
+                crate::ui::machine::RequestId(1),
+                AppMsg::SelectionReply {
+                    correlation: 1,
+                    accepted: true,
+                    flow_epoch: 81,
+                },
+            ),
+            ScreenEvent::Async(
+                crate::ui::machine::RequestId(99),
+                AppMsg::SelectionReply {
+                    correlation: 2,
+                    accepted: true,
+                    flow_epoch: 82,
+                },
+            ),
+        ] {
+            step_ev_with(&mut screen, &event, None, &old, InstanceId(17));
+            assert_eq!(
+                screen.pending_selection.map(PendingSelection::correlation),
+                Some(2),
+                "neither the closed pad's stale ACK nor a foreign RequestId settles this pad"
+            );
+            assert!(screen.pad.submitting);
+        }
+
+        let mut fast_denial = snapshot_at(82, Phase::Profiles, vec![user("Locked", true)]);
+        fast_denial.pin_denied = true;
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Tick(Tick {
+                ms: 16,
+                dt_us: 16_667,
+            }),
+            None,
+            &fast_denial,
+            InstanceId(17),
+        );
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(2),
+                AppMsg::SelectionReply {
+                    correlation: 2,
+                    accepted: true,
+                    flow_epoch: 82,
+                },
+            ),
+            None,
+            &fast_denial,
+            InstanceId(17),
+        );
+        assert!(screen.pad.error_s > 0.0);
+
+        let before = screen.state.hash();
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(2),
+                AppMsg::SelectionReply {
+                    correlation: 2,
+                    accepted: true,
+                    flow_epoch: 82,
+                },
+            ),
+            None,
+            &fast_denial,
+            InstanceId(17),
+        );
+        assert_eq!(screen.state.hash(), before, "a duplicate ACK is stale");
+    }
+
+    #[test]
+    fn checked_selection_correlation_exhaustion_emits_nothing_and_never_submits() {
+        let published = snapshot_at(90, Phase::Profiles, vec![user("Locked", true)]);
+        let mut screen = ProfilesScreen::new(EntryId(3), published.read());
+        screen.next_correlation = Some(u32::MAX);
+        let effects = submit_locked(&mut screen, 0, InstanceId(17));
+        assert!(screen.pad.open);
+        assert!(
+            !screen.pad.submitting,
+            "an unaddressable request must not strand a spinner"
+        );
+        assert!(screen.pending_selection.is_none());
+        assert!(effects.iter().all(|st| !matches!(
+            st.fx,
+            Fx::App(AppFx::Session(
+                auth::SessionCmd::SelectProfileWithReply { .. }
+            ))
+        )));
+    }
+
+    #[test]
+    fn canonical_state_distinguishes_awaiting_and_each_accepted_epoch() {
+        let published = snapshot_at(100, Phase::Profiles, vec![user("Locked", true)]);
+        let mut screen = ProfilesScreen::new(EntryId(3), published.read());
+        let fresh = Screen::<SessionHost>::state(&screen).hash();
+        submit_locked(&mut screen, 0, InstanceId(17));
+        let awaiting = Screen::<SessionHost>::state(&screen).hash();
+        assert_ne!(awaiting, fresh);
+
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(1),
+                AppMsg::SelectionReply {
+                    correlation: 1,
+                    accepted: true,
+                    flow_epoch: 101,
+                },
+            ),
+            None,
+            &published,
+            InstanceId(17),
+        );
+        let accepted_101 = Screen::<SessionHost>::state(&screen).hash();
+        assert_ne!(accepted_101, awaiting);
+
+        let mut other = ProfilesScreen::new(EntryId(4), published.read());
+        submit_locked(&mut other, 0, InstanceId(18));
+        step_ev_with(
+            &mut other,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(1),
+                AppMsg::SelectionReply {
+                    correlation: 1,
+                    accepted: true,
+                    flow_epoch: 102,
+                },
+            ),
+            None,
+            &published,
+            InstanceId(18),
+        );
+        assert_ne!(Screen::<SessionHost>::state(&other).hash(), accepted_101);
+    }
+
+    #[test]
+    fn canon_distinguishes_the_cached_read_used_to_reduce_the_same_accepted_ack() {
+        let old = snapshot_at(200, Phase::Profiles, vec![user("Locked", true)]);
+        let mut carried = ProfilesScreen::new(EntryId(3), old.read());
+        let mut observed = ProfilesScreen::new(EntryId(4), old.read());
+        submit_locked(&mut carried, 0, InstanceId(17));
+        submit_locked(&mut observed, 0, InstanceId(18));
+
+        let switching = snapshot_at(201, Phase::Switching, vec![user("Locked", true)]);
+        step_ev_with(
+            &mut observed,
+            &ScreenEvent::Tick(Tick {
+                ms: 16,
+                dt_us: 16_667,
+            }),
+            None,
+            &switching,
+            InstanceId(18),
+        );
+
+        for (screen, instance) in [
+            (&mut carried, InstanceId(17)),
+            (&mut observed, InstanceId(18)),
+        ] {
+            step_ev_with(
+                screen,
+                &ScreenEvent::Async(
+                    crate::ui::machine::RequestId(1),
+                    AppMsg::SelectionReply {
+                        correlation: 1,
+                        accepted: true,
+                        flow_epoch: 201,
+                    },
+                ),
+                None,
+                if instance == InstanceId(17) {
+                    &old
+                } else {
+                    &switching
+                },
+                instance,
+            );
+            assert!(matches!(
+                screen.pending_selection,
+                Some(PendingSelection::Accepted {
+                    flow_epoch: 201,
+                    ..
+                })
+            ));
+        }
+
+        assert_eq!(
+            carried.state.selection_correlation,
+            observed.state.selection_correlation
+        );
+        assert_eq!(
+            carried.state.selection_epoch,
+            observed.state.selection_epoch
+        );
+        assert_ne!(
+            Screen::<SessionHost>::state(&carried).hash(),
+            Screen::<SessionHost>::state(&observed).hash(),
+            "the same pending E=201 reduces differently with cached E=200/Profiles versus E=201/Switching"
         );
     }
 
@@ -2433,10 +3083,8 @@ mod tests {
     /// **The shared mechanism, tested directly.** All three doors out of the pad — BACK, a
     /// pointer miss (both above/below), and `tick`'s own non-PIN-failure branch (`ProfilesScreen`'s
     /// module doc, `close_pad`'s doc) — call this one function, so a fix or a regression in it
-    /// moves all three at once. `tick`'s own call site cannot be driven from this module without
-    /// also puppeting `auth.rs`'s network-epoch machinery just to make `auth::phase()` read
-    /// `Phase::Profiles` (a different lane's file), so this test exercises `close_pad` on its own
-    /// terms instead: it is the guard against the exact regression shape the bug had — reading
+    /// moves all three at once. The test exercises `close_pad` on its own terms: it is the guard
+    /// against the exact regression shape the bug had — reading
     /// `self.pad.target` AFTER `self.pad = Pad::new()` has already zeroed it, which is invisible
     /// to a caller and fails every door identically.
     #[test]
@@ -2462,11 +3110,6 @@ mod tests {
     /// With the pad CLOSED, every BACK is the typed Session root request.
     #[test]
     fn back_with_the_pad_closed_asks_the_loop_for_the_root_press() {
-        let legacy = super::super::registry::LoopReq::AuthBackAtRoot;
-        assert!(matches!(
-            legacy,
-            super::super::registry::LoopReq::AuthBackAtRoot
-        ));
         let mut s = bare(Pad::new());
         let (handled, effs) = step_ev(&mut s, &key_down(Key::Back, 0, 0), None);
         assert_eq!(handled, Handled::Yes);
@@ -2478,10 +3121,6 @@ mod tests {
             )),
             "the picker has no panel of its own to close first — BACK asks Session for the root press"
         );
-        assert!(effs.iter().all(|st| !matches!(
-            st.fx,
-            Fx::App(AppFx::Loop(super::super::registry::LoopReq::AuthBackAtRoot))
-        )));
     }
 
     /// A pointer click that resolves onto NONE of the pad's twelve stops (`hit: None`) is the
@@ -2524,10 +3163,8 @@ mod tests {
         assert!(s2.pad.open, "a hit is not a miss");
     }
 
-    /// A number key types straight into the entry without moving the visual cursor, and a full PIN
-    /// hands off to `submitting` — never actually reaching four digits here (that calls
-    /// `auth::submit_pin`, the switch worker this module's tests do not press, mirroring
-    /// `ui/profiles.rs`'s own "No test presses OK against the singleton").
+    /// A number key types straight into the entry without moving the visual cursor. This focused
+    /// edit test stops at three digits; typed four-digit command emission is covered above.
     #[test]
     fn a_digit_key_types_into_the_entry_and_backspace_removes_one() {
         let mut s = bare(Pad::opened(0));
@@ -2865,10 +3502,8 @@ mod tests {
     /// focus" means mechanically.
     ///
     /// Driven through [`ProfilesView`] with a NON-EMPTY roster (`n: 3`), which is what this adds
-    /// over the sibling `the_pad_is_the_only_group_while_it_is_open`: that one queries the screen
-    /// itself, whose `focus_view` reads the process-global `auth::users()` — permanently empty on
-    /// this host — so it can only ever prove the roster group is absent when there was no roster to
-    /// suppress. Here there are three tiles and the pad still answers alone.
+    /// over the sibling `the_pad_is_the_only_group_while_it_is_open`: here there are three retained
+    /// tiles and the pad still answers alone.
     #[test]
     fn only_the_grid_group_is_reachable_while_the_pad_is_open() {
         let s = bare(Pad::opened(0));

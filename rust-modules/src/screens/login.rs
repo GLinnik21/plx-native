@@ -1134,6 +1134,7 @@ mod tests {
 
     fn snapshot(phase: Phase, qr_generation: u64, code: &str) -> auth::owner::SessionSnapshot {
         auth::owner::SessionSnapshot {
+            flow_epoch: 0,
             phase,
             qr_generation,
             code: Arc::from(code),
@@ -1306,9 +1307,8 @@ mod tests {
     }
 
     /// A bare screen, built with NO read of `crate::auth` at all — for testing [`ControlKind`]'s
-    /// decision and the `Focusable` geometry in complete isolation from the process-global auth
-    /// controller (which `LoginScreen::new` deliberately reads, and which other tests running
-    /// concurrently in this binary may have left in an arbitrary state).
+    /// decision and the `Focusable` geometry without consulting even the local test host's
+    /// Session publication.
     fn bare_screen(phase: Phase, phase_ms: f32) -> LoginScreen {
         LoginScreen {
             entry: EntryId(0),
@@ -1555,10 +1555,7 @@ mod tests {
     /// refactor: three real `Tick`s in a row, driven through `Machine::step` exactly as the loop
     /// drives one, must each present. (The complementary "a settled read-out's clock does not
     /// report" half is `control_has_spinner`'s own predicate, unchanged by this conversion, and is
-    /// not re-driven here through `resync` — this screen reads the process-global `crate::auth`
-    /// phase on every tick, which other tests in this binary run concurrently against, so forcing
-    /// `Error`/`Deleted` through the real `step` path is exactly the shared-state hazard
-    /// `bare_screen` exists to avoid; see its own doc.)
+    /// not re-driven here through `resync`; the pure predicate already pins that settled half.)
     #[test]
     fn the_spinner_phase_reports_motion_on_every_tick_while_a_control_has_one() {
         let mut s = LoginScreen::new(EntryId(0), EMPTY_SNAPSHOT.read());

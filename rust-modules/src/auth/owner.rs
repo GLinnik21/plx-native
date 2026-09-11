@@ -132,6 +132,7 @@ pub(crate) enum Command {
     RestartWait { phase: Phase, qr_generation: u64, reply: ReplyTo },
     StartSwitch(Picker),
     SelectProfile { index: usize, pin: Option<String> },
+    SelectProfileWithReply { index: usize, pin: Option<String>, reply: ReplyTo },
     DismissPinError,
     BackAtRoot { reply: ReplyTo },
     SignOut,
@@ -296,6 +297,7 @@ pub(crate) enum SessionFx {
     Erase { req: u32, epoch: u64 },
     Coordinator(CoordinatorAction),
     RestartReply { to: ReplyTo, accepted: bool },
+    SelectionReply { to: ReplyTo, accepted: bool, flow_epoch: u64 },
     BackReply { to: ReplyTo, resumed: bool },
 }
 
@@ -601,6 +603,7 @@ impl LogicalState for SessionMachine {
 /// Derived UI facts only. Credentials and writable controller state are not part of the view.
 #[derive(PartialEq, Eq)]
 pub(crate) struct SessionSnapshot {
+    pub flow_epoch: u64,
     pub phase: Phase,
     pub qr_generation: u64,
     pub code: Arc<str>,
@@ -630,7 +633,7 @@ impl SessionSnapshot {
         Self::from_state_counted(state, None, &mut |_| {})
     }
     fn matches_state(&self, state: &SessionInit) -> bool {
-        self.phase == state.phase && self.qr_generation == state.qr_gen
+        self.flow_epoch == state.epoch && self.phase == state.phase && self.qr_generation == state.qr_gen
             && &*self.code == state.pin_code.as_str() && &*self.png == state.qr_png.as_slice()
             && &*self.users == state.users.as_slice() && &*self.error == state.error.as_str()
             && self.code_replaced == state.code_replaced && self.pin_denied == state.pin_denied
@@ -657,7 +660,7 @@ impl SessionSnapshot {
             });
         let error = previous.filter(|old| &*old.error == state.error.as_str())
             .map(|old| Arc::clone(&old.error)).unwrap_or_else(|| Arc::from(state.error.as_str()));
-        Self { phase: state.phase, qr_generation: state.qr_gen,
+        Self { flow_epoch: state.epoch, phase: state.phase, qr_generation: state.qr_gen,
             code, png, code_replaced: state.code_replaced, users,
             error, pin_denied: state.pin_denied,
             profile: state.active_profile.as_ref().map(|p| ProfileRead {
@@ -1521,6 +1524,11 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
             SessionEvent::Command(Command::TakeReady) => self.take_ready(&mut emit),
             SessionEvent::Command(Command::StartSwitch(picker)) => self.start_switch(*picker, &mut emit),
             SessionEvent::Command(Command::SelectProfile { index, pin }) => self.select_profile(*index, pin.clone(), &mut emit),
+            SessionEvent::Command(Command::SelectProfileWithReply { index, pin, reply }) => {
+                let accepted = self.select_profile(*index, pin.clone(), &mut emit);
+                emit(SessionFx::SelectionReply { to: *reply, accepted, flow_epoch: self.state.epoch });
+                true
+            }
             SessionEvent::Command(Command::BackAtRoot { reply }) => self.back(*reply, &mut emit),
             SessionEvent::Command(Command::SignOut) => self.erase(true, &mut emit),
             SessionEvent::Command(Command::EraseLocal) => self.erase(false, &mut emit),

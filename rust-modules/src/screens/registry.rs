@@ -846,6 +846,7 @@ pub(crate) trait AuthLike: AppLike + Sized {
 pub(crate) enum AppMsg {
     Session(crate::auth::owner::SessionEvent),
     RestartReply { correlation: u32, accepted: bool },
+    SelectionReply { correlation: u32, accepted: bool, flow_epoch: u64 },
     BackReply { correlation: u32, resumed: bool },
     Store(StoreCmd),
     StoreWork(StoreWork),

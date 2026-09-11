@@ -6,8 +6,8 @@ the audited integration recovery tree. No claim of an atomic application checkpo
 a compiling tree, or completed physical Session ownership is made.
 
 Worker base: `77fe6e8bbfaa6902b0f7e8b03a49ed3e6db35bcb` on `codex/p12-session-owner`.
-In-progress source checkpoint: `c4f10510580352e0dbe2a5a9e2edc21bee7c0467`.
-Audited integration parent: `9733e44dff4db331301d0b028a553ac6a47fa2d1`.
+In-progress source checkpoint: `23e4a8378329712783baa76f1d6b1abf92bee9c9`.
+Audited integration parent: `13abf13b33e442445316dcc1741437a03bc5fb26`.
 
 The worker still has production controller/mailbox migration, command/result and
 screen/bootstrap wiring, single publication and full regression proof outstanding.
