@@ -17,6 +17,7 @@
 pub(crate) mod consent;
 pub(crate) mod crashreport;
 pub(crate) mod native;
+pub(crate) mod oneoff;
 pub(crate) mod playback;
 pub(crate) mod posthog;
 pub(crate) mod queue;
@@ -170,6 +171,9 @@ pub(crate) fn record(c: Consent) {
         // (a real "No", not merely "not asked yet") must get its one attempt back the moment this
         // same process turns Errors on — see `retry_dropped_stages`'s own doc.
         crate::plex::session::retry_dropped_stages();
+        // Its twin for the sign-in save's own report, which is deduped on a (save outcome,
+        // preserve reason) pair rather than on a stage — see `storage::report_sign_in_not_persisted`.
+        storage::retry_dropped_sign_in();
     }
     consent::install(c.clone());
     // Issue #75: replay whatever sign-in funnel `diag::event` had to hold back because the consent
@@ -229,6 +233,12 @@ pub(crate) fn forget() {
     // `record`, and here also the moment the sender stops starting requests.
     consent::install(c.clone());
     crate::player::report::clear_error_trace();
+    // Issue #76's report lane: what the signed-out account's own sign-in save did with its session
+    // file is a fact ABOUT that account, and belongs to it — the same lifetime the consent decision
+    // and the crash-report id already have here. See `signin::forget_storage_outcome`.
+    signin::forget_storage_outcome();
+    oneoff::forget();
+    storage::forget();
     for p in candidates() {
         match std::fs::remove_file(&p) {
             Ok(()) => {}
@@ -277,6 +287,15 @@ static RETRY_SCHEDULED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// Returns immediately. A refused spawn is a return value rather than a panic — `task::spawn_small`
 /// exists because `thread::spawn` panics on EAGAIN and killed this app once.
 pub(crate) fn flush_soon() {
+    // Unit tests may deliberately configure the DEV endpoints through Makefile environment
+    // variables, but their spool path is a process-global test seam. A worker that outlives the
+    // serial test guard can then wake in a later test and drain that later test's fixture. Tests
+    // exercise `flush_now` synchronously where needed; never launch a background sender against a
+    // movable test path. Shipping builds retain the asynchronous flush behavior below.
+    if cfg!(test) {
+        return;
+    }
+
     use std::sync::atomic::Ordering;
     if !sender::configured() {
         return; // nothing in this build to send to — see `sender`'s module doc
@@ -530,7 +549,11 @@ mod tests {
             event_id: id.into(),
             body: b"{}".to_vec(),
         };
-        let all = vec![record("stale-error", queue::Category::Errors, queue::Dest::Sentry)];
+        let all = vec![record(
+            "stale-error",
+            queue::Category::Errors,
+            queue::Dest::Sentry,
+        )];
         let no_consent = consent::Consent {
             asked_version: consent::POLICY_VERSION,
             errors: false,

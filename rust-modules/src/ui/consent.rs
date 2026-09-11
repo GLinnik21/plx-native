@@ -119,7 +119,7 @@ const PRODUCT_TITLE: &str = "Share product analytics?";
 // including the whole "no identifier of any kind" guarantee — fell off the screen with no
 // ellipsis and no MORE affordance. This says the same things in fewer words; every substring the
 // tests below pin is still here.
-const CRASH_BODY: &str = "If PlxNative crashes, it can send technical details that help find and fix the problem: the signal, code addresses, thread and device details, plus a random crash report identifier, cleared when you turn it off or sign out. It also covers a handled sign-in error report and a storage error report; even while this is off, the sign-in screen may send a one-off report with no identifier of any kind. Reports never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, key material, or the product analytics identifier.";
+const CRASH_BODY: &str = "If PlxNative crashes, it can send technical details that help find and fix the problem: the signal, code addresses, thread and device details, plus a random crash report identifier, cleared when you turn it off or sign out. It also covers a handled sign-in error report and a storage error report; even while this is off, the sign-in screen may send a one-off report with no persistent identifier. Reports never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, key material, or the product analytics identifier.";
 const PRODUCT_BODY: &str = "PlxNative can share which screens and features are used and broad sign-in and playback outcomes. Reports carry a random Analytics ID, created when you turn this on and deleted when you turn it off or sign out, and can include the app version, webOS version, television model and SoC, whether a selected server is local, remote or relayed, and how the saved sign-in is stored on this television. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, key material, or exact viewing history.";
 
 const ROW_ERRORS: &str = "Crash reports";
@@ -675,13 +675,20 @@ pub(crate) fn open(prev: &Consent) {
     let pending = consent::pending_extensions(prev);
     let is_ext = prev.asked_version != 0 && !pending.is_empty();
     let active = if is_ext {
-        (pending.contains(&Category::Errors), pending.contains(&Category::Usage))
+        (
+            pending.contains(&Category::Errors),
+            pending.contains(&Category::Usage),
+        )
     } else {
         (true, true)
     };
     // The ceremony's own root: Crash when it is asked at all, else Product — a Usage-only
     // extension never visits a Crash stage nobody needs to answer.
-    let start = if active.0 { Stage::Crash } else { Stage::Product };
+    let start = if active.0 {
+        Stage::Crash
+    } else {
+        Stage::Product
+    };
     unsafe {
         addr_of_mut!(MODE).write(Mode::FirstRun);
         addr_of_mut!(IS_EXTENSION).write(is_ext);
@@ -1097,7 +1104,7 @@ pub(crate) fn on_ok() -> bool {
             crate::ui::idle::invalidate();
         }
         RowId::Delete => {
-            delete_alert().open_with_body(DELETE_SCOPE);
+            delete_alert().open_with_body(c"Delete all local data?", DELETE_SCOPE);
         }
     }
     true
@@ -1350,7 +1357,11 @@ pub(crate) fn preview_crash() -> String {
          problem, sent only by your own explicit press — regardless of whether this switch is on. \
          It has the same shape as the sample above but with `contexts.signin.consent` and \
          `tags[\"signin.consent\"]` read \"one_off\" instead of \"standing\", and it carries no \
-         `user` field at all: no crash report identifier, no identifier of any kind.",
+         `user` field at all: no crash report identifier and no persistent identifier. Its random \
+         one-off Report ID identifies only that event and can be quoted to ask about it. When the \
+         sign-in save or candidate-location facts are known, this one-off report may also carry \
+         those extra closed-word and small-number fields; the standing sample below shows the \
+         handled storage shape separately.",
     );
     out.push_str("\n\nHandled storage error (only when error reporting is on):\n");
     let storage = crate::telemetry::storage::preview_event();
@@ -1548,7 +1559,7 @@ pub(crate) fn draw() {
     // rather than in the host-page closure (which sits under Settings' opaque wash).
     crate::ui::profile::phase("cs.alert", || {
         delete_alert().draw_scrim();
-        delete_alert().draw(c"Delete all local data?", c"Cancel", c"Delete");
+        delete_alert().draw(c"Cancel", c"Delete");
     });
 }
 
@@ -2452,7 +2463,7 @@ mod tests {
     /// **Issue #75: the crash/errors question names BOTH sign-in reporting paths** — the standing
     /// handled-error report this switch actually gates, and the separate one-off "Send report"
     /// press the sign-in screen can offer even while this switch is off, which this text must say
-    /// is NOT gated by it and carries no identifier at all. `ROW_ERRORS_SUB` gets the short form.
+    /// is NOT gated by it and carries no persistent identifier. `ROW_ERRORS_SUB` gets the short form.
     #[test]
     fn crash_question_names_both_signin_reporting_paths() {
         assert!(CRASH_BODY.contains("sign-in error report"));
@@ -2461,8 +2472,8 @@ mod tests {
             "the text must distinguish the one-off path from the standing crash-report switch"
         );
         assert!(
-            CRASH_BODY.contains("no identifier of any kind"),
-            "the one-off path must say plainly that it carries no identifier"
+            CRASH_BODY.contains("no persistent identifier"),
+            "the one-off path must distinguish a receipt from a persistent identifier"
         );
         assert!(ROW_ERRORS_SUB.contains("sign-in"));
     }
@@ -2521,7 +2532,8 @@ mod tests {
         assert!(text.contains("ONE-OFF report"));
         assert!(text.contains("\"standing\""));
         assert!(text.contains("\"one_off\""));
-        assert!(text.contains("no identifier of any kind"));
+        assert!(text.contains("no persistent identifier"));
+        assert!(text.contains("one-off Report ID"));
     }
 
     /// **Issue #76: the Crashes/Errors preview also shows the handled storage-error sample.**
@@ -2822,7 +2834,7 @@ mod tests {
     #[test]
     fn confirming_delete_dismisses_the_alert_rather_than_closing_it_instantly() {
         let _g = crate::testlock::serial();
-        delete_alert().open_with_body(DELETE_SCOPE);
+        delete_alert().open_with_body(c"Delete all local data?", DELETE_SCOPE);
         delete_alert().set_choice(AlertChoice::Destructive);
         settle_delete_alert();
         assert!(on_ok(), "OK on an open delete alert must be handled here");
@@ -2839,14 +2851,14 @@ mod tests {
             "the destructive answer must still be recorded for the caller to act on"
         );
         // Cancel gets the same treatment — dismiss, not close.
-        delete_alert().open_with_body(DELETE_SCOPE);
+        delete_alert().open_with_body(c"Delete all local data?", DELETE_SCOPE);
         settle_delete_alert();
         assert!(on_ok(), "OK on Cancel must also be handled here");
         assert!(!delete_alert().is_open());
         assert!(delete_alert().visible(), "Cancel fades too");
         assert!(!take_delete_request(), "declining must never set the delete request");
         // …and BACK.
-        delete_alert().open_with_body(DELETE_SCOPE);
+        delete_alert().open_with_body(c"Delete all local data?", DELETE_SCOPE);
         settle_delete_alert();
         assert!(on_back());
         assert!(!delete_alert().is_open());

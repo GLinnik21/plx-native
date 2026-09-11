@@ -152,8 +152,17 @@ const REASK_CHANGES: &[(u32, &str)] = &[
 // version-6 question already put; neither widens either, so `ERRORS_SCOPE` stays at 6 — the exact
 // case the notice's own "a new field that still fits the data and purpose you already read about"
 // sentence describes.
+// Revision 4 (2026-09-11, issue #76's report lane): the storage error report gains a new
+// `sign_in_not_persisted` stage plus `persist_outcome`/`preserve_reason`/`candidate_reads`, and the
+// one-off sign-in report gains the matching `storage_persist_outcome`/`storage_preserve_reason`/
+// `storage_candidate_reads` fields — every one of them still answers "how your sign-in is stored
+// and why it could not be", the exact purpose Errors scope 6 already put to whoever has it on, so
+// this bumps alone with no re-ask; `ERRORS_SCOPE` stays at 6.
 #[allow(dead_code)]
-pub(crate) const NOTICE_REVISION: u32 = 3;
+// Revision 5 describes the explicit Details report, its bounded cold/fresh storage evidence,
+// event-specific receipt and in-memory fallback. Each one-off is consented at its own updated
+// confirmation; standing Errors/Usage collection and their accepted scopes are unchanged.
+pub(crate) const NOTICE_REVISION: u32 = 5;
 
 /// The Crash reports channel's collected-data scope. Grew at 4 (playback error report), 5
 /// (sign-in error report) and 6 (storage facts — `StorageError`, and `session_storage` riding the

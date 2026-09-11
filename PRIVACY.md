@@ -1,6 +1,6 @@
 # PlxNative Privacy Policy
 
-Applies to PlxNative 0.6.3. Last updated 11 September 2026.
+Applies to PlxNative 0.6.4. Last updated 11 September 2026.
 
 ## Who is responsible for PlxNative data
 
@@ -135,21 +135,58 @@ the report is actually about — `app_id`, `named`, `anonymous`, or `none` where
 nothing protected at all — because the whole question is whether the two differ. It contains no key material, ciphertext, plaintext or
 file path, and carries the same Crash report ID as a crash report, and the same television model,
 SoC, hardware revision, webOS release and the `rtkmem`/`install` sandbox facts a crash report
-carries. It is sent only once you have
+carries. It may also carry the compact candidate-location summary described below: which of this
+television's candidate sign-in locations were checked and how each went, using only closed words
+and small numbers, never a path. It is sent only once you have
 answered the crash-reports question Yes; a report found before that question is answered (which
 can happen on the very first launch after an update) waits in memory, dated to when it actually
 happened, for the rest of that one launch only — it is discarded, never sent, if you answer No or
 if the app closes before you answer.
 
-Separately, **whether or not crash reporting is on**, the sign-in screen can offer to send a
-**one-off report** about a specific sign-in problem — sent only if you explicitly press "Send
-report" on the screen where it is offered. It has the same shape as the automatic report above but
-carries **no identifier that persists between reports or identifies you or this television** — not the Crash report ID, not the Analytics ID. It
-is not a reporting decision and does not turn anything on: nothing is recorded about the press
-itself, and no later change to either optional-reporting switch withdraws a report already sent
-this way. Every report of either kind is tagged `standing` (the automatic form, gated on crash
-reports being on) or `one_off` (the explicit press, gated on nothing) so the two are never
-confused.
+The same storage error report also covers `sign_in_not_persisted` — a fresh sign-in whose file
+could not be kept the way this television decided to keep it. That report additionally says what
+the save actually did (`persisted_plaintext`, `persisted_sealed`, `preserved_existing_secure`,
+`blocked_unknown_envelope`, `write_failed` or `serialization_failed`), and, only when the save left
+an existing file alone rather than overwriting it, why (`not_proven`, `refused_marker_no_fresh_sign_in`
+or `seal_failed`). It carries the same candidate-location summary described above — a short line
+built only from closed words and small numbers, such as `developer:open_failed:13,internal:missing,app_dir:plaintext`, and
+**never a file path**. Each location is named only by which tier of the television it sits in
+(`developer`, `internal`, `app_dir`, `runtime`, or `other`), and each outcome is one closed word:
+`missing`, `open_failed`, `not_regular`, `wrong_owner`, `metadata_failed`, `too_large`,
+`read_failed`, `untrusted_mode` or `unparsable` for a location this launch declined, or
+`plaintext` / `secure` for one it read. `unparsable` means the file was there and readable and its
+contents were not a shape this app recognises at all — a truncated or empty save; the contents
+themselves are never sent, only that word.
+
+Separately, **whether or not crash reporting is on**, you can send a **one-off report** from the
+sign-in screen's Details panel, or accept the report offered after a sign-in problem. Opening
+Details does not send anything: the report leaves only after you confirm "Send report". A manual
+request is identified separately from an automatically detected sign-in failure; working QR
+polling is not reported as a connection failure merely because you requested diagnostics.
+
+The one-off report includes the sign-in stage and bounded connection facts described above,
+the app version, webOS version and hardware-class information, and storage diagnostics when
+available. These distinguish the original startup read from a later fresh sign-in save: candidate
+location categories and rejection reasons; whether account/server credentials were present
+(booleans, never the credentials); whether the stored session qualified for a local boot; key-service
+stages and numeric errors, registration and sealed-key identity categories; save outcomes; exact
+readback match/mismatch/rejection; and credential-file write attempts by candidate category,
+operation, numeric OS error or policy rejection. A failed directory synchronization is recorded
+as a durability warning, not disguised as a successful synchronization. No file contents, file
+paths, account names, tokens, PINs, sign-in codes or network addresses are included.
+
+It carries **no identifier that persists between reports or identifies you or this television** —
+not the Crash report ID, not the Analytics ID. A random ID identifies this one event and may be
+shown so you can quote it when reporting a problem. It does not enable either optional reporting
+category or store an account-wide consent decision. Reports are tagged `standing` or `one_off`
+so explicit requests cannot be confused with reports sent under the persistent setting.
+
+Normally the report is queued on disk for background delivery. If the queue cannot be written,
+the app can attempt one bounded background send directly from memory instead. "Queued" does not
+mean received; a direct request is marked sent only after a successful server response. If the
+direct attempt fails, you can retry explicitly. An in-memory request cannot survive closing the
+app. Signing out or deleting local data clears pending local report state; neither that action
+nor a later reporting-setting change can retract a report already transmitted.
 
 ## Optional product analytics
 
@@ -237,9 +274,10 @@ covered a smaller change.
 To ask what a category holds for your installation, or to have it deleted, write to the contact
 below and quote the identifier Settings shows for that category — the Crash report ID for crash
 and error reports, the Analytics ID for product analytics. Each identifier is the only handle its
-reports carry, so a request without it cannot be matched to anything — and a one-off sign-in
-report carries no handle at all, so it cannot be looked up or deleted on request; that is the
-trade the no-identifier guarantee makes.
+reports carry, so a request without it cannot be matched to that installation. For a one-off
+report, quote the event-specific Report ID shown after sending. It can locate that individual
+event, but there is no persistent account or television identifier linking your other one-off
+reports together.
 
 ## Contact and non-affiliation
 

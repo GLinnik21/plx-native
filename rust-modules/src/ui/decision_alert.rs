@@ -30,7 +30,7 @@
 //! runs over whatever the app shows next, exactly like a dismissed `account_menu`/`item_menu`
 //! fading over the host it returned to.
 
-use crate::ui::label::{HAlign, Label};
+use crate::ui::label::HAlign;
 use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::{Button, ControlStyle, CtlPop, StatusOverlay};
@@ -49,6 +49,7 @@ const BODY_GAP: f32 = theme::space::SM;
 pub(crate) const BODY_W: f32 = PANEL_W - 2.0 * PAD_X;
 const BUTTON_W: f32 = 260.0;
 const BUTTON_GAP: f32 = 20.0;
+const TEXT_ALIGN: HAlign = HAlign::Left;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Choice {
@@ -123,6 +124,9 @@ pub(crate) struct DecisionAlert {
     pop: Popover,
     choice: Choice,
     controls: CtlPop<2>,
+    /// Stored with the body so draw and pointer hit-testing use the same measured wrapping even on
+    /// the first frame after open.
+    question: &'static str,
     /// The optional paragraph under the question, held on the ALERT rather than passed to
     /// [`draw`](Self::draw). It has to be here because the body changes where the buttons are, and
     /// [`press_at`](Self::press_at) must compute the same panel as the last draw did. A body passed
@@ -147,6 +151,7 @@ impl DecisionAlert {
             pop: Popover::new().caching_host(),
             choice: Choice::Cancel,
             controls: CtlPop::new(),
+            question: "",
             body: None,
             tone: Tone::Destructive,
         }
@@ -167,7 +172,8 @@ impl DecisionAlert {
         self.pop.appear_settled()
     }
     /// Ask the question alone.
-    pub(crate) fn open(&mut self) {
+    pub(crate) fn open(&mut self, question: &'static core::ffi::CStr) {
+        self.question = question.to_str().unwrap_or("");
         self.body = None;
         self.open_inner();
     }
@@ -175,7 +181,12 @@ impl DecisionAlert {
     /// by its verb. The destructive delete is the case: "Delete all local data" is accurate about
     /// what it removes and silent about what it CANNOT reach, and the confirmation is the last
     /// moment that difference can be stated.
-    pub(crate) fn open_with_body(&mut self, body: &'static str) {
+    pub(crate) fn open_with_body(
+        &mut self,
+        question: &'static core::ffi::CStr,
+        body: &'static str,
+    ) {
+        self.question = question.to_str().unwrap_or("");
         self.body = Some(body);
         self.open_inner();
     }
@@ -187,24 +198,24 @@ impl DecisionAlert {
     /// The panel as last drawn. **Not callable from a host test** — `text_height` and `measure_h`
     /// both reach SDL2_ttf; the pure half is [`layout`].
     fn measured(&self) -> Layout {
-        let qh = crate::text::text_height(theme::size::TITLE, 1);
+        let qh = Self::question_view(self.question).measure_h(BODY_W);
         let bh = self
             .body
             .map_or(0.0, |b| Self::body_view(b).measure_h(BODY_W));
         layout(qh, bh)
     }
-    /// **8, not 4.** `DELETE_SCOPE` — the only body this alert shipped with before issue #75 —
-    /// wraps to 4 lines and is unaffected either way. Issue #75's one-off report body is roughly
-    /// twice that long (the full "what this sends, and what it never sends" disclosure), and at 4
-    /// lines it was cut off mid-sentence with no ellipsis and no MORE affordance, silently
-    /// dropping the whole "it carries no identifier" half — the one sentence a first-run person
-    /// with no other privacy notice on screen yet is being asked to trust before pressing Send.
-    /// The panel already grows to whatever `measure_h` reports (`layout`'s `body_h` term), so
-    /// raising the cap costs nothing for a body that already fits in fewer lines.
+    /// Confirmation disclosures must be complete, never silently capped. The panel grows from
+    /// this same measured view; both static callers are checked visually to fit the viewport.
+    /// A character-count budget cannot prove wrapping: the richer report disclosure fit that
+    /// budget but exceeded the former eight-line cap and lost its final privacy sentence.
     pub(crate) fn body_view(text: &str) -> TextView<'_> {
         TextView::new(text, theme::size::BODY, theme::TEXT_READING)
-            .h(HAlign::Center)
-            .max_lines(8)
+            .h(TEXT_ALIGN)
+    }
+    pub(crate) fn question_view(text: &str) -> TextView<'_> {
+        TextView::new(text, theme::size::TITLE, theme::TEXT_PRIMARY)
+            .bold()
+            .h(TEXT_ALIGN)
     }
     /// Instant hide — see [`Popover::close`]. Interactive answers take [`dismiss`](Self::dismiss).
     pub(crate) fn close(&mut self) {
@@ -261,7 +272,6 @@ impl DecisionAlert {
     }
     pub(crate) fn draw(
         &mut self,
-        question: &core::ffi::CStr,
         cancel: &core::ffi::CStr,
         destructive: &core::ffi::CStr,
     ) {
@@ -274,10 +284,7 @@ impl DecisionAlert {
         let p = self.pop.content_painter(Popover::RISE);
         crate::ui::profile::phase("da.panel", || self.pop.panel(p, l.panel, theme::ALERT_PANEL_RAD));
         crate::ui::profile::phase("da.text", || {
-            Label::new(question.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
-                .bold()
-                .h(HAlign::Center)
-                .draw(p, l.question);
+            Self::question_view(self.question).draw(p, l.question);
             if let Some(body) = self.body {
                 Self::body_view(body).draw(p, l.body);
             }
@@ -379,5 +386,32 @@ mod tests {
         assert_eq!(l.cancel.y, l.destructive.y);
         assert!(l.cancel.x < l.destructive.x);
         assert!(l.question.y + l.question.h < l.cancel.y);
+    }
+
+    #[test]
+    fn a_wrapped_question_grows_the_panel_and_keeps_hit_geometry_below_it() {
+        let short = layout(48.0, 0.0);
+        let long = layout(96.0, 0.0);
+
+        assert!(matches!(TEXT_ALIGN, HAlign::Left));
+        assert!(long.question.h > short.question.h, "the long title must wrap, never overflow");
+        let growth = long.question.h - short.question.h;
+        assert_eq!(long.panel.h - short.panel.h, growth);
+        assert_eq!(
+            (long.cancel.y - long.panel.y) - (short.cancel.y - short.panel.y),
+            growth,
+            "draw and pointer hit rectangles move by the measured wrap height"
+        );
+    }
+
+    #[test]
+    fn reopening_with_a_question_alone_clears_the_previous_body() {
+        let mut alert = DecisionAlert::new();
+        alert.open_with_body(c"First question?", "Consequences of the first question.");
+        assert!(alert.body.is_some());
+        alert.open(c"Second question?");
+        assert_eq!(alert.question, "Second question?");
+        assert!(alert.body.is_none());
+        alert.close();
     }
 }

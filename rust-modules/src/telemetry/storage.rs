@@ -1,7 +1,9 @@
 //! Handled storage errors for Sentry — issue #76: a keymanager3 session that seals but never opens
 //! again (`plex::session`'s `LOCKED_RECOVERABLE`/refused-marker shape, `keymanager.rs`'s round-trip
-//! proof) has never sent a single telemetry event of any kind, on any set of that generation, and
-//! nothing this app sends anywhere describes storage at all. This is the SAME shape as
+//! proof) needs a bounded storage-specific diagnostic alongside the existing telemetry surfaces.
+//! This does not claim that every firmware generation was previously silent: receiver evidence
+//! exists for some newer-firmware PostHog runs, while Sentry receipt remains separately unverified
+//! here. This is the SAME shape as
 //! `telemetry::signin` — a closed handled-error report spooled through the existing Errors/Sentry
 //! lane and gated on the SAME standing consent question, so it needs no consent bump of its own for
 //! the reporting mechanism, only for the fields it adds (see `consent::POLICY_VERSION`).
@@ -15,7 +17,8 @@
 //!
 //! **Unlike `signin.rs` this module has only the standing form.** A storage failure has no screen a
 //! person is looking at to offer a one-off "Send report" press from, so there is no `send_once`
-//! twin — [`report_error`] is the only door, gated on `consent::allows_errors_at(6)`. This whole
+//! twin — [`report_error_with_candidate_reads`] is the production door, gated on
+//! `consent::allows_errors_at(6)`. This whole
 //! report — not just one field on it — is Errors scope 6, unlike the playback report (scope 4) and
 //! the sign-in report (scope 5), which are each gated at their own, lower scope; the three standing
 //! handled-error reports deliberately no longer share one gate.
@@ -24,7 +27,7 @@
 //! half.** A locked read (`plex::session::read_locked`) can land on the very FIRST launch after an
 //! update, before the reporting question has been put to anyone at all, or before this report's
 //! own scope-6 extension on an already-accepted channel has been ruled on — and the whole point of
-//! this report is to describe exactly that shape of failure. [`report_error`] tries
+//! this report is to describe exactly that shape of failure. [`report_error_with_candidate_reads`] tries
 //! [`send_now`] first and, only when that refuses because the question is still open
 //! ([`should_defer`]), holds the context in the small in-memory [`DEFERRED`] queue (cap
 //! [`DEFERRED_CAP`], session-only — never persisted, so a crash or relaunch before the question is
@@ -35,8 +38,11 @@
 //! way the queue empties, so a refused answer cannot leak into the next decision. Each held report
 //! keeps the timestamp it was ORIGINALLY found at ([`event_body`]'s `occurred_at_ms` argument),
 //! not the time the question finally got answered. **A report found before the question is
-//! answered is discarded if you answer No, or if the app closes before you answer at all** — it is
-//! never written to disk, so it does not survive past the launch that found it.
+//! answered is discarded if you answer No, if you SIGN OUT, or if the app closes before you answer
+//! at all** — it is never written to disk, so it does not survive past the launch that found it,
+//! and [`forget`] is what keeps it from surviving past the ACCOUNT that found it either (review
+//! finding, 2026-09-11: it used to, and the next account's "yes" then sent it under that account's
+//! Crash report ID).
 
 use serde_json::Value;
 
@@ -186,6 +192,20 @@ pub(crate) enum StorageStage {
     /// one open failure that must never arm the cross-launch refused marker. No error code: no
     /// call was made.
     IdentityUnavailable,
+    /// **Issue #76's third half (report lane): a freshly-signed-in session could not be kept the
+    /// way `plex::session::save` decided to keep it.** Distinct from every stage above, which are
+    /// all about REOPENING an existing envelope — this one is about the SAVE that follows a
+    /// successful sign-in, before there was ever anything to open. Carried through
+    /// [`report_sign_in_not_persisted`] rather than the general [`report_error_with_candidate_reads`] entry point, with
+    /// its own `persist_outcome`/`preserve_reason`/`candidate_reads` fields on
+    /// [`StorageErrorContext`] rather than the stage-keyed fields above, since the save lane's own
+    /// vocabulary (`persisted_plaintext`/`persisted_sealed`/`preserved_existing_secure`/
+    /// `blocked_unknown_envelope`/`write_failed`/`serialization_failed`) answers a different
+    /// question than any `StorageStage` above it does. No error code exists for it either — a
+    /// `write_atomic` refusal carries none, same as [`WriteFailed`](Self::WriteFailed).
+    ///
+    /// Constructed only by [`report_sign_in_not_persisted`].
+    SignInNotPersisted,
 }
 
 impl StorageStage {
@@ -206,6 +226,7 @@ impl StorageStage {
         Self::WriteFailed,
         Self::UntrustedMode,
         Self::IdentityUnavailable,
+        Self::SignInNotPersisted,
     ];
 
     #[cfg(test)]
@@ -224,7 +245,8 @@ impl StorageStage {
             | Self::Unreachable
             | Self::WriteFailed
             | Self::UntrustedMode
-            | Self::IdentityUnavailable => {}
+            | Self::IdentityUnavailable
+            | Self::SignInNotPersisted => {}
         }
     }
 
@@ -243,12 +265,19 @@ impl StorageStage {
             Self::WriteFailed => "write_failed",
             Self::UntrustedMode => "untrusted_mode",
             Self::IdentityUnavailable => "identity_unavailable",
+            Self::SignInNotPersisted => "sign_in_not_persisted",
         }
     }
 }
 
 /// Everything one handled storage-error report carries. Every field is a closed enum, a bare
 /// service error number with no identity of its own, or a bool.
+///
+/// **Stays `Copy`, deliberately** — `plex::session`'s many call sites (`queue_report`,
+/// `report_once`'s `report_storage_error(ctx)` followed by `ctx.stage`) rely on that today, and
+/// that module is out of this lane's file scope. The issue #76 report-lane fields
+/// (`persist_outcome`/`preserve_reason`/`candidate_reads`) therefore live on the separate
+/// [`StorageExtra`], carried ALONGSIDE a context rather than added to it — see that type's doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct StorageErrorContext {
     pub stage: StorageStage,
@@ -304,20 +333,78 @@ pub(crate) struct StorageErrorContext {
     pub sealed_identity: Option<crate::keymanager::Identity>,
 }
 
-/// Pure body builder — same shape as `signin::event_body`, minus the consent-kind tag this module
-/// has no need of (there is only the standing form; see the module doc).
-///
+/// **Issue #76's report lane (2026-09-11).** Carried ALONGSIDE a [`StorageErrorContext`] rather
+/// than added to it — that struct stays `Copy` for `plex::session`'s sake (see its own doc), and
+/// `candidate_reads` is a runtime-built `String`, which cannot be. Every field defaults to `None`,
+/// which is what every report built before this lane existed still sends: nothing here changes an
+/// existing report's shape.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StorageExtra {
+    /// **What the SAVE that followed a fresh sign-in actually did with it.** Set only by
+    /// [`report_sign_in_not_persisted`] — every other report leaves this `None`, since every other
+    /// stage describes a seal/open attempt against an EXISTING envelope rather than a save
+    /// decision. One of the save lane's own closed words: `persisted_plaintext`,
+    /// `persisted_sealed`, `preserved_existing_secure`, `blocked_unknown_envelope`,
+    /// `write_failed`, `serialization_failed` — never renamed here, since a dashboard already keys
+    /// on them.
+    pub persist_outcome: Option<&'static str>,
+    /// **Only meaningful alongside `persist_outcome: Some("preserved_existing_secure")`** — WHY the
+    /// save left the existing envelope alone rather than overwriting it: `not_proven` (this
+    /// install's key service has not yet passed the cross-launch open-what-it-sealed check),
+    /// `refused_marker_no_fresh_sign_in` (this install already carries the persisted refused
+    /// marker and the save was not itself a fresh sign-in), or `seal_failed` (a seal was attempted
+    /// and did not succeed, so the prior envelope was kept rather than lost). `None` for every
+    /// other `persist_outcome`.
+    pub preserve_reason: Option<&'static str>,
+    /// **The read lane's compact, closed-vocabulary summary of which candidate session paths were
+    /// read and how it went** — shaped `developer:open_failed:13,internal:missing,app_dir:plaintext`
+    /// (candidate category `developer`/`internal`/`app_dir`/`runtime`/`other`, a colon, a rejection
+    /// code `missing`/`open_failed`/`not_regular`/`wrong_owner`/`metadata_failed`/`too_large`/
+    /// `read_failed`/`untrusted_mode`/`unparsable` — or, for a candidate that DID read, the storage class word
+    /// it produced — optionally a colon and the errno). **Never a path**: every token in it is one
+    /// of the closed words above, or a small bounded number. Populated on the general
+    /// The explicit [`report_error_with_candidate_reads`] path carries it for the load that owns
+    /// the report; ordinary reports leave this field absent.
+    pub candidate_reads: Option<String>,
+}
+
 /// `occurred_at_ms` is a Unix-epoch millisecond stamp, carried as Sentry's own `timestamp` field
 /// (seconds, may be fractional). It exists so a report that waited in [`DEFERRED`] for an
 /// unanswered consent question is sent dated to when the failure actually happened, not to when
 /// [`replay_deferred`] finally got to it — the same reasoning `diag::mod::Stamp` captures a
 /// timestamp for the sign-in funnel it defers.
+///
+/// Thin wrapper over [`event_body_with_extra`] with an empty [`StorageExtra`] — every call site
+/// this module had before the issue #76 report lane, unchanged.
+#[cfg(test)]
 pub(crate) fn event_body(
     event_id: &str,
     dist: &str,
     errors_id: Option<&str>,
     occurred_at_ms: u64,
     ctx: StorageErrorContext,
+) -> Vec<u8> {
+    event_body_with_extra(
+        event_id,
+        dist,
+        errors_id,
+        occurred_at_ms,
+        ctx,
+        &StorageExtra::default(),
+    )
+}
+
+/// Pure body builder — same shape as `signin::event_body`, minus the consent-kind tag this module
+/// has no need of (there is only the standing form; see the module doc), plus (2026-09-11) the
+/// issue #76 report-lane fields carried on `extra` rather than on `ctx` — see [`StorageExtra`]'s
+/// doc for why the two are separate.
+pub(crate) fn event_body_with_extra(
+    event_id: &str,
+    dist: &str,
+    errors_id: Option<&str>,
+    occurred_at_ms: u64,
+    ctx: StorageErrorContext,
+    extra: &StorageExtra,
 ) -> Vec<u8> {
     let stage_code = ctx.stage.code();
     let class_code = ctx.class.code();
@@ -338,6 +425,15 @@ pub(crate) fn event_body(
     }
     if let Some(outcome) = ctx.key_outcome {
         storage_ctx["key_outcome"] = Value::from(outcome.code());
+    }
+    if let Some(word) = extra.persist_outcome {
+        storage_ctx["persist_outcome"] = Value::from(word);
+    }
+    if let Some(word) = extra.preserve_reason {
+        storage_ctx["preserve_reason"] = Value::from(word);
+    }
+    if let Some(reads) = &extra.candidate_reads {
+        storage_ctx["candidate_reads"] = Value::from(reads.as_str());
     }
     let mut body = serde_json::json!({
         "event_id": event_id,
@@ -392,12 +488,16 @@ fn now_ms() -> u64 {
 const DEFERRED_CAP: usize = 4;
 
 /// One storage-error report held because consent had not yet settled the question — see
-/// [`report_error`]'s doc. `occurred_at_ms` is captured once, at defer time, so a later
+/// [`report_error_with_candidate_reads`]'s doc. `occurred_at_ms` is captured once, at defer time, so a later
 /// [`replay_deferred`] reports the failure as having happened when it actually did, not when the
 /// consent question finally got answered — the same reasoning `diag::mod::Stamp` exists for.
 struct Deferred {
     ctx: StorageErrorContext,
     occurred_at_ms: u64,
+    /// Issue #76's report-lane fields carried alongside `ctx` (see [`StorageExtra`]'s own doc) —
+    /// held across the same wait `ctx` is, so a replayed report still carries whatever
+    /// `candidate_reads`/`persist_outcome`/`preserve_reason` it was found with.
+    extra: StorageExtra,
 }
 
 /// Session-only, like `diag::DEFERRED`: never persisted, so a crash or relaunch before the
@@ -411,7 +511,7 @@ static DEFERRED: std::sync::Mutex<Vec<Deferred>> = std::sync::Mutex::new(Vec::ne
 /// engaged and the channel IS on, but this report's own scope (6) is a pending extension nobody
 /// has ruled on yet ([`super::consent::pending_extensions`]). A stored "no" (the channel is off
 /// and the question has been answered) and an already-declined extension both read `false` here —
-/// those are real decisions, and [`report_error`] drops exactly as it always has for them.
+/// those are real decisions, and [`report_error_with_candidate_reads`] drops exactly as it always has for them.
 ///
 /// Deliberately independent of `sender::has_sentry` — a build with no Sentry endpoint can never
 /// send a held report either way, so holding one there is a few bytes wasted rather than a
@@ -427,28 +527,34 @@ fn should_defer() -> bool {
     super::consent::pending_extensions(&c).contains(&super::consent::Category::Errors)
 }
 
-fn defer(ctx: StorageErrorContext) {
+fn defer(ctx: StorageErrorContext, extra: StorageExtra) {
     let mut q = DEFERRED.lock().unwrap_or_else(|e| e.into_inner());
     if q.len() >= DEFERRED_CAP {
         q.remove(0); // oldest first — keep the newest CAP
     }
-    q.push(Deferred { ctx, occurred_at_ms: now_ms() });
+    q.push(Deferred {
+        ctx,
+        occurred_at_ms: now_ms(),
+        extra,
+    });
 }
 
-/// Send `ctx` now, dated `occurred_at_ms` — the actual queue-and-flush [`report_error`] always
+/// Send `ctx` now, dated `occurred_at_ms` — the actual queue-and-flush [`report_error_with_candidate_reads`] always
 /// did, factored out so both the direct path and [`replay_deferred`] share it and stay gated
 /// identically: Errors scope 6 ([`super::consent::allows_errors_at`]'s doc) and a build that
 /// carries a Sentry endpoint at all.
-fn send_now(ctx: StorageErrorContext, occurred_at_ms: u64) -> bool {
+fn send_now(ctx: StorageErrorContext, occurred_at_ms: u64, extra: StorageExtra) -> bool {
     if !super::consent::allows_errors_at(6) {
         return false;
     }
     // Recorded once the consent gate itself has passed — this is what lets a test built with no
     // Sentry endpoint compiled in (every dev checkout; see `sender`'s module doc) still prove the
     // GATING decision this module exists for, the same way `plex::session`'s own
-    // `report_storage_error` test double stands in for a real send.
+    // `report_storage_error` test double stands in for a real send. `extra.clone()`: `StorageExtra`
+    // (unlike `ctx`) is not `Copy` — `candidate_reads` is a runtime `String` — so this test-only
+    // recording call must not consume the value the real send below still needs.
     #[cfg(test)]
-    tests::record_send_attempt(ctx, occurred_at_ms);
+    tests::record_send_attempt(ctx, occurred_at_ms, extra.clone());
     if !super::sender::has_sentry() {
         return false;
     }
@@ -456,12 +562,13 @@ fn send_now(ctx: StorageErrorContext, occurred_at_ms: u64) -> bool {
         crate::log("telemetry: no /dev/urandom — handled storage error was not queued");
         return false;
     };
-    let body = event_body(
+    let body = event_body_with_extra(
         &event_id,
         super::sentry::build_id(),
         super::consent::errors_id().as_deref(),
         occurred_at_ms,
         ctx,
+        &extra,
     );
     let record = super::queue::Record {
         category: super::queue::Category::Errors,
@@ -482,7 +589,7 @@ fn send_now(ctx: StorageErrorContext, occurred_at_ms: u64) -> bool {
     }
 }
 
-/// What became of one [`report_error`] call — session.rs's `report_once` (issue #76 Stage B2)
+/// What became of one [`report_error_with_candidate_reads`] call — session.rs's `report_once` (issue #76 Stage B2)
 /// needs this three-way split, not the bare bool the function used to return: a stage may only be
 /// marked reported-and-done once it was actually SENT or safely HELD for a later "yes" to replay
 /// ([`replay_deferred`]) — a stage that was outright DROPPED (the Errors channel's own consent
@@ -517,11 +624,18 @@ pub(crate) enum ReportOutcome {
 /// exercise the real consent-gated defer/drop split with no Sentry endpoint compiled in; the old
 /// doc here said this function was unreachable from a test build, which stopped being true the
 /// same move).
-pub(crate) fn report_error(ctx: StorageErrorContext) -> ReportOutcome {
-    let outcome = if send_now(ctx, now_ms()) {
+#[cfg(test)]
+fn report_error(ctx: StorageErrorContext) -> ReportOutcome {
+    report_error_with_candidate_reads(ctx, None)
+}
+
+/// Shared body of [`report_error_with_candidate_reads`] and [`report_sign_in_not_persisted`] — the same consent-gated,
+/// deferral-and-replay path, parameterised over the [`StorageExtra`] each carries.
+fn report_error_with_extra(ctx: StorageErrorContext, extra: StorageExtra) -> ReportOutcome {
+    let outcome = if send_now(ctx, now_ms(), extra.clone()) {
         ReportOutcome::Sent
     } else if should_defer() {
-        defer(ctx);
+        defer(ctx, extra);
         ReportOutcome::Deferred
     } else {
         ReportOutcome::Dropped
@@ -544,6 +658,153 @@ pub(crate) fn report_error(ctx: StorageErrorContext) -> ReportOutcome {
     outcome
 }
 
+/// **Issue #76's third half**: a fresh sign-in's session file could not be kept the way
+/// `plex::session::save` decided to keep it, reported the same way every other storage failure is
+/// — through [`report_error_with_candidate_reads`]'s existing consent-gated, deferral-and-replay path. Takes plain wire
+/// words rather than the save lane's own enum so this module compiles independently of the lane
+/// that produces them (`plex::session.rs`, out of this lane's file scope) — see [`StorageExtra`]'s
+/// own doc for the vocabulary.
+///
+/// `class`/`registered_with_app_id`/`registered_with_name` are read live
+/// (`plex::session::storage_class`/`crate::keymanager`'s own probed facts) so this report agrees
+/// with a crash report or a usage event built the same moment; `refused_marker` is left `false`
+/// here rather than guessed, since `plex::session::has_refused_marker` is private to that module —
+/// a caller that knows better may still set it by building a `StorageErrorContext` directly and
+/// calling [`report_error_with_candidate_reads`].
+///
+/// **Deduped once per process per (`persist_outcome`, `preserve_reason`) pair** — review finding,
+/// 2026-09-11. This used to go straight to [`report_error_with_extra`] with no dedup at all, alone
+/// among this app's storage reports: every other one is routed through
+/// `plex::session::report_once`, whose "exactly once per process per stage" rule exists so that a
+/// television answering the same refusal call after call does not fill the spool with the same
+/// report. Here the repeat was structural rather than incidental — `auth::take_ready` commits a
+/// sign-in on every profile switch and on `resume_stored`, so an install steadily returning
+/// `PreservedExistingSecure(NotProven)` raised one on every switch for the life of the process.
+///
+/// Keyed on the PAIR rather than on the stage, because the stage is the same word for every one of
+/// them and the pair is what actually distinguishes two different things having gone wrong. Same
+/// three-way split as `report_once`: `Sent`/`Deferred` are "this shape is spoken for"
+/// ([`REPORTED_SIGN_IN`]), `Dropped` is remembered apart ([`DROPPED_SIGN_IN`]) so a real "Yes"
+/// later in the same process gives the shape its one attempt back ([`retry_dropped_sign_in`]).
+/// [`ReportOutcome::Dropped`] is also what a suppressed duplicate answers: nothing left this
+/// television and nothing is waiting to.
+///
+/// Called from `auth::commit_sign_in_persist` — i.e. from `take_ready` only, not from the
+/// discovery thread's earlier save.
+pub(crate) fn report_sign_in_not_persisted(
+    persist_outcome: &'static str,
+    preserve_reason: Option<&'static str>,
+    candidate_reads: String,
+) -> ReportOutcome {
+    let shape = (persist_outcome, preserve_reason);
+    if REPORTED_SIGN_IN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&shape)
+        || DROPPED_SIGN_IN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&shape)
+    {
+        return ReportOutcome::Dropped;
+    }
+    let ctx = StorageErrorContext {
+        stage: StorageStage::SignInNotPersisted,
+        service_error_code: None,
+        class: crate::plex::session::storage_class(),
+        refused_marker: false,
+        key_outcome: None,
+        registered_with_app_id: crate::keymanager::registered_with_app_id(),
+        registered_with_name: crate::keymanager::registered_with_name(),
+        sealed_identity: None,
+    };
+    let outcome = report_error_with_extra(
+        ctx,
+        StorageExtra {
+            persist_outcome: Some(persist_outcome),
+            preserve_reason,
+            candidate_reads: Some(candidate_reads),
+        },
+    );
+    match outcome {
+        ReportOutcome::Sent | ReportOutcome::Deferred => {
+            REPORTED_SIGN_IN.lock().unwrap_or_else(|e| e.into_inner()).push(shape);
+        }
+        ReportOutcome::Dropped => {
+            DROPPED_SIGN_IN.lock().unwrap_or_else(|e| e.into_inner()).push(shape);
+        }
+    }
+    outcome
+}
+
+/// Which (`persist_outcome`, `preserve_reason`) shapes this PROCESS has already reported as
+/// [`StorageStage::SignInNotPersisted`] — the twin of `plex::session`'s `REPORTED_STAGES`, keyed on
+/// the pair because the stage word is the same for all of them. A shape lands here only once its
+/// attempt was actually SENT or safely DEFERRED for a later replay.
+static REPORTED_SIGN_IN: std::sync::Mutex<Vec<(&'static str, Option<&'static str>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// …and the twin of `DROPPED_STAGES`, for the same reason it is kept apart: a shape whose attempt
+/// was dropped outright (a stored "No", or a build with no Sentry endpoint) must not be retried on
+/// every later profile switch, but nothing was sent and nothing is waiting to be, so it is not the
+/// same fact as "reported". [`retry_dropped_sign_in`] is what gives it its one attempt back.
+static DROPPED_SIGN_IN: std::sync::Mutex<Vec<(&'static str, Option<&'static str>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// **End the signed-out account's tenure over this module's in-memory state** — review finding,
+/// 2026-09-11. Called from `telemetry::forget`, beside `signin::forget_storage_outcome` and the
+/// twin `diag::clear_deferred` that has been on that path from the start.
+///
+/// Two things go, and both belong to the account that is leaving:
+///
+/// * [`DEFERRED`] — a report HELD because the consent question was still open. Without this it
+///   survived the sign-out and `replay_deferred` sent it the moment the NEXT account answered Yes,
+///   stamped with that account's freshly minted Crash report ID. `PRIVACY.md` promises a sign-out
+///   "destroys everything queued at once", and this module's own doc enumerates exactly two exits
+///   for a held report — a No, or the app closing. A sign-out was neither, and the held report
+///   crossed an account boundary it may never cross. The queue is DROPPED, not replayed: the
+///   decision that could have authorised it is gone with the account.
+/// * both sign-in dedup sets, so the next account's own first unpersisted sign-in is reported
+///   rather than suppressed by a shape the previous account's install already raised.
+pub(crate) fn forget() {
+    DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    REPORTED_SIGN_IN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    DROPPED_SIGN_IN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
+/// **A real "Yes" gives a dropped sign-in report its one attempt back** — the exact twin of
+/// `plex::session::retry_dropped_stages`, called from the same place in `telemetry::record` and for
+/// the same reason: a "No" must not burn a report for the rest of the process after the SAME
+/// process later turns Errors on in Settings.
+pub(crate) fn retry_dropped_sign_in() {
+    DROPPED_SIGN_IN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
+/// Report a storage failure with the candidate summary owned by its load. Session's cold-load
+/// path uses this explicit form when draining its detached report batch; unlike the removed
+/// global hand-off, it cannot be claimed by a probe report or a concurrent save.
+pub(crate) fn report_error_with_candidate_reads(
+    ctx: StorageErrorContext,
+    candidate_reads: Option<String>,
+) -> ReportOutcome {
+    report_error_with_extra(
+        ctx,
+        StorageExtra {
+            candidate_reads,
+            ..StorageExtra::default()
+        },
+    )
+}
+
 /// Drain and replay every storage-error report held because consent had not yet settled the
 /// question. Called from `telemetry::record` right after a new decision publishes — same shape and
 /// same reason as `diag::replay_deferred`: a "yes" lets the held reports through [`send_now`]
@@ -563,7 +824,7 @@ pub(crate) fn replay_deferred() {
     // some are sent and others dropped in one replay.
     let mut any_sent = false;
     for d in held {
-        if send_now(d.ctx, d.occurred_at_ms) {
+        if send_now(d.ctx, d.occurred_at_ms, d.extra) {
             any_sent = true;
         }
     }
@@ -583,7 +844,7 @@ pub(crate) fn replay_deferred() {
 /// the notices promise ("the numeric error code the key service replied with") must actually show
 /// up in the one payload a person can inspect before consenting to send it.
 pub(crate) fn preview_event() -> Vec<u8> {
-    event_body(
+    event_body_with_extra(
         "<random per-error event id>",
         "<running ELF build id>",
         Some(super::native::PREVIEW_USER_ID),
@@ -601,6 +862,13 @@ pub(crate) fn preview_event() -> Vec<u8> {
             // 2026-09-10 used — so the field the notices promise ("which identity sealed it")
             // shows a real word rather than the absence one.
             sealed_identity: Some(crate::keymanager::Identity::Anonymous),
+        },
+        &StorageExtra {
+            persist_outcome: Some("preserved_existing_secure"),
+            preserve_reason: Some("not_proven"),
+            candidate_reads: Some(
+                "developer:open_failed:13,internal:missing,app_dir:plaintext".into(),
+            ),
         },
     )
 }
@@ -952,12 +1220,25 @@ mod tests {
     fn preview_event_parses_and_is_a_storage_error() {
         let v: Value = serde_json::from_slice(&preview_event()).expect("preview JSON");
         assert_eq!(v["exception"]["values"][0]["type"], "StorageError");
+        let storage = &v["contexts"]["storage"];
+        assert_eq!(storage["persist_outcome"], "preserved_existing_secure");
+        assert_eq!(storage["preserve_reason"], "not_proven");
+        assert_eq!(
+            storage["candidate_reads"],
+            "developer:open_failed:13,internal:missing,app_dir:plaintext"
+        );
     }
 
     /// No key material, ciphertext or plaintext is a value this module can even represent — the
     /// declaration region carries no owned string field, same shape as
     /// `diag::schema::tests::no_variant_can_carry_a_runtime_string`, so this is a source grep rather
     /// than a runtime assertion.
+    ///
+    /// **`candidate_reads` is the one deliberate exception (issue #76 report lane, 2026-09-11)** —
+    /// a bounded, closed-vocabulary summary of which candidate session paths were read and how
+    /// (`developer:open_failed:13,internal:missing,app_dir:plaintext`), built only from the read
+    /// lane's own category/rejection codes and small bounded numbers, never a path or free text.
+    /// The rule stays for every other field, which is what a NEW owned string here still fails on.
     #[test]
     fn no_field_can_carry_a_runtime_string() {
         let src = include_str!("storage.rs");
@@ -970,6 +1251,9 @@ mod tests {
         let decls = &src[from..to];
         for (i, line) in decls.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
+            if code.contains("candidate_reads") {
+                continue;
+            }
             assert!(
                 !code.contains("String") && !code.contains("Cow<"),
                 "line {} of storage.rs's declaration region introduces an owned string: {line}",
@@ -1008,15 +1292,19 @@ mod tests {
     // module exists to get right: held vs dropped vs sent-now.
 
     thread_local! {
-        static SEND_ATTEMPTS: std::cell::RefCell<Vec<(StorageErrorContext, u64)>> =
+        static SEND_ATTEMPTS: std::cell::RefCell<Vec<(StorageErrorContext, u64, StorageExtra)>> =
             std::cell::RefCell::new(Vec::new());
     }
 
-    pub(super) fn record_send_attempt(ctx: StorageErrorContext, occurred_at_ms: u64) {
-        SEND_ATTEMPTS.with(|s| s.borrow_mut().push((ctx, occurred_at_ms)));
+    pub(super) fn record_send_attempt(
+        ctx: StorageErrorContext,
+        occurred_at_ms: u64,
+        extra: StorageExtra,
+    ) {
+        SEND_ATTEMPTS.with(|s| s.borrow_mut().push((ctx, occurred_at_ms, extra)));
     }
 
-    fn send_attempts() -> Vec<(StorageErrorContext, u64)> {
+    fn send_attempts() -> Vec<(StorageErrorContext, u64, StorageExtra)> {
         SEND_ATTEMPTS.with(|s| s.borrow().clone())
     }
 
@@ -1078,6 +1366,15 @@ mod tests {
     fn reset() {
         clear_deferred();
         clear_send_attempts();
+        clear_sign_in_dedup();
+    }
+
+    /// The (save outcome, preserve reason) dedup sets are process-global and deliberately have no
+    /// production clear short of sign-out, so every test that raises a `SignInNotPersisted` report
+    /// has to start from an empty one or inherit the previous test's suppression.
+    fn clear_sign_in_dedup() {
+        super::REPORTED_SIGN_IN.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        super::DROPPED_SIGN_IN.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     /// (a) An unanswered install's locked-read context is HELD rather than dropped, and a later
@@ -1363,6 +1660,147 @@ mod tests {
         );
     }
 
+    /// **The issue #76 report-lane fields are a documented list of their own** (`StorageExtra`,
+    /// carried alongside a context rather than on it — see that type's doc for why). Same routing
+    /// decision as [`the_storage_report_fields_are_a_documented_list`]: all three answer "how your
+    /// sign-in is stored" — the exact purpose Errors scope 6 already covers — so they bumped
+    /// `consent::NOTICE_REVISION` (4) rather than `consent::ERRORS_SCOPE`, and are described in
+    /// `PRIVACY.md`/`ui::legal` instead of re-asking anyone.
+    #[test]
+    fn the_storage_extra_fields_are_present_only_when_supplied() {
+        let without: Value = serde_json::from_slice(&event_body_with_extra(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            1_725_000_000_000,
+            context(),
+            &StorageExtra::default(),
+        ))
+        .expect("event JSON");
+        for key in ["persist_outcome", "preserve_reason", "candidate_reads"] {
+            assert!(
+                without["contexts"]["storage"].get(key).is_none(),
+                "an empty StorageExtra must omit {key}, not send a placeholder"
+            );
+        }
+
+        let with: Value = serde_json::from_slice(&event_body_with_extra(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            1_725_000_000_000,
+            context(),
+            &StorageExtra {
+                persist_outcome: Some("preserved_existing_secure"),
+                preserve_reason: Some("not_proven"),
+                candidate_reads: Some("developer:open_failed:13,internal:missing".to_string()),
+            },
+        ))
+        .expect("event JSON");
+        assert_eq!(
+            with["contexts"]["storage"]["persist_outcome"],
+            "preserved_existing_secure"
+        );
+        assert_eq!(with["contexts"]["storage"]["preserve_reason"], "not_proven");
+        assert_eq!(
+            with["contexts"]["storage"]["candidate_reads"],
+            "developer:open_failed:13,internal:missing"
+        );
+    }
+
+    /// [`report_sign_in_not_persisted`] builds the `SignInNotPersisted` stage and folds its three
+    /// wire words into a [`StorageExtra`] that actually reaches [`send_now`] — driven through the
+    /// same defer/replay machinery as every other report, since it is `report_error_with_extra`
+    /// underneath.
+    #[test]
+    fn report_sign_in_not_persisted_carries_its_three_wire_words() {
+        let _g = crate::testlock::serial();
+        reset();
+        super::super::consent::install(errors_on_at_scope_6());
+
+        // Not asserting `ReportOutcome::Sent`: a dev checkout carries no compiled Sentry endpoint
+        // (see `report_error_needs_consent_and_an_endpoint`'s own doc), so the gate this test cares
+        // about — the attempt is made at all, with the right stage and extra — is what
+        // `send_attempts()` (recorded before the endpoint check) can prove either way.
+        let outcome = report_sign_in_not_persisted(
+            "blocked_unknown_envelope",
+            None,
+            "developer:open_failed:13".to_string(),
+        );
+        assert_ne!(outcome, ReportOutcome::Deferred, "scope 6 is already accepted");
+
+        let sent = send_attempts();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0.stage, StorageStage::SignInNotPersisted);
+        assert_eq!(
+            sent[0].2.persist_outcome,
+            Some("blocked_unknown_envelope")
+        );
+        assert_eq!(sent[0].2.preserve_reason, None);
+        assert_eq!(
+            sent[0].2.candidate_reads.as_deref(),
+            Some("developer:open_failed:13")
+        );
+
+        reset();
+        super::super::consent::install(unanswered());
+    }
+
+    /// The explicit candidate-summary API carries the load-owned value on every detached report;
+    /// ordinary reports carry no candidate summary.
+    #[test]
+    fn explicit_candidate_reads_reaches_each_owned_report() {
+        let _g = crate::testlock::serial();
+        reset();
+        super::super::consent::install(errors_on_at_scope_6());
+
+        let reads = Some("internal:missing".to_string());
+        report_error_with_candidate_reads(context(), reads.clone());
+        let first = send_attempts();
+        assert_eq!(first.len(), 1);
+        assert_eq!(
+            first[0].2.candidate_reads.as_deref(),
+            Some("internal:missing")
+        );
+
+        report_error_with_candidate_reads(context(), reads);
+        let second = send_attempts();
+        assert_eq!(second.len(), 2, "the second call must still be attempted");
+        assert_eq!(
+            second[1].2.candidate_reads.as_deref(),
+            Some("internal:missing")
+        );
+
+        // A report without an owned load summary remains intentionally empty.
+        report_error(context());
+        let third = send_attempts();
+        assert_eq!(third[2].2.candidate_reads, None);
+
+        reset();
+        super::super::consent::install(unanswered());
+    }
+
+    #[test]
+    fn sign_out_discards_deferred_storage_report_before_next_account_answers_yes() {
+        let _g = crate::testlock::serial();
+        reset();
+        super::super::consent::install(unanswered());
+        assert_ne!(report_error(context()), ReportOutcome::Sent);
+        assert_eq!(deferred_len(), 1);
+
+        // This is the production sign-out boundary; it must end the departing account's
+        // in-memory telemetry tenure, not merely purge the durable spool.
+        super::super::forget();
+        assert_eq!(deferred_len(), 0);
+
+        super::super::consent::install(errors_on_at_scope_6());
+        replay_deferred();
+        assert!(send_attempts().is_empty());
+
+        reset();
+        super::super::consent::install(unanswered());
+    }
+
     /// PRIVACY.md names the same closed vocabulary this module actually emits.
     ///
     /// **Driven off the live enums** — `StorageStage::ALL`, `SessionStorageClass::ALL` and
@@ -1380,12 +1818,37 @@ mod tests {
             .iter()
             .map(|s| s.code())
             .chain(SessionStorageClass::ALL.iter().map(|c| c.code()))
+            .chain(crate::keymanager::Identity::ALL.iter().map(|i| i.code()))
+            .chain(["existed", "created"])
+            // The save lane's own wire words (`plex::session.rs`, a different lane's file): not
+            // driven off an owned enum here, since this module accepts them as opaque
+            // `&'static str`s (see `StorageExtra`'s doc) rather than defining that vocabulary
+            // itself — a literal list is the practical choice for words this module does not own.
+            .chain([
+                "persisted_plaintext",
+                "persisted_sealed",
+                "preserved_existing_secure",
+                "blocked_unknown_envelope",
+                "serialization_failed",
+                "not_proven",
+                "refused_marker_no_fresh_sign_in",
+                "seal_failed",
+            ])
+            // The READ lane's own two closed vocabularies, which ride here as `candidate_reads`
+            // (`plex::session::CandidateCategory`/`ReadRejection`). Driven off those enums rather
+            // than off a literal list, so a variant added there — `Unparsable` was, on 2026-09-11,
+            // and it is a word the notice must name before it can be sent — fails this test until
+            // the policy names it.
             .chain(
-                crate::keymanager::Identity::ALL
+                crate::plex::session::CandidateCategory::ALL
                     .iter()
-                    .map(|i| i.code()),
+                    .map(|c| c.wire()),
             )
-            .chain(["existed", "created"]);
+            .chain(
+                crate::plex::session::ReadRejection::ALL
+                    .iter()
+                    .map(|r| r.wire()),
+            );
         for value in vocabulary {
             assert!(privacy.contains(value), "PRIVACY.md omitted {value}");
         }
@@ -1393,6 +1856,310 @@ mod tests {
             privacy.contains("`none`"),
             "…and the word this report sends for the ABSENCE of a sealed identity, which belongs \
              to no enum and so cannot be reached from one"
+        );
+    }
+
+    // ---- Issue #76's report lane: the integrator's own call sites ------------------------------
+    //
+    // Both tests below drive REAL production paths (`auth::take_ready`, `plex::session::load`)
+    // rather than calling this module's entry points directly, because the defect they guard is a
+    // missing CALL: every function under test here compiled, passed its own lane's unit tests and
+    // reported nothing at all, on every launch, because nobody called it.
+
+    /// A temp session file of this test module's own, in one of two shapes.
+    ///
+    /// `unwritable` points the only candidate at a path whose parent DOES NOT EXIST, so
+    /// `write_atomic` cannot even create its temp sibling: every candidate refuses and `save`
+    /// answers `WriteFailed` — the one outcome that really does cost the user their sign-in at the
+    /// next launch. `writable` is the ordinary healthy install, which is not a convenience but the
+    /// only shape that can show the `candidate_reads` LEAK: a load that queues no report of its own
+    /// leaves the hand-off slot unclaimed.
+    struct TempSession {
+        dir: std::path::PathBuf,
+    }
+
+    impl TempSession {
+        fn unwritable(tag: &str) -> TempSession {
+            TempSession::at(tag, |dir| dir.join("gone").join("auth.json"))
+        }
+
+        fn writable(tag: &str) -> TempSession {
+            TempSession::at(tag, |dir| dir.join("auth.json"))
+        }
+
+        fn at(tag: &str, file: impl Fn(&std::path::Path) -> std::path::PathBuf) -> TempSession {
+            let dir = std::env::temp_dir()
+                .join(format!("plxnative-storage-{}-{tag}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a writable temp dir");
+            crate::plex::session::redirect_for_test(Some(file(&dir)));
+            // `report_once`'s REPORTED/DROPPED sets are PROCESS globals: a stage some earlier test
+            // in this binary already reported is one the load below would silently skip.
+            crate::plex::session::reset_report_state_for_test();
+            reset();
+            // Errors at scope 6, so `send_now` gets past its own consent gate and records the
+            // attempt — the same arrangement every gating test in this module makes.
+            super::super::consent::install(errors_on_at_scope_6());
+            TempSession { dir }
+        }
+    }
+
+    impl Drop for TempSession {
+        fn drop(&mut self) {
+            crate::plex::session::redirect_for_test(None);
+            crate::plex::session::reset_report_state_for_test();
+            crate::auth::reset_ctl_for_test();
+            super::super::consent::install(unanswered());
+            reset();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn sign_in_session() -> crate::plex::session::Session {
+        crate::plex::session::Session {
+            client_id: "cid-for-test".to_string(),
+            account_token: "tok-for-test".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// **A sign-in `take_ready` could not persist is REPORTED, carrying all three save/read
+    /// facts.** Issue #76 field report case 6: the run carries on signed in (the in-memory `Ctl`
+    /// holds real credentials) and the next launch asks again, so this report is the only way
+    /// anyone ever learns it happened.
+    #[test]
+    fn take_ready_reports_a_sign_in_the_save_could_not_persist() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::unwritable("take-ready-report");
+        // A cold load first, so `candidate_reads_wire()` describes a real read of this test's own
+        // candidate rather than whatever the previous test left behind — the launch's read summary
+        // is exactly what the report is supposed to carry beside the save's verdict.
+        let _ = crate::plex::session::load();
+        clear_send_attempts();
+        clear_sign_in_dedup();
+
+        crate::auth::arm_ready_for_test(sign_in_session());
+        assert!(
+            crate::auth::take_ready().is_some(),
+            "the run still gets its credentials — a failed save must not sign it out"
+        );
+
+        let attempts = send_attempts();
+        let (ctx, _, extra) = attempts
+            .iter()
+            .find(|(c, _, _)| c.stage == StorageStage::SignInNotPersisted)
+            .unwrap_or_else(|| {
+                panic!("no sign_in_not_persisted report was attempted; got {attempts:?}")
+            });
+        assert_eq!(extra.persist_outcome, Some("write_failed"));
+        assert_eq!(
+            extra.preserve_reason, None,
+            "a write that failed preserved nothing, so there is no reason word to give"
+        );
+        assert_eq!(
+            extra.candidate_reads.as_deref(),
+            Some("other:missing"),
+            "the launch's own read summary, in the read lane's closed vocabulary"
+        );
+        assert_eq!(
+            ctx.service_error_code, None,
+            "no key service was asked anything — the file system said no on its own"
+        );
+    }
+
+    /// A cold load can queue more than one storage report: the probe is checked before the
+    /// session candidate, and an untrusted candidate can queue its own report afterward. Both
+    /// reports must carry the same load-owned candidate summary; a later unrelated report must
+    /// not inherit it.
+    #[test]
+    fn a_cold_load_attaches_candidates_to_probe_and_session_reports() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::testlock::serial();
+        let t = TempSession::writable("multi-report-load");
+        let auth = t.dir.join("auth.json");
+        std::fs::write(&auth, b"not trusted session bytes").unwrap();
+        std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        // ProbeFile uses `#[serde(flatten)]` for the sealed envelope fields.
+        let probe = serde_json::json!({
+            "backend": "keymanager3",
+            "key": "plxnative.session.v1",
+            "iv": "AAAAAAAAAAAAAAAAAAAAAA==",
+            "data": "c2VjcmV0",
+            "identity": "anonymous",
+            "attempts": 2
+        });
+        std::fs::write(
+            t.dir.join("secure-probe.json"),
+            serde_json::to_vec_pretty(&probe).unwrap(),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            t.dir.join("secure-probe.json"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+
+        crate::plex::session::reset_report_state_for_test();
+        clear_send_attempts();
+        crate::keymanager::arm_for_test(vec![("begin", Err(()))]);
+        let _ = crate::plex::session::load();
+        crate::keymanager::disarm_for_test();
+
+        let sent = send_attempts();
+        assert!(
+            sent.iter().any(|(ctx, _, _)| {
+                ctx.stage == StorageStage::NoReply
+                    || ctx.stage == StorageStage::Unreachable
+                    || ctx.stage == StorageStage::EnvelopeLocked
+            }),
+            "the probe report was not attempted: {:?}",
+            sent.iter().map(|(ctx, _, _)| ctx.stage).collect::<Vec<_>>()
+        );
+        assert!(
+            sent.iter().any(|(ctx, _, _)| ctx.stage == StorageStage::UntrustedMode),
+            "the session-read report was not attempted: {:?}",
+            sent.iter().map(|(ctx, _, _)| ctx.stage).collect::<Vec<_>>()
+        );
+        let load_reports: Vec<_> = sent
+            .iter()
+            .filter(|(ctx, _, _)| {
+                matches!(
+                    ctx.stage,
+                    StorageStage::NoReply
+                        | StorageStage::Unreachable
+                        | StorageStage::EnvelopeLocked
+                        | StorageStage::UntrustedMode
+                )
+            })
+            .collect();
+        assert!(load_reports.len() >= 2);
+        for (_, _, extra) in &load_reports {
+            assert_eq!(
+                extra.candidate_reads.as_deref(),
+                Some("other:untrusted_mode")
+            );
+        }
+
+        report_error_with_candidate_reads(context(), None);
+        let after = send_attempts();
+        assert_eq!(after.last().unwrap().2.candidate_reads, None);
+    }
+
+    /// **One sign-in that cannot be persisted is ONE report, however many times a save asks.**
+    ///
+    /// Review finding, 2026-09-11. `note_sign_in_persist` reported from both of the sign-in flow's
+    /// saves, so one attempt raised two identical reports — and `take_ready` also runs on every
+    /// PROFILE SWITCH and on `resume_stored`, so an install whose save steadily returns the same
+    /// non-persisting outcome spooled another one on every switch for the life of the process.
+    /// Every other storage report in this app is deduped (`plex::session::report_once`); this one
+    /// bypassed it entirely.
+    ///
+    /// Driven through the real `take_ready` twice — which is exactly what a profile switch does —
+    /// against an install whose only candidate cannot be written.
+    #[test]
+    fn a_repeated_unpersistable_sign_in_is_reported_once_per_process() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::unwritable("take-ready-report-once");
+        let _ = crate::plex::session::load();
+        clear_send_attempts();
+        clear_sign_in_dedup();
+
+        for _ in 0..3 {
+            crate::auth::arm_ready_for_test(sign_in_session());
+            assert!(crate::auth::take_ready().is_some());
+        }
+
+        let n = send_attempts()
+            .iter()
+            .filter(|(c, _, _)| c.stage == StorageStage::SignInNotPersisted)
+            .count();
+        assert_eq!(
+            n, 1,
+            "three commits of the same non-persisting outcome must raise one report, got {:?}",
+            send_attempts()
+        );
+    }
+
+    /// **…and the DISCOVERY-thread save is not one of the times it asks.** Both of the sign-in
+    /// flow's saves used to report, which is where the doubling came from. The discovery save still
+    /// records the outcome for the one-off body (`signin::note_storage_outcome`) and still logs its
+    /// own line — it simply is not the user-visible commit of a sign-in, and `take_ready` is.
+    #[test]
+    fn the_discovery_threads_save_notes_the_outcome_without_reporting_it() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::unwritable("discovery-save-no-report");
+        let _ = crate::plex::session::load();
+        clear_send_attempts();
+        clear_sign_in_dedup();
+
+        crate::auth::note_discovery_save_for_test(
+            crate::plex::session::PersistOutcome::WriteFailed,
+        );
+
+        assert!(
+            send_attempts()
+                .iter()
+                .all(|(c, _, _)| c.stage != StorageStage::SignInNotPersisted),
+            "the discovery save must raise no report of its own; got {:?}",
+            send_attempts()
+        );
+        assert_eq!(
+            super::super::signin::storage_outcome_for_test().persist_outcome,
+            Some("write_failed"),
+            "…while still recording what the save did, for the one-off body"
+        );
+    }
+
+    /// **The `candidate_reads` hand-off reaches the load's OWN report.** `plex::session::locked`
+    /// and its siblings build a `StorageErrorContext` literal with no field for this, which is why
+    /// the value is handed over out of band rather than threaded through every one of them — and
+    /// why nothing but an end-to-end load can prove it arrives.
+    #[test]
+    fn a_loads_candidate_summary_reaches_its_own_report() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::unwritable("candidate-reads-handoff");
+        clear_send_attempts();
+        clear_sign_in_dedup();
+
+        // This load reads one missing candidate, then mints a client id and cannot write it — one
+        // `WriteFailed` report raised from inside the load, which is the report the summary
+        // belongs to.
+        let _ = crate::plex::session::load();
+        let attempts = send_attempts();
+        let (_, _, extra) = attempts
+            .iter()
+            .find(|(c, _, _)| c.stage == StorageStage::WriteFailed)
+            .unwrap_or_else(|| panic!("the load raised no write-failure report; got {attempts:?}"));
+        assert_eq!(extra.candidate_reads.as_deref(), Some("other:missing"));
+    }
+
+    /// **…and never onto a report that is about something else.** The discriminating case is the
+    /// HEALTHY load — the one that queues no report at all, so nothing claims the hand-off — which
+    /// is exactly the boot every working install performs. Without `load`'s own clear, the single
+    /// slot would still be holding this launch's read hours later, and the next unrelated failure
+    /// (a seal failure inside some `update()`) would publish it as though it described that
+    /// moment's read.
+    #[test]
+    fn a_healthy_loads_candidate_summary_never_leaks_onto_a_later_unrelated_report() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::writable("candidate-reads-no-leak");
+        clear_send_attempts();
+        clear_sign_in_dedup();
+
+        let _ = crate::plex::session::load();
+        assert!(
+            send_attempts().is_empty(),
+            "the premise: a healthy load reports nothing, so nothing claims the hand-off — got {:?}",
+            send_attempts()
+        );
+
+        report_error(context());
+        let later = send_attempts();
+        assert_eq!(later.len(), 1, "{later:?}");
+        assert_eq!(
+            later[0].2.candidate_reads, None,
+            "a report about something else must not publish this launch's read summary"
         );
     }
 }

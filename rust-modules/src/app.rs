@@ -2747,7 +2747,6 @@ enum Route {
 /// Host page parked while the shared Home-source route is being used as a Settings editor.
 static mut SETTINGS_HOME_RETURN: Option<Route> = None;
 
-
 /// Which routes draw the shared top tab bar — the ONE test behind `ui::nav`'s
 /// continuous-chrome rule. Exhaustive for the same reason `Nav::wears_tab_bar` is: a new
 /// screen must not be able to answer this by accident. (Both popovers draw a live page
@@ -5087,9 +5086,18 @@ unsafe fn key_onboarding(
     // reach first — the profile picker's PIN keypad — is why [`onboarding_back`] exists and why
     // this is not a bare `is_back`.
     if is_back(sym, wcode) {
-        // Issue #75: the sign-in screen's one-off report alert claims BACK for itself while open —
-        // it is not this screen's root, and letting the root rule fire first would back the whole
-        // sign-in out (or hand the screen to the television) instead of dismissing the alert.
+        if matches!(route, Route::Login)
+            && crate::auth::pending_persistence_warning().is_some()
+            && !crate::ui::login::modal_open()
+        {
+            if crate::webos::take_root_press() { crate::webos::go_home(); }
+            return crate::ui::onboard::Action::None;
+        }
+        // Issue #75: a modal on the sign-in screen claims BACK for itself while open — it is not
+        // this screen's root, and letting the root rule fire first would back the whole sign-in out
+        // (or hand the screen to the television) instead of dismissing it. Two modals answer to
+        // `modal_open` now (issue #76's report lane added the storage Details panel beside the
+        // one-off report alert); `login::key`'s own ladder decides which of them has the press.
         if matches!(route, Route::Login) && crate::ui::login::modal_open() {
             crate::ui::login::key(sym, wcode);
             return crate::ui::onboard::Action::None;
@@ -5162,17 +5170,28 @@ unsafe fn key_onboarding(
         } else {
             crate::ui::profiles::key(sym, wcode);
         }
-    } else if is_ok(sym) && crate::ui::login::storage_readout_showing() {
-        // The storage read-out's *Try again* pill is this route's one action-row control face
-        // (`STORAGE_ACTION_POP`, drawn `.focused(true)` — it is the only thing OK can mean while
-        // the read-out is up). Arm the shared press exactly as the Onboard/Profiles branches
+    } else if is_ok(sym)
+        && crate::ui::login::storage_action_showing()
+        && !crate::ui::login::modal_open()
+    {
+        // Login's waiting-screen action — Details, secure-open retry, or a replacement QR code —
+        // is an action-row control face (`STORAGE_ACTION_POP`). Arm the shared press exactly as the Onboard/Profiles branches
         // above do for their own action pills, so the dip and spring-back bounce are on screen
         // before the retry fires; the deferred commit reaches
         // `crate::ui::login::commit_storage_retry` from `press::take_commit`'s dispatch. Do NOT
         // also call `crate::ui::login::key` here — that would fall through to its own (now
         // defensive no-op) OK branch, and a press this arms must resolve through exactly one path.
-        crate::ui::press::begin_ctl(SDL_GetTicks());
-        *ok_armed = true;
+        //
+        // **`!modal_open()` for the same reason the BACK rule above consults it** (issue #76's
+        // report lane): the read-out is still "showing" underneath a modal that stands over it, so
+        // without this an OK aimed at the Details panel — or at the one-off report alert's own
+        // answer — armed the retry pill underneath instead, and the panel's press went to the
+        // control it was covering. The `else` below routes those into `login::key`, which is where
+        // both modals' own OK handling lives.
+        if crate::ui::login::arm_storage_action() {
+            crate::ui::press::begin_ctl(SDL_GetTicks());
+            *ok_armed = true;
+        }
     } else {
         crate::ui::login::key(sym, wcode);
     }
@@ -7074,6 +7093,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut pick_user: Option<usize> =
             crate::dev::read("pickuser").and_then(|s| s.parse().ok());
         let session = crate::plex::session::load();
+        // **Issue #76's report lane.** This is the app's one COLD `session::load` — the only call
+        // that reads candidates, resolves the cross-launch probe and may reseal — so it is where
+        // this launch's storage facts become known. Hand them to the sign-in screen now, before the
+        // boot gate below can route to it: `BootTo::Login` mounts that route without an `enter()`
+        // (which is the other refresh), and the read-out's "Details" pill is hidden until the
+        // screen has been told something. Unconditional, not gated on the boot destination — a
+        // session that is fine now may still sign out later in this launch, and the panel must not
+        // be the one surface that then has nothing to say.
+        crate::ui::login::refresh_storage_readout();
         // Install-wide playback preference, restored before any route can resolve a stream.
         // A legacy file with no value resolves to Original; a new file can choose Auto only
         // through route's explicit readiness gate (session::load records that decision once).
@@ -7830,9 +7858,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // `ui::route_screen`'s rules 8 and 9: RIGHT enters the row under
                             // focus, LEFT leaves a screen that has no action band. The root
                             // answered neither key at all until the family was given one model.
-                            let action = crate::ui::settings::on_left_right(
-                                if sym == SDLK_LEFT { -1 } else { 1 },
-                            );
+                            let action = crate::ui::settings::on_left_right(if sym == SDLK_LEFT {
+                                -1
+                            } else {
+                                1
+                            });
                             perform_settings_action(action, &mut route);
                         }
                         continue;
@@ -8619,17 +8649,32 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::onboard::click(cx, cy);
                         }
                     } else if matches!(route, Route::Login) {
+                        let (cx, cy) = ptr_xy(&ev);
                         if crate::ui::login::modal_open() {
                             // Issue #75 review: route the click THROUGH the one-off report alert
                             // instead of synthesizing a bare OK — `alert_press_at` hits an actual
                             // answer (or refuses on a miss), so a click on the scrim or outside the
                             // panel can no longer activate whichever answer the D-pad last
-                            // focused.
-                            let (cx, cy) = ptr_xy(&ev);
-                            crate::ui::login::alert_press_at(cx, cy);
+                            // focused. The storage Details panel (issue #76's report lane) answers
+                            // `modal_open` too and takes no OK at all — a click over it refuses
+                            // here rather than reaching the pill underneath, and BACK closes it.
+                            if crate::ui::login::details_press_at(cx, cy) {
+                                // Details is the visible topmost modal and is read-only.
+                            } else {
+                                crate::ui::login::alert_press_at(cx, cy);
+                            }
+                        } else if crate::ui::login::action_press_at(cx, cy) {
+                            if crate::ui::login::arm_storage_action() {
+                                crate::ui::press::begin_ctl(last_input);
+                                ok_armed = true;
+                            }
                         } else {
-                            // one actionable thing on the login screen (retry on error) — click = OK
-                            crate::ui::login::key(SDLK_RETURN, 0);
+                            // Waiting owns explicit hit targets. The other Login phases retain
+                            // their historical anywhere-click OK action (retry/start after an
+                            // Error or deletion) through the same key handler as the remote.
+                            if crate::auth::phase() != crate::auth::Phase::Waiting {
+                                crate::ui::login::key(SDLK_RETURN, 0);
+                            }
                         }
                     }
                 } else if et == SDL_MOUSEBUTTONUP {
@@ -9707,11 +9752,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             route = next;
                         }
                     } else if matches!(route, Route::Login)
-                        && crate::ui::login::storage_readout_showing()
+                        && crate::ui::login::storage_action_showing()
                     {
-                        // The storage read-out's *Try again* pill, armed above in
+                        // Login's waiting-screen action, captured at arm time above in
                         // `key_onboarding`'s OK-down branch — see that arm's own comment and
-                        // `commit_storage_retry`'s doc for why the retry itself waits for this
+                        // `commit_storage_retry`'s doc for why the action itself waits for this
                         // per-frame commit rather than firing on the key-down.
                         crate::ui::login::commit_storage_retry();
                     } else {
@@ -9917,6 +9962,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // route (Login while creating/waiting/discovering/error, Profiles while picking/switching).
             if matches!(route, Route::Login | Route::Profiles) {
                 if let Some(c) = crate::auth::take_ready() {
+                    if matches!(route, Route::Login) {
+                        crate::ui::login::leave();
+                    }
                     // A sign-out followed by a fresh sign-in can replace the session without
                     // restarting the process. Re-read only at this one credentials handoff so the
                     // old account's in-memory preference cannot leak into the new session.
@@ -9947,6 +9995,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         log("login: server installed — entering Home");
                         route = Route::Home;
                     }
+                } else if crate::auth::pending_persistence_warning().is_some() {
+                    // Both discovery and the final save can fail. Keep the report reachable
+                    // before consent/profile routing; Continue releases the exact held handoff.
+                    if route != Route::Login { crate::ui::login::enter(); }
+                    route = Route::Login;
                 } else {
                     match crate::auth::phase() {
                         crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
@@ -9955,6 +10008,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // moment is the one who signed the television in. It draws over the
                             // picker's route on its own opaque ground.
                             maybe_ask_consent();
+                            if route == Route::Login {
+                                crate::ui::login::leave();
+                            }
                             if route != Route::Profiles {
                                 crate::ui::profiles::enter();
                             }

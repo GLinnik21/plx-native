@@ -86,7 +86,9 @@ looking at:
   describing this exposure (substitution OR replay) on a retail install (were one ever to exist) is
   in scope; the same exposure on a sideloaded install, reachable only by another process the user
   chose to sideload beside this one, is disclosed here rather than treated as a vulnerability of
-  this app, and is not itself something to report.
+  this app, and is not itself something to report. A storage error report may name which of these
+  tiers (`developer`/`internal`/`app_dir`/`runtime`/`other`) a candidate session file was found or
+  rejected at — a category word, never the path itself.
 - **The bundled FFmpeg.** Built from unmodified FFmpeg 9.0 with demuxers, parsers and subtitle
   decoders only — it is fed untrusted bytes from the network, so parser bugs reachable through
   `ff.rs` are in scope. Report FFmpeg's own bugs upstream as well.

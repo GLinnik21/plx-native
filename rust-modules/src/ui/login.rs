@@ -7,13 +7,17 @@ use crate::auth::{self, Phase};
 use crate::ui::consts::*;
 use crate::ui::decision_alert::{Choice, DecisionAlert, Tone};
 use crate::ui::label::{HAlign, Label};
+use crate::ui::popover::Popover;
 use crate::ui::route_screen::{ActionRow, RouteGround, RouteLayout};
+use crate::ui::table::{Row, Section, TableView};
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::{Button, Spinner, StatusKind, StatusOverlay};
 use crate::ui::{theme, Env, Painter, Rect, View};
+use crate::telemetry::oneoff::{self, DeliveryState};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
 use std::ptr::addr_of_mut;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Scene {
     spin_ms: f32,
@@ -32,12 +36,13 @@ struct Scene {
     /// How many files the last **Delete all local data** could not unlink. Drives the wording of
     /// the `Deleted` read-out, which must not claim a wipe it did not achieve.
     delete_leftovers: usize,
-    /// The link-health sentence ([`auth::link_detail`]) this screen last drew, or `None` while
-    /// plex.tv was answering. Cached so [`update`] can tell whether the text on screen actually
+    /// The link-health sentence ([`auth::link_detail`]) this screen last sampled, or `None` while
+    /// plex.tv was answering. Cached so [`update`] can tell whether the underlying state actually
     /// changed — the link snapshot is sampled every frame, but the sentence itself only moves
-    /// roughly once a poll (~2 s), and a settled screen must not be woken every frame by a value
-    /// that reads the same both times (see `ui::idle`'s discrete-change rule).
+    /// changes roughly once a poll (~2 s), without waking every frame for an equal value.
     last_link_detail: Option<String>,
+    /// A link-detail repaint deferred while the report alert freezes the QR page beneath it.
+    link_detail_repaint_pending: bool,
     /// **Issue #75** — the one-off sign-in report alert, opened over the failed or stuck read-out.
     report_alert: DecisionAlert,
     /// Which attempt [`report_alert`] was last opened (or answered) for — see [`offer_alert`].
@@ -52,6 +57,21 @@ struct Scene {
     /// [`report_note`]'s third state — without it a failed press was completely silent, dismissing
     /// the alert and leaving the read-out byte-identical to "Not now".
     report_send_failed: bool,
+    /// **Issue #76's report lane.** Everything the "Details" panel over the storage read-out can
+    /// show, as the integrator last told this screen via [`note_storage_readout`]. Never reset by
+    /// [`enter`] — the same reasoning [`delete_leftovers`](Self::delete_leftovers) is not: it is
+    /// set once the integrator knows it, not per visit.
+    storage_readout: StorageReadout,
+    /// The current one-off receipt belongs to this attempt only. It is intentionally not
+    /// persisted or reused after a route reset/sign-out.
+    storage_report_attempt: Option<u64>,
+    storage_report_id: Option<String>,
+    storage_report_state: Option<DeliveryState>,
+    storage_report_failed: bool,
+    report_prompt_storage_attempt: Option<u64>,
+    report_prompt_warning: Option<auth::PersistenceWarningKey>,
+    persistence_warning_seen: Option<auth::PersistenceWarningKey>,
+    details_report_rect: Option<Rect>,
 }
 
 /// How long a working phase runs before the read-out grows a way out.
@@ -111,6 +131,17 @@ const RETRY_OPENED: u8 = 2;
 /// The worker finished and the envelope is still not open.
 const RETRY_FAILED: u8 = 3;
 
+/// **What [`update`] last saw [`STORAGE_RETRY_STATE`] at** — the main thread's own edge detector,
+/// so the Details panel can be re-read the moment a *Try again* press settles.
+///
+/// The press changes exactly the facts that panel shows (the storage class, the key service's last
+/// refusal, and — on a set that grants the app id on the second registration — the identity), and
+/// it changes them from a WORKER, which may not touch `Scene`. So the worker publishes a state and
+/// this notices the edge one frame later on the thread that owns the screen. Only settled states
+/// trigger the re-read: the transition INTO `RETRY_BUSY` has learned nothing yet.
+static STORAGE_RETRY_SEEN: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(RETRY_IDLE);
+
 /// **Which sign-in attempt [`start_storage_retry`] was pressed for — [`settle_storage_retry`]'s
 /// stale-result guard.** `0` is never a real attempt (`auth`'s counter starts at 1), so it also
 /// means "nothing captured yet".
@@ -127,6 +158,526 @@ const RETRY_FAILED: u8 = 3;
 /// moved on — Ready, Profiles, Error, a fresh attempt, anything — is left alone and the newer
 /// result wins.
 static STORAGE_RETRY_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+// ---- Issue #76's report lane: the "Details" panel over the storage read-out ----------------------
+//
+// Owner correction, 2026-09-11: no diagnostic words in the read-out line or the footer — instead a
+// second pill, "Details", beside "Try again", opening an in-screen panel on the app's existing menu
+// idiom (`ui::CLAUDE.md`: Popover + TableView, tokens and components only). One row per fact, label
+// left / value right, photographable. BACK closes it.
+
+/// One candidate session-file location's read outcome, in the read lane's own closed vocabulary —
+/// see `telemetry::storage::StorageExtra::candidate_reads`'s wire shape for where these words come
+/// from. `outcome` is either a rejection word (`missing`/`open_failed`/`not_regular`/`wrong_owner`/
+/// `metadata_failed`/`too_large`/`read_failed`/`untrusted_mode`/`unparsable`) or, for a candidate that DID read,
+/// the storage-class word it produced (`plaintext`/`secure`/…).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CandidateReadout {
+    pub category: &'static str,
+    pub outcome: &'static str,
+    pub errno: Option<i32>,
+}
+
+/// Everything the "Details" panel can show, as the integrator last told this screen. Every field is
+/// `None`/empty until [`note_storage_readout`] is called at least once.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct StorageReadout {
+    /// "Stored sign-in" — the storage class word (`plex::session::storage_class`'s own vocabulary).
+    stored_sign_in: Option<&'static str>,
+    /// "Last save" — the save lane's persist-outcome word (`telemetry::storage::StorageExtra`'s own
+    /// vocabulary).
+    persist_outcome: Option<&'static str>,
+    /// Only meaningful alongside `persist_outcome`: WHY, when that word is
+    /// `preserved_existing_secure`.
+    preserve_reason: Option<&'static str>,
+    /// "Key service" — the STAGE word of the last refusal this launch's key service gave
+    /// (`keymanager::LastRefusal::stage`), i.e. the reason `plex::session::secure_unavailable()`
+    /// is true. `None` on a launch that never reached a refusal.
+    key_service: Option<&'static str>,
+    /// "Key identity" — WHICH LS2 identity this launch registered under
+    /// (`keymanager::Identity::code`: `app_id`/`named`/`anonymous`). A separate row from
+    /// `key_service` because it is a separate fact and issue #76's whole hypothesis is that it
+    /// differs between the launch that SEALED and the launch that cannot reopen — a photograph of
+    /// this panel from two launches is the cheapest way anyone has to see that happen.
+    key_identity: Option<&'static str>,
+    /// One row per candidate session-file location this launch checked.
+    candidates: Vec<CandidateReadout>,
+    /// Cold-boot eligibility captured before client-id minting or resealing.
+    cold_winner: Option<&'static str>,
+    cold_account: Option<&'static str>,
+    cold_pms: Option<&'static str>,
+    cold_server: Option<&'static str>,
+    cold_local: Option<&'static str>,
+    /// Fresh-sign-in disk readback, when the persistence lane has performed one.
+    fresh_readback: Option<String>,
+}
+
+impl StorageReadout {
+    /// Nothing to show yet — the "Details" pill stays off the action row entirely rather than
+    /// opening onto an empty panel.
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.stored_sign_in.is_none()
+            && self.persist_outcome.is_none()
+            && self.key_service.is_none()
+            && self.key_identity.is_none()
+            && self.candidates.is_empty()
+    }
+}
+
+/// **The setter**: replaces whatever the screen held before — there is only ever one launch's worth
+/// of facts to show, never a history of them. [`refresh_storage_readout`] is the one caller in the
+/// app; this stays separate from it so the row set can be driven directly from a host test with no
+/// `plex::session` or `keymanager` state to arrange.
+fn note_storage_readout(
+    stored_sign_in: Option<&'static str>,
+    persist_outcome: Option<&'static str>,
+    preserve_reason: Option<&'static str>,
+    key_service: Option<&'static str>,
+    key_identity: Option<&'static str>,
+    candidates: Vec<CandidateReadout>,
+) {
+    scene().storage_readout = StorageReadout {
+        stored_sign_in,
+        persist_outcome,
+        preserve_reason,
+        key_service,
+        key_identity,
+        candidates,
+        ..StorageReadout::default()
+    };
+    // A discrete change a settled screen must not miss — `ui::idle`'s rule for exactly this shape
+    // of update (an async landing, not a spring).
+    crate::ui::idle::invalidate();
+}
+
+/// **Read this launch's storage facts, now, and hand them to the screen** — the whole of what the
+/// "Details" panel can say.
+///
+/// Every source is a live process-global that only moves at the few moments this is called from:
+/// the boot `session::load` (`app.rs`), every entry to this route ([`enter`]), and the settling of
+/// a *Try again* press ([`settle_storage_retry`], which is where they change under a screen that
+/// is already up). **Never per frame** — `session::storage_class` opens up to five marker paths to
+/// answer, which is the syscall storm `session::secure_unavailable`'s own doc exists to keep off
+/// the SDL main thread.
+pub fn refresh_storage_readout() {
+    use crate::plex::session;
+    let candidates = session::last_candidate_reads()
+        .iter()
+        .map(|c| CandidateReadout {
+            category: c.category.wire(),
+            // The same two-source outcome word `session::candidate_reads_wire` builds its line
+            // from, and it must stay the same vocabulary: a rejection word for a candidate this
+            // launch declined, the accepted shape for one it read. `unknown` is unreachable today
+            // (every recorded candidate carries one or the other) and is the honest answer rather
+            // than an empty cell if a third shape is ever recorded.
+            outcome: match (c.rejection, c.accepted_as) {
+                (Some(rej), _) => rej.wire(),
+                (None, Some(accepted)) => accepted,
+                (None, None) => "unknown",
+            },
+            errno: c.rejection.and_then(|rej| rej.errno()),
+        })
+        .collect();
+    let persist = session::last_persist_outcome();
+    note_storage_readout(
+        Some(session::storage_class().code()),
+        persist.map(|o| o.wire()),
+        persist.and_then(|o| o.reason_wire()),
+        crate::keymanager::last_refusal().map(|r| r.stage.code()),
+        crate::keymanager::identity().map(|i| i.code()),
+        candidates,
+    );
+    let s = scene();
+    if let Some(facts) = session::cold_session_facts() {
+        s.storage_readout.cold_winner = facts.winner.map(|w| w.wire());
+        s.storage_readout.cold_account = Some(if facts.account_token_present { "yes" } else { "no" });
+        s.storage_readout.cold_pms = Some(if facts.pms_token_present { "yes" } else { "no" });
+        s.storage_readout.cold_server = Some(if facts.server_dialable { "yes" } else { "no" });
+        s.storage_readout.cold_local = Some(if facts.can_go_local { "yes" } else { "no" });
+    }
+    if let Some(readback) = session::last_fresh_save_readback() {
+        s.storage_readout.fresh_readback = Some(format!(
+            "{} ({})",
+            readback.winner.wire(),
+            readback.result.wire()
+        ));
+    }
+}
+
+/// PURE. A human label for one candidate category word — the four the read lane names today, plus
+/// a fallback so a fifth one added later still reads as *something* rather than vanishing silently.
+fn candidate_category_label(category: &str) -> String {
+    match category {
+        "developer" => "Developer directory".to_string(),
+        "internal" => "Internal storage".to_string(),
+        "app_dir" => "App directory".to_string(),
+        "runtime" => "Runtime directory".to_string(),
+        other => format!("{other} directory"),
+    }
+}
+
+/// PURE. One candidate row's value: its outcome word, with `(errno N)` appended when there is one.
+fn format_candidate_value(outcome: &str, errno: Option<i32>) -> String {
+    match errno {
+        Some(e) => format!("{outcome} (errno {e})"),
+        None => outcome.to_string(),
+    }
+}
+
+/// PURE. Assemble the Details panel's rows — label left, value right — from the current readout
+/// plus the footer's own "Build"/"Model" facts. No SDL, no `Popover`, no `TableView`: this is the
+/// whole of what makes the row set testable on the host.
+fn build_details_rows(r: &StorageReadout, build: &str, model: &str) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    if let Some(class) = r.stored_sign_in {
+        rows.push(("Stored sign-in".to_string(), class.to_string()));
+    }
+    if let Some(persist) = r.persist_outcome {
+        rows.push(("Last save".to_string(), persist.to_string()));
+        if let Some(reason) = r.preserve_reason {
+            // Keep the decisive reason in its own row. Concatenating it with the outcome made
+            // the shared right-aligned value consume the label column and paint over it.
+            rows.push(("Save reason".to_string(), reason.to_string()));
+        }
+    }
+    if let Some(key) = r.key_service {
+        rows.push(("Key service".to_string(), key.to_string()));
+    }
+    if let Some(id) = r.key_identity {
+        rows.push(("Key identity".to_string(), id.to_string()));
+    }
+    for c in &r.candidates {
+        rows.push((candidate_category_label(c.category), format_candidate_value(c.outcome, c.errno)));
+    }
+    if let Some(winner) = r.cold_winner {
+        rows.push(("Cold winner".to_string(), winner.to_string()));
+    }
+    for (label, value) in [
+        ("Account credential", r.cold_account),
+        ("Server credential", r.cold_pms),
+        ("Server dialable", r.cold_server),
+        ("Can go local", r.cold_local),
+    ] {
+        if let Some(value) = value {
+            rows.push((label.to_string(), value.to_string()));
+        }
+    }
+    if let Some(readback) = &r.fresh_readback {
+        rows.push(("Fresh save readback".to_string(), readback.clone()));
+    }
+    rows.push(("Build".to_string(), build.to_string()));
+    rows.push(("Model".to_string(), model.to_string()));
+    rows
+}
+
+const DETAILS_TITLE: &std::ffi::CStr = c"Storage details";
+const DETAILS_REPORT: &std::ffi::CStr = c"Send report";
+const DETAILS_REPORT_GUIDANCE: &str =
+    "Send a report if sign-in keeps failing or the app asks you to sign in again after a restart.";
+const DETAILS_PANEL_W: f32 = 900.0;
+const DETAILS_PANEL_RAD: f32 = 20.0;
+
+static mut DETAILS_POP: Popover = Popover::new();
+static mut DETAILS_TABLE: TableView = TableView::new();
+
+fn details_pop() -> &'static mut Popover {
+    unsafe { &mut *addr_of_mut!(DETAILS_POP) }
+}
+fn details_table() -> &'static mut TableView {
+    unsafe { &mut *addr_of_mut!(DETAILS_TABLE) }
+}
+
+/// Is the Details panel open (or still fading out)?
+///
+/// **`visible()`, not `is_open()`** — the same correction [`modal_open`]'s doc records for the
+/// one-off report alert, and for the same failure: `dismiss()` clears `open` at once and then
+/// fades for a few frames, so a second BACK during that fade would fall through to `app.rs`'s root
+/// rule and hand the whole screen to the television while the panel was still on top of it. This
+/// is the one predicate behind BOTH the draw's input claim and [`modal_open`], so a panel that can
+/// be seen is a panel that owns the keys.
+fn details_open() -> bool {
+    details_pop().visible()
+}
+
+/// The panel's rect: fixed width, centred, height clamped to its measured content and the screen —
+/// the same shape `item_menu::panel_rect` uses for an anchored panel, without the anchor this one
+/// does not have.
+/// Room above the table for the panel's own title line — shared by [`details_panel_rect`] (so the
+/// title has somewhere to draw without pushing the table off the panel's bottom edge) and the title
+/// draw call in [`draw`] itself, so the two cannot drift apart into an overlap or a gap.
+fn details_header_h() -> f32 {
+    crate::text::text_height(theme::size::LABEL, 0) + theme::space::SM
+}
+
+fn details_footer_h() -> f32 {
+    TextView::new(DETAILS_REPORT_GUIDANCE, theme::size::CAPTION, theme::TEXT_SECONDARY)
+        .measure_h(DETAILS_PANEL_W - 2.0 * theme::space::LG)
+        + 2.0 * theme::space::SM
+        + crate::ui::widgets::StatusOverlay::CTRL_H
+}
+
+fn details_panel_rect() -> Rect {
+    let h = (details_table().measured_height()
+        + details_header_h()
+        + 2.0 * theme::space::MD
+        + details_footer_h())
+        .clamp(160.0, SCR_H - 2.0 * theme::space::XL);
+    Rect::new(
+        (SCR_W - DETAILS_PANEL_W) * 0.5,
+        (SCR_H - h) * 0.5,
+        DETAILS_PANEL_W,
+        h,
+    )
+}
+
+/// The table frame is one geometry fact shared by sizing, scrolling and drawing.  TableView's
+/// update contract requires the exact same height that draw receives.
+fn details_table_rect(r: Rect) -> Rect {
+    details_table_rect_with_header(r, details_header_h(), details_footer_h())
+}
+
+fn details_table_rect_with_header(r: Rect, header_h: f32, footer_h: f32) -> Rect {
+    let table_y = r.y + theme::space::MD + header_h;
+    Rect::new(
+        r.x,
+        table_y,
+        r.w,
+        r.h
+            - header_h
+            - 2.0 * theme::space::MD
+            - footer_h,
+    )
+}
+
+fn details_report_rect(r: Rect) -> Rect {
+    Rect::new(
+        r.x + theme::space::LG,
+        r.y + r.h - theme::space::MD - crate::ui::widgets::StatusOverlay::CTRL_H,
+        Button::pill_w(DETAILS_REPORT.as_ptr(), theme::size::BODY, false),
+        crate::ui::widgets::StatusOverlay::CTRL_H,
+    )
+}
+
+fn storage_report_available() -> bool {
+    storage_report_available_for(scene().storage_report_state, scene().storage_report_failed)
+}
+
+fn storage_report_available_for(state: Option<DeliveryState>, failed: bool) -> bool {
+    failed
+        || !matches!(
+        state,
+        Some(DeliveryState::Queued | DeliveryState::Sending | DeliveryState::Sent)
+    )
+}
+
+fn storage_report_status(state: Option<DeliveryState>, failed: bool) -> Option<&'static str> {
+    if failed {
+        return Some("Report failed — Send report to try again");
+    }
+    match state {
+        Some(DeliveryState::Queued) => Some("Report queued"),
+        Some(DeliveryState::Sending) => Some("Sending — keep the app open"),
+        Some(DeliveryState::Sent) => Some("Report sent"),
+        Some(DeliveryState::Failed) => Some("Report failed — Send report to try again"),
+        None => None,
+    }
+}
+
+/// "Build"/"Model" for Details and reports. These technical facts intentionally do not compete
+/// with the ordinary sign-in screen's user-facing status.
+fn footer_build_and_model() -> (String, String) {
+    let release = crate::webos::info().release_line();
+    let set = crate::webos::device().set_line();
+    let set = if set.is_empty() { "?".to_string() } else { set };
+    (
+        format!("{} \u{00B7} {}", crate::plex::identity::VERSION, release),
+        set,
+    )
+}
+
+fn rebuild_storage_details_table() {
+    let (build, model) = footer_build_and_model();
+    let rows = build_details_rows(&scene().storage_readout, &build, &model);
+    let mut sec = Section::new("");
+    // Put the receipt first when returning from Send, fully readable without scrolling or
+    // squeezing it into the diagnostic table's value column.
+    if let Some(id) = &scene().storage_report_id {
+        sec = sec.row(Row::new("Report ID").detail(id.clone()));
+    }
+    if let Some(status) = storage_report_status(
+        scene().storage_report_state,
+        scene().storage_report_failed,
+    ) {
+        sec = sec.row(Row::new("Report status").detail(status));
+    }
+    for (label, value) in rows {
+        sec = sec.row(Row::new(label).value(value));
+    }
+    details_table().compact = true;
+    details_table().list_focused = false; // read-only: nothing here takes OK
+    let sel = details_table().sel;
+    details_table().set_sections(vec![sec], sel, true);
+}
+
+fn open_storage_details() {
+    scene().details_report_rect = None;
+    rebuild_storage_details_table();
+    details_pop().open();
+    crate::ui::idle::invalidate();
+}
+
+fn refresh_storage_details_table() {
+    if !details_open() {
+        return;
+    }
+    rebuild_storage_details_table();
+    crate::ui::idle::invalidate();
+}
+
+fn close_storage_details() {
+    details_pop().dismiss();
+    scene().details_report_rect = None;
+    crate::ui::idle::invalidate();
+}
+
+fn open_storage_report_confirmation() {
+    let (attempt, _) = auth::storage_report_context();
+    details_pop().close();
+    scene().details_report_rect = None;
+    scene().report_prompt_storage_attempt = Some(attempt);
+    scene().report_prompt_warning = auth::pending_persistence_warning().map(|w| w.key);
+    // This attempt has already offered a report. A network failure arriving behind this
+    // confirmation must not immediately ask again after the user chooses Not now.
+    scene().report_offered_for = Some(attempt);
+    scene()
+        .report_alert
+        .open_with_body(REPORT_STORAGE_QUESTION, REPORT_BODY);
+    crate::ui::idle::invalidate();
+}
+
+/// Which of the storage action row's two pills has focus — `0` = Try again, `1` = Details. A plain
+/// module `static` rather than a [`Scene`] field: it is UI-only navigation state with no bearing on
+/// what the screen knows, the same kind of thing [`STORAGE_RETRY_STATE`] already is.
+static STORAGE_FOCUS: AtomicUsize = AtomicUsize::new(0);
+/// `0` = the "Try again" pill.
+const STORAGE_FOCUS_RETRY: usize = 0;
+/// `1` = the "Details" pill.
+const STORAGE_FOCUS_DETAILS: usize = 1;
+
+const STORAGE_DETAILS: &std::ffi::CStr = c"Details";
+const STORAGE_NEW_CODE: &std::ffi::CStr = c"New code";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StoragePrimaryAction {
+    Continue(auth::PersistenceWarningKey),
+    RetrySecureOpen,
+    NewCode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StorageAction {
+    Continue(auth::PersistenceWarningKey),
+    RetrySecureOpen,
+    NewCode,
+    Details,
+}
+
+static ARMED_STORAGE_ACTION: std::sync::Mutex<Option<(StorageAction, u64)>> =
+    std::sync::Mutex::new(None);
+
+fn storage_primary_for(
+    waiting: bool,
+    secure_unavailable: bool,
+    new_code_ready: bool,
+) -> Option<StoragePrimaryAction> {
+    if !waiting {
+        None
+    } else if secure_unavailable {
+        Some(StoragePrimaryAction::RetrySecureOpen)
+    } else if new_code_ready {
+        Some(StoragePrimaryAction::NewCode)
+    } else {
+        None
+    }
+}
+
+fn storage_primary_action() -> Option<StoragePrimaryAction> {
+    if let Some(warning) = auth::pending_persistence_warning() {
+        return Some(StoragePrimaryAction::Continue(warning.key));
+    }
+    storage_primary_for(
+        storage_action_showing(),
+        crate::plex::session::secure_unavailable(),
+        qr_escape_offered(scene().phase_ms),
+    )
+}
+
+fn storage_focus_for(primary: Option<StoragePrimaryAction>, stored: usize) -> usize {
+    if primary.is_some() { stored.min(STORAGE_FOCUS_DETAILS) } else { STORAGE_FOCUS_DETAILS }
+}
+
+fn focused_storage_action() -> StorageAction {
+    if STORAGE_FOCUS.load(Ordering::Acquire) == STORAGE_FOCUS_DETAILS {
+        StorageAction::Details
+    } else {
+        match storage_primary_action() {
+            Some(StoragePrimaryAction::Continue(key)) => StorageAction::Continue(key),
+            Some(StoragePrimaryAction::RetrySecureOpen) => StorageAction::RetrySecureOpen,
+            Some(StoragePrimaryAction::NewCode) => StorageAction::NewCode,
+            None => StorageAction::Details,
+        }
+    }
+}
+
+pub(crate) fn arm_storage_action() -> bool {
+    if !storage_action_showing() || modal_open() {
+        return false;
+    }
+    *ARMED_STORAGE_ACTION.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some((focused_storage_action(), auth::current_attempt()));
+    true
+}
+
+fn armed_storage_action_valid(
+    action: StorageAction,
+    armed_attempt: u64,
+    live_attempt: u64,
+    waiting: bool,
+    secure_unavailable: bool,
+    new_code_ready: bool,
+    modal_visible: bool,
+) -> bool {
+    !modal_visible
+        && waiting
+        && armed_attempt == live_attempt
+        && match action {
+            StorageAction::Continue(_) => false, // validated against the exact live warning below
+            StorageAction::Details => true,
+            StorageAction::RetrySecureOpen => secure_unavailable,
+            StorageAction::NewCode => new_code_ready && !secure_unavailable,
+        }
+}
+
+fn warning_action_valid(
+    action: StorageAction,
+    armed_attempt: u64,
+    live: auth::PersistenceWarningKey,
+    modal_visible: bool,
+) -> bool {
+    !modal_visible && armed_attempt == live.attempt && match action {
+        StorageAction::Continue(key) => key == live,
+        StorageAction::Details => true,
+        _ => false,
+    }
+}
+
+/// PURE. Details is always available on the waiting QR screen, including a clean first install;
+/// the panel then shows the fixed build/model facts and any storage facts known so far.
+fn storage_details_pill_shown(r: &StorageReadout) -> bool {
+    let _ = r;
+    true
+}
 
 /// PURE. The line under the control, or `None` when the read-out has nothing to add to it. The
 /// three states are three different sentences because they answer three different questions:
@@ -257,23 +808,6 @@ fn settle_storage_retry() {
     crate::ui::idle::invalidate();
 }
 
-/// **The action slot, lifted clear of the identification footer.** `RouteLayout::action`'s bottom
-/// edge IS the safe area's, which is right on every route that has nothing under it — and this one
-/// does: `draw_footer` puts the permanent build/firmware/set line (issue #75, the line that makes a
-/// phone photograph of this screen worth reading) in exactly that corner, on every phase. A pill
-/// dropped into the unmodified slot lands ON that line, which the first simulator capture showed
-/// (`docs/measurements/keymanager-unavailable-signin-sim-2026-09-10.md`). One footer line plus the
-/// gap every other stacked pair on this screen uses, measured rather than guessed at, so a font
-/// change moves both together.
-///
-/// PURE, and `footer_h` is an argument rather than a `text::text_height` call inside, for the
-/// reason `StatusOverlay::above()` states about its own missing half: the host suite cannot LINK
-/// SDL2_ttf, so a rule that measures text inside itself is a rule no test can reach. The caller
-/// measures; this decides.
-fn storage_action_y(action: Rect, footer_h: f32) -> f32 {
-    action.y - footer_h - theme::space::SM
-}
-
 /// PURE. Vertical room actually left for the retry note, above the pill.
 ///
 /// **Review finding, 2026-09-10**: this note used to draw at a fixed one-line offset from the
@@ -281,7 +815,7 @@ fn storage_action_y(action: Rect, footer_h: f32) -> f32 {
 /// already leaves between its own body copy and the action slot
 /// (`RouteLayout::draw_narrative_with_note`'s `copy_bottom = action.y - space::XL`) — but nothing
 /// in the fixed offset actually measured that gap, so once the pill was lifted clear of the footer
-/// ([`storage_action_y`]) the note's fixed offset from the PILL routinely ran past `copy_bottom`
+/// the note's fixed offset from the PILL routinely ran past `copy_bottom`
 /// and into the body's own territory, overprinting it whenever the body filled its allowance. The
 /// fix mirrors `draw_narrative_with_note`'s own rule for its body's `max_lines` (route_screen.rs):
 /// derive the cap from what is actually LEFT, never assume a constant fits.
@@ -298,33 +832,54 @@ fn storage_note_room(action: Rect, r: Rect) -> f32 {
 /// column — the same slot `ui::onboard` and `ui::consent` put their own commit control in, rather
 /// than a position of this screen's own.
 fn draw_storage_action(p: Painter, env: &Env, layout: RouteLayout) {
-    let w = Button::pill_w(STORAGE_RETRY.as_ptr(), theme::size::BODY, false).min(layout.action.w);
-    let line_h = crate::text::text_height(theme::size::CAPTION, 0);
-    let r = Rect::new(
-        layout.action.x,
-        storage_action_y(layout.action, line_h),
-        w,
-        layout.action.h,
-    );
-    Button::new(STORAGE_RETRY.as_ptr(), theme::size::BODY, r)
-        // The only control on this route while the read-out is up (the QR stack is a picture, not
-        // a target), so it holds focus by construction — the same argument `draw_readout` makes
-        // for its own single action.
-        .focused(true)
-        // **Review finding, 2026-09-10**: this pill used to draw at a constant scale, with none
-        // of the shared focus pop every sibling route pill animates through — see
-        // [`STORAGE_ACTION_POP`]'s own doc for what this reaches and what it does not.
-        .scale(unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).scale(0) })
-        .draw(env, p);
-    unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).place(0, r) };
-    let Some(note) = storage_note(STORAGE_RETRY_STATE.load(std::sync::atomic::Ordering::Acquire))
+    let primary = storage_primary_action();
+    let show_retry = primary.is_some();
+    let show_details = storage_details_pill_shown(&scene().storage_readout);
+    // Clamp rather than trust the stored focus: a readout that arrives AFTER the panel already
+    // rendered with focus on slot 1 could otherwise leave a hidden pill "focused" — impossible in
+    // practice (the pill can only ever have been reached by first being shown), but the clamp is
+    // one line and turns a would-be invariant into a proven one.
+    let focus = storage_focus_for(primary, STORAGE_FOCUS.load(Ordering::Acquire));
+    let y = layout.action.y;
+    unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).clear() };
+    let mut x = layout.action.x;
+    if show_retry {
+        let label = match primary.unwrap() {
+            StoragePrimaryAction::Continue(_) => c"Continue",
+            StoragePrimaryAction::RetrySecureOpen => STORAGE_RETRY,
+            StoragePrimaryAction::NewCode => STORAGE_NEW_CODE,
+        };
+        let retry_w = Button::pill_w(label.as_ptr(), theme::size::BODY, false);
+        let r = Rect::new(x, y, retry_w.min(layout.action.w), layout.action.h);
+        Button::new(label.as_ptr(), theme::size::BODY, r)
+            .focused(focus == STORAGE_FOCUS_RETRY)
+            .scale(unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).scale(STORAGE_FOCUS_RETRY) })
+            .draw(env, p);
+        unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).place(STORAGE_FOCUS_RETRY, r) };
+        x += r.w + theme::space::SM;
+    }
+    if show_details {
+        let details_w = Button::pill_w(STORAGE_DETAILS.as_ptr(), theme::size::BODY, false);
+        let dr = Rect::new(x, y, details_w, layout.action.h);
+        Button::new(STORAGE_DETAILS.as_ptr(), theme::size::BODY, dr)
+            .focused(focus == STORAGE_FOCUS_DETAILS)
+            .scale(unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).scale(STORAGE_FOCUS_DETAILS) })
+            .draw(env, p);
+        unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).place(STORAGE_FOCUS_DETAILS, dr) };
+    }
+    let Some(note) = matches!(primary, Some(StoragePrimaryAction::RetrySecureOpen))
+        .then(|| storage_note(STORAGE_RETRY_STATE.load(std::sync::atomic::Ordering::Acquire)))
+        .flatten()
     else {
         return;
     };
-    // ABOVE the pill, not under it: everything below the pill belongs to the footer (see
-    // `storage_action_y`). The budget is the room actually LEFT above the pill, never a fixed
+    let line_h = crate::text::text_height(theme::size::CAPTION, 0);
+    // ABOVE the pill, not under it. The budget is the room actually LEFT above the pill, never a fixed
     // one-line assumption — see [`storage_note_room`] for why that used to overprint the body.
-    let room = storage_note_room(layout.action, r);
+    let room = storage_note_room(
+        layout.action,
+        Rect::new(layout.action.x, y, layout.action.w, layout.action.h),
+    );
     let leading = theme::size::CAPTION as f32 + theme::space::XS;
     let max_lines = ((room / leading).floor() as usize).clamp(1, 2);
     let note_view = TextView::new(note, theme::size::CAPTION, theme::TEXT_SECONDARY)
@@ -335,8 +890,11 @@ fn draw_storage_action(p: Painter, env: &Env, layout: RouteLayout) {
     // exists so a genuinely tiny room still shows SOMETHING rather than silence, at the cost of a
     // partial overlap the room could not avoid either way.
     let note_h = note_view.measure_h(layout.action.w).min(room.max(line_h));
-    let bottom = r.y - theme::space::SM;
-    note_view.draw(p, Rect::new(r.x, bottom - note_h, layout.action.w, note_h));
+    let bottom = y - theme::space::SM;
+    note_view.draw(
+        p,
+        Rect::new(layout.action.x, bottom - note_h, layout.action.w, note_h),
+    );
 }
 
 /// The verb on both the failed and the stuck read-out, because it is the same call underneath.
@@ -372,7 +930,7 @@ const ESCAPE: &std::ffi::CStr = c"Try again";
 /// the app after the first press on this one — a worse bug than the missing dip it would "fix".
 /// The focus pop above is real and device-verified (`docs/measurements/
 /// keymanager-unavailable-retry-pill-sim-2026-09-10.md`); the ring-on-press is a follow-up.
-static mut STORAGE_ACTION_POP: ActionRow<1> = ActionRow::new();
+static mut STORAGE_ACTION_POP: ActionRow<2> = ActionRow::new();
 
 static mut SCENE: Option<Scene> = None;
 
@@ -399,9 +957,19 @@ pub fn init() {
             wait: wait_id(),
             delete_leftovers: 0,
             last_link_detail: None,
+            link_detail_repaint_pending: false,
             report_alert,
             report_offered_for: None,
             report_send_failed: false,
+            storage_readout: StorageReadout::default(),
+            storage_report_attempt: None,
+            storage_report_id: None,
+            storage_report_state: None,
+            storage_report_failed: false,
+            report_prompt_storage_attempt: None,
+            report_prompt_warning: None,
+            persistence_warning_seen: None,
+            details_report_rect: None,
         });
     }
 }
@@ -422,6 +990,7 @@ pub fn enter() {
     // from under the alert" (`Popover::close`'s own case), which this is — the trouble this alert
     // was about belongs to the attempt that just ended.
     s.report_alert.close();
+    s.link_detail_repaint_pending = false;
     // A "still no answer" note belongs to the press that earned it, not to the next visit to this
     // route — a sign-out and a re-entry must not open on somebody else's failed retry. Only the
     // settled failure is cleared: a retry still in flight is still in flight.
@@ -431,18 +1000,122 @@ pub fn enter() {
         std::sync::atomic::Ordering::AcqRel,
         std::sync::atomic::Ordering::Relaxed,
     );
+    // A Details panel left open belongs to the visit that opened it, for the same reason the report
+    // alert above is `close()`d rather than `dismiss()`d; focus goes back to `Try again` for the
+    // fresh visit's own first frame.
+    details_pop().close();
+    scene().storage_report_attempt = None;
+    scene().storage_report_id = None;
+    scene().storage_report_state = None;
+    scene().storage_report_failed = false;
+    scene().report_prompt_storage_attempt = None;
+    scene().report_prompt_warning = None;
+    scene().persistence_warning_seen = None;
+    scene().details_report_rect = None;
+    STORAGE_FOCUS.store(STORAGE_FOCUS_RETRY, Ordering::Release);
+    // The facts this visit shows are THIS visit's. A sign-out and a re-entry, or a "Sign in" from
+    // the account menu on a running app, both land here after the save/read state has moved on
+    // from whatever the boot's own refresh recorded.
+    refresh_storage_readout();
     crate::ui::idle::invalidate();
 }
 
+/// Tear down route-owned modals before the app hands the route to Home, Profiles or Onboard.
+/// `Popover::close` is required here: the route no longer draws the fade, so leaving it in the
+/// global open counter would leak modal ownership for the rest of the process.
+pub fn leave() {
+    scene().report_alert.close();
+    scene().link_detail_repaint_pending = false;
+    details_pop().close();
+    scene().storage_report_attempt = None;
+    scene().storage_report_id = None;
+    scene().storage_report_state = None;
+    scene().storage_report_failed = false;
+    scene().report_prompt_storage_attempt = None;
+    scene().report_prompt_warning = None;
+    scene().persistence_warning_seen = None;
+    scene().details_report_rect = None;
+    STORAGE_FOCUS.store(STORAGE_FOCUS_RETRY, Ordering::Release);
+    unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).clear() };
+    *ARMED_STORAGE_ACTION.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Decide whether a changed link-health sentence should repaint the QR host now. While the report
+/// alert is visible—including its dismissal fade—the sentence is fully covered and a repaint
+/// would needlessly break the settled host snapshot for one frame. Multiple poll changes collapse
+/// into one repaint when the modal is gone; sampling itself never stops.
+fn link_detail_repaint(changed: bool, alert_visible: bool, pending: bool) -> (bool, bool) {
+    if alert_visible {
+        return (false, pending || changed);
+    }
+    (changed || pending, false)
+}
+
 pub fn update(dt: f32) {
+    let warning = auth::pending_persistence_warning().map(|w| w.key);
+    if scene().persistence_warning_seen != warning {
+        scene().persistence_warning_seen = warning;
+        scene().report_alert.close();
+        details_pop().close();
+        scene().report_prompt_storage_attempt = None;
+        scene().report_prompt_warning = None;
+        scene().storage_report_id = None;
+        scene().storage_report_state = None;
+        scene().storage_report_failed = false;
+        scene().details_report_rect = None;
+        STORAGE_FOCUS.store(STORAGE_FOCUS_RETRY, Ordering::Release);
+        refresh_storage_readout();
+        crate::ui::idle::invalidate();
+    }
     let s = scene();
     s.spin_ms += dt * 1000.0;
+    let live_attempt = auth::current_attempt();
+    if scene().storage_report_attempt != Some(live_attempt) {
+        scene().storage_report_attempt = None;
+        scene().storage_report_id = None;
+        scene().storage_report_state = None;
+        scene().storage_report_failed = false;
+    } else if let Some(id) = scene().storage_report_id.clone() {
+        if let Some(next) = oneoff::delivery_state(&id) {
+            if Some(next) != scene().storage_report_state {
+                scene().storage_report_state = Some(next);
+                scene().storage_report_failed = next == DeliveryState::Failed;
+                if details_open() {
+                    refresh_storage_details_table();
+                }
+                crate::ui::idle::invalidate();
+            }
+        }
+    }
     settle_storage_retry();
-    // The storage retry pill holds focus by construction whenever it is drawn — see
-    // `draw_storage_action`'s own `.focused(true)` — so its press surface's one slot animates
-    // exactly when [`storage_readout_showing`] says the pill is on screen at all.
+    // A settled *Try again* changes every fact the Details panel shows — see [`STORAGE_RETRY_SEEN`].
+    // After `settle_storage_retry`, so a press that OPENED the envelope is observed at the state it
+    // settled to rather than mid-handover.
+    let retry_state = STORAGE_RETRY_STATE.load(Ordering::Acquire);
+    if STORAGE_RETRY_SEEN.swap(retry_state, Ordering::AcqRel) != retry_state
+        && retry_state != RETRY_BUSY
+    {
+        refresh_storage_readout();
+    }
+    // The storage action row's focused slot — `Try again` until a `Details` pill exists to move to
+    // (`storage_details_pill_shown`), and clamped back to it if the readout that grew the row
+    // shrinks again (defensive; it never actually does once set — see `StorageReadout`'s doc).
+    if auth::phase() == Phase::Waiting && storage_primary_action().is_none() {
+        STORAGE_FOCUS.store(STORAGE_FOCUS_DETAILS, Ordering::Release);
+    }
+    let focused_slot = storage_action_showing().then(|| {
+        storage_focus_for(storage_primary_action(), STORAGE_FOCUS.load(Ordering::Acquire))
+    });
     unsafe {
-        (*addr_of_mut!(STORAGE_ACTION_POP)).step(storage_readout_showing().then_some(0), dt);
+        (*addr_of_mut!(STORAGE_ACTION_POP)).step(focused_slot, dt);
+    }
+    if details_pop().visible() {
+        // This panel's own springs, kept out of the host page's motion — the same
+        // `popover::own_motion` scope every compact menu in the app takes.
+        let _own = crate::ui::popover::own_motion();
+        details_pop().update(dt);
+        let r = details_panel_rect();
+        details_table().update(dt, details_table_rect(r).h);
     }
     // Each wait gets its own clock. A flow that walks Creating → Waiting → Discovering is making
     // progress, and restarting the timer at every step is what stops a slow-but-healthy sign-in
@@ -461,28 +1134,43 @@ pub fn update(dt: f32) {
     // sentence (not e.g. a bare `unanswered` counter) is what stops a healthy link — where every
     // poll answers and `link_detail` stays `None` forever — from invalidating every frame.
     let detail = auth::link_detail(&auth::link_state());
-    if link_detail_changed(&s.last_link_detail, &detail) {
+    let changed = link_detail_changed(&s.last_link_detail, &detail);
+    if changed {
         s.last_link_detail = detail;
+    }
+    let (invalidate_link_detail, pending) = link_detail_repaint(
+        changed,
+        s.report_alert.visible(),
+        s.link_detail_repaint_pending,
+    );
+    s.link_detail_repaint_pending = pending;
+    if invalidate_link_detail {
         crate::ui::idle::invalidate();
     }
     s.report_alert.update(dt);
     // **Issue #75.** While stuck (not merely erroring), note the trouble only once the screen's
     // own stalled-wait escape is already on offer — the same gate as the escape itself, so the
-    // report alert and "press OK for a new code" arrive together rather than the alert jumping the
+    // report alert and the New code action arrive together rather than the alert jumping the
     // gun on a sign-in that is still perfectly healthy.
     if qr_escape_ready(s) && auth::link_unreachable(&auth::link_state()) {
         auth::note_waiting_trouble();
     }
-    if let Some(attempt) = offer_alert(
-        s.report_offered_for,
-        auth::trouble_snapshot().map(|(a, _, reported)| (a, reported)),
+    if warning.is_none() && auto_report_offer_allowed(
+        scene().report_prompt_storage_attempt.is_some(),
+        details_open(),
     ) {
+        if let Some(attempt) = offer_alert(
+            s.report_offered_for,
+            auth::trouble_snapshot().map(|(a, _, reported)| (a, reported)),
+        ) {
         s.report_offered_for = Some(attempt);
         // A failure to send belongs to the press that failed, not to whatever this attempt does
         // next — reset so a stale "couldn't be sent" from an earlier trouble cannot linger over
         // an alert that has not been pressed yet.
         s.report_send_failed = false;
-        s.report_alert.open_with_body(REPORT_BODY);
+        s.report_alert
+            .open_with_body(c"Send a report about this sign-in problem?", REPORT_BODY);
+        }
     }
 }
 
@@ -502,6 +1190,10 @@ fn offer_alert(offered_for: Option<u64>, snapshot: Option<(u64, bool)>) -> Optio
     Some(attempt)
 }
 
+fn auto_report_offer_allowed(manual_prompt_open: bool, details_visible: bool) -> bool {
+    !manual_prompt_open && !details_visible
+}
+
 /// **Issue #75.** PURE. The caption drawn once a trouble has actually left the television — by
 /// either path, the automatic standing-consent send or the one-off press — or, once a deliberate
 /// "Send report" press has failed to queue, a caption saying so. `None` while neither is true.
@@ -511,7 +1203,7 @@ fn offer_alert(offered_for: Option<u64>, snapshot: Option<(u64, bool)>) -> Optio
 /// is stated here rather than left as an accident of argument order).
 fn report_note(sent: bool, send_failed: bool) -> Option<&'static std::ffi::CStr> {
     if sent {
-        Some(c"A report about this sign-in was sent \u{2014} thank you.")
+        Some(c"A report about this sign-in was queued \u{2014} thank you.")
     } else if send_failed {
         Some(c"That report couldn\u{2019}t be sent right now.")
     } else {
@@ -524,28 +1216,35 @@ fn report_note(sent: bool, send_failed: bool) -> Option<&'static std::ffi::CStr>
 /// means. `send_failed` is per-screen-instance state (reset per attempt in [`update`]), not part
 /// of `auth::Trouble`, because it describes a UI press outcome the auth layer never needed to know.
 fn current_report_note(send_failed: bool) -> Option<&'static std::ffi::CStr> {
+    if scene().storage_report_attempt == Some(auth::current_attempt()) {
+        return match scene().storage_report_state {
+            Some(DeliveryState::Sending) => Some(c"Sending — keep the app open."),
+            Some(DeliveryState::Failed) => Some(c"That report couldn’t be sent right now."),
+            Some(DeliveryState::Queued) => Some(c"That report was queued."),
+            Some(DeliveryState::Sent) => Some(c"That report was sent."),
+            None => None,
+        };
+    }
     let sent = auth::trouble_snapshot().is_some_and(|(_, _, reported)| reported);
     report_note(sent, send_failed)
 }
 
-/// **Issue #75.** Everything the one-off report alert's body states about what it sends — the
-/// stage of the sign-in, a coarse class of plex.tv's last answer with its bare status/error code,
-/// bucketed try counts and durations, how the sign-in is stored on this television, and this
-/// app's version — and what it does not: no PIN, no code, no account, no token, no address, no
-/// identifier of any kind. It does NOT name webOS version or TV model —
-/// `telemetry::signin::event_body` attaches neither to this report (its only fields are the ones
-/// this sentence lists, pinned exactly by `event_body_top_level_keys_are_exact`), and this text
-/// used to claim it did, overstating what actually leaves the television. **Issue #76 added the
-/// storage clause** — the payload gained `signin.storage`/`contexts.signin.storage` and this text
-/// used to fall silent on it, understating what leaves the television instead.
-const REPORT_BODY: &str = "This includes the sign-in stage, a class of \
-plex.tv\u{2019}s last answer with its bare status or error code, rounded try counts and \
-durations, how your sign-in is stored, and this app\u{2019}s version. It never includes your \
-PIN, code, account, token, or this television\u{2019}s address, and it carries no identifier.";
+/// The complete one-off disclosure: when the report is useful, its bounded diagnostic categories,
+/// its explicit exclusions, and the event-specific (not user/device) receipt ID.
+const REPORT_BODY: &str = "Use Send report if sign-in keeps failing or the app asks you to sign in again after a restart. The report includes sign-in, connection, storage and key-service diagnostics; rounded timings and try counts; and the TV model, webOS and app versions. It never includes your account name, tokens, PIN, sign-in code or network addresses. A random report ID identifies only this report, not you or this television.";
 
-/// Is the one-off report alert open (or still fading out)? `app.rs` checks this before its
-/// onboarding-screen root BACK rule fires, so the alert can claim BACK for itself instead of
-/// backing the whole sign-in out.
+const REPORT_STORAGE_QUESTION: &std::ffi::CStr =
+    c"Send a report about this television’s saved sign-in?";
+
+/// Is a modal on this route open (or still fading out)? `app.rs` checks this before its
+/// onboarding-screen root BACK rule fires — so the modal can claim BACK for itself instead of
+/// backing the whole sign-in out — and before it arms the storage read-out's *Try again* press on
+/// an OK, so a modal standing over that pill takes the press instead of the pill underneath it.
+///
+/// **Two modals, one predicate** (issue #76's report lane): the one-off report alert and the
+/// storage Details panel. Neither is this screen's root. Their presentations are exclusive:
+/// automatic offers wait for Details to finish closing, and an explicit Send closes Details
+/// before opening its confirmation.
 ///
 /// **`visible()`, not `is_open()`.** `DecisionAlert::dismiss` sets `open = false` at once and
 /// then fades for a few frames — `is_open()` alone treats that fade as "closed", so a second BACK
@@ -553,7 +1252,7 @@ PIN, code, account, token, or this television\u{2019}s address, and it carries n
 /// (`webos::go_home`) while the alert was still visibly on top of it. `visible()` claims input for
 /// the remainder of the fade instead, and [`key`]'s own alert branch (below) does the same.
 pub fn modal_open() -> bool {
-    scene().report_alert.visible()
+    scene().report_alert.visible() || details_open()
 }
 
 /// **Issue #75 review.** A pointer click at `(mx, my)` while the one-off report alert is open:
@@ -577,9 +1276,98 @@ pub fn alert_press_at(mx: f32, my: f32) -> bool {
         return false;
     }
     if s.report_alert.choice() == Choice::Destructive {
-        s.report_send_failed = !auth::send_trouble_once();
+        submit_report_confirmation();
+    } else {
+        s.report_prompt_storage_attempt = None;
+        s.report_alert.dismiss();
     }
-    s.report_alert.dismiss();
+    true
+}
+
+fn record_storage_report_failure(attempt: u64) {
+    let s = scene();
+    s.storage_report_attempt = Some(attempt);
+    // A rejected retry produced no new event. Never present the previous failed event's ID
+    // as the receipt for this submission.
+    s.storage_report_id = None;
+    s.storage_report_failed = true;
+    s.storage_report_state = Some(DeliveryState::Failed);
+}
+
+fn submit_report_confirmation() {
+    let storage_attempt = scene().report_prompt_storage_attempt.take();
+    let warning = scene().report_prompt_warning.take();
+    if let Some(attempt) = storage_attempt {
+        let ctx = match warning {
+            Some(key) => auth::persistence_warning_report_context(key),
+            None => Some(auth::storage_report_context().1),
+        };
+        match ctx.and_then(|ctx| auth::send_storage_report(attempt, ctx)) {
+            Some(id) => {
+                scene().storage_report_attempt = Some(attempt);
+                scene().storage_report_id = Some(id);
+                scene().storage_report_state = scene()
+                    .storage_report_id
+                    .as_deref()
+                    .and_then(oneoff::delivery_state)
+                    .or(Some(DeliveryState::Queued));
+                scene().storage_report_failed =
+                    scene().storage_report_state == Some(DeliveryState::Failed);
+            }
+            None => {
+                record_storage_report_failure(attempt);
+            }
+        }
+        scene().report_alert.close();
+        // Returning from an explicit Send is a new result view: show its receipt first.
+        // Background delivery updates preserve the user's subsequent scroll position.
+        details_table().sel = 0;
+        open_storage_details();
+        return;
+    }
+    let attempt = auth::current_attempt();
+    if let Some(id) = auth::send_trouble_event_once() {
+        scene().storage_report_attempt = Some(attempt);
+        scene().storage_report_id = Some(id);
+        scene().storage_report_state = scene()
+            .storage_report_id
+            .as_deref()
+            .and_then(oneoff::delivery_state)
+            .or(Some(DeliveryState::Queued));
+        scene().storage_report_failed =
+            scene().storage_report_state == Some(DeliveryState::Failed);
+        scene().report_send_failed = false;
+    } else {
+        scene().report_send_failed = true;
+    }
+    scene().report_alert.dismiss();
+}
+
+pub fn details_report_press_at(mx: f32, my: f32) -> bool {
+    if !details_open()
+        || !details_pop().is_open()
+        || !details_pop().appear_settled()
+        || !storage_report_available()
+    {
+        return false;
+    }
+    let Some(rect) = scene().details_report_rect else {
+        return false;
+    };
+    if !rect.contains(mx, my) {
+        return false;
+    }
+    open_storage_report_confirmation();
+    true
+}
+
+/// A visible Details panel is the topmost modal. It is read-only, but must still claim pointer
+/// clicks so a covered report alert can never receive a press through it.
+pub fn details_press_at(_mx: f32, _my: f32) -> bool {
+    if !details_open() {
+        return false;
+    }
+    let _ = details_report_press_at(_mx, _my);
     true
 }
 
@@ -653,26 +1441,89 @@ pub fn draw() {
     s.ground.draw_default(p);
     let env = Env::inert();
 
-    match auth::phase() {
+    if auth::pending_persistence_warning().is_some() {
+        let layout = RouteLayout::screen();
+        layout.draw_narrative(
+            p, None, "Your sign-in couldn’t be saved",
+            "You’re signed in for this session, but this TV may ask you to sign in again after you close the app.",
+            theme::size::LABEL,
+        );
+        TextView::new(
+            "Open Details to send a report so we can investigate the saving problem. Choose Continue to use Plex now.",
+            theme::size::BODY, theme::TEXT_SECONDARY,
+        ).draw(p, layout.content);
+        draw_storage_action(p, &env, layout);
+    } else { match auth::phase() {
         Phase::Waiting => draw_waiting(p, &env, s),
         Phase::Error => draw_failed(p, &env, s),
         Phase::Deleted => draw_deleted(p, &env, s),
         Phase::Discovering => draw_working(p, &env, s, "Finding your server\u{2026}"),
         _ => draw_working(p, &env, s, "Connecting to Plex\u{2026}"),
-    }
-    // Every read-out on this route carries the identification footer (issue #75) — not just the
-    // two that used to call it — because a television can die on ANY of these four screens, and a
-    // "Connecting to Plex…" spinner stuck on an offline set is exactly the frame most likely to get
-    // photographed and posted.
-    draw_footer(p);
-    // **Issue #75.** The one-off report alert draws LAST, over everything on this route including
-    // the footer — its scrim is meant to cover the whole screen it is answering for.
+    } }
+    // The one-off report alert covers the route; its scrim includes the whole host screen.
     s.report_alert.draw_scrim();
     s.report_alert.draw(
-        c"Send a report about this sign-in problem?",
         c"Not now",
         c"Send report",
     );
+    // Details and the report confirmation are mutually exclusive presentations.
+    if details_pop().visible() {
+        let dp = details_pop().painter(theme::alert::SCRIM_A, Popover::RISE);
+        let r = details_panel_rect();
+        s.details_report_rect = storage_report_available().then(|| details_report_rect(r));
+        details_pop().panel(dp, r, DETAILS_PANEL_RAD);
+        let title_h = crate::text::text_height(theme::size::LABEL, 0);
+        Label::new(
+            DETAILS_TITLE.as_ptr(),
+            theme::size::LABEL,
+            theme::TEXT_HEADING,
+        )
+        .draw(
+            dp,
+            Rect::new(
+                r.x + theme::space::LG,
+                r.y + theme::space::MD,
+                r.w - 2.0 * theme::space::LG,
+                title_h,
+            ),
+        );
+        details_table().draw(dp, details_table_rect(r));
+        let report_rect = details_report_rect(r);
+        let guidance_h = details_footer_h()
+            - 2.0 * theme::space::SM
+            - crate::ui::widgets::StatusOverlay::CTRL_H;
+        TextView::new(
+            DETAILS_REPORT_GUIDANCE,
+            theme::size::CAPTION,
+            theme::TEXT_SECONDARY,
+        )
+        .draw(
+            dp,
+            Rect::new(
+                r.x + theme::space::LG,
+                report_rect.y - theme::space::SM - guidance_h,
+                r.w - 2.0 * theme::space::LG,
+                guidance_h,
+            ),
+        );
+        if storage_report_available() {
+            Button::new(
+                DETAILS_REPORT.as_ptr(),
+                theme::size::BODY,
+                report_rect,
+            )
+            .focused(true)
+            .draw(&Env::inert(), dp);
+        }
+        let back_hint = crate::ui::widgets::KeyHint::new(c"Click", c"BACK", c"to return");
+        back_hint.draw(
+            dp,
+            r.x + r.w - theme::space::LG - back_hint.width(),
+            report_rect.y + report_rect.h * 0.5,
+        );
+    } else {
+        s.details_report_rect = None;
+    }
 }
 
 /// The three non-QR states are ONE centred read-out, not the two-column route.
@@ -691,12 +1542,7 @@ fn draw_readout(
     kind: StatusKind,
     reason: Option<&std::ffi::CStr>,
     action: Option<&'static std::ffi::CStr>,
-    // The plex.tv link-health sentence (issue #75) — `None` everywhere but [`draw_failed`], the
-    // one caller that has something to say about the WIRE rather than the account flow.
-    detail: Option<&std::ffi::CStr>,
-    // **Issue #75.** "A report about this sign-in was sent" — drawn LAST, below whatever else this
-    // read-out drew (the action pill if there is one, the detail sentence if there is one of
-    // those too), once the current attempt's trouble has actually left the television.
+    // The current report's delivery status, distinguishing queued from confirmed delivery.
     note: Option<&std::ffi::CStr>,
 ) {
     let mut o = StatusOverlay::new(Rect::FULL, caption, kind).phase(s.spin_ms as u32);
@@ -708,31 +1554,9 @@ fn draw_readout(
         // else for the ring to be, and OK must reach it without a press to move focus first.
         o = o.action(a).focused(true);
     }
-    // Computed before the draw (geometry, not paint) and used after it: the detail sentence sits
-    // BELOW everything the read-out already draws, and today that is always the action pill —
-    // every caller that passes `detail` also passes `action`, which the `expect` below states
-    // rather than lets a future caller discover as a mis-placed line.
-    // `detail` is only ever passed alongside `action` (every caller today does — `draw_failed` is
-    // the only one that passes `detail`, and it always passes `Some(ESCAPE)` with it) — but this
-    // draws inside the SDL frame loop, where an unwind kills the app on the television. A future
-    // caller that got the pairing wrong should lose the line, not the process.
-    debug_assert!(
-        detail.is_none() || o.action_frame().is_some(),
-        "draw_readout's `detail` is only ever passed alongside an `action`"
-    );
     o.draw(env, p);
     let line_h = crate::text::text_height(theme::size::CAPTION, 0);
-    // The bottom edge of whatever the read-out has drawn so far — the action pill if there is one,
-    // else the panel itself. `detail` and `note` stack below it in that order, each owing the next
-    // one `theme::space::SM` of air.
-    let mut below = o.action_frame().map(|a| a.y + a.h);
-    if let Some(d) = detail {
-        let y = below.map_or(o.frame.y + o.frame.h, |b| b + theme::space::SM);
-        Label::new(d.as_ptr(), theme::size::CAPTION, theme::TEXT_SECONDARY)
-            .h(HAlign::Center)
-            .draw(p, Rect::new(o.frame.x, y, o.frame.w, line_h));
-        below = Some(y + line_h);
-    }
+    let below = o.action_frame().map(|a| a.y + a.h);
     if let Some(n) = note {
         let y = below.map_or(o.frame.y + o.frame.h, |b| b + theme::space::SM);
         Label::new(n.as_ptr(), theme::size::CAPTION, theme::TEXT_SECONDARY)
@@ -755,18 +1579,11 @@ fn draw_working(p: Painter, env: &Env, s: &Scene, msg: &str) {
         stuck.then_some(c"This is taking longer than usual."),
         stuck.then_some(ESCAPE),
         None,
-        None,
     );
 }
 
 fn draw_failed(p: Painter, env: &Env, s: &Scene) {
     let reason = CString::new(auth::error()).unwrap_or_default();
-    // A SETTLED read-out, not `auth::link_detail` — this screen has no live poll left to flicker
-    // against, so it does not wait for a second miss. That distinction matters on the dominant
-    // issue-#75 path: a pin-CREATION failure records exactly one miss and the flow is over, so
-    // gating this on two misses meant the curl reason could never reach the one screen the user
-    // actually photographs.
-    let detail = auth::link_detail_settled(&auth::link_state()).and_then(|d| CString::new(d).ok());
     draw_readout(
         p,
         env,
@@ -775,7 +1592,6 @@ fn draw_failed(p: Painter, env: &Env, s: &Scene) {
         StatusKind::Failed,
         (!reason.is_empty()).then_some(reason.as_c_str()),
         Some(ESCAPE),
-        detail.as_deref(),
         current_report_note(s.report_send_failed),
     );
 }
@@ -820,43 +1636,7 @@ fn draw_deleted(p: Painter, env: &Env, s: &Scene) {
         Some(reason),
         Some(c"Sign in"),
         None,
-        None,
     );
-}
-
-/// PURE. The permanent identification line — issue #75's phone photograph needs to say which
-/// build and which television it is looking at, not only what plex.tv is doing. `release` and
-/// `set` are already-formatted strings (see [`draw_footer`]) with `"?"` already substituted by
-/// the caller for whatever the platform did not answer, so this function never special-cases
-/// emptiness itself — it is a plain, deterministic join.
-fn footer_line(version: &str, release: &str, set: &str) -> String {
-    format!(
-        "{} {version} \u{00B7} {release} \u{00B7} {set}",
-        crate::plex::identity::PRODUCT
-    )
-}
-
-/// Draw [`footer_line`] bottom-left inside the safe area, in the family's caption rung and its
-/// dimmest ink — a permanent line that must never compete with the read-out it sits under.
-///
-/// Built from [`crate::webos::Info::release_line`] and [`crate::webos::Hardware::set_line`] —
-/// **not** a third, local spelling of "which firmware, which set" — so this screen, the
-/// diagnostics panel and the playback failure read-out cannot drift apart on the same two facts,
-/// and so the SoC/board field `set_line` carries (the one that actually correlates with a decode
-/// or plane failure) reaches the one screen a stranger with a broken sign-in will photograph.
-/// `set_line` returns an empty string when nyx never answered; this footer substitutes its own
-/// `"?"` for that case, same as an unresolved `release_line`.
-fn draw_footer(p: Painter) {
-    let release = crate::webos::info().release_line();
-    let set = crate::webos::device().set_line();
-    let set: &str = if set.is_empty() { "?" } else { &set };
-    let line = footer_line(crate::plex::identity::VERSION, &release, set);
-    let Ok(text) = CString::new(line) else {
-        return;
-    };
-    let h = crate::text::text_height(theme::size::CAPTION, 0);
-    Label::new(text.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-        .draw(p, Rect::new(SAFE.x, SAFE.y + SAFE.h - h, SAFE.w, h));
 }
 
 fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
@@ -868,14 +1648,12 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
     // not be the only one offered. See `plex::session::LOCKED_UNAVAILABLE`.
     if crate::plex::session::secure_unavailable() {
         layout.draw_narrative(p, None, STORAGE_TITLE, STORAGE_COPY, theme::size::LABEL);
-        draw_storage_action(p, env, layout);
     } else {
         // Rule 11, and [`ActionRow::clear`]'s own instruction: the branch that does not draw the
         // band forgets its frame, so the pill that is no longer on screen is not hit-testable
         // where it used to be. The read-out comes and goes WITHIN one visit to this route —
         // `secure_unavailable()` flips the moment a retry opens the envelope — so `enter()`
         // resetting the scene is not what covers this.
-        unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).clear() };
         layout.draw_narrative(
             p,
             None,
@@ -884,6 +1662,10 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
             theme::size::LABEL,
         );
     }
+    // Details is a small, always-available information control on the QR screen.  Try again is
+    // added only for the retryable secure-unavailable state; the normal sign-in surface stays
+    // visually quiet until the user opens the panel.
+    draw_storage_action(p, env, layout);
     let right = qr_layout(layout);
     // ONE read of the code, used for the bitmap, the digits and the sentence beneath them.
     let qr = auth::qr_snapshot();
@@ -957,19 +1739,6 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
         0,
     );
 
-    // The plex.tv link-health sentence (issue #75) — silent while the link is healthy, so an
-    // ordinary sign-in draws exactly what it always did.
-    if let Some(detail) = auth::link_detail(&link) {
-        // **`TextView`, not a single-line `Label`.** The longest curl reasons (a TLS/cert failure's
-        // sentence) run past 1100px at this rung — well over the 884px right column — and a `Label`
-        // neither elides nor wraps, so the tail of exactly the sentence this screen exists to show
-        // ran off the panel's right edge. Two lines, word-wrapped by measured pixel width, fit the
-        // column the same way every other multi-line block in this app does.
-        TextView::new(&detail, theme::size::CAPTION, theme::TEXT_SECONDARY)
-            .h(HAlign::Center)
-            .max_lines(2)
-            .draw(p, right.detail);
-    }
     // **Issue #75.** "A report was sent" — drawn once the current attempt's trouble has actually
     // left the television, under the link-health sentence in the same secondary stack.
     if let Some(note) = current_report_note(s.report_send_failed) {
@@ -1003,9 +1772,9 @@ fn waiting_status(
     unreachable: bool,
 ) -> &'static std::ffi::CStr {
     if unreachable {
-        c"Can\u{2019}t reach plex.tv — check this TV\u{2019}s internet connection"
+        c"Can\u{2019}t reach Plex. Check your TV\u{2019}s internet connection."
     } else if stalled {
-        c"Still waiting — press OK for a new code"
+        c"Still waiting — choose New code to try again"
     } else if code_replaced {
         c"That code expired — scan this one"
     } else {
@@ -1033,7 +1802,7 @@ const QR_ESCAPE_AFTER_MS: f32 = 60_000.0;
 /// cannot be any more: a pin that runs out is replaced automatically, `Waiting → Creating →
 /// Waiting`, and `update` samples once a frame — so a replacement completed between two samples
 /// (a paused main loop, a long frame) is invisible, and the FRESH code inherits the dead one's
-/// age. It would then offer "press OK for a new code" about a code that had existed for a
+/// age. It would then offer New code about a code that had existed for a
 /// millisecond. Including the generation makes the reset exact rather than probable.
 fn wait_id() -> (Phase, u64) {
     (auth::phase(), auth::qr_generation())
@@ -1072,23 +1841,72 @@ pub(crate) fn storage_readout_showing() -> bool {
     auth::phase() == Phase::Waiting && crate::plex::session::secure_unavailable()
 }
 
+/// The action row exists for every waiting QR screen: Details is the quiet information control,
+/// while the retry pill is present only when the key service can be asked again.
+pub(crate) fn storage_action_showing() -> bool {
+    auth::phase() == Phase::Waiting || auth::pending_persistence_warning().is_some()
+}
+
 /// **`app.rs`'s deferred half of the storage-retry press.** [`key_onboarding`](crate::app) arms
 /// `press::begin_ctl` on the OK-down (see [`storage_readout_showing`]) instead of calling
 /// straight into [`start_storage_retry`], so the spring-back bounce from `press::release` is
 /// actually on screen before the retry fires — the same arm/commit split every other
 /// route-family action pill uses. Called from the per-frame `press::take_commit` dispatch, once,
 /// which is what makes "exactly once" a property of `press` (one commit per press) rather than of
-/// this function.
+/// this function. Commit validation also rejects the arm if a modal took ownership after OK-down.
 pub(crate) fn commit_storage_retry() {
-    start_storage_retry();
+    let armed = ARMED_STORAGE_ACTION.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let Some((action, attempt)) = armed else { return };
+    if let Some(warning) = auth::pending_persistence_warning() {
+        if !warning_action_valid(action, attempt, warning.key, modal_open()) { return; }
+        match action {
+            StorageAction::Continue(key) => { auth::acknowledge_persistence_warning(key); }
+            StorageAction::Details => open_storage_details(),
+            _ => {}
+        }
+        crate::ui::idle::invalidate();
+        return;
+    }
+    if !armed_storage_action_valid(
+        action,
+        attempt,
+        auth::current_attempt(),
+        auth::phase() == Phase::Waiting,
+        crate::plex::session::secure_unavailable(),
+        qr_escape_ready(scene()),
+        modal_open(),
+    ) {
+        return;
+    }
+    match action {
+        StorageAction::Continue(_) => {},
+        StorageAction::Details => open_storage_details(),
+        StorageAction::RetrySecureOpen => start_storage_retry(),
+        StorageAction::NewCode => {
+            let _ = auth::restart_stalled_wait(scene().wait);
+        }
+    }
+}
+
+/// Pointer twin of the action-row key path.  Hit-testing uses the same shared ActionRow rects the
+/// draw recorded, then moves focus before the app arms the ordinary control-face press.
+pub(crate) fn action_press_at(mx: f32, my: f32) -> bool {
+    if !storage_action_showing() || details_open() || scene().report_alert.visible() {
+        return false;
+    }
+    let Some(slot) = (unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).hit(mx, my) }) else {
+        return false;
+    };
+    if slot == STORAGE_FOCUS_RETRY && storage_primary_action().is_none() {
+        return false;
+    }
+    STORAGE_FOCUS.store(slot, Ordering::Release);
+    crate::ui::idle::invalidate();
+    true
 }
 
 fn qr_escape_ready(s: &Scene) -> bool {
-    auth::phase() == Phase::Waiting
-        && qr_escape_offered(s.phase_ms)
-        // The storage read-out has taken OK (see `key`), so the sentence that tells the user to
-        // press it for a new code must go with it — the line and the key are one offer.
-        && !storage_readout_showing()
+    auth::phase() == Phase::Waiting && qr_escape_offered(s.phase_ms)
 }
 
 /// The complete manual-link stack in the content column.
@@ -1102,11 +1920,7 @@ struct QrLayout {
     card: Rect,
     code: Rect,
     status: Rect,
-    /// The plex.tv link-health sentence (issue #75), directly under `status` — the same secondary
-    /// stack, one rung down in size, since it is de-emphasized diagnostic text rather than the
-    /// status line's own verdict.
-    detail: Rect,
-    /// **Issue #75.** "A report about this sign-in was sent", directly under `detail` — drawn only
+    /// **Issue #75.** "A report about this sign-in was sent", directly under the status — drawn only
     /// once the current attempt's trouble has actually been sent, in the same secondary stack.
     note: Rect,
 }
@@ -1122,30 +1936,11 @@ fn qr_layout(layout: RouteLayout) -> QrLayout {
     let url_h = theme::size::TITLE as f32 + theme::space::XS;
     let code_h = theme::size::DISPLAY as f32 + theme::space::XS;
     let status_h = theme::size::BODY as f32 + theme::space::SM;
-    // Two lines, not one: the diagnostic sentence this band holds can run to the longest curl
-    // reason plus a try count and a duration, which does not fit one CAPTION line at this column's
-    // 884px width (see `draw_waiting`'s `TextView` call). `TextView`'s own default leading (`sz *
-    // 1.32`) is what the wrap actually draws at, so the reserved band uses the same formula rather
-    // than a second, driftable one.
-    let detail_h = theme::size::CAPTION as f32 * 1.32 * 2.0;
-    // **Issue #75 review flagged this line as under-reserved** (`CAPTION`'s bare 24 against
-    // `draw_footer`'s own measured ~30px line), and drawing this box a `space::XS` taller was the
-    // obvious fix by analogy with `url_h`/`code_h`/`status_h` above — **and it is refused,
-    // verified rather than assumed**: at this stack's tallest content (a two-line `detail`
-    // sentence, which is exactly when `note` is likeliest to be showing too — both fire once a
-    // sign-in is stuck), the taller box pushed `note`'s bottom edge to 1033.36 against `SAFE`'s
-    // own 1026, failing `qr_is_vertically_centred_and_the_whole_link_stack_stays_in_the_right_
-    // column`'s containment assertion — trading a footer-overlap risk for an outright safe-area
-    // violation, a worse defect than the one being fixed. The stack has no slack left to spend at
-    // this box alone: closing the gap for real means shrinking a gap earlier in the stack
-    // (`card`↔`status`'s `space::LG` + `space::MD`, sized for the ordinary QR/short-code case) or
-    // the `detail` reservation itself, both a layout decision beyond a text-and-logic review.
-    // `note_h` stays bare `CAPTION`, as `qr_is_vertically_centred_and_the_whole_link_stack_stays_
-    // in_the_right_column` already requires; a device capture of the worst case (stuck sign-in,
-    // already-sent report, a long curl reason) is what should decide which upstream gap gives.
+    // The raw curl/HTTP diagnostic used to reserve two extra lines here. It remains in reports,
+    // while the ordinary QR screen shows one plain connection status.
     let note_h = theme::size::CAPTION as f32;
     let status_y = card.y + card.h + theme::space::LG + code_h + theme::space::MD;
-    let detail_y = status_y + status_h + theme::space::SM;
+    let note_y = status_y + status_h + theme::space::SM;
     QrLayout {
         url: Rect::new(
             layout.content.x,
@@ -1161,10 +1956,9 @@ fn qr_layout(layout: RouteLayout) -> QrLayout {
             code_h,
         ),
         status: Rect::new(layout.content.x, status_y, layout.content.w, status_h),
-        detail: Rect::new(layout.content.x, detail_y, layout.content.w, detail_h),
         note: Rect::new(
             layout.content.x,
-            detail_y + detail_h + theme::space::XS,
+            note_y,
             layout.content.w,
             note_h,
         ),
@@ -1172,6 +1966,27 @@ fn qr_layout(layout: RouteLayout) -> QrLayout {
 }
 
 pub fn key(sym: c_uint, wcode: c_uint) {
+    // **Issue #76's report lane.** The Details panel claims every key while it is open OR still
+    // fading, exactly like the one-off report alert below — the read-out and the sign-in flow
+    // underneath must not react to a BACK/UP/DOWN aimed at the panel on top of them.
+    if details_open() {
+        if is_back(sym, wcode) {
+            close_storage_details();
+        } else if is_ok(sym)
+            && details_pop().is_open()
+            && details_pop().appear_settled()
+            && storage_report_available()
+        {
+            open_storage_report_confirmation();
+        } else if sym == SDLK_UP {
+            details_table().move_sel(-1);
+            crate::ui::idle::invalidate();
+        } else if sym == SDLK_DOWN {
+            details_table().move_sel(1);
+            crate::ui::idle::invalidate();
+        }
+        return;
+    }
     // **Issue #75.** The one-off report alert claims every key while it is open OR still fading
     // out — nothing reaches the read-out underneath, exactly as `ui::consent`'s delete alert does.
     // `visible()`, not `is_open()`: see [`modal_open`]'s doc for why a second BACK during the exit
@@ -1179,6 +1994,7 @@ pub fn key(sym: c_uint, wcode: c_uint) {
     if scene().report_alert.visible() {
         let s = scene();
         if is_back(sym, wcode) {
+            s.report_prompt_storage_attempt = None;
             s.report_alert.dismiss();
         } else if sym == SDLK_LEFT {
             s.report_alert.move_focus(-1);
@@ -1186,10 +2002,17 @@ pub fn key(sym: c_uint, wcode: c_uint) {
             s.report_alert.move_focus(1);
         } else if is_ok(sym) {
             if s.report_alert.choice() == Choice::Destructive {
-                s.report_send_failed = !auth::send_trouble_once();
+                submit_report_confirmation();
+            } else {
+                s.report_prompt_storage_attempt = None;
+                s.report_alert.dismiss();
             }
-            s.report_alert.dismiss();
         }
+        return;
+    }
+    // BACK leaves the app in the platform handler, never replacing this unsaved session with
+    // cached credentials. Only the explicitly labelled Continue acknowledges the warning.
+    if auth::pending_persistence_warning().is_some() && is_back(sym, wcode) {
         return;
     }
     if auth::phase() == Phase::Deleted && is_ok(sym) {
@@ -1211,15 +2034,34 @@ pub fn key(sym: c_uint, wcode: c_uint) {
     // some other way (a test, or a future key source with no press arm of its own) from starting
     // a SECOND worker underneath the deferred one — `start_storage_retry`'s own compare-exchange
     // guard already refuses to stack, so this is belt-and-suspenders, not the primary gate.
-    if is_ok(sym) && storage_readout_showing() {
+    if is_ok(sym) && storage_action_showing() {
         return;
+    }
+    // **Issue #76's report lane.** LEFT/RIGHT walk the storage action row's two pills — the same
+    // idiom `ui::consent`'s answer row uses — only while there is a second pill to walk to at all
+    // (`storage_details_pill_shown`); with none, LEFT/RIGHT here would silently do nothing anyway,
+    // but a boot before the integrator ever calls [`note_storage_readout`] should not even try.
+    if storage_action_showing() && storage_details_pill_shown(&scene().storage_readout) {
+        if sym == SDLK_LEFT {
+            STORAGE_FOCUS.store(
+                if storage_primary_action().is_some() { STORAGE_FOCUS_RETRY } else { STORAGE_FOCUS_DETAILS },
+                Ordering::Release,
+            );
+            crate::ui::idle::invalidate();
+            return;
+        }
+        if sym == SDLK_RIGHT {
+            STORAGE_FOCUS.store(STORAGE_FOCUS_DETAILS, Ordering::Release);
+            crate::ui::idle::invalidate();
+            return;
+        }
     }
     if auth::phase() == Phase::Error && is_ok(sym) {
         auth::retry();
         return;
     }
     // **The two timed escapes are ONE press, and they must be, because they share one clock.**
-    // The QR screen's *press OK for a new code* (60 s) and the stalled spinner's *Try again*
+    // The QR screen's *New code* action (60 s) and the stalled spinner's *Try again*
     // (12 s) both hang off `phase_ms`, so a wait that leaves `Waiting` for `Discovering` between
     // the draw and the key made the first predicate false and the SECOND one true — on the old
     // code's timer, down the unguarded path. `auth::restart_stalled_wait` takes the wait this
@@ -1278,6 +2120,479 @@ mod tests {
     use super::*;
     use crate::ui::consts::inside_safe;
 
+    #[test]
+    fn warning_actions_require_the_current_generation_and_exclusive_input() {
+        let first = auth::PersistenceWarningKey { attempt: 7, generation: 1 };
+        let next = auth::PersistenceWarningKey { attempt: 7, generation: 2 };
+        assert!(warning_action_valid(StorageAction::Continue(first), 7, first, false));
+        assert!(!warning_action_valid(StorageAction::Continue(first), 7, next, false));
+        assert!(!warning_action_valid(StorageAction::Continue(next), 7, next, true));
+        assert!(!warning_action_valid(StorageAction::Details, 6, next, false));
+        assert!(warning_action_valid(StorageAction::Details, 7, next, false));
+        assert!(!warning_action_valid(StorageAction::NewCode, 7, next, false));
+        assert!(!warning_action_valid(StorageAction::RetrySecureOpen, 7, next, false));
+    }
+
+    // ---- Issue #76's report lane: the Details panel's row assembly (owner correction, 2026-09-11:
+    // no diagnostic words in the read-out/footer, a Details pill and panel instead) ----------------
+
+    #[test]
+    fn storage_readout_is_empty_until_the_integrator_says_something() {
+        assert!(StorageReadout::default().is_empty());
+        assert!(!StorageReadout {
+            stored_sign_in: Some("secure_refused"),
+            ..StorageReadout::default()
+        }
+        .is_empty());
+        assert!(!StorageReadout {
+            candidates: vec![CandidateReadout {
+                category: "developer",
+                outcome: "missing",
+                errno: None,
+            }],
+            ..StorageReadout::default()
+        }
+        .is_empty());
+        assert!(storage_details_pill_shown(&StorageReadout {
+            key_service: Some("no_reply"),
+            ..StorageReadout::default()
+        }));
+        assert!(storage_details_pill_shown(&StorageReadout::default()));
+    }
+
+    #[test]
+    fn details_is_available_before_storage_facts_exist() {
+        assert!(storage_details_pill_shown(&StorageReadout::default()));
+    }
+
+    #[test]
+    fn waiting_storage_actions_choose_one_stable_primary_and_always_keep_details() {
+        assert_eq!(storage_primary_for(false, true, true), None);
+        assert_eq!(storage_primary_for(true, false, false), None);
+        assert_eq!(
+            storage_primary_for(true, true, false),
+            Some(StoragePrimaryAction::RetrySecureOpen)
+        );
+        assert_eq!(
+            storage_primary_for(true, false, true),
+            Some(StoragePrimaryAction::NewCode)
+        );
+        assert_eq!(
+            storage_primary_for(true, true, true),
+            Some(StoragePrimaryAction::RetrySecureOpen),
+            "storage recovery wins; one visible primary can never change meaning"
+        );
+        assert_eq!(storage_focus_for(None, STORAGE_FOCUS_RETRY), STORAGE_FOCUS_DETAILS);
+        assert_eq!(
+            storage_focus_for(
+                Some(StoragePrimaryAction::NewCode),
+                STORAGE_FOCUS_RETRY
+            ),
+            STORAGE_FOCUS_RETRY
+        );
+    }
+
+    #[test]
+    fn deferred_login_action_never_changes_identity_or_crosses_an_attempt() {
+        assert!(armed_storage_action_valid(
+            StorageAction::Details, 7, 7, true, false, false, false
+        ));
+        assert!(!armed_storage_action_valid(
+            StorageAction::NewCode, 7, 8, true, false, true, false
+        ));
+        assert!(!armed_storage_action_valid(
+            StorageAction::RetrySecureOpen, 7, 7, true, false, true, false
+        ));
+        assert!(!armed_storage_action_valid(
+            StorageAction::NewCode, 7, 7, true, true, true, false
+        ));
+        assert!(!armed_storage_action_valid(
+            StorageAction::Details, 7, 7, true, false, false, true
+        ));
+    }
+
+    #[test]
+    fn leaving_login_closes_details_and_discards_an_armed_action() {
+        let _g = crate::testlock::serial();
+        init();
+        open_storage_details();
+        *ARMED_STORAGE_ACTION.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((StorageAction::Details, 7));
+        assert!(modal_open());
+
+        leave();
+
+        assert!(!modal_open(), "a modal owned by Login cannot outlive that route");
+        assert!(
+            ARMED_STORAGE_ACTION.lock().unwrap_or_else(|e| e.into_inner()).is_none(),
+            "a spring-back after the route changed must have nothing left to commit"
+        );
+    }
+
+    #[test]
+    fn visible_details_is_the_topmost_pointer_owner() {
+        let _g = crate::testlock::serial();
+        init();
+        open_storage_details();
+        assert!(details_press_at(-1.0, -1.0));
+        assert!(
+            !action_press_at(-1.0, -1.0),
+            "the action row underneath a modal never receives its click"
+        );
+        leave();
+    }
+
+    #[test]
+    fn details_table_frame_matches_panel_geometry() {
+        let panel = Rect::new(0.0, 0.0, DETAILS_PANEL_W, 420.0);
+        let header_h = 32.0;
+        let footer_h = 88.0;
+        let frame = details_table_rect_with_header(panel, header_h, footer_h);
+        assert_eq!(frame.y, panel.y + theme::space::MD + header_h);
+        assert_eq!(
+            frame.h,
+            panel.h
+                - header_h
+                - 2.0 * theme::space::MD
+                - footer_h
+        );
+        assert!(frame.y + frame.h <= panel.y + panel.h - footer_h);
+    }
+
+    #[test]
+    fn details_report_guidance_explains_when_sending_is_useful() {
+        assert!(DETAILS_REPORT_GUIDANCE.contains("sign-in keeps failing"));
+        assert!(DETAILS_REPORT_GUIDANCE.contains("after a restart"));
+    }
+
+    #[test]
+    fn format_candidate_value_appends_errno_only_when_there_is_one() {
+        assert_eq!(
+            format_candidate_value("open_failed", Some(13)),
+            "open_failed (errno 13)"
+        );
+        assert_eq!(format_candidate_value("missing", None), "missing");
+    }
+
+    #[test]
+    fn candidate_category_label_names_the_four_known_categories_and_falls_back_for_a_fifth() {
+        assert_eq!(candidate_category_label("developer"), "Developer directory");
+        assert_eq!(candidate_category_label("internal"), "Internal storage");
+        assert_eq!(candidate_category_label("app_dir"), "App directory");
+        assert_eq!(candidate_category_label("runtime"), "Runtime directory");
+        assert_eq!(candidate_category_label("other"), "other directory");
+        assert_eq!(candidate_category_label("future_kind"), "future_kind directory");
+    }
+
+    /// **The row set has one row per known fact, in the fixed order the panel draws them, and
+    /// nothing for a fact nobody has supplied** — the whole point of a `Details` panel that is
+    /// offered before every field is necessarily known (a stalled key service has no `persist_
+    /// outcome` to show, and a healthy save has no `key_service` stage to show).
+    #[test]
+    fn build_details_rows_includes_only_the_known_facts_plus_build_and_model() {
+        let empty = build_details_rows(
+            &StorageReadout::default(),
+            "0.6.4 \u{00B7} webOS 4.10.0",
+            "k5lp",
+        );
+        assert_eq!(
+            empty,
+            vec![
+                (
+                    "Build".to_string(),
+                    "0.6.4 \u{00B7} webOS 4.10.0".to_string()
+                ),
+                ("Model".to_string(), "k5lp".to_string()),
+            ],
+            "nothing but Build/Model when the integrator has told the screen nothing else"
+        );
+
+        let full = StorageReadout {
+            stored_sign_in: Some("secure_refused"),
+            persist_outcome: Some("preserved_existing_secure"),
+            preserve_reason: Some("not_proven"),
+            key_service: Some("no_reply"),
+            key_identity: Some("anonymous"),
+            candidates: vec![
+                CandidateReadout {
+                    category: "developer",
+                    outcome: "open_failed",
+                    errno: Some(13),
+                },
+                CandidateReadout {
+                    category: "internal",
+                    outcome: "missing",
+                    errno: None,
+                },
+            ],
+            ..StorageReadout::default()
+        };
+        let rows = build_details_rows(&full, "0.6.4 \u{00B7} webOS 4.10.0", "k5lp");
+        assert_eq!(
+            rows,
+            vec![
+                ("Stored sign-in".to_string(), "secure_refused".to_string()),
+                (
+                    "Last save".to_string(),
+                    "preserved_existing_secure".to_string()
+                ),
+                ("Save reason".to_string(), "not_proven".to_string()),
+                ("Key service".to_string(), "no_reply".to_string()),
+                ("Key identity".to_string(), "anonymous".to_string()),
+                (
+                    "Developer directory".to_string(),
+                    "open_failed (errno 13)".to_string()
+                ),
+                ("Internal storage".to_string(), "missing".to_string()),
+                ("Build".to_string(), "0.6.4 \u{00B7} webOS 4.10.0".to_string()),
+                ("Model".to_string(), "k5lp".to_string()),
+            ]
+        );
+    }
+
+    /// Diagnostic values remain complete; the widened shared table keeps decisive closed words
+    /// visible instead of applying a character-count truncation guess.
+    #[test]
+    fn build_details_rows_keeps_a_long_candidate_summary_complete() {
+        let long_outcome: &'static str = "untrusted_mode_with_an_unusually_long_wire_word_for_a_test";
+        let full = StorageReadout {
+            candidates: vec![CandidateReadout {
+                category: "other",
+                outcome: long_outcome,
+                errno: Some(i32::MAX),
+            }],
+            ..StorageReadout::default()
+        };
+        let rows = build_details_rows(&full, "build", "model");
+        let (label, value) = &rows[0];
+        assert_eq!(label, "other directory");
+        assert_eq!(value, &(long_outcome.to_string() + " (errno 2147483647)"));
+    }
+
+    /// `note_storage_readout` is the setter [`refresh_storage_readout`] drives — proven end to end
+    /// through the same `scene()` state [`build_details_rows`] reads at open time.
+    #[test]
+    fn note_storage_readout_replaces_whatever_the_screen_held_before() {
+        let _g = crate::testlock::serial();
+        init();
+        note_storage_readout(
+            Some("secure_refused"),
+            Some("write_failed"),
+            None,
+            Some("no_reply"),
+            Some("anonymous"),
+            vec![CandidateReadout {
+                category: "app_dir",
+                outcome: "not_regular",
+                errno: None,
+            }],
+        );
+        assert!(storage_details_pill_shown(&scene().storage_readout));
+        assert_eq!(
+            scene().storage_readout.stored_sign_in,
+            Some("secure_refused")
+        );
+        assert_eq!(scene().storage_readout.candidates.len(), 1);
+
+        // A second call REPLACES, rather than accumulating — there is only ever one launch's worth
+        // of facts.
+        note_storage_readout(None, None, None, None, None, Vec::new());
+        assert!(storage_details_pill_shown(&scene().storage_readout));
+    }
+
+    /// **The three shapes a launch can actually be in, as the panel renders them.** Not three
+    /// arbitrary fixtures: these are the three failures issue #76's field reports divide into, and
+    /// the reason the panel exists is that a photograph of it has to tell them apart. They differ
+    /// in what they say about the SAVE and about the candidate locations, which is exactly the
+    /// distinction a bare "your saved sign-in couldn't be read" cannot carry.
+    #[test]
+    fn the_details_rows_tell_the_three_real_storage_shapes_apart() {
+        let values = |r: &StorageReadout| -> Vec<String> {
+            build_details_rows(r, "0.6.4", "k5lp")
+                .into_iter()
+                .map(|(label, value)| format!("{label}={value}"))
+                .collect()
+        };
+
+        // 1. LOCKED-UNAVAILABLE — the reporters' own symptom. A sealed envelope is right there and
+        // was accepted as one; the key service never answered, so nothing was saved this launch.
+        let unavailable = StorageReadout {
+            stored_sign_in: Some("secure_unavailable"),
+            persist_outcome: None,
+            preserve_reason: None,
+            key_service: Some("no_reply"),
+            key_identity: Some("anonymous"),
+            candidates: vec![CandidateReadout {
+                category: "developer",
+                outcome: "secure",
+                errno: None,
+            }],
+            ..StorageReadout::default()
+        };
+        assert_eq!(
+            values(&unavailable),
+            vec![
+                "Stored sign-in=secure_unavailable",
+                "Key service=no_reply",
+                "Key identity=anonymous",
+                "Developer directory=secure",
+                "Build=0.6.4",
+                "Model=k5lp",
+            ],
+            "no 'Last save' row at all: this launch never saved, and an empty row would read as \
+             one that did"
+        );
+
+        // 2. SIGN-IN-NOT-PERSISTED — the fresh sign-in that was DELIBERATELY not written, because
+        // a secure envelope this install has not yet earned the right to replace is present. The
+        // reason word is the whole content of the finding.
+        let not_persisted = StorageReadout {
+            stored_sign_in: Some("secure"),
+            persist_outcome: Some("preserved_existing_secure"),
+            preserve_reason: Some("not_proven"),
+            key_service: None,
+            key_identity: Some("app_id"),
+            candidates: vec![CandidateReadout {
+                category: "app_dir",
+                outcome: "secure",
+                errno: None,
+            }],
+            ..StorageReadout::default()
+        };
+        assert_eq!(
+            values(&not_persisted),
+            vec![
+                "Stored sign-in=secure",
+                "Last save=preserved_existing_secure",
+                "Save reason=not_proven",
+                "Key identity=app_id",
+                "App directory=secure",
+                "Build=0.6.4",
+                "Model=k5lp",
+            ],
+            "the reason rides the save's own row — two rows would read as two separate facts"
+        );
+
+        // 3. WRITE-FAILED-EVERYWHERE — no key service in the story at all. Every candidate refused
+        // the write, and the per-candidate errnos are the only thing that says WHY, which is why
+        // one row per location is worth the space.
+        let write_failed = StorageReadout {
+            stored_sign_in: Some("none"),
+            persist_outcome: Some("write_failed"),
+            preserve_reason: None,
+            key_service: None,
+            key_identity: None,
+            candidates: vec![
+                CandidateReadout {
+                    category: "developer",
+                    outcome: "open_failed",
+                    errno: Some(13),
+                },
+                CandidateReadout {
+                    category: "internal",
+                    outcome: "missing",
+                    errno: None,
+                },
+            ],
+            ..StorageReadout::default()
+        };
+        assert_eq!(
+            values(&write_failed),
+            vec![
+                "Stored sign-in=none",
+                "Last save=write_failed",
+                "Developer directory=open_failed (errno 13)",
+                "Internal storage=missing",
+                "Build=0.6.4",
+                "Model=k5lp",
+            ],
+            "no key-service rows: nothing here is a verdict on a key service"
+        );
+
+        // All three offer the pill; none of them is the empty screen a boot starts on.
+        for r in [&unavailable, &not_persisted, &write_failed] {
+            assert!(storage_details_pill_shown(r));
+        }
+    }
+
+    /// **The Details panel owns BACK and OK while it is up, and `app.rs` is told so through ONE
+    /// predicate.**
+    ///
+    /// This route's BACK is the ROOT press — `app.rs`'s `key_onboarding` hands it to
+    /// `auth::cancel` and then to the television's own Home — and it consults
+    /// [`modal_open`] first precisely so a panel standing over the screen is not backed out of by
+    /// backing out of the whole sign-in. The same predicate gates the OK that arms the *Try again*
+    /// pill, which is still "showing" underneath an open panel.
+    #[test]
+    fn the_details_panel_claims_back_rather_than_the_routes_root_press() {
+        let _g = crate::testlock::serial();
+        init();
+        assert!(!modal_open(), "the premise: nothing is open on a fresh screen");
+
+        details_pop().open();
+        assert!(
+            modal_open(),
+            "app.rs must route BACK here, and must not arm the pill underneath on an OK"
+        );
+
+        key(0, crate::ui::consts::WCODE_BACK);
+        assert!(
+            !details_pop().is_open(),
+            "…and the panel's own BACK closes it rather than reaching the sign-in flow"
+        );
+
+        details_pop().close();
+        assert!(!modal_open());
+    }
+
+    /// **`refresh_storage_readout` reads THIS LAUNCH's own facts** — the integrator's call, and
+    /// the one that was missing: every field above is `None` and the pill is hidden on every boot
+    /// until something calls it.
+    #[test]
+    fn refresh_storage_readout_reads_this_launchs_own_storage_facts() {
+        let _g = crate::testlock::serial();
+        init();
+        let dir = std::env::temp_dir().join(format!("plxnative-login-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a writable temp dir");
+        crate::plex::session::redirect_for_test(Some(dir.join("auth.json")));
+        note_storage_readout(None, None, None, None, None, Vec::new());
+        assert!(
+            storage_details_pill_shown(&scene().storage_readout),
+            "Details remains available before the first storage read"
+        );
+
+        // One cold load of a candidate that is not there, followed by the client-id mint's own
+        // save — exactly what a first boot does.
+        let _ = crate::plex::session::load();
+        refresh_storage_readout();
+
+        let r = &scene().storage_readout;
+        assert!(storage_details_pill_shown(r));
+        assert!(
+            r.stored_sign_in.is_some(),
+            "the storage class is always knowable, so this row is always there"
+        );
+        assert_eq!(
+            r.persist_outcome,
+            Some("persisted_plaintext"),
+            "the mint's own save, read back through `session::last_persist_outcome`"
+        );
+        assert_eq!(
+            r.candidates,
+            vec![CandidateReadout {
+                category: "other",
+                outcome: "missing",
+                errno: None,
+            }],
+            "one row per candidate this launch examined, in the read lane's own vocabulary"
+        );
+
+        crate::plex::session::redirect_for_test(None);
+        note_storage_readout(None, None, None, None, None, Vec::new());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// **The read-out has to say the thing that is least guessable and most reassuring: nothing
     /// was changed.** A person looking at a QR code on a television they were already signed in to
     /// will assume they have been signed OUT — that is what this screen means everywhere else —
@@ -1307,22 +2622,12 @@ mod tests {
         );
     }
 
-    /// **The control may not sit on the identification footer.** That line is drawn on every phase
-    /// of this route, in the same bottom-left corner `RouteLayout::action` occupies — a slot whose
-    /// own contract assumes nothing is under it, which is true of `ui::onboard` and `ui::consent`
-    /// and false here. The first simulator capture of this read-out had the pill printed straight
-    /// through the version string.
+    /// The ordinary Login screen has no technical footer; its action uses the shared route slot.
     #[test]
-    fn the_try_again_pill_clears_the_identification_footer() {
+    fn login_root_action_uses_the_ordinary_slot_without_a_technical_footer() {
         let action = RouteLayout::screen().action;
-        // The measured height of a CAPTION line on the device font, from the run that produced
-        // the capture — the host cannot link SDL2_ttf to ask (see `storage_action_y`'s doc).
-        let footer_h = 30.0;
-        let y = storage_action_y(action, footer_h);
-        assert!(
-            y + action.h <= action.y + action.h - footer_h,
-            "the pill's bottom edge must clear the footer's own line box"
-        );
+        let y = action.y;
+        assert_eq!(y, action.y, "no hidden technical footer may lift the visible action");
         assert!(
             inside_safe(Rect::new(action.x, y, action.w, action.h)),
             "…without leaving the safe area at the other end"
@@ -1331,9 +2636,8 @@ mod tests {
 
     /// **Review finding, 2026-09-10: the note's budget must derive from the room actually left,
     /// never a fixed one-line assumption.** At the measured device CAPTION line height (~30px,
-    /// the same number [`the_try_again_pill_clears_the_identification_footer`] uses), the pill
-    /// sits well inside `copy_bottom`'s `space::XL` (64px) reservation once the footer has also
-    /// lifted it clear — so the room left for the note is small, and a fixed one-line draw used to
+    /// the same device-font scale), the pill sits inside `copy_bottom`'s `space::XL` reservation,
+    /// so the room left for the note is bounded and a fixed one-line draw used to
     /// run straight past it into the body's own territory. This pins that the computed room is
     /// small (not merely "some room"), and that the max-lines budget any caller derives from it can
     /// never exceed what the room can actually hold before the note view's own bottom edge is
@@ -1341,22 +2645,19 @@ mod tests {
     #[test]
     fn the_retry_note_budget_derives_from_the_room_left_above_the_pill() {
         let action = RouteLayout::screen().action;
-        let footer_h = 30.0; // measured device CAPTION line — see the footer test above
         let r = Rect::new(
             action.x,
-            storage_action_y(action, footer_h),
+            action.y,
             120.0,
             action.h,
         );
         let room = storage_note_room(action, r);
-        // The room is real (the body's own `space::XL` gap is not fully eaten by the footer +
-        // pill lift) but small — nowhere near enough for the fixed offset this used to draw at,
+        // The room is the body's own bounded `space::XL` gap, not an assumed number of lines,
         // which is exactly the gap the fixed version silently ran past.
         assert!(room >= 0.0, "the room must never go negative — `storage_note_room` clamps it");
         assert!(
             room < theme::space::XL,
-            "the room can never exceed the body's whole `space::XL` reservation, since the pill \
-             and footer both eat into it before the note ever gets a turn"
+            "the room can never exceed the body's whole `space::XL` reservation"
         );
         // A budget derived from this room, at the CAPTION leading `draw_storage_action` uses, must
         // never claim a second line the room does not actually justify — the one-line floor below
@@ -1554,8 +2855,8 @@ mod tests {
             "it names what happened; a code that simply changes reads as a fault"
         );
         // …and the sentence that carries an ACTION outranks the one that carries history.
-        assert!(says(waiting_status(true, true, false), b"press OK"));
-        assert!(says(waiting_status(false, true, false), b"press OK"));
+        assert!(says(waiting_status(true, true, false), b"New code"));
+        assert!(says(waiting_status(false, true, false), b"New code"));
     }
 
     /// **`unreachable` outranks both `stalled` and `code_replaced` (issue #75).** A fresh code or a
@@ -1568,10 +2869,15 @@ mod tests {
             |s: &std::ffi::CStr, word: &[u8]| s.to_bytes().windows(word.len()).any(|w| w == word);
         for (code_replaced, stalled) in [(false, false), (true, false), (false, true), (true, true)]
         {
+            assert_eq!(
+                waiting_status(code_replaced, stalled, true),
+                c"Can’t reach Plex. Check your TV’s internet connection.",
+                "the QR screen projects one plain connection status, not a second diagnostic line"
+            );
             assert!(
                 says(
                     waiting_status(code_replaced, stalled, true),
-                    b"Can\xe2\x80\x99t reach plex.tv"
+                    b"Can\xe2\x80\x99t reach Plex"
                 ),
                 "code_replaced={code_replaced} stalled={stalled}: unreachable must win regardless"
             );
@@ -1579,7 +2885,7 @@ mod tests {
         // …and stays silent about the link whenever plex.tv is answering, whatever else is true.
         assert!(!says(
             waiting_status(true, true, false),
-            b"Can\xe2\x80\x99t reach plex.tv"
+            b"Can\xe2\x80\x99t reach Plex"
         ));
     }
 
@@ -1637,57 +2943,19 @@ mod tests {
         let route = RouteLayout::screen();
         let q = qr_layout(route);
         assert_eq!(q.card.cy(), Rect::FULL.cy());
-        // `detail` (issue #75's diagnostic sentence) and `note` (the one-off report's "sent" line)
-        // join the same right-column stack the URL, QR and status line already share, and must
-        // stay inside the safe area exactly as they do — each is drawn whenever it has something
-        // to say, not only in a screenshot taken while designing the layout.
-        for r in [q.url, q.card, q.code, q.status, q.detail, q.note] {
+        // The report note remains inside the right-column stack without a raw diagnostic slot.
+        for r in [q.url, q.card, q.code, q.status, q.note] {
             assert!(r.x >= route.content.x);
             assert!(r.x + r.w <= route.content.x + route.content.w);
             assert!(inside_safe(r));
         }
         assert!(
-            q.detail.y >= q.status.y + q.status.h,
-            "the link-health sentence must sit BELOW the status line, never overlap it"
-        );
-        assert!(
-            q.note.y >= q.detail.y + q.detail.h,
-            "the report-sent note must sit BELOW the link-health sentence, never overlap it"
+            q.note.y >= q.status.y + q.status.h,
+            "the report receipt status must remain below the one visible connection status"
         );
     }
 
     // ---- issue #75: plex.tv link health on the sign-in screen ----
-
-    /// The footer is a plain, deterministic join — no locale formatting, no truncation — so a
-    /// caller can trust its shape without reading the implementation. Built on
-    /// `crate::plex::identity::PRODUCT` rather than a literal, so a product rename cannot leave
-    /// this the one surface still saying the old name.
-    #[test]
-    fn footer_line_joins_the_three_facts_with_the_dot_separator() {
-        assert_eq!(
-            footer_line(
-                crate::plex::identity::VERSION,
-                "webOS 4.10.2",
-                "49SM9000PLA"
-            ),
-            format!(
-                "{} {} \u{00B7} webOS 4.10.2 \u{00B7} 49SM9000PLA",
-                crate::plex::identity::PRODUCT,
-                crate::plex::identity::VERSION
-            )
-        );
-    }
-
-    /// [`draw_footer`] substitutes `"?"` and `release_line`'s own `"webOS unknown"` before calling
-    /// in, and the pure function must not try to be clever about an already-substituted
-    /// placeholder — it is just another string here.
-    #[test]
-    fn footer_line_passes_an_unknown_placeholder_through_unchanged() {
-        assert_eq!(
-            footer_line("0.7.0-dev", "webOS unknown", "?"),
-            format!("{} 0.7.0-dev \u{00B7} webOS unknown \u{00B7} ?", crate::plex::identity::PRODUCT)
-        );
-    }
 
     /// The one thing standing between a screen that must keep animating (the link sentence counts
     /// up while plex.tv stays unreachable) and one that must stop (a healthy sign-in, where the
@@ -1746,9 +3014,20 @@ mod tests {
         assert_eq!(offer_alert(Some(1), Some((5, true))), None);
     }
 
-    /// The "sent" caption draws only once something has actually left the television, "sent"
-    /// wins over a stale "failed", and a failed press with nothing sent yet gets its own caption
-    /// rather than silence.
+    #[test]
+    fn automatic_report_offer_waits_until_details_is_fully_gone() {
+        assert!(!auto_report_offer_allowed(false, true));
+        assert!(!auto_report_offer_allowed(true, false));
+        assert!(auto_report_offer_allowed(false, false));
+        assert_eq!(
+            offer_alert(None, Some((7, false))),
+            Some(7),
+            "the pending trouble remains offerable after Details disappears"
+        );
+    }
+
+    /// The queued caption reflects durable acceptance by the reporting lane, while a failed press
+    /// with nothing queued yet gets its own caption rather than silence.
     #[test]
     fn the_sent_note_only_draws_once_something_was_actually_sent() {
         assert_eq!(report_note(false, false), None);
@@ -1760,37 +3039,78 @@ mod tests {
             report_note(true, false),
             "a sent trouble reads as sent even if some earlier press on it had failed"
         );
+        let queued = report_note(true, false).unwrap().to_str().unwrap();
+        assert!(queued.contains("queued"));
+        assert!(!queued.contains("was sent"));
     }
 
-    /// **REPORT_BODY must not be truncated by the alert it is drawn in.** The alert's body view
-    /// caps at a fixed line count (`decision_alert::DecisionAlert::body_view`, 8 lines) — it used to
-    /// be 4, which cut this exact text off mid-sentence and dropped the whole "it carries no
-    /// identifier" half, the one privacy disclosure a first-run person sees before pressing Send.
-    ///
-    /// **A character budget, not a measurement, and that is forced rather than lazy**: the real
-    /// wrap goes through `text::text_width`, i.e. SDL2_ttf, and a host test that reaches it does
-    /// not fail — it does not LINK (`_TTF_OpenFont` undefined for the test binary; the symbols are
-    /// dead-stripped until a test references the path). The budget is the simulator's own number:
-    /// at `decision_alert::BODY_W` this body wraps to 7 lines of about 42 characters
-    /// (`/tmp/sim-issue75e/failed-alert.png`, 2026-09-10), so 8 lines hold roughly 336 and the
-    /// budget keeps one line of slack under that. A longer body needs a new capture, not a bigger
-    /// number.
+    /// **REPORT_BODY keeps the complete disclosure copy.** The alert measures the real wrapped
+    /// body and owns the viewport; this host test guards the bounded static copy and its decisive
+    /// privacy statements without reaching SDL2_ttf.
     #[test]
-    fn report_body_stays_inside_the_alerts_line_cap() {
-        const BUDGET_CHARS: usize = 300;
+    fn report_disclosure_stays_bounded_and_complete() {
+        const BUDGET_CHARS: usize = 512;
         let n = REPORT_BODY.chars().count();
         assert!(
             n <= BUDGET_CHARS,
-            "REPORT_BODY is {n} characters; over {BUDGET_CHARS} it no longer fits the alert's \
-             8-line body cap — shorten it, never let the privacy disclosure fall off silently"
+            "REPORT_BODY is {n} characters; over {BUDGET_CHARS} it needs another visual fit check — \
+             shorten it, never let the privacy disclosure fall off silently"
         );
         assert!(
-            REPORT_BODY.contains("carries no identifier"),
-            "the disclosure's last sentence is the one truncation used to eat"
+            REPORT_BODY.contains("random report ID identifies only this report"),
+            "the disclosure must explain that the event receipt is ephemeral"
         );
         assert!(
-            REPORT_BODY.contains("how your sign-in is stored"),
-            "issue #76 added a storage field to the payload; the disclosure must name it too"
+            REPORT_BODY.contains("storage and key-service diagnostics"),
+            "the disclosure must name the storage diagnostics"
         );
+    }
+
+    #[test]
+    fn storage_report_status_never_claims_delivery_for_queued_or_sending() {
+        assert_eq!(
+            storage_report_status(Some(DeliveryState::Queued), false),
+            Some("Report queued")
+        );
+        assert_eq!(
+            storage_report_status(Some(DeliveryState::Sending), false),
+            Some("Sending — keep the app open")
+        );
+        assert_eq!(
+            storage_report_status(Some(DeliveryState::Failed), false),
+            Some("Report failed — Send report to try again")
+        );
+    }
+
+    #[test]
+    fn failed_storage_report_keeps_the_footer_action_available() {
+        assert!(storage_report_available_for(Some(DeliveryState::Failed), false));
+        assert!(!storage_report_available_for(Some(DeliveryState::Queued), false));
+        assert!(!storage_report_available_for(Some(DeliveryState::Sending), false));
+        assert!(!storage_report_available_for(Some(DeliveryState::Sent), false));
+    }
+
+    #[test]
+    fn link_detail_repaint_is_deferred_once_while_the_report_alert_is_visible() {
+        assert_eq!(link_detail_repaint(true, false, false), (true, false));
+        assert_eq!(link_detail_repaint(true, true, false), (false, true));
+        assert_eq!(link_detail_repaint(true, true, true), (false, true));
+        assert_eq!(link_detail_repaint(false, true, true), (false, true));
+        assert_eq!(link_detail_repaint(false, false, true), (true, false));
+        assert_eq!(link_detail_repaint(false, false, false), (false, false));
+    }
+
+    #[test]
+    fn rejected_report_retry_does_not_display_the_previous_event_receipt() {
+        let _guard = crate::testlock::serial();
+        init();
+        scene().storage_report_id = Some("a".repeat(32));
+        scene().storage_report_state = Some(DeliveryState::Failed);
+        record_storage_report_failure(42);
+        assert!(scene().storage_report_id.is_none(), "a rejected submission has no new receipt");
+        assert_eq!(scene().storage_report_attempt, Some(42));
+        assert_eq!(scene().storage_report_state, Some(DeliveryState::Failed));
+        assert!(storage_report_available());
+        leave();
     }
 }
