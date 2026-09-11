@@ -865,6 +865,12 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     } else {
         pick_dp_audio(tracks, acodec)
     };
+    let audio_id = audio_sel.as_ref().map(|(_, _, id)| *id).unwrap_or(0);
+    let subtitle_id = plan
+        .playing
+        .as_ref()
+        .map(|p| mde_subtitle_stream_id(&p.subs))
+        .unwrap_or(0);
     // What the CONNECTION to this server allows, beside what the pipeline can decode: a Plex
     // relay is a ~2 Mbit/s tunnel, so neither of the two flavors that ship the file's own bytes
     // (direct play, and the uncapped container remux) can be asked for over one. Unrestricted on
@@ -895,13 +901,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // evaluate a TrueHD/DTS default and veto; naming the chosen AAC/AC3/EAC3 sibling on the
         // query is what keeps that class on Original. subtitleStreamID is an advertised embedded
         // track Original will client-render, or 0 so a sidecar / unadvertised codec does not
-        // force a burn.
-        let audio_id = audio_sel.as_ref().map(|(_, _, id)| *id).unwrap_or(0);
-        let subtitle_id = plan
-            .playing
-            .as_ref()
-            .map(|p| mde_subtitle_stream_id(&p.subs))
-            .unwrap_or(0);
+        // force a burn. Same ids go on the remux probe so MDE and start.mkv name one track.
         server_decision(client, rk, &session, audio_id, subtitle_id)
     };
     let mut directplay = mde.as_ref().is_some_and(|v| v.original);
@@ -1011,6 +1011,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         Some(crate::plex::probe::Location::Relay) => Some(crate::abr::LinkKind::Relay),
         None => None,
     };
+    // Captured before Auto overwrites `directplay` for HLS: a remux probe registered start.mkv
+    // on this playback identity, and a later HLS `/decision` must physical-stop that encoder
+    // first. A successful remux Original leaves the session for the play-path decision.
+    let mut remux_probed = false;
     let decision = match (env.quality, link_kind) {
         (Quality::Auto, Some(link)) => {
             // The probe is the only expensive input, so it is only taken where it can change the
@@ -1025,12 +1029,13 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                         )
                     } else {
                         // Part GET 503s after a transcode MDE. Sample the remux we would actually play.
+                        remux_probed = true;
                         measure_remote_remux(
                             client,
                             rk,
                             &session,
-                            env.audio_sid,
-                            env.sub_sid,
+                            audio_id,
+                            subtitle_id,
                             source_transport_kbps,
                         )
                     }
@@ -1237,6 +1242,13 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // from `Session`, and one that dropped the ceiling would hand the encoder back the full
     // 4K/60 Mbps bound the moment the user touched the scrubber.
     put_selection(env.sid, plan.part_id, env.audio_sid, env.sub_sid); // audio/subtitle selection drives the encode/remux + burn
+    if remux_probed && adaptive {
+        // Probe registered start.mkv on this playback identity. HLS `/decision` reuses it;
+        // closeResourceSession=1 would 503 the next start. A failed sample already stopped
+        // inside measure_remote_remux; this covers a completed sample that still falls to HLS.
+        // Stay-remux Original does not stop: the play-path decision owns that session.
+        let _ = client.transcode_stop_physical(&session);
+    }
     let sp = transcode_spec(
         rk,
         &session,

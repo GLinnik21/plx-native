@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import base64
 import collections
+import errno
 import gzip
 import hashlib
 import hmac
@@ -214,11 +215,13 @@ class Upnp:
                     loc = m.group(1).decode()
                     if loc not in locations:
                         locations.append(loc)
-        except OSError:
-            # macOS EHOSTUNREACH ("No route to host") when the laptop has no multicast route —
-            # offline, VPN-only, no default. Selftest must still pass with no router in the room;
-            # `start` already turns a missing IGD into a status string.
-            pass
+        except OSError as e:
+            # No multicast route (offline, VPN-only, no default): macOS EHOSTUNREACH /
+            # ENETUNREACH. Selftest must still return None with no router in the room; `start`
+            # already turns a missing IGD into a status string. Any other OSError is a real
+            # failure and must not be swallowed.
+            if e.errno not in (errno.EHOSTUNREACH, errno.ENETUNREACH):
+                raise
         finally:
             s.close()
         for loc in locations:

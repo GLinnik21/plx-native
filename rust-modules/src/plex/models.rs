@@ -407,10 +407,12 @@ pub struct MediaPart {
 }
 
 impl MediaPart {
-    /// `/decision` only. `Part.decision=transcode` means the *container* changes; a codec-copy
-    /// remux is still right unless the VIDEO stream's own decision is `transcode` (bit depth,
-    /// an undecodable codec, …). `docs/pms-api.md` measured Profile 5 as `Part=transcode` with
-    /// video `copy`. Absent streams, `copy`, or any other spelling do not forbid a remux.
+    /// Veto: a remux that copies video is forbidden only when a video `Stream` on this part
+    /// is `decision=transcode`. Silence is not a video re-encode — missing `Stream[]`, `copy`,
+    /// unnamed, or any other spelling leave copy allowed. Library metadata omits
+    /// `Stream.decision`; this reader is for `/decision` bodies. `Part.decision=transcode` is a
+    /// container change: TrueHD-only and Profile 5 are `Part=transcode` with video `copy`
+    /// (`docs/pms-api.md`).
     pub fn video_forbids_copy(&self) -> bool {
         self.stream
             .iter()

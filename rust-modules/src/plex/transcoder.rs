@@ -1142,10 +1142,11 @@ mod tests {
         );
     }
 
-    /// PIN: the assumed (table-unreadable) profile is byte-identical to the constant string the
-    /// app sent before devcaps existed. This is the fallback half of devcaps' contract — the
-    /// derivation may never drift for a device that was working yesterday, and any deliberate
-    /// profile change must update this literal to say so.
+    /// PIN: `Caps::assumed()` must emit this exact profile string. This is the assumed-caps
+    /// contract, not a claim that the string predates device-capability tables. A deliberate
+    /// profile edit must update this literal so the change is visible;
+    /// `the_direct_play_subtitle_list_is_the_shared_constant` is the interpolation gate
+    /// against [`DP_SUBTITLE_CODECS`].
     #[test]
     fn the_assumed_profile_is_byte_identical_to_the_shipped_one() {
         assert_eq!(

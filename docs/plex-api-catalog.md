@@ -224,9 +224,9 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
 
 - **Response:** no body (200) / 400 if the stream doesn't belong to the part.
 - **App reads:** only the HTTP status. Confirmed.
-- **Divergences:** none. This is the **correct** mechanism for stream selection (the app also
-  redundantly appends `audioStreamID`/`subtitleStreamID` to the transcode GET — those are
-  undocumented no-ops there; see D-7). `partId` is an integer in the spec — keep parsing it as
+- **Divergences:** none. This is the **correct** mechanism for stream selection. Transcode
+  start/decision GETs still copy the same ids (they match this PUT); MDE GETs use them as
+  load-bearing query names — **D-7**. `partId` is an integer in the spec — keep parsing it as
   numeric.
 
 ### 9. `transcodeDecision` — register/handshake a transcode session
@@ -270,9 +270,13 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
     **query params**. The spec declares these as **HTTP headers** (`X-Plex-Client-Identifier`
     is a **required header**). PMS accepts X-Plex-* as either, so it works, but header form is
     spec-correct and avoids leaking identity into cached URLs.
-  - **D-7:** `audioStreamID` / `subtitleStreamID` on the transcode GET are **not documented**
-    params of `transcodeDecision`/`transcodeStart`; server-side selection is done via
-    `libraryPutPartsPart` (which the app already does). The GET copies are no-ops — safe to drop.
+  - **D-7:** `audioStreamID` / `subtitleStreamID` are **not documented** params of
+    `transcodeDecision`/`transcodeStart`. Their meaning splits on `directPlay`:
+    - **MDE** (`hasMDE=1`, `directPlay=1`): both are load-bearing (smart-DP sibling as
+      `audioStreamID`; `subtitleStreamID=0` so a sidecar or unadvertised codec does not burn).
+      Not safe to drop.
+    - **Transcode** start/decision (`directPlay=0`): PUT `/library/parts/{id}`
+      (`libraryPutPartsPart`) remains the selection API; GET copies match that PUT.
 
 ### 10. `transcodeStart` — the actual transcoded MKV stream
 - **Method / canonical path:** `GET /{transcodeType}/:/transcode/universal/start.*`
@@ -305,9 +309,8 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
   `transcode` still remuxes when the video stream's own decision is `copy` or unnamed
   (`Part.decision` is a container change); only a video-stream `transcode` forbids the
   codec-copy. Remote Auto's Original probe then samples that remux `start.mkv` rather than
-  the Part (a Part GET after a transcode decision is 503). (Catalog **D-7** still describes
-  `audioStreamID`/`subtitleStreamID` on *transcode* start/decision GETs as undocumented relative
-  to the PUT selection API; the MDE handshake above is a separate use of those query names.)
+  the Part (a Part GET after a transcode decision is 503). See **D-7** for the MDE vs transcode
+  split on those query names.
 - **Divergences:** none (the key comes straight from `part.key`). The middle path segment is a
   **changestamp** (part updatedAt), not a byte offset — the app treats it as opaque, which is
   correct.
@@ -386,7 +389,7 @@ These documented operations cover things the app currently improvises or doesn't
 | **D-6a** | transcode decision/start | `maxVideoBitrate` → spec name `videoBitrate` (or `peakBitrate`). | low |
 | **D-6b** | transcode decision/start | `session=` → spec name `transcodeSessionId` (+ `X-Plex-Session-Identifier` header). | low |
 | **D-6c** | transcode decision/start | `X-Plex-*` sent as query params; spec declares them as **headers** (`X-Plex-Client-Identifier` required). | low |
-| **D-7** | transcode decision/start | `audioStreamID`/`subtitleStreamID` on the GET are undocumented no-ops; correct mechanism is `libraryPutPartsPart` (already used). Drop the GET copies. | low |
+| **D-7** | transcode decision/start | Undocumented `audioStreamID`/`subtitleStreamID` on the GET. **MDE** (`hasMDE=1`, `directPlay=1`): load-bearing (smart-DP sibling; `subtitleStreamID=0` so a sidecar does not burn) — do not drop. **Transcode** (`directPlay=0`): PUT `libraryPutPartsPart` is the selection API; GET copies match that PUT. | low |
 | **D-8a** | `/:/timeline` | App uses **GET**; spec verb is **POST** (`timelinePostSlash`). | medium |
 | **D-8b** | `/:/timeline` | `X-Plex-Client-Identifier` sent as query; spec = required **header**. | low |
 | **D-9** | `/video/:/transcode/universal/stop` | Undocumented endpoint (works); no spec drop-in. Nearest: `statusPostTerminate`. | low |

@@ -4871,6 +4871,10 @@ pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> Option<cra
 /// PMS 1.43 503s a Part GET after a transcode MDE. The Original we would actually play is a
 /// codec-copy remux, so the Remote capacity sample has to be that `start.mkv`, under the same
 /// session identity a direct Part probe uses.
+///
+/// Encoder spin-up stays inside the existing 4s probe budget; a miss fails toward HLS rather
+/// than waiting longer. First-byte wait on this sample is the remux coming up, not a measure of
+/// transport capacity.
 pub(super) fn measure_remote_remux(
     client: &crate::plex::Client,
     rk: &str,
@@ -4895,7 +4899,13 @@ pub(super) fn measure_remote_remux(
         crate::player::log("auto: remote remux preflight had no /decision; using HLS");
         return None;
     }
-    measure_remote_original(&client.transcode_start_url(&spec).to_url(), source_kbps)
+    let sample = measure_remote_original(&client.transcode_start_url(&spec).to_url(), source_kbps);
+    if sample.is_none() {
+        // Same playback identity the HLS/remux that follows will register. closeResourceSession=1
+        // would 503 that next start; physical-stop keeps the Streaming Resource.
+        let _ = client.transcode_stop_physical(session);
+    }
+    sample
 }
 
 /// MDE handshake result. `None` from [`server_decision`] means the body was missing or unusable:
@@ -8569,16 +8579,24 @@ mod tests {
                             start_bytes.filter(|_| first.contains("start.mkv"))
                         {
                             use std::io::Write;
-                            write!(
-                                socket,
-                                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {bytes}\r\nConnection: close\r\n\r\n",
-                                bytes.saturating_sub(1),
-                                bytes.saturating_mul(2),
-                            )
-                            .expect("start.mkv headers");
-                            socket
-                                .write_all(&vec![0x55; bytes])
-                                .expect("start.mkv body");
+                            if bytes == 0 {
+                                write!(
+                                    socket,
+                                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                )
+                                .expect("empty start.mkv");
+                            } else {
+                                write!(
+                                    socket,
+                                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {bytes}\r\nConnection: close\r\n\r\n",
+                                    bytes.saturating_sub(1),
+                                    bytes.saturating_mul(2),
+                                )
+                                .expect("start.mkv headers");
+                                socket
+                                    .write_all(&vec![0x55; bytes])
+                                    .expect("start.mkv body");
+                            }
                         } else {
                             let body = if first.contains("/decision?") {
                                 mde_body
@@ -9065,6 +9083,181 @@ mod tests {
         assert!(
             plan.url.contains("start.mkv"),
             "the installed route is the remux: {}",
+            plan.url
+        );
+        assert!(
+            !requests.iter().any(|line| line.contains("/transcode/universal/stop")),
+            "a successful remux Original leaves the session for the play-path decision: {requests:?}"
+        );
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// TrueHD default `id=1` is what `env.audio_sid` still carries (play-path PUT / transcode_spec).
+    /// MDE and the remux probe must name the AC3 sibling `id=2` that smart-DP will actually feed.
+    #[test]
+    fn remote_auto_truehd_remux_probe_names_the_ac3_sibling_not_env_audio_sid() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        if !crate::net::global_init() || !crate::curlio::available() {
+            return;
+        }
+        restore_quality(Quality::Auto);
+        let probe_bytes = crate::abr::source_probe_plan(320, crate::abr::PROBE_BUDGET_MS)
+            .expect("tiny source still has a probe object")
+            .target_bytes;
+        let (port, rx, server) = plan_pms_with_start_mkv(6, MDE_TRANSCODE_COPY, probe_bytes);
+        let sid = crate::plex::register_for_test(
+            "mde-remote-truehd-ids",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-remote-truehd-ids-client",
+        );
+        crate::plex::client_for(sid)
+            .expect("registered")
+            .set_link(crate::plex::probe::Location::Remote);
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.audio_sid = 1;
+        let mut item = fourk_item(
+            sid,
+            vec![
+                crate::metadata::Stream {
+                    id: 1,
+                    index: 0,
+                    lang_code: "eng".into(),
+                    codec: "truehd".into(),
+                    channels: 8,
+                    default: true,
+                    selected: true,
+                    ..Default::default()
+                },
+                crate::metadata::Stream {
+                    id: 2,
+                    index: 1,
+                    lang_code: "eng".into(),
+                    codec: "ac3".into(),
+                    channels: 6,
+                    ..Default::default()
+                },
+            ],
+        );
+        item.bitrate = 320;
+        env.cached_item = Some(item);
+        let _plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "truehd",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        let mde = requests
+            .iter()
+            .find(|line| line.contains("/decision?") && line.contains("hasMDE=1"))
+            .unwrap_or_else(|| panic!("MDE was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(mde, "audioStreamID"),
+            Some("2"),
+            "MDE must see the AC3 sibling, not env.audio_sid=1: {mde}"
+        );
+        let remux_probe = requests
+            .iter()
+            .find(|line| {
+                line.contains("start.mkv")
+                    || (line.contains("/decision?")
+                        && line.contains("directPlay=0")
+                        && !line.contains("hasMDE=1"))
+            })
+            .unwrap_or_else(|| panic!("remux probe was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(remux_probe, "audioStreamID"),
+            Some("2"),
+            "remux probe must name the AC3 sibling, not env.audio_sid=1: {remux_probe}"
+        );
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// A remux probe that registers `/decision` and then gets no `start.mkv` body must
+    /// physical-stop (`closeResourceSession=0`) so the HLS `/decision` on the same identity
+    /// is not 503'd. Closing the Streaming Resource would.
+    #[test]
+    fn remote_auto_failed_remux_sample_physical_stops_before_hls() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        if !crate::net::global_init() || !crate::curlio::available() {
+            return;
+        }
+        restore_quality(Quality::Auto);
+        let (port, rx, server) = plan_pms_with_start_mkv(8, MDE_TRANSCODE_COPY, 0);
+        let sid = crate::plex::register_for_test(
+            "mde-remote-truehd-stop",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-remote-truehd-stop-client",
+        );
+        crate::plex::client_for(sid)
+            .expect("registered")
+            .set_link(crate::plex::probe::Location::Remote);
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        let mut item = fourk_item(
+            sid,
+            vec![crate::metadata::Stream {
+                id: 36014,
+                index: 1,
+                lang_code: "eng".into(),
+                codec: "truehd".into(),
+                channels: 8,
+                default: true,
+                selected: true,
+                ..Default::default()
+            }],
+        );
+        item.bitrate = 320;
+        env.cached_item = Some(item);
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "truehd",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            requests.iter().any(|line| line.contains("start.mkv")),
+            "the remux probe still ran: {requests:?}"
+        );
+        let stop = requests
+            .iter()
+            .find(|line| line.contains("/transcode/universal/stop"))
+            .unwrap_or_else(|| panic!("failed remux sample must /stop: {requests:?}"));
+        assert_eq!(
+            query_param(stop, "closeResourceSession"),
+            Some("0"),
+            "physical-stop keeps the Streaming Resource for the HLS that follows: {stop}"
+        );
+        assert!(
+            !requests.iter().any(|line| {
+                line.contains("/transcode/universal/stop")
+                    && query_param(line, "closeResourceSession") == Some("1")
+            }),
+            "closeResourceSession=1 would 503 the next start: {requests:?}"
+        );
+        assert!(
+            !plan.remux,
+            "no remux sample → Auto falls through to HLS: {}",
             plan.url
         );
         restore_quality(Quality::Original);
