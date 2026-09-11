@@ -247,7 +247,7 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
   | `videoResolution` | query | no | string | `1920x1080` | ✅ |
   | `offset` | query | no | number | seconds, on seek/retranscode | ✅ |
   | `subtitleSize` | query | no | integer | `100` | ✅ |
-  | `subtitles` | query | no | enum(auto/burn/none/sidecar/embedded/segmented/unknown) | `burn` | ✅ |
+  | `subtitles` | query | no | enum(auto/burn/none/sidecar/embedded/segmented/unknown) | `burn` on transcode; `none` on MDE | ✅ |
   | `videoBitrate` / `peakBitrate` | query | no | integer | — | app instead sends `maxVideoBitrate` (D-6a) |
   | `transcodeSessionId` | query | no | string | — | app instead sends `session` (D-6b) |
   | `audioStreamID` / `subtitleStreamID` | — | — | — | app sends them | **not documented on this op** (D-7) |
@@ -274,7 +274,8 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
     `transcodeDecision`/`transcodeStart`. Their meaning splits on `directPlay`:
     - **MDE** (`hasMDE=1`, `directPlay=1`): both are load-bearing (smart-DP sibling as
       `audioStreamID`; `subtitleStreamID=0` so a sidecar or unadvertised codec does not burn).
-      Not safe to drop.
+      Always `subtitles=none` (client-rendered). Omitting it leaves PMS on `auto`, which 1.43.4
+      HTTP 400s when the part already has a selected subtitle. Not safe to drop.
     - **Transcode** start/decision (`directPlay=0`): PUT `/library/parts/{id}`
       (`libraryPutPartsPart`) remains the selection API; GET copies match that PUT.
 
@@ -303,7 +304,9 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
   `GET /video/:/transcode/universal/decision?hasMDE=1&directPlay=1` first so the session is
   admitted; smart-DP names the chosen AAC/AC3/EAC3 track as `audioStreamID` on that query, and
   the decision always carries `subtitleStreamID` (an advertised embedded client-rendered
-  id, or `0` so a selected sidecar or unadvertised codec does not force a burn). If
+  id, or `0` so a selected sidecar or unadvertised codec does not force a burn) and
+  `subtitles=none` (PMS 1.43.4 400s `hasMDE`+`directPlay` with a selected subtitle and
+  the default `auto`). If
   `/decision` is unreachable the app does **not**
   return the Part URL (that would 503); it remuxes or re-encodes instead. An explicit MDE
   `transcode` still remuxes when the video stream's own decision is `copy` or unnamed
@@ -389,7 +392,7 @@ These documented operations cover things the app currently improvises or doesn't
 | **D-6a** | transcode decision/start | `maxVideoBitrate` → spec name `videoBitrate` (or `peakBitrate`). | low |
 | **D-6b** | transcode decision/start | `session=` → spec name `transcodeSessionId` (+ `X-Plex-Session-Identifier` header). | low |
 | **D-6c** | transcode decision/start | `X-Plex-*` sent as query params; spec declares them as **headers** (`X-Plex-Client-Identifier` required). | low |
-| **D-7** | transcode decision/start | Undocumented `audioStreamID`/`subtitleStreamID` on the GET. **MDE** (`hasMDE=1`, `directPlay=1`): load-bearing (smart-DP sibling; `subtitleStreamID=0` so a sidecar does not burn) — do not drop. **Transcode** (`directPlay=0`): PUT `libraryPutPartsPart` is the selection API; GET copies match that PUT. | low |
+| **D-7** | transcode decision/start | Undocumented `audioStreamID`/`subtitleStreamID` on the GET. **MDE** (`hasMDE=1`, `directPlay=1`): load-bearing (smart-DP sibling; `subtitleStreamID=0` so a sidecar does not burn; `subtitles=none` so a selected subtitle does not 400) — do not drop. **Transcode** (`directPlay=0`): PUT `libraryPutPartsPart` is the selection API; GET copies match that PUT. | low |
 | **D-8a** | `/:/timeline` | App uses **GET**; spec verb is **POST** (`timelinePostSlash`). | medium |
 | **D-8b** | `/:/timeline` | `X-Plex-Client-Identifier` sent as query; spec = required **header**. | low |
 | **D-9** | `/video/:/transcode/universal/stop` | Undocumented endpoint (works); no spec drop-in. Nearest: `statusPostTerminate`. | low |

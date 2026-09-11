@@ -8597,6 +8597,19 @@ mod tests {
                                     .write_all(&vec![0x55; bytes])
                                     .expect("start.mkv body");
                             }
+                        } else if first.contains("/decision?")
+                            && first.contains("hasMDE=1")
+                            && first.contains("directPlay=1")
+                            && query_param(&first, "subtitles") != Some("none")
+                        {
+                            // PMS 1.43.4: hasMDE+directPlay with a selected subtitle and
+                            // subtitles=auto (the default when omitted) is HTTP 400.
+                            use std::io::Write;
+                            write!(
+                                socket,
+                                "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .expect("400");
                         } else {
                             let body = if first.contains("/decision?") {
                                 mde_body
@@ -8711,6 +8724,11 @@ mod tests {
             query_param(decision, "subtitleStreamID"),
             Some("0"),
             "no selectable embedded sub → explicit 0: {decision}"
+        );
+        assert_eq!(
+            query_param(decision, "subtitles"),
+            Some("none"),
+            "MDE must name client-rendered mode; auto 400s a selected sub: {decision}"
         );
         assert!(
             plan.url.contains("/library/parts/36013/"),
@@ -9093,8 +9111,9 @@ mod tests {
         crate::plex::reset_servers_for_test();
     }
 
-    /// TrueHD default `id=1` is what `env.audio_sid` still carries (play-path PUT / transcode_spec).
-    /// MDE and the remux probe must name the AC3 sibling `id=2` that smart-DP will actually feed.
+    /// TrueHD default `id=1` is what `env.audio_sid` still carries at resolve start.
+    /// MDE, the remux probe, the play-path PUT, and the installed start.mkv must all name the
+    /// AC3 sibling `id=2` that smart-DP will actually feed.
     #[test]
     fn remote_auto_truehd_remux_probe_names_the_ac3_sibling_not_env_audio_sid() {
         use std::time::Duration;
@@ -9145,7 +9164,7 @@ mod tests {
         );
         item.bitrate = 320;
         env.cached_item = Some(item);
-        let _plan = build_stream(
+        let plan = build_stream(
             "rk-4k",
             "/library/parts/36013/1/file.mkv",
             "hevc",
@@ -9179,6 +9198,26 @@ mod tests {
             query_param(remux_probe, "audioStreamID"),
             Some("2"),
             "remux probe must name the AC3 sibling, not env.audio_sid=1: {remux_probe}"
+        );
+        let put = requests
+            .iter()
+            .find(|line| line.contains("PUT /library/parts/"))
+            .unwrap_or_else(|| panic!("play-path PUT was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(put, "audioStreamID"),
+            Some("2"),
+            "PUT must select the AC3 sibling, not env.audio_sid=1: {put}"
+        );
+        assert!(
+            plan.url.contains("start.mkv"),
+            "Remote Auto remux installs start.mkv: {}",
+            plan.url
+        );
+        assert_eq!(
+            query_param(&plan.url, "audioStreamID"),
+            Some("2"),
+            "playback URL must name the AC3 sibling, not env.audio_sid=1: {}",
+            plan.url
         );
         restore_quality(Quality::Original);
         crate::plex::reset_servers_for_test();
@@ -9317,6 +9356,63 @@ mod tests {
         crate::plex::reset_servers_for_test();
     }
 
+    /// Selected embedded SRT is client-rendered on Original. MDE must name that stream id
+    /// *and* `subtitles=none`: 1.43.4 400s hasMDE+directPlay with a selected subtitle and
+    /// the default `auto`. The mock PMS rejects that shape, so omitting the mode fail-closes
+    /// into remux + PUT sub=0 (the selected subtitle disappears).
+    #[test]
+    fn selected_embedded_srt_names_id_and_client_rendered_mode_on_mde() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
+        let sid = crate::plex::register_for_test(
+            "mde-srt",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-srt-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.cached_item = Some(fourk_item_with_subs(
+            sid,
+            vec![eac3_track()],
+            vec![selected_sub(55001, "srt")],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        let decision = requests
+            .iter()
+            .find(|line| line.contains("/decision?"))
+            .unwrap_or_else(|| panic!("MDE was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(decision, "subtitleStreamID"),
+            Some("55001"),
+            "MDE must evaluate the SRT track Original will render: {decision}"
+        );
+        assert_eq!(
+            query_param(decision, "subtitles"),
+            Some("none"),
+            "client-rendered mode; auto is the 1.43.4 400: {decision}"
+        );
+        assert!(
+            plan.url.contains("/library/parts/36013/"),
+            "selected SRT must stay Original, not remux: {}",
+            plan.url
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
     /// Selected PGS is client-rendered on Original; MDE must see that stream id (and the profile
     /// must list pgs) so the decision stays directplay.
     #[test]
@@ -9353,6 +9449,11 @@ mod tests {
             query_param(decision, "subtitleStreamID"),
             Some("99001"),
             "MDE must evaluate the PGS track Original will render: {decision}"
+        );
+        assert_eq!(
+            query_param(decision, "subtitles"),
+            Some("none"),
+            "named bitmap still client-rendered, not auto/burn: {decision}"
         );
         assert!(
             plan.url.contains("/library/parts/36013/"),

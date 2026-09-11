@@ -358,6 +358,11 @@ impl Client {
     /// `subtitle_stream_id` is always sent: a positive id is an advertised embedded track Original
     /// will client-render; **0** tells MDE to evaluate with subs off so a selected sidecar or
     /// unadvertised codec does not force a burn/transcode. (`opt_int` would omit 0.)
+    ///
+    /// `subtitles=none` is the client-rendered mode. Omitting it leaves PMS on `auto`, and
+    /// 1.43.4 HTTP 400s `hasMDE`+`directPlay` when the part already has a selected subtitle
+    /// (`invalid subtitle setting 'auto'`). That `None` fail-closes Original into remux and a
+    /// PUT `subtitleStreamID=0`, which clears the selection. `burn` would force a transcode.
     pub fn mde_decision(
         &self,
         rating_key: &str,
@@ -378,7 +383,8 @@ impl Client {
             .str("session", session)
             .str("X-Plex-Session-Identifier", session)
             .opt_int("audioStreamID", audio_stream_id)
-            .int("subtitleStreamID", subtitle_stream_id);
+            .int("subtitleStreamID", subtitle_stream_id)
+            .str("subtitles", "none");
         let q = self
             .playback_identity(q)
             .str("X-Plex-Client-Profile-Name", "Generic")

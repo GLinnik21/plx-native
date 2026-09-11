@@ -901,7 +901,8 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // evaluate a TrueHD/DTS default and veto; naming the chosen AAC/AC3/EAC3 sibling on the
         // query is what keeps that class on Original. subtitleStreamID is an advertised embedded
         // track Original will client-render, or 0 so a sidecar / unadvertised codec does not
-        // force a burn. Same ids go on the remux probe so MDE and start.mkv name one track.
+        // force a burn. Same audio id goes on the remux probe, the play-path PUT, and
+        // transcode_spec so MDE / start.mkv / selection name one track.
         server_decision(client, rk, &session, audio_id, subtitle_id)
     };
     let mut directplay = mde.as_ref().is_some_and(|v| v.original);
@@ -1241,7 +1242,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // reasoning `remux` and `no_video_copy` carry: a seek and an audio switch rebuild this query
     // from `Session`, and one that dropped the ceiling would hand the encoder back the full
     // 4K/60 Mbps bound the moment the user touched the scrubber.
-    put_selection(env.sid, plan.part_id, env.audio_sid, env.sub_sid); // audio/subtitle selection drives the encode/remux + burn
+    // Same audio id MDE and the remux probe already named. `env.audio_sid` is the part default
+    // (TrueHD) at resolve start; putting that undoes smart-DP. Subtitle stays `env.sub_sid`:
+    // a positive id here is a burn, and Original client-renders instead.
+    put_selection(env.sid, plan.part_id, audio_id, env.sub_sid);
     if remux_probed && adaptive {
         // Probe registered start.mkv on this playback identity. HLS `/decision` reuses it;
         // closeResourceSession=1 would 503 the next start. A failed sample already stopped
@@ -1256,7 +1260,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         remux,
         no_video_copy,
         crate::plex::TranscodeOffset::Fresh,
-        env.audio_sid,
+        audio_id,
         env.sub_sid,
         plan.ceiling,
         plan.delivery,
