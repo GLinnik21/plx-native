@@ -1244,6 +1244,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         {
             app.refresh_hubs_at = 0;
             super::bridge::execute_endpoint_outcomes(
+                &mut app.pages,
                 crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints,
             );
             // …and every library's OWN shelves, for the same reason and at the same moment:
@@ -1545,7 +1546,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                         .unwrap_or_else(|| saved.playback_quality()),
                 );
                 let endpoints = install_pms(&c.origin, &c.token, c.tier, c.pin.as_ref());
-                super::bridge::execute_endpoint_outcomes(endpoints);
+                super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
                 // **A new user must never be able to walk BACK into the previous one's pages**,
                 // which is the fourth store an identity change must not survive beside the
                 // `browse`/`pms`/`person` resets `install_pms` performs. It was `trail.reset()`,
@@ -1695,18 +1696,19 @@ fn loop_requests(app: &mut App) {
             // whole of mounting the owned screen it lands on — see
             // `enter_profiles_from_onboard`'s doc.
             crate::screens::registry::LoopReq::AccountChangeProfile => {
-                crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
+                super::bridge::execute_session_command(&mut app.pages,
+                    crate::auth::SessionCmd::StartSwitch(crate::auth::Picker::ChangeProfile));
                 // **`switch_profile`, not a bare `Root(Profiles)`.** Every page of the outgoing
                 // profile is dropped with its `ReturnState` and its body — see
                 // `switching_profile_leaves_the_container_holding_nothing_of_the_previous_profile`.
                 super::bridge::switch_profile(&mut app.pages);
             }
             crate::screens::registry::LoopReq::AccountSignIn => {
-                crate::auth::start_login();
+                super::bridge::execute_session_command(&mut app.pages, crate::auth::SessionCmd::StartLogin);
                 super::bridge::nav_root(&mut app.pages, AppArg::Login);
             }
             crate::screens::registry::LoopReq::AccountSignOut => {
-                crate::auth::sign_out();
+                super::bridge::execute_session_command(&mut app.pages, crate::auth::SessionCmd::SignOut);
                 super::bridge::nav_root(&mut app.pages, AppArg::Login);
             }
             // The host route does NOT move: Settings is a surface presented over the same page,
@@ -1906,7 +1908,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // Home or off the detail page between pressing and the server answering, and the refresh
         // is owed either way. Invalidates from inside, per landing.
         let endpoints = crate::stores::viewstate::pump();
-        super::bridge::execute_endpoint_outcomes(endpoints);
+        super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
         crate::stores::person::pump();
         if let Some(keep) = crate::stores::viewstate::take_detail_refresh() {
             refresh_content(app, keep);

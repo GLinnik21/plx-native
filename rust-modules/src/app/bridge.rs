@@ -99,6 +99,15 @@ pub(crate) struct AppViews<'a> {
 #[derive(Default)]
 pub(crate) struct BridgeInit;
 
+/// Retained read inputs captured before construction. This is not a store decision owner.
+struct StorePublications {
+    hubs: crate::pms::HubsSnapshot,
+    listing: crate::stores::browse::ListingSnapshot,
+    directory: crate::stores::browse::DirectorySnapshot,
+    section_hubs: crate::stores::browse::HubsSnapshot,
+    search: crate::stores::search::SearchSnapshot,
+}
+
 impl LogicalState for BridgeInit {
     fn write(&self, _w: &mut Canon) {}
     fn probe(&self, out: &mut String) {
@@ -139,16 +148,14 @@ impl crate::stores::StoreEffectHost for AppHost {
     }
 }
 
-/// Transitional executor shared by boot and the dispatcher. R2B's physical Session owner
-/// replaces this execution with addressed Session delivery; no data module may call it.
-pub(crate) fn execute_session_command(command: crate::auth::SessionCmd) {
-    match command {
-        crate::auth::SessionCmd::RequestEndpoint { sid } => crate::auth::request_endpoint_refresh(sid),
-    }
+/// Queue an application command on the same drain as screen effects and worker observations.
+pub(crate) fn execute_session_command(d: &mut Dispatcher<AppHost>, command: crate::auth::SessionCmd) {
+    d.emit(MachineId::Nav, Fx::Deliver(MachineId::Session,
+        Delivery::Machine(AppMsg::Session(crate::auth::owner::SessionEvent::Command(command)))));
 }
 
-pub(crate) fn execute_endpoint_outcomes(endpoints: crate::stores::EndpointRefreshSet) {
-    execute_endpoint_outcomes_with(endpoints, execute_session_command);
+pub(crate) fn execute_endpoint_outcomes(d: &mut Dispatcher<AppHost>, endpoints: crate::stores::EndpointRefreshSet) {
+    execute_endpoint_outcomes_with(endpoints, |command| execute_session_command(d, command));
 }
 
 fn execute_endpoint_outcomes_with(
@@ -290,6 +297,28 @@ impl Bridge {
         init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter) -> Self {
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
         directory.capture();
+        Self::with_publications(measure, now_us, init, session_adapter, StorePublications {
+            hubs: crate::pms::hubs_snapshot(), listing: crate::stores::browse::listing_snapshot(),
+            directory, section_hubs: crate::stores::browse::hubs_snapshot(),
+            search: crate::stores::search::snapshot(),
+        })
+    }
+
+    #[cfg(test)]
+    fn for_session_test(init: crate::auth::SessionInit) -> Self {
+        static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
+        let adapter = super::adapters::session::SessionAdapter::fixture_with(init.persisted.clone());
+        Self::with_publications(&FIXTURE, || 0, init, adapter, StorePublications {
+            hubs: crate::pms::HubsSnapshot::empty_for_test(),
+            listing: crate::stores::browse::ListingSnapshot::empty_for_test(),
+            directory: Default::default(), section_hubs: crate::stores::browse::HubsSnapshot::empty_for_test(),
+            search: Default::default(),
+        })
+    }
+
+    fn with_publications(measure: &'static dyn Measure, now_us: fn() -> u64,
+        init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+        reads: StorePublications) -> Self {
         Self {
             session: crate::auth::SessionMachine::from_init(init),
             session_adapter,
@@ -299,11 +328,11 @@ impl Bridge {
             playback_live: false,
             video_plane: false,
             measure,
-            hubs: crate::pms::hubs_snapshot(),
-            listing: crate::stores::browse::listing_snapshot(),
-            directory,
-            section_hubs: crate::stores::browse::hubs_snapshot(),
-            search: crate::stores::search::snapshot(),
+            hubs: reads.hubs,
+            listing: reads.listing,
+            directory: reads.directory,
+            section_hubs: reads.section_hubs,
+            search: reads.search,
             chrome: super::chrome::ChromeSnapshot::default(),
             chrome_selection: 0,
             strip: crate::ui::widgets::StripRender::new(),
@@ -329,6 +358,15 @@ impl Bridge {
 
     pub(crate) fn take_reqs(&mut self) -> Vec<LoopReq> {
         std::mem::take(&mut self.reqs)
+    }
+
+    pub(crate) fn auth_read(&self) -> crate::auth::SessionRead<'_> { self.session.read() }
+
+    pub(crate) fn take_session_ready(&mut self) -> Option<crate::auth::ReadyCreds> {
+        let (epoch, scope, server, token) = self.session_ready.take()?;
+        if !self.session.ready_is_current(epoch, scope) { return None; }
+        Some(crate::auth::ReadyCreds { origin: server.origin(), token,
+            tier: server.tier, pin: server.resolve_pin() })
     }
 
     pub(crate) fn take_content_reqs(&mut self) -> Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)> {
@@ -926,7 +964,7 @@ impl Rig<AppHost> for Bridge {
         self.effect_return = ret;
     }
     fn app_fx(&mut self, from: MachineId, fx: AppFx, _parts: &CxParts<u32>, out: &mut Effects<'_, AppHost>) {
-        self.app_fx_with_session_executor(from, fx, out, execute_session_command);
+        self.app_effect(from, fx, out);
     }
     fn log(&mut self, line: &str) {
         crate::log(line);
@@ -981,11 +1019,10 @@ impl Rig<AppHost> for Bridge {
 }
 
 impl Bridge {
-    /// The production effect dispatch, with only the external Session executor injectable.
-    fn app_fx_with_session_executor(&mut self, from: MachineId, fx: AppFx,
-        out: &mut Effects<'_, AppHost>, execute: impl FnOnce(crate::auth::SessionCmd)) {
+    fn app_effect(&mut self, from: MachineId, fx: AppFx, out: &mut Effects<'_, AppHost>) {
         match fx {
-            AppFx::Session(command) => execute(command),
+            AppFx::Session(command) => out.push(Fx::Deliver(MachineId::Session,
+                Delivery::Machine(AppMsg::Session(crate::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
@@ -2374,14 +2411,227 @@ fn _measure_is_object_safe(m: &dyn Measure, s: &CStr) -> f32 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn session_stored_boot_publishes_before_handoff_without_saving_credentials() {
+        let stored = crate::plex::session::Session {
+            client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
+            server: crate::plex::session::ServerRef { machine_id: "synthetic-server".into(),
+                address: "192.0.2.1".into(), port: 32400, token: "synthetic-server-token".into(),
+                ..Default::default() },
+            user: crate::plex::session::UserRef { uuid: "synthetic-user".into(), title: "A".into(),
+                ..Default::default() }, ..Default::default()
+        };
+        assert!(stored.can_go_local());
+        let mut rig = Bridge::for_session_test(crate::auth::SessionInit::captured(stored));
+        // Stored boot installs the captured authority; it must not rewrite a more recent
+        // file merely to publish the initial profile and restore its granted registry.
+        rig.session_adapter.fixture_resources().disk.account_token = "synthetic-new-disk-token".into();
+        let mut d = Dispatcher::<AppHost>::new();
+        assert!(rig.take_session_ready().is_none());
+        execute_session_command(&mut d, crate::auth::SessionCmd::ResumeStored);
+        assert!(rig.session_adapter.fixture_resources().profile.is_none());
+        d.frame_with(&mut rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
+        let publication = rig.session_adapter.fixture_resources().profile.as_ref().unwrap();
+        assert_eq!(publication.profile.as_ref().unwrap().uuid, "synthetic-user");
+        assert_eq!(publication.scope.0, 1);
+        let ready = rig.take_session_ready().unwrap();
+        assert_eq!(ready.token, "synthetic-server-token");
+        assert!(rig.take_session_ready().is_none(), "the handoff is consumed exactly once");
+        assert_eq!(rig.session_adapter.fixture_resources().disk.account_token, "synthetic-new-disk-token");
+        execute_session_command(&mut d, crate::auth::SessionCmd::ResumeStored);
+        d.frame_with(&mut rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
+        assert_eq!(rig.session.read().0.scope.0, 1, "repeated bootstrap cannot allocate a second profile scope");
+        assert!(rig.take_session_ready().is_none());
+    }
+
+    #[test]
+    fn session_current_negative_commit_reply_unblocks_independent_carried_work() {
+        use crate::auth::owner::{AdmissionId, AdmissionState, Command, Identity, Pending,
+            SessionEvent, SessionOp, SessionWorkKey, StreamPhase};
+        use crate::auth::{AuthProgress, LoginProgress, RegistryProgress};
+        use crate::ui::machine::RequestId;
+        let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
+            client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
+            ..Default::default()
+        });
+        init.phase = crate::auth::Phase::Discovering;
+        init.next_req = 2;
+        let a_key = SessionWorkKey { epoch: 1, op: SessionOp::Login };
+        let b_key = SessionWorkKey { epoch: 1, op: SessionOp::ServerRoster };
+        for (req, key) in [(1, a_key), (2, b_key)] {
+            init.pending.insert(req, Pending { key, expected: Identity::of(&init.persisted),
+                lifecycle: None, last_arrival: None, phase: StreamPhase::Running, capture: None,
+                admission: AdmissionState::Awaiting(AdmissionId(req)) });
+        }
+        let expected = crate::auth::SessionIdentity::of(&init.persisted);
+        let mut rig = Bridge::for_session_test(init);
+        rig.session_adapter.launch(RequestId(1), a_key, true, |job| { job(); true }, |output| {
+            assert!(output.complete(LoginProgress::SignedIn { epoch: 1,
+                server: crate::plex::session::ServerRef { machine_id: "synthetic-server".into(),
+                    address: "192.0.2.1".into(), port: 32400, token: "synthetic-token".into(),
+                    ..Default::default() }, sources: Vec::new(), users: Vec::new() }.into()).is_ok());
+        }).unwrap();
+        rig.session_adapter.launch(RequestId(2), b_key, true, |job| { job(); true }, move |output| {
+            assert!(output.progress(AuthProgress::Registry(RegistryProgress::Install {
+                epoch: 1, expected: Some(expected), sources: Vec::new(), primary: None,
+            })).is_ok());
+            // Actual completion guard supplies the terminal; no test-only retirement path.
+        }).unwrap();
+        let records = rig.session_adapter.take_results();
+        assert_eq!(records.len(), 3);
+        let results = records.iter().cloned().map(|envelope| (envelope.addr,
+            AppMsg::Session(SessionEvent::Result(envelope)))).collect();
+        // The owner permit stays current, but latest disk identity refuses A's credential
+        // patch. B has a separate accepted request and must not be discarded with A.
+        rig.session_adapter.fixture_resources().disk.client_id = "synthetic-new-disk-identity".into();
+        let mut d = Dispatcher::<AppHost>::new();
+        for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 4 {
+            execute_session_command(&mut d, Command::DismissPinError);
+        }
+        let first = d.frame_with(&mut rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
+        assert!(first.carried > 0, "A's negative reply must actually cross the frame boundary");
+        assert!(rig.session.commit_is_current(1, 1, records[0].arrival));
+        assert_eq!(rig.session.snapshot_init().inbox.len(), 2);
+        assert_eq!(rig.session.read().0.phase, crate::auth::Phase::Discovering);
+        assert!(rig.session_adapter.fixture_resources().registry_writes.is_empty());
+        assert!(records.iter().all(|record| rig.session_adapter.admitted(record)));
+        d.frame_with(&mut rig, Tick { ms: 16, dt_us: 16_000 }, Vec::new(), Vec::new(), &mut NoTap, false);
+        assert_eq!(rig.session_adapter.fixture_resources().registry_writes.len(), 1,
+            "B's independent commit must execute after A's queued negative reply");
+        assert_eq!(rig.session_adapter.fixture_resources().disk.client_id, "synthetic-new-disk-identity");
+        let state = rig.session.snapshot_init();
+        assert!(state.pending.is_empty());
+        assert!(state.pending_commit.is_none());
+        assert!(state.inbox.is_empty());
+        assert!(!state.pump_pending);
+        assert!(records.iter().all(|record| !rig.session_adapter.admitted(record)));
+    }
+
+    #[test]
+    fn session_cancel_preserves_carried_receipts_until_unique_discard() {
+        use crate::auth::owner::{AdmissionId, AdmissionState, Command, Identity, Pending, Receipt,
+            SessionEvent, SessionFx, SessionOp, SessionWorkKey, StreamPhase};
+        use crate::auth::{AuthProgress, LoginProgress, RegistryProgress};
+        use crate::ui::machine::RequestId;
+        let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
+            client_id: "synthetic-client".into(), ..Default::default()
+        });
+        let key = SessionWorkKey { epoch: 1, op: SessionOp::Login };
+        init.next_req = 1;
+        init.pending.insert(1, Pending { key, expected: Identity::of(&init.persisted),
+            lifecycle: None, last_arrival: None, phase: StreamPhase::Running, capture: None,
+            admission: AdmissionState::Awaiting(AdmissionId(1)) });
+        let mut rig = Bridge::for_session_test(init);
+        rig.session_adapter.launch(RequestId(1), key, true, |job| { job(); true }, |output| {
+            assert!(output.progress(AuthProgress::Registry(RegistryProgress::Install {
+                epoch: 1, expected: None, sources: Vec::new(), primary: None,
+            })).is_ok());
+            assert!(output.complete(LoginProgress::Failed { epoch: 1, message: "synthetic".into() }.into()).is_ok());
+        }).unwrap();
+        let records = rig.session_adapter.take_results();
+        assert_eq!(records.len(), 2);
+        let a = records[0].clone();
+        let b = records[1].clone();
+        let old_ack = Receipt::of(&a);
+        let mut d = Dispatcher::<AppHost>::new();
+        for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 2 {
+            execute_session_command(&mut d, Command::DismissPinError);
+        }
+        d.emit(MachineId::Session, Fx::Deliver(MachineId::Session,
+            Delivery::Machine(AppMsg::Session(SessionEvent::Result(a.clone())))));
+        execute_session_command(&mut d, Command::EraseLocal);
+        d.emit(MachineId::Session, Fx::Deliver(MachineId::Session,
+            Delivery::Machine(AppMsg::Session(SessionEvent::Result(b.clone())))));
+        let first = d.frame_with(&mut rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
+        assert!(first.carried > 0);
+        assert_eq!(rig.session.read().0.phase, crate::auth::Phase::Deleted);
+        assert!(rig.session.snapshot_init().pending_commit.is_none());
+        assert!(rig.session_adapter.admitted(&b), "cancel cannot return a carried record's credit");
+
+        let next_key = SessionWorkKey { epoch: 2, op: SessionOp::Login };
+        rig.session_adapter.launch(RequestId(2), next_key, true, |job| { job(); true }, |output| {
+            assert!(output.complete(LoginProgress::Failed { epoch: 2, message: "synthetic-new".into() }.into()).is_ok());
+        }).unwrap();
+        // Return A's unique credit twice while B is still carried. Neither can release B.
+        rig.session_adapter.acknowledge(&[old_ack, old_ack]);
+        assert!(rig.session_adapter.take_results().is_empty());
+        assert!(rig.session_adapter.admitted(&b));
+        for record in [a, b.clone()] {
+            d.emit(MachineId::Session, Fx::Deliver(MachineId::Session,
+                Delivery::Machine(AppMsg::Session(SessionEvent::Result(record)))));
+        }
+        d.emit(MachineId::Session, Fx::App(AppFx::SessionEffect(SessionFx::Acknowledge(vec![old_ack]))));
+        d.frame_with(&mut rig, Tick { ms: 16, dt_us: 16_000 }, Vec::new(), Vec::new(), &mut NoTap, false);
+        assert!(!rig.session_adapter.admitted(&b));
+        let next = rig.session_adapter.take_results();
+        assert_eq!(next.len(), 1, "the next batch opens only after B's unique discard ACK");
+        rig.session_adapter.acknowledge(&[old_ack]);
+        assert!(rig.session_adapter.admitted(&next[0]), "late ACK cannot free a newer batch");
+        assert!(rig.session_adapter.fixture_resources().disk.account_token.is_empty());
+        assert!(rig.session_adapter.fixture_resources().registry_writes.iter()
+            .all(|write| matches!(write, crate::auth::owner::RegistryPlan::Revoke)));
+        assert!(rig.session.snapshot_init().pending_commit.is_none());
+    }
+
+    #[test]
+    fn two_session_bridges_dispatch_without_global_capture_or_a_serial_lock() {
+        use crate::auth::{Phase, SessionCmd, SessionInit};
+        let init = || SessionInit::captured(crate::plex::session::Session {
+            client_id: "synthetic-client".into(), ..Default::default()
+        });
+        let mut a = Bridge::for_session_test(init());
+        let mut b_init = init();
+        b_init.phase = Phase::Waiting;
+        b_init.pin_code = "BBBB".into();
+        b_init.qr_png = vec![2, 3, 4];
+        b_init.qr_gen = 7;
+        b_init.next_qr = 7;
+        let mut b = Bridge::for_session_test(b_init);
+        let retained_b = b.session.publication();
+        let before_b = b.session.subhash();
+        let mut da = Dispatcher::<AppHost>::new();
+        let mut db = Dispatcher::<AppHost>::new();
+        execute_session_command(&mut da, SessionCmd::StartLogin);
+        da.frame_with(&mut a, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
+        assert_eq!(a.session.read().0.phase, Phase::Creating);
+        assert_eq!(b.session.subhash(), before_b);
+        assert!(b.session_adapter.take_results().is_empty());
+        let results: AppResults = a.session_adapter.take_results().into_iter().map(|envelope|
+            (envelope.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope)))).collect();
+        assert_eq!(results.len(), 1, "fixture spawn refusal must use the production Landing terminal");
+        da.frame_with(&mut a, Tick { ms: 16, dt_us: 16_000 }, Vec::new(), results, &mut NoTap, false);
+        assert_eq!(a.session.read().0.phase, Phase::Error);
+        assert_eq!(b.session.subhash(), before_b);
+        assert!(std::sync::Arc::ptr_eq(&retained_b, &b.session.publication()));
+        execute_session_command(&mut db, SessionCmd::NoteDeleteLeftovers(3));
+        db.frame_with(&mut b, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
+        assert_eq!(a.session.read().0.delete_leftovers, 0);
+        assert_eq!(b.session.read().0.delete_leftovers, 3);
+        assert_eq!(retained_b.read().0.phase, Phase::Waiting);
+        assert_eq!(&*retained_b.read().0.code, "BBBB");
+        assert_eq!(&*retained_b.read().0.png, &[2, 3, 4]);
+        assert_eq!(retained_b.read().0.qr_generation, 7);
+        assert!(b.session_adapter.fixture_resources().registry_writes.is_empty());
+        assert!(a.session_adapter.fixture_resources().registry_writes.is_empty());
+        execute_session_command(&mut da, SessionCmd::EraseLocal);
+        da.frame_with(&mut a, Tick { ms: 32, dt_us: 16_000 }, Vec::new(), Vec::new(), &mut NoTap, false);
+        assert_eq!(a.session.read().0.phase, Phase::Deleted);
+        assert_eq!(a.session.read().0.scope.0, 1);
+        let published = a.session_adapter.fixture_resources().profile.as_ref().unwrap();
+        assert_eq!(published.scope.0, 1, "the adapter publishes the owner's explicit generation");
+        assert!(published.profile.is_none());
+        assert!(a.session_adapter.fixture_resources().disk.account_token.is_empty());
+        assert_eq!(b.session.read().0.scope.0, 0);
+        assert_eq!(b.session.read().0.phase, Phase::Waiting);
+        assert!(b.session_adapter.fixture_resources().profile.is_none());
+    }
+
+    #[test]
     fn session_registry_then_terminal_waits_for_queued_commit_replies() {
         use crate::auth::owner::{AdmissionId, AdmissionState, Identity, Pending, SessionOp,
             SessionWorkKey, StreamPhase};
         use crate::auth::{AuthProgress, LoginProgress, RegistryProgress};
         use crate::ui::machine::RequestId;
-        let _guard = crate::testlock::serial();
         for (success, carry) in [(true, false), (false, false), (true, true), (false, true)] {
-            let mut rig = Bridge::for_test(|| 0);
             let mut init = crate::auth::SessionInit::captured(crate::plex::session::Session {
                 client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
                 ..Default::default()
@@ -2392,8 +2642,7 @@ mod tests {
             init.pending.insert(1, Pending { key, expected: Identity::of(&init.persisted),
                 lifecycle: None, last_arrival: None, phase: StreamPhase::Running, capture: None,
                 admission: AdmissionState::Awaiting(AdmissionId(1)) });
-            rig.session_adapter = super::super::adapters::session::SessionAdapter::fixture_with(init.persisted.clone());
-            rig.session = crate::auth::SessionMachine::from_init(init);
+            let mut rig = Bridge::for_session_test(init);
             rig.session_adapter.launch(RequestId(1), key, true, |job| { job(); true }, move |output| {
                 for _ in 0..2 {
                     assert!(output.progress(AuthProgress::Registry(RegistryProgress::Install {
@@ -2538,13 +2787,15 @@ mod tests {
             for stamped in out {
                 let Fx::App(command @ AppFx::Session(_)) = stamped.fx
                     else { panic!("recovery was not translated into a Session command") };
-                rig.app_fx_with_session_executor(stamped.from, command, &mut fx, |command| {
-                    let crate::auth::SessionCmd::RequestEndpoint { sid } = command;
-                    executed.push(sid);
-                });
+                rig.app_fx(stamped.from, command, &parts, &mut fx);
             }
             drop(fx);
-            assert!(next.is_empty());
+            for stamped in next {
+                let Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::Session(
+                    crate::auth::owner::SessionEvent::Command(crate::auth::SessionCmd::RequestEndpoint { sid })))) = stamped.fx
+                    else { panic!("endpoint effect did not enter the owner's queued delivery path") };
+                executed.push(sid);
+            }
             assert_eq!(executed, expected);
             crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
             crate::viewstate::owe_hubs_refresh_for_test();
@@ -2585,7 +2836,8 @@ mod tests {
                 let endpoints = crate::app::boot::activate_server();
                 let mut boot_executed = Vec::new();
                 execute_endpoint_outcomes_with(endpoints, |command| {
-                    let crate::auth::SessionCmd::RequestEndpoint { sid } = command;
+                    let crate::auth::SessionCmd::RequestEndpoint { sid } = command
+                        else { panic!("boot emitted a non-endpoint command") };
                     boot_executed.push(sid);
                 });
                 assert_eq!(boot_executed, expected);

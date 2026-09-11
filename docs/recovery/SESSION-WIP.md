@@ -6,8 +6,8 @@ the audited integration recovery tree. No claim of an atomic application checkpo
 a compiling tree, or completed physical Session ownership is made.
 
 Worker base: `77fe6e8bbfaa6902b0f7e8b03a49ed3e6db35bcb` on `codex/p12-session-owner`.
-In-progress source checkpoint: `40e3022a65c6c8eb5148f4fa9186efdb57dea568`.
-Audited integration parent: `d9ecf3946648b6011257d94851a91f37b4d13429`.
+In-progress source checkpoint: `9776e84bef65fe372e5af58f24fe8bf8666f372f`.
+Audited integration parent: `55ac12bf3e1f4cc9ac7778db76031572b6981d52`.
 
 The worker still has production controller/mailbox migration, command/result and
 screen/bootstrap wiring, single publication and full regression proof outstanding.
@@ -23,9 +23,14 @@ The live worker files and index were not changed by this capture.
 - `rust-modules/src/app/bridge.rs`
 - `rust-modules/src/app/library_shelf_action_tests.rs`
 - `rust-modules/src/app/recorder.rs`
+- `rust-modules/src/app/run.rs`
 - `rust-modules/src/app/search_owned_tests.rs`
 - `rust-modules/src/auth.rs`
 - `rust-modules/src/auth/observation.rs`
 - `rust-modules/src/auth/owner.rs`
+- `rust-modules/src/browse/section_hubs.rs`
+- `rust-modules/src/browse/view.rs`
+- `rust-modules/src/dev/scenarios.rs`
 - `rust-modules/src/plex/session.rs`
+- `rust-modules/src/pms.rs`
 - `rust-modules/src/screens/registry.rs`

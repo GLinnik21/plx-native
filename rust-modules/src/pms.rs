@@ -377,6 +377,12 @@ pub(crate) fn hubs_snapshot() -> HubsSnapshot {
 }
 
 impl HubsSnapshot {
+    /// An explicit empty retained publication; fixture construction must not capture globals.
+    #[cfg(test)]
+    pub(crate) fn empty_for_test() -> Self {
+        Self { data: Arc::new(HomeCatalog::default()), generation: 0, state: HubState::Loading }
+    }
+
     pub(crate) fn view(&self) -> HubsView<'_> {
         HubsView { data: &self.data, generation: self.generation, state: self.state }
     }

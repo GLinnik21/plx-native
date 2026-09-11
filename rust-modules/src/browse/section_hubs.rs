@@ -131,6 +131,11 @@ pub(crate) struct HubsSnapshot {
 }
 
 impl HubsSnapshot {
+    #[cfg(test)]
+    pub(crate) fn empty_for_test() -> Self {
+        Self { data: None, id: None, publication: Publication::Fetching, revision: None }
+    }
+
     pub(crate) fn view(&self) -> HubsView<'_> {
         HubsView {
             shelves: self.data.as_deref().map(Vec::as_slice).unwrap_or(&[]),

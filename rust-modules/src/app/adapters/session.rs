@@ -20,7 +20,7 @@ pub(crate) enum SessionIngressError { BatchTooLarge, AddressMismatch, Unadmitted
 enum NativeEndpoint {
     Live(crate::auth::ClientLifecycle),
     #[cfg(test)]
-    Fixture(ServerLifecycle),
+    Fixture(EndpointCapture),
 }
 
 impl NativeEndpoint {
@@ -28,7 +28,7 @@ impl NativeEndpoint {
         match self {
             Self::Live(native) => native.logical(sid),
             #[cfg(test)]
-            Self::Fixture(native) => *native,
+            Self::Fixture(native) => native.lifecycle,
         }
     }
 }
@@ -183,7 +183,7 @@ impl SessionAdapter {
                 SessionReadRequest::Endpoint { sid } => {
                     let endpoint = resources.endpoints.get(&sid).cloned();
                     if let Some(captured) = &endpoint {
-                        self.native.insert(req, NativeEndpoint::Fixture(captured.lifecycle));
+                        self.native.insert(req, NativeEndpoint::Fixture(captured.clone()));
                     }
                     SessionReadValue::Endpoint(endpoint)
                 }
@@ -197,9 +197,19 @@ impl SessionAdapter {
             (Resources::Live { .. }, Some(NativeEndpoint::Live(native))) => native.is_current(expected),
             #[cfg(test)]
             (Resources::Fixture(resources), Some(NativeEndpoint::Fixture(captured))) =>
-                *captured == expected && resources.endpoints.get(&expected.sid)
-                    .is_some_and(|current| current.lifecycle == expected),
+                captured.lifecycle == expected && resources.endpoints.get(&expected.sid)
+                    .is_some_and(|current| current.lifecycle == expected && current.machine_id == captured.machine_id),
             _ => false,
+        }
+    }
+
+    fn endpoint_machine_matches(&self, req: u32, machine_id: &str) -> bool {
+        if machine_id.is_empty() { return false; }
+        match self.native.get(&req) {
+            Some(NativeEndpoint::Live(native)) => native.machine_id() == machine_id,
+            #[cfg(test)]
+            Some(NativeEndpoint::Fixture(captured)) => captured.machine_id == machine_id,
+            None => false,
         }
     }
 
@@ -212,7 +222,8 @@ impl SessionAdapter {
         }
         if plan.registry.iter().any(|operation| match operation {
             RegistryPlan::Activate { source, .. } => source.origin().is_none() || source.tier.is_none(),
-            RegistryPlan::Endpoint { expected, source } => plan.lifecycle != Some(*expected) || source.origin().is_none(),
+            RegistryPlan::Endpoint { expected, source } => plan.lifecycle != Some(*expected)
+                || source.origin().is_none() || !self.endpoint_machine_matches(permit.request(), &source.machine_id),
             _ => false,
         }) { return permit.reply(false); }
         match &mut self.resources {
@@ -512,6 +523,38 @@ mod tests {
         assert!(a.fixture_resources().registry_writes.is_empty());
         let captured = a.capture(2, 1, SessionReadRequest::ProfilePolicy);
         assert!(matches!(captured.value, SessionReadValue::ProfilePolicy { recently_unreachable: false }));
+    }
+
+    #[test]
+    fn endpoint_commit_rejects_another_machine_before_patching_disk() {
+        use crate::auth::owner::{CommitDelta, CredentialPatch, Identity, Pending, PendingCommit,
+            RegistryPlan, SessionInit, SessionMachine, StreamPhase};
+        let disk = crate::plex::session::Session { client_id: "synthetic-client".into(), ..Default::default() };
+        let lifecycle = ServerLifecycle { sid: 0, instance_gen: 11, token_gen: 12 };
+        let mut init = SessionInit::captured(disk.clone());
+        init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Endpoint(0) },
+            expected: Identity::of(&disk), lifecycle: Some(lifecycle), last_arrival: Some(1),
+            phase: StreamPhase::Running, capture: None, admission: crate::auth::owner::AdmissionState::Accepted(AdmissionId(1)) });
+        init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 1, terminal: true,
+            writes_credentials: true, receipt: None, delta: CommitDelta::default() });
+        let owner = SessionMachine::from_init(init);
+        let mut adapter = SessionAdapter::fixture_with(disk.clone());
+        adapter.fixture_resources().endpoints.insert(0, EndpointCapture {
+            lifecycle, machine_id: "machine-a".into(),
+        });
+        adapter.capture(1, 1, SessionReadRequest::Endpoint { sid: 0 });
+        let mut changed = disk.clone();
+        changed.account_token = "synthetic-new-token".into();
+        let plan = CommitPlan { expected_disk: Identity::of(&disk),
+            credentials: Some(CredentialPatch::of(&changed)), lifecycle: Some(lifecycle),
+            registry: vec![RegistryPlan::Endpoint { expected: lifecycle,
+                source: crate::plex::session::SourceRef { machine_id: "machine-b".into(),
+                    origin_url: "http://192.0.2.2:32400".into(), ..Default::default() } }],
+        };
+        assert!(!adapter.commit(owner.commit_permit(1, 1, 1).unwrap(), &plan).accepted,
+            "matching lifecycle cannot authorize repointing another machine");
+        assert!(adapter.fixture_resources().disk.account_token.is_empty());
+        assert!(adapter.fixture_resources().registry_writes.is_empty());
     }
 
     fn fill_batch(adapter: &mut SessionAdapter, first_req: u32, epoch: u64) {

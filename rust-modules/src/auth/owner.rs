@@ -125,6 +125,8 @@ pub(crate) struct CredentialPatch {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Command {
+    /// Restore the captured single-user boot authority without re-saving its credentials.
+    ResumeStored,
     StartLogin,
     Retry,
     RestartWait { phase: Phase, qr_generation: u64, reply: ReplyTo },
@@ -734,6 +736,20 @@ impl SessionMachine {
             registry: vec![RegistryPlan::Install { sources: next.sources.clone(), primary: None, replace: false }] };
         self.begin_commit(req, 0, true, plan, CommitDelta {
             credentials: Some(patch), activate_profile: true, ready: Some(false),
+            ..Default::default()
+        }, emit)
+    }
+
+    fn resume_stored(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool {
+        if self.state.phase != Phase::Idle || !self.state.persisted.can_go_local()
+            || self.state.pending_commit.is_some() { return false; }
+        let Some(req) = self.allocate(SessionOp::Ready, None) else { return false };
+        let plan = CommitPlan { expected_disk: self.state.committed_credentials.identity(),
+            credentials: None, lifecycle: None,
+            registry: vec![RegistryPlan::Install { sources: self.state.persisted.sources.clone(),
+                primary: None, replace: false }] };
+        self.begin_commit(req, 0, true, plan, CommitDelta {
+            phase: Some(Phase::Ready), activate_profile: true, ready: Some(false),
             ..Default::default()
         }, emit)
     }
@@ -1448,6 +1464,7 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
         let before = self.publication();
         let mut emit = |effect| fx.push(Fx::App(H::session_effect(effect)));
         let handled = match ev {
+            SessionEvent::Command(Command::ResumeStored) => self.resume_stored(&mut emit),
             SessionEvent::Command(Command::StartLogin) => self.restart_login(true, &mut emit),
             SessionEvent::Command(Command::Retry) => self.restart_login(false, &mut emit),
             SessionEvent::Command(Command::TakeReady) => self.take_ready(&mut emit),

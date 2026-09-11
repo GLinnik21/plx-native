@@ -1212,8 +1212,8 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
 pub(crate) fn pickuser_tick(app: &mut App) {
     if !(matches!(app.route(), AppArg::Profiles)
         && app.scenarios.pick_user.is_some()
-        && crate::auth::phase() == crate::auth::Phase::Profiles
-        && !crate::auth::users().is_empty())
+        && app.bridge.auth_read().0.phase == crate::auth::Phase::Profiles
+        && !app.bridge.auth_read().0.users.is_empty())
     {
         return;
     }
@@ -1222,7 +1222,7 @@ pub(crate) fn pickuser_tick(app: &mut App) {
     // because this call site cannot reach that method to ask it FOR us — see the phase-9 report
     // this arm's comment used to carry for the full account of why a protected roster index
     // refuses here rather than attempting a PIN-less switch plex.tv would refuse anyway.
-    let protected = crate::auth::users().get(idx).map(|u| u.protected).unwrap_or(false);
+    let protected = app.bridge.auth_read().0.users.get(idx).map(|u| u.protected).unwrap_or(false);
     if protected {
         crate::log(&format!(
             "pickuser: roster index {idx} is PROTECTED — refusing rather than attempting \
@@ -1231,7 +1231,8 @@ pub(crate) fn pickuser_tick(app: &mut App) {
         ));
     } else {
         crate::log(&format!("pickuser: auto-selecting roster index {idx}"));
-        crate::auth::select_profile(idx);
+        crate::app::bridge::execute_session_command(&mut app.pages,
+            crate::auth::SessionCmd::SelectProfile { index: idx, pin: None });
     }
 }
 

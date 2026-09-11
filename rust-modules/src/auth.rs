@@ -62,10 +62,8 @@ pub(crate) fn run_session_work(req: u32, key: owner::SessionWorkKey,
     }
 }
 
-/// Application command vocabulary; the concrete Session owner will receive this next stage.
-pub(crate) enum SessionCmd {
-    RequestEndpoint { sid: ServerId },
-}
+/// Application commands are the concrete owner's domain vocabulary, not global operations.
+pub(crate) use owner::Command as SessionCmd;
 
 /// Which stage the flow is in — the Login/Profiles screens switch on this each frame.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
@@ -1122,7 +1120,7 @@ enum ControllerIdentity {
 }
 
 impl SessionIdentity {
-    fn of(s: &Session) -> Self {
+    pub(crate) fn of(s: &Session) -> Self {
         Self {
             client_id: s.client_id.clone(),
             account_token: s.account_token.clone(),
@@ -1239,6 +1237,8 @@ pub(crate) struct ClientLifecycle {
 }
 
 impl ClientLifecycle {
+    pub(crate) fn machine_id(self) -> &'static str { self.client.machine_id() }
+
     pub(crate) fn capture(client: &'static crate::plex::Client) -> Self {
         Self { client, token_gen: client.token_gen() }
     }

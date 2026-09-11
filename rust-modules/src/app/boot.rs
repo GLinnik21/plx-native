@@ -606,8 +606,12 @@ pub(crate) unsafe fn boot(
     // auto-select that roster tile once it's up (headless exercise of the who's-watching flow).
     let pick_user: Option<usize> = crate::dev::scenarios::pickuser_index();
     let session = crate::plex::session::load();
-    let bridge = super::bridge::Bridge::new(crate::diag::heartbeat::now_us,
+    let mut bridge = super::bridge::Bridge::new(crate::diag::heartbeat::now_us,
         crate::auth::SessionInit::captured(session.clone()), &mt);
+    // Construct the one dispatcher before bootstrap commands; move this same queue into App.
+    let mut pages = crate::ui::dispatch::Dispatcher::with_transition(Box::new(
+        crate::ui::containers::transition::PageDip::new(),
+    ));
     // Install-wide playback preference, restored before any route can resolve a stream.
     // A legacy file with no value resolves to Original; a new file can choose Auto only
     // through route's explicit readiness gate (session::load records that decision once).
@@ -637,7 +641,7 @@ pub(crate) unsafe fn boot(
             Some(tier),
             None,
         );
-        super::bridge::execute_endpoint_outcomes(endpoints);
+        super::bridge::execute_endpoint_outcomes(&mut pages, endpoints);
         BootTo::Home
     } else if session.can_go_local() {
         if session.home_users.len() > 1 && (!automated_boot() || pick_user.is_some()) {
@@ -657,37 +661,28 @@ pub(crate) unsafe fn boot(
             log("boot: stored session — who's watching");
             BootTo::Profiles
         } else {
-            // The persisted roster FIRST, then the primary. This is the one boot path that does
-            // not go through `auth::start_switch` — a stored session with a single Plex Home
-            // user, or any automated run — so without this line it registered exactly one
-            // server and every share was invisible until the next sign-in: no second source in
-            // the Sources panel, no borrowed shelves, nothing to attribute. `install_roster`
-            // leaves `current` alone and sorts owned first, and `install_pms` below retargets to
-            // the session's own server regardless, so ordering cannot land us on a friend's box.
-            // Before, not after, because `install_pms` ends in the catalog + section fetch that
-            // turns a registered source into something on screen.
-            crate::auth::install_stored_roster(&session);
-            // WHO is watching, before anything reads a per-profile store. It drives the Home
-            // profile chip, and it is also what `browse::resolve_pins` and
-            // `search::recents` key on — `install_pms` below ends in the section fetch
-            // that resolves the Home selection, so set after it that resolve ran against the
-            // OWNER's record whoever was actually signed in. (`auth::take_ready`, the other
-            // way into Home, already sets it before its own `install_pms` for this reason.)
-            crate::plex::session::set_current(Some(session.user.clone()));
-            let endpoints = install_pms(
-                &session.server.origin(),
-                session.pms_token(),
-                session.server.tier,
-                session.server.resolve_pin().as_ref(),
-            );
-            super::bridge::execute_endpoint_outcomes(endpoints);
-            // Re-learn the roster only AFTER the spawn-time primary snapshot was installed.
-            // If a fast refresh re-pointed first, installing that stale snapshot afterwards
-            // put the dead origin back into the live registry for the rest of this run.
-            // Non-destructive on failure; the stored roster above remains available offline.
-            crate::auth::refresh_roster();
-            log("boot: stored session — local server (offline-capable)");
-            BootTo::Home
+            // The owner restores the granted roster and publishes WHO is watching before
+            // install_pms can read any per-profile stores. Stored boot does not re-save its
+            // credentials. This is the normal bounded dispatcher drain over the same owner
+            // and queue later moved into App, not a recursive bootstrap reducer.
+            super::bridge::execute_session_command(&mut pages, crate::auth::SessionCmd::ResumeStored);
+            pages.frame_with(&mut bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+                &mut crate::ui::dispatch::NoTap, false);
+            if let Some(ready) = bridge.take_session_ready() {
+                let endpoints = install_pms(&ready.origin, &ready.token, ready.tier, ready.pin.as_ref());
+                super::bridge::execute_endpoint_outcomes(&mut pages, endpoints);
+                // Refresh only AFTER installing the captured primary, so a fast accepted
+                // endpoint observation cannot be overwritten by that older boot snapshot.
+                super::bridge::execute_session_command(&mut pages, crate::auth::SessionCmd::RefreshRoster);
+                pages.frame_with(&mut bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+                    &mut crate::ui::dispatch::NoTap, false);
+                log("boot: stored session — local server (offline-capable)");
+                BootTo::Home
+            } else {
+                super::bridge::execute_session_command(&mut pages, crate::auth::SessionCmd::StartLogin);
+                log("boot: stored session could not be activated — starting QR sign-in");
+                BootTo::Login
+            }
         }
     } else {
         crate::auth::start_login();
@@ -1084,9 +1079,7 @@ pub(crate) unsafe fn boot(
         // **The application's page stack runs the route DIP** (§6.2). It ran `Immediate` until
         // phase 12 while `ui::nav` held a second fader and the loop applied its own route change
         // at THAT floor; `PageDip` is the same schedule in the container that owns the op.
-        pages: crate::ui::dispatch::Dispatcher::with_transition(Box::new(
-            crate::ui::containers::transition::PageDip::new(),
-        )),
+        pages,
         inputs: Vec::new(),
         bridge,
         // Every dev-trigger arm's own state (spec: `dev/scenarios.rs`'s module doc).
