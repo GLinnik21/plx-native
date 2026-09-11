@@ -11,7 +11,8 @@
 //! * **Information** is *"four facts the detail screen already prints in full behind the panel, so
 //!   they stay there"* — no alert, and (see below) no copy of them in this one either.
 //! * **Languages** — the audio list — *"belongs beside the bitrates in Track information"* (§1B),
-//!   so that column opens §1B rather than a panel of its own. `crate::screens::tracks_panel`.
+//!   so that column opens §1B rather than a panel of its own: the shared
+//!   [`crate::screens::registry::AppArg::TracksPanel`] route.
 //!
 //! Do not give columns 1 or 3 an alert from this note. The absence is the design.
 //!
