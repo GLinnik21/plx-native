@@ -64,6 +64,24 @@ pub(crate) fn clear_opaque_region() {
     }
 }
 
+/// Null the Wayland surface and display pointers on app background.
+///
+/// Called from the WILL/DID ENTER BACKGROUND lifecycle arm so that any frame still
+/// scheduled after the compositor takes the screen will find `G_WL_SURFACE` null and
+/// short-circuit in `clear_opaque_region` rather than calling `wl_proxy_marshal` on
+/// a proxy the compositor has already freed. `G_OPAQUE_SENT` is reset so the region
+/// is re-asserted once `sys_grab_wayland` repopulates the pointers on foreground return.
+pub(crate) fn sys_release_wayland() {
+    unsafe {
+        G_WL_SURFACE = std::ptr::null_mut();
+        G_WL_DISPLAY = std::ptr::null_mut();
+        #[cfg(not(feature = "hostsim"))]
+        {
+            G_OPAQUE_SENT = -1;
+        }
+    }
+}
+
 /// Service the glib main context that luna-service2 replies arrive on.
 ///
 /// A no-op on the simulator: glib is not linked and there is no luna bus to pump, so the loop

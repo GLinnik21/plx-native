@@ -532,6 +532,11 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         // Outside the player guard below on purpose: this is the OS taking the screen from
         // whatever is on it, not a fact about playback.
         app.pages.suspend();
+        // The compositor may destroy the wl_surface when it takes the screen. Null the
+        // cached Wayland pointers now so any frame that still runs before the loop gate
+        // drops will find G_WL_SURFACE null and short-circuit in clear_opaque_region
+        // rather than calling wl_proxy_marshal on a freed proxy (SIGSEGV, PLX-NATIVE-K).
+        crate::system::sys_release_wayland();
         if matches!(app.route, Route::Player) && !app.player.lifecycle.awaiting_load() {
             // INTENDED, not published: this snapshot is the only thing the foreground
             // restore has, and `suspend_bufferfeed` below drops the pending seek target
@@ -578,6 +583,10 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         // `Navigation::resume` is idempotent, so the pair is safe and a lost one is not.
         app.pages.resume();
         if et == 0x106 {
+            // Re-acquire the Wayland surface pointer: the compositor may have recreated the
+            // wl_surface since sys_release_wayland nulled it on background. This restores
+            // clear_opaque_region to normal operation before the first rendered frame.
+            crate::system::sys_grab_wayland(app.win);
             let activation = drive_foreground(
                 &mut app.player.lifecycle,
                 &mut app.player.session,
