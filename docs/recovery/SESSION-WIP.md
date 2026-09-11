@@ -27,3 +27,7 @@ The live worker files and index were not changed by this capture.
 - `rust-modules/src/auth/observation.rs`
 - `rust-modules/src/auth/owner.rs`
 - `rust-modules/src/screens/registry.rs`
+
+## Approved next implementation step
+
+[Session deferral contract](session-deferral-contract.md) records the parent decision for lossless bounded result ordering. It is a requirement, not a claim that this checkpoint implements it.
