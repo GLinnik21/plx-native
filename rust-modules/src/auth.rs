@@ -35,6 +35,9 @@ pub enum Phase {
     Switching,
     /// Credentials resolved — the main loop should install them and go Home.
     Ready,
+    /// Consent and Session revocation are effective in memory; their ordered durable tombstones
+    /// are still resolving on the shared persistence worker.
+    Resetting,
     /// A step failed; show the message and allow a retry.
     Error,
     /// All local state was erased. No worker runs until the user explicitly starts sign-in.
@@ -150,6 +153,7 @@ impl UserTile {
             thumb: self.thumb.clone(),
             protected: self.protected,
             admin: self.admin,
+            ..Default::default()
         }
     }
 }
@@ -202,6 +206,14 @@ struct Ctl {
     apply_pending: bool,
     persistence_warning: Option<PersistenceWarning>,
     prepared_handoff: bool,
+    /// Final whole-session write accepted by the bounded persistence FIFO. The receipt is polled
+    /// from [`take_ready`] only after both auth locks have been released.
+    final_persistence: Option<PendingSessionPersistence>,
+    final_persistence_submitting: bool,
+    discovery_persistence: Option<PendingDiscoveryPersistence>,
+    reset: Option<ResetState>,
+    reset_retry: Option<ResetDestination>,
+    reset_cleanup_warning: bool,
     // True only after THIS QR flow yielded an account token, and consumed after its eventual Ready
     // handoff. Besides choosing discovery retry, this is the one-shot authority which permits the
     // session layer to replace an envelope this launch could not open. `start_login` loads the old
@@ -263,6 +275,35 @@ struct Ctl {
     dev_link_outcome: Option<crate::net::CallOutcome>,
 }
 
+struct PendingSessionPersistence {
+    receipt: session::async_persistence::Receipt,
+    fresh: bool,
+    epoch: u64,
+    attempt: u64,
+}
+
+struct PendingDiscoveryPersistence {
+    receipt: session::async_persistence::Receipt,
+    fresh: bool,
+    epoch: u64,
+    attempt: u64,
+    users: Vec<UserTile>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResetDestination {
+    SignIn,
+    Deleted,
+}
+
+struct ResetState {
+    destination: ResetDestination,
+    attempt: u64,
+    consent: crate::telemetry::ConsentReceipt,
+    session: Option<session::async_persistence::Receipt>,
+    session_admission_failed: bool,
+}
+
 /// One attempt's sign-in trouble, held for [`trouble_snapshot`]/[`send_trouble_once`].
 struct Trouble {
     ctx: crate::telemetry::signin::SignInErrorContext,
@@ -281,6 +322,21 @@ struct Trouble {
 static SIGNIN_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PERSISTENCE_WARNING_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+static BEFORE_FINAL_PERSISTENCE_ADMISSION: Mutex<Option<Box<dyn FnOnce() + Send>>> =
+    Mutex::new(None);
+
+#[cfg(test)]
+fn run_before_final_persistence_admission_for_test() {
+    let hook = BEFORE_FINAL_PERSISTENCE_ADMISSION
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(hook) = hook {
+        hook();
+    }
+}
 
 fn next_attempt() -> u64 {
     SIGNIN_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1
@@ -446,10 +502,92 @@ fn consume_reauthentication_authority(c: &mut Ctl) -> bool {
     std::mem::take(&mut c.authorized_in_flow)
 }
 
+fn poll_reset() {
+    let Some(mut reset) = with_ctl(|c| c.reset.take()) else {
+        return;
+    };
+    let consent = reset.consent.poll();
+    let session = reset.session.as_mut().map(|receipt| receipt.poll());
+    let consent_pending = consent.write == crate::telemetry::PersistenceState::Pending;
+    let session_pending = matches!(session, Some(session::async_persistence::Poll::Pending { .. }));
+    if consent_pending || session_pending {
+        with_ctl(|c| {
+            if c.phase == Phase::Resetting && c.attempt == reset.attempt {
+                c.reset = Some(reset);
+            }
+        });
+        return;
+    }
+
+    let (session_durable, session_cleanup_failed) = match session {
+        Some(session::async_persistence::Poll::Complete(
+            session::async_persistence::Completion {
+                outcome:
+                    session::async_persistence::CompletionOutcome::Durable(
+                        session::async_persistence::Operation::Clear { cleanup_failed },
+                    ),
+                ..
+            },
+        )) => (true, cleanup_failed),
+        _ => (false, false),
+    };
+    let consent_durable = consent.write == crate::telemetry::PersistenceState::Durable;
+    if !consent_durable || !session_durable || reset.session_admission_failed {
+        log(&format!(
+            "auth: local account reset not durable consent={:?} consent_failure={:?} session_durable={session_durable}",
+            consent.write, consent.failure
+        ));
+        with_ctl(|c| {
+            if c.phase == Phase::Resetting && c.attempt == reset.attempt {
+                c.reset_retry = Some(reset.destination);
+                c.error = "The local account reset couldn't be saved. Try again.".into();
+                c.phase = Phase::Error;
+            }
+        });
+        return;
+    }
+
+    let cleanup_warning = session_cleanup_failed || consent.cleanup_failed();
+    log(&format!(
+        "auth: account revocation durable cleanup consent={:?} session_failed={session_cleanup_failed}",
+        consent.cleanup
+    ));
+    let landed = with_ctl(|c| {
+        if c.phase != Phase::Resetting || c.attempt != reset.attempt {
+            return false;
+        }
+        c.reset_retry = None;
+        match reset.destination {
+            ResetDestination::SignIn => {
+                *c = Ctl {
+                    reset_cleanup_warning: cleanup_warning,
+                    ..Ctl::default()
+                }
+            }
+            ResetDestination::Deleted => {
+                *c = Ctl {
+                    reset_cleanup_warning: cleanup_warning,
+                    ..deleted_ctl()
+                }
+            }
+        }
+        true
+    });
+    if landed && reset.destination == ResetDestination::SignIn {
+        start_login();
+    }
+}
+
 // ---- accessors the UI reads each frame ----
 
 pub fn phase() -> Phase {
+    poll_reset();
+    poll_discovery_persistence();
     with_ctl(|c| c.phase)
+}
+
+pub fn reset_cleanup_warning() -> bool {
+    with_ctl(|c| c.reset_cleanup_warning)
 }
 /// The flow's current attempt id (see `Ctl::attempt`'s own doc for what starts a new one).
 /// Exposed so a caller that captures it before starting async work OFF this flow — the
@@ -657,9 +795,14 @@ fn restart_discovery_ctl(c: &mut Ctl) {
 
 /// Begin the QR login: reset state, load the persisted `client_id`, and kick off the pin thread.
 pub fn start_login() {
+    if with_ctl(|c| c.phase == Phase::Resetting || c.reset_retry.is_some()) {
+        return;
+    }
+    let cleanup_warning = with_ctl(|c| c.reset_cleanup_warning);
     crate::diag::event(crate::diag::schema::DiagEvent::SignInStarted);
     let (epoch, ()) = begin_flow(|c| {
-        *c = fresh_login_ctl(session::load());
+        *c = fresh_login_ctl(session::begin_new_signin());
+        c.reset_cleanup_warning = cleanup_warning;
     });
     if !crate::task::spawn_small("login", move || login_thread(epoch)) {
         // Phase::Creating is a spinner with a worker behind it. Without the worker it never ends,
@@ -671,6 +814,10 @@ pub fn start_login() {
 /// Retry after [`Phase::Error`] — the explicit control on a settled read-out, which acts
 /// unconditionally because there is no live worker for it to race.
 pub fn retry() {
+    if let Some(destination) = with_ctl(|c| c.reset_retry.take()) {
+        forget_account(destination);
+        return;
+    }
     restart(None);
 }
 
@@ -1201,61 +1348,177 @@ pub(crate) fn reset_ctl_for_test() {
     with_ctl(|c| *c = Ctl::default());
 }
 
+fn completion_persist_outcome(
+    completion: session::async_persistence::Completion,
+) -> session::PersistOutcome {
+    use session::async_persistence::{CompletionOutcome, Failure, Operation};
+    match completion.outcome {
+        CompletionOutcome::Durable(Operation::Write(outcome))
+        | CompletionOutcome::Failed(Failure::Persistence(outcome)) => outcome,
+        CompletionOutcome::Durable(Operation::Clear { .. })
+        | CompletionOutcome::Uncertain { .. }
+        | CompletionOutcome::Failed(_)
+        | CompletionOutcome::Superseded => session::PersistOutcome::WriteFailed,
+    }
+}
+
+fn land_final_persistence(
+    epoch: u64,
+    attempt: u64,
+    fresh: bool,
+    outcome: session::PersistOutcome,
+) {
+    let applied = with_live_epoch(epoch, || {
+        with_ctl(|c| {
+            if c.attempt != attempt || c.phase != Phase::Ready || !c.apply_pending {
+                return false;
+            }
+            c.final_persistence = None;
+            c.final_persistence_submitting = false;
+            c.prepared_handoff = true;
+            if fresh {
+                update_fresh_persistence_warning(c, PersistenceWarningSite::Final, outcome);
+            }
+            true
+        })
+    });
+    if applied != Some(true) {
+        return;
+    }
+    if !outcome.persisted() {
+        log(&format!(
+            "session: sign-in is NOT persisted on this install ({}) — it will be asked again next launch",
+            outcome.wire()
+        ));
+    }
+    commit_sign_in_persist(outcome);
+}
+
+/// Poll the final save without holding either auth lock. Pending is a normal frame state; a
+/// disconnected worker is converted by the receipt into an explicit failed outcome.
+fn poll_final_persistence() {
+    let Some(mut pending) = with_ctl(|c| c.final_persistence.take()) else {
+        return;
+    };
+    match pending.receipt.poll() {
+        session::async_persistence::Poll::Pending { .. } => {
+            let _ = with_live_epoch(pending.epoch, || {
+                with_ctl(|c| {
+                    if c.attempt == pending.attempt
+                        && c.phase == Phase::Ready
+                        && c.apply_pending
+                    {
+                        c.final_persistence = Some(pending);
+                    }
+                })
+            });
+        }
+        session::async_persistence::Poll::Complete(completion) => {
+            land_final_persistence(
+                pending.epoch,
+                pending.attempt,
+                pending.fresh,
+                completion_persist_outcome(completion),
+            );
+        }
+    }
+}
+
+fn land_discovery_persistence(
+    epoch: u64,
+    attempt: u64,
+    fresh: bool,
+    users: Vec<UserTile>,
+    outcome: session::PersistOutcome,
+) {
+    let multiple = users.len() > 1;
+    let applied = with_live_epoch(epoch, || {
+        with_ctl(|c| {
+            if c.attempt != attempt || c.phase != Phase::Discovering {
+                return false;
+            }
+            c.discovery_persistence = None;
+            if fresh {
+                update_fresh_persistence_warning(c, PersistenceWarningSite::Discovery, outcome);
+            }
+            if multiple {
+                c.users = users;
+                c.phase = Phase::Profiles;
+                c.from = Picker::SignedIn;
+            } else {
+                c.phase = Phase::Ready;
+                c.apply_pending = true;
+            }
+            true
+        })
+    });
+    if applied != Some(true) {
+        return;
+    }
+    log(&format!(
+        "auth: sign-in saved at discovery — {}",
+        outcome.wire()
+    ));
+    note_sign_in_persist(outcome);
+    if multiple {
+        log("auth: showing who's-watching");
+    } else {
+        log("auth: single user — ready, entering Home");
+    }
+    finish_signin_completed();
+}
+
+fn poll_discovery_persistence() {
+    let Some(mut pending) = with_ctl(|c| c.discovery_persistence.take()) else {
+        return;
+    };
+    match pending.receipt.poll() {
+        session::async_persistence::Poll::Pending { .. } => {
+            let _ = with_live_epoch(pending.epoch, || {
+                with_ctl(|c| {
+                    if c.attempt == pending.attempt && c.phase == Phase::Discovering {
+                        c.discovery_persistence = Some(pending);
+                    }
+                })
+            });
+        }
+        session::async_persistence::Poll::Complete(completion) => land_discovery_persistence(
+            pending.epoch,
+            pending.attempt,
+            pending.fresh,
+            pending.users,
+            completion_persist_outcome(completion),
+        ),
+    }
+}
+
 pub fn take_ready() -> Option<ReadyCreds> {
+    poll_final_persistence();
+
+    enum Action {
+        None,
+        Handoff(Vec<SourceRef>, ReadyCreds),
+        Submit {
+            snapshot: Session,
+            fresh: bool,
+            epoch: u64,
+            attempt: u64,
+        },
+    }
+
     // Serialize the whole-session handoff with background roster reconciliation. In particular,
     // a picker opened from a pre-refresh snapshot must not save that snapshot over a refresh that
     // just landed, and sign-out must either precede this install or revoke it afterwards.
-    let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
-    let (sources, creds) = with_ctl(|c| {
+    let gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    let action = with_ctl(|c| {
         if c.prepared_handoff {
             if c.persistence_warning.is_some() {
-                return None;
+                return Action::None;
             }
             c.prepared_handoff = false;
             c.apply_pending = false;
             session::set_current(Some(c.session.user.clone()));
-            return Some((
-                c.session.sources.clone(),
-                ReadyCreds {
-                    origin: c.session.server.origin(),
-                    token: c.session.pms_token().to_owned(),
-                    tier: c.session.server.tier,
-                },
-            ));
-        }
-        if c.phase == Phase::Ready && c.apply_pending {
-            // A discovery failure must be acknowledged before this final fresh save can replace
-            // its diagnostic snapshot. Merely polling `take_ready` performs no work.
-            if c.persistence_warning.is_some() {
-                return None;
-            }
-            // **What the save DID, not merely that it failed.** Several branches leave the file
-            // untouched on purpose (a foreign envelope, a secure file this install may not
-            // replace) and one is a genuine write failure; they read identically as a bare
-            // "not persisted", which is how the 0.6.4 loop hid — a refusal that meant "the
-            // sign-in is gone at the next launch" looked exactly like "nothing needed writing".
-            // `session::save_locked` logs the branch and its reason on its own line; this line is
-            // the run-facing half and carries the outcome word so the two can be read together.
-            let fresh = consume_reauthentication_authority(c);
-            let outcome = if fresh {
-                // Consume the authority with this handoff. A later Change-profile flow mutates this
-                // same Ctl rather than replacing it; leaving the bit set would let a cached account
-                // token masquerade as another QR authorization and downgrade readable ciphertext.
-                session::save_after_reauthentication(&c.session)
-            } else {
-                session::save(&c.session)
-            };
-            if !outcome.persisted() {
-                session::publish_unpersisted(c.session.clone());
-                log(&format!(
-                    "session: sign-in is NOT persisted on this install ({}) — it will be asked again next launch",
-                    outcome.wire()
-                ));
-            }
-            // After the run-facing line, not before it: the event log then reads save → verdict →
-            // report, in the order somebody triaging a device log wants them.
-            commit_sign_in_persist(outcome);
-            let prepared = (
+            return Action::Handoff(
                 c.session.sources.clone(),
                 ReadyCreds {
                     origin: c.session.server.origin(),
@@ -1263,31 +1526,108 @@ pub fn take_ready() -> Option<ReadyCreds> {
                     tier: c.session.server.tier,
                 },
             );
-            if fresh {
-                update_fresh_persistence_warning(c, PersistenceWarningSite::Final, outcome);
-                if !outcome.persisted() {
-                    // Keep `apply_pending` true: reconciliation treats that as ownership by this
-                    // not-yet-finalized snapshot and therefore cannot write around the warning.
-                    c.prepared_handoff = true;
-                    return None;
-                }
-            }
-            c.apply_pending = false;
-            session::set_current(Some(c.session.user.clone())); // drives the Home profile chip
-            Some((
-                prepared.0,
-                prepared.1,
-            ))
-        } else {
-            None
         }
-    })?;
-    // Outside the CTL lock (but still inside the activation gate): registering touches the server
-    // registry (and, on a cold slot, reads the session file for the device id), and nothing here
-    // needs the flow state held while it does. `None` for the primary — the caller's own `plex::install` of these creds is what
-    // retargets `current`, and an owned entry registers first regardless.
-    install_roster(&sources, None);
-    Some(creds)
+        if c.phase == Phase::Ready && c.apply_pending {
+            // A discovery failure must be acknowledged before this final fresh save can replace
+            // its diagnostic snapshot. Merely polling `take_ready` performs no work.
+            if c.persistence_warning.is_some()
+                || c.final_persistence.is_some()
+                || c.final_persistence_submitting
+            {
+                return Action::None;
+            }
+            let fresh = consume_reauthentication_authority(c);
+            // Authority is consumed at admission, once. A warning acknowledgement releases the
+            // prepared handoff and never performs a second save.
+            c.final_persistence_submitting = true;
+            Action::Submit {
+                snapshot: c.session.clone(),
+                fresh,
+                epoch: network_epoch(),
+                attempt: c.attempt,
+            }
+        } else {
+            Action::None
+        }
+    });
+
+    if let Action::Handoff(sources, creds) = action {
+        // Still under the activation gate: sign-out either follows this registration and revokes
+        // it, or preceded this action and changed the epoch before it could be captured.
+        install_roster(&sources, None);
+        drop(gate);
+        return Some(creds);
+    }
+    let Action::Submit {
+        snapshot,
+        fresh,
+        epoch,
+        attempt,
+    } = action
+    else {
+        drop(gate);
+        return None;
+    };
+    // Keep the activation gate across only the bounded, nonblocking admission. A sign-out cannot
+    // advance the revocation floor between this epoch check and the old snapshot entering FIFO.
+    #[cfg(test)]
+    run_before_final_persistence_admission_for_test();
+    let submitted = if fresh {
+        session::save_after_reauthentication_with_receipt(snapshot.clone())
+    } else {
+        session::save_with_receipt(snapshot.clone())
+    };
+    match submitted {
+        Ok(receipt) => {
+            let pending = PendingSessionPersistence {
+                receipt,
+                fresh,
+                epoch,
+                attempt,
+            };
+            if network_epoch() == epoch {
+                with_ctl(|c| {
+                    if c.attempt == attempt && c.phase == Phase::Ready && c.apply_pending {
+                        c.final_persistence = Some(pending);
+                    }
+                });
+            }
+            drop(gate);
+        }
+        Err(error) => {
+            let applied = if network_epoch() == epoch {
+                with_ctl(|c| {
+                    if c.attempt != attempt || c.phase != Phase::Ready || !c.apply_pending {
+                        return false;
+                    }
+                    session::publish_unpersisted(snapshot);
+                    c.final_persistence_submitting = false;
+                    c.prepared_handoff = true;
+                    if fresh {
+                        update_fresh_persistence_warning(
+                            c,
+                            PersistenceWarningSite::Final,
+                            session::PersistOutcome::WriteFailed,
+                        );
+                    }
+                    true
+                })
+            } else {
+                false
+            };
+            let latest = session::latest_persistence_status();
+            drop(gate);
+            log(&format!(
+                "session: final persistence admission failed revision={:?} failure={:?} latest={}",
+                error.revision, error.failure, latest.latest_revision
+            ));
+            if applied {
+                log("session: sign-in is NOT persisted on this install (write_failed) — it will be asked again next launch");
+                commit_sign_in_persist(session::PersistOutcome::WriteFailed);
+            }
+        }
+    }
+    None
 }
 
 /// Open the "who's watching" picker: the boot gate (picker-at-start) and the Home profile menu's
@@ -1397,17 +1737,14 @@ pub fn start_switch(from: Picker) {
 /// slots are not reused, so nothing the new account registers can inherit the old one's per-server
 /// stores either.
 pub fn sign_out() {
-    forget_account();
-    with_ctl(|c| *c = Ctl::default());
-    start_login();
+    forget_account(ResetDestination::SignIn);
 }
 
 /// Forget credentials and every live server token without immediately minting a new client id or
 /// starting the Plex PIN flow. Settings' "Delete all local data" parks on [`Phase::Deleted`]; the
 /// login screen starts a fresh flow only after an explicit OK press.
 pub fn erase_local_state() {
-    forget_account();
-    with_ctl(|c| *c = deleted_ctl());
+    forget_account(ResetDestination::Deleted);
 }
 
 /// **Everything that ends an account's tenure on this television**, shared by [`sign_out`] and
@@ -1426,17 +1763,44 @@ pub fn erase_local_state() {
 /// be reported under the departed account's identifiers. Outside the gate, because `forget` takes
 /// the spool lock and the consent lock and nothing here should nest under the activation gate that
 /// it does not have to.
-fn forget_account() {
-    crate::telemetry::forget();
+fn forget_account(destination: ResetDestination) {
+    // Admission order is the cross-domain barrier: consent revocation enters the one shared FIFO
+    // first, then Session revocation. Neither operation waits here.
+    let consent = crate::telemetry::forget_with_receipt();
     // A sign-in event held back by an unanswered consent question belongs to the account whose
     // attempt caused it — never to whoever signs in next (issue #75's deferral, `diag::mod.rs`).
     crate::diag::clear_deferred();
-    let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    let gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
     AUTH_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    session::clear();
     crate::plex::revoke_all();
-    drop(_gate);
     session::set_current(None);
+    session::publish_unpersisted(Session::default());
+    let (session, session_admission_failed) = match session::clear_with_receipt() {
+        Ok(receipt) => (Some(receipt), false),
+        Err(error) => {
+            log(&format!(
+                "auth: Session reset admission failed revision={:?} failure={:?}",
+                error.revision, error.failure
+            ));
+            (None, true)
+        }
+    };
+    let attempt = next_attempt();
+    with_ctl(|c| {
+        *c = Ctl {
+            phase: Phase::Resetting,
+            attempt,
+            reset: Some(ResetState {
+                destination,
+                attempt,
+                consent,
+                session,
+                session_admission_failed,
+            }),
+            ..Ctl::default()
+        };
+    });
+    drop(gate);
 }
 
 fn deleted_ctl() -> Ctl {
@@ -1761,60 +2125,76 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64) {
         .map(UserTile::of)
         .collect();
     log(&format!("auth: home users n={}", users.len()));
-    let applied = with_live_epoch(epoch, || {
-        with_ctl(|c| c.session.home_users = users.iter().map(UserTile::to_ref).collect());
-        // Persist NOW — the account token + server + roster are durable the moment they exist.
-        // Waiting for take_ready() (a completed profile pick) meant abandoning the app at the
-        // picker lost the whole sign-in; next boot resumes at the picker instead.
-        let (snap, reauthenticated) = with_ctl(|c| (c.session.clone(), c.authorized_in_flow));
-        // **The FIRST of a sign-in's two saves, and the one a field report used to be blind to.**
-        // `save_locked` logs `session: persist outcome=…` for both of them and nothing said which
-        // was which, so this line names the site — the discovery thread's roster save, before any
-        // profile has been picked — and `note_sign_in_persist` carries the same verdict off the
-        // television. If the app closes at the picker before `take_ready`, this is the only save
-        // that can make the account/server discovery survive the next launch.
-        // Still under this attempt's epoch gate: only the PIN poll above can set the authority,
-        // and a superseding flow cannot lend its credential to this discovery result.
-        let outcome = if reauthenticated {
-            session::save_after_reauthentication(&snap)
-        } else {
-            session::save(&snap)
-        };
-        log(&format!(
-            "auth: sign-in saved at discovery — {}",
-            outcome.wire()
-        ));
-        note_sign_in_persist(outcome);
-        if reauthenticated {
-            with_ctl(|c| {
-                update_fresh_persistence_warning(c, PersistenceWarningSite::Discovery, outcome)
-            });
-        }
-        if users.len() > 1 {
-            log("auth: showing who's-watching");
-            // Sign-in reached a usable state. BOTH settling arms report it — this one and the
-            // single-user one below — because "did the QR flow work" is one question and a Plex
-            // Home roster is not a different answer to it.
-            finish_signin_completed();
-            with_ctl(|c| {
-                c.users = users;
-                c.phase = Phase::Profiles;
-                // The THIRD picker, and the one that does NOT go through `start_switch` — so it says
-                // which it is here, rather than inheriting whatever `start_login`'s reset left behind.
-                c.from = Picker::SignedIn;
-            });
-        } else {
-            // no Plex Home (or a single user): use the owner's server token as-is.
-            log("auth: single user — ready, entering Home");
-            finish_signin_completed();
-            with_ctl(|c| {
-                c.phase = Phase::Ready;
-                c.apply_pending = true;
-            });
-        }
-    });
-    if applied.is_none() {
+    let gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    if network_epoch() != epoch {
+        drop(gate);
         log("auth: sign-in result dropped — a newer flow owns the session");
+        return;
+    }
+    let Some((snap, reauthenticated, attempt)) = with_ctl(|c| {
+        if c.phase != Phase::Discovering {
+            return None;
+        }
+        c.session.home_users = users.iter().map(UserTile::to_ref).collect();
+        Some((c.session.clone(), c.authorized_in_flow, c.attempt))
+    }) else {
+        drop(gate);
+        log("auth: sign-in result dropped — the flow left discovery");
+        return;
+    };
+    // Short admission remains under the epoch gate, but no CTL guard and no disk wait does.
+    let submitted = if reauthenticated {
+        session::save_after_reauthentication_with_receipt(snap.clone())
+    } else {
+        session::save_with_receipt(snap.clone())
+    };
+    let mut admission_failed_applied = false;
+    match submitted {
+        Ok(receipt) => with_ctl(|c| {
+            if c.attempt == attempt && c.phase == Phase::Discovering {
+                c.discovery_persistence = Some(PendingDiscoveryPersistence {
+                    receipt,
+                    fresh: reauthenticated,
+                    epoch,
+                    attempt,
+                    users,
+                });
+            }
+        }),
+        Err(error) => {
+            session::publish_unpersisted(snap);
+            log(&format!(
+                "auth: discovery persistence admission failed revision={:?} failure={:?}",
+                error.revision, error.failure
+            ));
+            admission_failed_applied = with_ctl(|c| {
+                if c.attempt == attempt && c.phase == Phase::Discovering {
+                    if reauthenticated {
+                        update_fresh_persistence_warning(
+                            c,
+                            PersistenceWarningSite::Discovery,
+                            session::PersistOutcome::WriteFailed,
+                        );
+                    }
+                    if users.len() > 1 {
+                        c.users = users.clone();
+                        c.phase = Phase::Profiles;
+                        c.from = Picker::SignedIn;
+                    } else {
+                        c.phase = Phase::Ready;
+                        c.apply_pending = true;
+                    }
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+    }
+    drop(gate);
+    if admission_failed_applied {
+        note_sign_in_persist(session::PersistOutcome::WriteFailed);
+        finish_signin_completed();
     }
 }
 
@@ -2758,6 +3138,7 @@ fn resolve_roster_using(
                     // origin so boot can restore the same playback policy without guessing from
                     // an address.
                     tier: Some(c.location),
+                    ..Default::default()
                 };
                 // **`origin.log_form()`, not just `describe()`.** `SourceRef::describe` prints the
                 // diagnostic `address:port`, and both candidates of one connection carry the SAME
@@ -2884,6 +3265,7 @@ fn source_from_reach(
         port: c.port,
         token: plan.token.clone(),
         tier: Some(c.location),
+        ..Default::default()
     })
 }
 
@@ -2966,6 +3348,7 @@ fn discover_and_store(ac: &AccountClient, epoch: u64) -> Discovery {
         // Carried across from the roster entry, so the primary and its `sources` twin can never
         // disagree about where the same server is. `reconcile_primary` keeps them together later.
         origin_url: p.origin_url.clone(),
+        ..Default::default()
     };
     let applied = with_live_epoch(epoch, || {
         log(&format!(
@@ -3124,6 +3507,7 @@ fn server_ref(source: &SourceRef) -> ServerRef {
         token: source.token.clone(),
         tier: source.tier,
         origin_url: source.origin_url.clone(),
+        extensions: source.extensions.clone(),
     }
 }
 
@@ -3309,6 +3693,7 @@ fn apply_refreshed_endpoint(
         name: source.name.clone(),
         shared_by: source.shared_by.clone(),
         owned: source.owned,
+        extensions: source.extensions.clone(),
     };
     let changed = source.address != next.address
         || source.port != next.port
@@ -3890,6 +4275,7 @@ fn switch_thread(index: usize, pin: Option<String>) {
                     title: u.title.clone(),
                     thumb: tile.thumb.clone(),
                     token: primary.token.clone(),
+                    ..Default::default()
                 };
                 let applied = with_live_epoch(epoch, || {
                     crate::plex::revoke_for_profile_switch();
@@ -4229,24 +4615,30 @@ mod tests {
             saved: consent::current(),
         };
         crate::plex::session::redirect_for_test(Some(dir.join("auth.json")));
-        let consent_file = dir.join("telemetry.json");
-        crate::telemetry::redirect_for_test(Some(consent_file.clone()));
+        let legacy_consent_file = dir.join("telemetry.json");
+        let canonical_consent_file = dir.join("consent.json");
+        crate::telemetry::redirect_for_test(Some(legacy_consent_file.clone()));
         crate::telemetry::spool::set_test_path(Some(dir.join("spool.jsonl")));
 
         // Account A answers yes to both, which mints both identifiers and persists the decision.
-        crate::telemetry::record(consent::apply(
+        let mut consent_receipt = crate::telemetry::record_with_receipt(consent::apply(
             &consent::Consent::default(),
             true,
             true,
             || Some("a".repeat(32)),
         ));
+        crate::storage_worker::drain_for_test();
+        assert_eq!(
+            consent_receipt.poll().write,
+            crate::telemetry::PersistenceState::Durable
+        );
         assert!(consent::allows_usage() && consent::errors_id().is_some());
         assert!(
-            consent_file.exists(),
+            canonical_consent_file.exists(),
             "the decision was persisted for account A"
         );
 
-        forget_account();
+        forget_account(ResetDestination::Deleted);
 
         let after = consent::current().expect("a decision is always published");
         assert!(
@@ -4263,10 +4655,142 @@ mod tests {
             consent::should_ask(&after, false),
             "the next authorized sign-in must put the question on screen again"
         );
+        assert_eq!(phase(), Phase::Resetting);
+        crate::storage_worker::drain_for_test();
+        assert_eq!(phase(), Phase::Deleted);
         assert!(
-            !consent_file.exists(),
-            "the consent file outlived the sign-out and would resume A's decision at the next boot"
+            canonical_consent_file.exists(),
+            "sign-out leaves a canonical tombstone rather than deleting its terminal decision"
         );
+    }
+
+    struct ResetRedirects {
+        dir: std::path::PathBuf,
+    }
+
+    impl ResetRedirects {
+        fn new(tag: &str) -> Self {
+            crate::storage_worker::drain_for_test();
+            let dir = std::env::temp_dir().join(format!(
+                "plxnative-auth-reset-{tag}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let state = dir.join("state");
+            std::fs::create_dir_all(&state).unwrap();
+            crate::plex::session::redirect_for_test(Some(dir.join("auth.json")));
+            crate::telemetry::redirect_for_test(Some(state.join("telemetry.json")));
+            crate::telemetry::spool::set_test_path(Some(dir.join("spool.jsonl")));
+            Self { dir }
+        }
+    }
+
+    impl Drop for ResetRedirects {
+        fn drop(&mut self) {
+            crate::storage_worker::drain_for_test();
+            crate::telemetry::spool::set_test_path(None);
+            crate::telemetry::redirect_for_test(None);
+            crate::plex::session::redirect_for_test(None);
+            let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            AUTH_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            with_ctl(|c| *c = Ctl::default());
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn reset_waits_for_both_tombstones_and_retries_an_uncertain_barrier() {
+        let _g = crate::testlock::serial();
+        let _redirects = ResetRedirects::new("retry");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let blocker = crate::storage_worker::submit(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+        .unwrap();
+        entered_rx.recv().unwrap();
+        crate::storage::inject_next_commit_failure_for_test(
+            crate::storage::CommitStage::ParentSync,
+        );
+        forget_account(ResetDestination::Deleted);
+        assert_eq!(with_ctl(|c| c.phase), Phase::Resetting);
+        assert!(session::peek().account_token.is_empty());
+        assert!(session::current().is_none());
+        assert!(!crate::telemetry::consent::allows_usage());
+        release_tx.send(()).unwrap();
+        blocker.wait_blocking().unwrap();
+        crate::storage_worker::drain_for_test();
+        assert_eq!(phase(), Phase::Error, "uncertain consent clear blocks a new tenure");
+        start_login();
+        assert_eq!(phase(), Phase::Error, "direct QR start cannot bypass the barrier");
+        retry();
+        assert_eq!(with_ctl(|c| c.phase), Phase::Resetting);
+        crate::storage_worker::drain_for_test();
+        assert_eq!(phase(), Phase::Deleted);
+    }
+
+    #[test]
+    fn durable_reset_with_cleanup_residue_is_honest_but_does_not_block_relogin() {
+        let _g = crate::testlock::serial();
+        let redirects = ResetRedirects::new("cleanup-warning");
+        let aside = redirects.dir.join("auth.json.untrusted");
+        std::fs::write(&aside, b"obsolete-former-account-bytes").unwrap();
+        crate::plex::session::fail_next_cleanup_remove_for_test();
+        forget_account(ResetDestination::Deleted);
+        crate::storage_worker::drain_for_test();
+        assert_eq!(phase(), Phase::Deleted, "durable tombstones permit the next tenure");
+        assert!(reset_cleanup_warning());
+        assert!(aside.exists(), "the warning describes actual retained residue");
+        start_login();
+        assert_ne!(phase(), Phase::Deleted, "cleanup residue alone does not block reauth");
+    }
+
+    #[test]
+    fn signout_cannot_advance_the_epoch_between_ready_capture_and_fifo_admission() {
+        let _g = crate::testlock::serial();
+        let redirects = ResetRedirects::new("ready-signout-order");
+        with_ctl(|c| {
+            *c = Ctl {
+                phase: Phase::Ready,
+                apply_pending: true,
+                authorized_in_flow: true,
+                attempt: next_attempt(),
+                session: signed_in_as("u-adult"),
+                ..Ctl::default()
+            }
+        });
+        let (admitting_tx, admitting_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *BEFORE_FINAL_PERSISTENCE_ADMISSION
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Box::new(move || {
+            admitting_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        }));
+        let ready = std::thread::spawn(take_ready);
+        admitting_rx.recv().unwrap();
+        let (signed_out_tx, signed_out_rx) = mpsc::channel();
+        let signout = std::thread::spawn(move || {
+            forget_account(ResetDestination::Deleted);
+            signed_out_tx.send(()).unwrap();
+        });
+        assert!(
+            signed_out_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err(),
+            "sign-out cannot advance the epoch while ready admission owns the gate"
+        );
+        release_tx.send(()).unwrap();
+        assert!(ready.join().unwrap().is_none());
+        signout.join().unwrap();
+        crate::storage_worker::drain_for_test();
+        assert_eq!(phase(), Phase::Deleted);
+        assert!(session::peek().account_token.is_empty());
+        let record =
+            std::fs::read_to_string(redirects.dir.join("state/session.json")).unwrap();
+        assert!(record.contains(r#""state":"Cleared""#));
     }
 
     #[test]
@@ -6956,6 +7480,8 @@ mod tests {
                 ..Ctl::default()
             }
         });
+        assert!(take_ready().is_none(), "the save is admitted, never waited inline");
+        crate::storage_worker::drain_for_test();
         let ready = take_ready();
 
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -6984,6 +7510,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         crate::plex::session::redirect_for_test(Some(dir.join("auth.json")));
         crate::keymanager::disarm_for_test();
+        crate::storage::inject_next_commit_failure_for_test(
+            crate::storage::CommitStage::ParentSync,
+        );
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
         with_ctl(|c| {
             *c = Ctl {
@@ -6996,6 +7525,8 @@ mod tests {
             }
         });
 
+        assert!(take_ready().is_none(), "fresh credentials first enter the FIFO");
+        crate::storage_worker::drain_for_test();
         assert!(take_ready().is_none(), "fresh credentials pause behind the warning");
         let warning = pending_persistence_warning().expect("failed fresh save warning");
         assert_eq!(warning.site, PersistenceWarningSite::Final);

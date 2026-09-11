@@ -7772,6 +7772,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         continue;
                     }
 
+                    // This result belongs to the decision, not the route that submitted it. Once
+                    // admitted through the shared Popover registry it is the top modal even after
+                    // the consent route has closed.
+                    if crate::ui::consent::persistence_notice_visible() {
+                        crate::ui::consent::persistence_notice_key(sym, wcode);
+                        continue;
+                    }
+
                     // ---- the route-scoped arms, each of which `continue`s once it has taken the
                     // press. That makes the chain itself the priority statement: an earlier guard
                     // subsumes each later one it overlaps with, which the playback-failure guard
@@ -8145,6 +8153,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     ptr.prev_mx = mx;
                     ptr.prev_my = my;
+                    if crate::ui::consent::persistence_notice_visible() {
+                        crate::ui::consent::persistence_notice_pointer_focus(mx, my);
+                        continue;
+                    }
                     if jail_failure_subject(route) && jail_repair.visible() {
                         continue;
                     }
@@ -8282,6 +8294,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if ok_armed {
                         crate::ui::press::cancel();
                         ok_armed = false;
+                    }
+                    if crate::ui::consent::persistence_notice_visible() {
+                        let (cx, cy) = ptr_xy(&ev);
+                        crate::ui::consent::persistence_notice_press_at(cx, cy);
+                        continue;
                     }
                     if jail_failure_subject(route) && jail_repair.visible() {
                         let (cx, cy) = ptr_xy(&ev);
@@ -10417,6 +10434,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // Self-gated like the alert, and for the same reason: not a route, so there is no
             // route term to test it with.
             crate::ui::legal::update(dt);
+            crate::ui::consent::poll_persistence(!crate::ui::popover::any_open());
             crate::ui::consent::update(dt);
             crate::ui::settings::update(dt);
             let jail_subject = jail_failure_subject(route);
@@ -10991,6 +11009,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                         }
                         crate::ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
+                        crate::ui::consent::draw_persistence_notice();
                                                          // The lab upload read-out, over everything, on every route — including the
                                                          // player, where the two branches above diverge and this one must not.
                         crate::lab::draw();

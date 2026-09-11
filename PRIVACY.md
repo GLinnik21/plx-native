@@ -32,9 +32,10 @@ random Analytics ID if you turned product analytics on, any report waiting to be
 marker recording how much of the crash log has already been read.
 It keeps no bookmark of its own for where you stopped watching: playback position is held by your
 Plex Media Server. The Settings screen can sign out and remove PlxNative data from this television.
-On installs where the external candidates are unavailable, the packaged application directory also
-contains `state/auth.json` for the session and `state/telemetry.json` for the reporting decision;
-the package supplies that directory empty, and runtime files created there are not package payload.
+The packaged application directory contains an empty `state/` directory. The canonical session and
+reporting-decision records are `state/session.json` and `state/consent.json`; older external and
+app-local `auth.json`/telemetry paths are migration candidates only. Runtime records are not package
+payload.
 
 Your sign-in is protected with this television's own key service when one is available and this
 install has shown it can be trusted: the app checks, on a later launch, that the television's key
@@ -52,8 +53,10 @@ many launches in a row have gone unanswered, so a key service that never comes b
 than asking forever; it is removed as soon as one launch reads the sign-in successfully, and it too
 carries no key material.
 
-Those lifetimes differ. Signing out removes the sign-in, the servers registered with it and their
-tokens — and with them your optional-reporting answers, both identifiers and any queued report,
+Those lifetimes differ. Signing out clears the in-memory sign-in and writes a non-identifying
+canonical cleared record so the app will not re-import the old account; it attempts to remove the
+old sign-in material, servers registered with it and their tokens — and with them your
+optional-reporting answers, both identifiers and any queued report,
 because those choices were made by the person who signed in and say nothing about whoever signs
 in next: the next sign-in is asked afresh. Switching between the profiles of one Plex account is
 not a sign-out and keeps them. A queued report is deleted once sent. Switching a category off
@@ -61,8 +64,10 @@ deletes that category's own queued reports; signing out, or Delete all local dat
 everything queued, including a one-off report you already pressed "Send" for — a one-off report
 belongs to no category, so only those two erase it. The log rotates continuously. External candidate
 files can survive an uninstall because webOS gives an application no way to run code as it is
-removed; the packaged app directory, including its `state/auth.json` and `state/telemetry.json`
-files, is removed with the application. Use Delete all local data before uninstalling if you also
+removed; the packaged app directory is removed with the application, while external migration
+sources may remain. Cleanup is attempted, but a failure can leave obsolete material behind. Delete
+all local data writes the same non-identifying cleared record and attempts to remove recoverable
+session material before uninstalling if you also
 want external PlxNative data removed.
 
 ## Optional crash reports

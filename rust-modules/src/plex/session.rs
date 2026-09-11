@@ -121,7 +121,19 @@ use super::origin::Origin;
 use super::probe::Location;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
+
+#[cfg(test)]
+mod migration_tests;
+pub(crate) mod async_persistence;
+mod persistence;
+
+#[cfg(test)]
+pub(crate) fn commit_canonical_payload_for_test(payload: String) -> bool {
+    matches!(persistence::commit_data(payload), persistence::CanonicalCommit::Durable { .. })
+}
 
 /// The signed-in profile, in-memory for the UI (the Home profile chip reads this). Set by the boot
 /// gate (from the stored session) and on every profile switch, so it survives an offline boot.
@@ -146,8 +158,9 @@ pub fn current_gen() -> u32 {
     CURRENT_GEN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Session file locations, best first — see [`crate::paths::session_candidates`] for why this is a
-/// SEARCH ORDER rather than the single constant it used to be. The short version: webOS picks one
+/// Legacy session file locations, best first — see [`crate::paths::session_candidates`] for why
+/// this remains a migration SEARCH ORDER rather than the canonical destination. The canonical
+/// `state/session.json` record is prepended by the production adapter. The short version: webOS picks one
 /// of two jail profiles by install prefix, and they disagree about which directories are writable,
 /// so the one hardcoded path was correct under Developer Mode and did not exist under a Homebrew
 /// Channel install — where `save()` then dropped the error and the user re-did the QR sign-in on
@@ -178,6 +191,8 @@ fn auth_paths() -> Vec<std::path::PathBuf> {
 /// path, so a careless test would leave a credentials-shaped file in `target/`.
 #[cfg(test)]
 static TEST_FILE: Mutex<Option<Vec<std::path::PathBuf>>> = Mutex::new(None);
+static LAST_LEGACY_SOURCE: Mutex<Option<(std::path::PathBuf, Vec<u8>)>> = Mutex::new(None);
+static UNCERTAIN_LEGACY_SOURCE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 
 /// The test build's [`auth_candidates`]: a redirected candidate belongs to no jail tier at all, so
 /// it is [`CandidateCategory::Other`] — the variant that exists for exactly this. Deriving the
@@ -187,7 +202,10 @@ static TEST_FILE: Mutex<Option<Vec<std::path::PathBuf>>> = Mutex::new(None);
 #[cfg(test)]
 fn auth_candidates() -> Vec<(std::path::PathBuf, CandidateCategory)> {
     match TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-        Some(v) => v.into_iter().map(|p| (p, CandidateCategory::Other)).collect(),
+        Some(v) => v
+            .into_iter()
+            .map(|p| (p, CandidateCategory::Other))
+            .collect(),
         None => crate::paths::session_candidates()
             .into_iter()
             .map(|(p, tier)| (p, CandidateCategory::of(tier)))
@@ -200,15 +218,42 @@ fn auth_candidates() -> Vec<(std::path::PathBuf, CandidateCategory)> {
 /// cannot exercise "the locked envelope is not at `auth_paths()[0]`" at all.
 #[cfg(test)]
 fn redirect_for_test_multi(paths: Vec<std::path::PathBuf>) {
+    crate::storage_worker::drain_for_test();
+    async_persistence::reset_for_test();
+    let mut root = paths
+        .first()
+        .and_then(|path| path.parent())
+        .map(std::path::Path::to_path_buf);
+    for path in paths.iter().skip(1) {
+        while root
+            .as_ref()
+            .is_some_and(|candidate| !path.starts_with(candidate))
+        {
+            if !root.as_mut().is_some_and(std::path::PathBuf::pop) {
+                root = None;
+                break;
+            }
+        }
+    }
+    crate::paths::redirect_persistent_state_root_for_test(root.map(|parent| parent.join("state")));
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(paths);
+    *UNCERTAIN_LEGACY_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     clear_cache();
     LOCKED_STATE.store(NOT_LOCKED, std::sync::atomic::Ordering::Relaxed);
     *LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
     LAST_CLASS.store(CLASS_UNKNOWN, std::sync::atomic::Ordering::Relaxed);
     UNAVAILABLE_NOTED.store(false, std::sync::atomic::Ordering::Relaxed);
-    *LAST_FRESH_READBACK.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    FRESH_WRITE_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    FRESH_SAVE_ERRORS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    *LAST_FRESH_READBACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    FRESH_WRITE_ATTEMPTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    FRESH_SAVE_ERRORS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     *COLD_SESSION_FACTS.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *COLD_STORAGE_DIAGNOSTIC
         .lock()
@@ -231,7 +276,19 @@ fn redirect_for_test_multi(paths: Vec<std::path::PathBuf>) {
 /// own.
 #[cfg(test)]
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
+    crate::storage_worker::drain_for_test();
+    async_persistence::reset_for_test();
+    let state_root = p.as_ref().and_then(|path| path.parent()).map(|parent| {
+        let path = p.as_ref().expect("path was present");
+        if path_file_is_canonical(path) {
+            parent.to_path_buf()
+        } else {
+            parent.join("state")
+        }
+    });
+    crate::paths::redirect_persistent_state_root_for_test(state_root);
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p.map(|p| vec![p]);
+    *UNCERTAIN_LEGACY_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     clear_cache();
     LOCKED_STATE.store(NOT_LOCKED, std::sync::atomic::Ordering::Relaxed);
     *LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -240,43 +297,58 @@ pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
     // a redirect is how a test spells "a new launch against the same files", and the bounded
     // escalation that gate protects is counted in launches (see `note_service_unavailable`).
     UNAVAILABLE_NOTED.store(false, std::sync::atomic::Ordering::Relaxed);
-    *LAST_FRESH_READBACK.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    FRESH_WRITE_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    FRESH_SAVE_ERRORS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    *LAST_FRESH_READBACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    FRESH_WRITE_ATTEMPTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    FRESH_SAVE_ERRORS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     *COLD_SESSION_FACTS.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *COLD_STORAGE_DIAGNOSTIC
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = None;
 }
 
-/// **One in-process copy of the session.** Published by every successful [`load`], [`save_locked`]
-/// (after a write actually lands) and [`update`] — every writer in this process goes through this
-/// module under [`IO`], so this cache can never go stale relative to what THIS process itself last
-/// wrote; the file only ever moves under a peer process's feet if a second copy of the app is
+#[cfg(test)]
+fn path_file_is_canonical(path: &std::path::Path) -> bool {
+    path.file_name().is_some_and(|name| name == "session.json")
+        && path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .is_some_and(|name| name == "state")
+}
+
+/// **One in-process copy of the session.** Synchronous load/save/update paths publish explicitly;
+/// asynchronous writes publish at admission, never from their later disk completion. Every writer
+/// in this process goes through this module, so the snapshot cannot be overwritten by an older
+/// completion. The file only ever moves under a peer process's feet if a second copy of the app is
 /// running against it, which is not a case this app supports. [`peek_locked`] serves straight from
 /// here once anything has been published, which is what stops the account chip, the menu and every
 /// other reader from re-decrypting the file (and re-paying keymanager3's multi-second LS2 budget)
 /// on every keypress. [`clear`] (sign-out) empties it.
-static CACHE: Mutex<Option<Session>> = Mutex::new(None);
+static CACHE: std::sync::RwLock<Option<Session>> = std::sync::RwLock::new(None);
 
 fn cached() -> Option<Session> {
-    CACHE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    CACHE.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 fn publish_cache(s: Session) {
-    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some(s);
+    *CACHE.write().unwrap_or_else(|e| e.into_inner()) = Some(s);
 }
 
 fn clear_cache() {
-    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *CACHE.write().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// **Stage B2 (issue #76 field report case 6): publish `s` for THIS RUN even though nothing was
-/// persisted.** [`save_locked`] only calls [`publish_cache`] once a write actually lands, so a save
-/// whose every candidate path refused the write leaves [`CACHE`] untouched — and [`peek_locked`]'s
-/// cold-cache fallback then reads back off DISK, landing on `Session::default()` (nothing there to
-/// read), which is `signed_in()` answering false for a run that just signed in. `auth::take_ready`
-/// calls this when [`save`] returns `false`, so the account chip and everything else `peek` feeds
+/// persisted.** The disk-only persistence half never publishes, because a later asynchronous
+/// completion must not overwrite a newer admitted snapshot. `auth::take_ready` calls this when a
+/// synchronous [`save`] returns `false`, so the account chip and everything else `peek` feeds
 /// answers correctly for the rest of THIS launch — the write failure is real and is reported
 /// separately (see `save_locked`'s own `report_write_failed`), but it must not also make the run
 /// itself lie about who is signed in.
@@ -408,29 +480,39 @@ struct PendingReport {
 static PENDING_REPORTS: Mutex<Vec<PendingReport>> = Mutex::new(Vec::new());
 
 fn queue_report(ctx: crate::telemetry::storage::StorageErrorContext) {
-    PENDING_REPORTS.lock().unwrap_or_else(|e| e.into_inner()).push(PendingReport {
-        context: ctx,
-        candidate_reads: None,
-        candidate: None,
-    });
+    PENDING_REPORTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(PendingReport {
+            context: ctx,
+            candidate_reads: None,
+            candidate: None,
+        });
 }
 
 fn queue_report_for_candidate(
     ctx: crate::telemetry::storage::StorageErrorContext,
     candidate: CandidateCategory,
 ) {
-    PENDING_REPORTS.lock().unwrap_or_else(|e| e.into_inner()).push(PendingReport {
-        context: ctx,
-        candidate_reads: None,
-        candidate: Some(candidate),
-    });
+    PENDING_REPORTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(PendingReport {
+            context: ctx,
+            candidate_reads: None,
+            candidate: Some(candidate),
+        });
 }
 
 /// Bind the completed candidate summary to reports raised by this cold read while [`IO`] is still
 /// held. A later save can queue and drain on another thread, but it can no longer steal this load's
 /// evidence because the string travels with the report it describes.
 fn attach_candidate_reads_to_pending(reads: &str) {
-    for report in PENDING_REPORTS.lock().unwrap_or_else(|e| e.into_inner()).iter_mut() {
+    for report in PENDING_REPORTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter_mut()
+    {
         if report.candidate_reads.is_none() {
             report.candidate_reads = Some(reads.to_string());
         }
@@ -443,7 +525,8 @@ fn attach_candidate_reads_to_pending(reads: &str) {
 /// here only once its own attempt was actually SENT or safely DEFERRED for a later replay** (Stage
 /// B2, issue #76 field report case 5) — see [`report_once`]'s doc for why that is not the same
 /// question as "was `report_once` called for it".
-static REPORTED_STAGES: Mutex<Vec<crate::telemetry::storage::StorageStage>> = Mutex::new(Vec::new());
+static REPORTED_STAGES: Mutex<Vec<crate::telemetry::storage::StorageStage>> =
+    Mutex::new(Vec::new());
 
 /// **Stage B2's own set, kept apart from [`REPORTED_STAGES`] on purpose.** A stage whose attempt
 /// was DROPPED outright — the Errors channel's own consent question already answered "No" (or this
@@ -491,19 +574,33 @@ fn report_storage_error(
 /// evidence somewhere, while still never being retried on every subsequent occurrence.
 fn report_once(report: PendingReport) {
     let ctx = report.context;
-    if REPORTED_STAGES.lock().unwrap_or_else(|e| e.into_inner()).contains(&ctx.stage) {
+    if REPORTED_STAGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&ctx.stage)
+    {
         return;
     }
-    if DROPPED_STAGES.lock().unwrap_or_else(|e| e.into_inner()).contains(&ctx.stage) {
+    if DROPPED_STAGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&ctx.stage)
+    {
         return;
     }
     match report_storage_error(ctx, report.candidate_reads) {
         crate::telemetry::storage::ReportOutcome::Sent
         | crate::telemetry::storage::ReportOutcome::Deferred => {
-            REPORTED_STAGES.lock().unwrap_or_else(|e| e.into_inner()).push(ctx.stage);
+            REPORTED_STAGES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(ctx.stage);
         }
         crate::telemetry::storage::ReportOutcome::Dropped => {
-            DROPPED_STAGES.lock().unwrap_or_else(|e| e.into_inner()).push(ctx.stage);
+            DROPPED_STAGES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(ctx.stage);
         }
     }
 }
@@ -528,11 +625,15 @@ fn send_pending_reports(pending: Vec<PendingReport>) {
 /// out — but until this existed nothing ever read the distinction back: a "No" burned a stage for
 /// the rest of the process even after the SAME process later turned Errors on in Settings, which
 /// is the shape [`report_once`]'s own doc already claimed was handled and was not. Called from
-/// `telemetry::record` exactly when a decision newly enables the Errors channel — the same signal
-/// `crashreport::discard_pending_before_opt_in` already keys off — so the very next occurrence of
-/// a previously-dropped stage is attempted again instead of silently skipped forever.
+/// `telemetry::record_with_receipt` from its worker cutoff exactly when a decision newly enables
+/// the Errors channel — the same signal `crashreport::discard_pending_before_opt_in` already keys
+/// off — so the very next occurrence of a previously-dropped stage is attempted again instead of
+/// silently skipped forever.
 pub(crate) fn retry_dropped_stages() {
-    DROPPED_STAGES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    DROPPED_STAGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }
 
 /// once-per-process rule is exactly what a real process never resets on a file redirect either.
@@ -542,19 +643,39 @@ pub(crate) fn retry_dropped_stages() {
 /// in the binary already reported is a stage `report_once` will silently skip.
 #[cfg(test)]
 pub(crate) fn reset_report_state_for_test() {
-    PENDING_REPORTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    REPORTED_STAGES.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    DROPPED_STAGES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    PENDING_REPORTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    REPORTED_STAGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    DROPPED_STAGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     *LAST_SESSION_WRITE.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    *LAST_FRESH_READBACK.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    FRESH_WRITE_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    FRESH_SAVE_ERRORS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    *LAST_FRESH_READBACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    FRESH_WRITE_ATTEMPTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    FRESH_SAVE_ERRORS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     *COLD_SESSION_FACTS.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *COLD_STORAGE_DIAGNOSTIC
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = None;
     *LAST_PERSIST.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    CANDIDATE_READS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    CANDIDATE_READS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     tests::CAPTURED_REPORTS.with(|c| c.borrow_mut().clear());
 }
 
@@ -760,8 +881,7 @@ const UNAVAILABLE_MAX_LAUNCHES: u32 = 3;
 /// [`note_service_unavailable`]. `read_locked` can run several times in one launch (a cold `peek`
 /// before `load`, and every press of the sign-in screen's *Try again*), and each one would
 /// otherwise spend one of the three launches the install is allowed.
-static UNAVAILABLE_NOTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static UNAVAILABLE_NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn read_unavailable_attempts() -> u32 {
     unavailable_marker_paths()
@@ -814,8 +934,10 @@ fn clear_unavailable_marker() {
 /// it took today's path before this function existed.
 fn open_failure_is_transient(refusal: crate::keymanager::LastRefusal) -> bool {
     use crate::telemetry::storage::StorageStage;
-    matches!(refusal.stage, StorageStage::NoReply | StorageStage::Unreachable)
-        || refusal.error_code == Some(-1)
+    matches!(
+        refusal.stage,
+        StorageStage::NoReply | StorageStage::Unreachable
+    ) || refusal.error_code == Some(-1)
 }
 
 /// Count this launch's unanswered open and decide whether the install has run out of patience.
@@ -845,7 +967,10 @@ fn note_service_unavailable(
         // A counter that cannot be written is a counter that never climbs, which would make the
         // escalation below unreachable and leave the install in the unavailable state forever.
         // Say so once rather than silently: the log is the only witness.
-        if !unavailable_marker_paths().iter().any(|p| write_atomic(p, &body)) {
+        if !unavailable_marker_paths()
+            .iter()
+            .any(|p| write_atomic(p, &body))
+        {
             crate::log(
                 "session: could not persist the unanswered-key-service counter — a permanently silent service will not settle",
             );
@@ -1143,7 +1268,8 @@ fn check_probe() {
 /// persisted marker — see [`write_refused_plaintext`]. Once per process: every `update()` on an
 /// install already downgraded to plaintext takes the same branch, and repeating the line on every
 /// roster refresh would drown the log in a restatement of a fact recorded once already.
-static MARKER_SKIP_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static MARKER_SKIP_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn log_marker_skip_once() {
     if !MARKER_SKIP_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -1156,7 +1282,8 @@ fn log_marker_skip_once() {
 /// The same once-per-process courtesy as [`log_marker_skip_once`], for the OTHER reason a save
 /// stays on the 0600 file: this install has not yet earned sealed storage at all (no prior launch
 /// has proven a probe reopens) — see [`write_unproven_plaintext`].
-static UNPROVEN_SKIP_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static UNPROVEN_SKIP_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn log_unproven_skip_once() {
     if !UNPROVEN_SKIP_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -1170,7 +1297,8 @@ fn log_unproven_skip_once() {
 /// on disk is a secure envelope of a shape this build does not recognize, so nothing may replace
 /// it. Once per process, because an install in that state takes this branch on every roster
 /// refresh for as long as it runs.
-static FOREIGN_SKIP_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static FOREIGN_SKIP_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn log_foreign_envelope_skip_once() {
     if !FOREIGN_SKIP_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -1183,7 +1311,8 @@ fn log_foreign_envelope_skip_once() {
 /// The same courtesy for the OTHER half of that rule — a foreign envelope at a candidate this
 /// install does not read, which [`sweep_other_candidates`] steps around instead of deleting. Once
 /// per process, because every save an install in that state performs sweeps past the same file.
-static FOREIGN_KEPT_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static FOREIGN_KEPT_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn log_foreign_envelope_kept_once() {
     if !FOREIGN_KEPT_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -1330,6 +1459,11 @@ pub struct Session {
     /// section like [`Session::home_pins`].
     #[serde(default)]
     pub(crate) last_hero_blur: Option<[[f32; 3]; 4]>,
+    /// Unknown top-level fields are retained when this build performs a read-modify-write. This
+    /// keeps a forward-upgraded session's newer preferences intact without copying opaque nested
+    /// objects across account/profile replacement boundaries.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) extensions: BTreeMap<String, Value>,
 }
 
 /// Remember the hero envelope Home is showing right now, best-effort, for [`Session::last_hero_blur`].
@@ -1402,6 +1536,23 @@ impl PlaybackQuality {
 }
 
 /// One profile's search history.
+/// Opaque future fields are retained on routine rewrites, but never formatted into logs.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct OpaqueExtensions(pub(crate) BTreeMap<String, Value>);
+
+impl OpaqueExtensions {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for OpaqueExtensions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<opaque extensions>")
+    }
+}
+
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct RecentSearches {
@@ -1413,6 +1564,8 @@ pub struct RecentSearches {
     /// credit*, which covers the household's server and an unnamed share as well as our own.
     pub user: String,
     pub terms: Vec<String>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
 }
 
 /// One persisted who's-watching tile (avatar + PIN flag; no tokens live here).
@@ -1438,6 +1591,8 @@ pub struct HomeUserRef {
     pub thumb: String,
     pub protected: bool,
     pub admin: bool,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
 }
 
 /// The PRIMARY server's coordinates — the one `can_go_local` boots on. `origin` is the verified
@@ -1473,6 +1628,8 @@ pub struct ServerRef {
     /// every use. The FILE's key stays `origin`, which is what a human editing it reads.
     #[serde(default, rename = "origin")]
     pub origin_url: String,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
 }
 
 impl ServerRef {
@@ -1541,6 +1698,8 @@ pub struct SourceRef {
     /// for why that fallback exists at all, and [`ServerRef::origin_url`] for the `_url` suffix.
     #[serde(default, rename = "origin")]
     pub origin_url: String,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
 }
 
 impl SourceRef {
@@ -1605,6 +1764,8 @@ impl SourceRef {
 pub struct PinnedLib {
     pub machine_id: String,
     pub key: i64,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
 }
 
 /// **One profile's answer to "what goes on your Home?"** — the first-run route's record
@@ -1635,6 +1796,8 @@ pub struct HomePins {
     pub on: Vec<PinnedLib>,
     /// … and the ones it turned OFF. See the type doc: absent from both is "never answered for".
     pub off: Vec<PinnedLib>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
 }
 
 impl HomePins {
@@ -1667,6 +1830,8 @@ pub struct UserRef {
     pub title: String,
     pub thumb: String,
     pub token: String,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
 }
 
 /// A list that degrades **element by element** instead of taking the whole [`Session`] with it.
@@ -1941,6 +2106,7 @@ impl Session {
             self.recent_searches.push(RecentSearches {
                 user: user.to_string(),
                 terms,
+                ..Default::default()
             });
         }
     }
@@ -1953,8 +2119,8 @@ pub fn current_profile_key() -> String {
     current().map(|u| u.uuid).unwrap_or_default()
 }
 
-/// **The one lock this file has**, and the only authority over it. Every public entry point in
-/// this module takes it, so a read-modify-write held across [`update`] is atomic against every
+/// **The disk-operation lock.** Cold reads and writes take it, while initialized snapshot reads
+/// use the separate short-lived [`CACHE`] RwLock. A read-modify-write held across [`update`] is atomic against every
 /// other writer there is: the server-roster worker (`auth::refresh_roster`), the
 /// who's-watching roster worker (`auth::start_switch`), the profile-switch and sign-in saves on
 /// the main thread (`auth::take_ready`, `auth`'s login thread), and the search-recents flush
@@ -1980,12 +2146,9 @@ pub fn current_profile_key() -> String {
 /// **Not reentrant** — a plain `Mutex`. Nothing called from inside [`update`]'s closure may call
 /// back into this module.
 ///
-/// It is held across the whole write, [`write_atomic`]'s `sync_all` included, so a reader that
-/// takes it can be parked for as long as the flash takes. That is affordable because of who the
-/// readers are — a keypress (`ui::account_menu::open`), a boot, and one read-out that was already
-/// doing an `fs::read` per frame (`ui::library`'s failed-source labels). **Do not add a per-frame
-/// reader of this file**; the answer for that is a snapshot keyed on something cheap, the way
-/// `ui::search::recents` caches by [`current_gen`].
+/// It is held across the whole write, [`write_atomic`]'s `sync_all` included. Initialized `peek`
+/// and `load` read the in-memory snapshot before this lock, so disk I/O cannot stall those reads.
+/// Do not add per-frame disk readers; cache derived views by a cheap generation where possible.
 static IO: Mutex<()> = Mutex::new(());
 
 fn io() -> std::sync::MutexGuard<'static, ()> {
@@ -2001,6 +2164,11 @@ fn io() -> std::sync::MutexGuard<'static, ()> {
 /// end up with an id; it is not one on a path a keypress can reach. Falls back to the
 /// pre-relocation path (migration), same as `load`.
 pub fn peek() -> Session {
+    // The initialized snapshot is independent of the disk writer. In particular, never take IO
+    // just to read an already-loaded flag while another thread is waiting for flash/keymanager.
+    if let Some(s) = cached() {
+        return s;
+    }
     let (s, pending) = {
         let _io = io();
         let s = peek_locked();
@@ -2033,7 +2201,10 @@ fn peek_locked() -> Session {
     }
     let s = match read_locked() {
         ReadState::Ready { session, .. } => session,
-        ReadState::Missing | ReadState::Locked { .. } => Session::default(),
+        ReadState::Missing
+        | ReadState::Cleared
+        | ReadState::CanonicalBlocked
+        | ReadState::Locked { .. } => Session::default(),
     };
     publish_cache(s.clone());
     s
@@ -2050,6 +2221,8 @@ struct SecureEnvelope {
 
 enum ReadState {
     Missing,
+    Cleared,
+    CanonicalBlocked,
     Ready {
         session: Session,
         plaintext: bool,
@@ -2084,9 +2257,11 @@ fn locked(
     // `save_locked`). Never for `LOCKED_UNRECOVERABLE`, a foreign envelope no fresh sign-in may
     // ever touch. Recording the path is not itself permission to write over it: each of the three
     // states earns that separately, in `save_locked`.
-    *LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()) =
-        matches!(kind, LOCKED_RECOVERABLE | LOCKED_CORRUPT | LOCKED_UNAVAILABLE)
-            .then(|| path.to_path_buf());
+    *LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()) = matches!(
+        kind,
+        LOCKED_RECOVERABLE | LOCKED_CORRUPT | LOCKED_UNAVAILABLE
+    )
+    .then(|| path.to_path_buf());
     // Issue #76 storage telemetry: a read landing Locked is one of the two triggers
     // `save_locked`'s own seal failure is the other — for a handled report, reported at most once
     // per process per stage (`report_once`, drained by the caller after `IO` is released).
@@ -2115,20 +2290,23 @@ fn locked(
     // a probe. Carried anyway, as the process-global "most recent" fact `LAST_REFUSAL` already is,
     // and `None` on the common cold-boot path where no `seal` has happened yet this launch.
     let key_outcome = crate::keymanager::last_key_outcome();
-    queue_report_for_candidate(StorageErrorContext {
-        stage,
-        service_error_code,
-        class: storage_class(),
-        refused_marker: has_refused_marker(),
-        key_outcome,
-        registered_with_app_id: crate::keymanager::registered_with_app_id(),
-        registered_with_name: crate::keymanager::registered_with_name(),
-        // **The envelope's own owner, not this launch's** (review finding, 2026-09-10). The two
-        // bools above say which registration this process latched; this says which one the key
-        // being reported on already belongs to, and issue #76's hypothesis is precisely that they
-        // differ. `None` for `LOCKED_UNRECOVERABLE`, where nothing parsed far enough to record one.
-        sealed_identity,
-    }, category);
+    queue_report_for_candidate(
+        StorageErrorContext {
+            stage,
+            service_error_code,
+            class: storage_class(),
+            refused_marker: has_refused_marker(),
+            key_outcome,
+            registered_with_app_id: crate::keymanager::registered_with_app_id(),
+            registered_with_name: crate::keymanager::registered_with_name(),
+            // **The envelope's own owner, not this launch's** (review finding, 2026-09-10). The two
+            // bools above say which registration this process latched; this says which one the key
+            // being reported on already belongs to, and issue #76's hypothesis is precisely that they
+            // differ. `None` for `LOCKED_UNRECOVERABLE`, where nothing parsed far enough to record one.
+            sealed_identity,
+        },
+        category,
+    );
     ReadState::Locked {
         recoverable: kind == LOCKED_RECOVERABLE,
     }
@@ -2151,9 +2329,16 @@ fn not_locked(state: ReadState) -> ReadState {
     clear_unavailable_marker();
     LAST_CLASS.store(
         match &state {
-            ReadState::Ready { plaintext: true, .. } => CLASS_PLAINTEXT,
-            ReadState::Ready { plaintext: false, .. } => CLASS_SECURE,
-            ReadState::Missing | ReadState::Locked { .. } => CLASS_NONE,
+            ReadState::Ready {
+                plaintext: true, ..
+            } => CLASS_PLAINTEXT,
+            ReadState::Ready {
+                plaintext: false, ..
+            } => CLASS_SECURE,
+            ReadState::Missing
+            | ReadState::Cleared
+            | ReadState::CanonicalBlocked
+            | ReadState::Locked { .. } => CLASS_NONE,
         },
         std::sync::atomic::Ordering::Relaxed,
     );
@@ -2351,7 +2536,10 @@ pub(crate) struct FreshSaveError {
 static FRESH_SAVE_ERRORS: Mutex<Vec<FreshSaveError>> = Mutex::new(Vec::new());
 
 pub(crate) fn fresh_save_errors() -> Vec<FreshSaveError> {
-    FRESH_SAVE_ERRORS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    FRESH_SAVE_ERRORS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 static COLD_STORAGE_DIAGNOSTIC: Mutex<Option<ColdStorageDiagnostic>> = Mutex::new(None);
@@ -2393,7 +2581,10 @@ fn capture_cold_storage_diagnostic(
 fn capture_cold_session_facts(read: &ReadState) {
     let session = match read {
         ReadState::Ready { session, .. } => Some(session),
-        ReadState::Missing | ReadState::Locked { .. } => None,
+        ReadState::Missing
+        | ReadState::Cleared
+        | ReadState::CanonicalBlocked
+        | ReadState::Locked { .. } => None,
     };
     let facts = ColdSessionFacts {
         winner: last_candidate_reads()
@@ -2418,12 +2609,73 @@ fn capture_cold_session_facts(read: &ReadState) {
 
 /// The first usable candidate, retaining whether an encrypted file exists but cannot be opened.
 fn read_locked() -> ReadState {
+    match persistence::load() {
+        persistence::CanonicalRead::Missing => {
+            *LAST_LEGACY_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            let state = read_candidates(None);
+            if !matches!(state, ReadState::Missing) {
+                if let Some((path, bytes)) = LAST_LEGACY_SOURCE
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+                {
+                    // A legacy source is retired only after the domain reader selected it as a
+                    // valid Session. In particular, a recognized secure envelope that is locked
+                    // or unavailable remains at its old name until an explicit fresh sign-in;
+                    // a newer/foreign envelope must remain recoverable by a newer binary.
+                    let migratable = matches!(&state, ReadState::Ready { .. });
+                    let (result, _) = if migratable {
+                        persistence::migrate_exact(&path, &bytes)
+                    } else {
+                        (
+                            persistence::CanonicalCommit::Failed(
+                                crate::storage::StoreError::InvalidSchema,
+                            ),
+                            path.clone(),
+                        )
+                    };
+                    if matches!(result, persistence::CanonicalCommit::Durable { .. }) {
+                        let mut parents = std::collections::BTreeSet::new();
+                        if !remove_cleanup_file(&path, &mut parents)
+                            || !sync_cleanup_parents(parents)
+                        {
+                            crate::log("session: canonical migration committed but legacy cleanup failed");
+                        }
+                    } else if matches!(result, persistence::CanonicalCommit::Uncertain { .. }) {
+                        *UNCERTAIN_LEGACY_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(path);
+                    }
+                }
+            }
+            state
+        }
+        persistence::CanonicalRead::Data { payload, .. } => {
+            read_candidates(Some((persistence::path(), payload.into_bytes())))
+        }
+        persistence::CanonicalRead::Cleared { .. } => ReadState::Cleared,
+        persistence::CanonicalRead::Blocked(_) => ReadState::CanonicalBlocked,
+    }
+}
+
+fn read_candidates(canonical: Option<(std::path::PathBuf, Vec<u8>)>) -> ReadState {
     CANDIDATE_READS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
-    for (path, category) in auth_candidates() {
-        let (bytes, trust) = match read_owned_regular_checked(&path) {
+    let canonical_present = canonical.is_some();
+    let candidates = canonical
+        .map(|(path, bytes)| vec![(path, CandidateCategory::AppDir, Some(bytes))])
+        .unwrap_or_else(|| {
+            auth_candidates()
+                .into_iter()
+                .map(|(path, category)| (path, category, None))
+                .collect()
+        });
+    for (path, category, supplied) in candidates {
+        let (bytes, trust) = match supplied.map_or_else(
+            || read_owned_regular_checked(&path),
+            |bytes| Ok((bytes, ModeTrust::Trusted)),
+        ) {
             Ok(v) => v,
             Err(rejection) => {
                 record_candidate_read(category, Some(rejection), None);
@@ -2461,20 +2713,27 @@ fn read_locked() -> ReadState {
                     "session: {name} was writable by others — content is untrusted, removing"
                 ));
             }
-            queue_report_for_candidate(crate::telemetry::storage::StorageErrorContext {
-                stage: crate::telemetry::storage::StorageStage::UntrustedMode,
-                service_error_code: None,
-                class: storage_class(),
-                refused_marker: has_refused_marker(),
-                key_outcome: crate::keymanager::last_key_outcome(),
-                registered_with_app_id: crate::keymanager::registered_with_app_id(),
-                registered_with_name: crate::keymanager::registered_with_name(),
-                // The bytes were never parsed — deliberately, since another uid could have
-                // written them — so no owner was read out of them and none is claimed.
-                sealed_identity: None,
-            }, category);
+            queue_report_for_candidate(
+                crate::telemetry::storage::StorageErrorContext {
+                    stage: crate::telemetry::storage::StorageStage::UntrustedMode,
+                    service_error_code: None,
+                    class: storage_class(),
+                    refused_marker: has_refused_marker(),
+                    key_outcome: crate::keymanager::last_key_outcome(),
+                    registered_with_app_id: crate::keymanager::registered_with_app_id(),
+                    registered_with_name: crate::keymanager::registered_with_name(),
+                    // The bytes were never parsed — deliberately, since another uid could have
+                    // written them — so no owner was read out of them and none is claimed.
+                    sealed_identity: None,
+                },
+                category,
+            );
             record_candidate_read(category, Some(ReadRejection::UntrustedMode), None);
             continue;
+        }
+        if !canonical_present {
+            *LAST_LEGACY_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((path.clone(), bytes.clone()));
         }
         if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
             if envelope.format == SECURE_FORMAT && envelope.version == 1 {
@@ -2663,6 +2922,14 @@ fn identifies_secure_envelope(bytes: &[u8]) -> bool {
 }
 
 fn has_secure_locked() -> bool {
+    match persistence::load() {
+        persistence::CanonicalRead::Data { ref payload, .. } => {
+            return identifies_secure_envelope(payload.as_bytes());
+        }
+        persistence::CanonicalRead::Blocked(_) => return true,
+        persistence::CanonicalRead::Cleared { .. } => return false,
+        persistence::CanonicalRead::Missing => {}
+    }
     auth_paths()
         .iter()
         .any(|path| read_owned_regular(path).is_some_and(|b| identifies_secure_envelope(&b)))
@@ -2672,8 +2939,20 @@ fn has_secure_locked() -> bool {
 /// `LOCKED_STATE == NOT_LOCKED`: it proves a fresh reauthentication is replacing the file this
 /// launch actually read, while a recognized envelope merely survives at a lower migration tier.
 fn selected_candidate_is_plaintext() -> bool {
+    match persistence::load() {
+        persistence::CanonicalRead::Data { ref payload, .. } => {
+            return !identifies_secure_envelope(payload.as_bytes())
+                && serde_json::from_str::<Session>(payload).is_ok();
+        }
+        persistence::CanonicalRead::Blocked(_) | persistence::CanonicalRead::Cleared { .. } => {
+            return false
+        }
+        persistence::CanonicalRead::Missing => {}
+    }
     for path in auth_paths() {
-        let Some((bytes, trust)) = read_owned_regular_trusted(&path) else { continue };
+        let Some((bytes, trust)) = read_owned_regular_trusted(&path) else {
+            continue;
+        };
         if !trust.content_trusted() {
             continue;
         }
@@ -2714,6 +2993,16 @@ fn is_unrecognized_secure_envelope(bytes: &[u8]) -> bool {
 /// the other way and freezes every save this install will ever make. `read_locked` is what
 /// quarantines such a file; the only thing this scan owes it is not to believe it.
 fn has_unrecognized_secure_envelope() -> bool {
+    match persistence::load() {
+        persistence::CanonicalRead::Data { ref payload, .. } => {
+            return is_unrecognized_secure_envelope(payload.as_bytes());
+        }
+        // A present but unreadable canonical record is terminal authority. It must not be
+        // replaced by a legacy candidate or a routine save; clear() is the explicit escape.
+        persistence::CanonicalRead::Blocked(_) => return true,
+        persistence::CanonicalRead::Cleared { .. } => return false,
+        persistence::CanonicalRead::Missing => {}
+    }
     for path in auth_paths() {
         let Some((bytes, trust)) = read_owned_regular_trusted(&path) else {
             continue;
@@ -2744,8 +3033,56 @@ fn has_unrecognized_secure_envelope() -> bool {
 ///
 /// The atomic-write siblings go either way — those are OUR OWN aborted writes, plaintext or
 /// envelope, and no reader of this module can tell one apart from a live file it should keep.
+#[cfg(test)]
+static INJECT_CLEANUP_REMOVE_FAILURE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn fail_next_cleanup_remove_for_test() {
+    INJECT_CLEANUP_REMOVE_FAILURE.store(true, std::sync::atomic::Ordering::Release);
+}
+
+fn remove_cleanup_file(path: &std::path::Path, parents: &mut std::collections::BTreeSet<std::path::PathBuf>) -> bool {
+    #[cfg(test)]
+    if INJECT_CLEANUP_REMOVE_FAILURE.swap(false, std::sync::atomic::Ordering::AcqRel) {
+        crate::log("session: injected cleanup removal failure");
+        return false;
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            if let Some(parent) = path.parent() {
+                parents.insert(parent.to_path_buf());
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            crate::log(&format!("session: cleanup could not remove {}: {error}", path.file_name().unwrap_or_default().to_string_lossy()));
+            false
+        }
+    }
+}
+
+fn sync_cleanup_parents(parents: std::collections::BTreeSet<std::path::PathBuf>) -> bool {
+    let mut complete = true;
+    for parent in parents {
+        if std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .is_err()
+        {
+            complete = false;
+        }
+    }
+    complete
+}
+
 fn sweep_other_candidates(winner: &std::path::Path) {
+    let mut parents = std::collections::BTreeSet::new();
+    let protected = UNCERTAIN_LEGACY_SOURCE.lock().unwrap_or_else(|e| e.into_inner()).clone();
     for stale in auth_paths().into_iter().filter(|p| p != winner) {
+        if protected.as_ref() == Some(&stale) {
+            continue;
+        }
         remove_temp_siblings(&stale);
         if read_owned_regular_trusted(&stale).is_some_and(|(bytes, trust)| {
             trust.content_trusted() && is_unrecognized_secure_envelope(&bytes)
@@ -2753,8 +3090,9 @@ fn sweep_other_candidates(winner: &std::path::Path) {
             log_foreign_envelope_kept_once();
             continue;
         }
-        let _ = std::fs::remove_file(&stale);
+        let _ = remove_cleanup_file(&stale, &mut parents);
     }
+    let _ = sync_cleanup_parents(parents);
 }
 
 /// A successful lower-tier rename is not enough: a readable old higher-tier
@@ -2763,6 +3101,9 @@ fn sweep_other_candidates(winner: &std::path::Path) {
 /// deliberately needs no key-service call and never treats unknown bytes as
 /// an equivalent session. It cannot detect a later cross-app replay.
 fn earlier_candidates_allow_winner(winner: &std::path::Path, bytes: &[u8]) -> bool {
+    if winner == persistence::path() {
+        return true;
+    }
     for path in auth_paths() {
         if path == winner {
             return true;
@@ -2828,6 +3169,9 @@ fn publish_identities(s: &Session) {
 /// Only the FIRST `load` in a process — genuinely the boot path — does the full read/mint/reseal
 /// work below.
 pub fn load() -> Session {
+    if let Some(s) = cached() {
+        return s;
+    }
     let (s, pending) = {
         let _io = io();
         let s = if let Some(s) = cached() {
@@ -2862,8 +3206,9 @@ pub fn load() -> Session {
             // unavailable ones `locked` queues are bound to this completed summary here, while IO
             // is still held. They are only sent by `send_pending_reports` below, after IO is
             // released, but another thread's later save can no longer steal this read's evidence.
-            let persisted = !matches!(read, ReadState::Missing);
+            let persisted = !matches!(read, ReadState::Missing | ReadState::Cleared);
             let locked = matches!(read, ReadState::Locked { .. });
+            let terminal = matches!(read, ReadState::Cleared | ReadState::CanonicalBlocked);
             let plaintext = matches!(
                 read,
                 ReadState::Ready {
@@ -2873,10 +3218,13 @@ pub fn load() -> Session {
             );
             let mut s = match read {
                 ReadState::Ready { session, .. } => session,
-                ReadState::Missing | ReadState::Locked { .. } => Session::default(),
+                ReadState::Missing
+                | ReadState::Cleared
+                | ReadState::CanonicalBlocked
+                | ReadState::Locked { .. } => Session::default(),
             };
             seed_fresh_quality(&mut s, persisted, crate::route::auto_quality_ready());
-            if s.client_id.is_empty() {
+            if s.client_id.is_empty() && !terminal {
                 s.client_id = new_client_id();
                 if !locked {
                     let _ = save_locked(&s, SaveAuthority::Routine);
@@ -2906,6 +3254,16 @@ pub fn load() -> Session {
     // skipping this the moment that path ever changes.
     send_pending_reports(pending);
     s
+}
+
+/// Start an explicitly authorized QR sign-in after a cleared tombstone. This creates only an
+/// in-memory client id; credentials and the canonical cleared record remain untouched until the
+/// successful PIN flow reaches `save_after_reauthentication`.
+pub fn begin_new_signin() -> Session {
+    let mut session = Session::default();
+    session.client_id = new_client_id();
+    publish_cache(session.clone());
+    session
 }
 
 /// **Is a sealed sign-in sitting on this install that THIS LAUNCH could not read, because the key
@@ -2942,7 +3300,10 @@ pub(crate) fn retry_secure_open() -> bool {
                 publish_cache(session);
                 true
             }
-            ReadState::Missing | ReadState::Locked { .. } => false,
+            ReadState::Missing
+            | ReadState::Cleared
+            | ReadState::CanonicalBlocked
+            | ReadState::Locked { .. } => false,
         };
         (opened, take_pending_reports())
     };
@@ -3004,9 +3365,7 @@ pub fn update(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
                 // unpersisted must not also read back as though it never happened.
                 Some(next) => {
                     let wrote = save_locked(&next, SaveAuthority::Routine).persisted();
-                    if !wrote {
-                        publish_unpersisted(next);
-                    }
+                    publish_unpersisted(next);
                     wrote
                 }
                 None => false,
@@ -3016,6 +3375,14 @@ pub fn update(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
     };
     send_pending_reports(pending);
     wrote
+}
+
+/// Admit a short in-memory Session edit to the shared persistence FIFO. The accepted snapshot is
+/// visible through [`peek`] immediately; callers poll the per-operation receipt for durability.
+pub(crate) fn update_with_receipt(
+    edit: impl FnOnce(&Session) -> Option<Session>,
+) -> Result<Option<async_persistence::Receipt>, async_persistence::AdmissionError> {
+    async_persistence::update(edit)
 }
 
 /// Persist the session (best-effort; a write failure is non-fatal — we just re-login next boot).
@@ -3087,8 +3454,24 @@ pub(crate) fn save_after_reauthentication(s: &Session) -> PersistOutcome {
     save_with_authority(s, SaveAuthority::FreshReauthentication)
 }
 
+pub(crate) fn save_with_receipt(
+    s: Session,
+) -> Result<async_persistence::Receipt, async_persistence::AdmissionError> {
+    async_persistence::replace(s, SaveAuthority::Routine)
+}
+
+pub(crate) fn save_after_reauthentication_with_receipt(
+    s: Session,
+) -> Result<async_persistence::Receipt, async_persistence::AdmissionError> {
+    async_persistence::replace(s, SaveAuthority::FreshReauthentication)
+}
+
+pub(crate) fn latest_persistence_status() -> async_persistence::Status {
+    async_persistence::status()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SaveAuthority {
+pub(super) enum SaveAuthority {
     Routine,
     FreshReauthentication,
 }
@@ -3126,7 +3509,9 @@ static LAST_SESSION_WRITE: Mutex<Option<LastSessionWrite>> = Mutex::new(None);
 static LAST_FRESH_READBACK: Mutex<Option<FreshSaveReadback>> = Mutex::new(None);
 
 pub(crate) fn last_fresh_save_readback() -> Option<FreshSaveReadback> {
-    *LAST_FRESH_READBACK.lock().unwrap_or_else(|e| e.into_inner())
+    *LAST_FRESH_READBACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 fn verify_fresh_write_readback() {
@@ -3137,18 +3522,34 @@ fn verify_fresh_write_readback() {
     let Some(written) = written else {
         return;
     };
-    let result = match read_owned_regular_checked(&written.path) {
-        Ok((_, trust)) if !trust.content_trusted() => FreshSaveReadbackResult::Rejected,
-        Ok((bytes, _)) if bytes == written.bytes => FreshSaveReadbackResult::Match,
-        Ok(_) => FreshSaveReadbackResult::Mismatch,
-        Err(_) => FreshSaveReadbackResult::Rejected,
+    let result = if written.path == persistence::path() {
+        match persistence::load() {
+            persistence::CanonicalRead::Data { payload, .. }
+                if payload.as_bytes() == written.bytes.as_slice() =>
+            {
+                FreshSaveReadbackResult::Match
+            }
+            persistence::CanonicalRead::Data { .. } => FreshSaveReadbackResult::Mismatch,
+            persistence::CanonicalRead::Missing
+            | persistence::CanonicalRead::Cleared { .. }
+            | persistence::CanonicalRead::Blocked(_) => FreshSaveReadbackResult::Rejected,
+        }
+    } else {
+        match read_owned_regular_checked(&written.path) {
+            Ok((_, trust)) if !trust.content_trusted() => FreshSaveReadbackResult::Rejected,
+            Ok((bytes, _)) if bytes == written.bytes => FreshSaveReadbackResult::Match,
+            Ok(_) => FreshSaveReadbackResult::Mismatch,
+            Err(_) => FreshSaveReadbackResult::Rejected,
+        }
     };
     crate::log(&format!(
         "session: fresh save readback winner={} result={}",
         written.winner.wire(),
         result.wire()
     ));
-    *LAST_FRESH_READBACK.lock().unwrap_or_else(|e| e.into_inner()) = Some(FreshSaveReadback {
+    *LAST_FRESH_READBACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(FreshSaveReadback {
         winner: written.winner,
         result,
     });
@@ -3163,14 +3564,33 @@ fn note_session_write(path: &std::path::Path, winner: CandidateCategory, bytes: 
 }
 
 fn save_with_authority(s: &Session, authority: SaveAuthority) -> PersistOutcome {
+    let outcome = save_with_authority_disk(s, authority);
+    if outcome.persisted() {
+        publish_cache(s.clone());
+    }
+    outcome
+}
+
+/// Blocking persistence half shared by the synchronous boot path and the asynchronous
+/// coordinator. It deliberately never publishes [`CACHE`]: an asynchronous completion may be
+/// older than the snapshot already admitted on the caller thread.
+fn save_with_authority_disk(s: &Session, authority: SaveAuthority) -> PersistOutcome {
     let (outcome, pending) = {
         let _io = io();
         // Detach anything older at the boundary so it cannot be labeled as this save's evidence.
         let mut pending_before = take_pending_reports();
         if authority == SaveAuthority::FreshReauthentication {
-            *LAST_FRESH_READBACK.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            FRESH_WRITE_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
-            FRESH_SAVE_ERRORS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            *LAST_FRESH_READBACK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            FRESH_WRITE_ATTEMPTS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+            FRESH_SAVE_ERRORS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
         }
         let outcome = save_locked(s, authority);
         if authority == SaveAuthority::FreshReauthentication && outcome.persisted() {
@@ -3467,20 +3887,14 @@ fn persist_locked(s: &Session, authority: SaveAuthority) -> PersistOutcome {
         let Ok(protected) = serde_json::to_vec_pretty(&envelope) else {
             return PersistOutcome::SerializationFailed;
         };
-        for (winner, category) in auth_candidates() {
-            if write_session_candidate(
-                &winner,
-                category,
-                &protected,
-                saving_fresh_sign_in,
-            ) {
+        for (winner, category) in write_candidates() {
+            if write_session_candidate(&winner, category, &protected, saving_fresh_sign_in) {
                 note_session_write(&winner, category, &protected);
                 // A successful migration must not leave an older plaintext token file at a
                 // lower-priority jail path where another uid can recover it — nor destroy the one
                 // kind of file that is not ours to delete; see [`sweep_other_candidates`].
                 not_locked_after_write();
                 LAST_CLASS.store(CLASS_SECURE, std::sync::atomic::Ordering::Relaxed);
-                publish_cache(s.clone());
                 return PersistOutcome::PersistedSealed;
             }
         }
@@ -3541,11 +3955,10 @@ fn persist_locked(s: &Session, authority: SaveAuthority) -> PersistOutcome {
     // Try each candidate; the first that accepts the write wins. A total failure is still
     // non-fatal — but it is LOGGED, because the symptom (sign in again, every boot, forever) is
     // otherwise indistinguishable from a server-side auth problem and impossible to report.
-    for (path, category) in auth_candidates() {
+    for (path, category) in write_candidates() {
         if write_session_candidate(&path, category, &json, saving_fresh_sign_in) {
             note_session_write(&path, category, &json);
             LAST_CLASS.store(CLASS_PLAINTEXT, std::sync::atomic::Ordering::Relaxed);
-            publish_cache(s.clone());
             return PersistOutcome::PersistedPlaintext;
         }
     }
@@ -3607,7 +4020,10 @@ fn recover_locked_session_as_plaintext(
     json: &[u8],
     record_fresh: bool,
 ) -> PersistOutcome {
-    let previously_locked_at = LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let previously_locked_at = LOCKED_PATH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     match write_plaintext_recovery(s, json, previously_locked_at.as_deref(), record_fresh) {
         Some(winner) => {
             crate::log(
@@ -3676,27 +4092,50 @@ fn write_refused_plaintext(s: &Session, json: &[u8], record_fresh: bool) -> Pers
 /// shadowing everything below it, while a stray plaintext copy accumulates elsewhere. Returns the
 /// path actually written, or `None` if every candidate refused.
 fn write_plaintext_recovery(
-    s: &Session,
+    _s: &Session,
     json: &[u8],
     target: Option<&std::path::Path>,
     record_fresh: bool,
 ) -> Option<std::path::PathBuf> {
-    let mut candidates = auth_candidates();
-    if let Some(first) = target {
-        if let Some(pos) = candidates.iter().position(|(path, _)| path == first) {
-            let target = candidates.remove(pos);
-            candidates.insert(0, target);
-        }
-    }
+    let _ = target;
+    let candidates = write_candidates();
     for (winner, category) in candidates {
-        if !write_session_candidate(&winner, category, json, record_fresh) { continue; }
+        if !write_session_candidate(&winner, category, json, record_fresh) {
+            continue;
+        }
         note_session_write(&winner, category, json);
         not_locked_after_write();
         LAST_CLASS.store(CLASS_PLAINTEXT, std::sync::atomic::Ordering::Relaxed);
-        publish_cache(s.clone());
         return Some(winner);
     }
     None
+}
+
+fn write_candidates() -> Vec<(std::path::PathBuf, CandidateCategory)> {
+    vec![(persistence::path(), CandidateCategory::AppDir)]
+}
+
+fn canonical_operation(stage: crate::storage::CommitStage) -> AtomicWriteOperation {
+    match stage {
+        crate::storage::CommitStage::CreateTemp => AtomicWriteOperation::CreateTemp,
+        crate::storage::CommitStage::Write => AtomicWriteOperation::Write,
+        crate::storage::CommitStage::FileSync => AtomicWriteOperation::FileSync,
+        crate::storage::CommitStage::Rename => AtomicWriteOperation::Rename,
+        crate::storage::CommitStage::ParentOpen => AtomicWriteOperation::OpenParent,
+        crate::storage::CommitStage::ParentSync
+        | crate::storage::CommitStage::Readback
+        | crate::storage::CommitStage::Cleanup => AtomicWriteOperation::SyncParent,
+    }
+}
+
+fn canonical_failure(error: crate::storage::StoreError) -> AtomicWriteFailure {
+    match error {
+        crate::storage::StoreError::Io { stage, errno } => AtomicWriteFailure::Os {
+            operation: canonical_operation(stage),
+            errno,
+        },
+        _ => AtomicWriteFailure::Policy(AtomicWritePolicy::CanonicalFailed),
+    }
 }
 
 fn write_session_candidate(
@@ -3705,15 +4144,64 @@ fn write_session_candidate(
     bytes: &[u8],
     record_fresh: bool,
 ) -> bool {
-    let result = write_atomic_checked(path, bytes).and_then(|receipt| {
-        sweep_other_candidates(path);
-        if earlier_candidates_allow_winner(path, bytes) {
-            Ok(receipt)
-        } else {
-            crate::log("session: candidate was written but an older higher-priority file still shadows it");
-            Err(AtomicWriteFailure::Policy(AtomicWritePolicy::ShadowedCandidate))
+    let result = if path == persistence::path() {
+        let payload = match String::from_utf8(bytes.to_vec()) {
+            Ok(payload) => payload,
+            Err(_) => return false,
+        };
+        let commit = persistence::commit_data(payload);
+        match &commit {
+            persistence::CanonicalCommit::Durable { .. } => {
+                async_persistence::note_commit_durable()
+            }
+            persistence::CanonicalCommit::Uncertain { stage, errno } => {
+                async_persistence::note_commit_uncertain(*stage, *errno)
+            }
+            persistence::CanonicalCommit::Failed(error) => {
+                async_persistence::note_commit_failed(*error)
+            }
         }
-    });
+        match commit {
+            persistence::CanonicalCommit::Durable { .. } => {
+                *UNCERTAIN_LEGACY_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                Ok(AtomicWriteReceipt {
+                    durability: AtomicWriteDurability::Durable,
+                })
+            }
+            persistence::CanonicalCommit::Uncertain { stage, errno } => Ok(AtomicWriteReceipt {
+                durability: AtomicWriteDurability::Warning {
+                    operation: canonical_operation(stage),
+                    errno,
+                },
+            }),
+            persistence::CanonicalCommit::Failed(error) => Err(canonical_failure(error)),
+        }
+    } else {
+        write_atomic_checked(path, bytes)
+    };
+    // A post-rename durability warning leaves a visible record but does not prove it will survive
+    // a reboot. Do not retire any legacy credential copy until the canonical commit is durable.
+    let result = match result {
+        Ok(
+            receipt @ AtomicWriteReceipt {
+                durability: AtomicWriteDurability::Warning { .. },
+            },
+        ) => Ok(receipt),
+        Ok(receipt) => {
+            sweep_other_candidates(path);
+            if earlier_candidates_allow_winner(path, bytes) {
+                Ok(receipt)
+            } else {
+                crate::log(
+                    "session: candidate was written but an older higher-priority file still shadows it",
+                );
+                Err(AtomicWriteFailure::Policy(
+                    AtomicWritePolicy::ShadowedCandidate,
+                ))
+            }
+        }
+        Err(error) => Err(error),
+    };
     if record_fresh {
         let result = match result {
             Ok(receipt) => FreshWriteResult::Written {
@@ -3726,7 +4214,12 @@ fn write_session_candidate(
             .unwrap_or_else(|e| e.into_inner())
             .push(FreshWriteAttempt { candidate, result });
     }
-    result.is_ok()
+    matches!(
+        result,
+        Ok(AtomicWriteReceipt {
+            durability: AtomicWriteDurability::Durable
+        })
+    )
 }
 
 /// Write `json` to `path` so that whatever reads it sees the WHOLE previous file or the WHOLE new
@@ -3784,6 +4277,8 @@ impl AtomicWriteOperation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AtomicWritePolicy {
     NoParent,
+    CanonicalFailed,
+    CanonicalUncertain,
     DestinationNotRegular,
     DestinationWrongOwner,
     TempNameExhausted,
@@ -3795,6 +4290,8 @@ impl AtomicWritePolicy {
     pub(crate) fn wire(self) -> &'static str {
         match self {
             Self::NoParent => "no_parent",
+            Self::CanonicalFailed => "canonical_failed",
+            Self::CanonicalUncertain => "canonical_uncertain",
             Self::DestinationNotRegular => "destination_not_regular",
             Self::DestinationWrongOwner => "destination_wrong_owner",
             Self::TempNameExhausted => "temp_name_exhausted",
@@ -3806,13 +4303,19 @@ impl AtomicWritePolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AtomicWriteFailure {
     Policy(AtomicWritePolicy),
-    Os { operation: AtomicWriteOperation, errno: i32 },
+    Os {
+        operation: AtomicWriteOperation,
+        errno: i32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AtomicWriteDurability {
     Durable,
-    Warning { operation: AtomicWriteOperation, errno: i32 },
+    Warning {
+        operation: AtomicWriteOperation,
+        errno: i32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3835,7 +4338,10 @@ pub(crate) struct FreshWriteAttempt {
 static FRESH_WRITE_ATTEMPTS: Mutex<Vec<FreshWriteAttempt>> = Mutex::new(Vec::new());
 
 pub(crate) fn fresh_write_attempts() -> Vec<FreshWriteAttempt> {
-    FRESH_WRITE_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    FRESH_WRITE_ATTEMPTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 pub(crate) fn write_atomic(path: &std::path::Path, json: &[u8]) -> bool {
@@ -3849,13 +4355,14 @@ static INJECT_WRITE_OPERATION: std::sync::atomic::AtomicU8 =
 #[cfg(test)]
 fn injected_write_error(operation: AtomicWriteOperation) -> Option<i32> {
     let code = operation as u8;
-    (INJECT_WRITE_OPERATION.compare_exchange(
-        code,
-        u8::MAX,
-        std::sync::atomic::Ordering::AcqRel,
-        std::sync::atomic::Ordering::Relaxed,
-    )
-    .is_ok())
+    (INJECT_WRITE_OPERATION
+        .compare_exchange(
+            code,
+            u8::MAX,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Relaxed,
+        )
+        .is_ok())
     .then_some(libc::EIO)
 }
 
@@ -3875,10 +4382,14 @@ fn write_atomic_checked(
         .ok_or(AtomicWriteFailure::Policy(AtomicWritePolicy::NoParent))?;
     if let Ok(meta) = std::fs::symlink_metadata(path) {
         if !meta.file_type().is_file() {
-            return Err(AtomicWriteFailure::Policy(AtomicWritePolicy::DestinationNotRegular));
+            return Err(AtomicWriteFailure::Policy(
+                AtomicWritePolicy::DestinationNotRegular,
+            ));
         }
         if meta.uid() != unsafe { libc::geteuid() } {
-            return Err(AtomicWriteFailure::Policy(AtomicWritePolicy::DestinationWrongOwner));
+            return Err(AtomicWriteFailure::Policy(
+                AtomicWritePolicy::DestinationWrongOwner,
+            ));
         }
     }
     if let Some(errno) = injected_write_error(AtomicWriteOperation::CreateTemp) {
@@ -3940,24 +4451,30 @@ fn write_atomic_checked(
             operation: AtomicWriteOperation::OpenParent,
             errno,
         }
-    } else { match std::fs::File::open(parent) {
-        Err(e) => AtomicWriteDurability::Warning {
-            operation: AtomicWriteOperation::OpenParent,
-            errno: e.raw_os_error().unwrap_or(0),
-        },
-        Ok(dir) => if let Some(errno) = injected_write_error(AtomicWriteOperation::SyncParent) {
-            AtomicWriteDurability::Warning {
-                operation: AtomicWriteOperation::SyncParent,
-                errno,
-            }
-        } else { match dir.sync_all() {
-            Ok(()) => AtomicWriteDurability::Durable,
+    } else {
+        match std::fs::File::open(parent) {
             Err(e) => AtomicWriteDurability::Warning {
-                operation: AtomicWriteOperation::SyncParent,
+                operation: AtomicWriteOperation::OpenParent,
                 errno: e.raw_os_error().unwrap_or(0),
             },
-        } },
-    } };
+            Ok(dir) => {
+                if let Some(errno) = injected_write_error(AtomicWriteOperation::SyncParent) {
+                    AtomicWriteDurability::Warning {
+                        operation: AtomicWriteOperation::SyncParent,
+                        errno,
+                    }
+                } else {
+                    match dir.sync_all() {
+                        Ok(()) => AtomicWriteDurability::Durable,
+                        Err(e) => AtomicWriteDurability::Warning {
+                            operation: AtomicWriteOperation::SyncParent,
+                            errno: e.raw_os_error().unwrap_or(0),
+                        },
+                    }
+                }
+            }
+        }
+    };
     remove_temp_siblings(path);
     Ok(AtomicWriteReceipt { durability })
 }
@@ -3967,8 +4484,9 @@ fn create_private_temp_checked(
 ) -> Result<(std::path::PathBuf, std::fs::File), AtomicWriteFailure> {
     use std::os::unix::fs::OpenOptionsExt;
     for attempt in 0..16u64 {
-        let tmp = random_tmp_path(path, attempt)
-            .ok_or(AtomicWriteFailure::Policy(AtomicWritePolicy::TempNameExhausted))?;
+        let tmp = random_tmp_path(path, attempt).ok_or(AtomicWriteFailure::Policy(
+            AtomicWritePolicy::TempNameExhausted,
+        ))?;
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -3986,7 +4504,9 @@ fn create_private_temp_checked(
             }
         }
     }
-    Err(AtomicWriteFailure::Policy(AtomicWritePolicy::TempNameExhausted))
+    Err(AtomicWriteFailure::Policy(
+        AtomicWritePolicy::TempNameExhausted,
+    ))
 }
 
 fn random_tmp_path(path: &std::path::Path, attempt: u64) -> Option<std::path::PathBuf> {
@@ -4171,7 +4691,7 @@ pub(crate) fn read_owned_regular_checked(
     let trust = repair_owned_mode(&file, &meta, path);
     const MAX_FILE: u64 = 4 * 1024 * 1024;
     let mut bytes = Vec::new();
-    file.by_ref()
+    std::io::Read::by_ref(&mut file)
         .take(MAX_FILE + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| ReadRejection::ReadFailed(e.raw_os_error().unwrap_or(0)))?;
@@ -4275,7 +4795,10 @@ pub(crate) fn repair_owned_mode(
         return ModeTrust::Trusted;
     }
     let writable = before & 0o022 != 0;
-    let fixed = !fchmod_refused_for_test()
+    // A write-widened file is attacker-controlled content. Do not first make it look owner-only:
+    // if its quarantine/delete then fails, a later launch would otherwise accept the same bytes.
+    let fixed = !writable
+        && !fchmod_refused_for_test()
         && file
             .set_permissions(std::fs::Permissions::from_mode(0o600))
             .is_ok();
@@ -4285,7 +4808,9 @@ pub(crate) fn repair_owned_mode(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
         if writable {
-            crate::log(&format!("perm: repaired {name} was {before:o} (content untrusted)"));
+            crate::log(&format!(
+                "perm: repaired {name} was {before:o} (content untrusted)"
+            ));
         } else {
             crate::log(&format!("perm: repaired {name} was {before:o}"));
         }
@@ -4309,7 +4834,9 @@ fn read_trusted_marker(path: &std::path::Path) -> Option<Vec<u8>> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
-        crate::log(&format!("perm: ignored and removed {name} after an untrusted mode"));
+        crate::log(&format!(
+            "perm: ignored and removed {name} after an untrusted mode"
+        ));
         remove_temp_siblings(path);
         let _ = std::fs::remove_file(path);
         return None;
@@ -4383,17 +4910,41 @@ fn tmp_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
 /// would not, a directory), so a second tampering overwrites the first one's evidence rather than
 /// accumulating a numbered series in a jail directory this app does not police the size of.
 fn quarantine_untrusted(path: &std::path::Path, mode_is_owner_only: bool) -> bool {
-    let Some(aside) = untrusted_path(path).filter(|_| mode_is_owner_only) else {
-        let _ = std::fs::remove_file(path);
+    let Some(aside) = untrusted_path(path) else {
+        let _ = remove_cleanup_file(path, &mut std::collections::BTreeSet::new());
         return false;
     };
     // A previous quarantine (or anything a peer left at the name) goes first: `rename` would
     // replace a file or symlink anyway, and this also clears the one shape it would not.
+    // A directory at the quarantine name deliberately blocks rename; do not follow it.
     let _ = std::fs::remove_file(&aside);
     if std::fs::rename(path, &aside).is_ok() {
+        if !mode_is_owner_only {
+            use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+            let repaired = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+                .open(&aside)
+                .ok()
+                .and_then(|file| {
+                    let meta = file.metadata().ok()?;
+                    (meta.file_type().is_file() && meta.uid() == unsafe { libc::geteuid() })
+                        .then_some(file)
+                })
+                .is_some_and(|file| {
+                    !fchmod_refused_for_test()
+                        && file
+                            .set_permissions(std::fs::Permissions::from_mode(0o600))
+                            .is_ok()
+                });
+            if !repaired {
+                let _ = remove_cleanup_file(&aside, &mut std::collections::BTreeSet::new());
+                return false;
+            }
+        }
         return true;
     }
-    let _ = std::fs::remove_file(path);
+    let _ = remove_cleanup_file(path, &mut std::collections::BTreeSet::new());
     false
 }
 
@@ -4420,12 +4971,85 @@ fn untrusted_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
 /// Takes [`IO`] like every other entry point, and that is not tidiness: a sign-out racing an
 /// in-flight worker's read-modify-write would otherwise delete the file and have the worker put it
 /// straight back, account token and all.
-pub fn clear() {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClearDurability {
+    Durable,
+    Uncertain,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClearOutcome {
+    pub durability: ClearDurability,
+    pub cleanup_failed: bool,
+}
+
+impl ClearOutcome {
+    pub fn durable(self) -> bool {
+        matches!(self.durability, ClearDurability::Durable)
+    }
+}
+
+pub fn clear() -> bool {
+    clear_outcome().durable()
+}
+
+pub fn clear_outcome() -> ClearOutcome {
+    publish_cache(Session::default());
+    clear_outcome_disk()
+}
+
+/// Revoke the in-memory snapshot immediately and queue the canonical cleared record.
+pub(crate) fn clear_with_receipt(
+) -> Result<async_persistence::Receipt, async_persistence::AdmissionError> {
+    async_persistence::clear()
+}
+
+/// Blocking revocation half used by both the synchronous sign-out path and the asynchronous
+/// coordinator. Snapshot revocation happens at admission, before this function is allowed to
+/// wait for disk, and this function must never republish over a newer admitted sign-in.
+fn clear_outcome_disk() -> ClearOutcome {
     let _io = io();
+    let canonical_key = match persistence::load() {
+        persistence::CanonicalRead::Data { payload, .. } => {
+            serde_json::from_str::<SecureEnvelope>(&payload)
+                .ok()
+                .and_then(|e| {
+                    (e.format == SECURE_FORMAT && e.version == 1)
+                        .then_some((e.sealed.backend, e.sealed.key))
+                })
+        }
+        _ => None,
+    };
+    let canonical = persistence::commit_cleared();
+    match &canonical {
+        persistence::CanonicalCommit::Durable { .. } => {
+            async_persistence::note_commit_durable()
+        }
+        persistence::CanonicalCommit::Uncertain { stage, errno } => {
+            async_persistence::note_commit_uncertain(*stage, *errno)
+        }
+        persistence::CanonicalCommit::Failed(error) => {
+            async_persistence::note_commit_failed(*error)
+        }
+    }
+    if matches!(canonical, persistence::CanonicalCommit::Durable { .. }) {
+        if let Some((backend, key)) = canonical_key {
+            crate::keymanager::remove(&backend, &key);
+        }
+    }
+    let cleanup = persistence::cleanup_temporaries();
+    if let Err(error) = &cleanup {
+        crate::log(&format!(
+            "session: canonical temporary cleanup failed: {error:?}"
+        ));
+    }
     // Every candidate, not just the one we happen to write today: leaving a copy at any other
     // location would let `peek`'s search resurrect the stale session on the next boot. The `.tmp`
     // siblings go too — `peek` cannot read one, so it is not a resurrection risk, but a sign-out
     // that leaves a live account token in a file on a rooted television is not a sign-out.
+    let mut cleanup_failed = cleanup.is_err();
+    let mut cleanup_parents = std::collections::BTreeSet::new();
     for path in auth_paths() {
         if let Some(bytes) = read_owned_regular(&path) {
             if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
@@ -4439,9 +5063,9 @@ pub fn clear() {
         // belonged to the account now signing out. It exists for the owner to inspect, not to
         // outlive them.
         if let Some(aside) = untrusted_path(&path) {
-            let _ = std::fs::remove_file(aside);
+            cleanup_failed |= !remove_cleanup_file(&aside, &mut cleanup_parents);
         }
-        let _ = std::fs::remove_file(path);
+        cleanup_failed |= !remove_cleanup_file(&path, &mut cleanup_parents);
     }
     // The marker carries no credential, but leaving it behind would keep a FUTURE sign-in on this
     // same install pinned to plaintext for no reason connected to the account that just left.
@@ -4453,10 +5077,12 @@ pub fn clear() {
     // exact failure sign-out was meant to give the install a fresh chance to avoid — so when a
     // refused marker existed, the proven one it was found alongside is stale too and goes with it;
     // the account's next envelope re-earns proven storage through the probe like any other.
-    let had_refused = refused_marker_paths().iter().any(|p| read_owned_regular(p).is_some());
+    let had_refused = refused_marker_paths()
+        .iter()
+        .any(|p| read_owned_regular(p).is_some());
     for path in refused_marker_paths() {
         remove_temp_siblings(&path);
-        let _ = std::fs::remove_file(path);
+        cleanup_failed |= !remove_cleanup_file(&path, &mut cleanup_parents);
     }
     // The unanswered-launch counter goes too: it describes a run of launches against THIS
     // envelope, and the envelope has just been deleted.
@@ -4464,7 +5090,7 @@ pub fn clear() {
     // An in-flight probe belongs to the account that just signed out — a new sign-in earns its own.
     for path in probe_paths() {
         remove_temp_siblings(&path);
-        let _ = std::fs::remove_file(path);
+        cleanup_failed |= !remove_cleanup_file(&path, &mut cleanup_parents);
     }
     // **The PROVEN marker is otherwise deliberately NOT removed here.** Unlike the refused marker,
     // it is a fact about this TELEVISION's key manager — "a prior launch proved a probe reopens on
@@ -4476,25 +5102,44 @@ pub fn clear() {
     if had_refused {
         for path in proven_marker_paths() {
             remove_temp_siblings(&path);
-            let _ = std::fs::remove_file(path);
+            cleanup_failed |= !remove_cleanup_file(&path, &mut cleanup_parents);
         }
     }
+    cleanup_failed |= !sync_cleanup_parents(cleanup_parents);
     // No file, so nothing left to call Locked — and no cached copy of the session that just got
     // signed out should keep answering `peek`.
     LOCKED_STATE.store(NOT_LOCKED, std::sync::atomic::Ordering::Relaxed);
     *LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
     LAST_CLASS.store(CLASS_UNKNOWN, std::sync::atomic::Ordering::Relaxed);
     *LAST_SESSION_WRITE.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    *LAST_FRESH_READBACK.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    FRESH_WRITE_ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    FRESH_SAVE_ERRORS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    *LAST_FRESH_READBACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    FRESH_WRITE_ATTEMPTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    FRESH_SAVE_ERRORS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     *COLD_SESSION_FACTS.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *COLD_STORAGE_DIAGNOSTIC
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = None;
     *LAST_PERSIST.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    CANDIDATE_READS.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    clear_cache();
+    CANDIDATE_READS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    ClearOutcome {
+        durability: match canonical {
+            persistence::CanonicalCommit::Durable { .. } => ClearDurability::Durable,
+            persistence::CanonicalCommit::Uncertain { .. } => ClearDurability::Uncertain,
+            persistence::CanonicalCommit::Failed(_) => ClearDurability::Failed,
+        },
+        cleanup_failed,
+    }
 }
 
 /// A v4-ish UUID from `/dev/urandom` (no `uuid` crate). Only uniqueness/stability matter — plex.tv
@@ -4585,6 +5230,34 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::RecordStore;
+
+    #[test]
+    fn application_snapshot_reads_do_not_wait_for_the_disk_writer() {
+        let _serial = crate::testlock::serial();
+        let saved_cache = cached();
+        publish_cache(Session {
+            client_id: "snapshot-client".into(),
+            ..Default::default()
+        });
+        let disk_guard = io();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = crate::task::spawn("snapshot read test", move || {
+            tx.send((peek().client_id, load().client_id)).unwrap();
+        })
+        .unwrap();
+        let while_disk_busy = rx.recv_timeout(std::time::Duration::from_millis(250));
+        drop(disk_guard);
+        reader.join().unwrap();
+        match saved_cache {
+            Some(s) => publish_cache(s),
+            None => clear_cache(),
+        }
+        assert_eq!(
+            while_disk_busy.unwrap(),
+            ("snapshot-client".into(), "snapshot-client".into())
+        );
+    }
 
     thread_local! {
         /// What [`super::report_storage_error`]'s test double captured instead of a real send —
@@ -5429,22 +6102,145 @@ mod tests {
         }
     }
 
+    fn canonical_payload() -> String {
+        match persistence::load() {
+            persistence::CanonicalRead::Data { payload, .. } => payload,
+            _ => panic!("expected canonical session payload"),
+        }
+    }
+
+    fn canonical_session() -> Session {
+        serde_json::from_str(&canonical_payload()).expect("canonical payload is a Session")
+    }
+
+    #[test]
+    fn clear_requires_explicit_new_signin_and_never_resurrects_old_session() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("clear-new-signin");
+        assert!(save_after_reauthentication(&signed_in()).persisted());
+        assert_eq!(peek().account_token, "acct");
+
+        assert!(clear());
+        let fresh = begin_new_signin();
+        assert!(!fresh.client_id.is_empty());
+        assert_ne!(fresh.client_id, "cid-1");
+        assert!(fresh.account_token.is_empty());
+        assert_eq!(peek().client_id, fresh.client_id);
+        assert!(peek().account_token.is_empty());
+
+        clear_cache();
+        let cold = load();
+        assert!(cold.client_id.is_empty());
+        assert!(cold.account_token.is_empty());
+    }
+
+    #[test]
+    fn clear_reports_cleanup_failure_and_retries_leftover_quarantine() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("clear-retries-cleanup");
+        assert!(save_after_reauthentication(&signed_in()).persisted());
+        let aside = untrusted_path(&t.file()).unwrap();
+        std::fs::write(&aside, b"former-token-bytes").unwrap();
+
+        fail_next_cleanup_remove_for_test();
+        let first = clear_outcome();
+        assert_eq!(first.durability, ClearDurability::Durable);
+        assert!(first.cleanup_failed, "durable tombstone and cleanup are independent");
+        assert!(aside.exists(), "the injected cleanup failure leaves retryable residue");
+
+        let second = clear_outcome();
+        assert_eq!(second.durability, ClearDurability::Durable);
+        assert!(!second.cleanup_failed, "a later clear retries cleanup");
+        assert!(!aside.exists(), "the retry removes former credential material");
+    }
+
+    #[test]
+    fn corrupt_canonical_session_is_terminal_and_does_not_fall_back_to_legacy() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("corrupt-canonical-terminal");
+        std::fs::write(persistence::path(), b"not-a-record").unwrap();
+        std::fs::write(t.file(), serde_json::to_vec(&signed_in()).unwrap()).unwrap();
+        clear_cache();
+        let session = load();
+        assert!(session.account_token.is_empty());
+        assert!(session.client_id.is_empty());
+    }
+
+    #[test]
+    fn nested_future_fields_survive_same_identity_session_rewrite() {
+        let mut session = signed_in();
+        session.server.machine_id = "server-1".into();
+        session.sources.push(SourceRef {
+            machine_id: "server-1".into(),
+            ..Default::default()
+        });
+        session.user.uuid = "user-1".into();
+        session.home_users.push(HomeUserRef {
+            uuid: "home-1".into(),
+            ..Default::default()
+        });
+        session.home_pins.push(HomePins {
+            user: "home-1".into(),
+            on: vec![PinnedLib {
+                machine_id: "server-1".into(),
+                key: 7,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        session.recent_searches.push(RecentSearches {
+            user: "home-1".into(),
+            terms: vec!["old".into()],
+            ..Default::default()
+        });
+        let mut value = serde_json::to_value(&session).unwrap();
+        value["server"]["futureServerField"] = serde_json::json!(true);
+        value["sources"][0]["futureSourceField"] = serde_json::json!({"v": 2});
+        value["user"]["futureUserField"] = serde_json::json!("kept");
+        value["home_users"][0]["futureHomeField"] = serde_json::json!(3);
+        value["home_pins"][0]["futurePinsField"] = serde_json::json!(false);
+        value["home_pins"][0]["on"][0]["futurePinField"] = serde_json::json!("x");
+        value["recent_searches"][0]["futureSearchField"] = serde_json::json!("kept");
+
+        let mut rewritten: Session = serde_json::from_value(value).unwrap();
+        rewritten.server.address = "192.0.2.10".into();
+        rewritten.sources[0].port = 32400;
+        rewritten.user.title = "owner".into();
+        rewritten.home_users[0].title = "member".into();
+        rewritten.home_pins[0].asked = true;
+        rewritten.recent_searches[0].terms.push("new".into());
+        let persisted = serde_json::to_value(rewritten).unwrap();
+        assert_eq!(persisted["server"]["futureServerField"], true);
+        assert_eq!(persisted["sources"][0]["futureSourceField"]["v"], 2);
+        assert_eq!(persisted["user"]["futureUserField"], "kept");
+        assert_eq!(persisted["home_users"][0]["futureHomeField"], 3);
+        assert_eq!(persisted["home_pins"][0]["futurePinsField"], false);
+        assert_eq!(persisted["home_pins"][0]["on"][0]["futurePinField"], "x");
+        assert_eq!(persisted["recent_searches"][0]["futureSearchField"], "kept");
+    }
+
     #[test]
     fn app_state_fallback_survives_cold_read_and_signout_clears_it() {
         use std::os::unix::fs::PermissionsExt;
         let _g = crate::testlock::serial();
         let t = TwoCandidateSession::new("app-state-fallback");
         let state = t.dir.join("state");
-        std::fs::create_dir(&state).unwrap();
-        let file = state.join("auth.json");
+        assert!(state.is_dir());
+        let file = persistence::path();
         redirect_for_test_multi(vec![t.dir.join("absent-developer/auth.json"), file.clone()]);
         assert!(save_after_reauthentication(&signed_in()).persisted());
-        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         clear_cache();
         assert_eq!(peek().account_token, "acct");
         clear();
         assert!(!file.exists());
-        assert!(state.is_dir(), "sign-out must retain the packaged directory");
+        assert!(
+            state.is_dir(),
+            "sign-out must retain the packaged directory"
+        );
     }
 
     #[test]
@@ -5452,18 +6248,43 @@ mod tests {
         let _g = crate::testlock::serial();
         let t = TwoCandidateSession::new("legacy-to-state");
         let state = t.dir.join("state");
-        std::fs::create_dir(&state).unwrap();
-        let new_path = state.join("auth.json");
+        assert!(state.is_dir());
+        let new_path = persistence::path();
         let legacy = t.dir.join("auth.json");
-        assert!(write_atomic(&legacy, &serde_json::to_vec(&signed_in()).unwrap()));
-        redirect_for_test_multi(vec![t.dir.join("absent/auth.json"), new_path.clone(), legacy.clone()]);
+        assert!(write_atomic(
+            &legacy,
+            &serde_json::to_vec(&signed_in()).unwrap()
+        ));
+        redirect_for_test_multi(vec![
+            t.dir.join("absent/auth.json"),
+            new_path.clone(),
+            legacy.clone(),
+        ]);
         let old = peek();
         assert_eq!(old.account_token, "acct");
         assert!(save(&old).persisted());
         assert!(new_path.is_file());
-        assert!(!legacy.exists(), "the migrated legacy file must not shadow later saves");
+        assert!(
+            !legacy.exists(),
+            "the migrated legacy file must not shadow later saves"
+        );
         clear_cache();
         assert_eq!(peek().account_token, "acct");
+    }
+
+    #[test]
+    fn uncertain_migration_keeps_legacy_through_two_uncertain_commits_until_durable() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("uncertain-migration-retry");
+        std::fs::write(t.file(), serde_json::to_vec(&signed_in()).unwrap()).unwrap();
+        crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::ParentSync);
+        let _ = read_locked();
+        assert!(t.file().exists(), "an uncertain migration never retires its only durable source");
+        crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::ParentSync);
+        assert!(!save(&signed_in()).persisted());
+        assert!(t.file().exists(), "a second uncertainty still preserves the legacy source");
+        assert!(save(&signed_in()).persisted());
+        assert!(!t.file().exists(), "the later durable same-process commit retries cleanup");
     }
 
     #[test]
@@ -5471,12 +6292,18 @@ mod tests {
         let _g = crate::testlock::serial();
         let t = TwoCandidateSession::new("state-unknown-envelope");
         let state = t.dir.join("state");
-        std::fs::create_dir(&state).unwrap();
-        let file = state.join("auth.json");
+        assert!(state.is_dir());
+        let file = persistence::path();
         let unknown = br#"{"format":"plxnative-secure-session","version":99}"#;
         assert!(write_atomic(&file, unknown));
-        redirect_for_test_multi(vec![t.dir.join("absent/auth.json"), file.clone()]);
-        assert_eq!(save_after_reauthentication(&signed_in()), PersistOutcome::BlockedUnknownEnvelope);
+        redirect_for_test_multi(vec![
+            t.dir.join("absent/auth.json"),
+            t.dir.join("auth.json"),
+        ]);
+        assert_eq!(
+            save_after_reauthentication(&signed_in()),
+            PersistOutcome::BlockedUnknownEnvelope
+        );
         assert_eq!(std::fs::read(file).unwrap(), unknown);
     }
 
@@ -5486,15 +6313,20 @@ mod tests {
         let _g = crate::testlock::serial();
         // Root bypasses directory DAC. The ordinary non-root macOS/Linux host
         // runners exercise the actual refusal, not a mocked successful sweep.
-        if unsafe { libc::geteuid() } == 0 { return; }
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
         let t = TwoCandidateSession::new("state-shadowed");
         let higher_dir = t.dir.join("readonly");
         let state = t.dir.join("state");
         std::fs::create_dir(&higher_dir).unwrap();
-        std::fs::create_dir(&state).unwrap();
+        assert!(state.is_dir());
         let higher = higher_dir.join("auth.json");
-        let lower = state.join("auth.json");
-        assert!(write_atomic(&higher, &serde_json::to_vec(&signed_in()).unwrap()));
+        let lower = persistence::path();
+        assert!(write_atomic(
+            &higher,
+            &serde_json::to_vec(&signed_in()).unwrap()
+        ));
         redirect_for_test_multi(vec![higher.clone(), lower.clone()]);
         assert_eq!(peek().account_token, "acct");
         std::fs::set_permissions(&higher_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
@@ -5502,10 +6334,13 @@ mod tests {
         fresh.account_token = "new-account".into();
         let outcome = save_after_reauthentication(&fresh);
         std::fs::set_permissions(&higher_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(lower.exists(), "a lower physical write succeeds in this fixture");
-        assert!(!outcome.persisted(), "the cold reader would still choose the old higher file");
+        assert!(
+            lower.exists(),
+            "a lower physical write succeeds in this fixture"
+        );
+        assert!(outcome.persisted(), "the canonical write is authoritative");
         clear_cache();
-        assert_eq!(peek().account_token, "acct");
+        assert_eq!(peek().account_token, "new-account");
     }
 
     /// A save lands as a WHOLE file — written to a sibling tmp and renamed over — leaving nothing
@@ -5516,22 +6351,39 @@ mod tests {
     fn a_save_lands_whole_and_leaves_no_temporary_behind() {
         use std::os::unix::fs::PermissionsExt;
         let _g = crate::testlock::serial();
-        let t = TempSession::new("whole");
+        let _t = TempSession::new("whole");
 
         save(&signed_in());
         assert_eq!(peek().account_token, "acct", "and it reads back");
         assert!(
-            !t.tmp().exists(),
-            "the tmp file is renamed, not left beside the session"
+            std::fs::read_dir(persistence::root())
+                .unwrap()
+                .all(|entry| {
+                    entry
+                        .ok()
+                        .and_then(|e| {
+                            e.file_name()
+                                .to_str()
+                                .map(|n| !n.starts_with(".session.json.new-"))
+                        })
+                        .unwrap_or(true)
+                }),
+            "the temporary record file is cleaned up"
         );
-        let mode = std::fs::metadata(t.file()).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(persistence::path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600, "credentials at rest");
 
         // a sign-out takes the tmp with it: `peek` cannot read one, but a live account token left
         // in a file on a rooted television is not a sign-out
-        std::fs::write(t.tmp(), b"{}").unwrap();
         clear();
-        assert!(!t.file().exists() && !t.tmp().exists());
+        assert!(
+            persistence::path().exists(),
+            "clear retains the canonical tombstone"
+        );
     }
 
     #[test]
@@ -5542,7 +6394,9 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         assert_eq!(
             write_atomic_checked(&directory, b"x"),
-            Err(AtomicWriteFailure::Policy(AtomicWritePolicy::DestinationNotRegular))
+            Err(AtomicWriteFailure::Policy(
+                AtomicWritePolicy::DestinationNotRegular
+            ))
         );
         let missing_parent = t.dir.join("absent").join("auth.json");
         assert!(matches!(
@@ -5587,33 +6441,45 @@ mod tests {
                     },
                 })
             );
-            assert!(write_atomic(&t.file(), b"next"), "the bool wrapper keeps warning-as-success");
+            assert!(
+                write_atomic(&t.file(), b"next"),
+                "the bool wrapper keeps warning-as-success"
+            );
         }
     }
 
     #[test]
     fn fresh_save_records_ordered_candidate_failures_then_the_winner() {
         let _g = crate::testlock::serial();
-        let t = TwoCandidateSession::new("fresh-write-attempts");
-        let missing = t.dir.join("absent").join("auth.json");
-        let winner = t.lower();
-        super::redirect_for_test_multi(vec![missing, winner]);
-        assert!(save_after_reauthentication(&signed_in()).persisted());
+        let _t = TempSession::new("fresh-write-attempts");
+        crate::storage::inject_next_commit_failure_for_test(
+            crate::storage::CommitStage::ParentSync,
+        );
+        assert_eq!(
+            save_after_reauthentication(&signed_in()),
+            PersistOutcome::WriteFailed
+        );
         let attempts = fresh_write_attempts();
-        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts.len(), 1);
         assert!(matches!(
-            attempts[0].result,
-            FreshWriteResult::Failed {
-                failure: AtomicWriteFailure::Os {
-                    operation: AtomicWriteOperation::CreateTemp,
-                    errno: libc::ENOENT,
-                }
+            attempts[0],
+            FreshWriteAttempt {
+                candidate: CandidateCategory::AppDir,
+                result: FreshWriteResult::Written {
+                    durability: AtomicWriteDurability::Warning {
+                        operation: AtomicWriteOperation::SyncParent,
+                        errno: libc::EIO,
+                    },
+                },
             }
         ));
-        assert!(matches!(attempts[1].result, FreshWriteResult::Written { .. }));
         let retained = attempts.clone();
         save(&signed_in());
-        assert_eq!(fresh_write_attempts(), retained, "routine saves retain fresh diagnostics");
+        assert_eq!(
+            fresh_write_attempts(),
+            retained,
+            "routine saves retain fresh diagnostics"
+        );
         clear();
         assert!(fresh_write_attempts().is_empty());
     }
@@ -5621,35 +6487,44 @@ mod tests {
     #[test]
     fn fresh_save_errors_are_save_scoped_retained_and_cleared() {
         let _g = crate::testlock::serial();
-        let t = TwoCandidateSession::new("fresh-save-errors");
-        let missing_a = t.dir.join("absent-a").join("auth.json");
-        let missing_b = t.dir.join("absent-b").join("auth.json");
-        *COLD_STORAGE_DIAGNOSTIC.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(ColdStorageDiagnostic {
-                errors: Vec::new(),
-                candidate_reads: "internal:missing".into(),
-                facts: ColdSessionFacts {
-                    winner: None,
-                    account_token_present: false,
-                    pms_token_present: false,
-                    server_dialable: false,
-                    can_go_local: false,
-                },
-            });
-        super::redirect_for_test_multi(vec![missing_a, missing_b]);
-        assert!(cold_storage_diagnostic().is_none(), "a redirected fixture is a new launch");
-        assert_eq!(save_after_reauthentication(&signed_in()), PersistOutcome::WriteFailed);
+        let _t = TempSession::new("fresh-save-errors");
+        *COLD_STORAGE_DIAGNOSTIC
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(ColdStorageDiagnostic {
+            errors: Vec::new(),
+            candidate_reads: "internal:missing".into(),
+            facts: ColdSessionFacts {
+                winner: None,
+                account_token_present: false,
+                pms_token_present: false,
+                server_dialable: false,
+                can_go_local: false,
+            },
+        });
+        crate::storage::inject_next_commit_failure_for_test(
+            crate::storage::CommitStage::ParentSync,
+        );
+        assert_eq!(
+            save_after_reauthentication(&signed_in()),
+            PersistOutcome::WriteFailed
+        );
         let errors = fresh_save_errors();
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].candidate, None, "a save-wide failure invents no candidate");
+        assert_eq!(
+            errors[0].candidate, None,
+            "a save-wide failure invents no candidate"
+        );
         assert_eq!(
             errors[0].context.stage,
             crate::telemetry::storage::StorageStage::WriteFailed
         );
-        assert!(cold_storage_diagnostic().is_none(), "fresh evidence is not cold evidence");
 
         save(&signed_in());
-        assert_eq!(fresh_save_errors(), errors, "routine saves retain fresh evidence");
+        assert_eq!(
+            fresh_save_errors(),
+            errors,
+            "routine saves retain fresh evidence"
+        );
         clear();
         assert!(fresh_save_errors().is_empty());
     }
@@ -5674,7 +6549,10 @@ mod tests {
         );
 
         let second = [[0.9, 0.8, 0.7]; 4];
-        assert!(record_last_hero(second), "a genuinely different hero writes");
+        assert!(
+            record_last_hero(second),
+            "a genuinely different hero writes"
+        );
         assert_eq!(last_hero(), Some(second), "…and replaces the stored one");
     }
 
@@ -5729,15 +6607,18 @@ mod tests {
 
         // The user signs in again, exactly as the reported loop describes.
         save_after_reauthentication(&signed_in());
-        let on_disk = std::fs::read(t.file()).unwrap();
+        let on_disk = canonical_session();
         assert_ne!(
-            on_disk, original,
+            serde_json::to_vec(&on_disk).unwrap(),
+            original,
             "a fresh sign-in must not be discarded to protect an envelope nobody can open"
         );
-        let saved: Session =
-            serde_json::from_slice(&on_disk).expect("the recovery file is plaintext, not sealed");
-        assert_eq!(saved.account_token, "acct");
-        let mode = std::fs::metadata(t.file()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(on_disk.account_token, "acct");
+        let mode = std::fs::metadata(persistence::path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600, "the recovery write is credentials at rest too");
 
         // A later boot in a NEW process (no cache) reads the recovered session back.
@@ -5819,11 +6700,7 @@ mod tests {
         save_after_reauthentication(&signed_in());
         crate::keymanager::disarm_for_test();
 
-        let on_disk = std::fs::read(t.file()).unwrap();
-        let saved: Session = serde_json::from_slice(&on_disk).expect(
-            "a working-right-now backend must still be bypassed — the file must be the plaintext \
-             recovery write, never a freshly sealed envelope this launch alone could open",
-        );
+        let saved = canonical_session();
         assert_eq!(saved.account_token, "acct");
     }
 
@@ -5856,7 +6733,10 @@ mod tests {
         arm_refusing_keymanager(); // a real refusal — see `open_failure_is_transient`
         let loaded = load();
         crate::keymanager::disarm_for_test();
-        assert!(loaded.account_token.is_empty(), "Locked degrades to default");
+        assert!(
+            loaded.account_token.is_empty(),
+            "Locked degrades to default"
+        );
 
         save_after_reauthentication(&signed_in());
 
@@ -5866,8 +6746,7 @@ mod tests {
              it was free — the next boot's read_locked would never reach the untouched locked \
              file at the lower-priority path if it did"
         );
-        let saved: Session = serde_json::from_slice(&std::fs::read(t.lower()).unwrap())
-            .expect("the recovery write lands at the SAME candidate the envelope was found at");
+        let saved = canonical_session();
         assert_eq!(saved.account_token, "acct");
     }
 
@@ -5895,7 +6774,10 @@ mod tests {
         arm_refusing_keymanager(); // a real refusal — see `open_failure_is_transient`
         let loaded = load();
         crate::keymanager::disarm_for_test();
-        assert!(loaded.account_token.is_empty(), "Locked degrades to default");
+        assert!(
+            loaded.account_token.is_empty(),
+            "Locked degrades to default"
+        );
 
         save_after_reauthentication(&signed_in());
 
@@ -5903,7 +6785,7 @@ mod tests {
             !t.lower().exists(),
             "a stale copy at another candidate must not survive the recovery write"
         );
-        let saved: Session = serde_json::from_slice(&std::fs::read(t.higher()).unwrap()).unwrap();
+        let saved = canonical_session();
         assert_eq!(saved.account_token, "acct");
     }
 
@@ -5928,45 +6810,59 @@ mod tests {
 
         let loaded = load();
         assert!(loaded.account_token.is_empty());
-        assert!(t.lower().exists(), "a routine load preserves the lower envelope");
+        assert!(
+            !t.lower().exists(),
+            "a durable canonical migration retires the recognized stale legacy envelope"
+        );
 
         let mut fresh = signed_in();
         fresh.server.address = "192.0.2.10".into();
         fresh.server.port = 32400;
         fresh.server.token = "pms-token".into();
         assert!(save_after_reauthentication(&fresh).persisted());
-        assert!(!t.lower().exists(), "the recognized stale envelope is swept");
+        assert!(
+            !t.lower().exists(),
+            "the recognized stale envelope is swept"
+        );
 
         super::redirect_for_test_multi(vec![t.higher(), t.lower()]);
         let next = load();
         assert_eq!(next.account_token, "acct");
-        assert!(next.can_go_local(), "the next cold process passes the boot gate");
+        assert!(
+            next.can_go_local(),
+            "the next cold process passes the boot gate"
+        );
     }
 
     #[test]
     fn selected_plaintext_probe_applies_secure_envelope_precedence_before_serde_defaults() {
         let _g = crate::testlock::serial();
-        let t = TempSession::new("selected-plaintext-shape");
-        std::fs::write(t.file(), locked_envelope_bytes()).unwrap();
+        let _t = TempSession::new("selected-plaintext-shape");
+        assert!(matches!(
+            persistence::commit_data(String::from_utf8(locked_envelope_bytes()).unwrap()),
+            persistence::CanonicalCommit::Durable { .. }
+        ));
         assert!(
             !selected_candidate_is_plaintext(),
             "Session defaults must not make a recognized envelope parse as plaintext"
         );
-        std::fs::write(
-            t.file(),
-            br#"{"format":"plxnative-secure-session","version":99,"sealed":{}}"#,
-        )
-        .unwrap();
+        assert!(matches!(
+            persistence::commit_data(
+                r#"{"format":"plxnative-secure-session","version":99,"sealed":{}}"#.into(),
+            ),
+            persistence::CanonicalCommit::Durable { .. }
+        ));
         assert!(!selected_candidate_is_plaintext());
-        std::fs::write(
-            t.file(),
-            serde_json::to_vec_pretty(&Session {
-                client_id: "cid-only".into(),
-                ..Session::default()
-            })
-            .unwrap(),
-        )
-        .unwrap();
+        assert!(matches!(
+            persistence::commit_data(
+                serde_json::to_string(&Session {
+                    client_id: "cid-only".into(),
+                    ..Session::default()
+                })
+                .unwrap(),
+            ),
+            persistence::CanonicalCommit::Durable { .. }
+        ));
         assert!(selected_candidate_is_plaintext());
     }
 
@@ -6125,7 +7021,7 @@ mod tests {
     ) {
         use std::os::unix::fs::PermissionsExt;
         let _g = crate::testlock::serial();
-        let t = TempSession::new("cache-fallback");
+        let _t = TempSession::new("cache-fallback");
         crate::keymanager::arm_for_test(vec![
             ("generateKey", Ok(serde_json::json!({"returnValue": true}))),
             (
@@ -6157,11 +7053,13 @@ mod tests {
             "acct",
             "served from the in-process cache, not a re-decrypt of the file"
         );
-        let raw = std::fs::read(t.file()).unwrap();
-        let on_disk: Session =
-            serde_json::from_slice(&raw).expect("the fallback file is plaintext, not sealed");
+        let on_disk = canonical_session();
         assert_eq!(on_disk.account_token, "acct");
-        let mode = std::fs::metadata(t.file()).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(persistence::path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600, "credentials at rest even on the fallback path");
     }
 
@@ -6203,15 +7101,21 @@ mod tests {
     fn a_world_writable_owned_file_is_repaired_to_0600_on_read() {
         use std::os::unix::fs::PermissionsExt;
         let _g = crate::testlock::serial();
-        let t = TempSession::new("repair-on-read");
+        let _t = TempSession::new("repair-on-read");
         save(&signed_in());
-        std::fs::set_permissions(t.file(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        std::fs::set_permissions(persistence::path(), std::fs::Permissions::from_mode(0o777))
+            .unwrap();
 
-        let bytes = read_owned_regular(&t.file()).expect("owned regular file is still readable");
+        let bytes =
+            read_owned_regular(&persistence::path()).expect("owned regular file is still readable");
         assert!(!bytes.is_empty());
 
-        let mode = std::fs::metadata(t.file()).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "the widened mode was not repaired: {mode:o}");
+        let mode = std::fs::metadata(persistence::path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o777, "write-widened bytes are not repaired in place");
     }
 
     /// **Repairing the mode is not the same claim as trusting the content.** A write-widened
@@ -6226,9 +7130,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let _g = crate::testlock::serial();
         let t = TempSession::new("write-widened-session");
-        save(&signed_in());
+        std::fs::write(t.file(), serde_json::to_vec(&signed_in()).unwrap()).unwrap();
+        let file = t.file();
         reset_report_state_for_test();
-        std::fs::set_permissions(t.file(), std::fs::Permissions::from_mode(0o666)).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o666)).unwrap();
         // Simulate a fresh launch reading the same file — `save`'s own in-process cache must not
         // be what answers `load()` below, or this test would never touch the file at all.
         super::redirect_for_test(Some(t.file()));
@@ -6239,13 +7144,13 @@ mod tests {
             "a write-widened file's token must never be trusted as this account's"
         );
         assert!(
-            !untrusted_path(&t.file()).is_none_or(|p| !p.exists()),
+            !untrusted_path(&file).is_none_or(|p| !p.exists()),
             "and the bytes themselves are kept aside rather than destroyed"
         );
         // `load()` mints a fresh anonymous session for the empty-`client_id` case and saves it —
         // so the file exists again afterward, but never carrying the forged token: the assertion
         // that matters is that the OLD account is gone, not that the path stays empty forever.
-        if let Ok(on_disk) = std::fs::read_to_string(t.file()) {
+        if let Ok(on_disk) = std::fs::read_to_string(&file) {
             assert!(
                 !on_disk.contains("acct"),
                 "the untrusted file's forged token must never survive, even inside a later rewrite"
@@ -6271,17 +7176,24 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let _g = crate::testlock::serial();
         let t = TempSession::new("quarantine-widened-session");
-        save(&signed_in());
-        let forged = std::fs::read(t.file()).unwrap();
+        std::fs::write(t.file(), serde_json::to_vec(&signed_in()).unwrap()).unwrap();
+        let file = t.file();
+        let forged = std::fs::read(&file).unwrap();
         reset_report_state_for_test();
-        std::fs::set_permissions(t.file(), std::fs::Permissions::from_mode(0o666)).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o666)).unwrap();
         super::redirect_for_test(Some(t.file()));
 
         let loaded = load();
-        assert!(loaded.account_token.is_empty(), "the forged token is never trusted");
+        assert!(
+            loaded.account_token.is_empty(),
+            "the forged token is never trusted"
+        );
 
-        let quarantine = untrusted_path(&t.file()).unwrap();
-        assert!(quarantine.exists(), "the bytes are kept for the owner to look at");
+        let quarantine = untrusted_path(&file).unwrap();
+        assert!(
+            quarantine.exists(),
+            "the bytes are kept for the owner to look at"
+        );
         assert_eq!(
             std::fs::read(&quarantine).unwrap(),
             forged,
@@ -6309,16 +7221,23 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let _g = crate::testlock::serial();
         let t = TempSession::new("quarantine-cleared-on-signout");
-        save(&signed_in());
-        std::fs::set_permissions(t.file(), std::fs::Permissions::from_mode(0o666)).unwrap();
+        std::fs::write(t.file(), serde_json::to_vec(&signed_in()).unwrap()).unwrap();
+        let file = t.file();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o666)).unwrap();
         super::redirect_for_test(Some(t.file()));
         let _ = load();
-        let quarantine = untrusted_path(&t.file()).unwrap();
-        assert!(quarantine.exists(), "precondition: something was quarantined");
+        let quarantine = untrusted_path(&file).unwrap();
+        assert!(
+            quarantine.exists(),
+            "precondition: something was quarantined"
+        );
 
         clear();
 
-        assert!(!quarantine.exists(), "sign-out leaves no former account's bytes behind");
+        assert!(
+            !quarantine.exists(),
+            "sign-out leaves no former account's bytes behind"
+        );
     }
 
     /// **If the quarantine cannot be made, the file is destroyed exactly as before.** Keeping the
@@ -6330,9 +7249,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let _g = crate::testlock::serial();
         let t = TempSession::new("quarantine-blocked");
-        save(&signed_in());
-        std::fs::set_permissions(t.file(), std::fs::Permissions::from_mode(0o666)).unwrap();
-        let quarantine = untrusted_path(&t.file()).unwrap();
+        std::fs::write(t.file(), serde_json::to_vec(&signed_in()).unwrap()).unwrap();
+        let file = t.file();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let quarantine = untrusted_path(&file).unwrap();
         std::fs::create_dir_all(quarantine.join("blocker")).unwrap();
         super::redirect_for_test(Some(t.file()));
 
@@ -6340,8 +7260,11 @@ mod tests {
         assert!(loaded.account_token.is_empty());
         // `load` mints and saves a fresh anonymous session, so the path may exist again — what
         // must never survive is the forged token.
-        if let Ok(on_disk) = std::fs::read_to_string(t.file()) {
-            assert!(!on_disk.contains("acct"), "the forged token must not survive");
+        if let Ok(on_disk) = std::fs::read_to_string(&file) {
+            assert!(
+                !on_disk.contains("acct"),
+                "the forged token must not survive"
+            );
         }
         let _ = std::fs::remove_dir_all(&quarantine);
     }
@@ -6362,16 +7285,20 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let _g = crate::testlock::serial();
         let t = TempSession::new("quarantine-unfixable-mode");
-        save(&signed_in());
-        std::fs::set_permissions(t.file(), std::fs::Permissions::from_mode(0o666)).unwrap();
+        std::fs::write(t.file(), serde_json::to_vec(&signed_in()).unwrap()).unwrap();
+        let file = t.file();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o666)).unwrap();
         super::redirect_for_test(Some(t.file()));
 
         FCHMOD_REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
         let loaded = load();
         FCHMOD_REFUSED.store(false, std::sync::atomic::Ordering::Relaxed);
-        assert!(loaded.account_token.is_empty(), "the forged token is never trusted");
+        assert!(
+            loaded.account_token.is_empty(),
+            "the forged token is never trusted"
+        );
 
-        let quarantine = untrusted_path(&t.file()).unwrap();
+        let quarantine = untrusted_path(&file).unwrap();
         assert!(
             !quarantine.exists(),
             "a file still writable by others must not be preserved under ANY name — the evidence \
@@ -6385,6 +7312,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn failed_untrusted_cleanup_cannot_promote_the_same_legacy_bytes_on_restart() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("untrusted-cleanup-restart");
+        std::fs::write(t.file(), serde_json::to_vec(&signed_in()).unwrap()).unwrap();
+        std::fs::set_permissions(t.file(), std::fs::Permissions::from_mode(0o666)).unwrap();
+        let aside = untrusted_path(&t.file()).unwrap();
+        std::fs::create_dir_all(aside.join("blocks-rename")).unwrap();
+        fail_next_cleanup_remove_for_test();
+        assert!(load().account_token.is_empty());
+        if t.file().exists() {
+            assert_ne!(
+                std::fs::metadata(t.file()).unwrap().permissions().mode() & 0o022,
+                0,
+                "failed cleanup must leave attacker-writable bytes visibly untrusted"
+            );
+            let _ = std::fs::remove_file(persistence::path());
+            super::redirect_for_test(Some(t.file()));
+            assert!(load().account_token.is_empty(), "restart must not trust the old token");
+        }
+    }
+
     /// The read-only-widened twin of the test above: `0o644` carries no write bit, so the content
     /// is still provably this process's own and must load exactly as it always has, past the mode
     /// repair.
@@ -6394,7 +7344,8 @@ mod tests {
         let _g = crate::testlock::serial();
         let t = TempSession::new("readable-widened-session");
         save(&signed_in());
-        std::fs::set_permissions(t.file(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(persistence::path(), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
         super::redirect_for_test(Some(t.file()));
 
         let loaded = load();
@@ -6403,7 +7354,11 @@ mod tests {
             "a read-only widened mode must not cost the session"
         );
 
-        let mode = std::fs::metadata(t.file()).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(persistence::path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600, "the widened mode was not repaired: {mode:o}");
     }
 
@@ -6418,7 +7373,8 @@ mod tests {
     fn the_trust_verdict_is_decided_from_the_mode_before_repair_not_after() {
         use std::os::unix::fs::PermissionsExt;
         let _g = crate::testlock::serial();
-        let dir = std::env::temp_dir().join(format!("plxnative-verdict-order-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("plxnative-verdict-order-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("f");
@@ -6435,13 +7391,13 @@ mod tests {
             verdict,
             ModeTrust::Repaired {
                 readable_only: false,
-                fixed: true,
+                fixed: false,
             },
             "the verdict must reflect the WRITE-widened mode captured before the fchmod, \
              even though the file is 0600 by the time this call returns"
         );
         let after = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(after, 0o600, "the repair itself must still have happened");
+        assert_eq!(after, 0o666, "write-widened content is not repaired in place");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -6461,7 +7417,7 @@ mod tests {
         let t = TempSession::new("replay-limitation");
 
         save(&signed_in()); // account_token "acct"
-        let old_bytes = std::fs::read(t.file()).unwrap();
+        let old_payload = canonical_payload();
 
         // A fresh sign-in supersedes it — same install, same file, different account.
         super::redirect_for_test(Some(t.file()));
@@ -6472,11 +7428,13 @@ mod tests {
         });
         assert_eq!(peek().account_token, "different-acct");
 
-        // The replay: a peer that could rename/unlink in the shared directory moves the OLD bytes
-        // back over the current file. `std::fs::write` on an existing path overwrites content
-        // in place without touching the inode's mode, so this stays 0600 and this-process-owned —
-        // exactly what a real peer replay would also look like from this module's own checks.
-        std::fs::write(t.file(), &old_bytes).unwrap();
+        // The replay replaces the current canonical record with an older valid record payload.
+        // The RecordStore framing remains intact: this is a same-store replay, not a malformed
+        // legacy JSON file planted at the canonical filename.
+        assert!(matches!(
+            persistence::commit_data(old_payload),
+            persistence::CanonicalCommit::Durable { .. }
+        ));
 
         super::redirect_for_test(Some(t.file()));
         let loaded = load();
@@ -6606,8 +7564,11 @@ mod tests {
     #[test]
     fn a_locked_read_persists_the_refused_marker() {
         let _g = crate::testlock::serial();
-        let t = TempSession::new("marker-write-on-locked-read");
-        std::fs::write(t.file(), locked_envelope_bytes()).unwrap();
+        let _t = TempSession::new("marker-write-on-locked-read");
+        assert!(matches!(
+            persistence::commit_data(String::from_utf8(locked_envelope_bytes()).unwrap()),
+            persistence::CanonicalCommit::Durable { .. }
+        ));
 
         assert!(
             !has_refused_marker(),
@@ -6616,7 +7577,10 @@ mod tests {
         arm_refusing_keymanager();
         let loaded = load();
         crate::keymanager::disarm_for_test();
-        assert!(loaded.account_token.is_empty(), "Locked degrades to default");
+        assert!(
+            loaded.account_token.is_empty(),
+            "Locked degrades to default"
+        );
         assert!(
             has_refused_marker(),
             "read_locked's LOCKED_RECOVERABLE branch must persist the verdict"
@@ -6647,7 +7611,7 @@ mod tests {
         save(&signed_in());
         crate::keymanager::disarm_for_test();
         assert!(
-            serde_json::from_slice::<SecureEnvelope>(&std::fs::read(t.file()).unwrap()).is_ok(),
+            serde_json::from_str::<SecureEnvelope>(&canonical_payload()).is_ok(),
             "launch 1 ends with a genuinely sealed envelope on disk"
         );
 
@@ -6655,7 +7619,10 @@ mod tests {
         // could not even be registered with.
         super::redirect_for_test(Some(t.file()));
         let loaded2 = load();
-        assert!(loaded2.account_token.is_empty(), "this launch still can't open it");
+        assert!(
+            loaded2.account_token.is_empty(),
+            "this launch still can't open it"
+        );
         assert_eq!(
             LOCKED_STATE.load(std::sync::atomic::Ordering::Relaxed),
             LOCKED_UNAVAILABLE,
@@ -6725,7 +7692,10 @@ mod tests {
         let loaded = load();
         crate::keymanager::disarm_for_test();
 
-        assert!(loaded.account_token.is_empty(), "this launch still has no session");
+        assert!(
+            loaded.account_token.is_empty(),
+            "this launch still has no session"
+        );
         assert_eq!(
             std::fs::read(t.file()).unwrap(),
             original,
@@ -6760,8 +7730,11 @@ mod tests {
     #[test]
     fn a_transient_failure_reports_once_however_often_try_again_is_pressed() {
         let _g = crate::testlock::serial();
-        let t = TempSession::new("unavailable-reports-once");
-        std::fs::write(t.file(), locked_envelope_bytes()).unwrap();
+        let _t = TempSession::new("unavailable-reports-once");
+        assert!(matches!(
+            persistence::commit_data(String::from_utf8(locked_envelope_bytes()).unwrap()),
+            persistence::CanonicalCommit::Durable { .. }
+        ));
         reset_report_state_for_test();
         crate::keymanager::arm_for_test(vec![
             ("begin", Err(())),
@@ -6799,7 +7772,10 @@ mod tests {
         crate::keymanager::arm_for_test(vec![("begin", Err(()))]);
         let booted = load();
         crate::keymanager::disarm_for_test();
-        assert!(booted.account_token.is_empty(), "the boot read found nothing to use");
+        assert!(
+            booted.account_token.is_empty(),
+            "the boot read found nothing to use"
+        );
         assert!(secure_unavailable(), "…so the screen offers Try again");
 
         // The press. `retry_secure_open` must bypass CACHE — `load` published the ephemeral
@@ -6831,8 +7807,8 @@ mod tests {
             crate::telemetry::storage::SessionStorageClass::Secure
         );
         assert_eq!(
-            std::fs::read(t.file()).unwrap(),
-            original,
+            canonical_payload().as_bytes(),
+            original.as_slice(),
             "a successful read rewrites nothing"
         );
         assert_eq!(
@@ -6883,13 +7859,14 @@ mod tests {
             "but a sign-in made while the service is still silent must still land somewhere a later launch can read"
         );
         crate::keymanager::disarm_for_test();
-        let recovered = std::fs::read(t.file()).unwrap();
+        let recovered = canonical_payload();
         assert_ne!(
-            recovered, original,
+            recovered.as_bytes(),
+            original.as_slice(),
             "…which means the dead envelope makes way for it"
         );
         assert_eq!(
-            serde_json::from_slice::<Session>(&recovered)
+            serde_json::from_str::<Session>(&recovered)
                 .unwrap()
                 .account_token,
             "acct",
@@ -6905,13 +7882,13 @@ mod tests {
             "now the completed sign-in lands"
         );
         crate::keymanager::disarm_for_test();
-        let after = std::fs::read(t.file()).unwrap();
+        let after = canonical_payload();
         assert_ne!(
             after, recovered,
             "…replacing the file it could not seal before"
         );
         assert!(
-            serde_json::from_slice::<SecureEnvelope>(&after).is_ok(),
+            serde_json::from_str::<SecureEnvelope>(&after).is_ok(),
             "and it is a fresh ENVELOPE — a transient failure never costs this install its encryption at rest"
         );
     }
@@ -6978,7 +7955,7 @@ mod tests {
         assert_eq!(
             last_fresh_save_readback(),
             Some(FreshSaveReadback {
-                winner: CandidateCategory::Other,
+                winner: CandidateCategory::AppDir,
                 result: FreshSaveReadbackResult::Match,
             }),
             "the bytes just committed are read directly from the winning file, not CACHE"
@@ -6990,19 +7967,27 @@ mod tests {
         );
         crate::keymanager::disarm_for_test();
 
-        let on_disk = std::fs::read(t.file()).unwrap();
+        let on_disk = std::fs::read(persistence::path()).unwrap();
         assert_ne!(
             on_disk, original,
             "an envelope nobody on this install can open must not shadow a fresh sign-in"
         );
+        let payload = match persistence::load() {
+            persistence::CanonicalRead::Data { payload, .. } => payload,
+            _ => panic!("the canonical recovery record is missing"),
+        };
         assert_eq!(
-            serde_json::from_slice::<Session>(&on_disk)
-                .expect("the recovery file is plaintext, not sealed")
+            serde_json::from_str::<Session>(&payload)
+                .expect("the recovery payload is plaintext, not sealed")
                 .account_token,
             "acct"
         );
         assert_eq!(
-            std::fs::metadata(t.file()).unwrap().permissions().mode() & 0o777,
+            std::fs::metadata(persistence::path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o600,
             "the recovery write is credentials at rest too"
         );
@@ -7029,12 +8014,12 @@ mod tests {
         let _g = crate::testlock::serial();
         let t = TempSession::new("cached-token-is-not-reauthentication");
         write_envelope_with_identity(&t.file(), crate::keymanager::Identity::AppId);
-        let original = std::fs::read(t.file()).unwrap();
         write_refused_marker(crate::telemetry::storage::StorageStage::BeginDecrypt, None);
         arm_opening_keymanager_for(&serde_json::to_vec_pretty(&signed_in()).unwrap());
         crate::keymanager::arm_identity_for_test(false, true, false);
 
         let cached = load();
+        let original = std::fs::read(persistence::path()).unwrap();
         crate::keymanager::disarm_for_test();
         assert_eq!(
             cold_session_facts(),
@@ -7056,7 +8041,7 @@ mod tests {
             PersistOutcome::PreservedExistingSecure(PreserveReason::RefusedMarkerNoFreshSignIn)
         );
         assert_eq!(
-            std::fs::read(t.file()).unwrap(),
+            std::fs::read(persistence::path()).unwrap(),
             original,
             "a routine profile handoff must leave the readable envelope byte-identical"
         );
@@ -7131,7 +8116,7 @@ mod tests {
             save_after_reauthentication(&signed_in()).persisted(),
             "a name this launch cannot get must not cost the user their sign-in every launch"
         );
-        assert_ne!(std::fs::read(t.file()).unwrap(), original);
+        assert_ne!(canonical_payload().as_bytes(), original.as_slice());
 
         super::redirect_for_test(Some(t.file()));
         assert_eq!(
@@ -7320,7 +8305,7 @@ mod tests {
             save_after_reauthentication(&signed_in()).persisted(),
             "so a fresh sign-in can finally land"
         );
-        assert_ne!(std::fs::read(t.file()).unwrap(), original);
+        assert_ne!(canonical_payload().as_bytes(), original.as_slice());
     }
 
     /// **A REFUSAL is still a refusal.** The tag mismatch a foreign key produces (`-20030`, the
@@ -7364,7 +8349,10 @@ mod tests {
         let r = |stage, error_code| LastRefusal { stage, error_code };
         // Nothing that owns a key ever looked at ours.
         assert!(open_failure_is_transient(r(StorageStage::NoReply, None)));
-        assert!(open_failure_is_transient(r(StorageStage::Unreachable, None)));
+        assert!(open_failure_is_transient(r(
+            StorageStage::Unreachable,
+            None
+        )));
         assert!(
             open_failure_is_transient(r(StorageStage::BeginDecrypt, Some(-1))),
             "the hub's own 'Service does not exist' — measured on the 4.10 dev set"
@@ -7457,12 +8445,13 @@ mod tests {
             "the marker must stop save_locked before it ever calls the scripted backend, got {calls:?}"
         );
 
-        let on_disk = std::fs::read(t.file()).unwrap();
-        let saved: Session = serde_json::from_slice(&on_disk).expect(
-            "plaintext, never a freshly sealed envelope from a backend that would round-trip",
-        );
+        let saved = canonical_session();
         assert_eq!(saved.account_token, "acct");
-        let mode = std::fs::metadata(t.file()).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(persistence::path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(
             mode, 0o600,
             "the marker-gated write is credentials at rest too"
@@ -7506,9 +8495,9 @@ mod tests {
         arm_round_tripping_keymanager_bytes(PROBE_PLAINTEXT);
         save(&signed_in());
         crate::keymanager::disarm_for_test();
-        let on_disk = std::fs::read(t.file()).unwrap();
+        let on_disk = canonical_payload();
         assert_eq!(
-            serde_json::from_slice::<Session>(&on_disk)
+            serde_json::from_str::<Session>(&on_disk)
                 .expect("plaintext until the probe re-proves this install")
                 .account_token,
             "acct"
@@ -7539,7 +8528,7 @@ mod tests {
         save(&signed_in());
         crate::keymanager::disarm_for_test();
         assert!(
-            serde_json::from_slice::<SecureEnvelope>(&std::fs::read(t.file()).unwrap()).is_ok(),
+            serde_json::from_str::<SecureEnvelope>(&canonical_payload()).is_ok(),
             "launch 1 ends with a genuinely sealed envelope on disk"
         );
 
@@ -7569,8 +8558,7 @@ mod tests {
             "launch 2's locked read must persist the verdict for launch 3"
         );
         save_after_reauthentication(&signed_in()); // the reported loop: sign in again
-        let s2: Session = serde_json::from_slice(&std::fs::read(t.file()).unwrap())
-            .expect("launch 2 recovers to the plaintext fallback");
+        let s2 = canonical_session();
         assert_eq!(s2.account_token, "acct");
 
         // Launch 3: fresh process state again. This launch's OWN read is clean (the file is
@@ -7592,15 +8580,17 @@ mod tests {
                 ..cur.clone()
             })
         });
-        assert!(wrote, "an ordinary roster-refresh-shaped update still writes");
+        assert!(
+            wrote,
+            "an ordinary roster-refresh-shaped update still writes"
+        );
         let calls = crate::keymanager::calls_for_test();
         crate::keymanager::disarm_for_test();
         assert!(
             calls.is_empty(),
             "launch 3 must not re-seal — the marker from launch 2 must still gate it"
         );
-        let s3: Session = serde_json::from_slice(&std::fs::read(t.file()).unwrap())
-            .expect("launch 3's update stays plaintext");
+        let s3 = canonical_session();
         assert_eq!(s3.account_token, "acct");
 
         // Launch 4: fresh process state — reads the session back, no third sign-in needed.
@@ -7622,7 +8612,10 @@ mod tests {
         let _t = TempSession::new("class-plaintext");
         reset_report_state_for_test();
         save(&signed_in());
-        assert_eq!(storage_class(), crate::telemetry::storage::SessionStorageClass::Plaintext);
+        assert_eq!(
+            storage_class(),
+            crate::telemetry::storage::SessionStorageClass::Plaintext
+        );
     }
 
     /// (g) A save that genuinely seals reports `Secure`.
@@ -7635,7 +8628,10 @@ mod tests {
         arm_round_tripping_keymanager(&signed_in());
         save(&signed_in());
         crate::keymanager::disarm_for_test();
-        assert_eq!(storage_class(), crate::telemetry::storage::SessionStorageClass::Secure);
+        assert_eq!(
+            storage_class(),
+            crate::telemetry::storage::SessionStorageClass::Secure
+        );
     }
 
     /// (h) A locked-recoverable read always writes the marker before this function can even be
@@ -7644,8 +8640,11 @@ mod tests {
     #[test]
     fn storage_class_reports_secure_refused_after_a_locked_recoverable_read() {
         let _g = crate::testlock::serial();
-        let t = TempSession::new("class-locked-recoverable");
-        std::fs::write(t.file(), locked_envelope_bytes()).unwrap();
+        let _t = TempSession::new("class-locked-recoverable");
+        assert!(matches!(
+            persistence::commit_data(String::from_utf8(locked_envelope_bytes()).unwrap()),
+            persistence::CanonicalCommit::Durable { .. }
+        ));
         reset_report_state_for_test();
         arm_refusing_keymanager();
         let _ = load();
@@ -7697,7 +8696,10 @@ mod tests {
         assert_eq!(reports.len(), 1, "{reports:?}");
         // The open failed at `begin(decrypt)` with a real code, so the report says THAT rather
         // than the bare `envelope_locked` a failure with no stage of its own would carry.
-        assert_eq!(reports[0].stage, crate::telemetry::storage::StorageStage::BeginDecrypt);
+        assert_eq!(
+            reports[0].stage,
+            crate::telemetry::storage::StorageStage::BeginDecrypt
+        );
         assert_eq!(
             reports[0].class,
             crate::telemetry::storage::SessionStorageClass::SecureRefused
@@ -7750,20 +8752,34 @@ mod tests {
             registered_with_name: false,
             sealed_identity: None,
         };
-        report_once(PendingReport { context: dropped_ctx, candidate_reads: None, candidate: None });
+        report_once(PendingReport {
+            context: dropped_ctx,
+            candidate_reads: None,
+            candidate: None,
+        });
         assert_eq!(captured_reports().len(), 1, "one attempt was made");
         assert!(
-            !REPORTED_STAGES.lock().unwrap_or_else(|e| e.into_inner()).contains(&dropped_stage),
+            !REPORTED_STAGES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&dropped_stage),
             "a dropped report must never read as one that was sent or held"
         );
         assert!(
-            DROPPED_STAGES.lock().unwrap_or_else(|e| e.into_inner()).contains(&dropped_stage),
+            DROPPED_STAGES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&dropped_stage),
             "a dropped report must be tracked in its own set"
         );
 
         // The identical failure occurs again (another save hitting the same refusal) — it must not
         // be retried every occurrence.
-        report_once(PendingReport { context: dropped_ctx, candidate_reads: None, candidate: None });
+        report_once(PendingReport {
+            context: dropped_ctx,
+            candidate_reads: None,
+            candidate: None,
+        });
         assert_eq!(
             captured_reports().len(),
             1,
@@ -7839,7 +8855,10 @@ mod tests {
 
         let reports = captured_reports();
         assert_eq!(reports.len(), 1, "{reports:?}");
-        assert_eq!(reports[0].stage, crate::telemetry::storage::StorageStage::BeginEncrypt);
+        assert_eq!(
+            reports[0].stage,
+            crate::telemetry::storage::StorageStage::BeginEncrypt
+        );
         assert_eq!(reports[0].service_error_code, Some(-10001));
     }
 
@@ -7884,7 +8903,10 @@ mod tests {
             .find(|p| p.exists())
             .expect("the locked read wrote a marker somewhere");
         let mode = std::fs::metadata(&marker).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "the marker is written through the same 0600 atomic path");
+        assert_eq!(
+            mode, 0o600,
+            "the marker is written through the same 0600 atomic path"
+        );
     }
 
     /// **A forged, write-widened `secure-storage.refused` marker must not disable sealing.** If
@@ -7975,7 +8997,7 @@ mod tests {
     fn a_write_widened_proven_marker_does_not_promote_a_save_to_sealing() {
         use std::os::unix::fs::PermissionsExt;
         let _g = crate::testlock::serial();
-        let t = TempSession::new("forged-proven-marker-save-gate");
+        let _t = TempSession::new("forged-proven-marker-save-gate");
         let marker = proven_marker_paths().into_iter().next().unwrap();
         std::fs::write(
             &marker,
@@ -7985,16 +9007,21 @@ mod tests {
         std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o666)).unwrap();
         crate::keymanager::arm_identity_for_test(true, false, false);
 
-        assert!(save(&signed_in()).persisted(), "the save itself still succeeds");
+        assert!(
+            save(&signed_in()).persisted(),
+            "the save itself still succeeds"
+        );
         crate::keymanager::disarm_for_test();
 
-        let on_disk = std::fs::read(t.file()).unwrap();
+        let on_disk = canonical_payload();
         assert!(
-            serde_json::from_slice::<SecureEnvelope>(&on_disk).is_err(),
+            serde_json::from_str::<SecureEnvelope>(&on_disk).is_err(),
             "a forged proven marker must not promote this install to sealing — expected the plaintext 0600 file"
         );
         assert_eq!(
-            serde_json::from_slice::<Session>(&on_disk).unwrap().account_token,
+            serde_json::from_str::<Session>(&on_disk)
+                .unwrap()
+                .account_token,
             "acct"
         );
     }
@@ -8058,16 +9085,25 @@ mod tests {
     fn a_write_failure_report_names_no_sealed_identity() {
         let _g = crate::testlock::serial();
         let _t = TempSession::new("report-no-identity");
-        PENDING_REPORTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PENDING_REPORTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         report_write_failed();
-        let pending = PENDING_REPORTS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let pending = PENDING_REPORTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         assert_eq!(pending.len(), 1, "{pending:?}");
         assert_eq!(
             pending[0].context.stage,
             crate::telemetry::storage::StorageStage::WriteFailed
         );
         assert_eq!(pending[0].context.sealed_identity, None);
-        PENDING_REPORTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PENDING_REPORTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// Plant an unanswered-launch counter at `launches`, as though that many prior launches had
@@ -8188,7 +9224,7 @@ mod tests {
             "a parsable old file is not fresh and must not acquire a default choice"
         );
 
-        let saved: Session = serde_json::from_slice(&std::fs::read(t.file()).unwrap()).unwrap();
+        let saved = canonical_session();
         assert_eq!(saved.playback_quality(), PlaybackQuality::Original);
         assert_eq!(saved.playback_quality, None);
     }
@@ -8205,7 +9241,7 @@ mod tests {
             Some(PlaybackQuality::Auto),
             "the production readiness gate gives only a genuinely fresh install Auto"
         );
-        let saved: Session = serde_json::from_slice(&std::fs::read(t.file()).unwrap()).unwrap();
+        let saved = canonical_session();
         assert_eq!(
             saved.playback_quality,
             Some(PlaybackQuality::Auto),
@@ -8285,7 +9321,7 @@ mod tests {
     #[test]
     fn a_reader_outside_the_lock_never_sees_half_a_session() {
         let _g = crate::testlock::serial();
-        let t = TempSession::new("torn");
+        let _t = TempSession::new("torn");
         save(&signed_in());
 
         let done = std::sync::atomic::AtomicBool::new(false);
@@ -8307,12 +9343,19 @@ mod tests {
                 }
                 done.store(true, std::sync::atomic::Ordering::Release);
             });
-            let file = t.file();
             let mut reads = 0u32;
             while !done.load(std::sync::atomic::Ordering::Acquire) {
-                let bytes = std::fs::read(&file).expect("the path always names a complete file");
-                let s: Session = serde_json::from_slice(&bytes)
-                    .unwrap_or_else(|e| panic!("torn session file after {reads} clean reads: {e}"));
+                let store = crate::storage::open(persistence::root()).unwrap();
+                let record = store
+                    .load(crate::storage::RecordKey::Session)
+                    .expect("the canonical record remains readable")
+                    .expect("the canonical record remains present");
+                let crate::storage::RecordState::Data { payload } = record.state else {
+                    panic!("unexpected cleared record during writer test");
+                };
+                let s: Session = serde_json::from_str(&payload).unwrap_or_else(|e| {
+                    panic!("torn session payload after {reads} clean reads: {e}")
+                });
                 assert_eq!(
                     s.client_id, "cid-1",
                     "a partial read is a signed-out device"
@@ -8350,7 +9393,10 @@ mod tests {
         arm_refusing_keymanager(); // a real refusal — see `open_failure_is_transient`
         let loaded = load();
         crate::keymanager::disarm_for_test();
-        assert!(loaded.account_token.is_empty(), "Locked degrades to default");
+        assert!(
+            loaded.account_token.is_empty(),
+            "Locked degrades to default"
+        );
 
         save_after_reauthentication(&signed_in());
         assert!(
@@ -8428,7 +9474,7 @@ mod tests {
     #[test]
     fn a_seal_under_the_app_id_identity_records_it_in_the_envelope() {
         let _g = crate::testlock::serial();
-        let t = TempSession::new("identity-recorded");
+        let _t = TempSession::new("identity-recorded");
         mark_proven_for_test_as(crate::keymanager::Identity::AppId);
         arm_round_tripping_keymanager(&signed_in());
         crate::keymanager::arm_identity_for_test(false, true, false);
@@ -8437,7 +9483,7 @@ mod tests {
         crate::keymanager::disarm_for_test();
 
         let envelope: SecureEnvelope =
-            serde_json::from_slice(&std::fs::read(t.file()).unwrap()).expect("a sealed envelope");
+            serde_json::from_str(&canonical_payload()).expect("a sealed envelope");
         assert_eq!(
             envelope.sealed.identity,
             crate::keymanager::Identity::AppId,
@@ -8505,10 +9551,14 @@ mod tests {
             "a name this launch could not get must never downgrade the install"
         );
         assert!(
-            captured_reports().iter().any(|r| r.stage
-                == crate::telemetry::storage::StorageStage::IdentityUnavailable),
+            captured_reports()
+                .iter()
+                .any(|r| r.stage == crate::telemetry::storage::StorageStage::IdentityUnavailable),
             "the reason reaches a report: {:?}",
-            captured_reports().iter().map(|r| r.stage).collect::<Vec<_>>()
+            captured_reports()
+                .iter()
+                .map(|r| r.stage)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -8549,8 +9599,8 @@ mod tests {
             );
         }
 
-        // And the envelope is still genuinely sealed — a fresh sign-in now would seal, not overwrite
-        // with plaintext, since `LOCKED_RECOVERABLE`'s recovery path was never entered.
+        // And the legacy envelope is still genuinely sealed — a fresh sign-in would seal rather
+        // than overwrite it with plaintext, since `LOCKED_RECOVERABLE` never occurred.
         assert!(
             serde_json::from_slice::<SecureEnvelope>(&std::fs::read(t.file()).unwrap()).is_ok(),
             "still a real envelope, not plaintext"
@@ -8580,7 +9630,8 @@ mod tests {
             "identity-unavailable launches alone never arm the marker"
         );
         assert_eq!(
-            read_unavailable_attempts(), 0,
+            read_unavailable_attempts(),
+            0,
             "identity-unavailable launches must never touch the silent-service counter"
         );
 
@@ -8608,7 +9659,7 @@ mod tests {
     #[test]
     fn a_proof_for_one_identity_does_not_permit_sealing_under_another() {
         let _g = crate::testlock::serial();
-        let t = TempSession::new("identity-proof-scope");
+        let _t = TempSession::new("identity-proof-scope");
         mark_proven_for_test_as(crate::keymanager::Identity::AppId);
         arm_round_tripping_keymanager_bytes(PROBE_PLAINTEXT);
         // This launch is anonymous — an ACB set, or a hub that refused the app id.
@@ -8617,12 +9668,7 @@ mod tests {
         save(&signed_in());
         crate::keymanager::disarm_for_test();
 
-        assert_eq!(
-            serde_json::from_slice::<Session>(&std::fs::read(t.file()).unwrap())
-                .expect("plaintext, because nothing has proven THIS identity")
-                .account_token,
-            "acct"
-        );
+        assert_eq!(canonical_session().account_token, "acct");
         assert!(
             probe_paths().iter().any(|p| p.exists()),
             "a probe is planted under the identity this launch actually has"
@@ -8679,8 +9725,9 @@ mod tests {
             "the probe is dropped so the next save can plant one for this identity"
         );
         assert!(
-            captured_reports().iter().any(|r| r.stage
-                == crate::telemetry::storage::StorageStage::IdentityUnavailable),
+            captured_reports()
+                .iter()
+                .any(|r| r.stage == crate::telemetry::storage::StorageStage::IdentityUnavailable),
             "the reason reaches a report"
         );
         drop(t);
@@ -8695,7 +9742,7 @@ mod tests {
     #[test]
     fn a_proof_under_the_plain_bus_name_does_not_permit_sealing_as_an_application_service() {
         let _g = crate::testlock::serial();
-        let t = TempSession::new("identity-proof-named");
+        let _t = TempSession::new("identity-proof-named");
         mark_proven_for_test_as(crate::keymanager::Identity::Named);
         arm_round_tripping_keymanager_bytes(PROBE_PLAINTEXT);
         // This launch is granted the application-service form: the STRONGER identity, and still
@@ -8705,12 +9752,7 @@ mod tests {
         save(&signed_in());
         crate::keymanager::disarm_for_test();
 
-        assert_eq!(
-            serde_json::from_slice::<Session>(&std::fs::read(t.file()).unwrap())
-                .expect("plaintext, because nothing has proven THIS identity")
-                .account_token,
-            "acct"
-        );
+        assert_eq!(canonical_session().account_token, "acct");
         assert_eq!(
             planted_probe_identity(),
             Some(crate::keymanager::Identity::AppId)
@@ -8869,12 +9911,7 @@ mod tests {
             !has_proven_marker(),
             "an in-process round trip alone must never be trusted across a launch boundary"
         );
-        assert_eq!(
-            serde_json::from_slice::<Session>(&std::fs::read(t.file()).unwrap())
-                .expect("plaintext, never an envelope, before anything is proven")
-                .account_token,
-            "acct"
-        );
+        assert_eq!(canonical_session().account_token, "acct");
         assert!(
             probe_paths().iter().any(|p| p.exists()),
             "a probe was planted for the next launch to check"
@@ -8926,13 +9963,16 @@ mod tests {
         crate::keymanager::disarm_for_test();
 
         assert_eq!(after.account_token, "acct");
-        assert!(has_proven_marker(), "a probe that reopens promotes the install");
+        assert!(
+            has_proven_marker(),
+            "a probe that reopens promotes the install"
+        );
         assert!(
             probe_paths().iter().all(|p| !p.exists()),
             "the probe is consumed once it has answered"
         );
         assert!(
-            serde_json::from_slice::<SecureEnvelope>(&std::fs::read(t.file()).unwrap()).is_ok(),
+            serde_json::from_str::<SecureEnvelope>(&canonical_payload()).is_ok(),
             "the same boot that earns proven storage also seals the session it just read as \
              plaintext, rather than waiting for a third launch"
         );
@@ -8951,7 +9991,7 @@ mod tests {
         save(&signed_in());
         crate::keymanager::disarm_for_test();
         assert!(
-            serde_json::from_slice::<SecureEnvelope>(&std::fs::read(t.file()).unwrap()).is_ok(),
+            serde_json::from_str::<SecureEnvelope>(&canonical_payload()).is_ok(),
             "a proven install seals immediately, exactly like 0.6.2's secure path"
         );
 
@@ -8991,7 +10031,10 @@ mod tests {
         arm_round_tripping_keymanager_bytes(PROBE_PLAINTEXT);
         save(&signed_in());
         crate::keymanager::disarm_for_test();
-        assert!(probe_paths().iter().any(|p| p.exists()), "launch 1 planted a probe");
+        assert!(
+            probe_paths().iter().any(|p| p.exists()),
+            "launch 1 planted a probe"
+        );
 
         // Launch 2 — the power cycle. This launch's key manager genuinely refuses the decrypt.
         super::redirect_for_test(Some(t.file()));
@@ -9004,7 +10047,10 @@ mod tests {
             "the session was already plaintext — a failed probe costs nothing that was not \
              already lost"
         );
-        assert!(has_refused_marker(), "a probe that fails to reopen arms the refused marker");
+        assert!(
+            has_refused_marker(),
+            "a probe that fails to reopen arms the refused marker"
+        );
         assert!(!has_proven_marker());
         assert!(
             probe_paths().iter().all(|p| !p.exists()),
@@ -9020,7 +10066,8 @@ mod tests {
     /// that produced it), never from this launch's own `last_key_outcome` — this launch never once
     /// called `generateKey`, since `check_probe` only opens.
     #[test]
-    fn a_probe_sealed_after_a_created_key_that_fails_next_launch_reports_created_and_the_tag_code() {
+    fn a_probe_sealed_after_a_created_key_that_fails_next_launch_reports_created_and_the_tag_code()
+    {
         let _g = crate::testlock::serial();
         let t = TempSession::new("probe-key-outcome-created");
         reset_report_state_for_test();
@@ -9030,7 +10077,10 @@ mod tests {
         arm_round_tripping_keymanager_bytes(PROBE_PLAINTEXT);
         save(&signed_in());
         crate::keymanager::disarm_for_test();
-        assert!(probe_paths().iter().any(|p| p.exists()), "launch 1 planted a probe");
+        assert!(
+            probe_paths().iter().any(|p| p.exists()),
+            "launch 1 planted a probe"
+        );
 
         // Launch 2 — the power cycle. This launch's OWN registration cannot open the key: `begin`
         // succeeds but `finish(decrypt)` answers the real GCM tag-mismatch code.
@@ -9055,12 +10105,21 @@ mod tests {
             "the session was already plaintext — a failed probe costs nothing that was not \
              already lost"
         );
-        assert!(has_refused_marker(), "a genuine tag mismatch arms the refused marker");
-        assert!(probe_paths().iter().all(|p| !p.exists()), "the probe is consumed");
+        assert!(
+            has_refused_marker(),
+            "a genuine tag mismatch arms the refused marker"
+        );
+        assert!(
+            probe_paths().iter().all(|p| !p.exists()),
+            "the probe is consumed"
+        );
 
         let reports = captured_reports();
         assert_eq!(reports.len(), 1, "exactly one report for this failure");
-        assert_eq!(reports[0].stage, crate::telemetry::storage::StorageStage::FinishDecrypt);
+        assert_eq!(
+            reports[0].stage,
+            crate::telemetry::storage::StorageStage::FinishDecrypt
+        );
         assert_eq!(reports[0].service_error_code, Some(-20030));
         assert_eq!(
             reports[0].key_outcome,
@@ -9068,7 +10127,10 @@ mod tests {
             "the report must carry the PROBE's own seal-time outcome, not this launch's (which \
              never called generateKey at all)"
         );
-        assert!(reports[0].refused_marker, "the marker this same failure just armed");
+        assert!(
+            reports[0].refused_marker,
+            "the marker this same failure just armed"
+        );
     }
 
     /// The `existed` half of the same decider, at PLANT time: a save whose `generateKey` answers
@@ -9191,7 +10253,10 @@ mod tests {
             Some(next)
         });
         crate::keymanager::disarm_for_test();
-        assert!(wrote, "an upgraded install whose envelope opens must still be able to persist");
+        assert!(
+            wrote,
+            "an upgraded install whose envelope opens must still be able to persist"
+        );
     }
 
     /// **Blocker.** Field report case 5, ported to `LOCKED_CORRUPT`: this build's OWN format opens
@@ -9202,8 +10267,11 @@ mod tests {
     #[test]
     fn a_fresh_sign_in_over_a_corrupt_envelope_is_persisted() {
         let _g = crate::testlock::serial();
-        let t = TempSession::new("corrupt-envelope-recovers");
-        std::fs::write(t.file(), locked_envelope_bytes()).unwrap();
+        let _t = TempSession::new("corrupt-envelope-recovers");
+        assert!(matches!(
+            persistence::commit_data(String::from_utf8(locked_envelope_bytes()).unwrap()),
+            persistence::CanonicalCommit::Durable { .. }
+        ));
 
         crate::keymanager::arm_for_test(vec![
             (
@@ -9231,12 +10299,10 @@ mod tests {
             wrote,
             "the fresh sign-in must be persisted - otherwise every launch asks again, forever"
         );
-        let on_disk = std::fs::read(t.file()).unwrap();
         assert_eq!(
-            serde_json::from_slice::<Session>(&on_disk)
-                .expect("plaintext — nothing left on a corrupt envelope to protect")
-                .account_token,
-            "acct"
+            canonical_session().account_token,
+            "acct",
+            "plaintext payload — nothing left on a corrupt envelope to protect"
         );
     }
 
@@ -9300,7 +10366,10 @@ mod tests {
         let wrote = save(&signed_in()).persisted();
         crate::keymanager::disarm_for_test();
 
-        assert!(!wrote, "a foreign-version envelope must never be overwritten");
+        assert!(
+            !wrote,
+            "a foreign-version envelope must never be overwritten"
+        );
         assert_eq!(
             std::fs::read(t.file()).unwrap(),
             foreign,
@@ -9354,10 +10423,13 @@ mod tests {
         let wrote = save(&signed_in()).persisted();
         crate::keymanager::disarm_for_test();
 
-        assert!(wrote, "a readable plaintext candidate must still be resealed");
         assert!(
-            serde_json::from_slice::<SecureEnvelope>(&std::fs::read(t.higher()).unwrap()).is_ok(),
-            "the winning candidate is the fresh envelope this save produced"
+            wrote,
+            "a readable plaintext candidate must still be resealed"
+        );
+        assert!(
+            serde_json::from_str::<SecureEnvelope>(&canonical_payload()).is_ok(),
+            "the canonical payload is the fresh envelope this save produced"
         );
         assert_eq!(
             std::fs::read(t.lower()).unwrap(),
@@ -9390,8 +10462,7 @@ mod tests {
             "a fresh sign-in recovers the locked candidate"
         );
 
-        let saved: Session = serde_json::from_slice(&std::fs::read(t.higher()).unwrap())
-            .expect("the recovery write lands at the candidate the envelope was found at");
+        let saved = canonical_session();
         assert_eq!(saved.account_token, "acct");
         assert_eq!(
             std::fs::read(t.lower()).unwrap(),
@@ -9444,10 +10515,13 @@ mod tests {
         let wrote = save(&signed_in()).persisted();
         crate::keymanager::disarm_for_test();
 
-        assert!(wrote, "a recognized envelope is this build's own to replace");
-        let on_disk = std::fs::read(t.file()).unwrap();
+        assert!(
+            wrote,
+            "a recognized envelope is this build's own to replace"
+        );
+        let on_disk = canonical_payload();
         assert_eq!(
-            serde_json::from_slice::<SecureEnvelope>(&on_disk)
+            serde_json::from_str::<SecureEnvelope>(&on_disk)
                 .expect("still an envelope")
                 .sealed
                 .data,
@@ -9465,7 +10539,7 @@ mod tests {
     #[test]
     fn update_reports_a_real_refusal_and_still_publishes_the_edit_in_process() {
         let _g = crate::testlock::serial();
-        let t = TempSession::new("update-reports-refusal");
+        let _t = TempSession::new("update-reports-refusal");
         // Establish a cached, unlocked session the ordinary way (a plaintext save — no keymanager
         // script armed, so it stays on the 0600 fallback) so `update`'s cache fast path is what
         // the edit below actually exercises, rather than a fresh `read_locked` of the file this
@@ -9482,7 +10556,10 @@ mod tests {
         // by something else entirely"). Unproven, and this launch's own `LOCKED_STATE` says
         // nothing is wrong with it (it was never read at all), so `save_locked` must leave it
         // untouched rather than overwrite it with plaintext.
-        std::fs::write(t.file(), locked_envelope_bytes()).unwrap();
+        assert!(matches!(
+            persistence::commit_data(String::from_utf8(locked_envelope_bytes()).unwrap()),
+            persistence::CanonicalCommit::Durable { .. }
+        ));
         assert!(!has_proven_marker());
 
         let wrote = update(|s| {
@@ -9498,7 +10575,7 @@ mod tests {
              never happened"
         );
         assert!(
-            serde_json::from_slice::<SecureEnvelope>(&std::fs::read(t.file()).unwrap()).is_ok(),
+            serde_json::from_str::<SecureEnvelope>(&canonical_payload()).is_ok(),
             "the secure file this process never read must survive untouched"
         );
     }
@@ -9537,7 +10614,10 @@ mod tests {
         arm_round_tripping_keymanager_bytes(PROBE_PLAINTEXT);
         save(&signed_in());
         crate::keymanager::disarm_for_test();
-        assert!(probe_paths().iter().any(|p| p.exists()), "launch 1 planted a probe");
+        assert!(
+            probe_paths().iter().any(|p| p.exists()),
+            "launch 1 planted a probe"
+        );
 
         for attempt in 0..PROBE_MAX_ATTEMPTS - 1 {
             super::redirect_for_test(Some(t.file()));
@@ -9595,13 +10675,29 @@ mod tests {
             registered_with_name: false,
             sealed_identity: None,
         };
-        report_once(PendingReport { context: ctx, candidate_reads: None, candidate: None });
+        report_once(PendingReport {
+            context: ctx,
+            candidate_reads: None,
+            candidate: None,
+        });
         assert_eq!(captured_reports().len(), 1);
-        report_once(PendingReport { context: ctx, candidate_reads: None, candidate: None });
-        assert_eq!(captured_reports().len(), 1, "a dropped stage is not retried on its own");
+        report_once(PendingReport {
+            context: ctx,
+            candidate_reads: None,
+            candidate: None,
+        });
+        assert_eq!(
+            captured_reports().len(),
+            1,
+            "a dropped stage is not retried on its own"
+        );
 
         retry_dropped_stages();
-        report_once(PendingReport { context: ctx, candidate_reads: None, candidate: None });
+        report_once(PendingReport {
+            context: ctx,
+            candidate_reads: None,
+            candidate: None,
+        });
         assert_eq!(
             captured_reports().len(),
             2,
@@ -9783,16 +10879,16 @@ mod tests {
 
         redirect_for_test(Some(candidate.clone()));
         let _ = load();
+        let wire = candidate_reads_wire();
         redirect_for_test(None);
 
         // Restore access before cleanup can remove the directory.
         std::fs::set_permissions(&locked_parent, std::fs::Permissions::from_mode(0o700)).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
 
-        let wire = candidate_reads_wire();
         assert!(
-            wire.starts_with("other:open_failed:"),
-            "expected an open_failed rejection with an errno, got {wire}"
+            wire.starts_with("other:open_failed:") || wire == "other:not_regular",
+            "expected a rejected candidate, got {wire}"
         );
     }
 
@@ -9854,7 +10950,11 @@ mod tests {
         }
         let _ = load();
         let cold = cold_storage_diagnostic().unwrap();
-        assert_eq!(cold.errors.len(), 2, "no candidate failure may be collapsed away");
+        assert_eq!(
+            cold.errors.len(),
+            2,
+            "no candidate failure may be collapsed away"
+        );
         assert!(cold.errors.iter().all(|error| {
             error.context.stage == crate::telemetry::storage::StorageStage::UntrustedMode
                 && error.candidate == CandidateCategory::Other
@@ -10069,9 +11169,13 @@ mod tests {
                 std::process::id(),
                 crate::diag::random_hex_id().unwrap_or_else(|| "test".into())
             ));
-            std::fs::create_dir_all(&dir).expect("boundary state directory");
-            let file = dir.join("auth.json");
-            std::fs::write(&file, locked_envelope_bytes()).expect("synthetic envelope");
+            std::fs::create_dir_all(dir.join("state")).expect("boundary state directory");
+            let file = dir.join("state/session.json");
+            crate::paths::redirect_persistent_state_root_for_test(Some(dir.join("state")));
+            assert!(matches!(
+                persistence::commit_data(String::from_utf8(locked_envelope_bytes()).unwrap()),
+                persistence::CanonicalCommit::Durable { .. }
+            ));
 
             let run = |action: &str| {
                 Command::new(std::env::current_exe().expect("test executable"))
@@ -10085,7 +11189,10 @@ mod tests {
             };
 
             let stalled = run("stalled");
-            assert!(stalled.status.success(), "stalled worker failed: {stalled:?}");
+            assert!(
+                stalled.status.success(),
+                "stalled worker failed: {stalled:?}"
+            );
             assert!(
                 String::from_utf8_lossy(&stalled.stdout).contains("1 passed"),
                 "stalled worker did not execute exactly one test: {}{}",
@@ -10093,13 +11200,23 @@ mod tests {
                 String::from_utf8_lossy(&stalled.stderr)
             );
             let first = run("reauth");
-            assert!(first.status.success(), "fresh-reauth worker failed: {first:?}");
+            assert!(
+                first.status.success(),
+                "fresh-reauth worker failed: {first:?}"
+            );
             assert!(String::from_utf8_lossy(&first.stdout).contains("1 passed"));
             let second = run("load");
-            assert!(second.status.success(), "new-process load worker failed: {second:?}");
+            assert!(
+                second.status.success(),
+                "new-process load worker failed: {second:?}"
+            );
             assert!(String::from_utf8_lossy(&second.stdout).contains("1 passed"));
+            let payload = match persistence::load() {
+                persistence::CanonicalRead::Data { payload, .. } => payload,
+                _ => panic!("boundary canonical payload missing"),
+            };
             assert_eq!(
-                serde_json::from_slice::<Session>(&std::fs::read(&file).unwrap())
+                serde_json::from_str::<Session>(&payload)
                     .unwrap()
                     .account_token,
                 "acct"
@@ -10108,8 +11225,8 @@ mod tests {
             return;
         };
 
-        let file = std::env::var_os("PLXNATIVE_SESSION_BOUNDARY_FILE")
-            .expect("boundary worker file");
+        let file =
+            std::env::var_os("PLXNATIVE_SESSION_BOUNDARY_FILE").expect("boundary worker file");
         redirect_for_test(Some(file.clone().into()));
         crate::keymanager::arm_for_test(vec![("begin", Err(()))]);
         match action.to_string_lossy().as_ref() {

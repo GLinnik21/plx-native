@@ -32,7 +32,7 @@
 //! ([`should_defer`]), holds the context in the small in-memory [`DEFERRED`] queue (cap
 //! [`DEFERRED_CAP`], session-only — never persisted, so a crash or relaunch before the question is
 //! answered loses it) rather than the old behaviour of dropping it outright. [`replay_deferred`],
-//! called from `telemetry::record` right after a new decision publishes (same call site as
+//! called from `telemetry::record_with_receipt` right after a new decision publishes (same call site as
 //! `diag::replay_deferred`, issue #75's twin for the sign-in funnel), sends every held report
 //! through [`send_now`] on a "yes" and drops the whole queue with nothing sent on a "no" — either
 //! way the queue empties, so a refused answer cannot leak into the next decision. Each held report
@@ -516,6 +516,9 @@ static DEFERRED: std::sync::Mutex<Vec<Deferred>> = std::sync::Mutex::new(Vec::ne
 /// correctness question, and keeping this function answer the consent question ALONE is what
 /// makes it (and therefore the gating this module exists to prove) testable without one.
 fn should_defer() -> bool {
+    if super::consent::errors_scope_enable_pending(6) {
+        return true;
+    }
     let Some(c) = super::consent::current() else {
         return true; // nothing loaded at all reads the same as unanswered
     };
@@ -777,7 +780,7 @@ pub(crate) fn forget() {
 }
 
 /// **A real "Yes" gives a dropped sign-in report its one attempt back** — the exact twin of
-/// `plex::session::retry_dropped_stages`, called from the same place in `telemetry::record` and for
+/// `plex::session::retry_dropped_stages`, called from the same persistence operation and for
 /// the same reason: a "No" must not burn a report for the rest of the process after the SAME
 /// process later turns Errors on in Settings.
 pub(crate) fn retry_dropped_sign_in() {
@@ -804,7 +807,7 @@ pub(crate) fn report_error_with_candidate_reads(
 }
 
 /// Drain and replay every storage-error report held because consent had not yet settled the
-/// question. Called from `telemetry::record` right after a new decision publishes — same shape and
+/// question. Called after a new decision becomes effective — same shape and
 /// same reason as `diag::replay_deferred`: a "yes" lets the held reports through [`send_now`]
 /// exactly as if the question had already been answered when the failure was first found; a "no"
 /// (or a still-pending extension — see [`should_defer`]) hits the same gate [`send_now`] always
@@ -1413,6 +1416,19 @@ mod tests {
         super::super::consent::install(unanswered());
     }
 
+    #[test]
+    fn requested_scope_enable_defers_until_it_is_effective() {
+        let _g = crate::testlock::serial();
+        reset();
+        super::super::consent::install(stored_no());
+        super::super::consent::request_for_test(errors_on_at_scope_6());
+        assert_ne!(report_error(context()), ReportOutcome::Sent);
+        assert_eq!(deferred_len(), 1, "pending enable was confused with a stored No");
+        assert!(send_attempts().is_empty());
+        reset();
+        super::super::consent::install(unanswered());
+    }
+
     /// (b) The same held report, but the eventual answer is "no": the queue empties with NOTHING
     /// sent.
     #[test]
@@ -1788,7 +1804,7 @@ mod tests {
 
         // This is the production sign-out boundary; it must end the departing account's
         // in-memory telemetry tenure, not merely purge the durable spool.
-        super::super::forget();
+        let _ = super::super::forget_with_receipt().wait_blocking();
         assert_eq!(deferred_len(), 0);
 
         super::super::consent::install(errors_on_at_scope_6());
@@ -1936,7 +1952,14 @@ mod tests {
         clear_send_attempts();
         clear_sign_in_dedup();
 
+        crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::Write);
+
         crate::auth::arm_ready_for_test(sign_in_session());
+        assert!(
+            crate::auth::take_ready().is_none(),
+            "save admission never waits inline"
+        );
+        crate::storage_worker::drain_for_test();
         assert!(
             crate::auth::take_ready().is_some(),
             "the run still gets its credentials — a failed save must not sign it out"
@@ -2064,7 +2087,10 @@ mod tests {
         clear_sign_in_dedup();
 
         for _ in 0..3 {
+            crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::Write);
             crate::auth::arm_ready_for_test(sign_in_session());
+            assert!(crate::auth::take_ready().is_none());
+            crate::storage_worker::drain_for_test();
             assert!(crate::auth::take_ready().is_some());
         }
 
@@ -2087,6 +2113,7 @@ mod tests {
     fn the_discovery_threads_save_notes_the_outcome_without_reporting_it() {
         let _g = crate::testlock::serial();
         let _t = TempSession::unwritable("discovery-save-no-report");
+        crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::Write);
         let _ = crate::plex::session::load();
         clear_send_attempts();
         clear_sign_in_dedup();
@@ -2123,6 +2150,7 @@ mod tests {
         // This load reads one missing candidate, then mints a client id and cannot write it — one
         // `WriteFailed` report raised from inside the load, which is the report the summary
         // belongs to.
+        crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::Write);
         let _ = crate::plex::session::load();
         let attempts = send_attempts();
         let (_, _, extra) = attempts

@@ -294,7 +294,10 @@ pub(crate) fn commit_retiring(retired: &[String]) {
 /// **`Category::OneOff` is never named here, and that is deliberate, not an omission.** A one-off
 /// record's consent was the single press that queued it, not either standing switch, so there is
 /// no decision here for it to be withdrawn BY — see that variant's doc.
-pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
+pub(crate) fn purge_withdrawn(c: &super::consent::Consent) -> bool {
+    if c.errors && c.usage {
+        return true;
+    }
     let _g = lock();
     let mut all = read_locked();
     let before = all.len();
@@ -309,8 +312,11 @@ pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
             "telemetry: withdrawal purged {} queued records",
             before - all.len()
         ));
-        write_locked(&all);
     }
+    // Always rewrite and sync, even when the decoded queue was empty. An empty read is not proof
+    // that no stale file exists at another candidate; the resolved canonical spool must carry the
+    // cutoff before a new opt-in can become effective.
+    write_locked(&all)
 }
 
 /// **Destroy EVERY queued record, `Category::OneOff` included.**
@@ -320,16 +326,18 @@ pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
 /// local data are not a withdrawal of that press, they are an erasure of this television's local
 /// data, and PRIVACY.md/`legal.rs`'s PRIVACY const both promise sign-out removes "any queued
 /// report" and that Delete all local data "removes all of it". Called only from
-/// `telemetry::forget()`, never from the ordinary consent-change path `purge_withdrawn` guards.
-pub(crate) fn purge_all_local() {
+/// `telemetry::forget_with_receipt()`, never from the ordinary consent-change path `purge_withdrawn` guards.
+pub(crate) fn purge_all_local() -> bool {
     let _g = lock();
     let all = read_locked();
-    if all.is_empty() {
-        return;
-    }
     let n = all.len();
     if write_locked(&Vec::new()) {
-        crate::log(&format!("telemetry: local erasure purged {n} queued records"));
+        if n != 0 {
+            crate::log(&format!("telemetry: local erasure purged {n} queued records"));
+        }
+        true
+    } else {
+        false
     }
 }
 
@@ -619,7 +627,7 @@ mod tests {
     }
 
     /// **Unlike a withdrawal, a LOCAL ERASURE (sign-out, Delete all local data) takes the `OneOff`
-    /// record too.** `telemetry::forget()` calls this instead of `purge_withdrawn`, and the two
+    /// record too.** `telemetry::forget_with_receipt()` calls this instead of `purge_withdrawn`, and the two
     /// must stay opposite: PRIVACY.md promises sign-out removes "any queued report" and Delete all
     /// local data "removes all of it", which a one-off record surviving either would contradict.
     #[test]

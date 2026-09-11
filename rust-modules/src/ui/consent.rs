@@ -69,7 +69,7 @@
 //! which cannot be undone, so there is no route to restore and the crumb above the title is
 //! absent. It is not a trap — both answers are one press and refusing costs nothing — but it is
 //! the reason this route is the root of its own ceremony rather than a step in the boot wizard.
-//! From Settings, BACK discards the draft and Done appears only after a stored value changes.
+//! From Settings, BACK discards the draft and Done appears only after that draft changes.
 //!
 //! # It never appears on an automated boot
 //!
@@ -77,8 +77,16 @@
 //! `tests/run.py` injects a token and expects Home, the fps scenes grade a heartbeat on a known
 //! route, and every `sim-shot` script drives a screen it chose — a consent prompt in front of all
 //! of them would quietly re-point the entire harness at a screen nobody wrote an assertion for.
+//!
+//! # Persistence results outlive this route
+//!
+//! Recording a choice is bounded and asynchronous. Settings shows the requested choice at once,
+//! while collection waits for the prospective cutoff. One retained receipt is polled by the app
+//! loop after this route closes; a non-durable latest result uses the shared decision alert, is
+//! admitted only when no other Popover is open, and is invalidated by sign-out or a newer choice.
 use crate::telemetry::consent::{self, Category, Consent};
-use crate::ui::consts::SCR_W;
+use crate::telemetry::{ConsentReceipt, PersistenceState, RevisionStatus};
+use crate::ui::consts::{is_back, is_ok, SCR_W, SDLK_LEFT, SDLK_RIGHT};
 use crate::ui::decision_alert::{Choice as AlertChoice, DecisionAlert};
 use crate::ui::document_reader::DocumentReader;
 use crate::ui::popover::Popover;
@@ -175,6 +183,19 @@ const DELETE_SCOPE: &str = "This signs out and removes PlxNative data stored on 
 const CRUMB_SETTINGS: &str = "Settings";
 /// The Settings-hosted route's own title.
 const SETTINGS_TITLE: &str = "Privacy & data";
+
+const SAVE_FAILED_TITLE: &std::ffi::CStr = c"Reporting choice wasn’t saved";
+const SAVE_FAILED_BODY: &str =
+    "Your choice applies now, but it may be asked again after PlxNative restarts.";
+const SAVE_UNCERTAIN_TITLE: &std::ffi::CStr = c"Couldn’t confirm the choice was saved";
+const SAVE_UNCERTAIN_BODY: &str =
+    "Your choice applies now. Try again to make sure it remains after a restart.";
+const CLEANUP_FAILED_TITLE: &std::ffi::CStr = c"Choice saved; cleanup incomplete";
+const CLEANUP_FAILED_BODY: &str =
+    "The new choice is saved, but older local reporting data could not be fully removed.";
+const APPLY_FAILED_TITLE: &std::ffi::CStr = c"Reporting choice couldn’t be applied";
+const APPLY_FAILED_BODY: &str =
+    "Reporting remains off because older local data could not be cleared safely. Try again.";
 
 /// The two answers, as the words that go on the CONTROLS.
 ///
@@ -333,6 +354,31 @@ static mut READER: DocumentReader = DocumentReader::new();
 /// untouched until OK is actually pressed.
 static mut FOCUS: RouteFocus = RouteFocus::content();
 static mut DELETE_ALERT: DecisionAlert = DecisionAlert::new();
+static mut PERSISTENCE_ALERT: DecisionAlert = DecisionAlert::new();
+
+struct PendingPersistence {
+    decision: Consent,
+    revision: u64,
+    receipt: ConsentReceipt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersistenceNoticeKind {
+    Failed,
+    NotApplied,
+    Uncertain,
+    CleanupFailed,
+}
+
+#[derive(Clone)]
+struct PersistenceNotice {
+    decision: Consent,
+    revision: u64,
+    kind: PersistenceNoticeKind,
+}
+
+static mut PENDING_PERSISTENCE: Option<PendingPersistence> = None;
+static mut PERSISTENCE_NOTICE: Option<PersistenceNotice> = None;
 static mut GROUND: RouteGround = RouteGround::new();
 static mut GROUND_DRAWN: bool = false;
 /// First run's two answers' shared press surface (index 0 = Share, 1 = Don't share — the same
@@ -425,6 +471,185 @@ fn reader() -> &'static mut DocumentReader {
 }
 fn delete_alert() -> &'static mut DecisionAlert {
     unsafe { &mut *addr_of_mut!(DELETE_ALERT) }
+}
+
+fn persistence_alert() -> &'static mut DecisionAlert {
+    unsafe { &mut *addr_of_mut!(PERSISTENCE_ALERT) }
+}
+
+fn notice_kind(status: RevisionStatus, decision_effective: bool) -> Option<PersistenceNoticeKind> {
+    match status.write {
+        PersistenceState::Pending => None,
+        PersistenceState::Durable if status.cleanup_failed() => {
+            Some(PersistenceNoticeKind::CleanupFailed)
+        }
+        PersistenceState::Durable => None,
+        PersistenceState::Uncertain => Some(PersistenceNoticeKind::Uncertain),
+        PersistenceState::Failed if !decision_effective => Some(PersistenceNoticeKind::NotApplied),
+        PersistenceState::Failed => Some(PersistenceNoticeKind::Failed),
+    }
+}
+
+fn track_persistence(decision: Consent, receipt: ConsentReceipt) {
+    // A newer explicit choice supersedes every older UI notice. Its accepted disk job still
+    // completes, but its result no longer speaks for what Settings currently shows.
+    let revision = receipt.revision();
+    persistence_alert().close();
+    unsafe {
+        addr_of_mut!(PERSISTENCE_NOTICE).write(None);
+        addr_of_mut!(PENDING_PERSISTENCE).write(Some(PendingPersistence {
+            decision,
+            revision,
+            receipt,
+        }));
+    }
+}
+
+/// Poll once from the main loop. `can_admit` is the shared Popover registry's answer: a failure is
+/// retained while another modal owns the page, then admitted exactly once when that owner leaves.
+pub(crate) fn poll_persistence(can_admit: bool) {
+    let latest_revision = crate::telemetry::latest_persistence_status().revision;
+    let obsolete = unsafe {
+        (*addr_of!(PENDING_PERSISTENCE))
+            .as_ref()
+            .is_some_and(|pending| pending.revision != latest_revision)
+            || (*addr_of!(PERSISTENCE_NOTICE))
+                .as_ref()
+                .is_some_and(|notice| notice.revision != latest_revision)
+    };
+    if obsolete {
+        unsafe {
+            addr_of_mut!(PENDING_PERSISTENCE).write(None);
+            addr_of_mut!(PERSISTENCE_NOTICE).write(None);
+        }
+        persistence_alert().close();
+        return;
+    }
+    let completed = unsafe {
+        let pending = &mut *addr_of_mut!(PENDING_PERSISTENCE);
+        if let Some(pending) = pending.as_mut() {
+            let status = pending.receipt.poll();
+            (status.write != PersistenceState::Pending)
+                .then(|| (pending.decision.clone(), pending.revision, status))
+        } else {
+            None
+        }
+    };
+    if let Some((decision, revision, status)) = completed {
+        if crate::telemetry::latest_persistence_status().revision != revision {
+            unsafe { addr_of_mut!(PENDING_PERSISTENCE).write(None) };
+            persistence_alert().close();
+            return;
+        }
+        unsafe { addr_of_mut!(PENDING_PERSISTENCE).write(None) };
+        let decision_effective = consent::effective().as_ref() == Some(&decision);
+        if let Some(kind) = notice_kind(status, decision_effective) {
+            unsafe {
+                addr_of_mut!(PERSISTENCE_NOTICE)
+                    .write(Some(PersistenceNotice {
+                        decision,
+                        revision,
+                        kind,
+                    }))
+            };
+        }
+    }
+    let notice = unsafe { (*addr_of!(PERSISTENCE_NOTICE)).as_ref().map(|n| n.kind) };
+    if can_admit && !persistence_alert().visible() {
+        if let Some(kind) = notice {
+            let notice_is_latest = unsafe {
+                (*addr_of!(PERSISTENCE_NOTICE)).as_ref().is_some_and(|notice| {
+                    notice.revision == crate::telemetry::latest_persistence_status().revision
+                })
+            };
+            if !notice_is_latest {
+                unsafe { addr_of_mut!(PERSISTENCE_NOTICE).write(None) };
+                return;
+            }
+            let (title, body) = match kind {
+                PersistenceNoticeKind::Failed => (SAVE_FAILED_TITLE, SAVE_FAILED_BODY),
+                PersistenceNoticeKind::NotApplied => (APPLY_FAILED_TITLE, APPLY_FAILED_BODY),
+                PersistenceNoticeKind::Uncertain => (SAVE_UNCERTAIN_TITLE, SAVE_UNCERTAIN_BODY),
+                PersistenceNoticeKind::CleanupFailed => {
+                    (CLEANUP_FAILED_TITLE, CLEANUP_FAILED_BODY)
+                }
+            };
+            persistence_alert().set_tone(crate::ui::decision_alert::Tone::Neutral);
+            persistence_alert().open_with_body(title, body);
+        }
+    }
+}
+
+pub(crate) fn persistence_notice_visible() -> bool {
+    persistence_alert().visible()
+}
+
+fn dismiss_persistence_notice() {
+    unsafe { addr_of_mut!(PERSISTENCE_NOTICE).write(None) };
+    persistence_alert().dismiss();
+}
+
+fn retry_persistence_notice() {
+    let notice = unsafe { (*addr_of!(PERSISTENCE_NOTICE)).clone() };
+    let Some(notice) = notice else {
+        dismiss_persistence_notice();
+        return;
+    };
+    unsafe { addr_of_mut!(PERSISTENCE_NOTICE).write(None) };
+    persistence_alert().dismiss();
+    if let Some(receipt) = crate::telemetry::retry_record_with_receipt(
+        notice.revision,
+        notice.decision.clone(),
+    ) {
+        let revision = receipt.revision();
+        unsafe {
+            addr_of_mut!(PENDING_PERSISTENCE).write(Some(PendingPersistence {
+                decision: notice.decision,
+                revision,
+                receipt,
+            }))
+        };
+    };
+}
+
+/// Highest modal key owner while the persistence notice is open or fading out.
+pub(crate) fn persistence_notice_key(sym: u32, wcode: u32) {
+    if !persistence_alert().is_open() {
+        return;
+    }
+    if is_back(sym, wcode) {
+        dismiss_persistence_notice();
+    } else if sym == SDLK_LEFT {
+        persistence_alert().move_focus(-1);
+    } else if sym == SDLK_RIGHT {
+        persistence_alert().move_focus(1);
+    } else if is_ok(sym) {
+        if persistence_alert().choice() == AlertChoice::Destructive {
+            retry_persistence_notice();
+        } else {
+            dismiss_persistence_notice();
+        }
+    }
+}
+
+pub(crate) fn persistence_notice_pointer_focus(mx: f32, my: f32) {
+    if persistence_alert().is_open() && persistence_alert().settled() {
+        let _ = persistence_alert().press_at(mx, my);
+    }
+}
+
+pub(crate) fn persistence_notice_press_at(mx: f32, my: f32) {
+    if !persistence_alert().is_open()
+        || !persistence_alert().settled()
+        || !persistence_alert().press_at(mx, my)
+    {
+        return;
+    }
+    if persistence_alert().choice() == AlertChoice::Destructive {
+        retry_persistence_notice();
+    } else {
+        dismiss_persistence_notice();
+    }
 }
 
 /// Where focus is, in the family's shared terms — see `ui::route_screen`'s rule list.
@@ -911,7 +1136,8 @@ fn record_answer(errors: bool, usage: bool) {
             ));
         }
     }
-    crate::telemetry::record(next);
+    let receipt = crate::telemetry::record_with_receipt(next.clone());
+    track_persistence(next, receipt);
     // A decision can only make sending MORE restricted or newly possible, and both want a flush:
     // an opt-in drains anything this session queued, and a withdrawal is the moment the spool's
     // now-unconsented records get dropped — `flush_now` treats a record whose category is off as
@@ -1271,6 +1497,7 @@ pub(crate) fn click_row(mx: f32, my: f32) -> bool {
 pub(crate) fn update(dt: f32) {
     pop().update(dt);
     delete_alert().update(dt);
+    persistence_alert().update(dt);
     unsafe {
         (*addr_of_mut!(DOCUMENT_MORPH)).update(DOCUMENT_OPEN, dt);
         (*addr_of_mut!(STAGE_PUSH)).update(stage() == Stage::Product, dt);
@@ -1492,16 +1719,15 @@ fn preview() -> String {
 /// The Analytics ID document — the identifier itself, what it is attached to, and the one process
 /// that can act on a deletion request.
 ///
-/// **It reads the STORED consent rather than the draft.** The draft is what the toggles currently
-/// show, which may be an answer the person has not committed yet; the identifier that has actually
-/// been sent with events is the one in `consent::current`. Showing a draft here would name an
-/// identifier no event carries, or hide one that several do.
+/// **It reads effective consent rather than the draft/requested choice.** A newly requested enable
+/// waits for its prospective persistence cutoff; until then its identifier has not been attached
+/// to an event and this document must not present it as though it had.
 ///
 /// With analytics off there is no identifier to show, and that is the honest answer rather than a
 /// blank: `consent::apply` sets `install_id: None` on withdrawal and mints a NEW one if analytics is
 /// ever turned back on, so "off" really does mean the old handle is gone.
 fn analytics_id_document() -> String {
-    match consent::current().and_then(|c| c.install_id).as_deref() {
+    match consent::effective().and_then(|c| c.install_id).as_deref() {
         Some(id) => format!(
             "YOUR ANALYTICS ID\n\n{id}\n\nWHAT IT IS\n\nA random identifier created on this television when you turned product analytics on. It is attached to analytics events so they can be counted as coming from one Analytics ID: one uninterrupted opt-in on one television. It is not derived from your Plex account, your television or anything about you, and it is never sent with crash reports, which carry a separate Crash report ID of their own.\n\nHOW TO HAVE THESE EVENTS DELETED\n\nWrite to {CONTACT_EMAIL} and quote the identifier above. It is the only handle these events carry, so a request without it cannot be matched to anything.\n\nHOW IT ENDS\n\nTurning product analytics off deletes this identifier, and turning analytics on again creates a different one. Signing out removes it as well, and the next person to sign in is asked afresh; so does Delete all local data. Events already sent keep the old identifier, which is why it is worth copying down before you turn analytics off if you intend to ask for their deletion."
         ),
@@ -1512,8 +1738,7 @@ fn analytics_id_document() -> String {
 }
 
 /// The Crash report ID document — the crash channel's twin of [`analytics_id_document`], reading
-/// the STORED decision for the same reason: the identifier that has actually gone out on reports
-/// is the one in `consent::current`, not whatever the toggles currently show.
+/// effective authority for the same reason.
 ///
 /// The one sentence that differs in kind from the analytics document is what the identifier is
 /// FOR: it lets Sentry count how many Crash report IDs an issue reached — one per uninterrupted
@@ -1522,7 +1747,7 @@ fn analytics_id_document() -> String {
 /// is the reason the identifier exists, and a person deciding whether to leave the switch on is
 /// owed the reason.
 fn errors_id_document() -> String {
-    match consent::current().and_then(|c| c.errors_id).as_deref() {
+    match consent::effective().and_then(|c| c.errors_id).as_deref() {
         Some(id) => format!(
             "YOUR CRASH REPORT ID\n\n{id}\n\nWHAT IT IS\n\nA random identifier created on this television when you turned crash reports on. It is attached to every crash and error report so that repeated crashes under one Crash report ID are counted once, which is what tells a problem that hit many people apart from one television that hit it many times. It is not derived from your Plex account, your television or anything about you, and it is never sent with product analytics, which has a separate Analytics ID of its own.\n\nHOW TO HAVE THESE REPORTS DELETED\n\nWrite to {CONTACT_EMAIL} and quote the identifier above. It is the only handle these reports carry, so a request without it cannot be matched to anything.\n\nHOW IT ENDS\n\nTurning crash reports off deletes this identifier, and turning them on again creates a different one. Signing out removes it as well, and the next person to sign in is asked afresh; so does Delete all local data. Reports already sent keep the old identifier, which is why it is worth copying down before you turn crash reports off if you intend to ask for their deletion."
         ),
@@ -1560,6 +1785,14 @@ pub(crate) fn draw() {
     crate::ui::profile::phase("cs.alert", || {
         delete_alert().draw_scrim();
         delete_alert().draw(c"Cancel", c"Delete");
+    });
+}
+
+/// Drawn by `app.rs` on the all-routes tail, so a result cannot disappear with the consent route.
+pub(crate) fn draw_persistence_notice() {
+    crate::ui::profile::phase("cs.persist", || {
+        persistence_alert().draw_scrim();
+        persistence_alert().draw(c"Close", c"Try again");
     });
 }
 
@@ -1824,6 +2057,263 @@ fn draw_question() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct PersistenceReset {
+        dir: std::path::PathBuf,
+        saved: Option<Consent>,
+    }
+
+    impl PersistenceReset {
+        fn new(name: &str) -> Self {
+            crate::storage_worker::drain_for_test();
+            persistence_alert().close();
+            unsafe {
+                addr_of_mut!(PENDING_PERSISTENCE).write(None);
+                addr_of_mut!(PERSISTENCE_NOTICE).write(None);
+            }
+            let dir = std::env::temp_dir().join(format!(
+                "plxnative-consent-ui-persistence-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("state")).unwrap();
+            crate::telemetry::redirect_for_test(Some(dir.join("state/telemetry.json")));
+            crate::telemetry::spool::set_test_path(Some(dir.join("spool.bin")));
+            Self {
+                dir,
+                saved: consent::current(),
+            }
+        }
+    }
+
+    impl Drop for PersistenceReset {
+        fn drop(&mut self) {
+            crate::storage_worker::drain_for_test();
+            persistence_alert().close();
+            unsafe {
+                addr_of_mut!(PENDING_PERSISTENCE).write(None);
+                addr_of_mut!(PERSISTENCE_NOTICE).write(None);
+            }
+            crate::telemetry::spool::set_test_path(None);
+            crate::telemetry::redirect_for_test(None);
+            consent::install(self.saved.take().unwrap_or_default());
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn no_decision() -> Consent {
+        Consent {
+            asked_version: consent::POLICY_VERSION,
+            ..Default::default()
+        }
+    }
+
+    fn wait_for_persistence_notice() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !persistence_notice_visible() {
+            poll_persistence(true);
+            assert!(std::time::Instant::now() < deadline, "persistence notice never opened");
+            std::thread::yield_now();
+        }
+    }
+
+    fn finish_persistence_for_test() {
+        crate::storage_worker::drain_for_test();
+        poll_persistence(false);
+        persistence_alert().close();
+        unsafe {
+            addr_of_mut!(PENDING_PERSISTENCE).write(None);
+            addr_of_mut!(PERSISTENCE_NOTICE).write(None);
+        }
+    }
+
+    #[test]
+    fn persistence_result_words_distinguish_write_uncertainty_and_cleanup() {
+        let status = |write, cleanup| RevisionStatus {
+            revision: 1,
+            write,
+            cleanup,
+            failure: None,
+        };
+        assert_eq!(
+            notice_kind(status(
+                PersistenceState::Pending,
+                crate::telemetry::persistence::CleanupResult::NotAttempted,
+            ), false),
+            None
+        );
+        assert_eq!(
+            notice_kind(status(
+                PersistenceState::Durable,
+                crate::telemetry::persistence::CleanupResult::Complete,
+            ), true),
+            None
+        );
+        assert_eq!(
+            notice_kind(status(
+                PersistenceState::Durable,
+                crate::telemetry::persistence::CleanupResult::Failed,
+            ), true),
+            Some(PersistenceNoticeKind::CleanupFailed)
+        );
+        assert_eq!(
+            notice_kind(status(
+                PersistenceState::Uncertain,
+                crate::telemetry::persistence::CleanupResult::NotAttempted,
+            ), true),
+            Some(PersistenceNoticeKind::Uncertain)
+        );
+        assert_eq!(
+            notice_kind(status(
+                PersistenceState::Failed,
+                crate::telemetry::persistence::CleanupResult::NotAttempted,
+            ), true),
+            Some(PersistenceNoticeKind::Failed)
+        );
+        assert_eq!(
+            notice_kind(
+                status(
+                    PersistenceState::Failed,
+                    crate::telemetry::persistence::CleanupResult::Failed,
+                ),
+                false,
+            ),
+            Some(PersistenceNoticeKind::NotApplied)
+        );
+    }
+
+    #[test]
+    fn delayed_failure_survives_route_close_and_is_shown_only_once() {
+        let _g = crate::testlock::serial();
+        let reset = PersistenceReset::new("route-close");
+        consent::install(Consent::default());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocker = crate::storage_worker::submit(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+        .unwrap();
+        entered_rx.recv().unwrap();
+        let decision = no_decision();
+        let receipt = crate::telemetry::record_with_receipt(decision.clone());
+        track_persistence(decision, receipt);
+        close();
+        poll_persistence(true);
+        assert!(!persistence_notice_visible(), "Pending was presented as a terminal result");
+
+        std::fs::remove_dir_all(reset.dir.join("state")).unwrap();
+        std::fs::write(reset.dir.join("state"), b"not a directory").unwrap();
+        release_tx.send(()).unwrap();
+        blocker.wait_blocking().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while unsafe { (*addr_of!(PENDING_PERSISTENCE)).is_some() } {
+            poll_persistence(false);
+            assert!(std::time::Instant::now() < deadline, "receipt never completed");
+            std::thread::yield_now();
+        }
+        assert!(unsafe { (*addr_of!(PERSISTENCE_NOTICE)).is_some() });
+        assert!(!persistence_notice_visible(), "failure stacked over an existing modal");
+        wait_for_persistence_notice();
+        assert!(!menu_open(), "the old consent route was reopened to show its result");
+
+        persistence_notice_key(crate::ui::consts::SDLK_ESCAPE, 0);
+        for _ in 0..240 {
+            update(1.0 / 60.0);
+            poll_persistence(true);
+        }
+        assert!(!persistence_notice_visible(), "an acknowledged failure opened a second time");
+    }
+
+    #[test]
+    fn sign_out_invalidates_a_pending_notice_and_an_atomic_retry_of_the_old_decision() {
+        let _g = crate::testlock::serial();
+        let _reset = PersistenceReset::new("signout");
+        consent::install(Consent::default());
+        let old = Consent {
+            asked_version: consent::POLICY_VERSION,
+            usage: true,
+            usage_scope: consent::USAGE_SCOPE,
+            install_id: Some("o".repeat(32)),
+            ..Default::default()
+        };
+        crate::telemetry::spool::set_test_path(Some(
+            std::env::temp_dir().join(format!("missing-consent-spool-{}/spool", std::process::id())),
+        ));
+        let receipt = crate::telemetry::record_with_receipt(old.clone());
+        let old_revision = receipt.revision();
+        track_persistence(old.clone(), receipt);
+        wait_for_persistence_notice();
+
+        let forget = crate::telemetry::forget_with_receipt();
+        let forget_revision = forget.revision();
+        retry_persistence_notice();
+        assert_eq!(
+            crate::telemetry::latest_persistence_status().revision,
+            forget_revision,
+            "retry restored a superseded consent revision"
+        );
+        assert_ne!(old_revision, forget_revision);
+        assert!(consent::current().is_some_and(|c| !c.any() && c.install_id.is_none()));
+        poll_persistence(true);
+        assert!(!persistence_alert().is_open(), "the departed account's failure stayed modal");
+        drop(forget);
+    }
+
+    #[test]
+    fn sign_out_between_submission_and_failure_discards_the_pending_ui_result() {
+        let _g = crate::testlock::serial();
+        let _reset = PersistenceReset::new("signout-pending");
+        consent::install(Consent::default());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocker = crate::storage_worker::submit(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+        .unwrap();
+        entered_rx.recv().unwrap();
+        let old = no_decision();
+        let old_receipt = crate::telemetry::record_with_receipt(old.clone());
+        track_persistence(old, old_receipt);
+        let forget = crate::telemetry::forget_with_receipt();
+        poll_persistence(true);
+        assert!(unsafe { (*addr_of!(PENDING_PERSISTENCE)).is_none() });
+        assert!(!persistence_notice_visible());
+        release_tx.send(()).unwrap();
+        blocker.wait_blocking().unwrap();
+        crate::storage_worker::drain_for_test();
+        poll_persistence(true);
+        assert!(!persistence_notice_visible(), "departed tenure's late result opened an alert");
+        drop(forget);
+    }
+
+    #[test]
+    fn a_new_ui_decision_suppresses_the_visible_failure_from_the_old_one() {
+        let _g = crate::testlock::serial();
+        let reset = PersistenceReset::new("supersede");
+        consent::install(Consent::default());
+        crate::telemetry::spool::set_test_path(Some(reset.dir.join("missing/spool.bin")));
+        let old = Consent {
+            asked_version: consent::POLICY_VERSION,
+            usage: true,
+            usage_scope: consent::USAGE_SCOPE,
+            install_id: Some("s".repeat(32)),
+            ..Default::default()
+        };
+        let old_receipt = crate::telemetry::record_with_receipt(old.clone());
+        track_persistence(old, old_receipt);
+        wait_for_persistence_notice();
+
+        crate::telemetry::spool::set_test_path(Some(reset.dir.join("spool.bin")));
+        let next = no_decision();
+        let next_receipt = crate::telemetry::record_with_receipt(next.clone());
+        track_persistence(next, next_receipt);
+        assert!(!persistence_notice_visible(), "new choice left the stale alert on screen");
+        crate::storage_worker::drain_for_test();
+        poll_persistence(true);
+        assert!(!persistence_notice_visible(), "old failure reopened after the new choice completed");
+    }
 
     /// Run whatever transform is in flight to rest. Rule 11 refuses a POSITIONAL hit until the
     /// layer it belongs to has arrived, so every pointer test here has to land its screen first.
@@ -2973,6 +3463,7 @@ mod tests {
             consent::pending_extensions(&next).is_empty(),
             "declined at the current scope — not re-asked until it grows further"
         );
+        finish_persistence_for_test();
         if let Some(c) = saved {
             consent::install(c);
         }
@@ -3009,6 +3500,7 @@ mod tests {
         assert!(next.usage, "usage was never part of this ceremony");
         assert_eq!(next.usage_scope, 6, "and its accepted scope did not move");
         assert_eq!(next.install_id, prev.install_id, "…nor did its identifier");
+        finish_persistence_for_test();
         if let Some(c) = saved {
             consent::install(c);
         }
@@ -3041,6 +3533,7 @@ mod tests {
         assert_eq!(next.install_id, prev.install_id, "acceptance kept the existing identifier");
         assert!(next.errors, "errors was never part of this ceremony");
         assert_eq!(next.errors_scope, 6, "and its accepted scope did not move");
+        finish_persistence_for_test();
         if let Some(c) = saved {
             consent::install(c);
         }
@@ -3097,6 +3590,7 @@ mod tests {
         assert!(next.errors);
         assert_eq!(next.errors_id.as_deref(), prev.errors_id.as_deref());
         assert!(next.usage, "usage was already accepted and untouched by this ceremony");
+        finish_persistence_for_test();
         if let Some(c) = saved {
             consent::install(c);
         }

@@ -107,8 +107,9 @@ fn event_for_impl(
         // A replayed event (`stamp.is_some()`) that STILL finds consent unanswered is not
         // re-deferred — `replay_deferred` empties the queue unconditionally, and re-holding it here
         // would fight that.
-        let unanswered = crate::telemetry::consent::current().is_none_or(|c| !c.ever_answered());
-        if unanswered && stamp.is_none() && is_deferrable(&e) {
+        let unresolved = crate::telemetry::consent::current().is_none_or(|c| !c.ever_answered())
+            || crate::telemetry::consent::usage_enable_pending();
+        if unresolved && stamp.is_none() && is_deferrable(&e) {
             defer(e);
         }
         return;
@@ -141,7 +142,7 @@ fn event_for_impl(
     // An identifier only exists after an opt-in, which `allows_usage` implies — but READ it rather
     // than assume it. "Implies" is how an invariant becomes a panic, and the failure here would be
     // a report with a fabricated id, which is the one outcome the whole design refuses.
-    let Some(_) = crate::telemetry::consent::current().and_then(|c| c.install_id) else {
+    let Some(_) = crate::telemetry::consent::install_id() else {
         return;
     };
     if !crate::telemetry::sender::has_posthog() {
@@ -232,7 +233,7 @@ fn defer(e: schema::DiagEvent) {
 }
 
 /// Drain and replay every deferred sign-in event through the normal gated path. Called from
-/// `telemetry::record` right after the new decision is published — a "yes" lets these through
+/// `telemetry::record_with_receipt` after the new decision becomes effective — a "yes" lets these through
 /// exactly as if consent had already been answered when they first happened; a "no" hits the same
 /// gate every other event does and is dropped, which is why this drains UNCONDITIONALLY rather
 /// than checking the answer itself: emptying the queue either way is what keeps a refused answer
@@ -352,6 +353,25 @@ mod tests {
         });
     }
 
+    #[test]
+    fn sign_in_started_defers_while_a_requested_usage_enable_is_pending() {
+        with_consent_snapshot(|| {
+            consent::install(Consent {
+                asked_version: consent::POLICY_VERSION,
+                ..Default::default()
+            });
+            consent::request_for_test(Consent {
+                asked_version: consent::POLICY_VERSION,
+                usage: true,
+                usage_scope: consent::USAGE_SCOPE,
+                install_id: Some("u".repeat(32)),
+                ..Default::default()
+            });
+            event(schema::DiagEvent::SignInStarted);
+            assert_eq!(deferred_len(), 1);
+        });
+    }
+
     /// Only the sign-in family is held back — every other event drops exactly as it always did
     /// once consent is unanswered, since holding a route or a playback action for a later consent
     /// answer would misdate it against when it actually happened.
@@ -381,7 +401,7 @@ mod tests {
     /// **and it drains the queue whichever way that decision goes.** Here it is a real "no", so
     /// each replayed event hits the ordinary consent gate and is dropped rather than re-deferred
     /// (consent is now ANSWERED, so `event_for`'s unanswered check is false) — the queue still
-    /// ends up empty, exactly as `telemetry::record`'s doc promises for a refused answer.
+    /// ends up empty, exactly as the consent persistence path promises for a refused answer.
     #[test]
     fn replay_deferred_empties_the_queue() {
         with_consent_snapshot(|| {

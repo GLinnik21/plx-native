@@ -295,7 +295,7 @@ fn wire_body(r: &Record) -> Vec<u8> {
                 // an upgrade; guessing how to enrich them would invent occurrence/context facts.
                 return Vec::new();
             };
-            let Some(id) = consent::current().and_then(|c| c.install_id) else {
+            let Some(id) = consent::install_id() else {
                 return Vec::new();
             };
             let Some(key) = POSTHOG_KEY else {

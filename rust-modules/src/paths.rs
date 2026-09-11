@@ -234,8 +234,10 @@ fn macos_bundle_resources(_exe: &Path) -> Option<PathBuf> {
 /// Support/PlxNative`.
 ///
 /// The default runtime root is `/tmp`, which is right on the television and wrong for a Mac app
-/// somebody was sent: `auth.json` lives in this root (see [`session_candidates`]), and `/tmp` is
-/// swept, so the friend would re-do the QR sign-in every few days without ever learning why. The
+/// somebody was sent: legacy `auth.json` migration inputs live in this root (see
+/// [`session_candidates`]), and `/tmp` is swept, so a pre-canonical install could re-do the QR
+/// sign-in every few days without ever learning why. The canonical record now lives under the
+/// persistent app state root. The
 /// app bundle itself is not an option either — it may sit in a read-only `/Applications`, and on a
 /// signed bundle writing inside `Contents/` invalidates the signature.
 ///
@@ -301,6 +303,68 @@ pub(crate) fn runtime_dir() -> &'static Path {
         ensure_runtime_dir(&d);
         d
     })
+}
+
+/// Canonical per-install persistence root. Television packages carry `state/` beside the app;
+/// hostsim keeps the same shape under its private instance runtime root so tests never touch the
+/// checkout or a shared host directory.
+pub(crate) fn persistent_state_root() -> PathBuf {
+    #[cfg(test)]
+    if let Some(root) = TEST_PERSISTENT_STATE_ROOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        return root;
+    }
+    if ENV_STEERABLE {
+        runtime_dir().join("state")
+    } else {
+        app_dir().join("state")
+    }
+}
+
+#[cfg(test)]
+static TEST_PERSISTENT_STATE_ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn redirect_persistent_state_root_for_test(root: Option<PathBuf>) {
+    if let Some(root) = &root {
+        let _ = std::fs::create_dir_all(root);
+    }
+    *TEST_PERSISTENT_STATE_ROOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = root;
+}
+
+/// Prepare the hostsim-only state root without following a pre-existing symlink. TV packages must
+/// supply `state/`; a missing TV directory is an adapter error, never something this helper creates.
+pub(crate) fn ensure_persistent_state_root() -> std::io::Result<()> {
+    if !ENV_STEERABLE {
+        return Ok(());
+    }
+    let root = persistent_state_root();
+    match std::fs::symlink_metadata(&root) {
+        Ok(meta) if meta.file_type().is_dir() => Ok(()),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "persistent state root is not a directory",
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                let mut builder = std::fs::DirBuilder::new();
+                builder.mode(0o700);
+                builder.create(&root)
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::create_dir(&root)
+            }
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Create the runtime root if it is not `/tmp` itself, and make it world-writable + sticky.
@@ -468,11 +532,13 @@ pub(crate) enum SessionTier {
     Developer,
     /// `/media/internal/.<id>-auth.json` — the retail-jail writable fallback.
     Internal,
-    /// Inside the app install directory — packaged `state/auth.json`, or a legacy migration path.
+    /// Inside the app install directory — canonical `state/session.json` is managed separately;
+    /// this tier names only a legacy migration path.
     AppDir,
 }
 
-/// Candidate locations for the persisted session, best first, each with the [`SessionTier`] it is.
+/// Legacy candidate locations for the persisted session, best first, each with the
+/// [`SessionTier`] it is. They are migration inputs; the canonical output is `state/session.json`.
 ///
 /// The two established external locations remain first for compatibility with existing sessions.
 /// Some newer Developer Mode jails refuse both, so the IPK now provides `state/` as an app-local
@@ -858,8 +924,10 @@ mod tests {
             "{a:?} and {b:?} share a session file"
         );
         // …and the real list really is built that way, whichever install this binary is.
-        let real: Vec<std::path::PathBuf> =
-            super::session_candidates().into_iter().map(|(p, _)| p).collect();
+        let real: Vec<std::path::PathBuf> = super::session_candidates()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
         assert!(
             real.iter()
                 .any(|p| p.to_string_lossy().contains(super::app_id())),
@@ -886,8 +954,10 @@ mod tests {
     /// compatibility; packaged state is a fallback, not a forced migration.
     #[test]
     fn preferred_session_path_survives_a_reinstall() {
-        let c: Vec<std::path::PathBuf> =
-            super::session_candidates().into_iter().map(|(p, _)| p).collect();
+        let c: Vec<std::path::PathBuf> = super::session_candidates()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
         assert!(
             c.len() >= 2,
             "a single hardcoded path is the bug this list exists to fix"
@@ -927,9 +997,18 @@ mod tests {
 
     #[test]
     fn packaged_state_is_the_app_local_fallback_after_both_external_tiers() {
-        let paths: Vec<_> = super::session_candidates().into_iter().map(|(p, _)| p).collect();
-        let developer = paths.iter().position(|p| p.starts_with("/media/developer")).unwrap();
-        let internal = paths.iter().position(|p| p.starts_with("/media/internal")).unwrap();
+        let paths: Vec<_> = super::session_candidates()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        let developer = paths
+            .iter()
+            .position(|p| p.starts_with("/media/developer"))
+            .unwrap();
+        let internal = paths
+            .iter()
+            .position(|p| p.starts_with("/media/internal"))
+            .unwrap();
         let state = paths
             .iter()
             .position(|p| p == &super::app_dir().join("state/auth.json"))

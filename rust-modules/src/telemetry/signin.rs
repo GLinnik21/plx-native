@@ -1361,12 +1361,15 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("a writable temp dir");
         crate::plex::session::redirect_for_test(Some(dir.join("gone").join("auth.json")));
         forget_storage_outcome();
+        crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::Write);
 
         crate::auth::arm_ready_for_test(crate::plex::session::Session {
             client_id: "cid-for-test".to_string(),
             account_token: "tok-for-test".to_string(),
             ..Default::default()
         });
+        assert!(crate::auth::take_ready().is_none(), "save admission never waits inline");
+        crate::storage_worker::drain_for_test();
         assert!(crate::auth::take_ready().is_some());
 
         let one_off: Value = serde_json::from_slice(&event_body_with_storage_outcome(

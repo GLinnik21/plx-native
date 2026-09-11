@@ -45,8 +45,9 @@ looking at:
   developer-trigger build can allow that lab path, and it logs the exception without the URL.
   Anything that disables, downgrades or bypasses these rules is in scope; so is any path where a
   failure to *set* a security option results in a request going out anyway.
-- **The session file.** `<id>-auth.json` holds one access token per server your account can reach.
-  It is encrypted with the firmware's authenticated Key Manager where
+- **The canonical session record.** `state/session.json` carries one access token per server your
+  account can reach inside a versioned opaque record. Legacy `<id>-auth.json` and `state/auth.json`
+  files are read only as migration sources. The record payload is encrypted with the firmware's authenticated Key Manager where
   `com.webos.service.keymanager3` is available and permitted, with a 0600 plaintext compatibility
   fallback otherwise. The legacy `com.palm.keymanager` AES-CFB interface is not used because it
   provides no authenticated-encryption operation. The file is always created 0600 through
@@ -59,7 +60,7 @@ looking at:
   bytes, so that content is never trusted — the session and consent files are discarded rather than
   parsed, a marker or probe file is ignored and deleted, and the telemetry spool is truncated rather
   than appended onto. **A write-widened SESSION file is QUARANTINED rather than deleted**: it is
-  renamed to `<id>-auth.json.untrusted` beside itself, still 0600, and never parsed or opened again
+  renamed to the source name with `.untrusted` beside itself, still 0600, and never parsed or opened again
   by anything in the app — it is kept for the television's owner to inspect, those bytes being the
   only record of what was tampered with. **Only the most recent one is kept**: a later tampering
   replaces that file rather than accumulating a series beside the session. Signing out and Delete
@@ -72,7 +73,7 @@ looking at:
   process, or a way to make the app write it somewhere world-readable is in scope.
 - **The packaged state directory.** The IPK carries an empty per-install `state/` directory with
   uid 0, gid 5000 and mode 0775. It is a writable container for the jailed app; runtime files such
-  as `state/auth.json` and `state/telemetry.json` are created owner-only at 0600 and are not package
+  as `state/session.json` and `state/consent.json` are created owner-only at 0600 and are not package
   payload. The package checker grades the actual IPK member, not just the staging directory.
 - **The Developer Mode shared-namespace exposure, and why it is not the same claim as the above.**
   A **sideloaded Developer Mode** install runs under `jail_native_devmode.conf`, which

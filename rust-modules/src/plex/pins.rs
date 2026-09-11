@@ -118,6 +118,7 @@ pub(crate) fn record(user: &str, asked: bool, libs: &[LibRef<'_>], on: &[bool]) 
         asked,
         on: Vec::new(),
         off: Vec::new(),
+        ..Default::default()
     };
     for (i, l) in libs.iter().enumerate() {
         if l.machine_id.is_empty() {
@@ -126,6 +127,7 @@ pub(crate) fn record(user: &str, asked: bool, libs: &[LibRef<'_>], on: &[bool]) 
         let lib = PinnedLib {
             machine_id: l.machine_id.to_string(),
             key: l.key,
+            ..Default::default()
         };
         if on.get(i).copied().unwrap_or(false) {
             out.on.push(lib);
@@ -154,6 +156,9 @@ pub(crate) fn carry_forward(
     libs: &[LibRef<'_>],
 ) -> HomePins {
     let Some(prev) = prev else { return rec };
+    if rec.user == prev.user {
+        rec.extensions = prev.extensions.clone();
+    }
     let absent = |p: &&PinnedLib| {
         // an entry with no machine can never be WRITTEN (see [`record`]), so it can never be
         // carried either — and matching it against a table row's empty id would adopt a neighbour's

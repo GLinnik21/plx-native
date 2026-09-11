@@ -1,0 +1,30 @@
+{
+  "format": "plxnative-persistence-fixtures",
+  "version": 1,
+  "tag_object_oids": {
+    "v0.6.0": "b1393820c7a09b7fa6c83774be4ed8122b8efd29",
+    "v0.6.1": "68f488748055359b2c82358af8016e7bbcd0eaa7",
+    "v0.6.2": "831fa84108c3052b01701ee36a59cb03838b5fef",
+    "v0.6.3": "4c97988c1c2f0151d2cd55828bbeb0bf9687d396",
+    "v0.6.4": "d8286a0c90a2e9593e634e692ba90ece4e10d7a6",
+    "v0.6.5": "884b6d7d66aac43b2e47084da2c70e865235cfdc"
+  },
+  "source_commits": {
+    "v0.6.0": "b1393820c7a09b7fa6c83774be4ed8122b8efd29",
+    "v0.6.1": "68212dd5cc52cdf56c785c5a5645bb80fe90aeae",
+    "v0.6.2": "56289496df0d6398a332c16b280eca952fbc2c92",
+    "v0.6.3": "0e989295f9a19a0e05c4441ac891bbc7254db022",
+    "v0.6.4": "391c74d0884e0fa9aa80b2e1aa64f08575507ffa",
+    "v0.6.5": "cb33bb1f0452c1e54895a5a265260fe3ed8c2c40"
+  },
+  "consent_fields": {
+    "v0.6.0-v0.6.2": ["asked_version", "errors", "usage", "install_id", "errors_id"],
+    "v0.6.3-v0.6.5": [
+      "asked_version", "errors", "usage", "install_id", "errors_id",
+      "errors_scope", "usage_scope", "errors_declined_scope", "usage_declined_scope"
+    ]
+  },
+  "fixtures": [
+    "v0.6.0", "v0.6.1", "v0.6.2", "v0.6.3", "v0.6.4", "v0.6.5"
+  ]
+}

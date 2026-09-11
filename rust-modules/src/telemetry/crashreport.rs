@@ -752,12 +752,14 @@ pub(crate) fn report_pending(native_crashes: &[super::native::CrashKey]) {
 /// the append-only local log belong to the period in which no upload was authorised. Advancing the
 /// private watermark before publishing the new consent keeps those local diagnostics local while
 /// allowing the next crash to be reported normally.
-pub(crate) fn discard_pending_before_opt_in() {
+pub(crate) fn discard_pending_before_opt_in() -> bool {
     let path = crate::paths::in_runtime_dir("plxnative-crash.log");
-    let Ok(meta) = std::fs::metadata(path) else {
-        return;
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(_) => return false,
     };
-    write_mark(meta.len());
+    write_mark(meta.len())
 }
 
 /// Where in the crash log to start reading, given its size and the watermark.
@@ -791,9 +793,9 @@ fn read_mark() -> Mark {
         .unwrap_or_default()
 }
 
-fn write_mark(reported_bytes: u64) {
+fn write_mark(reported_bytes: u64) -> bool {
     let Ok(json) = serde_json::to_vec(&Mark { reported_bytes }) else {
-        return;
+        return false;
     };
     let stored = crate::paths::telemetry_crashmark_candidates()
         .iter()
@@ -804,6 +806,7 @@ fn write_mark(reported_bytes: u64) {
         // request per launch that says nothing new.
         crate::log("telemetry: could not persist the crash watermark to ANY candidate path");
     }
+    stored
 }
 
 /// The image path reported to Sentry.
