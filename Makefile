@@ -1192,6 +1192,8 @@ check: lint
 	python3 ci/test_verify_deploy.py
 	python3 ci/test_link_evidence.py
 	python3 ci/test_packaged_elf.py
+	python3 ci/test_check_elf.py
+	python3 ci/test_build_gc.py
 	python3 ci/test_source_bundle.py
 	python3 ci/test_restore_runtime.py
 	python3 ci/test-compat.py

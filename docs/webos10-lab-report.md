@@ -518,6 +518,11 @@ dots and four octets ≤ 255, and never looks at hex groups or colons. **This on
 not a gap**, and it is a household's LAN — well, WAN — topology in an upload. It is also directly
 testable on the host, which is where the fix belongs.
 
+**Fixed 2026-09-11 in #81.** The shared local/remote pass now recognizes compressed and expanded
+IPv6 literals in bare and bracketed forms, including the probe's bare `address:port` spelling. The
+issue's two leaked line shapes are regression fixtures, alongside false-positive checks for Rust
+paths, timestamps and MAC addresses.
+
 **(c) A managed profile's PIN, in the clear, twice.** The one the maintainer did not raise, and the
 most sensitive of the three. The app logs every key event's raw 48 bytes unconditionally — which is
 deliberate and valuable, and is how §5 below answers the colour-button question for free. But the
@@ -774,8 +779,9 @@ which it was.
 2. **DONE, 2026-09-03 — `player::sf_on_event_inner` publishes `load_failed` on a `type=18` seen
    before any picture.** ~~Make `type=18` a verdict~~ (§3.5). Today it is latched into a diagnostic counter and nothing
    else, so a refused Load presents as a silent black screen with a healthy-looking state machine.
-3. **Fix the two redaction holes and blank PIN keystrokes** (§4.2). All three are pure functions
-   with host tests; `scrub_addresses` in particular documents an IPv6 case it does not implement.
+3. **Fix the remaining bare-hostname and PIN-keystroke redaction holes** (§4.2). The IPv6 portion
+   was fixed in #81 on 2026-09-11; the other two remain. All three are pure functions with host
+   tests.
 4. **Cut the off-LAN cold start** (§4.1). 13–21 s of serial probing of unreachable candidates, on
    exactly the path a reviewer takes.
 5. **Correct `docs/distribution.md` line 263** — done, in this change. Only **webOS 10 = webOS TV
