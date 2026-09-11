@@ -26,6 +26,13 @@ const CH_W: f32 = 288.0;
 const CH_H: f32 = 162.0; // 16:9 still
 const CH_GAP: f32 = 24.0;
 const CH_TOP: f32 = 684.0; // thumbnail top — name/time fit above the tabs (SCR_H-128)
+const CH_RAD: f32 = 10.0;
+/// Focus rim on the selected chapter. The card family's resting sheen ([`theme::CARD_SHEEN`] .22 /
+/// 1px) washes out over the hardware video plane the same way an unkeyed control's edge did — pure
+/// white and a thicker stroke are what keep "which chapter" readable from the couch while scrolling.
+/// Colour is the unkeyed focus edge ([`theme::CONTROL_RIM_FOCUS_UNKEYED`]); width is deliberately a
+/// step over that control's 1.25 so a 288-wide still reads as selected, not merely edged.
+const CH_FOCUS_RING_W: f32 = 2.5;
 use crate::ui::widgets::CARD_FOCUS_SCALE;
 
 /// The strip's whole state, owned by the container that mounts this panel — the modal PHASE and
@@ -137,10 +144,21 @@ impl ChaptersState {
                 crate::route::item_sid(crate::route::cur_sid(ps)),
                 &ch.thumb,
                 (480, 270),
-                10.0,
+                CH_RAD,
                 focused,
                 scale,
             );
+            if focused {
+                // Same scaled frame `card()` draws into, so the rim rides the focus pop rather than
+                // lagging a resting box. Full strength whenever focused — the pop already animates the
+                // geometry; fading the rim with it would blank the selection mark on every LEFT/RIGHT.
+                p.rring(
+                    card.scaled(scale),
+                    CH_RAD,
+                    CH_FOCUS_RING_W,
+                    theme::CONTROL_RIM_FOCUS_UNKEYED,
+                );
+            }
             // name + timestamp beneath the card
             let ty = CH_TOP + CH_H + 26.0;
             let titc = if focused {

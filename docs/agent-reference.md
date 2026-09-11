@@ -1672,7 +1672,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `tests/run.py` always injects (it reads the owner token from the gitignored
   `src/config.local.h` on the HOST; that macro is never compiled in). An interactive boot with
   no session lands on the QR sign-in screen.
-- Normal interactive flow: who's-watching picker (multi-user) → Home; D-pad/pointer to focus a
+- Normal interactive flow: who's-watching picker (multi-user, unless Automatically Sign In is on) → Home; D-pad/pointer to focus a
   card → **OK** opens the detail page → Play starts playback; OK toggles play/pause, LEFT/RIGHT
   scrub-seek, **BACK/Stop** returns. The strip's **last pill is Search** (a mark, not a word) — a
   peer of Home and the Library, not a page stacked over them, so BACK from it returns to Home. BACK

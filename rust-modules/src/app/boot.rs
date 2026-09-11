@@ -564,7 +564,6 @@ pub(crate) unsafe fn boot(
         .to_string_lossy()
         .into_owned();
 
-
     // UI infra + poster workers always come up — the owned login/profiles screens use them too.
     //
     // **No `ui::login::init()` / `ui::profiles::init()` here any more (phase 6 retirement).**
@@ -597,8 +596,10 @@ pub(crate) unsafe fn boot(
     //  1. /tmp/plxnative-login forces the QR login screen (to exercise the flow on demand).
     //  2. /tmp/plxnative-token (the harness / headless runs) beats the stored session — automation
     //     must run as the injected test identity no matter who is signed in on the TV.
-    //  3. A stored session (offline-capable LAN server) → Home, through the who's-watching
-    //     picker first when the account has a multi-user Plex Home roster (interactive boots).
+    //  3. A stored session (offline-capable LAN server) → Home. A multi-user Plex Home roster
+    //     still goes through the who's-watching picker first on interactive boots, unless
+    //     Automatically Sign In is on and a profile is already seated (that skip is an explicit
+    //     opt-in, PIN included). Automated boots and a roster of one still skip the picker.
     //  4. Nothing → the QR sign-in flow (no credentials are compiled in — like a real client).
     // The destination itself is [`BootTo`], at module scope with the rest of the vocabulary.
     //
@@ -638,7 +639,7 @@ pub(crate) unsafe fn boot(
         super::bridge::execute_endpoint_outcomes(endpoints);
         BootTo::Home
     } else if session.can_go_local() {
-        if session.home_users.len() > 1 && (!automated_boot() || pick_user.is_some()) {
+        if session.boot_shows_picker(automated_boot(), pick_user.is_some()) {
             // Who's watching first. Only the read client is installed here (the avatars proxy
             // through the PMS photo transcoder); the catalog fetch + playback config happen in
             // take_ready once a profile is picked — done now they'd be thrown out on a switch.
@@ -657,11 +658,12 @@ pub(crate) unsafe fn boot(
         } else {
             // The persisted roster FIRST, then the primary. This is the one boot path that does
             // not go through `auth::start_switch` — a stored session with a single Plex Home
-            // user, or any automated run — so without this line it registered exactly one
-            // server and every share was invisible until the next sign-in: no second source in
-            // the Sources panel, no borrowed shelves, nothing to attribute. `install_roster`
-            // leaves `current` alone and sorts owned first, and `install_pms` below retargets to
-            // the session's own server regardless, so ordering cannot land us on a friend's box.
+            // user, an automated run, or Automatically Sign In with a seated profile — so without
+            // this line it registered exactly one server and every share was invisible until the
+            // next sign-in: no second source in the Sources panel, no borrowed shelves, nothing
+            // to attribute. `install_roster` leaves `current` alone and sorts owned first, and
+            // `install_pms` below retargets to the session's own server regardless, so ordering
+            // cannot land us on a friend's box.
             // Before, not after, because `install_pms` ends in the catalog + section fetch that
             // turns a registered source into something on screen.
             crate::auth::install_stored_roster(&session);
@@ -684,7 +686,16 @@ pub(crate) unsafe fn boot(
             // put the dead origin back into the live registry for the rest of this run.
             // Non-destructive on failure; the stored roster above remains available offline.
             crate::auth::refresh_roster();
-            log("boot: stored session — local server (offline-capable)");
+            if session.auto_sign_in()
+                && session.home_users.len() > 1
+                && session.seated_in_roster()
+                && !automated_boot()
+                && pick_user.is_none()
+            {
+                log("boot: stored session — auto sign-in");
+            } else {
+                log("boot: stored session — local server (offline-capable)");
+            }
             BootTo::Home
         }
     } else {

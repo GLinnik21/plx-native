@@ -12,8 +12,9 @@ use crate::plex::ServerId;
 use std::sync::atomic::Ordering;
 
 use super::decision::{
-    measure_remote_original, put_selection, resolve_playqueue, server_decision,
-    ActiveEncoderState, AutomaticRouteIntent, PlayerControl, ENCODER_GENERATION,
+    measure_remote_original, measure_remote_remux, put_selection, resolve_playqueue,
+    server_decision, ActiveEncoderState, AutomaticRouteIntent, MdeVerdict, PlayerControl,
+    ENCODER_GENERATION,
 };
 
 /// One worker's right to observe or replace the active route. Both fields are required: `encoder`
@@ -358,15 +359,6 @@ pub(super) fn remote_probe_plan(source_kbps: i64) -> Option<crate::abr::SourcePr
 pub(super) fn remote_probe_target_bytes(source_kbps: i64) -> Option<usize> {
     remote_probe_plan(source_kbps).map(|plan| plan.target_bytes)
 }
-
-/// **One bounded measurement of the actual file, as an observation and nothing more.** It reports
-/// bytes, active duration and whether the target was reached, because all three decide how much
-/// the measurement is worth: a 40 KiB read that finished instantly honestly reports a huge rate
-/// and proves nothing. What it does NOT do is decide anything — [`crate::abr::bootstrap`] owns the
-/// admission rule, so the policy is stated once and is host-testable without a network.
-///
-/// `None` means there is nothing to reason from (no source bitrate, or the transfer never
-/// returned), which is deliberately distinct from a completed slow probe.
 
 /// **Two ceilings mean the stricter one**, per flavor, and this is the only place the two are put
 /// together. A ceiling can only ever REMOVE a flavor: a fast link cannot restore what a low rung
@@ -771,26 +763,27 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         .clone()
         .or_else(|| crate::metadata::fetch_playing_item(env.sid, rk));
     // Server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
-    // capability profile. Falls back to the local codec test if the server returns no usable
-    // decision; the local-sample/demo path (rk empty) skips the decision entirely.
-    // Server-adjudicated (Phase 2). HEVC now direct-plays (Phase 3 demuxer + native decode);
-    // the guard that forced non-h264 to transcode is gone.
+    // capability profile. An unusable / unreachable `/decision` must not Original (PMS 1.43
+    // 503s a Part without a registered decision); remux/re-encode still registers via a
+    // separate `transcode_decision`. The local-sample/demo path (rk empty) skips MDE entirely.
     // Smart direct-play: the video decodes natively (H264/HEVC) AND some audio track is
     // direct-playable (AAC/AC3/E-AC3) — even if the DEFAULT track isn't. We own the demuxer, so
     // we direct-play the raw file and FEED a direct-playable track (e.g. a 4K HEVC item: TrueHD
     // default + an AC3 track → native 4K HEVC + AC3, no transcode — beats the server's
-    // video-downscaling transcode). Falls back to the server /decision (then the local codec
-    // test) when the video isn't direct-playable or NO audio track is (TrueHD/DTS-only → transcode).
+    // video-downscaling transcode). The chosen audio rides `audioStreamID` on `/decision` so MDE
+    // evaluates that sibling rather than vetoing the TrueHD/DTS default. When `/decision` is
+    // unreachable the plan fails closed (no Original Part — PMS 1.43 503s without a registered
+    // decision) and may still remux/re-encode; an explicit MDE transcode also forbids remux.
     // The video gate consults the DEVICE's own decoder table (devcaps), not this codebase's
     // memory of the dev TV: "the panel decodes HEVC" was the last dev-environment claim still
     // asserted as universal (issue #22's bug class — docs/plex-pass-audit.md, closing section).
     // This is belt-and-braces with the profile — a no-hevc profile means PMS should never
-    // *offer* hevc direct-play, but the smart-DP branch below can bypass the server's /decision
-    // entirely, so the local gate must agree with the profile on BOTH axes it asserts: the codec
+    // *offer* hevc direct-play, and when `/decision` is unreachable the local gate must still
+    // agree with the profile on BOTH axes it asserts: the codec
     // AND the width/height bound. Codec agreement alone left the resolution half open — the
     // profile's `*`-scoped limitation makes PMS transcode a 4K source down for a 1080p-bounded
-    // SoC, but a branch that never asks the server never meets the limitation, so a 4K file with
-    // any AAC/AC3 track (nearly every file has one) direct-played straight onto the bounded
+    // SoC, but a fallback that never asked the server never meets the limitation, so a 4K file with
+    // any AAC/AC3 track (nearly every file has one) would direct-play straight onto the bounded
     // decoder. See `video_direct_plays` for the gate itself.
     let (src_w, src_h) = plan
         .playing
@@ -872,6 +865,12 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     } else {
         pick_dp_audio(tracks, acodec)
     };
+    let audio_id = audio_sel.as_ref().map(|(_, _, id)| *id).unwrap_or(0);
+    let subtitle_id = plan
+        .playing
+        .as_ref()
+        .map(|p| mde_subtitle_stream_id(&p.subs))
+        .unwrap_or(0);
     // What the CONNECTION to this server allows, beside what the pipeline can decode: a Plex
     // relay is a ~2 Mbit/s tunnel, so neither of the two flavors that ship the file's own bytes
     // (direct play, and the uncapped container remux) can be asked for over one. Unrestricted on
@@ -889,31 +888,33 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // by `link`. Fixed rungs retain their ordinary ceiling policy.
     let tentative_quality = quality_policy(env.quality, true, env.src_kbps, src_w, src_h);
     let mut allowed = flavors_allowed(link, tentative_quality);
-    let mut directplay = if !allowed.direct_play {
-        false
-    } else if !video_dp {
-        // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265,
-        // and H265 only on a SoC whose table lists the decoder (devcaps). Anything else
-        // (AV1/VP9/MPEG-2/…) MUST transcode: we can't feed it even if the server's /decision
-        // says directplay (it adjudicates the panel's decoders, not our payload). This gate is
-        // why the local sample path (rk empty) is the only other non-transcode case. A source
-        // exceeding the device's width/height bound lands here too, and deliberately on the
-        // RE-ENCODE side of the branch below (a remux would copy the too-big pixels verbatim);
-        // its /decision carries the profile's own bound, so PMS scales the video down.
-        false
-    } else if !streamable {
-        false // non-MKV container → remux (the transcode branch copies the source codecs)
-    } else if audio_sel.is_some() {
-        true
-    } else if rk.is_empty() {
-        false
+    // MDE verdict for this resolve: Some(original)=Part.decision=directplay, Some(!original)=
+    // start.mkv, None=unreachable/unusable OR never asked (gates already refused Original).
+    // PMS 1.43 503s a Part GET without a registered decision, so None must never become Original.
+    // `video_forbids_copy` is independent: Part=transcode + video=copy (TrueHD-only, a selected
+    // sub MDE still refuses, …) is a remux, not a full re-encode.
+    let skip_mde = !allowed.direct_play || !video_dp || !streamable || rk.is_empty();
+    let mde: Option<MdeVerdict> = if skip_mde {
+        None
     } else {
-        server_decision(client, rk, &session).unwrap_or_else(|| crate::plex::is_dp_audio(acodec))
+        // Register the session before any Part GET. Smart-DP used to skip this because MDE would
+        // evaluate a TrueHD/DTS default and veto; naming the chosen AAC/AC3/EAC3 sibling on the
+        // query is what keeps that class on Original. subtitleStreamID is an advertised embedded
+        // track Original will client-render, or 0 so a sidecar / unadvertised codec does not
+        // force a burn. MDE and the remux probe always name that sibling (a copy cannot carry
+        // TrueHD/DTS). The play-path PUT and start.mkv use `encode_audio_id`: remux still names
+        // the sibling; a re-encode names a real selected pick or pref-lang English so 720p
+        // does not copy a foreign AC3 sibling.
+        server_decision(client, rk, &session, audio_id, subtitle_id)
     };
+    let mut directplay = mde.as_ref().is_some_and(|v| v.original);
+    // An unreachable MDE (None after we asked, or never asked) still allows remux when the
+    // video gate and link policy do. A video-stream `transcode` (bit depth, …) forbids remux.
+    let mde_forbids_copy = mde.as_ref().is_some_and(|v| v.video_forbids_copy);
 
     // A container-only remux also preserves the original video and avoids the GPU, so it belongs
     // to Auto's Original state and must pass the same remote bandwidth gate as direct play.
-    let remux_candidate = video_dp && allowed.remux && !no_video_copy;
+    let remux_candidate = video_dp && allowed.remux && !no_video_copy && !mde_forbids_copy;
     let source_transport_kbps = plan
         .playing
         .as_ref()
@@ -1013,13 +1014,35 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         Some(crate::plex::probe::Location::Relay) => Some(crate::abr::LinkKind::Relay),
         None => None,
     };
+    // Captured before Auto overwrites `directplay` for HLS: a remux probe registered start.mkv
+    // on this playback identity, and a later HLS `/decision` must physical-stop that encoder
+    // first. A successful remux Original leaves the session for the play-path decision.
+    let mut remux_probed = false;
     let decision = match (env.quality, link_kind) {
         (Quality::Auto, Some(link)) => {
             // The probe is the only expensive input, so it is only taken where it can change the
             // answer: a direct Remote with a feasible Original. Local needs no proof and Relay
             // cannot be talked into carrying a remux.
             let probe = (link == crate::abr::LinkKind::Remote && original_feasible)
-                .then(|| measure_remote_original(&client, part, &session, source_transport_kbps))
+                .then(|| {
+                    if directplay {
+                        measure_remote_original(
+                            &client.direct_play_url(part, &session).to_url(),
+                            source_transport_kbps,
+                        )
+                    } else {
+                        // Part GET 503s after a transcode MDE. Sample the remux we would actually play.
+                        remux_probed = true;
+                        measure_remote_remux(
+                            client,
+                            rk,
+                            &session,
+                            audio_id,
+                            subtitle_id,
+                            source_transport_kbps,
+                        )
+                    }
+                })
                 .flatten();
             Some(crate::abr::bootstrap(
                 link,
@@ -1178,8 +1201,16 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // `allowed.remux` is `link.remux` AND the user's ceiling — see `flavors_allowed` above. The
     // ceiling is the newer of the two terms and it denies a remux for the reason the relay does: a
     // copy ships the source at the source's own rate, which is precisely what the rung says the
-    // link cannot carry.
-    let remux = video_dp && allowed.remux && !no_video_copy;
+    // link cannot carry. `!mde_forbids_copy` is the MDE half: a VIDEO stream decision of
+    // `transcode` must not be answered with a local codec-copy remux. Part.decision=transcode
+    // alone is not that veto.
+    let remux = video_dp && allowed.remux && !no_video_copy && !mde_forbids_copy;
+    // Remux copies, so this PUT names the smart-DP sibling. A re-encode transcodes a real
+    // selected source track (English DTS → AC3) and must not PUT that sibling or a 720p start
+    // replaces the pick with a foreign AC3 copy. A selected flag that only echoes default is
+    // not a pick; `encode_audio_id` then keeps an English sibling or, if the sibling is a
+    // foreign dub, the first English track (unselected DTS included).
+    let encode_audio = encode_audio_id(remux, audio_id, env.audio_sid, tracks);
     if remux {
         let achosen = audio_sel
             .as_ref()
@@ -1197,13 +1228,12 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         plan.vcodec = crate::devcaps::caps().encode_vcodec().into();
         plan.acodec = "ac3".into();
     }
-    // Carry the picked SOURCE track into the server-side selection (put_selection +
-    // &audioStreamID on the transcode query): the remux copies — and the re-encode encodes —
-    // the CHOSEN track instead of the part default. The demuxer is NOT pointed at a source
-    // ordinal here (the old set_audio_track(aidx) indexed the SERVER's output, whose stream
-    // layout is the transcoder's, not the source's) — the payload-codec match finds the lane.
-    if let Some((_, _, asid)) = &audio_sel {
-        plan.audio_sid = *asid;
+    // Carry the SOURCE track this path will PUT and name on start.mkv. The demuxer is NOT
+    // pointed at a source ordinal here (the old set_audio_track(aidx) indexed the SERVER's
+    // output, whose stream layout is the transcoder's, not the source's) — the payload-codec
+    // match finds the lane.
+    if encode_audio > 0 {
+        plan.audio_sid = encode_audio;
     }
     // keep the flavor so a later seek rebuilds the same query for start.mkv?...&offset=T
     // Both halves of this line landed in the same batch from different units and each is
@@ -1219,7 +1249,18 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // reasoning `remux` and `no_video_copy` carry: a seek and an audio switch rebuild this query
     // from `Session`, and one that dropped the ceiling would hand the encoder back the full
     // 4K/60 Mbps bound the moment the user touched the scrubber.
-    put_selection(env.sid, plan.part_id, env.audio_sid, env.sub_sid); // audio/subtitle selection drives the encode/remux + burn
+    // Remux: the smart-DP sibling MDE and the remux probe already named — `env.audio_sid` is
+    // the part default (TrueHD) at resolve start; putting that undoes smart-DP. Re-encode:
+    // `encode_audio_id` (a real selected pick, else English, else that sibling). Subtitle stays
+    // `env.sub_sid`: a positive id here is a burn, and Original client-renders instead.
+    put_selection(env.sid, plan.part_id, encode_audio, env.sub_sid);
+    if remux_probed && adaptive {
+        // Probe registered start.mkv on this playback identity. HLS `/decision` reuses it;
+        // closeResourceSession=1 would 503 the next start. A failed sample already stopped
+        // inside measure_remote_remux; this covers a completed sample that still falls to HLS.
+        // Stay-remux Original does not stop: the play-path decision owns that session.
+        let _ = client.transcode_stop_physical(&session);
+    }
     let sp = transcode_spec(
         rk,
         &session,
@@ -1227,7 +1268,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         remux,
         no_video_copy,
         crate::plex::TranscodeOffset::Fresh,
-        env.audio_sid,
+        encode_audio,
         env.sub_sid,
         plan.ceiling,
         plan.delivery,
@@ -1352,6 +1393,58 @@ pub(super) fn pick_dp_audio(
 }
 
 
+/// Stream id named on the remux/re-encode PUT and start.mkv.
+///
+/// A remux COPIES, so this is the smart-DP sibling (`dp_audio_id`) — putting a selected
+/// TrueHD/DTS track would ship audio the TV cannot decode. A re-encode can transcode a real
+/// selected pick (`selected && !default`) to AC3, so naming the sibling would replace English
+/// DTS with a foreign AC3 copy. A `selected` flag that only echoes `default` is not a choice
+/// (The Morning Show: the Russian default reads `selected`); that falls through rather than
+/// beating English.
+///
+/// After that pick, a sibling already in [`PREF_AUDIO_LANG`] stays — taking "first English, any
+/// codec" would PUT English TrueHD on 720p when an English AC3 sibling exists, undoing smart-DP.
+/// Only when the sibling is a foreign dub does the first English track win, so an unselected
+/// English DTS is encoded instead of a Russian AC3 copy. Never `0` (an omitted PUT encodes the
+/// part default).
+/// `env_audio_sid` is the session/retry pick and wins on re-encode when set, including a remux
+/// leftover sibling (mid-play quality drop keeps what is already playing). A cold play zeros
+/// it (`request_play`).
+fn encode_audio_id(
+    remux: bool,
+    dp_audio_id: i64,
+    env_audio_sid: i64,
+    tracks: &[crate::metadata::Stream],
+) -> i64 {
+    if remux {
+        return dp_audio_id;
+    }
+    if env_audio_sid > 0 {
+        return env_audio_sid;
+    }
+    if let Some(id) = tracks
+        .iter()
+        .find(|s| s.selected && !s.default)
+        .map(|s| s.id)
+        .filter(|&id| id > 0)
+    {
+        return id;
+    }
+    let sibling_is_pref = tracks
+        .iter()
+        .any(|s| s.id == dp_audio_id && s.lang_code == PREF_AUDIO_LANG);
+    if sibling_is_pref {
+        return dp_audio_id;
+    }
+    tracks
+        .iter()
+        .find(|s| s.lang_code == PREF_AUDIO_LANG)
+        .map(|s| s.id)
+        .filter(|&id| id > 0)
+        .unwrap_or(dp_audio_id)
+}
+
+
 /// The subtitle to turn ON at the start of a DIRECT-PLAY, from the server's own per-part
 /// selection — returning (stream id, embedded-subtitle ordinal for the client renderer), or
 /// None to start with subtitles off (the shipped behaviour when the server has no selection).
@@ -1398,6 +1491,23 @@ pub(super) fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64,
     Some((subs[i].id, ord))
 }
 
+/// Stream id named on the MDE `/decision` handshake, or `0`.
+///
+/// [`pick_dp_subtitle`] is what Original will client-render. MDE only sees that id when the
+/// codec is in [`crate::plex::DP_SUBTITLE_CODECS`]: a sidecar, or a selected embedded track
+/// we render but do not advertise (`vplayer`, …), is sent as `0` so MDE evaluates subs off
+/// instead of answering transcode (which then forbids a codec-copy remux).
+fn mde_subtitle_stream_id(subs: &[crate::metadata::Stream]) -> i64 {
+    pick_dp_subtitle(subs)
+        .and_then(|(id, _)| {
+            subs.iter()
+                .find(|s| s.id == id)
+                .filter(|s| crate::plex::is_dp_subtitle(&s.codec))
+                .map(|_| id)
+        })
+        .unwrap_or(0)
+}
+
 
 /// PURE: the local direct-play VIDEO test — the codec, the source's stated frame size and its
 /// Dolby Vision layering must ALL clear what this device and this pipeline can actually show.
@@ -1405,10 +1515,11 @@ pub(super) fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64,
 /// The codec half: h264 unconditionally (every webOS SoC decodes it), hevc only when the table
 /// lists the decoder — anything else the pipeline cannot feed at all. The resolution half is the
 /// local agreement with the profile's `*`-scoped `video.width`/`video.height` limitation: the
-/// profile makes PMS transcode a 4K source down for a 1080p-bounded SoC, but the smart-DP branch
-/// never asks PMS, so without this test a 4K file with one direct-playable audio track was fed
-/// verbatim to a decoder whose table says 1920x1088 — the wrong-side failure devcaps' own doc
-/// names (issue #22's over-claim class), invisible on the dev TV, whose bound is 4096x2176.
+/// profile makes PMS transcode a 4K source down for a 1080p-bounded SoC, but when `/decision` is
+/// unreachable the fallback never asks PMS, so without this test a 4K file with one
+/// direct-playable audio track was fed verbatim to a decoder whose table says 1920x1088 — the
+/// wrong-side failure devcaps' own doc names (issue #22's over-claim class), invisible on the
+/// dev TV, whose bound is 4096x2176.
 ///
 /// **The Dolby Vision half is the same shape of bug, found the same way, and it is NOT about the
 /// decoder.** Every profile's base layer is ordinary HEVC and every one of them decodes here — so
@@ -2115,6 +2226,161 @@ mod tests {
         assert_eq!(pick_dp_audio(&tracks, "dca"), Some((2, "ac3".into(), 2673)));
     }
 
+    /// The 720p re-encode must name the selected DTS, not the Russian AC3 sibling smart-DP
+    /// would copy. Remux still names that sibling — a copy of DTS would not play.
+    #[test]
+    fn a_reencode_keeps_the_selected_dts_instead_of_the_ac3_sibling() {
+        let tracks = [
+            trk(2663, "ac3", "rus", true),
+            server_selected(trk(2669, "dca", "eng", false)),
+        ];
+        let dp = pick_dp_audio(&tracks, "dca")
+            .map(|(_, _, id)| id)
+            .unwrap_or(0);
+        assert_eq!(dp, 2663, "smart-DP sibling is the Russian AC3");
+        assert_eq!(
+            encode_audio_id(true, dp, 0, &tracks),
+            2663,
+            "remux copies the sibling"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, 0, &tracks),
+            2669,
+            "cold re-encode keeps the selected DTS"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, 2669, &tracks),
+            2669,
+            "a retry/session pick of that DTS is kept"
+        );
+        assert_eq!(
+            encode_audio_id(true, dp, 2669, &tracks),
+            2663,
+            "remux still copies the sibling even when a DTS pick is in env"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, dp, &tracks),
+            dp,
+            "retry after remux keeps the sibling already playing"
+        );
+    }
+
+    /// A selected flag that only echoes the container default is not a 720p pick. Treating it
+    /// as one would open The Morning Show in the Russian default the English rung exists to skip.
+    #[test]
+    fn a_reencode_does_not_treat_a_default_echo_as_a_pick() {
+        let tracks = [
+            server_selected(trk(10975, "eac3", "rus", true)),
+            trk(10976, "eac3", "eng", false),
+        ];
+        let dp = pick_dp_audio(&tracks, "eac3")
+            .map(|(_, _, id)| id)
+            .unwrap_or(0);
+        assert_eq!(dp, 10976, "smart-DP / pref-lang sibling is English");
+        assert_eq!(
+            encode_audio_id(true, dp, 0, &tracks),
+            10976,
+            "remux copies English"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, 0, &tracks),
+            10976,
+            "cold re-encode keeps English, not the echoed Russian default"
+        );
+    }
+
+    /// Live three-track shape: selected English DTS plus an English AC3 sibling. Remux copies
+    /// the AC3; re-encode names the DTS.
+    #[test]
+    fn a_reencode_names_selected_dts_not_the_english_ac3_sibling() {
+        let tracks = [
+            trk(2663, "ac3", "rus", true),
+            server_selected(trk(2669, "dca", "eng", false)),
+            trk(2673, "ac3", "eng", false),
+        ];
+        let dp = pick_dp_audio(&tracks, "dca")
+            .map(|(_, _, id)| id)
+            .unwrap_or(0);
+        assert_eq!(dp, 2673, "smart-DP sibling is the English AC3");
+        assert_eq!(
+            encode_audio_id(true, dp, 0, &tracks),
+            2673,
+            "remux copies the English AC3"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, 0, &tracks),
+            2669,
+            "cold re-encode keeps the selected DTS"
+        );
+    }
+
+    /// Unselected English DTS beside a Russian AC3 sibling: remux still copies the sibling, but
+    /// a re-encode can consume the English track PREF_AUDIO_LANG would have taken if it were DP.
+    #[test]
+    fn a_reencode_names_pref_lang_dts_when_the_sibling_is_foreign() {
+        let tracks = [
+            server_selected(trk(2663, "ac3", "rus", true)),
+            trk(2669, "dca", "eng", false),
+        ];
+        let dp = pick_dp_audio(&tracks, "dca")
+            .map(|(_, _, id)| id)
+            .unwrap_or(0);
+        assert_eq!(dp, 2663, "smart-DP sibling is the Russian AC3");
+        assert_eq!(
+            encode_audio_id(true, dp, 0, &tracks),
+            2663,
+            "remux copies the sibling"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, 0, &tracks),
+            2669,
+            "cold re-encode names unselected English DTS, not the Russian AC3"
+        );
+    }
+
+    /// First-English-any-codec would PUT TrueHD here. The sibling is already English, so 720p
+    /// keeps that AC3 copy instead of re-encoding lossless.
+    #[test]
+    fn a_reencode_keeps_an_english_ac3_sibling_over_truehd() {
+        let tracks = [
+            server_selected(trk(1, "truehd", "eng", true)),
+            trk(2, "ac3", "eng", false),
+        ];
+        let dp = pick_dp_audio(&tracks, "truehd")
+            .map(|(_, _, id)| id)
+            .unwrap_or(0);
+        assert_eq!(dp, 2, "smart-DP sibling is the English AC3");
+        assert_eq!(
+            encode_audio_id(false, dp, 0, &tracks),
+            2,
+            "re-encode must not replace the English AC3 with TrueHD"
+        );
+    }
+
+    /// No AC3 sibling: smart-DP has nothing to copy. A real selected DTS must still be named,
+    /// not omitted (PUT 0 encodes the TrueHD default).
+    #[test]
+    fn a_reencode_names_selected_dts_when_there_is_no_ac3_sibling() {
+        let tracks = [
+            trk(1, "truehd", "eng", true),
+            server_selected(trk(2, "dca", "eng", false)),
+        ];
+        let dp = pick_dp_audio(&tracks, "truehd")
+            .map(|(_, _, id)| id)
+            .unwrap_or(0);
+        assert_eq!(dp, 0, "no direct-playable track");
+        assert_eq!(
+            encode_audio_id(true, dp, 0, &tracks),
+            0,
+            "remux has no sibling to name"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, 0, &tracks),
+            2,
+            "cold re-encode names the selected DTS, not 0"
+        );
+    }
+
     /// The whole ladder, rung by rung, with the selected flag switched on and off — the order is
     /// the contract, and every row here is a shape the live server actually serves.
     #[test]
@@ -2212,6 +2478,32 @@ mod tests {
             sub(11, 4, "rus", false),
         ];
         assert_eq!(pick_dp_subtitle(&subs), None);
+    }
+
+    #[test]
+    fn mde_subtitle_stream_id_names_advertised_codecs_and_zeroes_the_rest() {
+        assert_eq!(mde_subtitle_stream_id(&[]), 0);
+        assert_eq!(
+            mde_subtitle_stream_id(&[server_selected(sub(10, 3, "eng", true))]),
+            0,
+            "sidecar → 0"
+        );
+        let mut pgs = server_selected(sub(12, 4, "eng", false));
+        pgs.codec = "pgs".into();
+        assert_eq!(mde_subtitle_stream_id(&[pgs]), 12);
+        let mut mov = server_selected(sub(14, 4, "eng", false));
+        mov.codec = "mov_text".into();
+        assert_eq!(mde_subtitle_stream_id(&[mov]), 14);
+        let mut dvd = server_selected(sub(15, 4, "eng", false));
+        dvd.codec = "dvd_subtitle".into();
+        assert_eq!(mde_subtitle_stream_id(&[dvd]), 15);
+        let mut obscure = server_selected(sub(13, 4, "eng", false));
+        obscure.codec = "vplayer".into();
+        assert_eq!(
+            mde_subtitle_stream_id(&[obscure]),
+            0,
+            "unadvertised but still client-rendered → 0 so MDE does not transcode"
+        );
     }
 
     #[test]
@@ -2632,10 +2924,11 @@ mod tests {
         );
     }
 
-    /// The RESOLUTION half of the gate (issue #22's over-claim class): the smart-DP branch never
-    /// asks PMS, so the profile's `*`-scoped width/height limitation cannot save a 4K source from
-    /// direct-playing onto a 1080p-bounded decoder — the client must refuse it locally. Invisible
-    /// on the dev TV (bound 4096x2176); this drives the gate with the reviewer-class caps.
+    /// The RESOLUTION half of the gate (issue #22's over-claim class): when `/decision` is
+    /// unreachable the fallback never asks PMS, so the profile's `*`-scoped width/height limitation
+    /// cannot save a 4K source from direct-playing onto a 1080p-bounded decoder — the client must
+    /// refuse it locally. Invisible on the dev TV (bound 4096x2176); this drives the gate with the
+    /// reviewer-class caps.
     #[test]
     fn a_source_beyond_the_device_bound_does_not_direct_play() {
         let caps = crate::devcaps::Caps {

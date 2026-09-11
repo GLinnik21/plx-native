@@ -734,14 +734,17 @@ fn may_resume(from: Picker, stored_is_protected: bool) -> bool {
 ///
 /// So a RESTART re-attaches through the BOOT GATE rather than through this one, and what happens
 /// there is that gate's policy, not this one's: with a roster of more than one it raises a picker
-/// and [`Picker::Boot`]'s rule applies, and with a roster of one or none `app.rs` installs the
-/// stored profile directly, PIN or no PIN. Two known staleness/policy gaps sit behind that
-/// sentence and are deliberately NOT closed here — the single-user boot restore, and the fact that
-/// `protected` is read from a CACHED roster that plex.tv may have moved on from. Both are older
-/// than this rule, both are one owner decision about what to do with no network, and the obvious
-/// fix for the first (gating boot on [`Session::active_profile_is_protected`]) is worse than the
-/// bug: that predicate answers TRUE for an empty or unknown roster by design, so it would put a PIN
-/// screen in front of every single-account user who has no PIN at all.
+/// unless Automatically Sign In is on and a profile is already seated
+/// ([`crate::plex::session::Session::boot_shows_picker`]), and with a roster of one or none
+/// `app.rs` installs the stored profile directly, PIN or no PIN. Two known staleness/policy gaps
+/// sit behind that sentence and are deliberately NOT closed here — the single-user boot restore,
+/// and the fact that `protected` is read from a CACHED roster that plex.tv may have moved on from.
+/// Both are older than this rule, both are one owner decision about what to do with no network,
+/// and the obvious fix for the first (gating boot on [`Session::active_profile_is_protected`]) is
+/// worse than the bug: that predicate answers TRUE for an empty or unknown roster by design, so it
+/// would put a PIN screen in front of every single-account user who has no PIN at all.
+/// Automatically Sign In is the explicit opt-in that extends the single-user restore to a
+/// multi-user roster, PIN included.
 ///
 /// The previous profile's per-user PMS token also stays installed in the server registry. It has to
 /// — the roster's own avatars are fetched through it (`ui::profiles`'s `Art::Thumb`), so revoking
@@ -1282,7 +1285,12 @@ pub(crate) enum LoginProgress {
     /// observation time, so a generation is only ever spent on a code that actually reaches the
     /// screen — exactly the property the old synchronous write had, and the reason the allocation
     /// does not travel on this variant.
-    CodeReady { epoch: u64, id: i64, code: String, qr_png: Vec<u8> },
+    CodeReady {
+        epoch: u64,
+        id: i64,
+        code: String,
+        qr_png: Vec<u8>,
+    },
     /// The user authorized on their phone; discovery is starting.
     Authorized { epoch: u64, token: String },
     /// The whole attempt failed for the stated, already-user-facing reason — no server on the
@@ -2150,7 +2158,10 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64, server: ServerRef, sources: Ve
     // `log_form`, not `base()`: byte-identical to the `{addr}:{port}` this line always printed
     // for a plaintext origin (so an archived log stays comparable), and the whole URL as soon as
     // the scheme is worth saying. See `Origin::log_form`.
-    log(&format!("auth: PMS client installed {}", server.origin().log_form()));
+    log(&format!(
+        "auth: PMS client installed {}",
+        server.origin().log_form()
+    ));
 
     // 4) Plex Home roster → who's-watching, or straight in if there's a single user. The roster is
     // kept on the session so it persists with the creds — the boot picker and every later
@@ -4483,7 +4494,8 @@ mod tests {
             }
         }
         let _g = crate::testlock::serial();
-        let dir = std::env::temp_dir().join(format!("plxnative-signout-consent-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("plxnative-signout-consent-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a writable temp dir");
         let _redirects = Redirects {
@@ -4496,11 +4508,17 @@ mod tests {
         crate::telemetry::spool::set_test_path(Some(dir.join("spool.jsonl")));
 
         // Account A answers yes to both, which mints both identifiers and persists the decision.
-        crate::telemetry::record(consent::apply(&consent::Consent::default(), true, true, || {
-            Some("a".repeat(32))
-        }));
+        crate::telemetry::record(consent::apply(
+            &consent::Consent::default(),
+            true,
+            true,
+            || Some("a".repeat(32)),
+        ));
         assert!(consent::allows_usage() && consent::errors_id().is_some());
-        assert!(consent_file.exists(), "the decision was persisted for account A");
+        assert!(
+            consent_file.exists(),
+            "the decision was persisted for account A"
+        );
 
         forget_account();
 
@@ -5506,7 +5524,8 @@ mod tests {
             ("192.168.0.10", 200, identity_json("aaaa1111")),
             ("203.0.113.9", 200, identity_json("bbbb2222")),
         ]);
-        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &[], &|o| d.dial(o))
+        let Resolved::Reached(roster) =
+            resolve_roster(&a_two_server_account(), &[], &|o| d.dial(o))
         else {
             panic!("both servers answer: {:?}", d.seen())
         };
@@ -5587,7 +5606,8 @@ mod tests {
             ("plex-relay.example.net", 200, identity_json("aaaa1111")),
             ("203-0-113-9.h.plex.direct", 200, identity_json("bbbb2222")),
         ]);
-        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &[], &|o| d.dial(o))
+        let Resolved::Reached(roster) =
+            resolve_roster(&a_two_server_account(), &[], &|o| d.dial(o))
         else {
             panic!("both servers answer over TLS: {:?}", d.seen())
         };
@@ -5642,7 +5662,8 @@ mod tests {
             ("192.168.0.10", 200, identity_json("aaaa1111")),
             ("203.0.113.9", 200, identity_json("bbbb2222")),
         ]);
-        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &[], &|o| d.dial(o))
+        let Resolved::Reached(roster) =
+            resolve_roster(&a_two_server_account(), &[], &|o| d.dial(o))
         else {
             panic!("both servers answer")
         };
@@ -5698,7 +5719,8 @@ mod tests {
         // a share that answers while OUR server is off still signs in — a friend's library beats
         // "no server found" — and it becomes the primary because it is the only thing there is
         let one = Dialled::new(vec![("203.0.113.9", 200, identity_json("bbbb2222"))]);
-        let Resolved::Reached(roster) = resolve_roster(&a_two_server_account(), &[], &|o| one.dial(o))
+        let Resolved::Reached(roster) =
+            resolve_roster(&a_two_server_account(), &[], &|o| one.dial(o))
         else {
             panic!("the share answered")
         };
@@ -5776,7 +5798,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(seated_uuid(&u, &tile("u-kid", false)), "u-kid");
-        assert_eq!(seated_uuid(&u, &tile("", false)), "u-other", "no roster uuid: the response's");
+        assert_eq!(
+            seated_uuid(&u, &tile("", false)),
+            "u-other",
+            "no roster uuid: the response's"
+        );
     }
 
     /// The plaintext twin may answer first, but a store build cannot make it live: only an
@@ -5787,7 +5813,10 @@ mod tests {
         let tls = Origin::parse("https://192-168-0-10.abc.plex.direct:32400").unwrap();
         assert!(!activation_allowed_by_policy(&plain, false));
         assert!(activation_allowed_by_policy(&tls, false));
-        assert!(activation_allowed_by_policy(&plain, true), "a developer build keeps its lab server");
+        assert!(
+            activation_allowed_by_policy(&plain, true),
+            "a developer build keeps its lab server"
+        );
     }
 
     fn tile(uuid: &str, protected: bool) -> UserTile {
@@ -5807,7 +5836,10 @@ mod tests {
         match offline_activation(&stored, &tile("u-admin", true), Some("4821")) {
             OfflineSwitch::Seat(next) => {
                 assert_eq!(next.user.token, "admin-token");
-                assert_eq!(next.client_id, "cid", "the account and its roster ride through");
+                assert_eq!(
+                    next.client_id, "cid",
+                    "the account and its roster ride through"
+                );
                 assert_eq!(next.account_token, "acct");
             }
             _ => panic!("the right PIN seats the cached profile"),
@@ -5846,7 +5878,11 @@ mod tests {
                 assert_eq!(next.user.token, "kid-token");
                 assert_eq!(next.server.token, "kid-token");
                 assert_eq!(next.sources[0].token, "kid-token");
-                assert_eq!(next.profiles.len(), 2, "the cache itself is kept for the next pick");
+                assert_eq!(
+                    next.profiles.len(),
+                    2,
+                    "the cache itself is kept for the next pick"
+                );
             }
             _ => panic!("an unprotected cached profile seats without a network"),
         }
@@ -5868,7 +5904,8 @@ mod tests {
     /// The seating paths that never see a PIN still write the record for a PIN-free profile,
     /// so a session stored before the cache existed becomes seatable offline on first use.
     #[test]
-    fn seating_an_unprotected_active_profile_records_it_and_a_protected_one_is_left_to_the_switch() {
+    fn seating_an_unprotected_active_profile_records_it_and_a_protected_one_is_left_to_the_switch()
+    {
         let mut s = cached_session(None);
         s.profiles.clear();
         s.home_users = vec![session::HomeUserRef {
@@ -5878,7 +5915,10 @@ mod tests {
         }];
         remember_unprotected_active(&mut s);
         assert_eq!(s.profiles.len(), 1);
-        assert_eq!(s.cached_profile("u-admin").unwrap().user.token, "admin-token");
+        assert_eq!(
+            s.cached_profile("u-admin").unwrap().user.token,
+            "admin-token"
+        );
 
         let mut p = cached_session(None);
         p.profiles.clear();
@@ -5888,11 +5928,17 @@ mod tests {
             ..Default::default()
         }];
         remember_unprotected_active(&mut p);
-        assert!(p.profiles.is_empty(), "no PIN in hand, no verifier to write");
+        assert!(
+            p.profiles.is_empty(),
+            "no PIN in hand, no verifier to write"
+        );
 
         let mut none = Session::default();
         remember_unprotected_active(&mut none);
-        assert!(none.profiles.is_empty(), "an account without Plex Home names no profile");
+        assert!(
+            none.profiles.is_empty(),
+            "an account without Plex Home names no profile"
+        );
     }
 
     fn source(machine_id: &str, owned: bool, token: &str) -> SourceRef {
@@ -6468,7 +6514,10 @@ mod tests {
         // the rule itself, as a table
         assert!(!may_resume(Picker::Boot, true), "the escalation");
         assert!(may_resume(Picker::Boot, false));
-        assert!(!may_resume(Picker::ChangeProfile, true), "the same escalation");
+        assert!(
+            !may_resume(Picker::ChangeProfile, true),
+            "the same escalation"
+        );
         assert!(!may_resume(Picker::ChangeProfile, false));
         assert!(!may_resume(Picker::SignedIn, true));
         assert!(!may_resume(Picker::SignedIn, false));
