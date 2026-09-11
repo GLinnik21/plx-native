@@ -86,10 +86,20 @@ stable app was foregrounded, not reinstalled, and the TV lock released.
 A private backup containing credentials was retained on the development TV;
 its path is recorded in the task handoff, not here. No user data was deleted.
 
-## Remaining field boundary
+## Field confirmation
 
-The reporter has verified the filesystem contract on Lite 11.2; the full
-application test above is on the older development TV. A fresh QR sign-in and
-application upgrade on the reporter's TV still need field confirmation. This
-document does not claim those tests, power-loss durability, or cross-app
-isolation have been performed, and does not authorize a release.
+The full application from commit `190c88aff87be2706e66a486aa75e3c8a22993b5`
+passed [CI run 34616399003](https://github.com/GLinnik21/plx-native/actions/runs/34616399003).
+The downloaded debug IPK was checked for its distinct app ID and empty
+`state/` directory with uid 0 / gid 5000 / mode 0775. Its SHA-256 is
+`47adeda1d687ffdb9c0953554eaef256edf907d9059e23eb63ca1b6089e4cdd4`.
+
+In response to the request to sign into that build, close it and reopen it,
+the original Lite 11.2 reporter [confirmed that it works](https://github.com/GLinnik21/plx-native/issues/76#issuecomment-5637356525).
+This is field confirmation of the requested sign-in/restart test, in addition
+to the earlier instrumented filesystem photographs. It is a user report,
+not an additional device trace collected by us.
+
+Application upgrade on the reporter's TV, power-loss durability and cross-app
+isolation were not established by that reply. No release is authorized or
+implied by this document.
