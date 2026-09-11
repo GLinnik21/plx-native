@@ -503,6 +503,11 @@ struct Deferred {
 /// in this corner of the app makes.
 static DEFERRED: std::sync::Mutex<Vec<Deferred>> = std::sync::Mutex::new(Vec::new());
 
+#[cfg(test)]
+pub(super) fn deferred_len_for_test() -> usize {
+    DEFERRED.lock().unwrap_or_else(|e| e.into_inner()).len()
+}
+
 /// Should a report [`send_now`] could not send RIGHT NOW be HELD rather than dropped? Only the two
 /// shapes a later "yes" can still resolve: the Errors channel's own consent question has never
 /// been engaged at all ([`super::consent::Consent::ever_answered`] is false), or it has been
@@ -753,18 +758,20 @@ static DROPPED_SIGN_IN: std::sync::Mutex<Vec<(&'static str, Option<&'static str>
     std::sync::Mutex::new(Vec::new());
 
 /// **End the signed-out account's tenure over this module's in-memory state** — review finding,
-/// 2026-09-11. Called from `telemetry::forget`, beside `signin::forget_storage_outcome` and the
-/// twin `diag::clear_deferred` that has been on that path from the start.
+/// 2026-09-11. Called from `telemetry::forget_with_receipt`, beside
+/// `signin::forget_storage_outcome` and the twin `diag::clear_deferred` that has been on that path
+/// from the start.
 ///
 /// Two things go, and both belong to the account that is leaving:
 ///
 /// * [`DEFERRED`] — a report HELD because the consent question was still open. Without this it
 ///   survived the sign-out and `replay_deferred` sent it the moment the NEXT account answered Yes,
-///   stamped with that account's freshly minted Crash report ID. `PRIVACY.md` promises a sign-out
-///   "destroys everything queued at once", and this module's own doc enumerates exactly two exits
-///   for a held report — a No, or the app closing. A sign-out was neither, and the held report
-///   crossed an account boundary it may never cross. The queue is DROPPED, not replayed: the
-///   decision that could have authorised it is gone with the account.
+///   stamped with that account's freshly minted Crash report ID. `PRIVACY.md` promises that a
+///   sign-out immediately closes both reporting gates and clears pending in-memory reports. This
+///   module's own doc enumerates exactly two former exits for a held report — a No, or the app
+///   closing. A sign-out was neither, and the held report crossed an account boundary it may never
+///   cross. The queue is DROPPED immediately, not replayed or left to disk cleanup: the decision
+///   that could have authorised it is gone with the account.
 /// * both sign-in dedup sets, so the next account's own first unpersisted sign-in is reported
 ///   rather than suppressed by a shape the previous account's install already raised.
 pub(crate) fn forget() {

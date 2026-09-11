@@ -219,6 +219,7 @@ fn auth_candidates() -> Vec<(std::path::PathBuf, CandidateCategory)> {
 #[cfg(test)]
 fn redirect_for_test_multi(paths: Vec<std::path::PathBuf>) {
     crate::storage_worker::drain_for_test();
+    COLD_LOAD_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
     async_persistence::reset_for_test();
     let mut root = paths
         .first()
@@ -277,6 +278,7 @@ fn redirect_for_test_multi(paths: Vec<std::path::PathBuf>) {
 #[cfg(test)]
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
     crate::storage_worker::drain_for_test();
+    COLD_LOAD_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
     async_persistence::reset_for_test();
     let state_root = p.as_ref().and_then(|path| path.parent()).map(|parent| {
         let path = p.as_ref().expect("path was present");
@@ -332,6 +334,16 @@ fn path_file_is_canonical(path: &std::path::Path) -> bool {
 /// other reader from re-decrypting the file (and re-paying keymanager3's multi-second LS2 budget)
 /// on every keypress. [`clear`] (sign-out) empties it.
 static CACHE: std::sync::RwLock<Option<Session>> = std::sync::RwLock::new(None);
+static COLD_LOAD_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+struct ColdLoadGuard;
+
+impl Drop for ColdLoadGuard {
+    fn drop(&mut self) {
+        COLD_LOAD_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
 
 fn cached() -> Option<Session> {
     CACHE.read().unwrap_or_else(|e| e.into_inner()).clone()
@@ -1478,7 +1490,7 @@ pub struct Session {
 /// ([`update`]'s own no-op rule) and when the stored envelope already matches, which is how a test
 /// can grade the skip without inspecting file bytes.
 pub(crate) fn record_last_hero(blur: [[f32; 3]; 4]) -> bool {
-    update(|cur| {
+    update_ordinary(|cur| {
         if cur.last_hero_blur == Some(blur) {
             return None;
         }
@@ -1491,7 +1503,7 @@ pub(crate) fn record_last_hero(blur: [[f32; 3]; 4]) -> bool {
 /// The last hero envelope recorded by [`record_last_hero`], or `None` on a fresh device that has
 /// never rendered one.
 pub(crate) fn last_hero() -> Option<[[f32; 3]; 4]> {
-    load().last_hero_blur
+    snapshot().last_hero_blur
 }
 
 /// The persisted playback-quality modes. The spelling on disk is explicit rather than derived
@@ -2169,6 +2181,9 @@ pub fn peek() -> Session {
     if let Some(s) = cached() {
         return s;
     }
+    if COLD_LOAD_ACTIVE.load(std::sync::atomic::Ordering::Acquire) {
+        return Session::default();
+    }
     let (s, pending) = {
         let _io = io();
         let s = peek_locked();
@@ -2182,19 +2197,28 @@ pub fn peek() -> Session {
     s
 }
 
+/// Cache-only runtime snapshot. Cold boot owns the one blocking read through [`start_load`]; UI,
+/// auth refresh and preference paths use this accessor so a missing initialization cannot turn a
+/// flag read into disk/keymanager work.
+pub(crate) fn snapshot() -> Session {
+    cached().unwrap_or_default()
+}
+
 /// [`peek`] with the lock already held — the read half every entry point here shares.
 ///
 /// Serves [`CACHE`] once anything has been published to it in this process, and only falls back to
 /// a real [`read_locked`] the first time — before any [`load`]/[`save_locked`]/[`update`] in this
-/// process has run. In production that first read is always [`load`]'s own, at boot; this fallback
-/// exists so [`peek`] is never wrong in that narrow window rather than to be the common path.
+/// process has run. Production cold boot owns that first read through [`start_load`] on the shared
+/// persistence worker; while it is active, [`peek`] returns an empty snapshot instead of entering
+/// this fallback. The fallback remains for compatibility callers and migration/security tests, not
+/// as a UI-thread boot path.
 ///
 /// **That cold-cache fallback also sets [`LOCKED_STATE`]/[`LOCKED_PATH`]**, same as any other
-/// `read_locked` call — so in the (narrow, boot-only) window before the first `load`, a `peek`
-/// reachable from a keypress can be the read that later authorizes [`save_locked`]'s plaintext
+/// `read_locked` call. A compatibility caller that invokes [`peek`] before production has admitted
+/// [`start_load`] can therefore still be the read that later authorizes [`save_locked`]'s plaintext
 /// recovery write. That is intentional, not an oversight: the verdict recorded is a fact about
-/// what is ON DISK, true regardless of which caller's read happened to observe it first, and a
-/// recovery write still only fires on an actual fresh sign-in later — a `peek` alone never writes.
+/// what is ON DISK, true regardless of which caller observed it first, and a `peek` alone never
+/// writes. The app boot gate prevents a keypress from taking this compatibility path.
 fn peek_locked() -> Session {
     if let Some(s) = cached() {
         return s;
@@ -3158,20 +3182,24 @@ fn publish_identities(s: &Session) {
 /// boot). Never returns an error — a missing/corrupt file degrades to a fresh, logged-out session.
 /// Falls back to the pre-relocation path once and re-saves at the new one (migration).
 ///
-/// **Served from [`CACHE`] once anything has been published to it in this process** — the same
-/// fast path [`peek_locked`] already takes, extended to cover `load`'s own ~9 mid-run callers
-/// (the account chip's `signed_in()`, a Settings rebuild, `plex::servers`'s per-registration device
-/// id, an auth cancel/restart). This process's own writers keep `CACHE` in lockstep with the file
-/// (see its doc), so a repeat `load` gains nothing by re-reading — except paying keymanager3's
-/// multi-second LS2 budget a second time, and letting a transient mid-run decrypt hiccup on some
-/// unrelated file access overwrite [`LOCKED_STATE`]/[`LOCKED_PATH`] with a verdict about a file
-/// this run already read successfully once, which a LATER save's recovery decision then trusts.
-/// Only the FIRST `load` in a process — genuinely the boot path — does the full read/mint/reseal
-/// work below.
+/// Production cold boot calls this through [`start_load`] on the persistence worker; runtime
+/// readers use [`snapshot`]. The compatibility entry remains for migration/security tests. While
+/// an accepted cold job owns [`COLD_LOAD_ACTIVE`], a second call refuses to cross the boundary and
+/// returns an empty snapshot instead of paying keymanager/disk twice.
 pub fn load() -> Session {
     if let Some(s) = cached() {
         return s;
     }
+    if COLD_LOAD_ACTIVE.load(std::sync::atomic::Ordering::Acquire) {
+        return Session::default();
+    }
+    load_cold_owned()
+}
+
+/// The one blocking cold-load body. Production reaches it only through [`start_load`]'s worker;
+/// the public compatibility wrapper above remains for host migration tests and refuses to become
+/// a second disk/keymanager reader while that worker owns the cold boundary.
+fn load_cold_owned() -> Session {
     let (s, pending) = {
         let _io = io();
         let s = if let Some(s) = cached() {
@@ -3254,6 +3282,75 @@ pub fn load() -> Session {
     // skipping this the moment that path ever changes.
     send_pending_reports(pending);
     s
+}
+
+pub(crate) struct LoadReceipt {
+    ticket: Option<crate::storage_worker::TypedTicket<Session>>,
+    resolved: Option<LoadPoll>,
+}
+
+#[derive(Clone)]
+pub(crate) enum LoadPoll {
+    Pending,
+    Ready(Session),
+    Failed,
+}
+
+impl LoadReceipt {
+    pub(crate) fn poll(&mut self) -> LoadPoll {
+        if let Some(result) = self.resolved.clone() {
+            return result;
+        }
+        let Some(ticket) = self.ticket.as_ref() else {
+            return LoadPoll::Failed;
+        };
+        match ticket.try_recv() {
+            Ok(session) => {
+                let result = LoadPoll::Ready(session);
+                self.ticket = None;
+                self.resolved = Some(result.clone());
+                result
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => LoadPoll::Pending,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.ticket = None;
+                self.resolved = Some(LoadPoll::Failed);
+                LoadPoll::Failed
+            }
+        }
+    }
+}
+
+/// Start the blocking cold Session read on the one shared persistence worker. The worker publishes
+/// [`CACHE`] before the receipt becomes Ready; callers retry an explicit admission failure or a
+/// disconnected receipt and never fall back to inline disk/keymanager work.
+pub(crate) fn start_load(
+) -> Result<LoadReceipt, crate::storage_worker::SubmitError> {
+    let job = prepare_cold_load()?;
+    crate::storage_worker::submit(job).map(|ticket| LoadReceipt {
+        ticket: Some(ticket),
+        resolved: None,
+    })
+}
+
+fn prepare_cold_load(
+) -> Result<Box<dyn FnOnce() -> Session + Send>, crate::storage_worker::SubmitError> {
+    if COLD_LOAD_ACTIVE
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return Err(crate::storage_worker::SubmitError::Full);
+    }
+    let guard = ColdLoadGuard;
+    Ok(Box::new(move || {
+        let _guard = guard;
+        load_cold_owned()
+    }))
 }
 
 /// Start an explicitly authorized QR sign-in after a cleared tombstone. This creates only an
@@ -3383,6 +3480,24 @@ pub(crate) fn update_with_receipt(
     edit: impl FnOnce(&Session) -> Option<Session>,
 ) -> Result<Option<async_persistence::Receipt>, async_persistence::AdmissionError> {
     async_persistence::update(edit)
+}
+
+/// Admit an ordinary in-process Session edit and retain one bounded receipt for diagnostics.
+/// Returns admission/no-change, never a durability claim.
+pub(crate) fn update_ordinary(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
+    async_persistence::update_ordinary(edit)
+}
+
+pub(crate) fn poll_ordinary_persistence() -> async_persistence::Status {
+    async_persistence::poll_ordinary()
+}
+
+pub(crate) fn ordinary_persistence_revision() -> u64 {
+    async_persistence::ordinary_revision()
+}
+
+pub(crate) fn retry_ordinary_persistence(expected_revision: u64) -> bool {
+    async_persistence::retry_ordinary(expected_revision)
 }
 
 /// Persist the session (best-effort; a write failure is non-fatal — we just re-login next boot).

@@ -3026,10 +3026,263 @@ fn forward_leave(cur: Route) -> Option<fn()> {
 // ---- boot, and the loop's own between-frame state ---------------------------------------------
 /// Which screen the boot gate landed on — see the gate itself in `plex_run`, which is where the
 /// order of its four cases is argued.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BootTo {
     Home,
     Login,
     Profiles,
+}
+
+fn boot_destination(
+    force_login: bool,
+    dev_token: bool,
+    can_go_local: bool,
+    home_users: usize,
+    automated: bool,
+    pick_user: bool,
+) -> BootTo {
+    if force_login {
+        BootTo::Login
+    } else if dev_token {
+        BootTo::Home
+    } else if can_go_local {
+        if home_users > 1 && (!automated || pick_user) {
+            BootTo::Profiles
+        } else {
+            BootTo::Home
+        }
+    } else {
+        BootTo::Login
+    }
+}
+
+enum TelemetryCold {
+    Pending(crate::telemetry::BootReceipt),
+    Ready(crate::telemetry::BootReady),
+    Failed,
+    Taken,
+}
+
+enum SessionCold {
+    Pending(crate::plex::session::LoadReceipt),
+    Ready(crate::plex::session::Session),
+    Failed,
+    Taken,
+}
+
+enum ActivationCold {
+    Waiting,
+    Pending(crate::telemetry::ActivationReceipt),
+    Ready(crate::telemetry::Activated),
+    Failed,
+    Taken,
+}
+
+struct ColdBoot {
+    telemetry: TelemetryCold,
+    session: SessionCold,
+    activation: ActivationCold,
+}
+
+impl ColdBoot {
+    fn start() -> Self {
+        Self {
+            telemetry: crate::telemetry::start_boot()
+                .map_or(TelemetryCold::Failed, TelemetryCold::Pending),
+            session: crate::plex::session::start_load()
+                .map_or(SessionCold::Failed, SessionCold::Pending),
+            activation: ActivationCold::Waiting,
+        }
+    }
+
+    fn poll(&mut self) {
+        if let TelemetryCold::Pending(receipt) = &mut self.telemetry {
+            match receipt.poll() {
+                crate::telemetry::BootPoll::Pending => {}
+                crate::telemetry::BootPoll::Ready(ready) => {
+                    self.telemetry = TelemetryCold::Ready(ready)
+                }
+                crate::telemetry::BootPoll::Failed => {
+                    self.telemetry = TelemetryCold::Failed
+                }
+            }
+        }
+        if let SessionCold::Pending(receipt) = &mut self.session {
+            match receipt.poll() {
+                crate::plex::session::LoadPoll::Pending => {}
+                crate::plex::session::LoadPoll::Ready(session) => {
+                    self.session = SessionCold::Ready(session)
+                }
+                crate::plex::session::LoadPoll::Failed => self.session = SessionCold::Failed,
+            }
+        }
+        if matches!(self.activation, ActivationCold::Waiting) {
+            if let TelemetryCold::Ready(ready) = &self.telemetry {
+                if matches!(self.session, SessionCold::Ready(_)) {
+                    self.activation = crate::telemetry::start_activation(ready.clone())
+                        .map_or(ActivationCold::Failed, ActivationCold::Pending);
+                }
+            }
+        }
+        if let ActivationCold::Pending(receipt) = &mut self.activation {
+            match receipt.poll() {
+                crate::telemetry::ActivationPoll::Pending => {}
+                crate::telemetry::ActivationPoll::Ready(ready) => {
+                    self.activation = ActivationCold::Ready(ready)
+                }
+                crate::telemetry::ActivationPoll::Failed => {
+                    self.activation = ActivationCold::Failed
+                }
+            }
+        }
+    }
+
+    fn failed(&self) -> bool {
+        matches!(self.telemetry, TelemetryCold::Failed)
+            || matches!(self.session, SessionCold::Failed)
+            || matches!(self.activation, ActivationCold::Failed)
+    }
+
+    fn retry(&mut self) {
+        self.retry_with(crate::telemetry::start_boot, crate::plex::session::start_load);
+    }
+
+    fn retry_with(
+        &mut self,
+        start_telemetry: impl FnOnce(
+            ) -> Result<crate::telemetry::BootReceipt, crate::storage_worker::SubmitError>,
+        start_session: impl FnOnce(
+            ) -> Result<crate::plex::session::LoadReceipt, crate::storage_worker::SubmitError>,
+    ) {
+        if matches!(self.telemetry, TelemetryCold::Failed) {
+            self.telemetry = start_telemetry()
+                .map_or(TelemetryCold::Failed, TelemetryCold::Pending);
+        }
+        if matches!(self.session, SessionCold::Failed) {
+            self.session = start_session()
+                .map_or(SessionCold::Failed, SessionCold::Pending);
+        }
+        if matches!(self.activation, ActivationCold::Failed) {
+            self.activation = ActivationCold::Waiting;
+        }
+    }
+
+    fn take_ready(
+        &mut self,
+    ) -> Option<(crate::telemetry::Activated, crate::plex::session::Session)> {
+        if !matches!(self.activation, ActivationCold::Ready(_))
+            || !matches!(self.session, SessionCold::Ready(_))
+        {
+            return None;
+        }
+        let ActivationCold::Ready(telemetry) =
+            std::mem::replace(&mut self.activation, ActivationCold::Taken)
+        else {
+            unreachable!()
+        };
+        let SessionCold::Ready(session) =
+            std::mem::replace(&mut self.session, SessionCold::Taken)
+        else {
+            unreachable!()
+        };
+        self.telemetry = TelemetryCold::Taken;
+        Some((telemetry, session))
+    }
+}
+
+fn boot_status(failed: bool, now: u32) -> crate::ui::widgets::StatusOverlay<'static> {
+    use crate::ui::widgets::{StatusKind, StatusOverlay};
+    if failed {
+        StatusOverlay::new(
+            crate::ui::Rect::FULL,
+            c"Couldn’t load local data",
+            StatusKind::Failed,
+        )
+            .reason(c"PlxNative could not finish reading this television’s saved state.")
+            .action(c"Try again")
+            .focused(true)
+    } else {
+        StatusOverlay::new(
+            crate::ui::Rect::FULL,
+            c"Loading PlxNative…",
+            StatusKind::Working,
+        )
+        .phase(now)
+    }
+}
+
+#[cfg(test)]
+mod cold_boot_tests {
+    use super::*;
+
+    #[test]
+    fn boot_destination_preserves_trigger_session_and_picker_priority() {
+        assert_eq!(boot_destination(true, true, true, 3, false, true), BootTo::Login);
+        assert_eq!(boot_destination(false, true, true, 3, false, true), BootTo::Home);
+        assert_eq!(boot_destination(false, false, true, 3, false, false), BootTo::Profiles);
+        assert_eq!(boot_destination(false, false, true, 3, true, false), BootTo::Home);
+        assert_eq!(boot_destination(false, false, true, 3, true, true), BootTo::Profiles);
+        assert_eq!(boot_destination(false, false, true, 1, false, false), BootTo::Home);
+        assert_eq!(boot_destination(false, false, false, 0, false, false), BootTo::Login);
+    }
+
+    #[test]
+    fn pending_boot_has_no_action_and_failure_has_one_explicit_retry() {
+        use crate::ui::widgets::StatusKind;
+        let pending = boot_status(false, 41);
+        assert_eq!(pending.kind, StatusKind::Working);
+        assert!(pending.action.is_none());
+        assert_eq!(pending.phase, 41);
+        let failed = boot_status(true, 99);
+        assert_eq!(failed.kind, StatusKind::Failed);
+        assert_eq!(failed.action.and_then(|s| s.to_str().ok()), Some("Try again"));
+        assert!(failed.focused);
+    }
+
+    #[test]
+    fn pending_boot_source_contains_no_synchronous_session_read() {
+        let source = include_str!("app.rs");
+        let start = source.rfind("COLD_BOOT_PENDING_PATH_BEGIN").unwrap();
+        let end = source.rfind("COLD_BOOT_PENDING_PATH_END").unwrap();
+        let pending = &source[start..end];
+        assert!(pending.contains("SDL_PollEvent"), "pending boot stopped pumping platform input");
+        assert!(pending.contains("SDL_GL_SwapWindow"), "pending boot stopped presenting its status");
+        for forbidden in [
+            "crate::plex::session::load(",
+            "crate::plex::session::peek(",
+            "crate::plex::session::snapshot(",
+        ] {
+            assert!(
+                !pending.contains(forbidden),
+                "pending boot can synchronously enter Session storage through {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_domain_is_terminal_until_retry_is_requested() {
+        let mut boot = ColdBoot {
+            telemetry: TelemetryCold::Failed,
+            session: SessionCold::Failed,
+            activation: ActivationCold::Waiting,
+        };
+        assert!(boot.failed());
+        let telemetry_starts = std::cell::Cell::new(0);
+        let session_starts = std::cell::Cell::new(0);
+        boot.retry_with(
+            || {
+                telemetry_starts.set(telemetry_starts.get() + 1);
+                Err(crate::storage_worker::SubmitError::Full)
+            },
+            || {
+                session_starts.set(session_starts.get() + 1);
+                Err(crate::storage_worker::SubmitError::Full)
+            },
+        );
+        assert_eq!(telemetry_starts.get(), 1);
+        assert_eq!(session_starts.get(), 1);
+        assert!(boot.failed(), "a refused retry must return to the error state, not spin");
+    }
 }
 /// WHICH key the remote is holding down, as one value: the sym the client-side repeat timer
 /// is driving, the two instants that timer reads, the hardware heartbeat that catches a
@@ -6726,38 +6979,27 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // wrong by one line.
     let _ = crate::paths::app_dir();
     // Before the crash backend is armed, identify the firmware it would need to report. Sentry's
-    // scope is snapshotted into the crash event file during `telemetry::boot`; probing afterwards
+    // scope is snapshotted into a native crash event when the backend starts; probing afterwards
     // leaves only `Linux 4.4.84`, which does not distinguish webOS releases at all. This reads one
     // flat platform file and cannot fail the boot. The crash channel receives only the reviewed
     // compatibility fields (webOS/API/model/SoC/hardware revision), never device identifiers.
     crate::webos::probe();
-    // The stored telemetry decision, BEFORE the first event can be reported — `diag::event` reads
-    // a snapshot this publishes, and with none installed it refuses everything. So the ordering is
-    // the fail-closed guarantee, not a convenience.
-    let _telemetry_guard = crate::telemetry::boot();
-    // …and then, if asked, DIE. `plxnative-crashtest` is the instrument for the instrument: both
-    // the C fallback and (when consented/configured) the out-of-process native recorder are now
-    // armed, so this trigger grades the reporter users actually run. It remains before SDL so a
-    // playback/UI regression cannot make the instrument unreachable. Compiled out with
-    // `devtriggers`; a no-op in every other build.
-    crate::dev::crash_on_purpose();
+    // Cold telemetry/session storage starts below, after the keymanager/LS2 diagnostic seams are
+    // armed. Until its receipt is Ready no consent snapshot exists, so every producer fails closed.
+    // The native guard is finalized on this thread after libcurl init and lives to function exit.
+    let mut _telemetry_guard: Option<crate::telemetry::native::Guard> = None;
     // If `plxnative-keymanager=<mode>` named a mode this build understands, say so loudly and
-    // before anything could have called `keymanager::seal`/`open` — session load is still ahead
-    // of this line. Compiled out with `devtriggers`; a no-op in every other build. Issue #76.
+    // before anything could have called `keymanager::seal`/`open` — the Session cold-load worker
+    // has not started yet. Compiled out with `devtriggers`; a no-op in every other build. Issue #76.
     crate::keymanager::boot_log_fake_if_armed();
     // If `plxnative-ls2identity` is armed, ask the LS2 hub for every registration shape once and
     // log what it answers — HERE, because the next thing to register on the bus is
-    // `plex::session::load`'s keymanager call, and on a webOS 4 set `player::acb_init` has not yet
-    // taken the app-id name either. Compiled out with `devtriggers`; a no-op in every other build.
+    // `plex::session::start_load`'s keymanager call, and on a webOS 4 set `player::acb_init` has not
+    // yet taken the app-id name either. Compiled out with `devtriggers`; a no-op in every other build.
     // Issue #76.
     crate::webos::ls2_identity_probe_if_armed();
-    // The first reportable event, and it is a marker with no fields on purpose — everything that
-    // would qualify a launch (model, firmware, version, locale) is a session constant and belongs
-    // in a sender's envelope, not repeated on every record. It reaches PostHog when the usage
-    // switch is on and this build carries a key; `crate::diag::event` is the gate and fails closed
-    // on either. (This comment said "nothing listens today" for as long as that was true and for a
-    // while after.)
-    crate::diag::event(crate::diag::schema::DiagEvent::AppLaunch);
+    // COLD_BOOT_PENDING_PATH_BEGIN — structural test below keeps synchronous Session reads out.
+    let mut cold_boot = ColdBoot::start();
     // And what it DECODES, from the device's own codec table — the capability profile and the
     // direct-play gate derive from this instead of asserting the dev TV's abilities as universal
     // (issue #22's bug class; docs/plex-pass-audit.md's closing section). Same contract as
@@ -6932,9 +7174,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
         // still runs, and `net::global_init` has already said so in the event log.
         let _ = crate::net::global_init();
-        // Drain whatever the LAST session left behind, on a worker — and **after `global_init`,
-        // which is the whole reason this line is here and not beside `telemetry::boot()` 170 lines
-        // up.** It was there first, and the end-to-end run showed why that was wrong: the worker
+        // Drain whatever the LAST session left behind only after `global_init`. The cold worker
+        // may already be reading/importing local records, but activation does not publish consent
+        // or schedule the sender until this loop polls both cold receipts. It was scheduled too
+        // early before, and the end-to-end run showed why that was wrong: the worker
         // reached `post_ca` before libcurl was bound, `net::available()` was false, every record
         // came back Keep, and the log read `holding 5 records` immediately ABOVE `net: bound
         // libcurl`. So the first flush of every launch failed, always, and the failure was
@@ -6947,7 +7190,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // process that no longer exists and this is the first moment anything can send it. A record
         // queued during THIS session goes out at the next launch, or sooner if a consent change
         // flushes.
-        crate::telemetry::flush_soon();
+        // The cold telemetry activation receipt may still be queued behind Session storage. Its completion
+        // path below finalizes native capture and schedules this flush only after the stored
+        // decision and prior-process crash records are ready. libcurl is initialized now, before
+        // either path can schedule a sender.
 
         // NO token is compiled into this binary. PMS access comes from the signed-in session,
         // or — for automated runs only (the regression harness, headless captures) — from the
@@ -7111,10 +7357,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // auto-select that roster tile once it's up (headless exercise of the who's-watching flow).
         let mut pick_user: Option<usize> =
             crate::dev::read("pickuser").and_then(|s| s.parse().ok());
-        let session = crate::plex::session::load();
-        // **Issue #76's report lane.** This is the app's one COLD `session::load` — the only call
-        // that reads candidates, resolves the cross-launch probe and may reseal — so it is where
-        // this launch's storage facts become known. Hand them to the sign-in screen now, before the
+        let finish_session_boot =
+            |session: &crate::plex::session::Session, pick_user: &mut Option<usize>| {
+        // **Issue #76's report lane.** This Session came from the app's one cold `start_load`
+        // worker — the only operation that reads candidates, resolves the cross-launch probe and
+        // may reseal — so its completion is where this launch's storage facts become known. Hand
+        // them to the sign-in screen now, before the
         // boot gate below can route to it: `BootTo::Login` mounts that route without an `enter()`
         // (which is the other refresh), and the read-out's "Details" pill is hidden until the
         // screen has been told something. Unconditional, not gated on the boot destination — a
@@ -7127,11 +7375,26 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         crate::route::restore_quality(
             crate::dev::playback_quality_override().unwrap_or_else(|| session.playback_quality()),
         );
-        let boot_to = if crate::dev::flag("login") {
-            crate::auth::start_login();
-            log("boot: /tmp/plxnative-login — starting QR login");
-            BootTo::Login
-        } else if !dev_token.is_empty() {
+        let force_login = crate::dev::flag("login");
+        let dev_identity = !dev_token.is_empty();
+        let boot_to = boot_destination(
+            force_login,
+            dev_identity,
+            session.can_go_local(),
+            session.home_users.len(),
+            automated_boot(),
+            pick_user.is_some(),
+        );
+        match boot_to {
+            BootTo::Login => {
+                crate::auth::start_login();
+                if force_login {
+                    log("boot: /tmp/plxnative-login — starting QR login");
+                } else {
+                    log("boot: no session — starting QR sign-in");
+                }
+            }
+            BootTo::Home if dev_identity => {
             // `Origin::http` names the assumption out loud: the host and port compiled into the
             // C shim are a plaintext address, with no scheme to read off them.
             //
@@ -7149,9 +7412,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 &dev_token,
                 Some(tier),
             );
-            BootTo::Home
-        } else if session.can_go_local() {
-            if session.home_users.len() > 1 && (!automated_boot() || pick_user.is_some()) {
+            }
+            BootTo::Profiles => {
                 // Who's watching first. Only the read client is installed here (the avatars proxy
                 // through the PMS photo transcoder); the catalog fetch + playback config happen in
                 // take_ready once a profile is picked — done now they'd be thrown out on a switch.
@@ -7162,8 +7424,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // identified themselves yet, so there is no "carry on as me" to fall back on.
                 crate::auth::start_switch(crate::auth::Picker::Boot);
                 log("boot: stored session — who's watching");
-                BootTo::Profiles
-            } else {
+            }
+            BootTo::Home => {
                 // The persisted roster FIRST, then the primary. This is the one boot path that does
                 // not go through `auth::start_switch` — a stored session with a single Plex Home
                 // user, or any automated run — so without this line it registered exactly one
@@ -7192,33 +7454,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // Non-destructive on failure; the stored roster above remains available offline.
                 crate::auth::refresh_roster();
                 log("boot: stored session — local server (offline-capable)");
-                BootTo::Home
             }
-        } else {
-            crate::auth::start_login();
-            log("boot: no session — starting QR sign-in");
-            BootTo::Login
+        }
+        boot_to
         };
         crate::player::acb_init(mt);
         crate::ff::boot(); // FFmpeg version smoke test + optional /tmp/plxnative-ffprobe ABI probe
                            // dev: /tmp/plxnative-logintest validates the plex.tv account path end-to-end on the device — a
                            // real typed create_pin() through the libcurl transport + DTO deserialize. Logs only the
                            // public pin id + code length + that authToken is still null (never a token/secret).
-        if crate::dev::flag("logintest") {
-            let _ = crate::task::spawn_small("logintest", || {
-                let sess = crate::plex::session::load();
-                let ac = crate::plex::account::AccountClient::new(&sess.client_id, None);
-                match ac.create_pin() {
-                    Some(p) => log(&format!(
-                        "logintest: create_pin ok id={} code_len={} authToken_null={}",
-                        p.id,
-                        p.code.len(),
-                        p.auth_token.is_none()
-                    )),
-                    None => log("logintest: create_pin FAILED (transport/TLS/link/deser)"),
-                }
-            });
-        }
         // dev: the animation-diagnostic overlay is OFF by default; /tmp/plxnative-anim enables it (its
         // trace goes to /tmp/plxnative-anim.log, a separate stream from the main event log)
         if crate::dev::flag("anim") {
@@ -7431,8 +7675,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut itemmenu_tried = false; // dev: /tmp/plxnative-itemmenu opens the card context menu once
         let mut ptr = Pointer::IDLE;
 
-        // Initial route from the boot gate: Login when we have no usable creds, Profiles for the
-        // boot who's-watching picker, else Home.
+        // Route resolution after the cold gate: Login when we have no usable creds, Profiles for
+        // the boot who's-watching picker, else Home. While cold work is pending the `Route::Login`
+        // value below is inert and never drawn or allowed to enter auth.
         //
         // …and Home is intercepted by the first-run question when this profile has never been
         // asked it and the roster holds more than one source (`ui::onboard`). It belongs HERE as
@@ -7449,39 +7694,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // are why looking at this screen headlessly requires a trigger of its own.
         let ask_first_run =
             || crate::dev::flag("firstrun") || (!automated_boot() && crate::ui::onboard::asks());
-        let mut route = match boot_to {
-            // **Both Home arms ask, and the shared call is the point.** This is the one boot that
-            // has no earlier hook — an install already signed in, either never asked or asked
-            // against an older policy — and the sign-in's question has to come before every
-            // per-profile step, the Home-sources wizard included. Asking only in the second arm
-            // (which is what shipped for an hour) meant a stored session that still owed the
-            // sources answer walked Onboard → Home and was never asked at all.
-            BootTo::Home => {
-                maybe_ask_consent();
-                if ask_first_run() {
-                    log("boot: asking which sources feed Home");
-                    crate::ui::onboard::enter();
-                    Route::Onboard
-                } else {
-                    Route::Home
-                }
-            }
-            // Both of these enter the `Route::Login | Route::Profiles` block below, which asks as
-            // soon as the account is authorized — earlier than here, and before the picker.
-            BootTo::Login => Route::Login,
-            BootTo::Profiles => Route::Profiles,
-        };
-        // dev: /tmp/plxnative-acct auto-opens the profile menu (headless capture of the popover).
-        if crate::dev::flag("acct") && matches!(route, Route::Home) {
-            crate::ui::account_menu::open();
-            route = Route::Account {
-                over: BarHost::Home,
-            };
-        }
-        // Home is the product landing after the credential gates; its Hero / Continue Watching
-        // rows own resume. Never override this route from an old last-page bookmark. The cleanup is
-        // intentionally unconditional so automated and ordinary upgrades retire the same state.
-        crate::coldstart::retire();
+        // The real route is installed exactly once when both cold snapshots and telemetry's
+        // worker-side deferred replay are ready. Until then Login is only an inert placeholder;
+        // the boot gate below owns input and draws the loading/error StatusOverlay instead.
+        let mut route = Route::Login;
+        let mut boot_routed = false;
         // The page the live playback session was LAUNCHED FROM — where Stop/BACK/EOS returns to.
         // Kept OUTSIDE Route (like `foreground` keeps the suspended session): it is navigation
         // history, not the current node, and Route makes every page and Player exclusive so it
@@ -7569,12 +7786,69 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // ready to dispatch a delivered command within one frame. Compile-time no-op otherwise.
         crate::lab::start_control();
         while running {
+            cold_boot.poll();
+            if let Some((telemetry, session)) = cold_boot.take_ready() {
+                _telemetry_guard = Some(crate::telemetry::finish_boot(telemetry));
+                // The deliberate crash now waits for stored consent, prior-process imports and
+                // native capture readiness. It still precedes the first reportable launch event.
+                crate::dev::crash_on_purpose();
+                crate::diag::event(crate::diag::schema::DiagEvent::AppLaunch);
+
+                let boot_to = finish_session_boot(&session, &mut pick_user);
+                route = match boot_to {
+                    // **Both Home arms ask, and the shared call is the point.** This is the one
+                    // boot that has no earlier hook — an install already signed in, either never
+                    // asked or asked against an older policy — and the sign-in's question has to
+                    // come before every per-profile step.
+                    BootTo::Home => {
+                        maybe_ask_consent();
+                        if ask_first_run() {
+                            log("boot: asking which sources feed Home");
+                            crate::ui::onboard::enter();
+                            Route::Onboard
+                        } else {
+                            Route::Home
+                        }
+                    }
+                    BootTo::Login => Route::Login,
+                    BootTo::Profiles => Route::Profiles,
+                };
+                if crate::dev::flag("acct") && matches!(route, Route::Home) {
+                    crate::ui::account_menu::open();
+                    route = Route::Account {
+                        over: BarHost::Home,
+                    };
+                }
+                crate::coldstart::retire();
+                if crate::dev::flag("logintest") {
+                    let client_id = session.client_id.clone();
+                    let _ = crate::task::spawn_small("logintest", move || {
+                        let ac = crate::plex::account::AccountClient::new(&client_id, None);
+                        match ac.create_pin() {
+                            Some(p) => log(&format!(
+                                "logintest: create_pin ok id={} code_len={} authToken_null={}",
+                                p.id,
+                                p.code.len(),
+                                p.auth_token.is_none()
+                            )),
+                            None => log("logintest: create_pin FAILED (transport/TLS/link/deser)"),
+                        }
+                    });
+                }
+                boot_routed = true;
+                crate::telemetry::flush_soon();
+                crate::ui::idle::invalidate();
+            }
+            let boot_failed = !boot_routed && cold_boot.failed();
             // Resolve the control row ONCE per iteration, before the event pump, and pass this
             // value to input, update and draw alike. `player_hud::slot()` reads `playpos_ns`, which
             // LG's media thread writes and `player::pump` advances mid-iteration — deriving it per
             // call site let a keypress activate a control this same frame then declined to draw.
             let ctrl = crate::ui::player_hud::slot();
             crate::system::ls2_pump();
+            crate::ui::route_screen::session_persistence::poll(
+                !crate::ui::popover::any_open(),
+            );
             // Cloud Test Lab has no SSH/FIFO. Its LAB build long-polls outward, then leaves each
             // command here for the SDL thread so the same dispatcher and event queue remain the
             // only input path. Acknowledge acceptance after dispatch, before polling SDL below.
@@ -7605,6 +7879,32 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // kind — rather than in each of the ~30 arms below, where the next one added would
                 // silently draw nothing.
                 crate::ui::idle::invalidate();
+                if !boot_routed {
+                    if et == SDL_QUIT {
+                        running = false;
+                    } else if et == SDL_KEYDOWN {
+                        let (state, wcode, sym) = decode_key(&ev);
+                        if state & 0xff == 1 {
+                            let key = classify(sym, wcode);
+                            if boot_failed && is_ok(sym) {
+                                cold_boot.retry();
+                            } else if matches!(key, Key::Exit) {
+                                running = false;
+                            } else if matches!(key, Key::Back) {
+                                back_at_root();
+                            }
+                        }
+                    } else if et == SDL_MOUSEBUTTONDOWN && boot_failed {
+                        let (mx, my) = ptr_xy(&ev);
+                        if boot_status(true, SDL_GetTicks())
+                            .action_frame()
+                            .is_some_and(|frame| frame.contains(mx, my))
+                        {
+                            cold_boot.retry();
+                        }
+                    }
+                    continue;
+                }
                 if et == SDL_KEYDOWN
                     || et == SDL_KEYUP
                     || et == SDL_TEXTINPUT
@@ -7769,6 +8069,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // there is nothing for a later arm to have wanted first. Compiles to `false`
                     // in every other build (`crate::lab::key_press`).
                     if crate::lab::key_press(sym, wcode) {
+                        continue;
+                    }
+
+                    if crate::ui::route_screen::session_persistence::visible() {
+                        crate::ui::route_screen::session_persistence::key(sym, wcode);
                         continue;
                     }
 
@@ -8153,6 +8458,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                     ptr.prev_mx = mx;
                     ptr.prev_my = my;
+                    if crate::ui::route_screen::session_persistence::visible() {
+                        crate::ui::route_screen::session_persistence::pointer_focus(mx, my);
+                        continue;
+                    }
                     if crate::ui::consent::persistence_notice_visible() {
                         crate::ui::consent::persistence_notice_pointer_focus(mx, my);
                         continue;
@@ -8294,6 +8603,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if ok_armed {
                         crate::ui::press::cancel();
                         ok_armed = false;
+                    }
+                    if crate::ui::route_screen::session_persistence::visible() {
+                        let (cx, cy) = ptr_xy(&ev);
+                        crate::ui::route_screen::session_persistence::press_at(cx, cy);
+                        continue;
                     }
                     if crate::ui::consent::persistence_notice_visible() {
                         let (cx, cy) = ptr_xy(&ev);
@@ -8826,6 +9140,33 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // own edit state, because the route changes at the fade floor.
                     crate::textinput::on_event(&ev);
                 }
+            }
+
+            if !boot_routed {
+                let now = SDL_GetTicks();
+                crate::system::opaque_route(false);
+                crate::egl::frame_damage();
+                let (vx, vy, vw, vh) = crate::surface::viewport();
+                glViewport(vx, vy, vw, vh);
+                crate::gfx::frame_clear(
+                    crate::ui::theme::CLEAR_RGB.0,
+                    crate::ui::theme::CLEAR_RGB.1,
+                    crate::ui::theme::CLEAR_RGB.2,
+                );
+                crate::ui::guard(|| {
+                    use crate::ui::View;
+                    boot_status(boot_failed, now).draw(
+                        &crate::ui::Env::inert(),
+                        crate::ui::Painter::root(),
+                    );
+                });
+                crate::capture::tick(now);
+                #[cfg(feature = "hostsim")]
+                crate::shot::maybe_capture(vx, vy, vw, vh);
+                SDL_GL_SwapWindow(win);
+                crate::egl::late_probe();
+                // COLD_BOOT_PENDING_PATH_END
+                continue;
             }
 
             let now = SDL_GetTicks();
@@ -11009,6 +11350,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                         }
                         crate::ui::anim::draw_overlay(); // dev diagnostic overlay (all routes)
+                        crate::ui::route_screen::session_persistence::draw();
                         crate::ui::consent::draw_persistence_notice();
                                                          // The lab upload read-out, over everything, on every route — including the
                                                          // player, where the two branches above diverge and this one must not.

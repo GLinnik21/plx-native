@@ -647,8 +647,10 @@ fn consume_native_match(
 
 /// **Report every fault the last run left behind, once.**
 ///
-/// Called at boot, after consent is published and before anything else can crash — the process that
-/// wrote these records no longer exists, which is the whole reason the log is on disk.
+/// Called by the cold telemetry worker with the stored consent passed explicitly, before that
+/// decision is published to runtime producers. The process that wrote these records no longer
+/// exists, which is the whole reason the log is on disk. Runtime consent is activated only after
+/// this import and the other cold persistence work finish.
 ///
 /// Three things about the bookkeeping are load-bearing.
 ///
@@ -664,8 +666,11 @@ fn consume_native_match(
 /// not degrade to an unsymbolicated frame with a warning; it produces `missing_symbol` and no error
 /// at all, which is indistinguishable from never having uploaded symbols. Sending no image at least
 /// says so.
-pub(crate) fn report_pending(native_crashes: &[super::native::CrashKey]) {
-    if !super::consent::allows_errors() {
+pub(crate) fn report_pending_for(
+    consent: &super::consent::Consent,
+    native_crashes: &[super::native::CrashKey],
+) {
+    if !consent.errors {
         return; // no consent for this category — nothing is read and nothing is queued
     }
     let path = crate::paths::in_runtime_dir("plxnative-crash.log");
@@ -695,7 +700,7 @@ pub(crate) fn report_pending(native_crashes: &[super::native::CrashKey]) {
     let current_build_id = super::sentry::build_id();
     // Read once: every report of this pass belongs to the same decision, and a toggle racing this
     // loop must not split one crash log between two identities.
-    let errors_id = super::consent::errors_id();
+    let errors_id = consent.errors_id.clone();
     let mut native_crashes = native_crashes.to_vec();
     let mut queued = 0usize;
     let mut native_wins = 0usize;

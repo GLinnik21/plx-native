@@ -397,7 +397,7 @@ fn storage_outcome() -> StorageOutcome {
     outcome
 }
 
-/// Cleared on sign-out, through the existing forget path (`telemetry::forget`, behind
+/// Cleared on sign-out, through the existing forget path (`telemetry::forget_with_receipt`, behind
 /// `auth::forget_account`) — the same lifetime every other per-account telemetry fact in this
 /// corner of the app has: consent belongs to the account that gave it, and so does the record of
 /// what its own sign-in save did.
@@ -1413,7 +1413,7 @@ mod tests {
         // `forget_storage_outcome` that wipes it. Without the lock it raced the integration test
         // above (which drives a real `take_ready` and then reads the same global back) and made it
         // flake roughly one run in four. `testlock::serial`, not a local mutex: the global is also
-        // reached from `auth` and from `telemetry::forget`.
+        // reached from `auth` and from `telemetry::forget_with_receipt`.
         let _g = crate::testlock::serial();
         crate::plex::session::reset_report_state_for_test();
         note_storage_outcome(

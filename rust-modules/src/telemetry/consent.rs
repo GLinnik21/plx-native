@@ -20,8 +20,8 @@
 //! travel together: a person who consented to two purposes did not consent to having them joined,
 //! and one shared handle is precisely the join. Withdrawing one channel destroys ITS id and leaves
 //! the other untouched. **Signing out destroys both and the decision with them**
-//! (`telemetry::forget`, behind `auth::forget_account`): consent belongs to the account that gave
-//! it, and the next account to sign in is asked afresh.
+//! (`telemetry::forget_with_receipt`, behind `auth::forget_account`): consent belongs to the
+//! account that gave it, and the next account to sign in is asked afresh.
 //!
 //! **Two switches, because they are two questions.** Error reports and usage statistics are judged
 //! differently by the people who care — when Audacity retreated it dropped usage analytics and kept

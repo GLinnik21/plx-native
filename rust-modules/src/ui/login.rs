@@ -800,7 +800,7 @@ fn settle_storage_retry() {
         );
         return;
     }
-    let resumed = crate::auth::resume_secure_session(crate::plex::session::load());
+    let resumed = crate::auth::resume_secure_session(crate::plex::session::snapshot());
     STORAGE_RETRY_STATE.store(
         if resumed { RETRY_IDLE } else { RETRY_FAILED },
         Ordering::Release,

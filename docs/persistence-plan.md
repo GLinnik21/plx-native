@@ -1,7 +1,9 @@
 # Shared persistence: implementation and acceptance ledger
 
-Approved 2026-09-11. Implement on the 0.6 maintenance line first, then integrate the same core
-into 0.7 without replacing its newer Session fields. This is a work ledger, not release evidence.
+Approved 2026-09-11. The current release goal is the 0.6 maintenance line only. A later 0.7
+forward-port must integrate the same record/queue guarantees without replacing its newer Session
+fields, but that port is deferred and is not a blocker for the 0.6 release. This is a work ledger,
+not release evidence.
 
 ## Contract
 
@@ -28,31 +30,39 @@ into 0.7 without replacing its newer Session fields. This is a work ledger, not 
 ## Implementation batches
 
 - [x] Establish module boundaries without behavior change.
-- [ ] JSON backend + bounded safe filesystem operations + injected-failure contract tests.
-- [ ] Bounded FIFO worker + tickets; snapshot reads never wait for disk.
-- [ ] Session canonical migration, versioning, unknown-field preservation and revocation record.
-- [ ] Session asynchronous writes, ordered revisions and visible completion/errors at all callers.
-- [ ] Consent canonical migration + asynchronous persistence + revocation/error reporting.
-- [ ] UI/boot integration: no new UI-thread I/O; existing fresh-auth and keymanager behavior retained.
-- [ ] Per-tag 0.6.x direct/chained migration fixtures, concurrent/failure tests, documentation audit.
+- [x] JSON backend + bounded safe filesystem operations + injected-failure contract tests.
+- [x] Bounded FIFO worker + tickets; snapshot reads never wait for disk.
+- [x] Session canonical migration, versioning, unknown-field preservation and revocation record.
+- [x] Session asynchronous writes, ordered revisions and visible completion/errors at all callers.
+- [x] Consent canonical migration + asynchronous persistence + revocation/error reporting.
+- [x] UI/boot integration: no new UI-thread persistence I/O; existing fresh-auth and keymanager
+      behavior retained.
+- [x] Per-tag 0.6.x direct/chained migration fixtures, concurrent/failure tests, documentation audit.
 - [ ] Host/default/hostsim/shipping checks, ARM build and actual IPK metadata verification.
 - [ ] Package upgrade preservation on older dev TV and reporter's newer webOS (restart alone insufficient).
-- [ ] 0.7 integration preserving profiles, PIN, last_library, auto_sign_in and current consent scopes.
+- [ ] Deferred after the 0.6 release: 0.7 integration preserving profiles, PIN, last_library,
+      auto_sign_in and current consent scopes.
 - [ ] Release preparation/publication under cut-release workflow, only after required gates.
 
 ## Scope of assurance
 
-Forward upgrades from every published 0.6.x, directly to the patch/0.7 or through the patch.
-No downgrade, uninstall/reinstall, filesystem rollback, physical data loss or lost-key guarantee.
-No new data collection or consent-scope expansion. Do not change existing settings-reset policy.
+The current assurance target is a forward upgrade from every published 0.6.x to the fixing 0.6
+patch. The later 0.7 forward-port is deferred future acceptance, not a promise made by this 0.6
+ledger. No downgrade, uninstall/reinstall, filesystem rollback, physical data loss or lost-key
+guarantee. No new data collection or consent-scope expansion. Do not change existing
+settings-reset policy.
 
 ## Evidence so far
 
-- Queue staging currently passes 10 focused host tests: typed cross-domain FIFO, off-thread
-  execution, nonblocking Full rejection without running rejected work, worker disconnect,
-  dropped-ticket durability, explicit startup refusal, and zero-capacity coverage. The executor
-  remains test-staged until Session and Consent consumers wire the shared production instance;
-  this is not async production or device evidence.
+- The bounded FIFO is the production persistence executor for Session and Consent. Focused host
+  tests cover typed cross-domain ordering, off-thread execution, nonblocking Full rejection without
+  running rejected work, worker disconnect, dropped tickets, explicit startup refusal and
+  zero-capacity behavior. Per-operation receipts keep Pending distinct from Durable, Uncertain and
+  Failed; cleanup is reported independently.
+- The current 0.6 source passed 2,593 default and 2,622 host-simulator Rust tests, the Python tail,
+  the shipping-feature check and the simulator build on 2026-09-12. A simulator cold start also
+  reopened a stored Session and a saved No consent without identifiers. These are host/source
+  results, not an ARM build, an IPK-upgrade result or device evidence.
 - Previous issue-76 test build proves app-local restart on the reporter's Lite 11.2; the earlier
   isolated dev-TV probe proves upgrade preservation only on older firmware. Neither proves this
   new migration or the newer firmware's package upgrade.
@@ -69,4 +79,5 @@ The child `session::migration_tests` matrix (when enabled by the session module)
 legacy-to-canonical migration, exact opaque payload transport, canonical reopen, routine consent
 rewrite, stale legacy copies after clear, and the secure-envelope shape. It does not claim an
 old-binary/0.7 executable guarantee, package-upgrade preservation, key-manager cryptographic
-validity, or TV behavior; those remain separate 0.7/device/IPK acceptance gates.
+validity, or TV behavior. The 0.7 executable proof is deferred; device and IPK upgrade evidence
+remain separate 0.6 acceptance gates.

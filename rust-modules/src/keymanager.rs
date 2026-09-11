@@ -699,9 +699,10 @@ pub(crate) fn seal(plain: &[u8]) -> Option<Sealed> {
     match SELECTED.load(Ordering::Relaxed) {
         // Trust the fast path rather than re-verifying every save: the round trip already ran
         // once, at promotion below, and a `seal` that pays a second LS2 registration plus two
-        // more budgeted calls on every credential write is a cost this path (the SDL main thread,
-        // under the auth and session locks) cannot absorb for free (Codex review 2026-09-04;
-        // issue #76 review). It is NOT what catches a backend whose key is unusable from a
+        // more budgeted calls on every credential write would monopolize the one bounded
+        // persistence worker and delay every Session/Consent receipt (Codex review 2026-09-04;
+        // issue #76 review originally found the same cost on the former synchronous lock-held
+        // path). It is NOT what catches a backend whose key is unusable from a
         // DIFFERENT launch or registration than the one that sealed it — `plex::session`'s
         // `LOCKED_STATE` does, from the read side, which is the only side that can see a launch
         // boundary at all.
@@ -872,9 +873,9 @@ fn log(m: &str) {
 
 /// Which `(method, errorCode)` refusals and `(method, field)` missing-field replies this PROCESS
 /// has already logged — a `Mutex`, not a `thread_local!`, because `seal`/`open` run on more than
-/// one thread (the SDL main thread via a synchronous session save, and each auth worker
-/// `task::spawn_small` starts fresh for a sign-in or roster refresh) and a per-thread cache would
-/// dedupe only within one thread, re-logging the same refusal once per worker. A television's
+/// one thread. Production Session opens and seals run on the shared persistence worker, while
+/// compatibility/tests may enter them from their own threads; a per-thread cache would dedupe only
+/// within one thread and re-log the same refusal elsewhere. A television's
 /// keymanager3 answers the same shape call after call (a token is re-sealed on every profile
 /// switch), so without a process-wide cache a bad or absent service would fill the primary event
 /// log with the same line every few seconds.
@@ -1212,6 +1213,18 @@ pub(crate) fn arm_for_test(entries: Vec<(&'static str, Result<Value, ()>)>) {
     IDENTITY.store(IDENTITY_UNSET, Ordering::Relaxed);
 }
 
+/// Test-only scoped transport for persistence callbacks which execute on the shared worker rather
+/// than on the test thread. Existing thread-local scripts remain isolated and unchanged.
+#[cfg(test)]
+pub(crate) fn arm_worker_for_test(entries: Vec<(&'static str, Result<Value, ()>)>) {
+    SELECTED.store(UNKNOWN, Ordering::Relaxed);
+    logged_once().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    platform::script_for_worker_test(entries);
+    *LAST_REFUSAL.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    LAST_KEY_OUTCOME.store(KEY_OUTCOME_UNKNOWN, Ordering::Relaxed);
+    IDENTITY.store(IDENTITY_UNSET, Ordering::Relaxed);
+}
+
 /// Test-only: undo [`arm_for_test`] — `Client::new` goes back to refusing (the default every
 /// non-scripted test relies on), and the backend/log caches are reset again so a later scripted or
 /// unscripted call in the same process starts clean.
@@ -1293,6 +1306,16 @@ mod platform {
         use serde_json::Value;
         use std::cell::RefCell;
         use std::collections::{HashMap, VecDeque};
+        use std::sync::Mutex;
+
+        struct WorkerScript {
+            replies: HashMap<&'static str, VecDeque<Result<Value, ()>>>,
+            calls: Vec<(String, String)>,
+            requested: Vec<Option<super::super::Identity>>,
+            hub: (bool, bool, bool),
+        }
+
+        static WORKER: Mutex<Option<WorkerScript>> = Mutex::new(None);
 
         thread_local! {
             /// Queued replies per LUNA method (the URI's last path segment: `generateKey`,
@@ -1349,27 +1372,71 @@ mod platform {
         }
 
         pub(super) fn acb_holds_app_id() -> bool {
-            HUB.with(|h| h.borrow().0)
+            if REPLIES.with(|r| !r.borrow().is_empty()) {
+                HUB.with(|h| h.borrow().0)
+            } else {
+                WORKER
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .is_some_and(|script| script.hub.0)
+            }
         }
 
         pub(super) fn app_id_granted() -> bool {
-            HUB.with(|h| h.borrow().1)
+            if REPLIES.with(|r| !r.borrow().is_empty()) {
+                HUB.with(|h| h.borrow().1)
+            } else {
+                WORKER
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .is_some_and(|script| script.hub.1)
+            }
         }
 
         pub(super) fn named_granted() -> bool {
-            HUB.with(|h| h.borrow().2)
+            if REPLIES.with(|r| !r.borrow().is_empty()) {
+                HUB.with(|h| h.borrow().2)
+            } else {
+                WORKER
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .is_some_and(|script| script.hub.2)
+            }
         }
 
         pub(super) fn record_requested(identity: Option<super::super::Identity>) {
-            REQUESTED.with(|r| r.borrow_mut().push(identity));
+            if REPLIES.with(|r| !r.borrow().is_empty()) {
+                REQUESTED.with(|r| r.borrow_mut().push(identity));
+            } else if let Some(script) = WORKER
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_mut()
+            {
+                script.requested.push(identity);
+            }
         }
 
         pub(super) fn requested() -> Vec<Option<super::super::Identity>> {
-            REQUESTED.with(|r| r.borrow().clone())
+            if REPLIES.with(|r| !r.borrow().is_empty()) {
+                REQUESTED.with(|r| r.borrow().clone())
+            } else {
+                WORKER
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map_or_else(Vec::new, |script| script.requested.clone())
+            }
         }
 
         pub(super) fn armed() -> bool {
             REPLIES.with(|r| !r.borrow().is_empty())
+                || WORKER
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_some()
         }
 
         pub(super) fn set(entries: Vec<(&'static str, Result<Value, ()>)>) {
@@ -1384,6 +1451,19 @@ mod platform {
             CALLS.with(|c| c.borrow_mut().clear());
         }
 
+        pub(super) fn set_worker(entries: Vec<(&'static str, Result<Value, ()>)>) {
+            let mut replies: HashMap<_, VecDeque<_>> = HashMap::new();
+            for (method, reply) in entries {
+                replies.entry(method).or_default().push_back(reply);
+            }
+            *WORKER.lock().unwrap_or_else(|e| e.into_inner()) = Some(WorkerScript {
+                replies,
+                calls: Vec::new(),
+                requested: Vec::new(),
+                hub: (false, false, false),
+            });
+        }
+
         pub(super) fn reset() {
             REPLIES.with(|r| r.borrow_mut().clear());
             CALLS.with(|c| c.borrow_mut().clear());
@@ -1391,25 +1471,52 @@ mod platform {
             DOWNGRADE_AFTER.with(|d| *d.borrow_mut() = None);
             CALL_COUNT.with(|c| *c.borrow_mut() = 0);
             set_hub(false, false, false);
+            *WORKER.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
 
         pub(super) fn record_call(uri: &str, payload: &str) {
-            CALLS.with(|c| c.borrow_mut().push((uri.to_string(), payload.to_string())));
-            maybe_downgrade();
+            if REPLIES.with(|r| !r.borrow().is_empty()) {
+                CALLS.with(|c| c.borrow_mut().push((uri.to_string(), payload.to_string())));
+                maybe_downgrade();
+            } else if let Some(script) = WORKER
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_mut()
+            {
+                script.calls.push((uri.to_string(), payload.to_string()));
+            }
         }
 
         pub(super) fn calls() -> Vec<(String, String)> {
-            CALLS.with(|c| c.borrow().clone())
+            if REPLIES.with(|r| !r.borrow().is_empty()) {
+                CALLS.with(|c| c.borrow().clone())
+            } else {
+                WORKER
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map_or_else(Vec::new, |script| script.calls.clone())
+            }
         }
 
         pub(super) fn next_reply(uri: &str) -> Result<Value, ()> {
             let method = uri.rsplit('/').next().unwrap_or("");
-            REPLIES.with(|r| {
-                r.borrow_mut()
-                    .get_mut(method)
+            if REPLIES.with(|r| !r.borrow().is_empty()) {
+                REPLIES.with(|r| {
+                    r.borrow_mut()
+                        .get_mut(method)
+                        .and_then(VecDeque::pop_front)
+                        .unwrap_or(Err(()))
+                })
+            } else {
+                WORKER
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_mut()
+                    .and_then(|script| script.replies.get_mut(method))
                     .and_then(VecDeque::pop_front)
                     .unwrap_or(Err(()))
-            })
+            }
         }
     }
 
@@ -1418,6 +1525,13 @@ mod platform {
     #[cfg(test)]
     pub(crate) fn script_for_test(entries: Vec<(&'static str, Result<serde_json::Value, ()>)>) {
         script::set(entries);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn script_for_worker_test(
+        entries: Vec<(&'static str, Result<serde_json::Value, ()>)>,
+    ) {
+        script::set_worker(entries);
     }
 
     /// Test-only: clear the script — `Client::new` goes back to refusing, the default every
@@ -1578,11 +1692,12 @@ mod platform {
     /// process-wide `webos::ls2` client — the shape it registers with and the reason are there.
     ///
     /// **A service that stalls once is not asked again on this client.** Registration succeeds on
-    /// the dev set since 2026-09-04, which makes [`BUDGET`] REACHABLE from a synchronous session
-    /// save for the first time, and `modern_crypt`'s begin → (finish | abort) is two calls: a
-    /// keymanager3 that hangs on the first would otherwise cost two budgets on a path that holds
-    /// the auth and session locks (Codex review, 2026-09-04). A timeout marks the client dead and
-    /// every later call on it answers at once; `seal` then records the backend unavailable.
+    /// the dev set since 2026-09-04, which first made [`BUDGET`] reachable from the then-synchronous
+    /// Session save (Codex review, 2026-09-04). Persistence now runs on the shared worker, but
+    /// `modern_crypt`'s begin → (finish | abort) is still two calls: a service that hangs on the
+    /// first must not consume a second budget and monopolize the bounded FIFO. A timeout marks the
+    /// client dead and every later call on it answers at once; `seal` then records the backend
+    /// unavailable.
     /// `Fake` exists only with `devtriggers` — see `keymanager::fake`'s own doc. A release build
     /// (`--no-default-features`) never constructs it: `Client::new` below checks the trigger only
     /// under the same `#[cfg]`, so on that build this variant is simply never reached, and it is

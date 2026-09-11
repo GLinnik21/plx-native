@@ -30,13 +30,113 @@ pub(crate) mod storage;
 
 use consent::Consent;
 
-/// Load the stored decision and publish it for the event path.
-///
-/// Called once at boot, before anything can report. A missing or unparsable file is the DEFAULT
-/// decision — everything off, unanswered — which is the only safe reading: a file we cannot
-/// understand is not consent.
-pub(crate) fn boot() -> native::Guard {
-    let c = load();
+#[derive(Clone)]
+pub(crate) struct BootReady {
+    consent: Consent,
+}
+
+#[derive(Clone)]
+pub(crate) enum BootPoll {
+    Pending,
+    Ready(BootReady),
+    Failed,
+}
+
+pub(crate) struct BootReceipt {
+    ticket: Option<crate::storage_worker::TypedTicket<BootReady>>,
+    resolved: Option<BootPoll>,
+}
+
+impl BootReceipt {
+    pub(crate) fn poll(&mut self) -> BootPoll {
+        if let Some(result) = self.resolved.clone() {
+            return result;
+        }
+        let Some(ticket) = self.ticket.as_ref() else {
+            return BootPoll::Failed;
+        };
+        match ticket.try_recv() {
+            Ok(ready) => {
+                let result = BootPoll::Ready(ready);
+                self.ticket = None;
+                self.resolved = Some(result.clone());
+                result
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => BootPoll::Pending,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.ticket = None;
+                self.resolved = Some(BootPoll::Failed);
+                BootPoll::Failed
+            }
+        }
+    }
+}
+
+fn load_boot() -> BootReady {
+    let consent = load();
+    // These are all filesystem/spool operations. They precede publication so diagnostics from a
+    // prior process are queued under the stored decision without ever blocking the SDL thread.
+    let native_crashes = native::prepare_boot(&consent);
+    crashreport::report_pending_for(&consent, &native_crashes);
+    BootReady { consent }
+}
+
+pub(crate) fn start_boot() -> Result<BootReceipt, crate::storage_worker::SubmitError> {
+    crate::storage_worker::submit(load_boot).map(|ticket| BootReceipt {
+        ticket: Some(ticket),
+        resolved: None,
+    })
+}
+
+#[derive(Clone)]
+pub(crate) struct Activated {
+    consent: Consent,
+}
+
+#[derive(Clone)]
+pub(crate) enum ActivationPoll {
+    Pending,
+    Ready(Activated),
+    Failed,
+}
+
+pub(crate) struct ActivationReceipt {
+    ticket: Option<crate::storage_worker::TypedTicket<Result<Activated, ()>>>,
+    resolved: Option<ActivationPoll>,
+}
+
+impl ActivationReceipt {
+    pub(crate) fn poll(&mut self) -> ActivationPoll {
+        if let Some(result) = self.resolved.clone() {
+            return result;
+        }
+        let Some(ticket) = self.ticket.as_ref() else {
+            return ActivationPoll::Failed;
+        };
+        match ticket.try_recv() {
+            Ok(Ok(ready)) => {
+                let result = ActivationPoll::Ready(ready);
+                self.ticket = None;
+                self.resolved = Some(result.clone());
+                result
+            }
+            Ok(Err(())) => {
+                self.ticket = None;
+                self.resolved = Some(ActivationPoll::Failed);
+                ActivationPoll::Failed
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ActivationPoll::Pending,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.ticket = None;
+                self.resolved = Some(ActivationPoll::Failed);
+                ActivationPoll::Failed
+            }
+        }
+    }
+}
+
+fn activate_boot(ready: BootReady) -> Activated {
+    let c = ready.consent;
     // Logged because the alternative is a silent behavioural difference between two televisions.
     // No identifier in the line: it is the one field here worth not putting in a log that gets
     // pasted into issue threads, and its PRESENCE is the only fact worth stating anyway.
@@ -64,19 +164,40 @@ pub(crate) fn boot() -> native::Guard {
         if sender::has_sentry() { "yes" } else { "no" },
         if sender::has_posthog() { "yes" } else { "no" }
     ));
-    // **After the install, and before anything in this process can fault.** The records being read
-    // were written by a process that no longer exists — that is the whole reason the crash log is
-    // on disk — so this is the only moment they can be turned into reports. It queues; it does not
-    // send. The flush is spawned later, after `net::global_init`, which is a separate ordering
-    // constraint that has already been got wrong once: a boot flush ahead of it logged
-    // `holding 5 records` directly above `net: bound libcurl`.
-    // Queue a completed out-of-process event first. The local C/panic log may describe the same
-    // crash; report_pending consumes the native keys so one process death remains one Sentry event.
-    let native_crashes = native::import_pending();
-    crashreport::report_pending(&native_crashes);
-    // The SDK capture backend starts only after consent is published and old fallback records are
-    // safely queued. Its guard lives for the whole app and restores the C tracer on clean exit.
-    native::sync(&c)
+    // Session's cold read ran behind the consent read on the same FIFO. Any storage/sign-in report
+    // it found therefore deferred while consent was unpublished; resolve that bounded batch now,
+    // on this worker, before the app leaves its boot gate.
+    crate::diag::replay_deferred();
+    storage::replay_deferred();
+    Activated { consent: c }
+}
+
+pub(crate) fn start_activation(
+    ready: BootReady,
+) -> Result<ActivationReceipt, crate::storage_worker::SubmitError> {
+    crate::storage_worker::submit(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| activate_boot(ready))).map_err(
+            |_| {
+                // Publication precedes deferred replay so its normal gates can run. If that replay
+                // panics, close authority again before reporting activation failure to the UI.
+                consent::install(Consent::default());
+                crate::log("telemetry: boot activation failed; reporting remains off");
+            },
+        )
+    })
+    .map(|ticket| ActivationReceipt {
+        ticket: Some(ticket),
+        resolved: None,
+    })
+}
+
+/// Configure only the native process-lifecycle backend on the main thread. Disk migration,
+/// crash import, deferred replay and spool work have already completed on the shared worker.
+pub(crate) fn finish_boot(ready: Activated) -> native::Guard {
+    let c = ready.consent;
+    // The SDK starts only after the worker has safely queued old fallback records. Its guard lives
+    // for the whole app and restores the C tracer on clean exit.
+    native::sync_prepared(&c)
 }
 
 /// The first candidate that exists and parses. Same search-order shape as the session file, and
@@ -616,9 +737,10 @@ pub(crate) fn retry_record_with_receipt(
 /// gone with it, and the canonical consent record receives a durable cleared state. Legacy
 /// candidates and queued records are cleaned up on a best-effort basis; a cleanup failure is
 /// retained as an explicit persistence outcome, not treated as proof that the record was absent.
-/// Every queued record, standing or one-off, is purged (`spool::purge_all_local`), and the native
-/// capture backend is stopped with its pending envelopes removed. A missing legacy file is not
-/// interpreted as "never asked" once a canonical cleared record exists.
+/// The worker attempts to purge every queued record, standing or one-off
+/// (`spool::purge_all_local`), and to stop the native capture backend and remove its pending
+/// envelopes. The receipt reports cleanup independently from the cleared record's durability. A
+/// missing legacy file is not interpreted as "never asked" once a canonical cleared record exists.
 ///
 /// ONE mechanism with two consumers, both behind `auth::forget_account`: the two Sign out doors
 /// (account menu, who's-watching pill) and Delete all local data.
@@ -865,6 +987,87 @@ pub(crate) fn is_minted_id(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cold_boot_receipt_is_pending_while_worker_storage_is_delayed_then_ready() {
+        let executor = crate::storage_worker::Executor::start(1).unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let ticket = executor
+            .submit(move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                BootReady {
+                    consent: Consent::default(),
+                }
+            })
+            .unwrap();
+        entered_rx.recv().unwrap();
+        let mut receipt = BootReceipt {
+            ticket: Some(ticket),
+            resolved: None,
+        };
+        assert!(matches!(receipt.poll(), BootPoll::Pending));
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match receipt.poll() {
+                BootPoll::Pending => {
+                    assert!(std::time::Instant::now() < deadline, "boot receipt stayed pending");
+                    std::thread::yield_now();
+                }
+                BootPoll::Ready(_) => break,
+                BootPoll::Failed => panic!("accepted cold boot disconnected"),
+            }
+        }
+    }
+
+    #[test]
+    fn saved_opt_in_replays_a_session_storage_error_before_boot_activation_is_ready() {
+        let _g = crate::testlock::serial();
+        crate::storage_worker::drain_for_test();
+        let saved = consent::current();
+        storage::forget();
+        consent::install(Consent::default());
+        let report = storage::report_error_with_candidate_reads(
+            storage::StorageErrorContext {
+                stage: storage::StorageStage::Unreachable,
+                service_error_code: None,
+                class: storage::SessionStorageClass::SecureUnavailable,
+                refused_marker: false,
+                key_outcome: None,
+                registered_with_app_id: false,
+                registered_with_name: false,
+                sealed_identity: None,
+            },
+            Some("app_dir:open_failed:5".into()),
+        );
+        assert_eq!(report, storage::ReportOutcome::Deferred);
+        assert_eq!(storage::deferred_len_for_test(), 1);
+        let opted_in = Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: true,
+            errors_scope: consent::ERRORS_SCOPE,
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        };
+        let mut receipt = start_activation(BootReady { consent: opted_in }).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match receipt.poll() {
+                ActivationPoll::Pending => {
+                    assert!(std::time::Instant::now() < deadline, "activation stayed pending");
+                    std::thread::yield_now();
+                }
+                ActivationPoll::Ready(_) => break,
+                ActivationPoll::Failed => panic!("activation worker disconnected"),
+            }
+        }
+        assert_eq!(storage::deferred_len_for_test(), 0);
+        assert!(consent::allows_errors_at(consent::ERRORS_SCOPE));
+        storage::forget();
+        consent::install(saved.unwrap_or_default());
+    }
 
     fn outcome(
         write: persistence::PersistResult,

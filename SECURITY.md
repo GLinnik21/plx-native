@@ -122,8 +122,11 @@ No account of its own, no server, no payment path, and no user-generated content
 **It does have telemetry, and that hedge used to say it did not.** A release binary carries a Sentry
 DSN and a PostHog project key — both **write-only ingest credentials**, publishable by design, which
 permit sending to a project and grant no read of anything in it. First run asks about crash reports
-and product analytics separately. The first answer remains a draft; answering the second records
-both choices, and only a **Share** answer enables that category and permits its POSTs to
+and product analytics separately. The first answer remains a draft; answering the second publishes
+both requested choices and queues their record on the bounded persistence worker. A withdrawal
+closes its runtime gate and removes its identifier immediately; an enable becomes effective only
+after its prospective local cutoff completes. The UI does not call Pending saved and reports a
+failed or uncertain write. Only a **Share** answer enables that category and permits its POSTs to
 `ingest.de.sentry.io` or `eu.i.posthog.com`. The one deliberate exception is the sign-in screen's
 one-off "Send report" press: it is its own consent, POSTs to Sentry under no standing answer
 either way, and carries no identifier — a researcher can tell it apart from the consent gate

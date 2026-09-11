@@ -47,19 +47,26 @@ impl Drop for Guard {
     }
 }
 
-/// Bring the capture backend into line with the currently published consent decision.
-///
-/// Boot imports pending envelopes before calling this. A withdrawal first restores the C crash
-/// tracer that Sentry found installed ahead of it, then removes both native directories.
-pub(crate) fn sync(c: &super::consent::Consent) -> Guard {
+/// Main-thread half of cold boot after [`prepare_boot`] has completed every explicit local purge
+/// and pending-envelope import on the persistence worker. SDK start/stop remains here because the
+/// native capture backend is process lifecycle state, not storage adapter work.
+pub(crate) fn sync_prepared(c: &super::consent::Consent) -> Guard {
     let wanted = c.answered() && c.errors && super::sender::sentry_dsn().is_some();
     if wanted {
         start();
     } else {
         stop();
-        purge_all();
     }
     Guard
+}
+
+pub(crate) fn prepare_boot(consent: &super::consent::Consent) -> Vec<CrashKey> {
+    if consent.errors && super::sender::sentry_dsn().is_some() {
+        import_pending_for(consent)
+    } else {
+        let _ = purge_all();
+        Vec::new()
+    }
 }
 
 /// Apply a consent change without manufacturing a second lifetime guard.
@@ -70,7 +77,7 @@ pub(crate) fn sync(c: &super::consent::Consent) -> Guard {
 pub(crate) fn sync_change(c: &super::consent::Consent) -> bool {
     let wanted = c.answered() && c.errors && super::sender::sentry_dsn().is_some();
     if wanted {
-        let _ = import_pending();
+        let _ = import_pending_for(c);
         start();
         set_user(c.errors_id.as_deref());
         // The SDK exposes no status for an already-active backend or scope flush. This return only
@@ -645,8 +652,8 @@ fn event_from_envelope(bytes: &[u8]) -> Option<(String, Vec<u8>, Option<CrashKey
 }
 
 /// Import every complete native envelope, deleting it only after the durable spool accepted it.
-pub(crate) fn import_pending() -> Vec<CrashKey> {
-    if !super::consent::allows_errors() || super::sender::sentry_dsn().is_none() {
+pub(crate) fn import_pending_for(consent: &super::consent::Consent) -> Vec<CrashKey> {
+    if !consent.errors || super::sender::sentry_dsn().is_none() {
         return Vec::new();
     }
     let Ok(entries) = std::fs::read_dir(pending_dir()) else {

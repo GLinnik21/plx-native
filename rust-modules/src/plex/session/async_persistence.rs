@@ -339,6 +339,44 @@ impl Coordinator {
         Ok(Some(receipt))
     }
 
+    fn update_ordinary(
+        &self,
+        executor: &dyn Submitter,
+        edit: impl FnOnce(&Session) -> Option<Session>,
+    ) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.requires_fresh
+            || LOCKED_STATE.load(std::sync::atomic::Ordering::Relaxed) != NOT_LOCKED
+        {
+            return false;
+        }
+        let current = CACHE.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some(current) = current.filter(|session| !session.client_id.is_empty()) else {
+            return false;
+        };
+        let Some(next) = edit(&current) else {
+            return false;
+        };
+        let Ok(revision) = next_revision(&mut state) else {
+            return false;
+        };
+        let command = next.clone();
+        let receipt = self.submit_locked(&mut state, revision, executor, move || {
+            execute_write(command, SaveAuthority::Routine)
+        });
+        match receipt {
+            Ok(receipt) => {
+                *CACHE.write().unwrap_or_else(|e| e.into_inner()) = Some(next);
+                install_ordinary_receipt(revision, Some(receipt));
+                true
+            }
+            Err(_) => {
+                install_ordinary_receipt(revision, None);
+                false
+            }
+        }
+    }
+
     fn replace(
         &self,
         executor: &dyn Submitter,
@@ -368,6 +406,32 @@ impl Coordinator {
         Ok(receipt)
     }
 
+    fn retry_ordinary(&self, expected_revision: u64, executor: &dyn Submitter) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.revision != expected_revision || state.requires_fresh {
+            return false;
+        }
+        let Some(snapshot) = CACHE.read().unwrap_or_else(|e| e.into_inner()).clone() else {
+            return false;
+        };
+        let Ok(revision) = next_revision(&mut state) else {
+            return false;
+        };
+        let receipt = self.submit_locked(&mut state, revision, executor, move || {
+            execute_write(snapshot, SaveAuthority::Routine)
+        });
+        match receipt {
+            Ok(receipt) => {
+                install_ordinary_receipt(revision, Some(receipt));
+                true
+            }
+            Err(_) => {
+                install_ordinary_receipt(revision, None);
+                false
+            }
+        }
+    }
+
     fn clear(
         &self,
         executor: &dyn Submitter,
@@ -377,6 +441,7 @@ impl Coordinator {
         let revision = next_revision(&mut state)?;
         state.revocation_floor = Some(revision);
         state.requires_fresh = true;
+        install_ordinary_receipt(0, None);
         // Runtime revocation is immediate even when the bounded queue cannot accept durability.
         *CACHE.write().unwrap_or_else(|e| e.into_inner()) = Some(Session::default());
         self.submit_locked(&mut state, revision, executor, persist)
@@ -472,6 +537,17 @@ impl CompletionGuard {
     }
 
     fn finish_outcome(&mut self, outcome: CompletionOutcome) -> CompletionOutcome {
+        match outcome {
+            CompletionOutcome::Uncertain { stage, errno } => crate::log(&format!(
+                "session: async persistence uncertain revision={} stage={stage:?} errno={errno}",
+                self.revision
+            )),
+            CompletionOutcome::Failed(failure) => crate::log(&format!(
+                "session: async persistence failed revision={} failure={failure:?}",
+                self.revision
+            )),
+            CompletionOutcome::Durable(_) | CompletionOutcome::Superseded => {}
+        }
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) = match outcome {
             CompletionOutcome::Durable(_) => LatestStatus::Durable,
             CompletionOutcome::Uncertain { stage, errno } => {
@@ -512,6 +588,15 @@ impl Submitter for SharedExecutor {
 
 static COORDINATOR: OnceLock<Coordinator> = OnceLock::new();
 static EXECUTOR: SharedExecutor = SharedExecutor;
+static ORDINARY_RECEIPT: Mutex<Option<Receipt>> = Mutex::new(None);
+static ORDINARY_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Called only while the coordinator state mutex is held, including clear. That lock makes
+/// revision publication + receipt replacement one ordering decision across concurrent producers.
+fn install_ordinary_receipt(revision: u64, receipt: Option<Receipt>) {
+    *ORDINARY_RECEIPT.lock().unwrap_or_else(|e| e.into_inner()) = receipt;
+    ORDINARY_REVISION.store(revision, std::sync::atomic::Ordering::Release);
+}
 
 fn coordinator() -> &'static Coordinator {
     COORDINATOR.get_or_init(Coordinator::new)
@@ -519,6 +604,8 @@ fn coordinator() -> &'static Coordinator {
 
 #[cfg(test)]
 pub(super) fn reset_for_test() {
+    *ORDINARY_RECEIPT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    ORDINARY_REVISION.store(0, std::sync::atomic::Ordering::Release);
     *coordinator()
         .state
         .lock()
@@ -529,6 +616,46 @@ pub(super) fn update(
     edit: impl FnOnce(&Session) -> Option<Session>,
 ) -> Result<Option<Receipt>, AdmissionError> {
     coordinator().update(&EXECUTOR, edit, execute_write)
+}
+
+/// Admit a routine preference/roster edit and retain one receipt for explicit failure polling.
+/// Replacing a pending receipt stays bounded: the newer admitted snapshot already contains the
+/// older edit, and the coordinator's latest cell becomes the relevant durability verdict.
+pub(super) fn update_ordinary(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
+    coordinator().update_ordinary(&EXECUTOR, edit)
+}
+
+/// Main-loop hook: poll the one retained ordinary receipt and publish/log its terminal result.
+/// No wait and no disk work; auth never calls this while holding its activation gate.
+pub(super) fn poll_ordinary() -> Status {
+    let receipt = ORDINARY_RECEIPT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(mut receipt) = receipt {
+        match receipt.poll() {
+            Poll::Pending { .. } => {
+                let revision = receipt.revision();
+                let mut slot = ORDINARY_RECEIPT.lock().unwrap_or_else(|e| e.into_inner());
+                if slot
+                    .as_ref()
+                    .is_none_or(|current| current.revision() < revision)
+                {
+                    *slot = Some(receipt);
+                }
+            }
+            Poll::Complete(_) => {}
+        }
+    }
+    status()
+}
+
+pub(super) fn ordinary_revision() -> u64 {
+    ORDINARY_REVISION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+pub(super) fn retry_ordinary(expected_revision: u64) -> bool {
+    coordinator().retry_ordinary(expected_revision, &EXECUTOR)
 }
 
 pub(super) fn replace(
@@ -615,6 +742,25 @@ mod tests {
             client_id: client.into(),
             ..Session::default()
         }
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let n = (chunk[0] as u32) << 16
+                | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+                | *chunk.get(2).unwrap_or(&0) as u32;
+            for i in 0..4 {
+                if i <= chunk.len() {
+                    out.push(ALPHABET[(n >> (18 - i * 6)) as usize & 63] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
     }
 
     fn durable(snapshot: Session, _: SaveAuthority) -> DiskOutcome {
@@ -1055,6 +1201,95 @@ mod tests {
     }
 
     #[test]
+    fn blocked_shared_disk_does_not_block_flag_reads_or_a_second_ui_admission() {
+        let _serial = crate::testlock::serial();
+        crate::storage_worker::drain_for_test();
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-session-blocked-ui-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        super::super::redirect_for_test(Some(dir.join("auth.json")));
+        crate::keymanager::disarm_for_test();
+        super::super::save(&session("blocked-client"));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let blocker = crate::storage_worker::submit(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+        .unwrap();
+        entered_rx.recv().unwrap();
+        let began = std::time::Instant::now();
+        assert!(update_ordinary(|current| {
+            let mut next = current.clone();
+            next.user.title = "first-ui-event".into();
+            Some(next)
+        }));
+        assert!(update_ordinary(|current| {
+            let mut next = current.clone();
+            next.server.name = "settings-event".into();
+            Some(next)
+        }));
+        assert_eq!(super::super::snapshot().user.title, "first-ui-event");
+        assert_eq!(super::super::snapshot().server.name, "settings-event");
+        assert_eq!(status().latest, Some(LatestStatus::Pending));
+        assert!(began.elapsed() < std::time::Duration::from_millis(250));
+        release_tx.send(()).unwrap();
+        blocker.wait_blocking().unwrap();
+        crate::storage_worker::drain_for_test();
+        let _ = poll_ordinary();
+        super::super::redirect_for_test(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_ordinary_producers_retain_the_newest_revision_receipt() {
+        let _serial = crate::testlock::serial();
+        crate::storage_worker::drain_for_test();
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-session-ordinary-race-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        super::super::redirect_for_test(Some(dir.join("auth.json")));
+        crate::keymanager::disarm_for_test();
+        super::super::save(&session("ordinary-race"));
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let first_barrier = barrier.clone();
+        let first = std::thread::spawn(move || {
+            first_barrier.wait();
+            update_ordinary(|current| {
+                let mut next = current.clone();
+                next.user.title = "first".into();
+                Some(next)
+            })
+        });
+        let second_barrier = barrier.clone();
+        let second = std::thread::spawn(move || {
+            second_barrier.wait();
+            update_ordinary(|current| {
+                let mut next = current.clone();
+                next.server.name = "second".into();
+                Some(next)
+            })
+        });
+        barrier.wait();
+        assert!(first.join().unwrap());
+        assert!(second.join().unwrap());
+        let status = status();
+        assert_eq!(ordinary_revision(), status.latest_revision);
+        assert_eq!(super::super::snapshot().user.title, "first");
+        assert_eq!(super::super::snapshot().server.name, "second");
+        crate::storage_worker::drain_for_test();
+        let _ = poll_ordinary();
+        super::super::redirect_for_test(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn shared_worker_writes_canonical_session_and_a_cold_reopen_reads_it() {
         let _serial = crate::testlock::serial();
         crate::storage_worker::drain_for_test();
@@ -1087,6 +1322,149 @@ mod tests {
         assert_eq!(reopened.client_id, "canonical-client");
         assert_eq!(reopened.account_token, "canonical-account");
         crate::storage_worker::drain_for_test();
+        super::super::redirect_for_test(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn in_flight_cold_worker_prevents_a_second_sync_reader_crossing_the_boundary() {
+        let _serial = crate::testlock::serial();
+        crate::storage_worker::drain_for_test();
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-session-cold-owner-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("auth.json");
+        super::super::redirect_for_test(Some(legacy.clone()));
+        let mut stored = session("cold-owner");
+        stored.account_token = "cold-secret".into();
+        std::fs::write(&legacy, serde_json::to_vec(&stored).unwrap()).unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let blocker = crate::storage_worker::submit(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+        .unwrap();
+        entered_rx.recv().unwrap();
+        let mut receipt = super::super::start_load().unwrap();
+        assert!(super::super::load().account_token.is_empty());
+        assert!(super::super::peek().account_token.is_empty());
+        assert!(matches!(receipt.poll(), super::super::LoadPoll::Pending));
+        release_tx.send(()).unwrap();
+        blocker.wait_blocking().unwrap();
+        crate::storage_worker::drain_for_test();
+        match receipt.poll() {
+            super::super::LoadPoll::Ready(loaded) => {
+                assert_eq!(loaded.account_token, "cold-secret")
+            }
+            _ => panic!("the owning cold worker did not publish Ready"),
+        }
+        super::super::redirect_for_test(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dropped_or_refused_cold_job_releases_ownership_for_retry() {
+        let _serial = crate::testlock::serial();
+        crate::storage_worker::drain_for_test();
+        super::super::COLD_LOAD_ACTIVE.store(false, Ordering::Release);
+        let queued = super::super::prepare_cold_load().unwrap();
+        assert!(super::super::COLD_LOAD_ACTIVE.load(Ordering::Acquire));
+        assert!(matches!(
+            super::super::prepare_cold_load(),
+            Err(crate::storage_worker::SubmitError::Full)
+        ));
+        drop(queued);
+        assert!(!super::super::COLD_LOAD_ACTIVE.load(Ordering::Acquire));
+        let retry = super::super::prepare_cold_load().expect("retry owns the released boundary");
+        drop(retry);
+        assert!(!super::super::COLD_LOAD_ACTIVE.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn shared_worker_seals_and_reopens_with_the_worker_scoped_keymanager_script() {
+        struct Disarm;
+        impl Drop for Disarm {
+            fn drop(&mut self) {
+                crate::storage_worker::drain_for_test();
+                crate::keymanager::disarm_for_test();
+            }
+        }
+
+        let _serial = crate::testlock::serial();
+        let _disarm = Disarm;
+        crate::storage_worker::drain_for_test();
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-session-async-sealed-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        super::super::redirect_for_test(Some(dir.join("auth.json")));
+        super::super::write_proven_marker(crate::keymanager::Identity::Anonymous);
+        let mut snapshot = session("sealed-client");
+        snapshot.account_token = "sealed-account".into();
+        let plain = serde_json::to_vec_pretty(&snapshot).unwrap();
+        crate::keymanager::arm_worker_for_test(vec![
+            ("generateKey", Ok(serde_json::json!({"returnValue": true}))),
+            (
+                "begin",
+                Ok(serde_json::json!({
+                    "returnValue": true, "handle": "h-enc", "iv": "MDEyMzQ1Njc4OWFi"
+                })),
+            ),
+            (
+                "finish",
+                Ok(serde_json::json!({"returnValue": true, "output": "Y2lwaGVydGV4dA=="})),
+            ),
+            (
+                "begin",
+                Ok(serde_json::json!({"returnValue": true, "handle": "h-dec"})),
+            ),
+            (
+                "finish",
+                Ok(serde_json::json!({"returnValue": true, "output": b64(&plain)})),
+            ),
+        ]);
+        let coordinator = Coordinator::new();
+        let receipt = coordinator
+            .replace(
+                &SharedExecutor,
+                snapshot,
+                SaveAuthority::Routine,
+                execute_write,
+            )
+            .unwrap();
+        assert_eq!(
+            receipt.wait_blocking().outcome,
+            CompletionOutcome::Durable(Operation::Write(PersistOutcome::PersistedSealed))
+        );
+        assert_eq!(crate::keymanager::calls_for_test().len(), 5);
+
+        crate::keymanager::arm_worker_for_test(vec![
+            (
+                "begin",
+                Ok(serde_json::json!({"returnValue": true, "handle": "h-open"})),
+            ),
+            (
+                "finish",
+                Ok(serde_json::json!({"returnValue": true, "output": b64(&plain)})),
+            ),
+        ]);
+        super::super::redirect_for_test(Some(dir.join("auth.json")));
+        let mut load = super::super::start_load().unwrap();
+        crate::storage_worker::drain_for_test();
+        match load.poll() {
+            super::super::LoadPoll::Ready(reopened) => {
+                assert_eq!(reopened.client_id, "sealed-client");
+                assert_eq!(reopened.account_token, "sealed-account");
+            }
+            _ => panic!("sealed worker load did not resolve ready"),
+        }
+        assert_eq!(crate::keymanager::calls_for_test().len(), 2);
         super::super::redirect_for_test(None);
         let _ = std::fs::remove_dir_all(dir);
     }

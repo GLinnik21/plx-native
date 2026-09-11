@@ -53,22 +53,26 @@ many launches in a row have gone unanswered, so a key service that never comes b
 than asking forever; it is removed as soon as one launch reads the sign-in successfully, and it too
 carries no key material.
 
-Those lifetimes differ. Signing out clears the in-memory sign-in and writes a non-identifying
-canonical cleared record so the app will not re-import the old account; it attempts to remove the
-old sign-in material, servers registered with it and their tokens — and with them your
+Those lifetimes differ. Signing out immediately clears the in-memory sign-in and reporting gates,
+then queues a non-identifying canonical cleared record so the app will not re-import the old
+account. The app does not permit a new sign-in until that cleared record is durably confirmed. It
+also queues removal of the old sign-in material, servers registered with it and their tokens — and with them your
 optional-reporting answers, both identifiers and any queued report,
 because those choices were made by the person who signed in and say nothing about whoever signs
 in next: the next sign-in is asked afresh. Switching between the profiles of one Plex account is
 not a sign-out and keeps them. A queued report is deleted once sent. Switching a category off
-deletes that category's own queued reports; signing out, or Delete all local data, destroys
-everything queued, including a one-off report you already pressed "Send" for — a one-off report
-belongs to no category, so only those two erase it. The log rotates continuously. External candidate
+immediately closes its gate and deletes its identifier, then queues removal of that category's
+reports. Signing out, or Delete all local data, immediately closes every reporting gate and clears
+pending in-memory reports, then queues removal of everything on disk, including a one-off report
+you already pressed "Send" for — a one-off report belongs to no category, so only those two erase
+it. The log rotates continuously. External candidate
 files can survive an uninstall because webOS gives an application no way to run code as it is
 removed; the packaged app directory is removed with the application, while external migration
-sources may remain. Cleanup is attempted, but a failure can leave obsolete material behind. Delete
-all local data writes the same non-identifying cleared record and attempts to remove recoverable
-session material before uninstalling if you also
-want external PlxNative data removed.
+sources may remain. Cleanup is separate from the cleared record's durability: the app reports an
+incomplete cleanup, and a failure can leave obsolete material behind, but closed reporting gates
+do not permit that material to be sent. Delete all local data queues the same non-identifying
+cleared record and removal of recoverable session material. Resolve any failure it reports before
+uninstalling if you also want external PlxNative data removed.
 
 ## Optional crash reports
 
@@ -124,7 +128,7 @@ report contains which step failed
 `write_failed`, `untrusted_mode` — this television found the saved sign-in file writable by
 another app on the device, so rather than trust its contents it stopped using them and set the
 file aside unread, under the same name with `.untrusted` on the end, which signing out or Delete
-all local data removes — or
+all local data attempts to remove and reports if cleanup is incomplete — or
 `identity_unavailable` — the saved sign-in records which system-bus identity protected it, and
 this launch could not register as that one, so nothing was decided about the key — your saved
 sign-in is left as it is, unless this happened while checking an earlier install for a stale probe
@@ -254,13 +258,15 @@ or exact viewing history.
 ## Your choices
 
 Crash reports and product analytics are independent. You can enable either, both or neither during
-setup, and change either choice later in Settings → Privacy & data. Withdrawing a choice stops new
-reports of that category, removes queued records that are no longer permitted, and deletes that
-category's identifier from this television. One report that the sender had already picked up at
-the moment you withdraw a category may still be sent; no further report of that category is picked
-up after it. Signing out, or Delete all local data, is a harder stop: it purges everything queued
-for either category at once, including a one-off report, so nothing further goes out from either
-path.
+setup, and change either choice later in Settings → Privacy & data. Withdrawing a choice
+immediately stops new reports of that category and deletes that category's identifier from this
+television; removal of queued records is then performed on the bounded persistence worker. One
+report that the sender had already picked up at the moment you withdraw a category may still be
+sent; no further report of that category is picked up after it. Signing out, or Delete all local
+data, immediately closes both reporting gates and clears pending in-memory reports, then orders the
+durable cleared records and on-disk purge on that worker before a new sign-in is permitted. A disk
+cleanup failure is shown separately; it can leave obsolete local material behind, but closed gates
+do not permit that material to be sent.
 
 When this notice changes, whether you are asked again depends on what changed. A wording-only
 revision — clearer language describing the same data and the same purpose — is never a new

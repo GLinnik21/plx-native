@@ -487,7 +487,7 @@ fn begin_flow_if<R>(
 fn cancel_and_load_session() -> (Session, u64) {
     let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
     let epoch = AUTH_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
-    (session::load(), epoch)
+    (session::snapshot(), epoch)
 }
 
 fn with_live_epoch<R>(epoch: u64, f: impl FnOnce() -> R) -> Option<R> {
@@ -867,7 +867,7 @@ fn restart(expected: Option<(Phase, u64)>) -> bool {
             let fresh_attempt = restart_is_a_new_attempt(c.signin_active);
             match plan {
                 Restart::Discovery { .. } => restart_discovery_ctl(c),
-                Restart::Login => *c = fresh_login_ctl(session::load()),
+                Restart::Login => *c = fresh_login_ctl(session::snapshot()),
             }
             (plan, fresh_attempt)
         },
@@ -1006,7 +1006,7 @@ pub fn cancel() -> bool {
     // [`cancel_and_load_session`] guards for its own callers: nothing may write that file, or act
     // on an epoch, while this is held.
     let gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
-    cancel_under_gate(&gate, session::load())
+    cancel_under_gate(&gate, session::snapshot())
 }
 
 /// [`cancel`] with the stored session NAMED and the activation gate already held.
@@ -1697,7 +1697,7 @@ pub fn start_switch(from: Picker) {
                         c.users = users;
                         true
                     });
-                    live && session::update(|s| {
+                    live && session::update_ordinary(|s| {
                         (s.client_id == cid && s.account_token == tok && s.user.uuid == profile)
                             .then(|| Session {
                                 home_users: roster,
@@ -1754,15 +1754,17 @@ pub fn erase_local_state() {
 /// revoke what it just registered; if sign-out got here first, its epoch check refuses the old
 /// token. There is no check→revoke→re-register window.
 ///
-/// **The telemetry decision ends with the tenure too** (`telemetry::forget`), and it goes FIRST:
-/// its first act is publishing the unanswered decision, which is the instant every producer's gate
-/// closes and the sender stops picking up records — `PRIVACY.md` promises that no further report
-/// is picked up after a sign-out, so the reset cannot sit behind the session's file I/O, and it has to precede
-/// [`sign_out`]'s `start_login`, which emits `SignInStarted` on its first line. Consent belongs to
-/// the person who gave it; the next account to sign in is asked afresh, and nothing it causes can
-/// be reported under the departed account's identifiers. Outside the gate, because `forget` takes
-/// the spool lock and the consent lock and nothing here should nest under the activation gate that
-/// it does not have to.
+/// **The telemetry decision ends with the tenure too** (`telemetry::forget_with_receipt`), and its
+/// admission goes FIRST. Admission publishes the unanswered decision before any worker I/O, which
+/// is the instant every producer's gate closes and the sender stops picking up records. Consent and
+/// Session clear operations then enter the same FIFO in that order; this controller remains in
+/// [`Phase::Resetting`] until both cleared records are durably confirmed. Cleanup is reported
+/// separately and is not disguised as reset durability. The admission must precede [`sign_out`]'s
+/// later `start_login`, which emits `SignInStarted` on its first line: consent belongs to the person
+/// who gave it, and the next account must be asked afresh rather than reporting under the departed
+/// account's identifiers. Admission stays outside the activation gate because it performs only
+/// short in-memory publication and enqueue; spool, keymanager and disk work run on the shared
+/// persistence worker.
 fn forget_account(destination: ResetDestination) {
     // Admission order is the cross-domain barrier: consent revocation enters the one shared FIFO
     // first, then Session revocation. Neither operation waits here.
@@ -3549,7 +3551,7 @@ pub fn refresh_roster() {
     // afterwards admits: load old session → sign out → capture new epoch → trust old credentials.
     let (sess, epoch) = {
         let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
-        (session::load(), network_epoch())
+        (session::snapshot(), network_epoch())
     };
     if sess.account_token.is_empty() {
         return; // signed out; nothing to ask plex.tv with
@@ -3598,7 +3600,7 @@ pub fn refresh_roster() {
         // share, while dropping a machine plex.tv no longer names.
         let applied = with_live_epoch(epoch, || {
             let mut reconciled: Option<(Vec<SourceRef>, ServerRef, bool, bool)> = None;
-            let persisted = session::update(|s| {
+            let admitted = session::update_ordinary(|s| {
                 if !same_session_identity(s, &sess) {
                     return None;
                 }
@@ -3648,9 +3650,9 @@ pub fn refresh_roster() {
                 // and tokens are installed, so the Sources list never falls back to NotProbed.
                 publish_settled_probes(&settled);
             }
-            Some((sources.len(), persisted, usable_refresh))
+            Some((sources.len(), admitted, usable_refresh))
         });
-        let Some(Some((n, persisted, usable_refresh))) = applied else {
+        let Some(Some((n, admitted, usable_refresh))) = applied else {
             return log("auth: roster refresh dropped — session identity changed while probing");
         };
         if !usable_refresh {
@@ -3660,7 +3662,7 @@ pub fn refresh_roster() {
         }
         log(&format!(
             "auth: roster refresh — {n} server(s){}",
-            if persisted { ", persisted" } else { "" }
+            if admitted { ", persistence queued" } else { "" }
         ));
     });
 }
@@ -3747,7 +3749,7 @@ pub(crate) fn request_endpoint_refresh(id: ServerId) {
         {
             ctl_session
         } else {
-            session::peek()
+            session::snapshot()
         };
         if sess.account_token.is_empty()
             || !sess
@@ -3800,7 +3802,7 @@ pub(crate) fn request_endpoint_refresh(id: ServerId) {
             // home-user roster updates instead of whole-saving the older probe snapshot.
             let mut from_disk = None;
             if !pending {
-                let _ = session::update(|disk| {
+                let _ = session::update_ordinary(|disk| {
                     if !same_session_identity(disk, &sess) {
                         return None;
                     }
@@ -4115,8 +4117,9 @@ fn merge_profile_roster(
     if !apply_pending {
         let expected = expected.clone();
         let next = next.clone();
-        let _ =
-            session::update(|disk| same_session_identity(disk, &expected).then(|| next.clone()));
+        let _ = session::update_ordinary(|disk| {
+            same_session_identity(disk, &expected).then(|| next.clone())
+        });
     }
 }
 
@@ -4791,6 +4794,29 @@ mod tests {
         let record =
             std::fs::read_to_string(redirects.dir.join("state/session.json")).unwrap();
         assert!(record.contains(r#""state":"Cleared""#));
+    }
+
+    #[test]
+    fn stale_refresh_cannot_admit_an_ordinary_session_edit_after_logout() {
+        let _g = crate::testlock::serial();
+        let _redirects = ResetRedirects::new("stale-ordinary-refresh");
+        session::save(&signed_in_as("u-adult"));
+        let stale_epoch = network_epoch();
+        forget_account(ResetDestination::Deleted);
+        let ran = std::sync::atomic::AtomicBool::new(false);
+        let applied = with_live_epoch(stale_epoch, || {
+            ran.store(true, std::sync::atomic::Ordering::Release);
+            session::update_ordinary(|current| {
+                let mut next = current.clone();
+                next.user.title = "departed-account".into();
+                Some(next)
+            })
+        });
+        assert!(applied.is_none());
+        assert!(!ran.load(std::sync::atomic::Ordering::Acquire));
+        assert!(session::snapshot().account_token.is_empty());
+        crate::storage_worker::drain_for_test();
+        assert_eq!(phase(), Phase::Deleted);
     }
 
     #[test]
@@ -7582,6 +7608,61 @@ mod tests {
         assert!(take_ready().is_none());
         assert!(with_ctl(|c| c.authorized_in_flow));
         assert_eq!(crate::plex::session::fresh_write_attempts(), before);
+        with_ctl(|c| *c = Ctl::default());
+    }
+
+    #[test]
+    fn synthetic_discovery_persistence_completion_and_error_land_once() {
+        let _g = crate::testlock::serial();
+        let attempt = next_attempt();
+        with_ctl(|c| {
+            *c = Ctl {
+                phase: Phase::Discovering,
+                attempt,
+                session: signed_in_as("u-adult"),
+                ..Ctl::default()
+            }
+        });
+        let users = vec![
+            UserTile {
+                uuid: "first".into(),
+                ..UserTile::default()
+            },
+            UserTile {
+                uuid: "second".into(),
+                ..UserTile::default()
+            },
+        ];
+        land_discovery_persistence(
+            network_epoch(),
+            attempt,
+            false,
+            users,
+            session::PersistOutcome::PersistedPlaintext,
+        );
+        assert_eq!(phase(), Phase::Profiles);
+        assert_eq!(with_ctl(|c| c.users.len()), 2);
+
+        let failed_attempt = next_attempt();
+        with_ctl(|c| {
+            *c = Ctl {
+                phase: Phase::Discovering,
+                attempt: failed_attempt,
+                session: signed_in_as("u-adult"),
+                ..Ctl::default()
+            }
+        });
+        land_discovery_persistence(
+            network_epoch(),
+            failed_attempt,
+            true,
+            Vec::new(),
+            session::PersistOutcome::WriteFailed,
+        );
+        assert_eq!(phase(), Phase::Ready);
+        let warning = pending_persistence_warning().expect("discovery failure stays visible");
+        assert_eq!(warning.site, PersistenceWarningSite::Discovery);
+        assert_eq!(warning.outcome, session::PersistOutcome::WriteFailed);
         with_ctl(|c| *c = Ctl::default());
     }
 

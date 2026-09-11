@@ -1052,7 +1052,7 @@ fn lib_refs() -> Vec<crate::plex::pins::LibRef<'static>> {
 /// latter, and this is the reason the read is here rather than inside [`pinned`].
 fn resolve_pins() {
     let libs = lib_refs();
-    let sess = crate::plex::session::peek();
+    let sess = crate::plex::session::snapshot();
     let rec = sess.pins_for(&crate::plex::session::current_profile_key());
     let want = crate::plex::pins::resolve(&libs, rec);
     unsafe {
@@ -1084,7 +1084,7 @@ pub(crate) fn record_pins(asked: bool) {
     // Through `update`, never `save`: this owns ONE field of a file four other writers touch (the
     // roster worker, the profile switch, the sign-in save, the search-recents flush), and a
     // whole-file replace from a stale snapshot is how a lost update signs the device out.
-    crate::plex::session::update(|s| {
+    let admitted = crate::plex::session::update_ordinary(|s| {
         // …and MERGE rather than replace, because this table is what has answered, not what
         // exists: a friend's server asleep at the moment a switch is flipped must not have its
         // recorded answer overwritten with silence (`plex::pins::carry_forward`).
@@ -1094,15 +1094,16 @@ pub(crate) fn record_pins(asked: bool) {
         written = Some(rec);
         Some(next)
     });
-    // Only what actually reached the file: `update` is a no-op on a session with no `client_id`,
-    // and adopting a record that was never written would make the snapshot disagree with disk.
+    // Only what the coordinator admitted: an uninitialized or refused store publishes no Session
+    // snapshot, so adopting that record here would make the two in-memory views disagree.
     //
     // No `SECTIONS_GEN` bump here, deliberately — a caller that CHANGED something owes one
     // ([`toggle_pin`] makes it, one line after this call). Writing alone cannot change what
     // [`library_pins`] answers: the fresh record is the table's own state, and `carry_forward` can
     // only put back entries [`RECORDED`] already held. A future caller that flips a row without
     // going through `toggle_pin` owes the bump too, or Home does not re-merge.
-    if let Some(rec) = written {
+    if admitted {
+        let rec = written.expect("an admitted pins update produced its record");
         unsafe { *addr_of_mut!(RECORDED) = Some(rec) };
     }
 }
@@ -1110,7 +1111,7 @@ pub(crate) fn record_pins(asked: bool) {
 /// **Has the first-run question been put to the profile now watching?** — the route's own gate,
 /// answered from the granted roster and this profile's record. See `plex::pins::asks`.
 pub(crate) fn first_run_asks() -> bool {
-    let sess = crate::plex::session::peek();
+    let sess = crate::plex::session::snapshot();
     let granted = crate::plex::server_ids().count();
     #[cfg(test)]
     let granted = granted.max(sources().len());

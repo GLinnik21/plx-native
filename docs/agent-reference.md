@@ -488,9 +488,11 @@ which the linking section explains is load-bearing rather than tidy.
   the mechanism for viewing content is that call sites do not write it, pinned by a test that greps
   the tree — see `no_log_call_site_interpolates_viewing_content`. Adding a `log(&format!(…))` that
   interpolates an item title, a search query or subtitle text will fail `make check`.
-  Identities come from `plex::session::publish_identities`, PUSHED on load/save; the scrubber must
-  never call `session::peek()` from the log path — it takes the session lock and reads files, which
-  deadlocked the whole `auth` test block and put five `read`s on every log line.
+  Identities come from `plex::session::publish_identities`, PUSHED when the persistence worker
+  loads or saves. The scrubber must never call the compatibility `session::peek()` from the log
+  path: before cold-load admission a cache miss can still cross into disk/keymanager work. That
+  historical wiring deadlocked the whole `auth` test block and put five reads on every log line;
+  production boot now owns the cold read through `start_load`, but the hot-path rule is unchanged.
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Four** callers in a lab build and three in every other, each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;

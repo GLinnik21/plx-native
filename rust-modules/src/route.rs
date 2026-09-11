@@ -4734,7 +4734,7 @@ fn persist_quality_choice(q: Quality) -> Quality {
     QUALITY.store(q.index(), Ordering::Relaxed);
     // A session write is a read-modify-write under the session lock: changing this preference
     // must not overwrite a roster refresh, a profile switch, or another profile's recents.
-    let _ = crate::plex::session::update(|s| {
+    let _ = crate::plex::session::update_ordinary(|s| {
         if s.playback_quality == Some(q) {
             None
         } else {
