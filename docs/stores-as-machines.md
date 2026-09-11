@@ -1,5 +1,14 @@
 # Stores as machines — restructure phase 4
 
+R2B-E endpoint recovery: `stores::apply` returns a `StoreOutcome` containing the existing
+`changed` verdict and a bounded, deduplicated set of endpoint requests in first-observation
+order. Hubs failure/refetch/retry, Browse discovery and ViewState's hub refetch propagate that
+set to their callers. Generic store steps use the layer-neutral `StoreEffectHost`; Bridge and
+Onboard translate requests to `AppFx::Session(RequestEndpoint)`. Boot/run accumulate outcomes
+locally and share the temporary app-side Session command executor with Bridge. Data modules
+no longer execute auth recovery directly. Physical Session ownership remains the next R2B
+package: the temporary executor still calls the existing auth controller.
+
 The design note for spec v4 (`ui-plxnative-structured-phoenix.md`) phase 4, written from the
 code rather than from the spec's sentence, because the sentence hides four decisions the tree
 forces. Read `rust-modules/src/stores/mod.rs` for the vocabulary; this is the reasoning.

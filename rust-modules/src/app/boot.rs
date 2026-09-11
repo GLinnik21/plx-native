@@ -254,7 +254,7 @@ pub(crate) enum BootTo {
     // EVERY store below is keyed to whichever server was current when it was filled, and none
     // of them carries a server in its keys, so leaving one behind means server A's ratingKeys
     // being fetched from server B: the same catalog index opening a different film.
-pub(crate) fn activate_server() {
+pub(crate) fn activate_server() -> crate::stores::EndpointRefreshSet {
         // the browse store must never carry the previous user's (or server's) cached grid,
         // watched-state angles, or section tabs forward
         crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
@@ -265,16 +265,17 @@ pub(crate) fn activate_server() {
         // wifi hiccup can't blank a populated Home), which makes this the one place that
         // must still wipe it — otherwise a profile switch whose fetch fails would leave the
         // previous user's shelves on screen.
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        let _ = crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
         crate::stores::person::apply(crate::stores::person::PersonCmd::Reset); // ditto for an open person page's shelves
                                 // …and any view-state write still queued or owed a refresh. It belongs to the account
                                 // that pressed it, and the refresh it owes would land on shelves this reset just wiped.
         crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
         // Catalog activation is request-only. Home and section discovery both use their
         // existing worker/mailbox pumps, so a remote endpoint cannot park the SDL loop here.
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs);
-        crate::stores::browse::discover_pump();
+        let mut endpoints = crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints;
+        endpoints.merge(crate::stores::browse::discover_pump());
         log("pms: catalog activation queued");
+        endpoints
 }
 
     // Install the PMS client (the read layer AND the playback path) as the CURRENT server,
@@ -289,7 +290,7 @@ pub(crate) fn install_pms(
     token: &str,
     tier: Option<crate::plex::probe::Location>,
     pin: Option<&crate::plex::ResolvePin>,
-) {
+) -> crate::stores::EndpointRefreshSet {
         crate::plex::install(origin, token, pin); // a (re)install is a login / profile switch
                                              // `install` may re-point the slot by publishing a fresh Client, whose link starts
                                              // unknown. Restore the persisted/raced winner only after that publication.
@@ -334,7 +335,7 @@ pub(crate) fn install_pms(
             // the roster's own answer about this server: a handle means someone else's.
             crate::plex::describe_server(id, &s.name, &s.handle, s.handle.is_empty());
         }
-        activate_server();
+        activate_server()
 }
 
 /// Everything before the loop: SDL and the window, GL, text, the poster workers, the boot gate
@@ -628,12 +629,13 @@ pub(crate) unsafe fn boot(
         log(&format!(
             "boot: dev token — link={tier:?} (classified from the configured address)"
         ));
-        install_pms(
+        let endpoints = install_pms(
             &crate::plex::Origin::http(&host_s, pms_port),
             &dev_token,
             Some(tier),
             None,
         );
+        super::bridge::execute_endpoint_outcomes(endpoints);
         BootTo::Home
     } else if session.can_go_local() {
         if session.home_users.len() > 1 && (!automated_boot() || pick_user.is_some()) {
@@ -670,12 +672,13 @@ pub(crate) unsafe fn boot(
             // OWNER's record whoever was actually signed in. (`auth::take_ready`, the other
             // way into Home, already sets it before its own `install_pms` for this reason.)
             crate::plex::session::set_current(Some(session.user.clone()));
-            install_pms(
+            let endpoints = install_pms(
                 &session.server.origin(),
                 session.pms_token(),
                 session.server.tier,
                 session.server.resolve_pin().as_ref(),
             );
+            super::bridge::execute_endpoint_outcomes(endpoints);
             // Re-learn the roster only AFTER the spawn-time primary snapshot was installed.
             // If a fast refresh re-pointed first, installing that stale snapshot afterwards
             // put the dead origin back into the live registry for the rest of this run.

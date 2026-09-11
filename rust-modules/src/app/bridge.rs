@@ -122,6 +122,33 @@ impl HomeLike for AppHost {
     fn hubs<'a>(cx: &Cx<'a, Self>) -> crate::pms::HubsView<'a> { cx.views.hubs }
 }
 
+impl crate::stores::StoreEffectHost for AppHost {
+    fn endpoint_refresh(request: crate::stores::EndpointRefresh) -> AppFx {
+        AppFx::Session(crate::auth::SessionCmd::RequestEndpoint { sid: request.sid })
+    }
+}
+
+/// Transitional executor shared by boot and the dispatcher. R2B's physical Session owner
+/// replaces this execution with addressed Session delivery; no data module may call it.
+pub(crate) fn execute_session_command(command: crate::auth::SessionCmd) {
+    match command {
+        crate::auth::SessionCmd::RequestEndpoint { sid } => crate::auth::request_endpoint_refresh(sid),
+    }
+}
+
+pub(crate) fn execute_endpoint_outcomes(endpoints: crate::stores::EndpointRefreshSet) {
+    execute_endpoint_outcomes_with(endpoints, execute_session_command);
+}
+
+fn execute_endpoint_outcomes_with(
+    endpoints: crate::stores::EndpointRefreshSet,
+    mut execute: impl FnMut(crate::auth::SessionCmd),
+) {
+    for request in endpoints.iter() {
+        execute(crate::auth::SessionCmd::RequestEndpoint { sid: request.sid });
+    }
+}
+
 impl crate::screens::registry::PlayerLike for AppHost {
     fn session<'a>(cx: &Cx<'a, Self>) -> &'a crate::route::PlaybackSession { cx.views.session }
 }
@@ -833,14 +860,14 @@ impl Rig<AppHost> for Bridge {
         match msg {
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
             AppMsg::HubsResult(result) => {
-                crate::stores::hubs::land(result);
+                crate::stores::hubs::land(result).endpoints.emit(fx);
                 Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Hubs) => {
                 crate::stores::hubs::HubsStore.step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
             }
             AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery) => {
-                crate::stores::browse::discover_pump();
+                crate::stores::browse::discover_pump().emit(fx);
                 Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Browse) => {
@@ -857,19 +884,7 @@ impl Rig<AppHost> for Bridge {
         self.effect_return = ret;
     }
     fn app_fx(&mut self, from: MachineId, fx: AppFx, _parts: &CxParts<u32>, out: &mut Effects<'_, AppHost>) {
-        match fx {
-            AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
-            AppFx::StoreWork(work) => out.push(Fx::Deliver(
-                MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),
-            AppFx::Consent(ConsentCmd::Record { errors, usage }) => self.consent.record(errors, usage),
-            AppFx::Loop(req) => self.reqs.push(req),
-            AppFx::Content(req) => self.content_reqs.push((from, req, self.effect_return.clone())),
-            AppFx::Home(req) => self.home_reqs.push((from, req, self.effect_return.clone())),
-            AppFx::Library(req) => self.library_reqs.push((from, req, self.effect_return.clone())),
-            AppFx::Search(req) => self.search_reqs.push((from, req, self.effect_return.clone())),
-            AppFx::Player(req) => self.player_reqs.push(req),
-            AppFx::ItemMenu(req) => self.item_menu_reqs.push(req),
-        }
+        self.app_fx_with_session_executor(from, fx, out, execute_session_command);
     }
     fn log(&mut self, line: &str) {
         crate::log(line);
@@ -920,6 +935,27 @@ impl Rig<AppHost> for Bridge {
     }
     fn back_at_root(&mut self) {
         self.reqs.push(LoopReq::BackAtRoot);
+    }
+}
+
+impl Bridge {
+    /// The production effect dispatch, with only the external Session executor injectable.
+    fn app_fx_with_session_executor(&mut self, from: MachineId, fx: AppFx,
+        out: &mut Effects<'_, AppHost>, execute: impl FnOnce(crate::auth::SessionCmd)) {
+        match fx {
+            AppFx::Session(command) => execute(command),
+            AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
+            AppFx::StoreWork(work) => out.push(Fx::Deliver(
+                MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),
+            AppFx::Consent(ConsentCmd::Record { errors, usage }) => self.consent.record(errors, usage),
+            AppFx::Loop(req) => self.reqs.push(req),
+            AppFx::Content(req) => self.content_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Home(req) => self.home_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Library(req) => self.library_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Search(req) => self.search_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Player(req) => self.player_reqs.push(req),
+            AppFx::ItemMenu(req) => self.item_menu_reqs.push(req),
+        }
     }
 }
 
@@ -2201,6 +2237,99 @@ fn _measure_is_object_safe(m: &dyn Measure, s: &CStr) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
+        let _g = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("endpoint-edges");
+        crate::plex::reset_servers_for_test();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+        let a = crate::plex::register_for_test("endpoint-a", "127.0.0.1", 9, "synthetic", "cid");
+        let b = crate::plex::register_for_test("endpoint-b", "127.0.0.1", 10, "synthetic", "cid");
+        crate::plex::describe_server(a, "Synthetic", "Synthetic share", false);
+        let expected = [b, a]; // Home's own-first observation order, deliberately not slot order.
+        crate::pms::with_refused_fetches_for_test(|| {
+            for cmd in [crate::stores::hubs::HubsCmd::RefetchHubs, crate::stores::hubs::HubsCmd::Retry] {
+                let _ = crate::stores::take_notices();
+                let generation = crate::stores::gen(StoreId::Hubs);
+                let outcome = crate::stores::apply(StoreCmd::Hubs(cmd));
+                assert!(outcome.changed);
+                assert_eq!(outcome.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), expected);
+                assert_eq!(crate::stores::take_notices(), [(StoreId::Hubs, generation + 1)]);
+            }
+            let mut rig = Bridge::for_test(|| 0);
+            let parts = CxParts { tick: Tick::default(), press: Default::default(),
+                focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
+            let mut present = crate::ui::present::Present::default();
+            let mut out = Vec::new();
+            let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Hubs.ord()), &mut present);
+            rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
+                &AppMsg::Store(StoreCmd::Hubs(crate::stores::hubs::HubsCmd::Retry)), &parts, &mut fx);
+            drop(fx);
+            assert_eq!(out.len(), 2, "one command per observed source");
+            let mut executed = Vec::new();
+            let mut next = Vec::new();
+            let mut fx = Effects::new(&mut next, MachineId::Session, &mut present);
+            for stamped in out {
+                let Fx::App(command @ AppFx::Session(_)) = stamped.fx
+                    else { panic!("recovery was not translated into a Session command") };
+                rig.app_fx_with_session_executor(stamped.from, command, &mut fx, |command| {
+                    let crate::auth::SessionCmd::RequestEndpoint { sid } = command;
+                    executed.push(sid);
+                });
+            }
+            drop(fx);
+            assert!(next.is_empty());
+            assert_eq!(executed, expected);
+            crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
+            crate::viewstate::owe_hubs_refresh_for_test();
+            let split = rig.split();
+            let cx = parts.cx::<AppHost>(split.views, split.measure);
+            let mut out = Vec::new();
+            let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::ViewState.ord()), &mut present);
+            crate::stores::viewstate::ViewStateStore.step(
+                &crate::stores::StoreEv::Pump { dt: 0.0 }, &cx, &mut fx);
+            drop(fx);
+            drop(cx);
+            assert_eq!(out.len(), 2);
+            let actual: Vec<_> = out.into_iter().map(|e| match e.fx {
+                Fx::App(AppFx::Session(crate::auth::SessionCmd::RequestEndpoint { sid })) => sid,
+                _ => panic!("ViewState pump discarded its recovery outcome"),
+            }).collect();
+            assert_eq!(actual, expected);
+            crate::pms::queue_test_landing(None);
+            let result = crate::stores::hubs::take_results().pop().unwrap();
+            let mut out = Vec::new();
+            let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Hubs.ord()), &mut present);
+            rig.deliver(MachineId::Store(StoreId::Hubs.ord()), &AppMsg::HubsResult(result), &parts, &mut fx);
+            drop(fx);
+            assert_eq!(out.len(), 1);
+            assert!(matches!(out[0].fx, Fx::App(AppFx::Session(
+                crate::auth::SessionCmd::RequestEndpoint { sid })) if sid == b));
+            crate::browse::with_refused_discovery_for_test(|| {
+                let client = crate::plex::client_for(a).unwrap();
+                crate::browse::queue_discovery_for_test(client, client.token_gen(), false);
+                let mut out = Vec::new();
+                let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Browse.ord()), &mut present);
+                rig.deliver(MachineId::Store(StoreId::Browse.ord()),
+                    &AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery), &parts, &mut fx);
+                drop(fx);
+                assert_eq!(out.len(), 1);
+                assert!(matches!(out[0].fx, Fx::App(AppFx::Session(
+                    crate::auth::SessionCmd::RequestEndpoint { sid })) if sid == a));
+                let endpoints = crate::app::boot::activate_server();
+                let mut boot_executed = Vec::new();
+                execute_endpoint_outcomes_with(endpoints, |command| {
+                    let crate::auth::SessionCmd::RequestEndpoint { sid } = command;
+                    boot_executed.push(sid);
+                });
+                assert_eq!(boot_executed, expected);
+            });
+        });
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+        crate::plex::reset_servers_for_test();
+    }
     include!("library_bookmark_tests.rs");
     include!("library_diagnostic_tests.rs");
     include!("library_query_tests.rs");
@@ -2299,7 +2428,7 @@ mod tests {
                 }).unwrap();
             }
         }
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -2334,7 +2463,7 @@ mod tests {
                 assert_eq!(d.focus(), last, "an invalid addressed request must not displace focus");
             }
         }
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -2371,7 +2500,7 @@ mod tests {
                 i += 1;
             }
         }
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -2392,7 +2521,7 @@ mod tests {
         frame(&mut d, &mut rig, AppArg::Home, tick(2), vec![]);
         assert!(!d.nav.tabs.strip.iter().any(|member| member.elem == movies));
         assert_eq!(d.focus(), Some(FocusKey { entry, elem: crate::screens::home::STRIP_HOME_ELEM }));
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -2455,7 +2584,7 @@ mod tests {
                 assert!((before.y - after.y).abs() < 1.0, "vertical viewport changed: {} -> {}", before.y, after.y);
             }
         }
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -2571,7 +2700,7 @@ mod tests {
         {
             let split = rig.split();
             assert_eq!(split.views.hubs.hub(0).unwrap().items.len(), 3);
-            crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+            crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
             assert_eq!(split.views.hubs.hub(0).unwrap().items.len(), 3);
         }
         assert_eq!(rig.split().views.hubs.hub_count(), 1,
@@ -2602,7 +2731,7 @@ mod tests {
         frame(&mut d, &mut rig, AppArg::Home, tick(42), vec![release_input(tick(42))]);
         for i in 43..80 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
         assert!(rig.take_home_reqs().is_empty(), "a removed arm must not become a press on the replacement cursor");
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -2637,7 +2766,7 @@ mod tests {
         assert!(requests.iter().any(|(_, request, _)| matches!(request, HomeReq::Play { rk, .. } if rk == "1")),
             "the old presented map named item 1, not the replacement now at its old position");
         assert!(!requests.iter().any(|(_, request, _)| matches!(request, HomeReq::Play { rk, .. } if rk == "3")));
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -2678,7 +2807,7 @@ mod tests {
         assert_eq!(rig.deliver(MachineId::Store(StoreId::Search.ord()),
             &AppMsg::HubsResult(result), &parts, &mut fx), Handled::No);
         assert_eq!(crate::pms::hub_len(0), 5, "a misaddressed result must not apply");
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -2703,7 +2832,7 @@ mod tests {
         assert_eq!(crate::pms::hub_len(0), 5, "an empty supplied frame cannot fall back to live data");
         frame_with_tap(&mut d, &mut rig, AppArg::Home, tick(2), vec![], &mut NoTap);
         assert_eq!(crate::pms::hub_len(0), 9, "the live arrival was preserved for a live ingest");
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -2729,7 +2858,7 @@ mod tests {
             assert_eq!(rig.deliver(MachineId::Store(StoreId::Search.ord()),
                 &AppMsg::StoreWork(work), &parts, &mut fx), Handled::No);
         }
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     use super::*;

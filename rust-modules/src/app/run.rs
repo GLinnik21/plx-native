@@ -1243,7 +1243,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             && !matches!(app.route(), AppArg::Player)
         {
             app.refresh_hubs_at = 0;
-            crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs);
+            super::bridge::execute_endpoint_outcomes(
+                crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints,
+            );
             // …and every library's OWN shelves, for the same reason and at the same moment:
             // a finished playback moves Continue Watching and watch state, and a section deck
             // is as stale as the global one (`browse::section_hubs::invalidate_all`).
@@ -1542,7 +1544,8 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                     crate::dev::playback_quality_override()
                         .unwrap_or_else(|| saved.playback_quality()),
                 );
-                install_pms(&c.origin, &c.token, c.tier, c.pin.as_ref());
+                let endpoints = install_pms(&c.origin, &c.token, c.tier, c.pin.as_ref());
+                super::bridge::execute_endpoint_outcomes(endpoints);
                 // **A new user must never be able to walk BACK into the previous one's pages**,
                 // which is the fourth store an identity change must not survive beside the
                 // `browse`/`pms`/`person` resets `install_pms` performs. It was `trail.reset()`,
@@ -1902,7 +1905,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // unconditional for the same reason as the two pumps around it — the user can walk off
         // Home or off the detail page between pressing and the server answering, and the refresh
         // is owed either way. Invalidates from inside, per landing.
-        crate::stores::viewstate::pump();
+        let endpoints = crate::stores::viewstate::pump();
+        super::bridge::execute_endpoint_outcomes(endpoints);
         crate::stores::person::pump();
         if let Some(keep) = crate::stores::viewstate::take_detail_refresh() {
             refresh_content(app, keep);

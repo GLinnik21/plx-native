@@ -26,7 +26,7 @@ pub(crate) struct PersonStore;
 
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
 pub(crate) fn apply(cmd: PersonCmd) -> bool {
-    super::apply(super::StoreCmd::Person(cmd))
+    super::apply(super::StoreCmd::Person(cmd)).changed
 }
 
 /// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into

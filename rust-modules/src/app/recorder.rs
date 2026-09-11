@@ -742,7 +742,7 @@ mod tests {
         data["sources"][0]["retry_n"] = json!(123);
         let changed: crate::pms::initial::Initial = serde_json::from_value(data).unwrap();
         assert_ne!(RecordedInit { app: &app, hubs: &changed }.hash(), header.init_hash);
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -822,7 +822,7 @@ mod tests {
         assert_eq!(r.graded, 2);
         assert_eq!(r.result_diffs, 1, "the next frame starts at result ordinal zero");
         assert!(!r.same());
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -881,7 +881,7 @@ mod tests {
         let Recplay::Replaying(r) = replay else { unreachable!() };
         assert_eq!(r.result_at, 1);
         assert_eq!(r.result_diffs, 0);
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -1000,7 +1000,7 @@ mod tests {
         assert_eq!(seen, vec![2], "the live arrival waited for its recorded frame");
         assert!(crate::ui::landgate::take_diffs().is_empty());
         assert!(crate::ui::landgate::unmatched().is_empty());
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     /// …and a landing the recording never saw is delivered at once and counted, so the gate can
@@ -1019,7 +1019,7 @@ mod tests {
             crate::ui::landgate::take_diffs(),
             vec![(5, crate::stores::StoreId::Hubs.ord().0, crate::ui::landgate::Diff::Extra)]
         );
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]

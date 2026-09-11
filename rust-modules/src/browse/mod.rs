@@ -2544,7 +2544,7 @@ fn maybe_discover() {
     // The exact client is captured HERE, on the main thread. It is leaked and therefore safe for
     // the worker to retain, while the landing's pointer+token generation rejects results from an
     // origin/profile lifecycle the slot has since replaced.
-    let spawned = crate::task::spawn_small("sources", move || {
+    let spawned = spawn_discovery(move || {
         let landing = catch_unwind(|| {
             // the server naming ITSELF, so a roster that never reached plex.tv still heads its
             // group with a machine name. One request, once, per source.
@@ -2607,6 +2607,39 @@ fn maybe_discover() {
     }
 }
 
+fn spawn_discovery(job: impl FnOnce() + Send + 'static) -> bool {
+    #[cfg(test)]
+    if REFUSE_DISCOVERY_FOR_TEST.with(|flag| flag.get()) { return false; }
+    crate::task::spawn_small("sources", job)
+}
+
+#[cfg(test)]
+thread_local! {
+    static REFUSE_DISCOVERY_FOR_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_refused_discovery_for_test<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { REFUSE_DISCOVERY_FOR_TEST.with(|flag| flag.set(self.0)); }
+    }
+    let _restore = Restore(REFUSE_DISCOVERY_FOR_TEST.with(|flag| flag.replace(true)));
+    f()
+}
+
+/// Supply a transport observation, retaining the actual source epoch and captured lifecycle.
+#[cfg(test)]
+pub(crate) fn queue_discovery_for_test(client: &'static crate::plex::Client, token_gen: u32, ok: bool) {
+    crate::testlock::assert_held("discovery observation fixture");
+    sync_roster();
+    let si = sources().iter().position(|s| s.sid == client.id()).unwrap();
+    let what = SrcWhat::Sections(ok.then(Vec::new));
+    *SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some((
+        EPOCH.load(Ordering::SeqCst), si, SrcLanding { client, token_gen, name: String::new(), what },
+    ));
+}
+
 /// The OS refused a discovery worker ([`crate::task::spawn_small`] returned `false`) — release the
 /// single flight and back this source off.
 ///
@@ -2635,7 +2668,7 @@ fn discovery_spawn_refused(si: usize) {
 
 /// Apply a discovery landing. Gated on the table EPOCH, not on its shape generation: an append
 /// from one source must not throw away another's answer.
-fn land_discovery() {
+fn land_discovery() -> Option<crate::stores::EndpointRefresh> {
     // the landing GATE (§3.3 step 3, `ui::landgate`): a replay takes this on its recorded frame.
     // `maybe_discover`, which spawns the next one, is outside the gate at both call sites.
     let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
@@ -2643,12 +2676,12 @@ fn land_discovery() {
     });
     let Some((epoch, si, landing)) = taken
     else {
-        return;
+        return None;
     };
     SRC_FETCHING.store(false, Ordering::SeqCst);
     crate::ui::idle::invalidate(); // a Sources row, a tab pill or a count appears
     if epoch != EPOCH.load(Ordering::SeqCst) {
-        return; // the account changed under it — every index means something else now
+        return None; // the account changed under it — every index means something else now
     }
     let SrcLanding {
         client,
@@ -2724,14 +2757,15 @@ fn land_discovery() {
         },
     );
     if committed != Some(true) {
-        return; // same slot, different origin/token/profile: every byte belongs to the old lifecycle
+        return None; // same slot, different origin/token/profile: every byte belongs to the old lifecycle
     }
     if !ok {
         // A retry against the same Client cannot follow a Wi-Fi/LAN transition to another
         // advertised endpoint. Auth performs the targeted Resource re-probe on a worker and the
         // registry lifecycle change above re-arms this source when it lands.
-        crate::auth::request_endpoint_refresh(client.id());
+        return Some(crate::stores::EndpointRefresh { sid: client.id() });
     }
+    None
 }
 
 // ---- D3: stores::browse's one door onto every BrowseCmd -------------------------------------
@@ -2863,13 +2897,15 @@ pub(crate) fn run(cmd: crate::stores::browse::BrowseCmd) -> bool {
 /// to "a shared server" forever. Cheap and idempotent: the same single-flight and per-source
 /// backoff [`pump`] relies on, so calling it every frame from a second screen costs one comparison
 /// once the answers are in.
-pub(crate) fn discover_pump() {
+pub(crate) fn discover_pump() -> crate::stores::EndpointRefreshSet {
     sync_roster();
-    land_discovery();
+    let mut endpoints = crate::stores::EndpointRefreshSet::default();
+    if let Some(request) = land_discovery() { endpoints.insert(request); }
     maybe_discover();
+    endpoints
 }
 
-pub(crate) fn pump() -> bool {
+pub(crate) fn pump() -> crate::stores::StoreOutcome {
     let mut changed = false;
     unsafe {
         if RETRY_CD > 0 {
@@ -2880,7 +2916,8 @@ pub(crate) fn pump() -> bool {
     // and idempotent, and it is what lets a friend's libraries arrive without the main thread ever
     // waiting on their server.
     sync_roster();
-    land_discovery();
+    let mut endpoints = crate::stores::EndpointRefreshSet::default();
+    if let Some(request) = land_discovery() { endpoints.insert(request); }
     maybe_discover();
     // the library's own shelves: land whatever arrived and advance the publication machine. Both
     // are inert until something calls `section_hubs::kick`, which nothing does yet — see that
@@ -2967,7 +3004,7 @@ pub(crate) fn pump() -> bool {
         }
     }
     maybe_spawn();
-    changed
+    crate::stores::StoreOutcome { changed, endpoints }
 }
 
 /// One fetch in flight at a time: pick the first missing page inside the wanted window
@@ -3419,7 +3456,7 @@ mod tests {
             sorts: None,
         });
         FETCHING.store(true, Ordering::SeqCst);
-        pump();
+        let _outcome = pump();
     }
 
     fn queue_directories_from(client: &'static crate::plex::Client, token_gen: u32) {
@@ -3580,6 +3617,26 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_outcomes_follow_only_current_failed_discovery_through_both_pumps() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, client) = registered_source();
+        with_refused_discovery_for_test(|| {
+            queue_discovery_for_test(client, client.token_gen(), false);
+            let requests = crate::stores::browse::discover_pump();
+            assert_eq!(requests.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
+            assert!(!crate::plex::write_held_for_test(), "intent returned after lifecycle lock release");
+            queue_discovery_for_test(client, client.token_gen(), false);
+            assert_eq!(crate::stores::browse::pump().endpoints.iter().count(), 1);
+            queue_discovery_for_test(client, client.token_gen(), true);
+            assert_eq!(crate::stores::browse::discover_pump().iter().count(), 0);
+            let old_gen = client.token_gen();
+            client.set_token("new-synthetic");
+            queue_discovery_for_test(client, old_gen, false);
+            assert_eq!(crate::stores::browse::pump().endpoints.iter().count(), 0);
+        });
+    }
+
+    #[test]
     fn a_same_slot_repoint_rearms_section_discovery_without_erasing_known_rows() {
         let _g = crate::testlock::serial();
         let (_cleanup, sid, _) = registered_page_source();
@@ -3675,7 +3732,7 @@ mod tests {
                 total, sorts: None,
             });
             FETCHING.store(true, Ordering::SeqCst);
-            pump();
+            let _outcome = pump();
             assert_eq!(sources()[0].state, expected);
             assert_eq!(source_list_gen(), generation.wrapping_add(u32::from(changed)));
             // A later roster sync cannot be relied on to supply a missing notification: its
@@ -4006,7 +4063,7 @@ mod tests {
             sorts: None,
         };
         *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
-        pump();
+        let _outcome = pump();
     }
 
     /// THE bug: a failed first page armed the retry cooldown and nothing else, so `total` stayed
@@ -5593,7 +5650,7 @@ mod tests {
             sorts: None,
         };
         *PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
-        pump();
+        let _outcome = pump();
         assert_eq!(
             fetch_state(),
             SecFetch::Loading,

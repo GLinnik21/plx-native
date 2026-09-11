@@ -172,7 +172,7 @@ pub(crate) struct MetadataStore;
 
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
 pub(crate) fn apply(cmd: MetadataCmd) -> bool {
-    super::apply(super::StoreCmd::Metadata(cmd))
+    super::apply(super::StoreCmd::Metadata(cmd)).changed
 }
 
 /// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into

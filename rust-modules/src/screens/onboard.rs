@@ -468,7 +468,12 @@ impl<H: AppLike> Machine<H> for OnboardScreen {
                 // itself has no need of. If a mutating mistake ever sneaks into `discover_pump`'s
                 // own body, this call site would not be the fix — the fix belongs in `browse/`,
                 // which decides what a pump is allowed to touch.
-                crate::stores::browse::discover_pump();
+                let endpoints = crate::stores::browse::discover_pump();
+                for request in endpoints.iter() {
+                    fx.push(crate::ui::machine::Fx::App(crate::screens::registry::AppFx::Session(
+                        crate::auth::SessionCmd::RequestEndpoint { sid: request.sid },
+                    )));
+                }
                 if self.table_gen != crate::browse::source_list_gen() {
                     self.rebuild(true);
                     fx.invalidate(crate::ui::present::Provenance::Landing(fx.from()));
@@ -793,6 +798,27 @@ mod tests {
             Machine::<InnerHost>::step(s, ev, &cx, &mut fx)
         };
         (handled, buf)
+    }
+
+    #[test]
+    fn endpoint_outcomes_leave_onboard_in_the_same_tick_as_discovery() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("endpoint-onboard");
+        crate::plex::reset_servers_for_test();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        let sid = crate::plex::register_for_test("endpoint-onboard", "127.0.0.1", 9, "synthetic", "cid");
+        let client = crate::plex::client_for(sid).unwrap();
+        let mut s = OnboardScreen::first_run(EntryId(0));
+        crate::browse::queue_discovery_for_test(client, client.token_gen(), false);
+        let (_, effects) = crate::browse::with_refused_discovery_for_test(|| {
+            step_ev(&mut s, &ScreenEvent::Tick(crate::ui::machine::Tick { ms: 16, dt_us: 16_000 }), None)
+        });
+        assert_eq!(effects.iter().filter(|effect| matches!(effect.fx,
+            Fx::App(AppFx::Session(crate::auth::SessionCmd::RequestEndpoint { sid: target })) if target == sid
+        )).count(), 1);
+        assert_eq!(s.table_gen, crate::browse::source_list_gen(), "rebuild was not deferred");
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        crate::plex::reset_servers_for_test();
     }
 
     fn key_ok_down() -> ScreenEvent<InnerHost> {

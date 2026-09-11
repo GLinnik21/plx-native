@@ -126,7 +126,7 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
                             })
                         ) {
                             assert!(
-                                crate::stores::apply(command),
+                                crate::stores::apply(command).changed,
                                 "{edit:?} must be accepted by the real store"
                             );
                             committed = true;

@@ -299,7 +299,7 @@ fn edit_local(sid: ServerId, rk: &str, w: Write) {
                 sid,
                 rk: rk.to_string(),
                 edit: crate::pms::LocalEdit::Watched(on),
-            });
+            }).changed;
             crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetWatchedLocal {
                 sid,
                 rk: rk.to_string(),
@@ -328,7 +328,7 @@ fn edit_local(sid: ServerId, rk: &str, w: Write) {
                 sid,
                 rk: rk.to_string(),
                 edit: crate::pms::LocalEdit::LeftTheDeck,
-            });
+            }).changed;
             // …and the LIBRARY's own deck, which is a different shelf on a different screen and is
             // where this row is now reachable from at all (the Library's section Continue Watching
             // shelf, 2026-09-05).
@@ -426,7 +426,8 @@ fn kick() {
 /// MAIN THREAD, once a frame, ROUTE-UNCONDITIONAL — a landing must never depend on which screen is
 /// mounted, because the user can walk off Home (or off the detail page) between the press and the
 /// answer, and the refresh is owed either way.
-pub(crate) fn pump() {
+pub(crate) fn pump() -> crate::stores::EndpointRefreshSet {
+    let mut endpoints = crate::stores::EndpointRefreshSet::default();
     let due = retry_tick();
     // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay the server's answer is taken
     // on the frame the recording took it on. The retry tick and `kick` below stay outside it.
@@ -465,16 +466,23 @@ pub(crate) fn pump() {
         kick();
     }
     if is_busy() {
-        return; // a burst still has writes to send — one refresh at the end of it, not per write
+        return endpoints; // a burst still has writes to send — one refresh at the end of it, not per write
     }
     let hubs = unsafe { std::mem::take(&mut *addr_of_mut!(WANT_HUBS)) };
     if hubs {
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs);
+        endpoints.merge(crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints);
         // the same staleness, one screen over: a library's own shelves carry watch state and its
         // own Continue Watching row, so the burst that made Home's hubs stale made these stale too
         crate::stores::browse::apply(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
         crate::ui::idle::invalidate();
     }
+    endpoints
+}
+
+#[cfg(test)]
+pub(crate) fn owe_hubs_refresh_for_test() {
+    crate::testlock::assert_held("viewstate refresh fixture");
+    unsafe { *addr_of_mut!(WANT_HUBS) = true; }
 }
 
 /// The owning application addresses the refresh to the mounted entry after the write burst.
@@ -663,6 +671,24 @@ pub(crate) fn run(cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn endpoint_outcomes_survive_the_viewstate_refetch_pump() {
+        let _g = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("endpoint-viewstate");
+        reset();
+        crate::plex::reset_servers_for_test();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+        let sid = crate::plex::register_for_test("endpoint-viewstate", "127.0.0.1", 9, "synthetic", "cid");
+        unsafe { *addr_of_mut!(WANT_HUBS) = true; }
+        let endpoints = crate::pms::with_refused_fetches_for_test(crate::stores::viewstate::pump);
+        assert_eq!(endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
+        assert_eq!(crate::stores::viewstate::pump().iter().count(), 0, "refetch is consumed once");
+        reset();
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        crate::plex::reset_servers_for_test();
+    }
     use super::*;
 
     // Every test here that touches a STATIC holds the crate-wide serial lock: the queue, the
@@ -1034,7 +1060,7 @@ mod tests {
             also: vec![(SRV_B, "4".into())],
         });
 
-        pump();
+        let _outcome = pump();
 
         assert!(
             crate::metadata::current().unwrap().watched,

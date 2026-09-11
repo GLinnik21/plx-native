@@ -22,6 +22,11 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Application command vocabulary; the concrete Session owner will receive this next stage.
+pub(crate) enum SessionCmd {
+    RequestEndpoint { sid: ServerId },
+}
+
 /// Which stage the flow is in — the Login/Profiles screens switch on this each frame.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Phase {

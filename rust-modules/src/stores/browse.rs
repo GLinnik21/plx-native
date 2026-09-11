@@ -3,7 +3,7 @@
 //! stay in `browse/` until phase 8 moves the screen.
 
 use crate::plex::ServerId;
-use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
+use crate::ui::machine::{Cx, Effects, Handled, Machine};
 
 use super::{note, StoreEv, StoreId};
 
@@ -70,7 +70,7 @@ pub(crate) enum LibraryWork {
 
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
 pub(crate) fn apply(cmd: BrowseCmd) -> bool {
-    super::apply(super::StoreCmd::Browse(cmd))
+    super::apply(super::StoreCmd::Browse(cmd)).changed
 }
 
 /// The store's own step, reached only through [`super::apply`]. D3 moved the match itself
@@ -90,25 +90,27 @@ pub(super) fn run(cmd: BrowseCmd) -> bool {
 
 /// The landing pass the Library screen runs once a frame while it is up: pages, menu data, the
 /// roster, the shelves. Answers `true` when the store changed.
-pub(crate) fn pump() -> bool {
-    note(StoreId::Browse, crate::browse::pump())
+pub(crate) fn pump() -> super::StoreOutcome {
+    let outcome = crate::browse::pump();
+    note(StoreId::Browse, outcome.changed);
+    outcome
 }
 
 /// The roster half alone — what Home and Search run to learn about a friend's libraries without
 /// fetching any page.
-pub(crate) fn discover_pump() {
-    crate::browse::discover_pump();
+pub(crate) fn discover_pump() -> super::EndpointRefreshSet {
+    crate::browse::discover_pump()
 }
 
-impl<H: Host> Machine<H> for BrowseStore {
+impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
     type Ev = StoreEv<BrowseCmd>;
-    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
+    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             StoreEv::Cmd(c) => {
                 run(c.clone());
             }
             StoreEv::Pump { .. } => {
-                pump();
+                pump().endpoints.emit(fx);
             }
         }
         Handled::Yes
