@@ -4895,8 +4895,12 @@ pub(super) fn measure_remote_remux(
         None,
         crate::plex::TranscodeDelivery::ProgressiveMkv,
     );
-    if client.transcode_decision(&spec).is_none() {
+    let Some(decision) = client.transcode_decision(&spec) else {
         crate::player::log("auto: remote remux preflight had no /decision; using HLS");
+        return None;
+    };
+    if refusal(&decision).is_some() {
+        crate::player::log("auto: remote remux preflight refused by /decision; using HLS");
         return None;
     }
     let sample = measure_remote_original(&client.transcode_start_url(&spec).to_url(), source_kbps);
@@ -8629,6 +8633,125 @@ mod tests {
             tx.send(requests).expect("publish plan requests");
         });
         (port, rx, handle)
+    }
+
+    /// Selection is PMS state, not a promise made by a GET's query parameters.
+    fn selection_probe_pms(
+        refuse: bool,
+        burn: i64,
+    ) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<(String, (i64, i64))>>) {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port() as i32;
+        listener.set_nonblocking(true).unwrap();
+        let (done, stop) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let mut selection = (1, 9);
+            let mut requests = Vec::new();
+            loop {
+                match listener.accept() {
+                    Ok((mut socket, _)) => {
+                        socket.set_nonblocking(false).unwrap();
+                        let line = drain_http(&mut socket);
+                        if line.starts_with("PUT /library/parts/") {
+                            selection = (
+                                query_param(&line, "audioStreamID").unwrap().parse().unwrap(),
+                                query_param(&line, "subtitleStreamID").unwrap().parse().unwrap(),
+                            );
+                        }
+                        let ready = selection == (2, burn);
+                        if line.contains("start.mkv") {
+                            // A wrong part selection cannot produce the intended remux sample.
+                            let bytes = if ready && !refuse {
+                                remote_probe_plan(320).unwrap().target_bytes
+                            } else { 0 };
+                            if bytes > 0 {
+                                write!(socket, "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {bytes}\r\nConnection: close\r\n\r\n", bytes - 1, bytes * 2).unwrap();
+                            } else {
+                                write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                            }
+                            socket.write_all(&vec![0x55; bytes]).unwrap();
+                        } else if line.contains("/decision?") {
+                            let body: &[u8] = if !line.contains("hasMDE=1") && (refuse || !ready) {
+                                br#"{"MediaContainer":{"generalDecisionCode":2000,"transcodeDecisionCode":2000,"transcodeDecisionText":"synthetic refusal"}}"#
+                            } else {
+                                MDE_TRANSCODE_COPY
+                            };
+                            write_json(&mut socket, body);
+                        } else {
+                            write_json(&mut socket, EMPTY_MC);
+                        }
+                        requests.push((line, selection));
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if stop.try_recv().is_ok() { break; }
+                        std::thread::yield_now();
+                    }
+                    Err(e) => panic!("fixture accept: {e}"),
+                }
+            }
+            requests
+        });
+        (port, done, handle)
+    }
+
+    #[test]
+    fn remux_review_probe_installs_effective_selection_before_decision_and_start() {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        assert!(crate::net::global_init() && crate::curlio::available());
+        restore_quality(Quality::Auto);
+        // Cold client-rendered subtitles stay off server-side; an explicit burn remains a burn.
+        for burn in [0, 9] {
+            let (port, done, server) = selection_probe_pms(false, burn);
+            let sid = crate::plex::register_for_test("selection-probe", "127.0.0.1", port, "token", "selection-probe-client");
+            crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Remote);
+            let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+            env.audio_sid = 1;
+            env.sub_sid = burn;
+            let mut item = fourk_item_with_subs(sid, vec![
+                crate::metadata::Stream { id: 1, index: 0, lang_code: "eng".into(), codec: "truehd".into(), channels: 8, default: true, selected: true, ..Default::default() },
+                crate::metadata::Stream { id: 2, index: 1, lang_code: "eng".into(), codec: "ac3".into(), channels: 6, ..Default::default() },
+            ], vec![selected_sub(9, "srt")]);
+            item.bitrate = 320;
+            env.cached_item = Some(item);
+            let plan = build_stream("rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "truehd", &env);
+            done.send(()).unwrap();
+            let requests = server.join().unwrap();
+            let decision = requests.iter().position(|(r, _)| r.contains("/decision?") && !r.contains("hasMDE=1")).expect("probe decision");
+            let put = requests.iter().position(|(r, _)| r.starts_with("PUT /library/parts/")).expect("selection PUT");
+            assert!(put < decision, "PUT must precede probe decision: {requests:?}");
+            let start = requests.iter().position(|(r, _)| r.contains("start.mkv")).expect("sample GET");
+            assert!(decision < start);
+            for index in [decision, start] {
+                let (request, state) = &requests[index];
+                assert_eq!(*state, (2, burn), "effective PMS selection");
+                assert_eq!(query_param(request, "audioStreamID"), Some("2"));
+                // Progressive requests omit zero; the prior PUT is what suppresses defaults.
+                assert_eq!(query_param(request, "subtitleStreamID"), if burn == 0 { None } else { Some("9") });
+                assert_eq!(query_param(request, "subtitles"), if burn == 0 { None } else { Some("burn") });
+            }
+            assert!(plan.remux && plan.url.contains("start.mkv"), "state-dependent sample must admit remux: {}", plan.url);
+        }
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn remux_review_http_200_refusal_never_gets_media() {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        assert!(crate::net::global_init() && crate::curlio::available());
+        let (port, done, server) = selection_probe_pms(true, 0);
+        let sid = crate::plex::register_for_test("refused-probe", "127.0.0.1", port, "token", "refused-probe-client");
+        let sample = measure_remote_remux(crate::plex::client_for(sid).unwrap(), "rk", "refused-session", 2, 0, 320);
+        done.send(()).unwrap();
+        let requests = server.join().unwrap();
+        assert!(sample.is_none());
+        assert!(requests.iter().any(|(r, _)| r.contains("/decision?")));
+        assert!(!requests.iter().any(|(r, _)| r.contains("start.mkv")), "refusal must prevent media GET: {requests:?}");
+        assert!(!requests.iter().any(|(r, _)| r.contains("closeResourceSession=1")));
+        crate::plex::reset_servers_for_test();
     }
 
     fn fourk_item(
