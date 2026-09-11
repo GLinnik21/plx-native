@@ -1128,6 +1128,7 @@ check: lint
 	@# comparison `verify-deploy` runs against the television, with no ssh and no device.
 	python3 ci/test_deploy_manifest.py
 	python3 ci/test_verify_deploy.py
+	python3 ci/test_check_elf.py
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the

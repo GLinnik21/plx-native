@@ -27,12 +27,18 @@ fi
 fail() { echo "::error::$*"; exit 1; }
 ok()   { echo "  ok — $*"; }
 
+# Check producers before inspecting output: early grep/head consumers can otherwise turn
+# successful scans into SIGPIPE failures, or hide producer failures in negative assertions.
+AUDIT_TMP=$(mktemp -d "${TMPDIR:-/tmp}/check-elf.XXXXXX") || fail "cannot create audit scratch directory"
+trap 'rm -rf "$AUDIT_TMP"' EXIT
+
 echo "== ELF identity =="
-H=$("$READELF" -h "$BIN")
+H=$("$READELF" -h "$BIN") || fail "readelf -h failed"
 grep -q 'Class: *ELF32'      <<<"$H" || fail "not ELF32"
 grep -q 'Machine: *ARM'      <<<"$H" || fail "not ARM"
 grep -q 'Flags:.*soft-float' <<<"$H" || fail "not soft-float ABI (the NDK's softfp convention)"
-"$READELF" -A "$BIN" | grep -q 'Tag_CPU_arch: v7' || fail "not ARMv7 (Tag_CPU_arch)"
+A=$("$READELF" -A "$BIN") || fail "readelf -A failed"
+grep -q 'Tag_CPU_arch: v7' <<<"$A" || fail "not ARMv7 (Tag_CPU_arch)"
 ok "ELF32 / ARM / soft-float / ARMv7"
 
 echo "== Starfish callback interposer =="
@@ -43,7 +49,7 @@ echo "== Starfish callback interposer =="
 # app in the dynamic loader before main.
 SMP_HOOK='_ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc'
 SMP_LOAD_CTX='_ZN17StarfishMediaAPIs4LoadEPKcPFvixS1_PvES2_'
-DYN_SYMS=$($READELF --dyn-syms -W "$BIN")
+DYN_SYMS=$("$READELF" --dyn-syms -W "$BIN") || fail "readelf --dyn-syms failed"
 HOOK_ROWS=$(awk -v symbol="$SMP_HOOK" '$NF == symbol { print }' <<<"$DYN_SYMS")
 [ "$(wc -l <<<"$HOOK_ROWS" | tr -d ' ')" -eq 1 ] \
   || fail "callbackFunctionHook interposer is not present exactly once in .dynsym"
@@ -53,7 +59,8 @@ awk '$4 == "FUNC" && $5 == "GLOBAL" && $6 == "DEFAULT" && $7 != "UND" { ok=1 } \
 if awk -v symbol="$SMP_LOAD_CTX" '$NF == symbol { found=1 } END { exit !found }' <<<"$DYN_SYMS"; then
   fail "Load-with-context is a dynamic symbol dependency; it must be dlsym'd for firmware fallback"
 fi
-if "$READELF" -rW "$BIN" | grep -q "$SMP_LOAD_CTX"; then
+RELOCS=$("$READELF" -rW "$BIN") || fail "readelf -rW failed"
+if grep -q "$SMP_LOAD_CTX" <<<"$RELOCS"; then
   fail "Load-with-context has a dynamic relocation; missing firmware would fail before main"
 fi
 ok "exact hook exported GLOBAL/DEFAULT; Load-with-context has no loader dependency"
@@ -73,14 +80,16 @@ grep -q 'Type: *EXEC' <<<"$H" || fail "no longer ET_EXEC — the image base is n
 # One variable for the expectation, named once: written twice, a change to the comparison and a
 # change to the message drift apart, and the failure then reports "is X, not X".
 WANT_BASE=0x00010000
-LOAD_BASE=$("$READELF" -l "$BIN" | awk '/^  LOAD/{print $3}' | LC_ALL=C sort | head -1)
+PHEADERS=$("$READELF" -l "$BIN") || fail "readelf -l failed"
+LOAD_BASE=$(awk '/^  LOAD/{print $3}' <<<"$PHEADERS" | LC_ALL=C sort | sed -n '1p')
 [ "$LOAD_BASE" = "$WANT_BASE" ] \
   || fail "lowest PT_LOAD is $LOAD_BASE, not $WANT_BASE — update telemetry::sentry::IMAGE_ADDR and re-verify that a real crash still symbolicates"
 
 # (2) The BUILD ID. It is the only thing that pairs a stripped binary a stranger's television
 # faulted in with the pkg/plxnative.debug a release uploaded. `-Wl,--build-id=sha1` is
 # unconditional on every link and `strip` preserves it, so an absent one means the flag was lost.
-"$READELF" -n "$BIN" | grep -qi 'Build ID: *[0-9a-f]\{40\}' \
+NOTES=$("$READELF" -n "$BIN") || fail "readelf -n failed"
+grep -qi 'Build ID: *[0-9a-f]\{40\}' <<<"$NOTES" \
   || fail "no 40-hex GNU build id — -Wl,--build-id=sha1 was lost, and nothing can then pair a \
 crash report with its symbols"
 ok "ET_EXEC, image base $LOAD_BASE, sha1 build id present"
@@ -93,7 +102,7 @@ echo "== CP15 barrier regression =="
 if ! command -v "$OBJDUMP" >/dev/null 2>&1; then
   echo "  SKIP — $OBJDUMP not found (install llvm or set OBJDUMP=)"
 else
-  D=$("$OBJDUMP" -d "$BIN")
+  D=$("$OBJDUMP" -d "$BIN") || fail "objdump -d failed"
   CP15=$(grep -ciE 'mcr[[:space:]]+p?15,[[:space:]]*#?0,[[:space:]]*r[0-9]+,[[:space:]]*c(r)?7,[[:space:]]*c(r)?10' <<<"$D" || true)
   DMB=$(grep -cE '[[:space:]]dmb([[:space:]]|$)' <<<"$D" || true)
   [ "$CP15" -eq 0 ]  || fail "$CP15 CP15 barrier instructions — this binary will SIGILL on the TV"
@@ -113,11 +122,12 @@ echo "== DT_NEEDED =="
 # capital first (libAcbAPI, libGLESv2, libSDL2…, then libav…). Same 21 libraries either way — the
 # diff was pure ordering, which reads exactly like the ABI drift this check exists to catch.
 # The expectation file is regenerated in C collation to match.
-"$READELF" -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | LC_ALL=C sort > /tmp/dt-needed.actual
-if ! diff -u ci/expected-dt-needed.txt /tmp/dt-needed.actual; then
+DYNAMIC=$("$READELF" -d "$BIN") || fail "readelf -d failed"
+sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' <<<"$DYNAMIC" | LC_ALL=C sort > "$AUDIT_TMP/dt-needed.actual"
+if ! diff -u ci/expected-dt-needed.txt "$AUDIT_TMP/dt-needed.actual"; then
   fail "DT_NEEDED drifted. If intended, confirm with tools/fwcompat.py that it exists on every supported release, then update ci/expected-dt-needed.txt"
 fi
-ok "$(wc -l < /tmp/dt-needed.actual | tr -d ' ') entries, unchanged"
+ok "$(wc -l < "$AUDIT_TMP/dt-needed.actual" | tr -d ' ') entries, unchanged"
 
 echo "== build-host identity =="
 # docs/distribution.md §4: a public build must not carry the developer's LAN or home directory.
@@ -135,8 +145,9 @@ echo "== build-host identity =="
 # Skipping the whole section on a dev machine meant the host-path gate had never once executed
 # against a real build. It also cannot be left CI-only now: the remap is the thing that makes the
 # ipk's byte-for-byte reproducibility claim true, and a dev build is where it would be broken.
-if strings -a "$BIN" | grep -qE '(^|[^[:alnum:]/_.-])/(Users|home)/[a-z]'; then
-  strings -a "$BIN" | grep -oE '(^|[^[:alnum:]/_.-])/(Users|home)/[a-z][^ ]*' | sort -u | head
+strings -a "$BIN" > "$AUDIT_TMP/strings" || fail "strings failed"
+if grep -qE '(^|[^[:alnum:]/_.-])/(Users|home)/[a-z]' "$AUDIT_TMP/strings"; then
+  grep -oE '(^|[^[:alnum:]/_.-])/(Users|home)/[a-z][^ ]*' "$AUDIT_TMP/strings" | sort -u | sed -n '1,10p'
   fail "build-host paths in the binary — the build must set --remap-path-prefix (see the Makefile's RUST_REMAP)"
 fi
 # The pattern is anchored to a path BOUNDARY rather than matching '/home/[a-z]' anywhere, because
@@ -149,11 +160,11 @@ if [ -f src/config.local.h ] && [ "${CI:-}" != "true" ]; then
   echo "all ELF assertions passed (config-dependent assertions skipped)"
   exit 0
 fi
-if strings -a "$BIN" | grep -qE '\b(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}\b'; then
-  strings -a "$BIN" | grep -oE '\b(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}\b' | sort -u | head
+if grep -qE '\b(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}\b' "$AUDIT_TMP/strings"; then
+  grep -oE '\b(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}\b' "$AUDIT_TMP/strings" | sort -u | sed -n '1,10p'
   fail "private IP address baked into the binary — was this built with src/config.local.h present?"
 fi
-strings -a "$BIN" | grep -q YOUR_PMS_HOST \
+grep -q YOUR_PMS_HOST "$AUDIT_TMP/strings" \
   || fail "YOUR_PMS_HOST placeholder absent — a real PMS_HOST was compiled in"
 ok "no private IPs, placeholder present"
 
