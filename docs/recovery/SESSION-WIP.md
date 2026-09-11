@@ -6,8 +6,8 @@ the audited integration recovery tree. No claim of an atomic application checkpo
 a compiling tree, or completed physical Session ownership is made.
 
 Worker base: `77fe6e8bbfaa6902b0f7e8b03a49ed3e6db35bcb` on `codex/p12-session-owner`.
-In-progress source checkpoint: `9776e84bef65fe372e5af58f24fe8bf8666f372f`.
-Audited integration parent: `55ac12bf3e1f4cc9ac7778db76031572b6981d52`.
+In-progress source checkpoint: `63471336955c6b352be1634627552581f535b166`.
+Audited integration parent: `e24f6ea1905309e6e479f0be88bf00cb7d5aeb49`.
 
 The worker still has production controller/mailbox migration, command/result and
 screen/bootstrap wiring, single publication and full regression proof outstanding.
@@ -25,6 +25,7 @@ The live worker files and index were not changed by this capture.
 - `rust-modules/src/app/recorder.rs`
 - `rust-modules/src/app/run.rs`
 - `rust-modules/src/app/search_owned_tests.rs`
+- `rust-modules/src/app/session_protocol_tests.rs`
 - `rust-modules/src/auth.rs`
 - `rust-modules/src/auth/observation.rs`
 - `rust-modules/src/auth/owner.rs`

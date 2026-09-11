@@ -158,6 +158,8 @@ pub(crate) enum CoordinatorAction {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum RegistryPlan {
+    /// Boot picker's avatar client, before any profile is permitted to enter Home.
+    Primary { server: crate::plex::session::ServerRef, token: String },
     Activate { source: crate::plex::session::SourceRef, ipv6: bool },
     Install { sources: Vec<crate::plex::session::SourceRef>, primary: Option<usize>, replace: bool },
     Endpoint { expected: ServerLifecycle, source: crate::plex::session::SourceRef },
@@ -801,8 +803,10 @@ impl SessionMachine {
         }
         if delta.activate_profile {
             self.publish_profile(Some(self.state.persisted.user.clone()), emit);
-            emit(SessionFx::Ready { epoch: self.state.epoch, scope: self.state.profile_scope,
-                server: self.state.persisted.server.clone(), token: self.state.persisted.pms_token().into() });
+            if self.state.phase == Phase::Ready {
+                emit(SessionFx::Ready { epoch: self.state.epoch, scope: self.state.profile_scope,
+                    server: self.state.persisted.server.clone(), token: self.state.persisted.pms_token().into() });
+            }
         }
         if commit.terminal {
             self.state.pending.remove(&reply.req);
@@ -978,12 +982,21 @@ impl SessionMachine {
         self.state.phase = Phase::Profiles;
         self.state.picker = picker;
         if let Some(req) = self.allocate(SessionOp::Picker, None) {
+            let initial_profile = picker == Picker::Boot && self.state.active_profile.is_none()
+                && self.state.persisted.can_go_local();
+            let mut registry = Vec::new();
+            if initial_profile {
+                registry.push(RegistryPlan::Primary { server: self.state.persisted.server.clone(),
+                    token: self.state.persisted.pms_token().into() });
+            }
+            registry.push(RegistryPlan::Install {
+                sources: self.state.persisted.sources.clone(), primary: None, replace: false,
+            });
             let plan = CommitPlan { expected_disk: self.state.committed_credentials.identity(),
-                credentials: None, lifecycle: None,
-                registry: vec![RegistryPlan::Install {
-                    sources: self.state.persisted.sources.clone(), primary: None, replace: false,
-                }] };
-            self.begin_commit(req, 0, true, plan, CommitDelta::default(), emit);
+                credentials: None, lifecycle: None, registry };
+            self.begin_commit(req, 0, true, plan, CommitDelta {
+                activate_profile: initial_profile, ..Default::default()
+            }, emit);
         }
         self.refresh_roster(emit);
         if let Some(req) = self.allocate(SessionOp::HomeRoster, None) {

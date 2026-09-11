@@ -2409,7 +2409,36 @@ fn _measure_is_object_safe(m: &dyn Measure, s: &CStr) -> f32 {
 }
 
 #[cfg(test)]
+#[path = "session_protocol_tests.rs"]
+mod session_protocol_tests;
+
+#[cfg(test)]
 mod tests {
+    #[test]
+    fn session_boot_picker_publishes_captured_profile_without_ready_handoff() {
+        let stored = crate::plex::session::Session {
+            client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
+            server: crate::plex::session::ServerRef { machine_id: "synthetic-server".into(),
+                address: "192.0.2.1".into(), port: 32400, token: "synthetic-server-token".into(),
+                ..Default::default() },
+            user: crate::plex::session::UserRef { uuid: "synthetic-user".into(), title: "A".into(),
+                ..Default::default() },
+            home_users: vec![crate::plex::session::HomeUserRef { uuid: "synthetic-user".into(),
+                title: "A".into(), protected: true, ..Default::default() }], ..Default::default()
+        };
+        let mut rig = Bridge::for_session_test(crate::auth::SessionInit::captured(stored));
+        let mut d = Dispatcher::<AppHost>::new();
+        execute_session_command(&mut d, crate::auth::SessionCmd::StartSwitch(crate::auth::Picker::Boot));
+        d.frame_with(&mut rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
+        assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Profiles);
+        let profile = rig.session_adapter.fixture_resources().profile.as_ref()
+            .expect("boot profile publication must come from the concrete owner, not prior global seeding");
+        assert_eq!(profile.profile.as_ref().unwrap().uuid, "synthetic-user");
+        assert_eq!(profile.scope.0, 1);
+        assert!(rig.take_session_ready().is_none(), "a protected boot picker has not seated a viewer");
+        assert!(rig.session_adapter.fixture_resources().disk.home_users[0].protected);
+    }
+
     #[test]
     fn session_stored_boot_publishes_before_handoff_without_saving_credentials() {
         let stored = crate::plex::session::Session {

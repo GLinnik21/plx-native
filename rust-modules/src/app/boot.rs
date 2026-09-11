@@ -645,19 +645,14 @@ pub(crate) unsafe fn boot(
         BootTo::Home
     } else if session.can_go_local() {
         if session.home_users.len() > 1 && (!automated_boot() || pick_user.is_some()) {
-            // Who's watching first. Only the read client is installed here (the avatars proxy
-            // through the PMS photo transcoder); the catalog fetch + playback config happen in
-            // take_ready once a profile is picked — done now they'd be thrown out on a switch.
-            crate::plex::install(
-                &session.server.origin(),
-                session.pms_token(),
-                session.server.resolve_pin().as_ref(),
-            );
-            crate::plex::session::set_current(Some(session.user.clone()));
-            // seeds the persisted roster + refreshes it online. `Picker::Boot` is what makes
-            // BACK out of this picker refuse to reinstate a PIN-protected profile — nobody has
-            // identified themselves yet, so there is no "carry on as me" to fall back on.
-            crate::auth::start_switch(crate::auth::Picker::Boot);
+            // The Session owner installs the avatar read client and retained grants, publishes
+            // the captured profile, then owns the picker/refresh flows. It does NOT issue the
+            // Ready handoff before a viewer is selected. Boot BACK therefore retains its
+            // protected/unknown-profile refusal policy rather than silently entering Home.
+            super::bridge::execute_session_command(&mut pages,
+                crate::auth::SessionCmd::StartSwitch(crate::auth::Picker::Boot));
+            pages.frame_with(&mut bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+                &mut crate::ui::dispatch::NoTap, false);
             log("boot: stored session — who's watching");
             BootTo::Profiles
         } else {

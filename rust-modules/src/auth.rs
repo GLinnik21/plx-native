@@ -1255,6 +1255,9 @@ impl ClientLifecycle {
 /// owner permit and (for an endpoint) exact captured Client lifecycle have been validated.
 pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
     match plan {
+        owner::RegistryPlan::Primary { server, token } => {
+            crate::plex::install(&server.origin(), token, server.resolve_pin().as_ref());
+        }
         owner::RegistryPlan::Activate { source, ipv6 } => {
             let Some(origin) = source.origin() else { return false };
             let Some(location) = source.tier else { return false };
