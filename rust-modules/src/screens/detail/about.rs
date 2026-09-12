@@ -90,7 +90,14 @@ impl Rows {
         ));
         if !d.countries.is_empty() {
             self.info
-                .push((crate::i18n::t("Regions of Origin"), d.countries.join(", ")));
+                .push((
+                    crate::i18n::t("Regions of Origin"),
+                    d.countries
+                        .iter()
+                        .map(|c| crate::i18n::country(c).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ));
         }
         self.orig_audio = d.audio.first().map(|a| {
             if a.lang.is_empty() {
