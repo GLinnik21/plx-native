@@ -488,10 +488,10 @@ pub(crate) fn hero_credit(d: &Detail) -> Option<(&'static str, Vec<&str>)> {
             .filter(|credit| credit.role.contains("Writer"))
             .map(|credit| credit.tag.as_str())
             .collect();
-        return (!names.is_empty()).then_some(("Created by", names));
+        return (!names.is_empty()).then_some((crate::i18n::t("Created by"), names));
     }
     let names: Vec<&str> = d.directors.iter().map(String::as_str).collect();
-    (!names.is_empty()).then_some(("Directed by", names))
+    (!names.is_empty()).then_some((crate::i18n::t("Directed by"), names))
 }
 
 pub(crate) fn has_people(d: &Detail) -> bool {
@@ -509,7 +509,7 @@ pub(crate) fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn M
             .take(PEOPLE_CAST)
             .map(|credit| credit.tag.as_str())
             .collect();
-        bottom -= people_line(p, "Starring", &names, x, bottom, measure);
+        bottom -= people_line(p, crate::i18n::t("Starring"), &names, x, bottom, measure);
     }
     if let Some((label, names)) = hero_credit(d) {
         people_line(p, label, &names, x, bottom, measure);

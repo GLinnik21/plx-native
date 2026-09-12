@@ -487,12 +487,21 @@ impl PlaybackState {
     /// for UI strings) so the draw path allocates nothing — this is read 60x/second for the whole
     /// load window, and indefinitely in `Error`.
     pub fn caption(self) -> &'static std::ffi::CStr {
-        match self {
-            PlaybackState::Resolving => c"Preparing…",
-            PlaybackState::Connecting => c"Connecting…",
-            PlaybackState::Buffering => c"Buffering…",
-            PlaybackState::Seeking => c"Seeking…",
-            PlaybackState::Error => c"Playback failed",
+        // Both spellings of each caption are static C strings and the language atom is read
+        // once per call: the answer is a pointer PICK, not a build, so the 60x/second read this
+        // doc pins stays allocation-free in every language (i18n keys on the English literal).
+        let es = crate::i18n::is_es();
+        match (self, es) {
+            (PlaybackState::Resolving, false) => c"Preparing…",
+            (PlaybackState::Resolving, true) => c"Preparando…",
+            (PlaybackState::Connecting, false) => c"Connecting…",
+            (PlaybackState::Connecting, true) => c"Conectando…",
+            (PlaybackState::Buffering, false) => c"Buffering…",
+            (PlaybackState::Buffering, true) => c"Almacenando…",
+            (PlaybackState::Seeking, false) => c"Seeking…",
+            (PlaybackState::Seeking, true) => c"Buscando…",
+            (PlaybackState::Error, false) => c"Playback failed",
+            (PlaybackState::Error, true) => c"No se pudo reproducir",
             _ => c"",
         }
     }
@@ -2451,6 +2460,23 @@ pub(crate) enum Stage {
 
 #[cfg(test)]
 mod tests {
+    /// The busy captions translate with the language atom, and both spellings are STATIC -
+    /// this is the pick-not-build property the 60x/second read depends on. Pinned here rather
+    /// than in the HUD because the HUD test runs with the atom at its boot default (English);
+    /// this one flips it, reads every busy state, and puts it back.
+    #[test]
+    fn the_busy_captions_follow_the_language_atom() {
+        crate::i18n::set_for_test(true);
+        assert_eq!(PlaybackState::Resolving.caption(), c"Preparando\u{2026}");
+        assert_eq!(PlaybackState::Connecting.caption(), c"Conectando\u{2026}");
+        assert_eq!(PlaybackState::Buffering.caption(), c"Almacenando\u{2026}");
+        assert_eq!(PlaybackState::Seeking.caption(), c"Buscando\u{2026}");
+        assert_eq!(PlaybackState::Error.caption(), c"No se pudo reproducir");
+        crate::i18n::set_for_test(false);
+        assert_eq!(PlaybackState::Resolving.caption(), c"Preparing\u{2026}");
+        crate::i18n::set_for_test(false);
+    }
+
     use super::*;
 
     #[test]

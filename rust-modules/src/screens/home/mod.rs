@@ -1069,11 +1069,13 @@ impl HomeScreen {
         press_scale: f32,
     ) {
         let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
-        let label = if resumes { c"Continue" } else { c"Play" };
+        // tc: t() answers a &str; the draw API eats NUL-terminated pointers (i18n's bridge)
+        let mut lb = [0u8; crate::i18n::TC_MAX];
+        let label = crate::i18n::tc(if resumes { "Continue" } else { "Play" }, &mut lb);
         let pill = Rect::new(
             MARGIN_X,
             HERO_ROW_Y,
-            hero_pill_w(measure, label),
+            hero_pill_w(measure, unsafe { std::ffi::CStr::from_ptr(label.as_ptr().cast()) }),
             HERO_CTRL_D,
         );
         let info = Rect::new(
@@ -1105,7 +1107,7 @@ impl HomeScreen {
         .map(ControlPalette::ambient)
         .unwrap_or_default();
         let pop = |i| if live { self.hero_pop.scale_with(i, press_scale) } else { 1.0 };
-        Button::new(label.as_ptr(), theme::size::BODY, pill)
+        Button::new(label.as_ptr().cast(), theme::size::BODY, pill)
             .icon(Icon::Play)
             .focused(focus == Some(Located::Hero(0)))
             .palette(palette)
@@ -1708,11 +1710,13 @@ impl HomeScreen {
         }
         let hero = self.selected_hero(view)?.item;
         let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
-        let label = if resumes { c"Continue" } else { c"Play" };
+        // tc: t() answers a &str; the draw API eats NUL-terminated pointers (i18n's bridge)
+        let mut lb = [0u8; crate::i18n::TC_MAX];
+        let label = crate::i18n::tc(if resumes { "Continue" } else { "Play" }, &mut lb);
         let pill = Rect::new(
             MARGIN_X,
             HERO_ROW_Y,
-            hero_pill_w(measure, label),
+            hero_pill_w(measure, unsafe { std::ffi::CStr::from_ptr(label.as_ptr().cast()) }),
             HERO_CTRL_D,
         );
         match index {
@@ -2010,6 +2014,12 @@ fn pinned_snap(target: f32, rows: usize) -> f32 {
     }
 }
 
+/// The translated pick of a fixed label: static C strings in, one pointer out, nothing
+/// allocates on the draw path.
+fn tr_c(en: &'static std::ffi::CStr, es: &'static std::ffi::CStr) -> &'static std::ffi::CStr {
+    if crate::i18n::is_es() { es } else { en }
+}
+
 fn status_read(
     view: HubsView<'_>,
 ) -> Option<(
@@ -2025,14 +2035,14 @@ fn status_read(
             (c"Loading your library\u{2026}", StatusKind::Working, None)
         }
         crate::pms::HubState::Failed => (
-            c"Can\u{2019}t reach your Plex server",
+            tr_c(c"Can\u{2019}t reach your Plex server", c"No se puede conectar con el servidor"),
             StatusKind::Failed,
-            Some(c"Try again"),
+            Some(tr_c(c"Try again", c"Reintentar")),
         ),
         crate::pms::HubState::Ready => (
-            c"Nothing on this server yet",
+            tr_c(c"Nothing on this server yet", c"Esta biblioteca todavía está vacía"),
             StatusKind::Empty,
-            Some(c"Refresh"),
+            Some(tr_c(c"Refresh", c"Actualizar")),
         ),
     })
 }

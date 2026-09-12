@@ -12,6 +12,12 @@ use crate::ui::widgets::{
 };
 use crate::ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
+
+/// The translated pick of a fixed label: static C strings in, one pointer out, nothing
+/// allocates on the draw path.
+fn tr_c(en: &'static std::ffi::CStr, es: &'static std::ffi::CStr) -> &'static std::ffi::CStr {
+    if crate::i18n::is_es() { es } else { en }
+}
 use std::os::raw::{c_int, c_uint};
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -1048,7 +1054,7 @@ fn draw_failed_readout(
     );
     fr_line(
         p,
-        c"Playback failed",
+        tr_c(c"Playback failed", c"No se pudo reproducir"),
         FR_VERDICT_TOP,
         theme::size::TITLE,
         1,
@@ -1088,7 +1094,7 @@ fn draw_failed_readout(
             );
     }
     if e.no_pass {
-        let words = c"This server has no";
+        let words = tr_c(c"This server has no", c"Este servidor no tiene");
         let ww = measure.width(words, theme::size::BODY, false);
         let cw = crate::ui::widgets::pass_capsule_w(measure);
         const GAP: f32 = 16.0;
@@ -1110,13 +1116,13 @@ fn draw_failed_readout(
     // Both exits stay visible.  OK enters the shared quality ladder (selecting the current rung is
     // a plain retry); BACK still leaves the player.  The key caps are what survive a phone photo.
     if !jail || ps.repair_status == crate::webos::jail_repair::State::Idle {
-        draw_hint_with_keycap(p, c"Press", c"OK", if jail { c"to review sandbox repair" } else { c"to choose quality or retry" }, FR_HINT_TOP, measure);
+        draw_hint_with_keycap(p, tr_c(c"Press", c"Pulsa"), c"OK", if jail { tr_c(c"to review sandbox repair", c"para revisar la reparación del sandbox") } else { tr_c(c"to choose quality or retry", c"para elegir calidad o reintentar") }, FR_HINT_TOP, measure);
     }
     draw_hint_with_keycap(
         p,
-        c"Press",
-        c"BACK",
-        c"to return",
+        tr_c(c"Press", c"Pulsa"),
+        tr_c(c"BACK", c"ATRÁS"),
+        tr_c(c"to return", c"para volver"),
         FR_HINT_TOP + FR_HINT_GAP,
         measure,
     );

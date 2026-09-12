@@ -50,7 +50,8 @@ impl Resources {
             self.query = q.into();
             self.caret = caret;
             self.run = if q.trim().is_empty() {
-                c"Search your library".into()
+                // The placeholder translates (i18n): two static spellings, one pointer pick.
+                cstring(if crate::i18n::is_es() { "Busca en tu biblioteca" } else { "Search your library" })
             } else {
                 cstring(q)
             };
@@ -339,8 +340,8 @@ fn empty<H: SearchLike>(screen: &SearchScreen, f: &DrawFrame<'_, '_, H>, p: Pain
     let mut rect = layout::empty_band(screen.editing);
     rect.y -= screen.scroll.pos;
     if empty == EmptyState::Fault {
-        StatusOverlay::new(rect, c"Search didn’t reach the server", StatusKind::Failed)
-            .reason(c"Your libraries are fine — try again in a moment.")
+        StatusOverlay::new(rect, tr_c(c"Search didn’t reach the server", c"La búsqueda no llegó al servidor"), StatusKind::Failed)
+            .reason(tr_c(c"Your libraries are fine — try again in a moment.", c"Tus bibliotecas están bien; prueba en un momento."))
             .draw(&Env::inert(), p);
         return;
     }
@@ -357,7 +358,7 @@ fn empty<H: SearchLike>(screen: &SearchScreen, f: &DrawFrame<'_, '_, H>, p: Pain
             f.cx.measure,
         ))
     } else {
-        "Nothing searched yet".into()
+        crate::i18n::t("Nothing searched yet").to_string()
     };
     let statement = cstring(&statement);
     let hh = f.cx.measure.cap_h(theme::size::CAPTION);
@@ -575,15 +576,32 @@ fn empty_state(state: crate::search::State, has_shelves: bool) -> Option<EmptySt
     }
 }
 
+/// The translated pick of a fixed label: static C strings in, one pointer out, nothing
+/// allocates on the draw path.
+fn tr_c(en: &'static CStr, es: &'static CStr) -> &'static CStr {
+    if crate::i18n::is_es() { es } else { en }
+}
+
 fn header_of(state: EmptyState) -> &'static CStr {
+    // The header translates, so it cannot stay a c"" literal. There are exactly two answers,
+    // each built ONCE per process (OnceLock + a deliberate two-allocation leak): the per-draw
+    // buffer dance has no home here - the pointer must outlive the fn - and leaking two labels
+    // a process beats leaking one per frame by every measure that matters.
+    static NO_RES: std::sync::OnceLock<&'static CStr> = std::sync::OnceLock::new();
+    static RECENT: std::sync::OnceLock<&'static CStr> = std::sync::OnceLock::new();
+    fn mk(key: &'static str) -> &'static CStr {
+        let mut v = crate::i18n::t(key).as_bytes().to_vec();
+        v.push(0);
+        std::ffi::CStr::from_bytes_with_nul(Box::leak(v.into_boxed_slice())).unwrap_or_default()
+    }
     match state {
-        EmptyState::NoResults => c"SEARCH RESULTS",
-        _ => c"RECENT SEARCHES",
+        EmptyState::NoResults => NO_RES.get_or_init(|| mk("SEARCH RESULTS")),
+        _ => RECENT.get_or_init(|| mk("RECENT SEARCHES")),
     }
 }
 
 fn no_results_line(q: &str) -> String {
-    format!("No results for \u{201C}{q}\u{201D}")
+    format!("{} \u{201C}{q}\u{201D}", crate::i18n::t("No results for"))
 }
 
 fn heading_flow(

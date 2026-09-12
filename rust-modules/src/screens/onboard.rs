@@ -33,6 +33,11 @@ use super::registry::{band_index, word, AppFx, DirectoryLike, LoopReq};
 
 pub(crate) const TITLE: &str = "Which libraries do you want?";
 const SETTINGS_TITLE: &str = "Favorite libraries";
+/// The translated pick of a fixed label (same helper `ui::detail` owns): static C strings in,
+/// one pointer out, nothing allocates on the draw path.
+fn tr_c(en: &'static std::ffi::CStr, es: &'static std::ffi::CStr) -> &'static std::ffi::CStr {
+    if crate::i18n::is_es() { es } else { en }
+}
 const ACTION: &CStr = c"Start watching";
 const DONE: &CStr = c"Done";
 const RETRY: &CStr = c"Try again";
@@ -54,9 +59,9 @@ enum ActionKind {
 impl ActionKind {
     fn label(self) -> &'static CStr {
         match self {
-            ActionKind::Retry => RETRY,
-            ActionKind::Done => DONE,
-            ActionKind::Start => ACTION,
+            ActionKind::Retry => tr_c(RETRY, c"Reintentar"),
+            ActionKind::Done => tr_c(DONE, c"Hecho"),
+            ActionKind::Start => tr_c(ACTION, c"Empezar a ver"),
         }
     }
 }
@@ -749,8 +754,8 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
         if self.table.n_rows() == 0 {
             let env = Env::inert();
             if directory.discovery() == SecFetch::Failed {
-                StatusOverlay::new(lf, c"Couldn't load libraries", StatusKind::Failed)
-                    .reason(c"Check the connection, then try again.")
+                StatusOverlay::new(lf, tr_c(c"Couldn't load libraries", c"No se pudieron cargar las bibliotecas"), StatusKind::Failed)
+                    .reason(tr_c(c"Check the connection, then try again.", c"Comprueba la conexión e inténtalo de nuevo."))
                     .draw(&env, p);
             } else {
                 Spinner::new(lf.x + lf.w * 0.5, lf.y + StatusOverlay::CTRL_H, 22.0)

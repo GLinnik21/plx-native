@@ -121,7 +121,7 @@ fn rows_for(acc: &Account) -> &'static [Action] {
 pub(crate) fn chip_label(acc: &Account) -> String {
     match (&acc.name, acc.signed_in) {
         (Some(n), _) => n.clone(),
-        (None, true) => HEADER_FALLBACK.to_string(),
+        (None, true) => crate::i18n::t(HEADER_FALLBACK).to_string(),
         (None, false) => label(Action::SignIn).to_string(),
     }
 }
@@ -191,7 +191,7 @@ impl AccountMenuScreen {
     pub(crate) fn new(entry: EntryId) -> Self {
         Self {
             entry,
-            header: HEADER_FALLBACK.to_string(),
+            header: crate::i18n::t(HEADER_FALLBACK).to_string(),
             rows: &[],
             table: TableView::new(),
             built: false,
@@ -212,7 +212,7 @@ impl AccountMenuScreen {
         let cur = crate::plex::session::current();
         let acc = sess.account(cur.as_ref());
         self.rows = rows_for(&acc);
-        self.header = acc.name.unwrap_or_else(|| HEADER_FALLBACK.to_string());
+        self.header = acc.name.unwrap_or_else(|| crate::i18n::t(HEADER_FALLBACK).to_string());
         let mut sec = Section::new(self.header.clone());
         for a in self.rows {
             sec = sec.row(Row::new(label(*a)).chevron(drills_in(*a)));
@@ -464,7 +464,7 @@ mod tests {
         let acc = s.account(active);
         let rows = rows_for(&acc);
         (
-            acc.name.unwrap_or_else(|| HEADER_FALLBACK.to_string()),
+            acc.name.unwrap_or_else(|| crate::i18n::t(HEADER_FALLBACK).to_string()),
             rows.iter().map(|a| label(*a)).collect(),
         )
     }

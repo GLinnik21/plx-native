@@ -1042,18 +1042,18 @@ impl RootPage {
         sections.push(
             Section::new("Privacy")
                 .row(
-                    Row::new("Privacy & data")
-                        .detail("Optional reports, privacy information and local data.")
+                    Row::new(crate::i18n::t("Privacy & data"))
+                        .detail(crate::i18n::t("Optional reports, privacy information and local data."))
                         .chevron(true),
                 )
                 .row(
-                    Row::new("Legal notices")
-                        .detail("Privacy, licences, source code, trademarks and contact.")
+                    Row::new(crate::i18n::t("Legal notices"))
+                        .detail(crate::i18n::t("Privacy, licences, source code, trademarks and contact."))
                         .chevron(true),
                 ),
         );
         actions.extend([Action::Privacy, Action::Legal]);
-        let mut system = Section::new("System");
+        let mut system = Section::new(crate::i18n::t("System"));
         // A one-person account already skips the picker; the switch only changes a multi-user boot.
         if signed_in && multi_user {
             system = system.row(
@@ -1072,8 +1072,8 @@ impl RootPage {
             actions.push(Action::TrailerAutoplay);
         }
         system = system.row(
-            Row::new("About PlxNative")
-                .detail("Version, copyright and project information.")
+            Row::new(crate::i18n::t("About PlxNative"))
+                .detail(crate::i18n::t("Version, copyright and project information."))
                 .chevron(true),
         );
         sections.push(system);

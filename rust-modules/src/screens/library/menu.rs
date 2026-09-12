@@ -187,7 +187,7 @@ fn source_draft(
 }
 
 fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDraft {
-    let mut section = Section::new("Sort by");
+    let mut section = Section::new(crate::i18n::t("Sort by"));
     let mut rows = Vec::new();
     let mut stamp = Stamp::default();
     stamp.tag(7);
@@ -236,7 +236,7 @@ fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDr
 }
 
 fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>) -> MenuDraft {
-    let section = Section::new("Filter")
+    let section = Section::new(crate::i18n::t("Filter"))
         .row(Row::new("Unwatched only").toggle(unwatched))
         .row(
             Row::new("Genre")
@@ -392,8 +392,8 @@ impl LibraryMenu {
         let mut sections = Vec::new();
         let selected = 0i32;
         let title = match self.kind {
-            LibraryMenuKind::Sort => "Sort by",
-            LibraryMenuKind::Filter => "Filter",
+            LibraryMenuKind::Sort => crate::i18n::t("Sort by"),
+            LibraryMenuKind::Filter => crate::i18n::t("Filter"),
             LibraryMenuKind::Genre => "Genre",
             LibraryMenuKind::Sources => "Libraries",
         };

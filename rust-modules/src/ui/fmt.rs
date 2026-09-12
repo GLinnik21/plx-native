@@ -234,11 +234,8 @@ pub(crate) fn pretty_date(iso: &str, year: i64) -> String {
             parts[1].parse::<usize>(),
             parts[2].parse::<i64>(),
         ) {
-            const MON: [&str; 12] = [
-                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-            ];
             if (1..=12).contains(&mo) {
-                return format!("{da} {} {y}", MON[mo - 1]);
+                return format!("{da} {} {y}", crate::i18n::month_abbr(mo));
             }
         }
     }

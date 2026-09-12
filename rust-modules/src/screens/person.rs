@@ -1287,8 +1287,17 @@ impl PersonScreen {
         let row = &self.shelves[kind];
         let cur_col = if focused { row.focus() } else { -1 };
         let hy = -row.lift();
+        // tc buffers: the titles translate (i18n), so they cannot stay c"" literals
+        let shelf_title = {
+            let mut b = [0u8; crate::i18n::TC_MAX];
+            let t = crate::i18n::t(if kind == 0 { "Movies" } else { "Shows" });
+            let n = t.len().min(crate::i18n::TC_MAX - 1);
+            b[..n].copy_from_slice(&t.as_bytes()[..n]);
+            b[n] = 0;
+            b
+        };
         Label::new(
-            SHELF_TITLE[kind].as_ptr(),
+            shelf_title.as_ptr().cast(),
             theme::size::HEADLINE,
             theme::TEXT_HEADING,
         )
@@ -1296,7 +1305,7 @@ impl PersonScreen {
         .v(VAlign::CapTop)
         .draw(p, Rect::new(MARGIN_X, hy, SCR_W, 0.0));
         if !self.shelf_count_c[kind].as_bytes().is_empty() {
-            let tw = measure.width(SHELF_TITLE[kind], theme::size::HEADLINE, true);
+            let tw = measure.width(unsafe { std::ffi::CStr::from_ptr(shelf_title.as_ptr().cast()) }, theme::size::HEADLINE, true);
             Label::new(
                 self.shelf_count_c[kind].as_ptr(),
                 theme::size::CAPTION,
@@ -1425,7 +1434,7 @@ impl PersonScreen {
 }
 
 /// Shelves, in flow order. Kind 0 = Movies, 1 = Shows.
-const SHELF_TITLE: [&std::ffi::CStr; NSHELF] = [c"Movies", c"Shows"];
+
 
 /// The Filmography entry pill's width, sized to its own runs.
 fn entry_w(_p: &Person, entry_count_c: &std::ffi::CStr, m: &dyn Measure) -> f32 {
