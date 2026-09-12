@@ -474,13 +474,13 @@ fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32)
 fn playback_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32) -> String {
     use crate::player::PlaybackState as S;
     let s = match crate::player::state(ps) {
-        S::Idle => "Idle",
-        S::Resolving => "Resolving",
-        S::Connecting => "Connecting",
-        S::Buffering => "Buffering",
-        S::Seeking => "Seeking",
-        S::Playing => "Playing",
-        S::Error => "Playback error",
+        S::Idle => crate::i18n::t("Idle"),
+        S::Resolving => crate::i18n::t("Resolving"),
+        S::Connecting => crate::i18n::t("Connecting"),
+        S::Buffering => crate::i18n::t("Buffering"),
+        S::Seeking => crate::i18n::t("Seeking"),
+        S::Playing => crate::i18n::t("Playing"),
+        S::Error => crate::i18n::t("Playback error"),
     };
     // The reason is part of every Error verdict — bare "Playback error" made the reviewer derive
     // "the server dropped the video track" from the server's own transcoder logs (issue #22);
@@ -545,8 +545,7 @@ fn device_rows() -> Vec<Field> {
     let set = hw.set_line();
     let set_unknown = set.is_empty();
     v.push(
-        Field::new(
-            "Set",
+        Field::new(crate::i18n::t("Set"),
             if set_unknown {
                 "unknown — nyx did not answer".to_string()
             } else {
@@ -578,8 +577,7 @@ fn device_rows() -> Vec<Field> {
     // panel whose output is a photograph must not print the second as if it were the first.
     let measured = crate::devcaps::measured();
     v.push(
-        Field::new(
-            "Decoder",
+        Field::new(crate::i18n::t("Decoder"),
             format!(
                 "{} · {} · {}",
                 if c.hevc {
@@ -625,7 +623,7 @@ fn rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64,
 
 fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
     let mut v = Vec::with_capacity(LEFT_ROWS);
-    v.push(Field::new("Connection", connection_line(ps)));
+    v.push(Field::new(crate::i18n::t("Connection"), connection_line(ps)));
     v.push(Field::new("AppArg", route_line(ps, d)));
 
     let mut video = chain(
@@ -637,7 +635,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     if dv.present {
         video.push_str(&format!(" · Dolby Vision P{}.{}", dv.profile, dv.bl_compat));
     }
-    v.push(Field::new("Video", video));
+    v.push(Field::new(crate::i18n::t("Video"), video));
 
     let mut audio = chain(
         crate::route::source_acodec(ps),
@@ -666,8 +664,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
         (0, "")
     };
     v.push(
-        Field::new(
-            "Picture",
+        Field::new(crate::i18n::t("Picture"),
             match (d.video_w, d.video_h) {
                 (0, _) | (_, 0) => "stream never opened".to_string(),
                 (w, h) if fps_milli > 0 => {
@@ -678,8 +675,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
         )
         .fault(d.video_w == 0 || d.video_h == 0),
     );
-    v.push(Field::new(
-        "Timeline",
+    v.push(Field::new(crate::i18n::t("Timeline"),
         format!(
             "{} / {}",
             crate::ui::fmt::clock(d.pos_ns / 1_000_000),
@@ -690,22 +686,21 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
             },
         ),
     ));
-    v.push(Field::new("A/V sync", skew(d)).fault(skew_bad(d)));
+    v.push(Field::new(crate::i18n::t("A/V sync"), skew(d)).fault(skew_bad(d)));
 
     let (plane, plane_bad) = plane_line(d);
-    v.push(Field::new("Video plane", plane).fault(plane_bad));
+    v.push(Field::new(crate::i18n::t("Video plane"), plane).fault(plane_bad));
 
     let transfer = match (d.http_status, d.net_rx) {
         (0, _) => "no connection".to_string(),
         (st, rx) => format!("HTTP {st} · {} received", mb(rx)),
     };
     v.push(
-        Field::new("Transfer", transfer)
+        Field::new(crate::i18n::t("Transfer"), transfer)
             .fault(d.http_status != 0 && !(200..300).contains(&d.http_status)),
     );
     v.push(
-        Field::new(
-            "Load",
+        Field::new(crate::i18n::t("Load"),
             format!(
                 "{} · {}",
                 if d.load_failed {
@@ -725,8 +720,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
         .fault(d.load_failed || d.cb_err != 0 || (d.cb_count == 0 && d.load_completed)),
     );
     v.push(
-        Field::new(
-            "Feed",
+        Field::new(crate::i18n::t("Feed"),
             format!(
                 "{} · {}",
                 if d.pushed_any {
@@ -740,8 +734,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
         .fault(!d.pushed_any || (d.fed_v == 0 && d.load_completed) || d.feed_is_fault()),
     );
     let (cv, ca) = crate::player::aq_caps();
-    v.push(Field::new(
-        "Queues",
+    v.push(Field::new(crate::i18n::t("Queues"),
         format!(
             "video {:.1}/{:.1} MB · audio {:.2}/{:.1} MB",
             mb_f(d.aq_video),
@@ -751,7 +744,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
         ),
     ));
     v.push(
-        Field::new("Frames", frames_str(d, now))
+        Field::new(crate::i18n::t("Frames"), frames_str(d, now))
             .fault(!d.seen_frame && d.load_completed && since(d.load_at, now) > STALL_MS),
     );
     debug_assert_eq!(v.len(), LEFT_ROWS);
@@ -775,9 +768,9 @@ fn connection_line(ps: &crate::route::PlaybackSession) -> String {
     };
     let tier = match client.link() {
         Some(crate::plex::probe::Location::Local) => "LAN",
-        Some(crate::plex::probe::Location::Remote) => "remote",
+        Some(crate::plex::probe::Location::Remote) => crate::i18n::t("remote"),
         Some(crate::plex::probe::Location::Relay) => "relay",
-        None => "link unknown",
+        None => crate::i18n::t("link unknown"),
     };
     format!(
         "{tier} · PMS {}",
@@ -796,9 +789,9 @@ fn route_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> St
         "progressive"
     };
     let transform = match (crate::route::is_transcoding(ps), crate::route::is_remux(ps)) {
-        (false, _) => "direct play",
-        (true, true) => "remux (stream copy)",
-        (true, false) => "transcode (re-encode)",
+        (false, _) => crate::i18n::t("direct play"),
+        (true, true) => crate::i18n::t("remux (stream copy)"),
+        (true, false) => crate::i18n::t("transcode (re-encode)"),
     };
     format!("{transport} · {transform}")
 }
@@ -810,7 +803,7 @@ fn plane_line(d: &crate::player::Diag) -> (String, bool) {
     // "(webOS 4)" / "(webOS 5+)" restates what the header's own `webOS 4.10.2` already says, and
     // it is 11 characters this row does not have. The FAULT arm keeps its full sentence.
     let mode = match d.vp_mode {
-        crate::player::VP_EXPORTED => "exported window",
+        crate::player::VP_EXPORTED => crate::i18n::t("exported window"),
         crate::player::VP_ACB => "ACB",
         _ => d.vp_mode_str(),
     };
@@ -839,10 +832,10 @@ fn plane_line(d: &crate::player::Diag) -> (String, bool) {
             format!(
                 "{mode} · {}",
                 match (d.acb_ok, d.stage) {
-                    (false, _) => "NOT AVAILABLE",
-                    (true, 0) => "init'd · NOT bound",
-                    (true, 1) => "bind sent",
-                    _ => "streaming",
+                    (false, _) => crate::i18n::t("NOT AVAILABLE"),
+                    (true, 0) => crate::i18n::t("init'd · NOT bound"),
+                    (true, 1) => crate::i18n::t("bind sent"),
+                    _ => crate::i18n::t("streaming"),
                 }
             ),
             !d.acb_ok,
@@ -900,18 +893,18 @@ fn model_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> Ve
 }
 
 fn abr_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, selected: crate::route::Quality, v: &mut Vec<Field>) {
-    v.push(Field::new("Mode", abr_mode(d, selected)));
+    v.push(Field::new(crate::i18n::t("Mode"), abr_mode(d, selected)));
     v.push(Field::new("Quality", abr_quality(d, selected)));
-    v.push(Field::new("Sample", abr_link(d, selected)));
-    v.push(Field::new("Conservative", abr_budget(d, selected)));
-    v.push(Field::new("Buffer", abr_buffer(d, selected)));
+    v.push(Field::new(crate::i18n::t("Sample"), abr_link(d, selected)));
+    v.push(Field::new(crate::i18n::t("Conservative"), abr_budget(d, selected)));
+    v.push(Field::new(crate::i18n::t("Buffer"), abr_buffer(d, selected)));
     v.push(
-        Field::new("Risk", abr_risk(d, selected))
+        Field::new(crate::i18n::t("Risk"), abr_risk(d, selected))
             .fault(d.abr_why == crate::player::ABR_WHY_STARVATION),
     );
-    v.push(Field::new("Acquisition", abr_acquisition_cadence(ps, d)));
-    v.push(Field::new("Action", abr_action(d, selected)));
-    v.push(Field::new("Reason", abr_reason(d, selected)));
+    v.push(Field::new(crate::i18n::t("Acquisition"), abr_acquisition_cadence(ps, d)));
+    v.push(Field::new(crate::i18n::t("Action"), abr_action(d, selected)));
+    v.push(Field::new(crate::i18n::t("Reason"), abr_reason(d, selected)));
 }
 
 fn abr_mode(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
@@ -1008,9 +1001,9 @@ fn abr_buffer(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
         };
     }
     let trend = match d.abr_slope_ms_per_s.cmp(&0) {
-        std::cmp::Ordering::Greater => "filling",
-        std::cmp::Ordering::Less => "draining",
-        std::cmp::Ordering::Equal => "steady",
+        std::cmp::Ordering::Greater => crate::i18n::t("filling"),
+        std::cmp::Ordering::Less => crate::i18n::t("draining"),
+        std::cmp::Ordering::Equal => crate::i18n::t("steady"),
     };
     format!(
         "{:.1} s · {:+.2} s/s · {trend}",
@@ -1088,7 +1081,7 @@ fn abr_raster(kbps: i64) -> &'static str {
         (1280, 720) => "720p",
         (1920, 1080) => "1080p",
         (3840, 2160) => "4K",
-        _ => "unknown raster",
+        _ => crate::i18n::t("unknown raster"),
     }
 }
 

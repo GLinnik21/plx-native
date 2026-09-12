@@ -1152,7 +1152,7 @@ impl Diag {
         match self.feed_state {
             1 => "accepting",
             2 => "BufferFull (sink is full)",
-            3 => "REFUSED",
+            3 => crate::i18n::t("REFUSED"),
             4 => "holding ~1.6 s ahead",
             5 => "queue empty (no data)",
             _ => "— nothing fed yet",
