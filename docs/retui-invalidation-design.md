@@ -24,9 +24,10 @@
 > `Tick` type, not the compile-time guarantee.
 >
 > **Replay boundary (phase 12):** this note does not close the broader recorder contract in §0.8/
-> §5.5. Controlled Home now restores typed pre-effect inputs and injects recorded Home/Browse
-> results without live data IO. Other domains remain unsupported by that bounded driver, and the
-> committed `focusfp.sh --replay` path does not expose the UI engine's `--resolve` mode. The
+> §5.5. The bounded driver covers controlled Home, Settings, and typed Flow 12 content; it
+> restores typed pre-effect inputs and injects Home/Browse and Flow 12 Detail/Person results
+> without live data IO. Other domains remain unsupported, and the committed
+> `focusfp.sh --replay` path does not expose the UI engine's `--resolve` mode. The
 > structural phase-12 gates therefore check specific structural invariants; they are not an
 > overall proof of UI ownership, whole-application
 > deterministic restore or scenario replay; those remain separate implementation work.

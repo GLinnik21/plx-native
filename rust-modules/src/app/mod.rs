@@ -112,7 +112,7 @@ extern "C" {
 // loop body reads exactly as before. `plex_run` itself is phase 1b.
 pub(crate) mod adapters;
 pub(crate) mod boot;
-mod bootstrap;
+pub(crate) mod bootstrap;
 #[cfg(test)]
 pub(crate) use bootstrap::HomeIo;
 /// **"Stats for nerds"** — the diagnostics read-out (phase 10, was `ui/stats.rs`). Here rather
@@ -479,8 +479,18 @@ fn finish_recording(rec: &mut recorder::Recplay) -> bool {
 
 /// Simulator tooling emits the entire typed contract, never a patched household auth file.
 #[cfg(feature = "hostsim")]
-pub fn synthetic_home_initial(seed: u32, port: u16) -> Result<String, &'static str> {
-    let initial = bootstrap::Initial::synthetic_home(seed, port)?;
+pub fn synthetic_home_initial(seed: u32, port: u16, settings: Option<String>)
+    -> Result<String, &'static str> {
+    let content = settings.as_deref() == Some("flow12");
+    let mut initial = bootstrap::Initial::synthetic_home(seed, port, if content { None } else { settings })?;
+    if content {
+        initial.content = Some(bootstrap::ContentInitial { detail:"1001".into(), detailsec:1,
+            detailok:true, filmography:true, personcredits:9, nowan:true });
+        for name in ["detail", "detailsec", "detailok", "filmography", "personcredits", "nowan"] {
+            initial.triggers.push(format!("plxnative-{name}"));
+        }
+        initial.validate()?;
+    }
     serde_json::to_string_pretty(&initial).map_err(|_| "cannot encode synthetic initial inputs")
 }
 

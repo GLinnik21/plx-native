@@ -13,9 +13,10 @@ already a `SCENE`-rooted tree; detail.rs is still loose statics; app.rs still fl
 It supersedes the older steps 5–7 sketch in `ui-system-migration.md` where they disagree.
 
 This is a historical view-tree plan, not a claim that the product's recorder/restore/resolve
-architecture or end-to-end replay proof is complete. Controlled Home now has typed initial
-restoration and recorded-result ingress without live replay data IO; other domains and both-mode
-completion remain open. Those broader §0.8/§5.5 obligations are outside this view-tree scope.
+architecture or end-to-end replay proof is complete. Controlled Home, Settings, and typed Flow 12
+content now have typed initial restoration and recorded-result ingress without live replay data
+IO; both-mode completion and broader all-domain replay remain open. Those broader §0.8/§5.5
+obligations are outside this view-tree scope.
 
 The **only correctness signal is `make`** (ARM cross-build; no host runtime). Every step below is
 sized so `make` is green at its checkpoint, and every pixel-moving step names an on-device

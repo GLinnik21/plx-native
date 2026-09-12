@@ -365,6 +365,7 @@ pub(crate) unsafe fn construct(
 ) -> Result<App, c_int> {
     let controlled = preflight.controlled();
     if let Some(initial) = &initial {
+        super::bootstrap::stores::init(initial, preflight.replay());
         initial.home.restore_boot(&mt).map_err(|_| 1)?;
         crate::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| 1)?;
     }
@@ -650,7 +651,8 @@ pub(crate) unsafe fn construct(
         super::bridge::Bridge::controlled_home(crate::diag::heartbeat::now_us,
             initial.as_ref().expect("controlled initialization"), &mt, preflight.replay())
     } else {
-        super::bridge::Bridge::new(crate::diag::heartbeat::now_us, session_init, &mt)
+        super::bridge::Bridge::new(crate::diag::heartbeat::now_us, session_init,
+            crate::telemetry::consent::current().unwrap_or_default(), &mt)
     };
     // Construct the one dispatcher before bootstrap commands; move this same queue into App.
     let mut pages = crate::ui::dispatch::Dispatcher::with_transition(Box::new(
@@ -880,7 +882,11 @@ pub(crate) unsafe fn construct(
     // completely healthy modal intentionally reports ~0 fps after its springs settle, which
     // cannot grade the screen's fill cost. The paired settings-idle scene omits the oscillator
     // and guards the inverse contract.
-    let settings_boot = if controlled { None } else { crate::dev::scenarios::settings_boot_value() };
+    let settings_boot = if controlled {
+        initial.as_ref().and_then(|initial| initial.settings.clone())
+    } else {
+        crate::dev::scenarios::settings_boot_value()
+    };
     let settings_osc = !controlled && crate::dev::scenarios::settingsosc_armed();
     let settings_osc_last = 0u32;
     let settings_osc_down = true;

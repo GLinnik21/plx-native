@@ -185,15 +185,22 @@ impl crate::screens::registry::LibraryLike for AppHost {
 // the rig
 // ---------------------------------------------------------------------------------------------
 
-/// The consent MACHINE (§2.2): the one owner of the two decisions. It applies an answer and
-/// PUBLISHES it (`telemetry::record` → `consent::install`), which is the snapshot every
-/// telemetry thread reads; nothing else writes it.
-pub(crate) struct ConsentMachine;
+/// The consent MACHINE (§2.2): the physical owner of the two decisions. The adapter persists and
+/// publishes immutable snapshots; it never supplies the previous decision back to this owner.
+pub(crate) struct ConsentMachine {
+    current: crate::telemetry::consent::Consent,
+}
 
 impl ConsentMachine {
-    fn record(&mut self, errors: bool, usage: bool) {
-        let prev = crate::telemetry::consent::current().unwrap_or_default();
-        let next = crate::telemetry::consent::apply(&prev, errors, usage, crate::telemetry::mint_id);
+    pub(crate) const SHAPE: &'static str =
+        "Consent{asked_version:u32,errors:bool,usage:bool,install_id:option<string>,errors_id:option<string>}";
+
+    fn from_initial(current: crate::telemetry::consent::Consent) -> Self { Self { current } }
+
+    fn record(&mut self, adapter: &mut super::adapters::consent::ConsentAdapter,
+        errors: bool, usage: bool) {
+        let next = crate::telemetry::consent::apply(
+            &self.current, errors, usage, crate::telemetry::mint_id);
         for (asked, got, channel) in [
             (errors, next.errors, "crash reports"),
             (usage, next.usage, "usage analytics"),
@@ -204,9 +211,30 @@ impl ConsentMachine {
                 ));
             }
         }
-        crate::telemetry::record(next);
+        adapter.commit(&self.current, &next);
+        self.current = next;
         crate::telemetry::flush_soon();
     }
+
+    fn forget(&mut self, adapter: &mut super::adapters::consent::ConsentAdapter) {
+        adapter.forget(&self.current);
+        self.current = Default::default();
+    }
+
+    pub(crate) fn subhash(&self) -> u64 {
+        let mut c = Canon::new();
+        c.u32(self.current.asked_version)
+            .bool(self.current.errors)
+            .bool(self.current.usage);
+        for value in [&self.current.install_id, &self.current.errors_id] {
+            c.bool(value.is_some());
+            if let Some(value) = value { c.str(value); }
+        }
+        c.finish()
+    }
+
+    #[cfg(test)]
+    fn current(&self) -> &crate::telemetry::consent::Consent { &self.current }
 }
 
 /// What the bridge lends the dispatcher, and what it collects for the loop.
@@ -217,6 +245,7 @@ pub(crate) struct Bridge {
     session: crate::auth::SessionMachine,
     session_adapter: super::adapters::session::SessionAdapter,
     session_ready: Option<(u64, crate::auth::owner::ProfileScope, crate::plex::session::ServerRef, String, crate::auth::owner::ReadyInstall)>,
+    consent_adapter: super::adapters::consent::ConsentAdapter,
     mounter: AppMounter,
     /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
     /// [`Bridge::publish_playback`] from the loop, once per iteration.
@@ -306,7 +335,9 @@ impl Bridge {
         static TTF: crate::text::TtfMeasure = crate::text::TtfMeasure;
         let preferences = initial.session.persisted.clone();
         let mut bridge = Self::with_publications(&TTF, now_us, initial.session.clone(),
-            super::adapters::session::SessionAdapter::controlled_home(mt, replay), StorePublications {
+            super::adapters::session::SessionAdapter::controlled_home(mt, replay),
+            initial.consent.clone(), super::adapters::consent::ConsentAdapter::live(),
+            StorePublications {
                 hubs:initial.home.snapshot(), listing:crate::stores::browse::ListingSnapshot::empty(),
                 directory:Default::default(), section_hubs:crate::stores::browse::HubsSnapshot::empty(),
                 search:Default::default(),
@@ -317,13 +348,14 @@ impl Bridge {
         bridge
     }
     pub(crate) fn new(now_us: fn() -> u64, init: crate::auth::SessionInit,
-        mt: &crate::task::MainThread) -> Self {
+        consent: crate::telemetry::consent::Consent, mt: &crate::task::MainThread) -> Self {
         // A `static`, not `&TtfMeasure` inline: a unit-struct literal DOES const-promote to
         // `'static` today, but that is a rule about the expression rather than a promise about
         // this field, and a `static` states the lifetime outright. Same reasoning as the one
         // `screens::settings`'s test module writes out beside its own measure.
         static TTF: crate::text::TtfMeasure = crate::text::TtfMeasure;
-        Self::with_measure(&TTF, now_us, init, super::adapters::session::SessionAdapter::live(mt))
+        Self::with_measure(&TTF, now_us, init, super::adapters::session::SessionAdapter::live(mt),
+            consent, super::adapters::consent::ConsentAdapter::live())
     }
 
     /// The same bridge over a measure that needs no fonts — the ONLY constructor a host test may
@@ -334,14 +366,18 @@ impl Bridge {
         static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
         Self::with_measure(&FIXTURE, now_us,
             crate::auth::SessionInit::captured(crate::plex::session::Session::default()),
-            super::adapters::session::SessionAdapter::fixture())
+            super::adapters::session::SessionAdapter::fixture(), Default::default(),
+            super::adapters::consent::ConsentAdapter::fixture())
     }
 
     fn with_measure(measure: &'static dyn Measure, now_us: fn() -> u64,
-        init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter) -> Self {
+        init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+        consent: crate::telemetry::consent::Consent,
+        consent_adapter: super::adapters::consent::ConsentAdapter) -> Self {
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
         directory.capture();
-        Self::with_publications(measure, now_us, init, session_adapter, StorePublications {
+        Self::with_publications(measure, now_us, init, session_adapter, consent, consent_adapter,
+            StorePublications {
             hubs: crate::pms::hubs_snapshot(), listing: crate::stores::browse::listing_snapshot(),
             directory, section_hubs: crate::stores::browse::hubs_snapshot(),
             search: crate::stores::search::snapshot(),
@@ -352,7 +388,8 @@ impl Bridge {
     fn for_session_test(init: crate::auth::SessionInit) -> Self {
         static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
         let adapter = super::adapters::session::SessionAdapter::fixture_with(init.persisted.clone());
-        Self::with_publications(&FIXTURE, || 0, init, adapter, StorePublications {
+        Self::with_publications(&FIXTURE, || 0, init, adapter, Default::default(),
+            super::adapters::consent::ConsentAdapter::fixture(), StorePublications {
             hubs: crate::pms::HubsSnapshot::empty_for_test(),
             listing: crate::stores::browse::ListingSnapshot::empty_for_test(),
             directory: Default::default(), section_hubs: crate::stores::browse::HubsSnapshot::empty_for_test(),
@@ -360,8 +397,38 @@ impl Bridge {
         })
     }
 
+    #[cfg(test)]
+    fn for_consent_test(consent: crate::telemetry::consent::Consent) -> Self {
+        static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
+        Self::with_publications(&FIXTURE, || 0,
+            crate::auth::SessionInit::captured(crate::plex::session::Session::default()),
+            super::adapters::session::SessionAdapter::fixture(), consent,
+            super::adapters::consent::ConsentAdapter::fixture(), StorePublications {
+                hubs: crate::pms::HubsSnapshot::empty_for_test(),
+                listing: crate::stores::browse::ListingSnapshot::empty(),
+                directory: Default::default(), section_hubs: crate::stores::browse::HubsSnapshot::empty(),
+                search: Default::default(),
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_consent_resource_test(consent: crate::telemetry::consent::Consent) -> Self {
+        static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
+        Self::with_publications(&FIXTURE, || 0,
+            crate::auth::SessionInit::captured(crate::plex::session::Session::default()),
+            super::adapters::session::SessionAdapter::fixture(), consent,
+            super::adapters::consent::ConsentAdapter::live(), StorePublications {
+                hubs: crate::pms::HubsSnapshot::empty_for_test(),
+                listing: crate::stores::browse::ListingSnapshot::empty(),
+                directory: Default::default(), section_hubs: crate::stores::browse::HubsSnapshot::empty(),
+                search: Default::default(),
+            })
+    }
+
     fn with_publications(measure: &'static dyn Measure, now_us: fn() -> u64,
         init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+        consent: crate::telemetry::consent::Consent,
+        consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications) -> Self {
         Self {
             home_io: None,
@@ -370,6 +437,7 @@ impl Bridge {
             session: crate::auth::SessionMachine::from_init(init),
             session_adapter,
             session_ready: None,
+            consent_adapter,
             mounter: AppMounter::default(),
             playback: crate::route::PlaybackSession::IDLE,
             playback_live: false,
@@ -385,7 +453,7 @@ impl Bridge {
             strip: crate::ui::widgets::StripRender::new(),
             home_commands: std::collections::VecDeque::new(),
             library_commands: std::collections::VecDeque::new(),
-            consent: ConsentMachine,
+            consent: ConsentMachine::from_initial(consent),
             reqs: Vec::new(),
             content_reqs: Vec::new(),
             home_reqs: Vec::new(),
@@ -411,6 +479,8 @@ impl Bridge {
 
     /// Cached logical Session hash, including pending work even when its UI read is unchanged.
     pub fn session_subhash(&self) -> u64 { self.session.subhash() }
+    /// Physical Consent owner's decision hash; identifiers are folded, never serialized here.
+    pub fn consent_subhash(&self) -> u64 { self.consent.subhash() }
     pub(crate) fn initial_subhash(&self) -> u64 { self.initial_subhash }
     #[cfg(test)]
     pub(crate) fn profile_resource_view(&self) -> Option<std::sync::Arc<crate::plex::session::CurrentProfile>> {
@@ -968,6 +1038,15 @@ impl Rig<AppHost> for Bridge {
         }
     }
     fn deliver(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
+        if let AppMsg::Consent(command) = msg {
+            if to != MachineId::Consent { return Handled::No; }
+            match command {
+                ConsentCmd::Record { errors, usage } => {
+                    self.consent.record(&mut self.consent_adapter, *errors, *usage);
+                }
+            }
+            return Handled::Yes;
+        }
         if let AppMsg::Session(event) = msg {
             use crate::auth::owner::SessionEvent;
             if to != MachineId::Session { return Handled::No; }
@@ -1132,7 +1211,8 @@ impl Bridge {
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
                 MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),
-            AppFx::Consent(ConsentCmd::Record { errors, usage }) => self.consent.record(errors, usage),
+            AppFx::Consent(command) => out.push(Fx::Deliver(
+                MachineId::Consent, Delivery::Machine(AppMsg::Consent(command)))),
             AppFx::Loop(req) => self.reqs.push(req),
             AppFx::Content(req) => self.content_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Home(req) => self.home_reqs.push((from, req, self.effect_return.clone())),
@@ -1208,6 +1288,9 @@ impl Bridge {
             SessionFx::Coordinator(action) => {
                 if matches!(action, crate::auth::owner::CoordinatorAction::LocalDataErased) {
                     self.reqs.push(LoopReq::LocalDataErased);
+                }
+                if matches!(action, crate::auth::owner::CoordinatorAction::CloseTelemetry) {
+                    self.consent.forget(&mut self.consent_adapter);
                 }
                 self.session_adapter.coordinator(action);
             }
@@ -2557,6 +2640,9 @@ mod session_resource_tests;
 #[cfg(test)]
 #[path = "recording_erasure_tests.rs"]
 mod recording_erasure_tests;
+#[cfg(test)]
+#[path = "consent_owner_tests.rs"]
+mod consent_owner_tests;
 
 #[cfg(test)]
 #[path = "session_controller_regression_tests.rs"]

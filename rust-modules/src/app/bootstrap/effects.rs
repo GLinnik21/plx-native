@@ -6,6 +6,21 @@ use crate::ui::screen::ScreenEvent;
 use serde_json::{json, Value};
 
 fn focus(key: crate::ui::machine::FocusKey<u32>) -> Value { json!([key.entry.0,key.elem]) }
+fn content(arg: &crate::screens::registry::ContentArg) -> Value {
+    use crate::screens::registry::ContentArg;
+    match arg {
+        ContentArg::Detail { sid, rk } => json!({"detail":[sid.raw(),rk]}),
+        ContentArg::Person { sid, key, guid, name, thumb } => json!({"person":[sid.raw(),key,guid,name,thumb]}),
+        ContentArg::Filmography { sid, key } => json!({"filmography":[sid.raw(),key]}),
+    }
+}
+fn argument(arg: &crate::screens::registry::AppArg) -> Result<Value, &'static str> {
+    match arg {
+        crate::screens::registry::AppArg::Home => Ok(json!("home")),
+        crate::screens::registry::AppArg::Content(arg) => Ok(content(arg)),
+        _ => Err("unsupported controlled navigation argument"),
+    }
+}
 fn home_command(command: &crate::screens::registry::HomeCmd) -> Value {
     use crate::screens::registry::{HomeCmd,HomeTab};
     match command {
@@ -17,6 +32,66 @@ fn home_command(command: &crate::screens::registry::HomeCmd) -> Value {
         HomeCmd::SelectHero(index) => json!({"select_hero":index}),
         HomeCmd::ItemMenu => json!("itemmenu"),
     }
+}
+
+fn home_hub(identity: &crate::screens::registry::HomeHubIdentity) -> Value {
+    use crate::screens::registry::HomeHubIdentity;
+    match identity {
+        HomeHubIdentity::ContinueWatching => json!([0]),
+        HomeHubIdentity::Identifier { sid, id } => json!([1, sid.raw(), id]),
+        HomeHubIdentity::Key { sid, key } => json!([2, sid.raw(), key]),
+        HomeHubIdentity::Ephemeral { generation, ordinal } => json!([3, generation, ordinal]),
+    }
+}
+
+fn home_item(identity: &crate::screens::registry::HomeItemIdentity) -> Value {
+    use crate::screens::registry::HomeItemIdentity;
+    match identity {
+        HomeItemIdentity::Item { hub, sid, rk } => json!([0, home_hub(hub), sid.raw(), rk]),
+        HomeItemIdentity::Slot { hub, generation, ordinal } =>
+            json!([1, home_hub(hub), generation, ordinal]),
+    }
+}
+
+fn page_memory(memory: &crate::screens::registry::PageMemory) -> Result<Value, &'static str> {
+    use crate::screens::registry::PageMemory;
+    Ok(match memory {
+        PageMemory::None => Value::Null,
+        PageMemory::Detail(m) => json!({"detail":{
+            "spot":[json!(m.spot.section), json!(m.spot.col), json!(m.spot.ep_text),
+                json!(m.spot.saved_col), json!(m.spot.season)],
+            "next_elem":m.next_elem, "keys":m.keys.iter().map(|k| {
+                use crate::screens::registry::DetailIdentity::*;
+                json!([k.elem, match &k.identity {
+                    Slot(n) => json!({"slot":n}),
+                    Season { sid, show, rk } => json!({"season":[sid.raw(),show,rk]}),
+                    Episode { sid, rk, text } => json!({"episode":[sid.raw(),rk,text]}),
+                    Related { sid, rk } => json!({"related":[sid.raw(),rk]}),
+                    Cast { sid, key, guid, name, role } => json!({"cast":[sid.raw(),key,guid,name,role]}),
+                }])
+            }).collect::<Vec<_>>()}}),
+        PageMemory::Person(m) => json!({"person":{"next_card_elem":m.next_card_elem,
+            "header_marked":m.header_marked,"card_keys":m.card_keys.iter()
+                .map(|k| json!([k.sid.raw(),k.rk,k.elem])).collect::<Vec<_>>()}}),
+        PageMemory::Filmography(m) => json!({"filmography":{"next_elem":m.next_elem,
+            "department":m.department,"preview":m.preview,"keys":m.keys.iter()
+                .map(|k| json!([k.department,k.catalog_id,k.elem])).collect::<Vec<_>>()}}),
+        PageMemory::Home(memory) => json!({"home":{
+            "groups":memory.groups.iter().map(|key|
+                json!([home_hub(&key.identity),key.group])).collect::<Vec<_>>(),
+            "items":memory.items.iter().map(|key| json!([
+                home_item(&key.identity),key.elem,key.last_row,key.last_col
+            ])).collect::<Vec<_>>(),
+            "next_group":memory.next_group,
+            "next_elem":memory.next_elem,
+            "carousel":memory.carousel.as_ref().map(|(sid,rk)| json!([sid.raw(),rk])),
+            "strip_chosen":memory.strip_chosen,
+            "scroll_y_bits":memory.scroll_y.to_bits(),
+            "row_scroll":memory.row_scroll.iter().map(|(group,x)|
+                json!([group,x.to_bits()])).collect::<Vec<_>>(),
+        }}),
+        _ => return Err("unsupported controlled page memory"),
+    })
 }
 
 pub(crate) fn input(event: &crate::ui::machine::InputEvent<u32>) -> Result<Value, &'static str> {
@@ -45,7 +120,8 @@ pub(crate) fn decode_input(value: &Value) -> Result<crate::ui::machine::InputEve
     let body = &value["body"];
     let key = match body["key"].as_str() {
         Some("Up") => Key::Up, Some("Down") => Key::Down, Some("Left") => Key::Left,
-        Some("Right") => Key::Right, _ => return Err("unsupported Home key"),
+        Some("Right") => Key::Right, Some("Ok") => Key::Ok, Some("Back") => Key::Back,
+        _ => return Err("unsupported controlled key"),
     };
     let edge = match body["edge"].as_str() {
         Some("Up") => Edge::Up, Some("Down") => Edge::Down, Some("Repeat") => Edge::Repeat,
@@ -62,7 +138,12 @@ pub(crate) fn decode_input(value: &Value) -> Result<crate::ui::machine::InputEve
     let state = match edge { Edge::Up => 0, Edge::Down => 1, Edge::Repeat => 0x101 };
     let physical = super::super::bridge::key_input(number(&body["sym"])?, number(&body["wcode"])?,
         state, event.at, source);
-    if input(&physical)? != input(&event)? { return Err("incoherent physical input"); }
+    if source == Source::Script && number(&body["sym"])? == 0 {
+        let scripted = super::super::bridge::script_key(key, event.at);
+        if !scripted.iter().any(|candidate| input(candidate).ok() == input(&event).ok()) {
+            return Err("incoherent script input");
+        }
+    } else if input(&physical)? != input(&event)? { return Err("incoherent physical input"); }
     let mut canonical = value.clone();
     if let Some(object) = canonical.as_object_mut() { object.remove("f"); object.remove("t"); }
     if input(&event)? != canonical { return Err("noncanonical controlled input"); }
@@ -79,6 +160,15 @@ pub(crate) fn app(effect: &AppFx) -> Result<Value, &'static str> {
         AppFx::SessionEffect(effect) => json!({"session_effect":wire(effect)?}),
         AppFx::Store(id, command) => json!({"store":id.ord().0,"command":store(command)?}),
         AppFx::StoreWork(work) => json!({"work":work_value(work)?}),
+        AppFx::Content(req) => {
+            use crate::screens::registry::ContentReq;
+            json!({"content":match req {
+                ContentReq::Push(arg) => json!({"push":content(arg)}),
+                ContentReq::Present(arg) => json!({"present":content(arg)}),
+                ContentReq::Back => json!("back"),
+                _ => return Err("unsupported controlled content effect"),
+            }})
+        }
         AppFx::Home(crate::screens::registry::HomeReq::FoldToHero) => json!({"home":"fold"}),
         _ => return Err("unsupported Home application effect"),
     })
@@ -100,6 +190,23 @@ fn store(command: &crate::stores::StoreCmd) -> Result<Value, &'static str> {
         StoreCmd::Hubs(HubsCmd::Retry) => json!({"hubs":"retry"}),
         StoreCmd::Browse(BrowseCmd::Reset) => json!({"browse":"reset"}),
         StoreCmd::Browse(BrowseCmd::Discovery(result)) => crate::browse::record::encode(result),
+        StoreCmd::Metadata(cmd) => {
+            use crate::stores::metadata::MetadataCmd;
+            json!({"metadata":match cmd {
+                MetadataCmd::RequestDetail { sid, rk } => json!({"request_detail":[sid.raw(),rk]}),
+                MetadataCmd::Clear => json!("clear"),
+                _ => return Err("unsupported controlled metadata command"),
+            }})
+        }
+        StoreCmd::Person(cmd) => {
+            use crate::stores::person::PersonCmd;
+            json!({"person":match cmd {
+                PersonCmd::Open { sid,key,guid,name,thumb } => json!({"open":[sid.raw(),key,guid,name,thumb]}),
+                PersonCmd::Close => json!("close"),
+                PersonCmd::Reset => json!("reset"),
+                _ => return Err("unsupported controlled person command"),
+            }})
+        }
         _ => return Err("unsupported Home store command"),
     })
 }
@@ -127,6 +234,20 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
         Fx::Mount(id) => json!({"mount":id.0}),
         Fx::Unmount(id) => json!({"unmount":id.0}),
         Fx::Nav(crate::ui::machine::NavOp::Root(crate::screens::registry::AppArg::Home)) => json!({"root":"home"}),
+        Fx::Nav(op) => {
+            use crate::ui::machine::NavOp;
+            match op {
+                NavOp::Root(a) => json!({"root":argument(a)?}),
+                NavOp::Push(a) => json!({"push":argument(a)?}),
+                NavOp::Present(a) => json!({"present":argument(a)?}),
+                NavOp::Replace(a) => json!({"replace":argument(a)?}),
+                NavOp::SelectTab(a) => json!({"select_tab":argument(a)?}),
+                NavOp::Pop => json!({"pop":true}),
+                NavOp::PopTo(id) => json!({"pop_to":id.0}),
+                NavOp::Dismiss(id) => json!({"dismiss":id.0}),
+                NavOp::Cancel => json!({"cancel":true}),
+            }
+        }
         Fx::Timer { id, after_ms } => json!({"timer":id.0,"after_ms":after_ms}),
         Fx::CancelTimer(id) => json!({"cancel_timer":id.0}),
         Fx::Remember { group, elem } => json!({"group":group.0,"elem":elem}),
@@ -142,6 +263,7 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
                     let body = match event {
                         ScreenEvent::Mount | ScreenEvent::Cover | ScreenEvent::Uncover |
                         ScreenEvent::Unmount | ScreenEvent::Suspend | ScreenEvent::Resume => Value::Null,
+                        ScreenEvent::RestoreMemory(memory) => page_memory(memory)?,
                         ScreenEvent::Enter(enter) => match enter {
                             crate::ui::screen::Enter::Restored => json!("restored"),
                             crate::ui::screen::Enter::Fresh { focus:target } => json!({"fresh":match target {
@@ -165,13 +287,11 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
                                 crate::ui::screen::By::Reconcile => "reconcile" }}),
                         ScreenEvent::App(msg) => message(msg)?,
                         ScreenEvent::Async(req, msg) => json!({"req":req.0,"message":message(msg)?}),
-                        _ => return Err("unsupported Home screen delivery"),
                     };
                     json!({"event":event.name(),"body":body})
                 }
             };
             json!({"to":super::super::recorder::machine_name(*to),"delivery":body})
         }
-        _ => return Err("unsupported Home library effect"),
     })
 }

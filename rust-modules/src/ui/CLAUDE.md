@@ -494,10 +494,11 @@ unused `reveal`/`pill_at` getters as that authority. Final chrome ownership rema
 separate integration review, including the profile/label caches and tab-glass state.
 
 The UI engine fixture replay (`ui/replay.rs`'s `--targets`/`--resolve`) is also separate from the
-product recorder. `app/recorder.rs` remains live-assisted with a coarse `AppInit` and incomplete
-store/adapter result injection; `tests/focusfp.sh --replay` has no `--resolve` option, and
-`make check` does not close a committed scenario-replay run. Phase-12 ownership gates do not prove
-whole-application deterministic restore.
+product recorder. The recorder has typed pre-effect initialization and closed result/admission
+injection for supported Home, Settings, and Flow 12 content domains. It is not a
+whole-application recorder: unsupported domains remain fail-closed, `tests/focusfp.sh --replay`
+has no product `--resolve` mode, and `make check` does not close a committed scenario-replay run.
+Phase-12 ownership gates do not prove whole-application deterministic restore.
 
 ### The restructure spike (phases 2-i → 3b of `~/.claude/plans/ui-plxnative-structured-phoenix.md`)
 

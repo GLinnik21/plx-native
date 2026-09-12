@@ -1,12 +1,85 @@
 //! Controlled-bootstrap host boundaries. The production SDL boot/loop is additionally exercised
 //! by the fresh-root simulator artifact; these tests do not claim native rendering or network.
 use super::*;
+
+#[test]
+fn filmography_initial_requires_complete_typed_inputs() {
+    let mut value = serde_json::to_value(Initial::synthetic_home(1, 32498, None).unwrap()).unwrap();
+    value["content"] = serde_json::json!({"detail":"1001", "detailsec":1,
+        "detailok":true, "filmography":true, "personcredits":9, "nowan":true});
+    for trigger in ["detail", "detailsec", "detailok", "filmography", "personcredits", "nowan"] {
+        value["triggers"].as_array_mut().unwrap().push(serde_json::json!(format!("plxnative-{trigger}")));
+    }
+    let initial = Initial::from_value(value.clone()).expect("complete filmography boot");
+    assert_ne!(initial.hash(), Initial::synthetic_home(1, 32498, None).unwrap().hash());
+    value["content"].as_object_mut().unwrap().remove("detailsec");
+    assert!(Initial::from_value(value).is_err());
+}
+
+#[test]
+fn content_resources_deny_execution_and_require_exact_admissions() {
+    let _guard = crate::testlock::serial();
+    let initial = Initial::synthetic_home(1, 32498, None).unwrap();
+    stores::init(&initial, true);
+    let request = serde_json::json!({"store":"metadata","sid":0,"rk":"1001","gen":1,"client":1});
+    let admission = serde_json::json!({"content_resource":true,"request":request,"admitted":false});
+    stores::validate_admission(&admission, 1).unwrap();
+    stores::begin([admission.clone()].into(), Default::default());
+    assert!(!stores::admit(request.clone(), || panic!("replay executed a resource")));
+    assert_eq!(stores::finish(), (vec![admission.clone()], None));
+    let mut accepted = admission.clone();
+    accepted["admitted"] = serde_json::json!(true);
+    stores::begin([accepted.clone()].into(), Default::default());
+    assert!(stores::admit(request.clone(), || panic!("admitted replay executed a resource")));
+    assert!(stores::poll::<serde_json::Value>("person", 0,
+        || panic!("empty replay polled a live mailbox")).is_none());
+    assert_eq!(stores::finish(), (vec![accepted], None));
+    stores::begin([admission].into(), Default::default());
+    let mut wrong = request;
+    wrong["rk"] = serde_json::json!("1002");
+    assert!(!stores::admit(wrong, || panic!("mismatched request executed")));
+    assert_eq!(stores::finish().1, Some("mismatched content resource admission"));
+    stores::reset_for_test();
+}
+
+#[test]
+fn controlled_script_input_roundtrips_without_claiming_a_physical_key() {
+    for event in super::super::bridge::script_key(crate::ui::machine::Key::Down,
+        crate::ui::machine::Tick { ms:646, dt_us:0 }) {
+        let value = effects::input(&event).unwrap();
+        assert_eq!(effects::input(&effects::decode_input(&value).unwrap()).unwrap(), value);
+        let mut wrong = value;
+        wrong["body"]["at_edge"] = serde_json::json!(true);
+        assert!(effects::decode_input(&wrong).is_err());
+    }
+}
+
+#[test]
+fn settings_initial_is_typed_hashed_and_bound_to_its_trigger() {
+    let initial = Initial::synthetic_home(17, 32517, Some("root".into())).unwrap();
+    assert_eq!(initial.settings.as_deref(), Some("root"));
+    assert!(initial.triggers.iter().any(|trigger| trigger == "plxnative-settings"));
+    let encoded = serde_json::to_value(&initial).unwrap();
+    let decoded = Initial::from_value(encoded).unwrap();
+    assert_eq!(decoded.hash(), initial.hash());
+
+    let mut bad_value = initial.clone();
+    bad_value.settings = Some("other".into());
+    assert_eq!(bad_value.validate(), Err("unsupported initial Settings input"));
+
+    let mut missing_trigger = initial.clone();
+    missing_trigger.triggers.retain(|trigger| trigger != "plxnative-settings");
+    assert_eq!(missing_trigger.validate(), Err("incoherent initial Settings input"));
+
+    let plain = Initial::synthetic_home(17, 32517, None).unwrap();
+    assert_ne!(plain.hash(), initial.hash());
+}
 use crate::ui::machine::{InputEvent, InputKind, Key, Edge, Source, Tick};
 use serde_json::json;
 
 #[test]
 fn typed_initial_roundtrip_and_hidden_input_hash_are_complete() {
-    let initial = Initial::synthetic_home(17, 32517).unwrap();
+    let initial = Initial::synthetic_home(17, 32517, None).unwrap();
     let value = serde_json::to_value(&initial).unwrap();
     assert_eq!(Initial::decode(value.clone(), initial.hash()).unwrap().hash(), initial.hash());
     let mut changed = initial.clone();
@@ -14,8 +87,8 @@ fn typed_initial_roundtrip_and_hidden_input_hash_are_complete() {
     changed.validate().unwrap();
     assert_ne!(changed.hash(), initial.hash(), "automation hides the prompt, not its logical initial decision");
     let press = crate::ui::press::Press::new();
-    assert_ne!(super::super::recorder::state_hash(&press,"home","","",0,0,initial.hash()),
-        super::super::recorder::state_hash(&press,"home","","",0,0,changed.hash()));
+    assert_ne!(super::super::recorder::state_hash(&press,"home","","",0,0,0,initial.hash()),
+        super::super::recorder::state_hash(&press,"home","","",0,0,0,changed.hash()));
     assert!(Initial::decode(serde_json::to_value(&changed).unwrap(),initial.hash()).is_err());
     let mut unknown = value.clone(); unknown["unrecognized"] = json!(true);
     assert!(Initial::from_value(unknown).is_err());
@@ -69,8 +142,9 @@ fn normal_and_controlled_activation_publish_the_owner_supplied_scope() {
     let _cleanup = RegistryCleanup;
     crate::plex::reset_servers_for_test();
     let mt = unsafe { crate::task::MainThread::assume() };
-    let initial = Initial::synthetic_home(19,9).unwrap();
-    let mut live = super::super::bridge::Bridge::new(||0,initial.session.clone(),&mt);
+    let initial = Initial::synthetic_home(19,9,None).unwrap();
+    let mut live = super::super::bridge::Bridge::new(
+        ||0, initial.session.clone(), initial.consent.clone(), &mt);
     activate(&mut live);
     let live_view = live.profile_resource_view().unwrap();
     let live_owner = live.snapshot_session_init();
@@ -109,7 +183,7 @@ fn recording(initial: &Initial) -> Recording {
 
 #[test]
 fn whole_record_preflight_rejects_bad_late_results_and_markers_without_resources() {
-    let initial = Initial::synthetic_home(23,32517).unwrap();
+    let initial = Initial::synthetic_home(23,32517,None).unwrap();
     let mut record = recording(&initial);
     super::super::recorder::validate_controlled(&record,&initial).unwrap();
     record.frames[0].st = None;

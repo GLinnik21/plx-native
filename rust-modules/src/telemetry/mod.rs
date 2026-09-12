@@ -108,6 +108,13 @@ fn candidates() -> Vec<std::path::PathBuf> {
     }
 }
 
+/// Candidate paths used by the live consent resource adapter. Logical owners must use
+/// `app::adapters::consent::ConsentAdapter` instead of treating this path inventory as a commit
+/// seam.
+pub(crate) fn resource_candidates() -> Vec<std::path::PathBuf> {
+    candidates()
+}
+
 /// Point this module's decision file at `p`, or back at the real search order with `None`. The
 /// caller holds `crate::testlock::serial()` for the whole test: this is a crate global.
 #[cfg(test)]
@@ -123,95 +130,19 @@ fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
         .unwrap_or_default()
 }
 
-/// Record a decision: write it, then publish it. **Write first** — a decision that took effect but
-/// did not persist would silently re-ask on the next boot while having already acted on itself.
-///
-/// A total write failure is logged and still applied to this session. The alternative is refusing
-/// to honour something a person just chose because a disk is full, which is worse in both
-/// directions: it ignores a "no", and it ignores a "yes".
-pub(crate) fn record(c: Consent) {
-    let enabling_errors = newly_enables_errors(consent::current().as_ref(), &c);
-    let Ok(json) = serde_json::to_vec_pretty(&c) else {
-        return;
-    };
-    let stored = candidates()
-        .iter()
-        .any(|p| crate::plex::session::write_atomic(p, &json));
-    if !stored {
-        crate::log("telemetry: could not persist the decision to ANY candidate path");
-    }
-    // Consent is prospective: crash diagnostics accumulated while this switch was off stay local.
-    // Do this before publishing `c`, so there is no interval in which an old record can be read as
-    // newly authorised.
-    if enabling_errors {
-        crashreport::discard_pending_before_opt_in();
-    }
-    consent::install(c.clone());
-    if !c.errors {
-        crate::player::report::clear_error_trace();
-    }
-    // Install first, then purge. A record queued between the two would be one the new decision
-    // already governs, so it is caught by the next flush's per-record check; the other order leaves
-    // a window in which a record of a just-withdrawn category is written by a path still reading
-    // the old consent and then never looked at again.
-    spool::purge_withdrawn(&c);
-    native::sync_change(&c);
+/// Compatibility for resource-focused telemetry and auth tests. Production code has one explicit
+/// commit seam: `app::adapters::consent::ConsentAdapter`.
+#[cfg(test)]
+pub(crate) fn record(next: Consent) {
+    let previous = consent::current().unwrap_or_default();
+    crate::app::adapters::consent::ConsentAdapter::live().commit(&previous, &next);
 }
 
-/// **End the signed-in account's tenure over telemetry.** The decision returns to *unanswered*
-/// and is PUBLISHED FIRST — before any file I/O — so from that instant every producer's gate
-/// answers no and the sender's per-record revision check picks up no further record; this is what
-/// lets `PRIVACY.md` say that no further report is picked up after a sign-out. ONE record the
-/// sender had already passed through that check may still go out — the check-to-POST gap has no
-/// cancellation — and the policy says exactly that, no more. Then both identifiers are gone with it, the consent file
-/// is unlinked from every candidate location — a candidate that cannot be unlinked is overwritten
-/// with the default decision, and one that refuses both is logged: that disk is also refusing the
-/// session's own clear, the same failure sign-out already has for the credentials — queued records
-/// are purged, and the native capture backend is stopped with its pending envelopes removed.
-/// Nothing is written otherwise: a missing file IS "never asked", which is what Delete all local
-/// data needs the name to mean.
-///
-/// ONE mechanism with two consumers, both behind `auth::forget_account`: the two Sign out doors
-/// (account menu, who's-watching pill) and Delete all local data.
-///
-/// Why sign-out ends it: consent is given by the person who signed the television in, and it
-/// authorises nothing about the next person to sign in through the QR flow. Until 2026-09-04 the
-/// decision and both identifiers deliberately outlived the sign-in ("so that a decision you have
-/// already made is not put to you again"), which meant account B was never asked and every report
-/// B caused went out under A's consent and A's identifiers. A managed-profile switch is not a
-/// sign-out and keeps the decision; an uninstall keeps the sign-in, so it keeps the decision too.
-///
-/// The crash MARK (`paths::telemetry_crashmark_candidates`) is deliberately left alone: it records
-/// how much of the crash log has been read — a fact about the log, not about anybody — and the
-/// next opt-in watermarks the log again through `crashreport::discard_pending_before_opt_in`.
+/// Test-only twin of [`record`].
+#[cfg(test)]
 pub(crate) fn forget() {
-    let c = Consent::default();
-    // Install first — then the files, then the purge: the same order and the same reason as
-    // `record`, and here also the moment the sender stops starting requests.
-    consent::install(c.clone());
-    crate::player::report::clear_error_trace();
-    for p in candidates() {
-        match std::fs::remove_file(&p) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                // A file that will not go must at least stop saying yes.
-                let overwritten = serde_json::to_vec_pretty(&c)
-                    .map(|json| crate::plex::session::write_atomic(&p, &json))
-                    .unwrap_or(false);
-                crate::log(&format!(
-                    "telemetry: sign-out could not unlink the decision ({e}); overwritten={overwritten}"
-                ));
-            }
-        }
-    }
-    spool::purge_withdrawn(&c);
-    native::sync_change(&c);
-}
-
-fn newly_enables_errors(previous: Option<&Consent>, next: &Consent) -> bool {
-    let effectively_allows_errors = |c: &Consent| c.answered() && c.errors;
-    effectively_allows_errors(next) && previous.is_none_or(|c| !effectively_allows_errors(c))
+    let prior = consent::current().unwrap_or_default();
+    crate::app::adapters::consent::ConsentAdapter::live().forget(&prior);
 }
 
 // ---- the spool, and the one worker that drains it ---------------------------------------------
@@ -383,33 +314,6 @@ pub(crate) fn is_minted_id(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_an_errors_off_to_on_transition_discards_preconsent_crashes() {
-        let state = |errors| Consent {
-            asked_version: consent::POLICY_VERSION,
-            errors,
-            usage: false,
-            install_id: None,
-            errors_id: None,
-        };
-        assert!(newly_enables_errors(None, &state(true)));
-        assert!(newly_enables_errors(Some(&state(false)), &state(true)));
-        assert!(!newly_enables_errors(Some(&state(true)), &state(true)));
-        assert!(!newly_enables_errors(Some(&state(true)), &state(false)));
-
-        let stale_yes = Consent {
-            asked_version: consent::POLICY_VERSION.saturating_sub(1),
-            errors: true,
-            usage: false,
-            install_id: None,
-            errors_id: None,
-        };
-        assert!(
-            newly_enables_errors(Some(&stale_yes), &state(true)),
-            "a stale-policy boolean is not current authorization; the new answer must watermark crashes accumulated while consent failed closed",
-        );
-    }
 
     #[test]
     fn a_held_destination_does_not_block_the_other_destination() {

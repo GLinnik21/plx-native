@@ -427,7 +427,10 @@ impl SessionAdapter {
         use crate::diag::schema::{DiagEvent, SignInFailure};
         match action {
             CoordinatorAction::LocalDataErased => {}
-            CoordinatorAction::CloseTelemetry => crate::telemetry::forget(),
+            // Bridge routes this coordinator effect through the physical Consent owner first.
+            // Fixture adapters record it above; the live Session resource must not execute a
+            // second telemetry owner behind that machine.
+            CoordinatorAction::CloseTelemetry => {}
             CoordinatorAction::SignInStarted => crate::diag::event(DiagEvent::SignInStarted),
             CoordinatorAction::SignInCompleted => crate::diag::event(DiagEvent::SignInCompleted),
             CoordinatorAction::SignInCancelled => crate::diag::event(DiagEvent::SignInCancelled),

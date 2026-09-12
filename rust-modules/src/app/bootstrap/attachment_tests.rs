@@ -3,7 +3,7 @@ use crate::app::{boot, recorder::Recplay};
 use crate::plex::session::{self, Session};
 
 fn initial_for(saved: Session, entropy: Option<[u8; 16]>) -> Initial {
-    let mut initial = Initial::synthetic_home(17, 32517).unwrap();
+    let mut initial = Initial::synthetic_home(17, 32517, None).unwrap();
     let crate::auth::owner::BootstrapAuthority::DevPms { primary, .. } = initial.session.authority
     else {
         unreachable!()

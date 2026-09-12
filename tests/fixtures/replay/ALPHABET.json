@@ -1,6 +1,7 @@
 {
   "_comment": "The CLOSED ALPHABET every string value in a committed replay fixture must belong to (restructure spec §5.6 rule 2). Match literals exactly or patterns with fullmatch. Synthetic construction against tests/mock_pms.py remains required: membership is a vocabulary check, not proof of data provenance, and cannot distinguish private values coincidentally equal to allowed words/numbers. CLI, outbound guard and host tests share this policy. Add new protocol constants by source-backed name, never by harvesting an unchecked recording.",
   "_sources": {
+    "controlled_content": "app/bootstrap/effects.rs and bootstrap/stores.rs name content/metadata; metadata.rs MarkerKind/RatingArt; person.rs seed_dev_credits and filmography name the finite departments. tests/mock_pms.py builds people thumb paths, plex GUIDs from sname, two-sname mkv filenames, a four-sname tagline and en/eng/srt/mkv media values.",
     "effect_and_machine_names": "rust-modules/src/app/recorder.rs: Recplay::effect Fx match and machine_name exhaustive MachineId match",
     "provenance": "rust-modules/src/ui/present.rs: Provenance/ResourceKind; ui/machine.rs: MachineId and derived Debug InstanceId/StoreOrd/TimerId; ui/fixture.rs: Recorder::present formats Debug. Landing(Instance(4)) is NOT that format.",
     "routes": "rust-modules/src/app/words.rs: route_word, overlay_suffix and NO_OVERLAY; app/recorder.rs: AppInit::probe; screens/registry.rs word constants; screens/player/overlay.rs: OverlayKind names menu/info/chapters/more",
@@ -11,6 +12,10 @@
     "controlled_home": "app/bootstrap.rs: Initial::synthetic_home fixes loopback, emits the complete Seeded contract and a fixed probe; app/bootstrap/effects.rs explicitly encodes input Source/Key/Edge, lifecycle By, Home commands and store request names. auth/owner.rs declares ActivateDevBootstrap and ReadyInstall::AlreadyInstalled; auth.rs Phase::Idle and Picker::Boot, plex/probe.rs Location's lowercase local wire. No general UUID, hostname, token or capitalized-word pattern is permitted."
   },
   "patterns": [
+    "/library/metadata/people/[0-9]+/thumb/1",
+    "plex://(movie|show)/s[0-9a-f]{8}",
+    "/s[0-9a-f]{8}/s[0-9a-f]{8}\\.mkv",
+    "s[0-9a-f]{8}( s[0-9a-f]{8}){3}",
     "s[0-9a-f]{8}",
     "[ACFMZ] s[0-9a-f]{8}",
     "s[0-9a-f]{8}( s[0-9a-f]{8}){23}",
@@ -37,13 +42,15 @@
     "press phase=(idle|down|up) live=[01] active=[01] long=[01]"
   ],
   "literals": [
+    "content", "metadata", "en", "eng", "srt", "mkv", "Credits", "Imdb",
+    "Actor", "Appeared", "Director", "Producer", "Composer", "Cinematographer", "Writer", "Other",
     "A", "C", "F", "M", "Z", "S",
     "a", "c", "f", "m", "z", "s",
     "",
     "hubs",
     "127.0.0.1", "controlled=home version=1", "Idle", "Boot", "local",
     "ActivateDevBootstrap", "AlreadyInstalled", "Request", "discovery", "reset", "refetch", "retry",
-    "owned", "Sdl", "RemoteFifo", "Script", "Replay", "Up", "Down", "Left", "Right", "Repeat",
+    "owned", "Sdl", "RemoteFifo", "Script", "Replay", "Up", "Down", "Left", "Right", "Ok", "Back", "Repeat", "activate",
     "input", "focus_moved", "store_changed", "restored", "for_good", "deeper", "dir", "restore", "reconcile",
     "fold", "hero", "movies", "shows", "movie", "show",
     "PG-13",
@@ -124,6 +131,7 @@
     "itemmenu",
     "settings",
     "legal",
+    "root",
     "privacy",
     "consent",
     "info",

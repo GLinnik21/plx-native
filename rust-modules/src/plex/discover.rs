@@ -155,6 +155,7 @@ struct PersonContainer {
 /// module docs for why a TV does not show them. Serde ignores unknown fields, so adding one back is
 /// a field, not a migration.
 #[derive(Deserialize, Default)]
+#[derive(serde::Serialize)]
 pub struct PersonProfile {
     #[serde(default)]
     pub title: String,
@@ -190,6 +191,7 @@ pub struct PersonProfile {
 /// (`"costume-makeup"`, seen live on Peter Sallis). `crate::person::roles_line` is what cleans that
 /// up; do not print `title` raw.
 #[derive(Deserialize, Default)]
+#[derive(serde::Serialize)]
 pub struct CreditType {
     #[serde(rename = "type", default)]
     pub kind: String,
@@ -226,6 +228,7 @@ struct CreditsContainer {
 /// name for a department (`"costume-makeup"`, live on Peter Sallis) — exactly the trap
 /// [`CreditType`] carries, and it is cleaned by the same [`crate::person::pretty_department`].
 #[derive(Deserialize, Default)]
+#[derive(serde::Serialize)]
 pub struct CreditGroup {
     #[serde(rename = "type", default)]
     pub kind: String,
@@ -241,6 +244,7 @@ pub struct CreditGroup {
 
 /// One credit inside a department: what they were in it, and the item itself.
 #[derive(Deserialize, Default)]
+#[derive(serde::Serialize)]
 pub struct Credit {
     /// The billing order the provider sorted the cast by. Modelled because it is on the wire and
     /// costs nothing; the screen sorts by YEAR, so nothing reads it yet.
@@ -262,6 +266,7 @@ pub struct Credit {
 /// cross is [`guid`](CreditItem::guid), which is the metadata provider's global id and the key both
 /// sides of the availability join speak (`plex::Metadata::guid` on the library side).
 #[derive(Deserialize, Default)]
+#[derive(serde::Serialize)]
 pub struct CreditItem {
     #[serde(rename = "type", default)]
     pub kind: String,

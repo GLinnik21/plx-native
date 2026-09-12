@@ -610,6 +610,21 @@ class ReplayFixtures(unittest.TestCase):
                 for name, contents in kept.items():
                     with open(os.path.join(fixtures, "flow", name), "rb") as f:
                         self.assertEqual(f.read(), contents)
+            for input_line, count in [("replay: input diverge f=0 script_index=0 reason=changed\n", 1),
+                                      ("", 1),
+                                      ("replay: input diverge f=0 script_index=0 reason=missing count=1\n", 0)]:
+                log = os.path.join(tmp, "input.log")
+                with open(log, "w") as f:
+                    f.write(input_line +
+                            "replay: diverge f=0 expected=0x0000000000000010 got=0x0000000000000020 inputs=1\n" +
+                            "replay: done frames=1 graded=1 diverged=1 present_diffs=0 input_diffs=%d verdict=DIVERGED\n" % count)
+                r = run("rebaseline", new, "flow", "--log", log)
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn("input", r.stdout)
+                self.assertFalse(os.path.exists(os.path.join(fixtures, "flow", "divergence.json")))
+                for name, contents in kept.items():
+                    with open(os.path.join(fixtures, "flow", name), "rb") as f:
+                        self.assertEqual(f.read(), contents)
             # 4. a real record: accepted, and divergence.json is written beside the new recording
             log = os.path.join(tmp, "real.log")
             open(log, "w").write("replay: diverge f=0 expected=0x0000000000000010 got=0x0000000000000020 inputs=1\n"

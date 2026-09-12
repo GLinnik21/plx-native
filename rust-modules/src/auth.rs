@@ -3046,9 +3046,27 @@ mod tests {
             "the decision was persisted for account A"
         );
 
-        let mt = unsafe { crate::task::MainThread::assume() };
-        crate::app::adapters::session::SessionAdapter::live(&mt)
-            .coordinator(owner::CoordinatorAction::CloseTelemetry);
+        let mut bridge = crate::app::bridge::Bridge::for_consent_resource_test(
+            consent::current().expect("account A decision is published"),
+        );
+        let mut dispatcher =
+            crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
+        dispatcher.emit(
+            crate::ui::machine::MachineId::Session,
+            crate::ui::machine::Fx::App(
+                crate::screens::registry::AppFx::SessionEffect(
+                    owner::SessionFx::Coordinator(owner::CoordinatorAction::CloseTelemetry),
+                ),
+            ),
+        );
+        dispatcher.frame_with(
+            &mut bridge,
+            crate::ui::machine::Tick::default(),
+            Vec::new(),
+            Vec::new(),
+            &mut crate::ui::dispatch::NoTap,
+            false,
+        );
 
         let after = consent::current().expect("a decision is always published");
         assert!(

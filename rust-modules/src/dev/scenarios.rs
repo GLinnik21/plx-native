@@ -404,6 +404,11 @@ pub(crate) struct ContentBoot {
 }
 
 impl ContentBoot {
+    fn controlled(sid: crate::plex::ServerId, input: &crate::app::bootstrap::ContentInitial) -> Self {
+        Self { sid, rk: input.detail.clone(), season:None, down:input.detailsec, right:0,
+            activate:input.detailok, filmography:input.filmography, bio:false,
+            waiting_person:false, ready_seen:false }
+    }
     /// Is the page this boot is waiting for the one on top?
     fn is_top(&self, d: &crate::ui::dispatch::Dispatcher<crate::app::bridge::AppHost>) -> bool {
         matches!(d.top_arg(), Some(AppArg::Content(crate::screens::registry::ContentArg::Detail { sid, rk }))
@@ -523,7 +528,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
             // headless capture reaches page 2 at all. It goes through the same door the Languages
             // press does (`bridge::open_content_panel`), so the trigger cannot present a panel the
             // page would refuse: availability is the PAGE's answer about the page's own item.
-            if let Some(pg) = crate::dev::read("tracks") {
+            if let Some(pg) = app.boot_initial.is_none().then(|| crate::dev::read("tracks")).flatten() {
                 let host = app.pages.top_page();
                 let available = app
                     .pages
@@ -555,7 +560,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
             // footer's FIRST column, four sections down a page whose section count depends on the
             // item, so a `down`/`right` script that reached it on one film would miss it on the
             // next — and `fps:about-panel` needs the same screen every run.
-            if crate::dev::flag("about") {
+            if app.boot_initial.is_none() && crate::dev::flag("about") {
                 if let Some(host) = app.pages.top_page() {
                     let (sid, rk) = (boot.sid, boot.rk.clone());
                     bridge::open_content_panel(
@@ -1197,6 +1202,21 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     menu_arm(app, fr);
     menupick_arm(app, fr);
     marker_arm(app, fr);
+    true
+}
+
+/// Typed controlled-bootstrap scenarios. Ordinary arms may read live trigger files; replay may
+/// execute only values restored into the App from its validated initial input.
+pub(crate) fn controlled_each_frame(app: &mut App, fr: &mut Frame) -> bool {
+    settings_boot_arm(app, fr);
+    if !app.scenarios.detail_tried && fr.now.wrapping_sub(app.t0) > 500 {
+        app.scenarios.detail_tried = true;
+        if let Some(input) = app.boot_initial.as_ref().and_then(|init| init.content.as_ref()) {
+            let sid = crate::plex::ServerId::from_raw(0);
+            app.scenarios.content_boot = Some(ContentBoot::controlled(sid, input));
+            crate::app::bridge::open_detail(&mut app.pages, &mut app.bridge, sid, &input.detail, None, None);
+        }
+    }
     true
 }
 

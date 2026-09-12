@@ -6,15 +6,17 @@ A directory here is one RECORDING (restructure spec §5.3): `manifest.json` (the
 (§5.5): `tools/plxnative-rec diff` compares two, `tools/plxnative-rec check` verifies one against
 `ALPHABET.json`, and `tests/test_harness.py` verifies every committed one on every `make check`.
 
-The first controlled-bootstrap domain is **Home**. `tests/focusfp.sh --rec --only 1` now asks the
-current simulator for the complete typed synthetic initial input, before boot, using the same
-contract as replay restoration. It does not seed an auth file or patch a recorded identifier.
+Controlled bootstrap accepts **Home**, **Settings**, and the typed synthetic
+**12-filmography-detail-return** content domain. `tests/focusfp.sh --rec --only 12` asks the
+current simulator for Flow 12's complete typed synthetic initial input before boot, using the
+same contract as replay restoration. It remains synthetic: it does not seed an auth file or patch
+a recorded identifier.
 `tests/controlled_bootstrap.py --sim <built-simulator>` exercises normal Home, recording, fresh
 and contrasting-ambient replay with outbound IO denied, malformed-input refusals, and a
 supported-effect discriminator. Its private recording must pass `tools/plxnative-rec check`
 before `import`/`rerecord`; a live-mock focus smoke alone is not replay acceptance.
 
-The hash includes `AppFrameV3{route,overlay,focus,tree,session,initial}`: the press machine, the route/overlay words and the
+The hash includes `AppFrameV4{route,overlay,focus,tree,session,consent,initial}`: the press machine, the route/overlay words and the
 focus fingerprint from phase 2, plus — since phase 5b — `tree`, which is `Dispatcher::state_hash`
 (every live container instance's `LogicalState`, the tree's shape and surface phases, saved entry
 arguments and return memory even after eviction, the engine's focus and the queue depth), plus
@@ -23,9 +25,10 @@ replay use the same frame-tail composition. Private initialization and complete 
 can contain credentials; only their digests enter shareable probes. Synthetic construction,
 not alphabet membership alone, establishes fixture provenance.
 
-Controlled Home supplies its recorded Home/Browse results through the production dispatcher,
-binds the recorded Client explicitly, and denies replay data IO. Other domains and both-mode /
-cross-target completion remain open and unsupported families fail closed before IO.
+Controlled replay supplies Home/Browse results through the production dispatcher and supplies
+Flow 12 Detail/Person results at their original store consumers. It binds the recorded Client
+explicitly and denies resource execution and data transport. Account, playback, and every other
+unlisted domain remain unsupported and fail closed before IO; both-mode completion remains open.
 
 The admission contract also records each synchronous worker-spawn answer with its full request
 identity and frame ordering. A refused attempt stays refused during replay, including its normal
@@ -50,22 +53,22 @@ library-matched credit opened in Detail, and both BACK steps). Phase 7 rerecorde
 after an observed loader refusal and added the content-return anchor. **Phase 11 rerecorded all
 three onto schema 2**, which carries the landing schedule above.
 
-**Current migration:** Home requires the controlled typed-init shape. Settings and Filmography
-anchors remain historical assertions, not accepted executable coverage of the Home-only driver.
-They are retained, not demoted or silently skipped. They need their own capture/restore/IO
-boundaries before a later genuine rerecord can count. Editing manifest fingerprints or state
-hashes is never a replacement for rerecording. The D1 results below describe that earlier build,
-not current all-domain acceptance.
+**Current migration:** Home, Settings, and Flow 12 Filmography anchors are accepted
+controlled-replay coverage. Flow 12 has typed initial state, exact synchronous admissions,
+recorded content results, and denied resource execution. This bounded support does not imply
+all-domain acceptance. Editing manifest fingerprints or state hashes is never a replacement for
+rerecording. The D1 results below describe that earlier build, not current all-domain acceptance.
 
-**Phase 12 (D1) rerecorded all three again**, and it is the cleanest example of what `rerecord` is
+**Historical Phase 12 (D1) rerecorded all three again**, and it is the cleanest example of what `rerecord` is
 for: `enum Route` was folded into `AppArg`, so `ARG_SHAPE` lost its nested `Legacy:Route{…}` and
 gained the seven page names flat — `state_fp` moved from `0x2ee80fef41949b4b` to
 `0x489bbd488180e355` — while `LogicalState::write` still emits exactly the bytes it did before, so
 NO recorded frame hash changed. The committed artifacts could not be loaded at all
 (`replay: REFUSED — state shape 0x2ee80fef41949b4b recorded, 0x489bbd488180e355 here`, all three),
 which is the machine-checkable condition `rerecord` verifies for itself; nothing was accepted,
-because nothing could be compared. The replacements replay `verdict=SAME` with `diverged=0
-present_diffs=0 result_diffs=0 land_diffs=0`.
+because nothing could be compared. The current three anchor manifests carry `state_fp`
+`16109897700616989408` (`0xdf91da9ad5286ae0`). Clean replay summaries require
+`input_diffs=0 effect_diffs=0` as well as zero state, presentation, result, and landing diffs.
 
 Flow 12's own history is worth keeping, because it is what the schedule was built for. Its phase-7
 recording was taken while `plxnative-detail` loaded the page with a BLOCKING fetch on the SDL
@@ -74,10 +77,10 @@ and the replay diverged on frames 31 and 32 — both recorded `0xd9d6d1334cf4d69
 `0xbb2179d70158cf9b` — before re-converging. A recording taken under the async arm could not be
 committed in its place: the landing then arrived ~5 ms after boot, the frame it landed on differed
 between the recording and every replay, and 927 of 928 frames diverged (three runs of three). The
-anchor could not be rebaselined and a stable re-recording needed the gate first. It also records
-with `/tmp/plxnative-nowan` armed, since its person-page arms dial `discover.provider.plex.tv` for
-real and the fixture's stability would otherwise depend on that 401 arriving promptly over the
-actual internet.
+anchor could not be rebaselined and a stable re-recording needed the gate first. Controlled Flow
+12 capture records the typed offline policy and failed provider replies without a WAN call;
+replay supplies those replies and admissions with the mock off and resource execution denied. The
+trigger remains part of the synthetic initial contract, not a dependency on a timely external 401.
 
 Take the census from this directory's listing. An anchor refuses `--rebaseline` (below); when a
 change instead bumps the recorded state SHAPE (`schema` or `state_fp` — 5b's `tree:u64` term did

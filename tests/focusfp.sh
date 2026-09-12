@@ -11,8 +11,8 @@
 #
 # Phase 0 of the UI restructure runs this as a LIVE-SIM SMOKE: a flow passes when the app stayed
 # alive and produced at least MIN_LINES fingerprint lines. From phase 2 the flows are replayed
-# from the committed recording instead (restructure spec §15.4), and from 3b `--resolve` grades
-# the engine's answers against these lines pointwise.
+# from the committed recording instead (restructure spec §15.4). Resolve mode remains a separate
+# follow-up; `--replay` here grades the production state, presentation, results and effects.
 #
 # Flow 10 (root BACK at Home / picker / QR) is a television flow — on the simulator a root BACK is
 # a log line and nothing else — and is listed here as SKIP so the numbering matches the spec.
@@ -62,7 +62,9 @@ done
 mkdir -p "$OUT"
 
 MOCK_PID=""
-if [ -z "$PMS" ]; then
+if [ -n "$REPLAY" ]; then
+  PMS="127.0.0.1:$PORT"
+elif [ -z "$PMS" ]; then
   python3 "$ROOT/tests/mock_pms.py" --port "$PORT" --seed "$SEED" > "$OUT/mock_pms.log" 2>&1 &
   MOCK_PID=$!
   for _ in $(seq 1 30); do
@@ -93,17 +95,23 @@ run_flow() {
   local d="$OUT/root-$n"
   local fp="$OUT/$n-$name.fp"
   rm -rf "$d"; mkdir -p "$d"
-  if [ -n "$REC" ] && [ "$n" = 1 ] && [ -n "$MOCK_PID" ]; then
+  if [ -n "$REC" ] && { [ "$n" = 1 ] || [ "$n" = 6 ] || [ "$n" = 12 ]; } && [ -n "$MOCK_PID" ]; then
     # Complete typed initial inputs, before boot. Never seed/copy an auth file or rewrite an ID
-    # in a completed recording. Other replay domains remain explicitly unsupported for now.
-    "$SIM_BIN" --write-synthetic-initial "$d/plxnative-app-init" "$SEED" "$PMS_PORT"
+    # in a completed recording. These are the supported synthetic bootstrap domains.
+    if [ "$n" = 12 ]; then
+      "$SIM_BIN" --write-synthetic-initial "$d/plxnative-app-init" "$SEED" "$PMS_PORT" flow12
+    elif [ "$n" = 6 ]; then
+      "$SIM_BIN" --write-synthetic-initial "$d/plxnative-app-init" "$SEED" "$PMS_PORT" settings=root
+    else
+      "$SIM_BIN" --write-synthetic-initial "$d/plxnative-app-init" "$SEED" "$PMS_PORT"
+    fi
   else
     printf 'synthetic-token' > "$d/plxnative-token"
   fi
   touch "$d/plxnative-focus" "$d/plxnative-noidle"
   [ -n "$REC" ] && touch "$d/plxnative-rec"
   if [ -n "$REPLAY" ]; then
-    local fixture="$ROOT/tests/fixtures/replay/$n-$name"
+    local fixture="${REPLAY_FIXTURE:-$ROOT/tests/fixtures/replay/$n-$name}"
     [ -d "$fixture" ] || { echo "  [SKIP] $n $name: no committed fixture at $fixture"; return 2; }
     printf '%s' "$fixture" > "$d/plxnative-recplay"
   fi
@@ -142,7 +150,7 @@ run_flow() {
       return 1
     fi
     verdict=$(grep -E '^replay: done ' "$log" | tail -1 || true)
-    grep -E '^replay: (diverge|present|INITIAL)' "$log" | head -20 | sed 's/^/    /'
+    grep -E '^replay: (diverge|present|INITIAL)' "$log" | head -20 | sed 's/^/    /' || true
     if [ -z "$verdict" ]; then
       echo "  [FAIL] $n $name: no \`replay: done\` line after ${waited}s ($log)"; return 1
     fi
@@ -254,6 +262,9 @@ record_flow 11 pointer-stops "" "ck:960,92 sleep:1 ck:133,92 sleep:1 back sleep:
 # sent before the seed runs), and against the injected token that call 401s — so this flow's
 # stability otherwise depends on the internet answering that 401 promptly. `nowan` makes the name
 # refuse locally and at once, the same offline reproduction `docs/agent-reference.md` documents.
+# Controlled recording instead captures that offline policy in the typed initial input and
+# produces the failed provider replies without a WAN call. Replay supplies every recorded reply
+# and admission with the mock off and resource execution denied.
 record_flow 12 filmography-detail-return "detail=$RK_MOVIE detailsec=1 detailok filmography personcredits nowan" "sleep:2 down ok sleep:2 back sleep:2 back" 'route=person'
 
 echo "=== focusfp: $passed passed, $fails failed, $skipped skipped of $selected ==="

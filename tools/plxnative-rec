@@ -233,6 +233,7 @@ DIVERGE_RE = re.compile(r"^replay: diverge f=(\d+) expected=(0x[0-9a-f]+) got=(0
 DONE_RE = re.compile(r"^replay: done .*verdict=(SAME|DIVERGED)")
 RESULT_DIFFS_RE = re.compile(r"\bresult_diffs=(\d+)\b")
 EFFECT_DIFFS_RE = re.compile(r"\beffect_diffs=(\d+)\b")
+INPUT_DIFFS_RE = re.compile(r"\binput_diffs=(\d+)\b")
 
 
 def divergence_record(fixture_dir, log_path):
@@ -253,6 +254,8 @@ def divergence_record(fixture_dir, log_path):
             return None, "result divergences need an adapter adoption record; state-only rebaseline is refused"
         if ln.startswith("replay: effect diverge "):
             return None, "effect divergences need an effect adoption record; state-only rebaseline is refused"
+        if ln.startswith("replay: input diverge "):
+            return None, "input divergences need an input adoption record; state-only rebaseline is refused"
         m = DONE_RE.match(ln)
         if m:
             results = RESULT_DIFFS_RE.search(ln)
@@ -261,6 +264,9 @@ def divergence_record(fixture_dir, log_path):
             effects = EFFECT_DIFFS_RE.search(ln)
             if effects and int(effects.group(1)) != 0:
                 return None, "effect divergences need an effect adoption record; state-only rebaseline is refused"
+            inputs = INPUT_DIFFS_RE.search(ln)
+            if inputs and int(inputs.group(1)) != 0:
+                return None, "input divergences need an input adoption record; state-only rebaseline is refused"
             verdict = m.group(1)
         m = DIVERGE_RE.match(ln)
         if m and first is None:

@@ -3,6 +3,7 @@
 //! fetched on demand into a single CURRENT item. Idiomatic Rust (String/Vec), like the
 //! browse catalog (pms.rs) — the fixed C buffers from the C port are gone.
 use std::os::raw::c_int;
+pub(crate) mod record;
 use std::panic::catch_unwind;
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -76,6 +77,7 @@ pub(crate) fn friendly_codec(codec: &str) -> String {
 /// One credit on the Cast & Crew shelf. PMS ships crew (`Director[]`/`Writer[]`) in the SAME shape
 /// as the actors (`Role[]`) minus the `role` attribute, so a crew credit is this same struct with
 /// its JOB in `role` — see [`crew_credits`].
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Cast {
     pub(crate) tag: String,   // person's name
     pub(crate) role: String,  // character (an actor) — or the job, "Director"/"Writer" (crew)
@@ -117,6 +119,7 @@ impl Cast {
 /// All zero is "the server said nothing", which is also what a non-DV stream produces — see
 /// [`Dovi::base_layer_unusable`] for why silence must never convict.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Dovi {
     /// `DOVIPresent` — the file carries Dolby Vision at all. Everything below is meaningless
     /// without it, because a non-DV stream sends none of these fields and so reads as all-zero.
@@ -443,6 +446,7 @@ crate::dev::latched_flag!(
 // `Default` is for TESTS: every field is a zero/empty that means "PMS did not say", so a fixture
 // can name the two or three fields its case is about instead of the fifteen it is not.
 #[derive(Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Stream {
     pub(crate) id: i64,      // Plex stream id (for &audioStreamID / &subtitleStreamID)
     pub(crate) index: i64,   // PMS stream index (container order) — the ordinal mapping sorts by it
@@ -510,6 +514,7 @@ impl Stream {
 }
 
 #[derive(Default)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Episode {
     pub(crate) rk: String,
     pub(crate) index: i64,  // episode number
@@ -534,6 +539,7 @@ pub(crate) struct Episode {
 // Deliberately NOT `Default`: every construction site spells every field, so adding one to a
 // season is a compile error at each of them rather than a silent zero (the counts below are
 // exactly the kind of field that reads as a legitimate value when it defaults).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Season {
     pub(crate) rk: String,
     pub(crate) index: i64,
@@ -591,6 +597,7 @@ pub(crate) type Related = crate::pms::PmsMovie;
 /// Clone because the playing-item store keeps the played leaf's OWN chapters (see [`PlayingItem`]) —
 /// on the detail-page play path they are cloned from the already-loaded `Detail` rather than refetched.
 #[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Chapter {
     pub(crate) index: i64,    // 1-based chapter number
     pub(crate) start_ms: i64, // startTimeOffset — the seek target + timestamp label
@@ -617,6 +624,7 @@ fn convert_chapters(chapters: &[crate::plex::Chapter]) -> Vec<Chapter> {
 /// PMS also emits `commercial` on recorded content, which [`convert_markers`] drops, so an
 /// unhandled kind can never be mistaken for one of these.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) enum MarkerKind {
     Intro,
     Credits,
@@ -626,6 +634,7 @@ pub(crate) enum MarkerKind {
 /// the in-player Skip prompt and — for an episode with something queued after it — the moment the
 /// Up Next control takes over.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Marker {
     pub(crate) kind: MarkerKind,
     pub(crate) start_ms: i64,
@@ -771,6 +780,7 @@ pub(crate) fn marker_at(markers: &[Marker], pos_ms: i64) -> Option<Marker> {
 /// The PROVIDER likewise comes from the URI scheme and never from `Rating.type`: IMDb and TMDB both
 /// arrive as `audience`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) enum RatingArt {
     TomatoFresh,
     /// Certified Fresh — a distinct Rotten Tomatoes mark (the wreathed tomato), not a synonym for
@@ -859,8 +869,10 @@ impl RatingArt {
 /// One review score to badge on the detail hero: the artwork the server named, the score as PMS
 /// normalises it (0–10 for every provider — a 91% tomato arrives as 9.1), and whether PMS filed it
 /// as a critic or an audience score.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Rating {
     pub(crate) art: RatingArt,
+    #[serde(with = "record::float_bits")]
     pub(crate) value: f64,
     pub(crate) critic: bool,
 }
@@ -920,12 +932,14 @@ fn convert_ratings(it: &crate::plex::Metadata) -> Vec<Rating> {
 }
 
 #[derive(Default)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Detail {
     /// WHICH SERVER this item was fetched from — the other half of its identity. `rk` on its own
     /// names an item on no machine in particular the moment a shared server is registered (both
     /// number from 1; docs/shared-servers.md §2), and every equality test that reads this struct
     /// therefore compares the pair through [`crate::plex::same_item`]: `cached_playing`'s cache
     /// hit, `pump_season`'s ownership test, `detail::reselect`, and the BACK trail's node.
+    #[serde(with = "record::server_id")]
     pub(crate) sid: crate::plex::ServerId,
     pub(crate) rk: String,
     /// Which SERVER this item was fetched from, as the OWNER'S HANDLE ("friend") — empty whenever
@@ -968,6 +982,7 @@ pub(crate) struct Detail {
     pub(crate) part: String,   // Media[0].Part[0].key for a leaf (movie/episode); empty for a show
     pub(crate) vcodec: String, // Media[0].videoCodec (drives the direct-play/transcode decision)
     pub(crate) acodec: String, // Media[0].audioCodec
+    #[serde(with = "record::float_bits")]
     pub(crate) video_fps: f64, // video Stream frameRate (0 = unknown); feeds the Load esInfo
     // ---- the PRIMARY version's technical fields (plex::Metadata::primary_media = Media[0], NOT a
     // best-of pick — a multi-version item has more, and choosing among them needs a version picker
@@ -994,6 +1009,7 @@ pub(crate) struct Detail {
     /// `Part[0].size` in BYTES (0 = the server did not say).
     pub(crate) size: i64,
     /// `Media[0].aspectRatio` as a number — `2.35` (0.0 = not said).
+    #[serde(with = "record::float_bits")]
     pub(crate) aspect_ratio: f64,
     /// The primary version's VIDEO track, whole. `vcodec`/`width`/`height`/`bitrate` above are the
     /// Media-level summary the play path reads; this is the stream's own record, and the only
@@ -1021,6 +1037,7 @@ pub(crate) struct Detail {
     /// the LOADED item and not only on the catalog row because a page opened from the Library grid,
     /// a Related tile or the person page is never in the home catalog (`pms::index_of_rk` searches
     /// the hubs only), and those were exactly the pages sitting on flat grey with no wash at all.
+    #[serde(with = "record::blur_bits")]
     pub(crate) blur: [[f32; 3]; 4],
     pub(crate) has_blur: bool,
     pub(crate) genres: Vec<String>,
@@ -1322,6 +1339,7 @@ pub(crate) fn sync_now_playing() {
 /// this to `None` and the whole call to the registry read below it.
 #[cfg(not(test))]
 fn dev_source() -> Option<&'static str> {
+    if crate::app::bootstrap::stores::active() { return None; }
     static SEEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     SEEN.get_or_init(|| crate::dev::read("shared")).as_deref()
 }
@@ -2130,7 +2148,7 @@ fn supersede_detail() -> u32 {
     use std::sync::atomic::Ordering;
     let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     DETAIL_DONE.store(gen, Ordering::SeqCst);
-    DETAIL_LANDING.clear();
+    record::cancel_all();
     *DETAIL_WANT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     gen
 }
@@ -2143,7 +2161,7 @@ fn land_detail(sid: crate::plex::ServerId, rk: &str, gen: u32, d: Option<Detail>
     let addr = detail_addr(gen);
     // Full has already queued one Dropped terminal. Unknown/duplicate results queue nothing;
     // cancelled worker completions acknowledge only their own retained reservation.
-    let _ = DETAIL_LANDING.put(addr, (sid, rk.to_string()), d);
+    record::put(addr, (sid, rk.to_string()), d);
 }
 
 /// Mint the request: supersede the season, bump the generation, record what the page awaits
@@ -2157,10 +2175,10 @@ fn begin_detail_request(sid: crate::plex::ServerId, rk: &str) -> (
     // NOT supersede_detail(): the generation must move (a stale landing is discarded) but
     // DETAIL_DONE must stay behind so `detail_loading()` reports this fetch as in flight
     let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    DETAIL_LANDING.clear();
+    record::cancel_all();
     *DETAIL_WANT.lock().unwrap_or_else(|e| e.into_inner()) = Some((sid, rk.to_string()));
     let addr = detail_addr(gen);
-    let admission = DETAIL_LANDING.admit(addr);
+    let admission = record::admit(addr);
     if admission.is_err() {
         // Rejected admission owns no queued terminal: settle this new generation synchronously.
         // clear() cancelled previous workers but kept their reservations until acknowledgement.
@@ -2179,9 +2197,11 @@ fn begin_detail_request(sid: crate::plex::ServerId, rk: &str) -> (
 fn request_detail(sid: crate::plex::ServerId, rk: &str) {
     request_detail_with_spawn(sid, rk, |gen| {
         let rk = rk.to_string();
-        crate::task::spawn_small("detail", move || {
+        crate::app::bootstrap::stores::admit(serde_json::json!({"store":"metadata",
+            "sid":sid.raw(),"rk":rk,"gen":gen,
+            "client":crate::plex::client_for(sid).map(|c| c.instance_gen())}), || crate::task::spawn_small("detail", move || {
             finish_detail_fetch(sid, &rk, gen, || fetch_full(sid, &rk));
-        })
+        }))
     });
 }
 
@@ -2192,7 +2212,7 @@ fn request_detail_with_spawn(sid: crate::plex::ServerId, rk: &str, spawn: impl F
     if !spawn(gen) {
         // no worker means nothing will ever land on its own: the refusal record is what settles
         // the spinner (`pump_detail`), exactly one event for the request (§5.2)
-        let _ = DETAIL_LANDING.refused(addr);
+        record::refused(addr);
     }
 }
 
@@ -2270,21 +2290,19 @@ pub(crate) fn pump_detail() -> bool {
     // Under a replay this drains on the frame the recording drained it on (§3.3 step 3,
     // `ui::landgate`); off one it is the same call. The gate wraps the QUEUE drain and not the
     // supersede/install below, so a held frame leaves the record in the landing untouched.
-    let out = crate::stores::take_landings(crate::stores::StoreId::Metadata, || {
-        let mut out = Vec::new();
-        DETAIL_LANDING.take_for(
-            &|_| true,
-            &|k| match &want {
-                // A wrong key is a discarded terminal; it cannot settle this item's spinner.
-                // A later valid success requires a NEW admitted request, never another terminal
-                // for the discarded Addr. Server identity is part of the key (§5.2).
-                Some((sid, rk)) => k.0 == *sid && k.1 == *rk,
-                None => true,
-            },
-            &mut out,
-        );
-        out
-    });
+    let out = if crate::app::bootstrap::stores::active() {
+        crate::stores::take_landings(crate::stores::StoreId::Metadata, || {
+            crate::app::bootstrap::stores::poll_apply("metadata", 0,
+                || record::drain_live(&want), |replies| record::supply(replies, &want))
+                .into_iter().collect::<Vec<_>>()
+        }).into_iter().flat_map(|drain| drain.landed).collect()
+    } else {
+        crate::stores::take_landings(crate::stores::StoreId::Metadata, || {
+            let mut out = Vec::new();
+            DETAIL_LANDING.take_for(&|_| true, &|key| want.as_ref().is_none_or(|wanted| key == wanted), &mut out);
+            out
+        })
+    };
     let mut fresh = false;
     for rec in out {
         let gen = rec.addr.req.0;
@@ -2745,6 +2763,7 @@ pub(crate) fn pump_alt_sources() -> bool {
 /// whole 2-5 round-trip window, so at that moment there is no runtime, no resolution class and no
 /// title to build a copy of the item FROM.
 fn alt_pump_stand_in() -> bool {
+    if crate::app::bootstrap::stores::active() { return false; }
     let Some(d) = current() else { return false };
     if d.rk == alt().stand_in_rk {
         return false; // this item has already had its chance — one string compare
@@ -4069,6 +4088,95 @@ mod tests {
         assert!(!detail_loading());
         assert_eq!(DETAIL_LANDING.inflight(detail_addr(0).to), 0);
         clear();
+    }
+
+    #[test]
+    fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
+        let _serial = crate::testlock::serial();
+        let mut value = serde_json::to_value(
+            crate::app::bootstrap::Initial::synthetic_home(1, 32498, None).unwrap()).unwrap();
+        value["content"] = serde_json::json!({"detail":"1001", "detailsec":1,
+            "detailok":true, "filmography":true, "personcredits":9, "nowan":true});
+        for trigger in ["detail", "detailsec", "detailok", "filmography", "personcredits", "nowan"] {
+            value["triggers"].as_array_mut().unwrap()
+                .push(serde_json::json!(format!("plxnative-{trigger}")));
+        }
+        let initial = crate::app::bootstrap::Initial::from_value(value).unwrap();
+        crate::app::bootstrap::stores::init(&initial, false);
+        crate::ui::landgate::arm_recording();
+        DETAIL_GEN.store(0, Ordering::SeqCst);
+        DETAIL_DONE.store(0, Ordering::SeqCst);
+        clear();
+
+        let mut recorded = Vec::new();
+        for n in 0..6 {
+            crate::app::bootstrap::stores::begin(Default::default(), Default::default());
+            let gen = begin_detail_for_test(crate::plex::ServerId::UNSET, &format!("old-{n}"));
+            clear();
+            land_detail(crate::plex::ServerId::UNSET, &format!("old-{n}"), gen, None);
+            assert!(!pump_detail());
+            let results = crate::app::bootstrap::stores::take_results();
+            assert_eq!(results.len(), 1,
+                "the cancelled completion remains a recorded capacity-retiring observation");
+            recorded.push(results[0].clone());
+            assert_eq!(crate::ui::landgate::take_frame_lands(),
+                vec![(crate::stores::StoreId::Metadata.ord(), 1)],
+                "a filtered ACK retains its original observed landing frame");
+            assert_eq!(crate::app::bootstrap::stores::finish().1, None);
+            assert_eq!(DETAIL_LANDING.inflight(detail_addr(gen).to), 0);
+        }
+
+        crate::app::bootstrap::stores::begin(Default::default(), Default::default());
+        let wrong = begin_detail_for_test(crate::plex::ServerId::from_raw(0), "same-key");
+        land_detail(crate::plex::ServerId::from_raw(1), "same-key", wrong, None);
+        assert!(!pump_detail(), "a wrong-server answer stays filtered");
+        let wrong_result = crate::app::bootstrap::stores::take_results().pop().unwrap();
+        assert_eq!(DETAIL_LANDING.inflight(detail_addr(wrong).to), 0);
+        assert_eq!(crate::ui::landgate::take_frame_lands(),
+            vec![(crate::stores::StoreId::Metadata.ord(), 1)]);
+        assert_eq!(crate::app::bootstrap::stores::finish().1, None);
+
+        crate::app::bootstrap::stores::begin(Default::default(), Default::default());
+        let fresh = begin_detail_for_test(crate::plex::ServerId::UNSET, "fresh-after-cancel");
+        land_detail(crate::plex::ServerId::UNSET, "fresh-after-cancel", fresh,
+            Some(Detail { sid:crate::plex::ServerId::UNSET, rk:"fresh-after-cancel".into(),
+                ..Default::default() }));
+        assert!(pump_detail(), "more than the four-slot cap can run after cancelled ACKs retire");
+        let fresh_result = crate::app::bootstrap::stores::take_results().pop().unwrap();
+        assert_eq!(crate::ui::landgate::take_frame_lands(),
+            vec![(crate::stores::StoreId::Metadata.ord(), 1)]);
+        assert_eq!(crate::app::bootstrap::stores::finish().1, None);
+        clear();
+        crate::ui::landgate::disarm();
+
+        crate::app::bootstrap::stores::init(&initial, true);
+        DETAIL_GEN.store(0, Ordering::SeqCst);
+        DETAIL_DONE.store(0, Ordering::SeqCst);
+        clear();
+        for (n, result) in recorded.into_iter().enumerate() {
+            crate::app::bootstrap::stores::begin(Default::default(), [result.clone()].into());
+            let gen = begin_detail_for_test(crate::plex::ServerId::UNSET, &format!("old-{n}"));
+            clear();
+            assert!(!pump_detail());
+            assert_eq!(crate::app::bootstrap::stores::take_results(), vec![result],
+                "replay grades the ACK it actually applied");
+            assert_eq!(crate::app::bootstrap::stores::finish().1, None);
+            assert_eq!(DETAIL_LANDING.inflight(detail_addr(gen).to), 0,
+                "the replayed cancelled ACK retires its reservation");
+        }
+        crate::app::bootstrap::stores::begin(Default::default(), [wrong_result.clone()].into());
+        let wrong = begin_detail_for_test(crate::plex::ServerId::from_raw(0), "same-key");
+        assert!(!pump_detail(), "replay preserves the wrong-server filter");
+        assert_eq!(crate::app::bootstrap::stores::take_results(), vec![wrong_result]);
+        assert_eq!(DETAIL_LANDING.inflight(detail_addr(wrong).to), 0);
+        assert_eq!(crate::app::bootstrap::stores::finish().1, None);
+        crate::app::bootstrap::stores::begin(Default::default(), [fresh_result].into());
+        let fresh = begin_detail_for_test(crate::plex::ServerId::UNSET, "fresh-after-cancel");
+        assert!(pump_detail(), "replay also admits beyond the recovered four-slot cap");
+        assert_eq!(DETAIL_LANDING.inflight(detail_addr(fresh).to), 0);
+        assert_eq!(crate::app::bootstrap::stores::finish().1, None);
+        clear();
+        crate::app::bootstrap::stores::reset_for_test();
     }
 
     // ---- the season mailbox -----------------------------------------------------------------

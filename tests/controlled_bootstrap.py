@@ -118,7 +118,8 @@ def main():
             if expected == 'SAME':
                 assert code == 0, name
                 assert all(' %s=0' % field in summaries[-1] for field in
-                           ('diverged', 'present_diffs', 'result_diffs', 'land_diffs', 'effect_diffs')), name
+                           ('diverged', 'present_diffs', 'input_diffs', 'result_diffs',
+                            'land_diffs', 'effect_diffs')), name
         assert before == snapshot(root), name + ': ambient persistence changed or was created'
         assert not attempts, name + ': primary network attempt'
         result = {'case': name, 'exit': code, 'expected': expected, 'nonmutation': True,

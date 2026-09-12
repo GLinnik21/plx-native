@@ -48,8 +48,15 @@ fn main() {
             let path = args.next().ok_or("missing output path")?;
             let seed = args.next().and_then(|value| value.parse::<u32>().ok()).ok_or("invalid seed")?;
             let port = args.next().and_then(|value| value.parse::<u16>().ok()).ok_or("invalid port")?;
+            let settings = match args.next() {
+                None => None,
+                Some(value) if value == "flow12" => Some(value),
+                Some(value) if value.starts_with("settings=") =>
+                    Some(value.trim_start_matches("settings=").to_string()),
+                Some(_) => return Err("unsupported synthetic initial argument"),
+            };
             if args.next().is_some() { return Err("unexpected argument"); }
-            let encoded = plxnative_modules::synthetic_home_initial(seed,port)?;
+            let encoded = plxnative_modules::synthetic_home_initial(seed,port,settings)?;
             let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600)
                 .open(path).map_err(|_| "cannot create initial input file")?;
             file.write_all(encoded.as_bytes()).map_err(|_| "cannot write initial input file")

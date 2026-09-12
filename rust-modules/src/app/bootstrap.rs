@@ -1,10 +1,13 @@
 //! Controlled, pre-effect boot inputs. Resource handles never enter this private wire format.
-//! The first executable replay domain is Home; other domains fail closed at preflight.
+//! Home, Settings and the typed filmography-detail-return scenario have controlled inputs.
+//! Other initial domains fail closed at preflight.
 
 use crate::ui::machine::{Canon, LogicalState};
 use crate::ui::rec::Recording;
 use serde::{Deserialize, Serialize};
+pub(crate) const CONTENT_SHAPE: &str = "ContentInitialV1{detail:str,detailsec:u32,detailok:bool,filmography:bool,personcredits:u32,nowan:bool};ContentResourcesV2{admission:Metadata(sid,rk,gen,client)|MetadataCancel(boundary,retired:DetailBatch)|Person(slot,gen,arg,guid,local?,client?,sid?),admitted:bool;result:DetailBatch(seq,req,terminal,Data(key,Option<Detail>)|Dropped(req)|Refused(req))|Person(slot,Mail(gen,Resolve|Media|Profile|Credits|Roles));PersonTerminal:slot+gen+kind-bound;DetailFloats:bits;ContentEffectsV1:complete_nav_store_request_return_memory}";
 pub(crate) mod effects;
+pub(crate) mod stores;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -87,7 +90,9 @@ pub(crate) fn validate_admission(value: &serde_json::Value, client: u32) -> Resu
     Ok(())
 }
 
-pub(crate) const SHAPE: &str = "ControlledHomeInitV1{version:u32,session:SessionInit,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
+pub(crate) const SHAPE: &str = "ControlledHomeInitV2{version:u32,session:SessionInit,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,settings:Option<root|privacy|legal>,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
+#[cfg(test)]
+pub(crate) const PRE_SETTINGS_SHAPE: &str = "ControlledHomeInitV1{version:u32,session:SessionInit,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Entropy {
@@ -108,12 +113,28 @@ pub(crate) struct Initial {
     pub entropy: Entropy,
     pub primary_client: u32,
     pub automated: bool,
+    #[serde(default)]
+    pub settings: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<ContentInitial>,
     pub triggers: Vec<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ContentInitial {
+    pub detail: String,
+    pub detailsec: u32,
+    pub detailok: bool,
+    pub filmography: bool,
+    pub personcredits: u32,
+    pub nowan: bool,
 }
 
 impl Initial {
     #[cfg(any(test, feature = "hostsim"))]
-    pub(crate) fn synthetic_home(seed: u32, port: u16) -> Result<Self, &'static str> {
+    pub(crate) fn synthetic_home(seed: u32, port: u16, settings: Option<String>)
+        -> Result<Self, &'static str> {
         if port == 0 { return Err("invalid synthetic port"); }
         let saved = crate::plex::session::Session { client_id:format!("s{seed:08x}"), ..Default::default() };
         let origin = crate::plex::Origin::http("127.0.0.1", i32::from(port));
@@ -122,8 +143,11 @@ impl Initial {
             tier:Some(crate::plex::probe::Location::Local), ..Default::default() };
         let initial = Self { version:1, session:crate::auth::SessionInit::captured_boot(saved,Some(primary),Vec::new()),
             consent:Default::default(),home:crate::pms::initial::Initial::fresh(),clock_start:0,
-            entropy:Entropy::Seeded(seed),primary_client:1,automated:true,
-            triggers:vec!["plxnative-app-init".into(),"plxnative-rec".into(),"plxnative-focus".into(),"plxnative-noidle".into()] };
+            entropy:Entropy::Seeded(seed),primary_client:1,automated:true,settings:settings.clone(),
+            content:None, triggers:vec!["plxnative-app-init".into(),"plxnative-rec".into(),
+                "plxnative-focus".into(),"plxnative-noidle".into()] };
+        let mut initial = initial;
+        if settings.is_some() { initial.triggers.push("plxnative-settings".into()); }
         initial.validate()?;
         Ok(initial)
     }
@@ -145,6 +169,8 @@ impl Initial {
             consent: crate::telemetry::capture_initial(), clock_start: 0, entropy: Entropy::Captured(entropy),
             primary_client: crate::plex::Client::capture_generation_seed(),
             automated: crate::dev::any_trigger_present(),
+            settings: crate::dev::scenarios::settings_boot_value(),
+            content: None,
             home: crate::pms::initial::Initial::capture(),
             triggers: crate::dev::armed_triggers(),
         };
@@ -178,6 +204,27 @@ impl Initial {
             return Err("unsupported Home server binding");
         }
         if s.persisted.client_id.is_empty() { return Err("missing initial identity"); }
+        if self.settings.as_deref().is_some_and(|value|
+            !matches!(value, "root" | "privacy" | "legal")) {
+            return Err("unsupported initial Settings input");
+        }
+        if self.settings.is_some()
+            != self.triggers.iter().any(|trigger| trigger == "plxnative-settings") {
+            return Err("incoherent initial Settings input");
+        }
+        let content_triggers = ["detail", "detailsec", "detailok", "filmography", "personcredits", "nowan"];
+        if let Some(content) = &self.content {
+            if content.detail != "1001" || content.detailsec != 1 || !content.detailok
+                || !content.filmography || content.personcredits != 9 || !content.nowan
+                || self.settings.is_some() {
+                return Err("unsupported initial content input");
+            }
+        }
+        for name in content_triggers {
+            if self.content.is_some() != self.triggers.iter().any(|t| t == &format!("plxnative-{name}")) {
+                return Err("incoherent initial content input");
+            }
+        }
         match self.entropy {
             Entropy::Captured(Some(bytes)) if crate::plex::session::client_id_from_entropy(bytes) != s.persisted.client_id =>
                 return Err("initial entropy mismatch"),
@@ -187,7 +234,10 @@ impl Initial {
         }
         for trigger in &self.triggers {
             if !matches!(trigger.as_str(), "plxnative-rec" | "plxnative-recplay" |
-                "plxnative-focus" | "plxnative-noidle" | "plxnative-token" | "plxnative-app-init") {
+                "plxnative-focus" | "plxnative-noidle" | "plxnative-token" |
+                "plxnative-app-init" | "plxnative-settings" | "plxnative-detail" |
+                "plxnative-detailsec" | "plxnative-detailok" | "plxnative-filmography" |
+                "plxnative-personcredits" | "plxnative-nowan") {
                 return Err("unsupported initial developer input");
             }
         }
@@ -225,7 +275,13 @@ impl LogicalState for Initial {
             Entropy::Captured(bytes) => { c.u32(0); c.option(bytes.as_ref(), |c, bytes| { for byte in bytes { c.u32(u32::from(*byte)); } }); }
             Entropy::Seeded(seed) => { c.u32(1).u32(seed); }
         }
-        c.u32(self.primary_client).bool(self.automated).seq(self.triggers.len());
+        c.u32(self.primary_client).bool(self.automated);
+        c.option(self.settings.as_ref(), |c, value| { c.str(value); });
+        if let Some(v) = &self.content {
+            c.str("ContentInitialV1").str(&v.detail).u32(v.detailsec).bool(v.detailok)
+                .bool(v.filmography).u32(v.personcredits).bool(v.nowan);
+        }
+        c.seq(self.triggers.len());
         for trigger in &self.triggers { c.str(trigger); }
     }
     fn probe(&self, out: &mut String) { out.push_str("controlled=home version=1"); }

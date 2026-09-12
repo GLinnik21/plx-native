@@ -20,7 +20,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
         std::fs::write(outside.join("sentinel"), b"synthetic sentinel").unwrap();
         let recording = root.join("plxnative-recordings");
         let sink = crate::ui::rec::DirSink::create(&recording.join("latest")).unwrap();
-        let initial = bootstrap::Initial::synthetic_home(17, 32517).unwrap();
+        let initial = bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
         let mut rec = recorder::Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
         rec.tick(0, 0.0); // deliberately still buffered when the confirmed command arrives
         std::os::unix::fs::symlink(&outside, recording.join("external-link")).unwrap();
@@ -121,7 +121,7 @@ fn replay_cannot_authorize_erasure_of_a_recording_target() {
     let temp = session::TempSession::new("replay-no-erasure");
     temp.assert_only_target();
     let before = std::fs::read(temp.path()).unwrap();
-    let initial = bootstrap::Initial::synthetic_home(17, 32517).unwrap();
+    let initial = bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
     let mut bridge = Bridge::controlled_home(|| 0, &initial, &mt, true);
     let mut pages = Dispatcher::<AppHost>::new();
     let mut rec = recorder::Recplay::Off;

@@ -104,6 +104,7 @@ const RESOLVE_LIMIT: i64 = 12;
 /// the captions describe THESE items by index, and the total is the number to print rather than
 /// `items.len()`.
 #[derive(Default)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Shelf {
     /// the tiles, capped at [`SHELF_MAX`]
     pub(crate) items: Vec<PmsMovie>,
@@ -399,6 +400,7 @@ const RETRY_FRAMES: u32 = 120;
 /// form (plex.tv answers 200 with an empty container for a person it has never heard of, which is
 /// an ANSWER); and the resolve has it in the sharpest form of all, since "this server has no record
 /// of them" is the NORMAL answer from a share and must never read as a fault.
+#[derive(serde::Serialize, serde::Deserialize)]
 enum Landing {
     /// One source's own `personId`. `Some("")` = answered, and this server has never heard of them.
     Resolve(Option<String>),
@@ -420,6 +422,7 @@ enum Landing {
 /// them because [`SHELF_MAX`] caps what a `CardRow` can spring: a prolific actor's 60 movies draw
 /// as 24 tiles, and joining a filmography against the 24 would silently un-own 36 films the user
 /// really has.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct MediaLanding {
     shelves: [Shelf; NSHELF],
     /// `(guid, ratingKey)` for EVERY `movie`/`show` row the response carried. Short strings, a few
@@ -431,14 +434,36 @@ pub(crate) struct MediaLanding {
 /// along because [`apply`] must refuse a landing for a shelf list that has since been replaced
 /// (see there). `pairs` is already filtered to THIS person's credit per item — the worker walks the
 /// batched response so ~30 KB of tag arrays never crosses the mailbox.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct RolesLanding {
     keys: Vec<String>,
     pairs: Vec<(String, String)>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Mail {
     gen: u32,
     what: Landing,
+}
+pub(crate) fn validate_record(slot: u32, value: &serde_json::Value) -> Result<(), &'static str> {
+    if slot as usize >= NFETCH { return Err("invalid person slot"); }
+    let mail: Mail = serde_json::from_value(value.clone()).map_err(|_| "invalid person reply")?;
+    if serde_json::to_value(&mail).ok().as_ref() != Some(value) {
+        return Err("noncanonical person reply");
+    }
+    let legal = match slot as usize {
+        F_PROFILE => matches!(mail.what, Landing::Profile(_)),
+        F_CREDITS => matches!(mail.what, Landing::Credits(_)),
+        i => match un_fx(i).map(|(_, kind)| kind) {
+            Some(K_RESOLVE) => matches!(mail.what, Landing::Resolve(_)),
+            Some(K_MEDIA) => matches!(mail.what, Landing::Media(_)),
+            Some(K_ROLES) => matches!(mail.what, Landing::Roles(_)),
+            _ => false,
+        },
+    };
+    if !legal { return Err("mismatched person terminal kind"); }
+    if mail.gen == 0 { return Err("invalid person reply generation"); }
+    Ok(())
 }
 
 /// One fetch's two WORKER-VISIBLE halves: the claim that it is out, and the mailbox its answer
@@ -760,7 +785,7 @@ fn open(sid: ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
         // here rather than hardcoding `landed: false` is what keeps that rule in one place.
         if let Some(p) = (*addr_of_mut!(CURRENT)).as_mut() {
             resettle(p);
-            seed_dev_profile(p);
+            if !crate::app::bootstrap::stores::active() { seed_dev_profile(p); }
         }
     }
 }
@@ -918,8 +943,13 @@ pub(crate) fn pump() -> bool {
         // the recording took it on (§3.3 step 3, `ui::landgate`); `maybe_spawn` below is
         // deliberately outside the gate, so the request that produces it still goes out on time.
         if let Some(r) =
-            crate::stores::take_landing(crate::stores::StoreId::Person, || FETCH[i].take())
+            if crate::app::bootstrap::stores::active() {
+                let reply = crate::app::bootstrap::stores::poll("person", i as u32, || FETCH[i].take());
+                if reply.is_some() { crate::ui::landgate::landed(crate::stores::StoreId::Person.ord()); }
+                reply
+            } else { crate::stores::take_landing(crate::stores::StoreId::Person, || FETCH[i].take()) }
         {
+            FETCH[i].release();
             // EVERY landing repaints, the failures included. `ui::idle` gates the whole frame
             // on a settled screen, so without this a shelf that arrives (or a spinner that should
             // stop) waits for the next keypress to become visible. This page had no such call at
@@ -964,7 +994,10 @@ pub(crate) fn pump() -> bool {
 /// headless capture reaches the strip's scroll and the left edge fade over its cut.
 #[allow(unused_variables)]
 fn seed_dev_credits(p: &mut Person) -> bool {
-    let Some(arg) = crate::dev::read("personcredits") else {
+    let arg = if crate::app::bootstrap::stores::active() {
+        crate::app::bootstrap::stores::credits().map(|v| v.to_string())
+    } else { crate::dev::read("personcredits") };
+    let Some(arg) = arg else {
         return false;
     };
     // **The rows the page really holds, as `(title, guid)`** — taken from the source's OWN index
@@ -1329,16 +1362,19 @@ fn maybe_spawn(i: usize) {
     if i == F_PROFILE || i == F_CREDITS {
         let profile = i == F_PROFILE;
         FETCH[i].claim();
-        let spawned = crate::task::spawn_small("person", move || {
+        let controlled = crate::app::bootstrap::stores::active();
+        let spawned = crate::app::bootstrap::stores::admit(serde_json::json!({
+            "store":"person","slot":i,"gen":gen,"arg":arg,"guid":guid}), ||
+            crate::task::spawn_small("person", move || {
             // filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE (None), not
             // as an empty biography / an empty filmography
             let what = if profile {
-                Landing::Profile(catch_unwind(|| fetch_profile(&arg[0])).unwrap_or(None))
+                Landing::Profile(if controlled { None } else { catch_unwind(|| fetch_profile(&arg[0])).unwrap_or(None) })
             } else {
-                Landing::Credits(catch_unwind(|| fetch_credits(&arg[0])).unwrap_or(None))
+                Landing::Credits(if controlled { None } else { catch_unwind(|| fetch_credits(&arg[0])).unwrap_or(None) })
             };
             land(i, gen, what);
-        });
+        }));
         if !spawned {
             FETCH[i].release();
         }
@@ -1366,7 +1402,9 @@ fn maybe_spawn(i: usize) {
         .and_then(|s| s.local.clone())
         .unwrap_or_default();
     FETCH[i].claim();
-    let spawned = crate::task::spawn_small("person", move || {
+    let spawned = crate::app::bootstrap::stores::admit(serde_json::json!({
+        "store":"person","slot":i,"gen":gen,"arg":arg,"guid":guid,
+        "local":local,"client":c.instance_gen(),"sid":sid.raw()}), || crate::task::spawn_small("person", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
         // (None), not as an empty filmography / a source silently written off / no captions
         let what = match kind {
@@ -1406,7 +1444,7 @@ fn maybe_spawn(i: usize) {
             _ => return, // `un_fx` only ever yields 0..NKIND
         };
         land(i, gen, what);
-    });
+    }));
     if !spawned {
         // nothing will ever fill the mailbox, and the claim is cleared only by a take — release it
         // here or this source never fetches again. `maybe_spawn` runs every frame, so this retries

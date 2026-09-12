@@ -3,7 +3,7 @@
  "blobs": false,
  "build": "0.7.0-dev",
  "clock": {
-  "start": 120
+  "start": 0
  },
  "features": [
   "devtools",
@@ -12,54 +12,148 @@
  ],
  "init": {
   "data": {
-   "app": {
-    "consent_asked": 0,
-    "consent_errors": false,
-    "consent_usage": false,
-    "route": "home",
-    "seed": 0,
-    "servers": 1,
-    "session": false
+   "automated": true,
+   "clock_start": 0,
+   "consent": {
+    "asked_version": 0,
+    "errors": false,
+    "usage": false
    },
-   "hubs": {
+   "entropy": {
+    "Seeded": 1
+   },
+   "home": {
     "catalog": {
      "heroes": [],
      "hubs": [],
      "items": []
     },
-    "catalog_generation": 1,
-    "generation": 2,
-    "next_request": 2,
-    "sections_generation": 1,
-    "seen": 8589934593,
-    "seen_facts": 1,
-    "sources": [
-     {
-      "client": 1,
-      "fetching": true,
-      "handle": "",
-      "last": null,
-      "retry_bits": 0,
-      "retry_n": 0,
-      "seq": 1,
-      "sid": 0,
-      "state": 0,
-      "token_gen": 1
-     }
-    ],
+    "catalog_generation": 0,
+    "generation": 0,
+    "next_request": 1,
+    "sections_generation": 0,
+    "seen": 18446744073709551615,
+    "seen_facts": 4294967295,
+    "sources": [],
     "version": 1
-   }
+   },
+   "primary_client": 1,
+   "session": {
+    "active_profile": null,
+    "apply_pending": false,
+    "authority": {
+     "DevPms": {
+      "extras": [],
+      "primary": {
+       "address": "127.0.0.1",
+       "machine_id": "",
+       "name": "",
+       "origin": "http://127.0.0.1:32498",
+       "port": 32498,
+       "tier": "local",
+       "token": "s00000002"
+      }
+     }
+    },
+    "authorized_in_flow": false,
+    "code_replaced": false,
+    "committed_credentials": {
+     "account_token": "",
+     "client_id": "s00000001",
+     "home_users": [],
+     "profiles": [],
+     "server": {
+      "address": "",
+      "machine_id": "",
+      "name": "",
+      "origin": "",
+      "port": 0,
+      "tier": null,
+      "token": ""
+     },
+     "sources": [],
+     "user": {
+      "id": 0,
+      "thumb": "",
+      "title": "",
+      "token": "",
+      "uuid": ""
+     }
+    },
+    "delete_leftovers": 0,
+    "disk_identity": {
+     "account_token": "",
+     "client_id": "s00000001",
+     "profile_uuid": ""
+    },
+    "epoch": 1,
+    "error": "",
+    "inbox": [],
+    "next_qr": 0,
+    "next_req": 0,
+    "pending": {},
+    "pending_commit": null,
+    "pending_erase": null,
+    "persisted": {
+     "account_token": "",
+     "auto_sign_in": false,
+     "client_id": "s00000001",
+     "home_pins": [],
+     "home_users": [],
+     "last_hero_blur": null,
+     "last_library": [],
+     "playback_quality": null,
+     "profiles": [],
+     "recent_searches": [],
+     "server": {
+      "address": "",
+      "machine_id": "",
+      "name": "",
+      "origin": "",
+      "port": 0,
+      "tier": null,
+      "token": ""
+     },
+     "sources": [],
+     "user": {
+      "id": 0,
+      "thumb": "",
+      "title": "",
+      "token": "",
+      "uuid": ""
+     }
+    },
+    "phase": "Idle",
+    "picker": "Boot",
+    "pin_code": "",
+    "pin_denied": false,
+    "profile_scope": 0,
+    "pump_pending": false,
+    "qr_gen": 0,
+    "qr_png": [],
+    "signin_active": false,
+    "users": []
+   },
+   "settings": "root",
+   "triggers": [
+    "plxnative-app-init",
+    "plxnative-rec",
+    "plxnative-focus",
+    "plxnative-noidle",
+    "plxnative-settings"
+   ],
+   "version": 1
   },
-  "hash": 13272641050745139175,
-  "probe": "route=home session=0 servers=1 consent=0/0/0 seed=0"
+  "hash": 8139486231875451159,
+  "probe": "controlled=home version=1"
  },
  "schema": 2,
- "state_fp": 5231983511228965717,
+ "state_fp": 16109897700616989408,
  "triggers": [
+  "plxnative-app-init",
+  "plxnative-rec",
   "plxnative-focus",
   "plxnative-noidle",
-  "plxnative-rec",
-  "plxnative-settings",
-  "plxnative-token"
+  "plxnative-settings"
  ]
 }

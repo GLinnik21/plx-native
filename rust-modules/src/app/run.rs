@@ -48,8 +48,10 @@ pub(super) fn recorder_end_frame(
     focus: &str,
     tree: u64,
 ) -> bool {
+    rec.content_end();
     rec.end_frame(&|| super::recorder::state_hash(
-        press, route, overlay, focus, tree, bridge.session_subhash(), bridge.initial_subhash(),
+        press, route, overlay, focus, tree, bridge.session_subhash(), bridge.consent_subhash(),
+        bridge.initial_subhash(),
     ))
 }
 
@@ -145,7 +147,13 @@ pub(crate) unsafe fn run(app: &mut App) {
         // `apply_pending` stayed set — so the next boot came up as the previous profile
         // and the offline-pick harness case found no cache record (device, 2026-09-06).
         // Waiting for the handoff costs a headless run the seconds the seating takes.
-        if app.boot_initial.is_none() && !crate::dev::scenarios::each_frame(app, fr) {
+        app.rec.content_begin();
+        let scenarios_ok = if app.boot_initial.is_some() {
+            crate::dev::scenarios::controlled_each_frame(app, fr)
+        } else {
+            crate::dev::scenarios::each_frame(app, fr)
+        };
+        if !scenarios_ok {
             continue;
         }
         playback_tick(app, fr);
@@ -228,6 +236,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         loop_requests(app);
         app.instr.mark(crate::diag::heartbeat::Phase::NavCommit); // navcommit
         update(app, fr);
+        app.rec.content_results();
         app.instr.mark(crate::diag::heartbeat::Phase::TickDrain); // tick_drain
         prepare_window(app, fr);
         present_and_swap(app, fr);
@@ -2743,6 +2752,10 @@ pub(crate) unsafe fn shutdown(
 unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
     if app.boot_initial.is_some() {
         match super::bootstrap::effects::decode_input(v) {
+            Ok(input) if input.source == crate::ui::machine::Source::Script => {
+                // The typed initial scenario regenerates this internal step at its recorded
+                // clock. Dispatch still observes and grades it once; it is not external ingress.
+            }
             Ok(input) => controlled_key_input(app, input),
             Err(reason) => app.rec.refuse(reason),
         }
@@ -2787,9 +2800,9 @@ unsafe fn controlled_key_input(app: &mut App, event: crate::ui::machine::InputEv
     let InputKind::Key { key, sym, wcode, edge, at_edge: false } = event.kind else {
         app.rec.refuse("unsupported controlled Home input"); return;
     };
-    if !matches!(key, Key::Up | Key::Down | Key::Left | Key::Right)
+    if !matches!(key, Key::Up | Key::Down | Key::Left | Key::Right | Key::Ok | Key::Back)
         || !super::bridge::owns_input(&app.pages) {
-        app.rec.refuse("unsupported controlled Home key destination"); return;
+        app.rec.refuse("unsupported controlled key destination"); return;
     }
     match edge {
         Edge::Up => on_key_up(sym, app.ok_armed, &mut app.down_sym, &mut app.input.press),

@@ -1498,15 +1498,16 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   by-hand run inherits whatever the last session armed; and any non-DIAG trigger left behind also
   suppresses the who's-watching picker, silently changing which screen you boot to. The
   **`tv-session` skill** drives all of this (clear → arm → launch → assert) and owns the
-  screen-to-trigger recipes. **Controlled Home bootstrap update:** `plxnative-rec` and
-  `plxnative-recplay` now use a typed pre-effect Session/consent/Home initializer, explicit
-  recorded Client bindings and supplied Home/Browse results. Replay denies live data IO and
-  compares supported effects as well as state; malformed/unsupported input fails closed before
-  resource activation. `AppFrameV3` includes the initial-input digest. Private recordings can
-  contain credentials in typed initialization/effects: only explicitly synthetic inputs may
-  become fixtures. `tests/controlled_bootstrap.py` exercises this representative production path
-  with fresh/contrasting roots and outbound IO denied. Other domains, blobs, cross-target and
-  both-mode completion remain unsupported/open. The following phase-11/12 description is
+  screen-to-trigger recipes. **Controlled-bootstrap update:** `plxnative-rec` and
+  `plxnative-recplay` support Home, Settings, and typed Flow 12 content with typed pre-effect
+  initialization, explicit recorded Client bindings, recorded Home/Browse and Detail/Person
+  results, and exact request admissions. Replay denies content resource execution and compares
+  supported effects as well as state; malformed/unsupported input fails closed before resource
+  activation. `AppFrameV4` includes physical Consent and the initial-input digest. Private recordings can contain
+  credentials in typed initialization/effects: only explicitly synthetic inputs may become
+  fixtures. `tests/controlled_bootstrap.py` exercises this representative production path with
+  fresh/contrasting roots and outbound IO denied. Blobs, cross-target operation, both-mode
+  completion, and unsupported domains remain unsupported/open. The following phase-11/12 description is
   historical, not a claim that current replay falls back to live stores.
   Named historical highlights: **`/tmp/plxnative-rec[=blobs]`** (the RECORDER of
   the UI restructure, spec §5.3 — every frame's tick and present bit, every input the loop acted
