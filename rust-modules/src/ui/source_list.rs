@@ -84,8 +84,8 @@ pub(crate) enum Tail {
 fn state_word(s: SourceState) -> Option<&'static str> {
     match s {
         SourceState::NotProbed | SourceState::Reachable => None,
-        SourceState::Unauthorized => Some(UNAUTHORIZED),
-        SourceState::Unreachable => Some(UNREACHABLE),
+        SourceState::Unauthorized => Some(crate::i18n::t(UNAUTHORIZED)),
+        SourceState::Unreachable => Some(crate::i18n::t(UNREACHABLE)),
         SourceState::InsecureOnly => Some(INSECURE_ONLY),
     }
 }
@@ -121,7 +121,7 @@ const INSECURE_ONLY: &str = "Not secure";
 fn tier_word(t: Location) -> Option<&'static str> {
     match t {
         Location::Local => None,
-        Location::Remote => Some("Remote"),
+        Location::Remote => Some(crate::i18n::t("Remote")),
         Location::Relay => Some("Relay"),
     }
 }
@@ -216,7 +216,7 @@ pub(crate) fn sections(
                     // is the library that works.
                     .value_dim(r.last_pinned)
                     .detail(if r.last_pinned {
-                        "The app needs one library".to_string()
+                        crate::i18n::t("The app needs one library").to_string()
                     } else {
                         r.count_line.clone()
                     }),
@@ -236,7 +236,7 @@ pub(crate) fn sections(
         acts.push(SrcAction::None);
         // no leading glyph, deliberately: on the Browse level that column carries the picker's
         // tick, and an action mark in it would be a second grammar for one column
-        last.rows.push(Row::new("Check for new shares"));
+        last.rows.push(Row::new(crate::i18n::t("Check for new shares")));
         acts.push(SrcAction::Recheck);
     }
     (out, acts)

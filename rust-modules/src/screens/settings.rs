@@ -1027,12 +1027,12 @@ impl RootPage {
             // The section is Libraries and the row is Favorite libraries: the switch governs the
             // whole app — Home's shelves, the top tab strip and the Library's Sources picker.
             sections.push(
-                Section::new("Libraries").row(
-                    Row::new("Favorite libraries")
-                        .detail("Which libraries this television shows.")
+                Section::new(crate::i18n::t("Libraries")).row(
+                    Row::new(crate::i18n::t("Favorite libraries"))
+                        .detail(crate::i18n::t("Which libraries this television shows."))
                         .value(format!(
                             "{n} {}",
-                            if n == 1 { "favorite" } else { "favorites" }
+                            if n == 1 { crate::i18n::t("favorite") } else { crate::i18n::t("favorites") }
                         ))
                         .chevron(true),
                 ),
@@ -1040,7 +1040,7 @@ impl RootPage {
             actions.push(Action::Favourites);
         }
         sections.push(
-            Section::new("Privacy")
+            Section::new(crate::i18n::t("Privacy"))
                 .row(
                     Row::new(crate::i18n::t("Privacy & data"))
                         .detail(crate::i18n::t("Optional reports, privacy information and local data."))
@@ -1057,16 +1057,16 @@ impl RootPage {
         // A one-person account already skips the picker; the switch only changes a multi-user boot.
         if signed_in && multi_user {
             system = system.row(
-                Row::new("Automatically Sign In")
-                    .detail("Skip the profile list when the app starts.")
+                Row::new(crate::i18n::t("Automatically Sign In"))
+                    .detail(crate::i18n::t("Skip the profile list when the app starts."))
                     .toggle(auto_sign_in),
             );
             actions.push(Action::AutoSignIn);
         }
         if signed_in {
             system = system.row(
-                Row::new("Play trailers automatically")
-                    .detail("After a moment on a title, play its trailer with sound.")
+                Row::new(crate::i18n::t("Play trailers automatically"))
+                    .detail(crate::i18n::t("After a moment on a title, play its trailer with sound."))
                     .toggle(trailer_autoplay),
             );
             actions.push(Action::TrailerAutoplay);
@@ -1090,8 +1090,8 @@ impl RootPage {
             Header::new(
                 RouteLayout::screen(),
                 None,
-                "Settings",
-                "Settings apply to this Plex profile on this television. You can return here from the profile menu at any time.",
+                crate::i18n::t("Settings"),
+                crate::i18n::t("Settings apply to this Plex profile on this television. You can return here from the profile menu at any time."),
             ),
             &self.table,
             GroupId(0),

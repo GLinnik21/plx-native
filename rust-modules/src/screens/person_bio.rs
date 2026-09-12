@@ -94,16 +94,28 @@ const RAIL_GAP: f32 = theme::space::MD;
 const EYEBROW_TRACK: f32 = theme::size::CAPTION as f32 * 0.08;
 /// The eyebrow, pre-split per character — [`widgets::tracked_run`] explains why a tracked run is
 /// spelled this way, and why it is only worth it for a constant word.
-const EYEBROW: [&std::ffi::CStr; 6] = [c"P", c"E", c"R", c"S", c"O", c"N"];
+/// The eyebrow word, pre-split per character - `widgets::tracked_run` explains why a tracked run
+/// is spelled this way. "PERSON" in English, "PERSONA" in Spanish: the split is per-language
+/// because the tracked run steps one glyph at a time and a fixed six-slot array cannot hold the
+/// seventh letter the translation adds.
+fn eyebrow() -> &'static [&'static std::ffi::CStr] {
+    if crate::i18n::is_es() {
+        &[c"P", c"E", c"R", c"S", c"O", c"N", c"A"]
+    } else {
+        &[c"P", c"E", c"R", c"S", c"O", c"N"]
+    }
+}
 
 /// The footer's right-hand hint, as its three runs — assembled by the shared
 /// [`widgets::KeyHint`], which owns the cap, the gaps and the measure. This module used to lay the
 /// line out itself (three `text_width` calls, its own `HINT_GAP` and a bare `key_cap`), which was
 /// the same arithmetic the widget already does and the place a fourth copy of the design's `gap`
 /// would have drifted — it did drift, to 14 against the spec's 12.
-const HINT_PRE: &std::ffi::CStr = c"Press";
-const HINT_KEY: &std::ffi::CStr = c"BACK";
-const HINT_POST: &std::ffi::CStr = c"to return";
+/// The translated pick of a fixed label: static C strings in, one pointer out, nothing
+/// allocates on the draw path.
+fn tr_c(en: &'static std::ffi::CStr, es: &'static std::ffi::CStr) -> &'static std::ffi::CStr {
+    if crate::i18n::is_es() { es } else { en }
+}
 
 /// The dot-separated identity line's air either side of its separator — `detail.rs`'s facts row
 /// spends the same, and the two lines are the same idiom.
@@ -548,8 +560,8 @@ pub(crate) fn meta_runs(roles: &str, born: &str, died: &str, birthplace: &str) -
     // what made the asymmetry easy to miss.
     for (label, value) in [
         ("", roles),
-        ("Born ", born),
-        ("Died ", died),
+        (crate::i18n::t("Born "), born),
+        (crate::i18n::t("Died "), died),
         ("", birthplace),
     ] {
         let value = value.trim();
@@ -573,18 +585,22 @@ pub(crate) fn meta_runs(roles: &str, born: &str, died: &str, birthplace: &str) -
 /// at a `CardRow`'s spring count, and "24" on a person with 60 films would be the cap posing as a
 /// fact about the library.
 pub(crate) fn library_line(films: usize, shows: usize) -> Option<String> {
-    let noun = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    let noun = |n: usize, one: &'static str, many: &'static str| {
+        format!("{n} {}", if n == 1 { crate::i18n::t(one) } else { crate::i18n::t(many) })
+    };
     let body = match (films, shows) {
         (0, 0) => return None,
         (f, 0) => noun(f, "film", "films"),
         (0, s) => noun(s, "show", "shows"),
-        (f, s) => format!(
-            "{} and {}",
-            noun(f, "film", "films"),
-            noun(s, "show", "shows")
-        ),
+        (f, s) => {
+            let films = noun(f, "film", "films");
+            let shows = noun(s, "show", "shows");
+            crate::i18n::t("{} and {}")
+                .replacen("{}", &films, 1)
+                .replacen("{}", &shows, 1)
+        }
     };
-    Some(format!("{body} in this library"))
+    Some(format!("{body}{}", crate::i18n::t(" in this library")))
 }
 
 // ---- draw ----------------------------------------------------------------------------------------
@@ -601,7 +617,7 @@ fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn crate::ui::mach
     let (eyebrow_cap, _) = crate::text::text_cap_band(theme::size::CAPTION, 1);
     widgets::tracked_run(
         p,
-        &EYEBROW,
+        eyebrow(),
         c.x,
         y - eyebrow_cap,
         theme::size::CAPTION,
@@ -705,7 +721,7 @@ fn draw_foot(p: Painter, person: &Person, c: Rect, measure: &dyn crate::ui::mach
     }
     // …and the hint, right-anchored: the widget measures itself, so the whole run ends on the
     // content box's right edge — the same edge the rail and the hairlines end on.
-    let hint = widgets::KeyHint::new(HINT_PRE, HINT_KEY, HINT_POST);
+    let hint = widgets::KeyHint::new(tr_c(c"Press", c"Pulsa"), tr_c(c"BACK", c"ATRÁS"), tr_c(c"to return", c"para volver"));
     hint.draw(p, c.x + c.w - hint.width(measure), cy, measure);
 }
 

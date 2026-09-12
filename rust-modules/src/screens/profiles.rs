@@ -1121,7 +1121,7 @@ impl ProfilesScreen {
             .get(self.pad.target)
             .map(|u| u.title.as_str())
             .unwrap_or("");
-        if let Ok(t) = CString::new(format!("Enter {name}'s PIN")) {
+        if let Ok(t) = CString::new(crate::i18n::t("Enter {name}'s PIN").replacen("{name}", name, 1)) {
             p.text(
                 t.as_ptr(),
                 SCR_W as f32 * 0.5,
@@ -1523,7 +1523,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             return;
         }
 
-        if let Ok(t) = CString::new(TITLE) {
+        if let Ok(t) = CString::new(crate::i18n::t(TITLE)) {
             p.text(
                 t.as_ptr(),
                 SCR_W as f32 * 0.5,

@@ -189,7 +189,10 @@ const BTN_GAP: f32 = theme::space::MD;
 const PILL_GAP: f32 = theme::space::SM;
 const CAPTION_H: f32 = 30.0;
 
-const NEXT_LABEL: &str = "Next Episode";
+/// The "Next Episode" control's label, translated at draw time (i18n).
+fn next_label() -> &'static str {
+    crate::i18n::t("Next Episode")
+}
 const CREDITS_LABEL: &core::ffi::CStr = c"Watch Credits";
 
 /// The caption is RIGHT-ALIGNED text, so it may run wider than the still/button column without
@@ -242,7 +245,7 @@ pub(crate) fn layout_of(next_w: f32, credits_w: f32) -> Layout {
 /// equivalent.
 pub(crate) fn layout(row: &mut crate::ui::player_hud::TransportRow, measure: &dyn crate::ui::machine::Measure) -> Layout {
     layout_of(
-        crate::ui::player_hud::ctrl_slot(row, NEXT_LABEL, measure).w,
+        crate::ui::player_hud::ctrl_slot(row, next_label(), measure).w,
         crate::ui::widgets::Button::pill_w_measured(CREDITS_LABEL, theme::size::BODY, false, false, measure),
     )
 }
@@ -268,12 +271,10 @@ pub(crate) fn hit(row: &mut crate::ui::player_hud::TransportRow, cx: f32, cy: f3
 /// on the same band, hence the explicit "Up Next ·" kicker rather than a bare "S2, E4".
 fn caption(u: &UpNext) -> String {
     if u.season > 0 || u.index > 0 {
-        format!(
-            "Up Next \u{b7} {}",
-            crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title)
-        )
+        crate::i18n::t("Up Next \u{b7} {}")
+            .replacen("{}", &crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title), 1)
     } else {
-        format!("Up Next \u{b7} {}", u.ep_title)
+        crate::i18n::t("Up Next \u{b7} {}").replacen("{}", &u.ep_title, 1)
     }
 }
 
@@ -334,7 +335,7 @@ pub(crate) fn draw(
     // starts. Driven straight off the remaining MILLISECONDS and redrawn every frame, so the sweep
     // is continuous; the label carries no seconds, because the pill's width is derived from its
     // label and a ticking numeral would resize the button and slide its centred text every second.
-    let Ok(label) = CString::new(NEXT_LABEL) else {
+    let Ok(label) = CString::new(next_label()) else {
         return;
     };
     let mut b = Button::new(label.as_ptr(), theme::size::BODY, l.next)

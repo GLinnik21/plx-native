@@ -168,7 +168,7 @@ impl ChaptersState {
                 theme::TEXT_SECONDARY
             };
             let name = if ch.title.trim().is_empty() {
-                format!("Chapter {}", ch.index)
+                crate::i18n::t("Chapter {}").replacen("{}", &ch.index.to_string(), 1)
             } else {
                 ch.title.clone()
             };

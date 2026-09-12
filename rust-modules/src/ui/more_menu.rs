@@ -106,8 +106,8 @@ impl MoreMenuState {
         let initial = initial_selection(&rows, quality);
         // TWO sections, built in ROWS order — see `rows_for`: `TableView::sel` is one flat index over
         // both, so the split here is presentational and the ORDER is the contract.
-        let mut quality_sec = Section::new("Quality");
-        let mut options = Section::new("Options");
+        let mut quality_sec = Section::new(crate::i18n::t("Quality"));
+        let mut options = Section::new(crate::i18n::t("Options"));
         for a in &rows {
             match a {
                 Action::SetQuality(_) => quality_sec = quality_sec.row(row_for(ps, *a)),
@@ -343,11 +343,11 @@ fn rows_for() -> Vec<Action> {
 
 fn label(a: Action) -> &'static str {
     match a {
-        Action::ToggleStats => "Stats for nerds",
+        Action::ToggleStats => crate::i18n::t("Stats for nerds"),
         // the rung names itself — rate and frame in one string, because the row already carries
         // the picker's leading mark (see this module's doc)
         Action::SetQuality(q) => q.label(),
-        Action::SendDiagnostics => "Send diagnostics",
+        Action::SendDiagnostics => crate::i18n::t("Send diagnostics"),
         Action::None => "",
     }
 }

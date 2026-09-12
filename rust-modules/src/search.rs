@@ -140,10 +140,10 @@ impl Kind {
     /// people; everything else as results. See [`items_word`] for the other count on this screen.
     pub(crate) fn count_word(self, n: usize) -> &'static str {
         match (self, n) {
-            (Kind::Person, 1) => "person",
-            (Kind::Person, _) => "people",
-            (_, 1) => "result",
-            (_, _) => "results",
+            (Kind::Person, 1) => crate::i18n::t("person"),
+            (Kind::Person, _) => crate::i18n::t("people"),
+            (_, 1) => crate::i18n::t("result"),
+            (_, _) => crate::i18n::t("results"),
         }
     }
     /// Which hub identifiers feed this shelf.
@@ -172,8 +172,8 @@ impl Kind {
 /// into "1 item".
 pub(crate) fn items_word(n: i64) -> &'static str {
     match n {
-        1 => "item",
-        _ => "items",
+        1 => crate::i18n::t("item"),
+        _ => crate::i18n::t("items"),
     }
 }
 

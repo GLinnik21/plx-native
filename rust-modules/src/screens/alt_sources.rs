@@ -263,7 +263,7 @@ pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<A
     idx.into_iter()
         .map(|i| {
             let c = &list[i];
-            let who = c.owner.as_deref().unwrap_or(OWN_ACCOUNT);
+            let who = c.owner.as_deref().unwrap_or(crate::i18n::t(OWN_ACCOUNT));
             AltRow {
                 label: c.library.clone(),
                 detail: who.to_string(),

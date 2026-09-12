@@ -73,6 +73,12 @@ use crate::ui::widgets;
 use crate::ui::widgets::KeyHint;
 use crate::ui::{Painter, Rect};
 
+/// The translated pick of a fixed label: static C strings in, one pointer out, nothing
+/// allocates on the draw path.
+fn tr_c(en: &'static std::ffi::CStr, es: &'static std::ffi::CStr) -> &'static std::ffi::CStr {
+    if crate::i18n::is_es() { es } else { en }
+}
+
 // ---- the frame -------------------------------------------------------------------------------
 
 /// The mock's panel width. Wide enough that a synopsis wraps at a comfortable measure rather than
@@ -312,7 +318,7 @@ impl AboutPanelScreen {
         };
 
         run(
-            "ABOUT",
+            crate::i18n::t("ABOUT"),
             s.eyebrow,
             theme::size::CAPTION,
             EYEBROW_LEAD,
@@ -334,7 +340,7 @@ impl AboutPanelScreen {
         }
         rule(p, r, s.rule);
 
-        let hint = KeyHint::new(c"Press", c"BACK", c"to return");
+        let hint = KeyHint::new(tr_c(c"Press", c"Pulsa"), tr_c(c"BACK", c"ATRÁS"), tr_c(c"to return", c"para volver"));
         // RIGHT-aligned on the padding edge, as §1B and §1C are and as the design draws all three
         // (§1A's footer row is `justify-content:flex-end`). It was centred for one revision, on the
         // theory that a lone hint with no left-hand partner should not sit at a margin; the owner's

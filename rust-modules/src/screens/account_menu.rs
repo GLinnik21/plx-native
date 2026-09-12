@@ -128,11 +128,11 @@ pub(crate) fn chip_label(acc: &Account) -> String {
 
 fn label(a: Action) -> &'static str {
     match a {
-        Action::ChangeProfile => "Change profile",
-        Action::SignIn => "Sign in",
-        Action::SignOut => "Sign out",
-        Action::Settings => "Settings",
-        Action::SendDiagnostics => "Send diagnostics",
+        Action::ChangeProfile => crate::i18n::t("Change profile"),
+        Action::SignIn => crate::i18n::t("Sign in"),
+        Action::SignOut => crate::i18n::t("Sign out"),
+        Action::Settings => crate::i18n::t("Settings"),
+        Action::SendDiagnostics => crate::i18n::t("Send diagnostics"),
         Action::None => "",
     }
 }

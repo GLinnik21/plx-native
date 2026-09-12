@@ -432,15 +432,22 @@ impl OnboardScreen {
 }
 
 fn body_copy_for(who: &[String]) -> String {
-    let tail = " Pick your favorites \u{2014} they are what Home and the Library show, and you \
-                can change them in Settings whenever you like.";
+    let tail = crate::i18n::t(
+        " Pick your favorites \u{2014} they are what Home and the Library show, and you \
+                can change them in Settings whenever you like.",
+    );
     match join_names(who) {
-        None => "Choose the libraries this television shows. Your favorites fill Home's shelves \
-                 and the Library's own tabs; Settings lists every one you have."
-            .to_string(),
+        None => crate::i18n::t(
+            "Choose the libraries this television shows. Your favorites fill Home's shelves \
+                 and the Library's own tabs; Settings lists every one you have.",
+        )
+        .to_string(),
         Some(names) => {
-            let verb = if who.len() == 1 { "has" } else { "have" };
-            format!("{names} {verb} shared libraries with you.{tail}")
+            let verb = if who.len() == 1 { crate::i18n::t("has") } else { crate::i18n::t("have") };
+            crate::i18n::t("{names} {verb} shared libraries with you.{tail}")
+                .replacen("{names}", &names, 1)
+                .replacen("{verb}", verb, 1)
+                .replacen("{tail}", tail, 1)
         }
     }
 }
@@ -449,7 +456,11 @@ fn join_names(who: &[String]) -> Option<String> {
     match who {
         [] => None,
         [a] => Some(a.clone()),
-        [rest @ .., last] => Some(format!("{} and {last}", rest.join(", "))),
+        [rest @ .., last] => Some(
+            crate::i18n::t("{} and {last}")
+                .replacen("{}", &rest.join(", "), 1)
+                .replacen("{last}", last, 1),
+        ),
     }
 }
 
@@ -718,7 +729,7 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
         &self.state
     }
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<Cow<'_, str>> {
-        Some(Cow::Borrowed(if self.settings { CRUMB_SETTINGS } else { CRUMB_PROFILES }))
+        Some(Cow::Borrowed(if self.settings { crate::i18n::t(CRUMB_SETTINGS) } else { crate::i18n::t(CRUMB_PROFILES) }))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
@@ -732,8 +743,8 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
         let body = self.body_copy(directory);
         Header::new(
             layout,
-            Some(if self.settings { CRUMB_SETTINGS } else { CRUMB_PROFILES }),
-            if self.settings { SETTINGS_TITLE } else { TITLE },
+            Some(if self.settings { crate::i18n::t(CRUMB_SETTINGS) } else { crate::i18n::t(CRUMB_PROFILES) }),
+            if self.settings { crate::i18n::t(SETTINGS_TITLE) } else { crate::i18n::t(TITLE) },
             &body,
         )
         .paint(p, f.measure);

@@ -1030,9 +1030,9 @@ fn draw_failed_readout(
         use crate::webos::jail_repair::State;
         match ps.repair_status {
             State::Idle => {},
-            State::Running => { e.readout = "Repairing this app’s sandbox…"; e.detail = "Wait for the result before closing the app.".into(); },
-            State::Repaired => { e.readout = "Sandbox repair completed"; e.detail = "Close and reopen PlxNative before playing video.".into(); },
-            State::Failed(reason) => { e.readout = "Sandbox repair could not be confirmed"; e.detail = reason.message().into(); },
+            State::Running => { e.readout = crate::i18n::t("Repairing this app’s sandbox…"); e.detail = crate::i18n::t("Wait for the result before closing the app.").into(); },
+            State::Repaired => { e.readout = crate::i18n::t("Sandbox repair completed"); e.detail = crate::i18n::t("Close and reopen PlxNative before playing video.").into(); },
+            State::Failed(reason) => { e.readout = crate::i18n::t("Sandbox repair could not be confirmed"); e.detail = reason.message().into(); },
         }
     }
     // The GROUND, first: `Player Screen.dc.html` gives the failed variant `inset:0; background:#000`

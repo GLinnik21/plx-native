@@ -73,6 +73,12 @@ enum Located {
 // are the shipped, photographed design, not a re-derivation
 // -------------------------------------------------------------------------------------------
 
+/// The translated pick of a fixed label: static C strings in, one pointer out, nothing
+/// allocates on the draw path.
+fn tr_c(en: &'static std::ffi::CStr, es: &'static std::ffi::CStr) -> &'static std::ffi::CStr {
+    if crate::i18n::is_es() { es } else { en }
+}
+
 const PORTRAIT_EXP: f32 = 320.0;
 const PORTRAIT_BARE: f32 = 220.0;
 const PORTRAIT_RES: (std::os::raw::c_int, std::os::raw::c_int) = (300, 300);
@@ -842,14 +848,14 @@ impl PersonScreen {
         self.life_parts = Vec::new();
         let born = crate::ui::fmt::pretty_date(&p.born, 0);
         if !born.is_empty() {
-            self.life_parts.push(format!("Born {born}"));
+            self.life_parts.push(crate::i18n::t("Born {born}").replacen("{born}", &born, 1));
         }
         if !p.birthplace.is_empty() {
             self.life_parts.push(p.birthplace.clone());
         }
         let died = crate::ui::fmt::pretty_date(&p.died, 0);
         if !died.is_empty() {
-            self.life_parts.push(format!("Died {died}"));
+            self.life_parts.push(crate::i18n::t("Died {died}").replacen("{died}", &died, 1));
         }
 
         for k in 0..NSHELF {
@@ -1371,7 +1377,10 @@ impl PersonScreen {
         }
         StatusOverlay::new(
             band,
-            c"Nothing from this person is in your libraries",
+            tr_c(
+                c"Nothing from this person is in your libraries",
+                c"No hay nada de esta persona en tus bibliotecas",
+            ),
             StatusKind::Empty,
         )
         .draw(env, p);

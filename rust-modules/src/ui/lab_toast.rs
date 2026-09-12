@@ -51,9 +51,9 @@ pub(crate) fn draw(stats: Option<Rect>) {
         return;
     }
     let (title, ink) = match upload::phase() {
-        upload::PHASE_SENDING => ("Uploading diagnostics…", theme::TEXT_PRIMARY),
-        upload::PHASE_OK => ("Diagnostics uploaded", theme::TEXT_PRIMARY),
-        _ => ("Diagnostics upload failed", theme::DANGER),
+        upload::PHASE_SENDING => (crate::i18n::t("Uploading diagnostics…"), theme::TEXT_PRIMARY),
+        upload::PHASE_OK => (crate::i18n::t("Diagnostics uploaded"), theme::TEXT_PRIMARY),
+        _ => (crate::i18n::t("Diagnostics upload failed"), theme::DANGER),
     };
     let r = frame_for(stats);
     let p = Painter::root();

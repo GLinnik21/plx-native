@@ -366,7 +366,7 @@ pub(crate) fn audio_detail(s: &Stream) -> String {
         parts.push(b);
     }
     if s.selected {
-        parts.push("playing".to_string());
+        parts.push(crate::i18n::t("playing").to_string());
     }
     parts.join(" \u{b7} ")
 }
@@ -382,7 +382,7 @@ pub(crate) fn audio_rows(audio: &[Stream]) -> Vec<TrackRow> {
         .iter()
         .map(|s| TrackRow {
             name: if s.lang.trim().is_empty() {
-                "Unknown".to_string()
+                crate::i18n::t("Unknown").to_string()
             } else {
                 s.lang.clone()
             },
@@ -409,15 +409,15 @@ pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
     let mut out: Vec<(String, String, String, usize)> = Vec::new();
     for s in subs {
         let name = if s.lang.trim().is_empty() {
-            "Unknown".to_string()
+            crate::i18n::t("Unknown").to_string()
         } else {
             s.lang.clone()
         };
         let mut head = s.codec.to_uppercase();
         for (on, tag) in [
-            (s.forced, "Forced"),
+            (s.forced, crate::i18n::t("Forced")),
             (s.sdh, "SDH"),
-            (s.external, "External"),
+            (s.external, crate::i18n::t("External")),
         ] {
             if on {
                 head = if head.is_empty() {
@@ -462,16 +462,16 @@ pub(crate) fn file_rows(d: &Detail) -> Vec<Pair> {
         }
     };
     push(
-        "Container",
+        crate::i18n::t("Container"),
         (!d.container.is_empty()).then(|| d.container.to_uppercase()),
     );
-    push("Size", fmt_size(d.size));
-    push("Total bitrate", fmt_bitrate(d.bitrate));
+    push(crate::i18n::t("Size"), fmt_size(d.size));
+    push(crate::i18n::t("Total bitrate"), fmt_bitrate(d.bitrate));
     push(
-        "Duration",
+        crate::i18n::t("Duration"),
         (d.dur_ms > 0).then(|| crate::ui::fmt::clock(d.dur_ms)),
     );
-    push("Aspect ratio", fmt_aspect(d.aspect_ratio));
+    push(crate::i18n::t("Aspect ratio"), fmt_aspect(d.aspect_ratio));
     v
 }
 
@@ -491,14 +491,14 @@ pub(crate) fn video_rows(d: &Detail) -> Vec<Pair> {
         .filter(|s| !s.is_empty())
         .unwrap_or(d.vcodec.as_str());
     let profile = vs.map(|s| s.profile.as_str()).unwrap_or("");
-    push("Codec", fmt_codec_profile(codec, profile));
-    push("Resolution", fmt_frame_size(d.width, d.height));
-    push("Frame rate", fmt_fps(d.video_fps));
+    push(crate::i18n::t("Codec"), fmt_codec_profile(codec, profile));
+    push(crate::i18n::t("Resolution"), fmt_frame_size(d.width, d.height));
+    push(crate::i18n::t("Frame rate"), fmt_fps(d.video_fps));
     // the STREAM's bitrate, not the file's — `d.bitrate` is already the FILE column's own row, and
     // repeating it here would state the same number twice under two different labels
     push("Bitrate", vs.and_then(|s| fmt_bitrate(s.bitrate)));
     push(
-        "Bit depth",
+        crate::i18n::t("Bit depth"),
         vs.and_then(|s| fmt_depth_chroma(s.bit_depth, &s.chroma)),
     );
     v
@@ -519,19 +519,19 @@ pub(crate) fn dovi_rows(d: &Detail) -> Vec<Pair> {
             v.push(Pair { label, value });
         }
     };
-    push("Profile", (dv.profile > 0).then(|| dv.profile.to_string()));
-    push("Level", (dv.level > 0).then(|| dv.level.to_string()));
-    push("Version", dv.version_str());
-    push("Base layer", dv.bl_present.then(|| "Present".to_string()));
-    push("RPU", dv.rpu_present.then(|| "Present".to_string()));
+    push(crate::i18n::t("Profile"), (dv.profile > 0).then(|| dv.profile.to_string()));
+    push(crate::i18n::t("Level"), (dv.level > 0).then(|| dv.level.to_string()));
+    push(crate::i18n::t("Version"), dv.version_str());
+    push(crate::i18n::t("Base layer"), dv.bl_present.then(|| crate::i18n::t("Present").to_string()));
+    push("RPU", dv.rpu_present.then(|| crate::i18n::t("Present").to_string()));
     v
 }
 
 /// A section head as it is drawn: `AUDIO · 8 TRACKS`. Caps, because the head names the group.
 pub(crate) fn track_head(word: &str, n: usize) -> String {
     match n {
-        1 => format!("{word} \u{b7} 1 TRACK"),
-        n => format!("{word} \u{b7} {n} TRACKS"),
+        1 => format!("{word} \u{b7} {}", crate::i18n::t("1 TRACK")),
+        n => format!("{word} \u{b7} {}", crate::i18n::t("{n} TRACKS").replacen("{n}", &n.to_string(), 1)),
     }
 }
 
@@ -889,8 +889,8 @@ struct Content {
 fn content_of(d: &Detail) -> Content {
     Content {
         cols: [
-            ("FILE", file_rows(d)),
-            ("VIDEO", video_rows(d)),
+            (crate::i18n::t("FILE"), file_rows(d)),
+            (crate::i18n::t("VIDEO"), video_rows(d)),
             ("DOLBY VISION", dovi_rows(d)),
         ],
         audio: (d.audio.len(), audio_rows(&d.audio)),
@@ -948,7 +948,7 @@ fn body_flow(
     // subtitles those are different numbers — that is the whole point of grouping them, and
     // passing `rows.len()` here is how the head came to say "SUBTITLES · 3 TRACKS" over a list
     // describing nine of them.
-    for (word, (total, rows)) in [("AUDIO", &c.audio), ("SUBTITLES", &c.subs)] {
+    for (word, (total, rows)) in [(crate::i18n::t("AUDIO"), &c.audio), (crate::i18n::t("SUBTITLES"), &c.subs)] {
         if rows.is_empty() {
             continue;
         }
@@ -985,8 +985,9 @@ impl TracksPanelScreen {
         let cx = r.x + PAD;
         let cw = PANEL_W - 2.0 * PAD;
         let mut y = r.y + PAD;
-        let eyebrow = c"TRACK INFORMATION";
-        Label::new(eyebrow.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+        let mut eb = [0u8; crate::i18n::TC_MAX];
+        let eyebrow = crate::i18n::tc("TRACK INFORMATION", &mut eb);
+        Label::new(eyebrow.as_ptr().cast(), theme::size::CAPTION, theme::TEXT_TERTIARY)
             .bold()
             .v(VAlign::CapTop)
             .draw(p, Rect::new(cx, y, cw, theme::alert::EYEBROW_LEAD));

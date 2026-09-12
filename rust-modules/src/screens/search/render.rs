@@ -323,7 +323,7 @@ fn recents<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p
         stop(screen, *elem, ElemKind::Bare, f, p);
     }
     let rect = layout::clear(shown, screen.scroll.pos, f.cx.measure);
-    Button::new(c"Clear recent searches".as_ptr(), theme::size::BODY, rect)
+    Button::new(clear_label().as_ptr(), theme::size::BODY, rect)
         .focused(f.cx.focus.current == Some(screen.key(CLEAR)))
         .draw(&env, p);
     stop(screen, CLEAR, ElemKind::Control, f, p);
@@ -600,6 +600,16 @@ fn header_of(state: EmptyState) -> &'static CStr {
     }
 }
 
+/// The Clear button's label, built once per process like the headers above.
+fn clear_label() -> &'static CStr {
+    static CLEAR: std::sync::OnceLock<&'static CStr> = std::sync::OnceLock::new();
+    CLEAR.get_or_init(|| {
+        let mut v = crate::i18n::t("Clear recent searches").as_bytes().to_vec();
+        v.push(0);
+        std::ffi::CStr::from_bytes_with_nul(Box::leak(v.into_boxed_slice())).unwrap_or_default()
+    })
+}
+
 fn no_results_line(q: &str) -> String {
     format!("{} \u{201C}{q}\u{201D}", crate::i18n::t("No results for"))
 }
@@ -658,7 +668,7 @@ fn subtitle(kind: Kind, item: &Item, handle: &str) -> String {
 fn source_label(source: &ScopeSource) -> String {
     if source.household {
         return if source.name.is_empty() {
-            "your server".into()
+            crate::i18n::t("your server").to_string()
         } else {
             source.name.clone()
         };
@@ -680,12 +690,10 @@ fn join(names: &[String]) -> String {
     match names {
         [] => String::new(),
         [one] => one.clone(),
-        [a, b] => format!("{a} and {b}"),
-        _ => format!(
-            "{} and {}",
-            names[..names.len() - 1].join(", "),
-            names.last().unwrap()
-        ),
+        [a, b] => crate::i18n::t("{} and {}").replacen("{}", a, 1).replacen("{}", b, 1),
+        _ => crate::i18n::t("{} and {}")
+            .replacen("{}", &names[..names.len() - 1].join(", "), 1)
+            .replacen("{}", names.last().unwrap(), 1),
     }
 }
 fn name_set(sources: &[&ScopeSource]) -> String {
@@ -714,9 +722,9 @@ fn name_set(sources: &[&ScopeSource]) -> String {
         .map(|source| source_label(source))
         .collect();
     names.push(if libraries > 0 {
-        format!("{libraries} shared libraries")
+        crate::i18n::t("{libs} shared libraries").replacen("{libs}", &libraries.to_string(), 1)
     } else {
-        format!("{} shared sources", shares.len())
+        crate::i18n::t("{} shared sources").replacen("{}", &shares.len().to_string(), 1)
     });
     join(&names)
 }
@@ -726,7 +734,7 @@ fn scope_text(sources: &[ScopeSource]) -> Option<String> {
     }
     let (live, down): (Vec<_>, Vec<_>) = sources.iter().partition(|source| source.live);
     if down.is_empty() {
-        let mut line = format!("Searching {}", name_set(&live));
+        let mut line = crate::i18n::t("Searching {}").replacen("{}", &name_set(&live), 1);
         let mut shares = live
             .iter()
             .filter(|source| !source.household && !source.handle.is_empty());
@@ -738,13 +746,13 @@ fn scope_text(sources: &[ScopeSource]) -> Option<String> {
         }
         Some(line)
     } else if live.is_empty() {
-        Some(format!("{} unreachable", name_set(&down)))
+        Some(crate::i18n::t("{} unreachable").replacen("{}", &name_set(&down), 1))
     } else {
-        Some(format!(
-            "{} unreachable · results from {} only",
-            name_set(&down),
-            name_set(&live)
-        ))
+        Some(
+            crate::i18n::t("{} unreachable · results from {} only")
+                .replacen("{}", &name_set(&down), 1)
+                .replacen("{}", &name_set(&live), 1),
+        )
     }
 }
 

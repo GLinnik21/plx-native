@@ -324,7 +324,19 @@ const GROUP_FAILURE: GroupId = GroupId(3);
 const GROUP_REPAIR: GroupId = GroupId(4);
 const REPAIR_CANCEL: u32 = 40_000;
 const REPAIR_CONFIRM: u32 = REPAIR_CANCEL + 1;
-const REPAIR_BODY: &str = "Use Homebrew Channel’s root access to update PlxNative’s sandbox with LG’s native profile. This requires a rooted TV. Close and reopen PlxNative afterward.";
+/// The translated pick of a fixed label: static C strings in, one pointer out, nothing
+/// allocates on the draw path.
+fn tr_c(en: &'static std::ffi::CStr, es: &'static std::ffi::CStr) -> &'static std::ffi::CStr {
+    if crate::i18n::is_es() { es } else { en }
+}
+
+/// The repair confirmation's body, translated at draw time (the right single quote is the
+/// source's own mark, byte-exact with the key in the Spanish table).
+fn repair_body() -> &'static str {
+    crate::i18n::t(
+        "Use Homebrew Channel\u{2019}s root access to update PlxNative\u{2019}s sandbox with LG\u{2019}s native profile. This requires a rooted TV. Close and reopen PlxNative afterward.",
+    )
+}
 
 impl<H: PlayerLike + crate::screens::registry::MetadataLike> Machine<H> for PlayerScreen {
     type Ev = ScreenEvent<H>;
@@ -477,7 +489,7 @@ impl PlayerScreen {
     fn failure_action<H: AppLike>(&mut self, ps: &crate::route::PlaybackSession, fx: &mut Effects<'_, H>) {
         if crate::player::error_now(ps).kind == crate::player::FailureKind::JailMissingRtkmem {
             if ps.repair_status == crate::webos::jail_repair::State::Idle && !self.repair_alert.visible() {
-                self.repair_alert.open_with_body(c"Repair PlxNative’s sandbox?", REPAIR_BODY);
+                self.repair_alert.open_with_body(tr_c(c"Repair PlxNative’s sandbox?", c"¿Reparar el sandbox de PlxNative?"), repair_body());
                 Self::repair_focus(fx, GROUP_REPAIR);
             }
         } else {
@@ -1191,7 +1203,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         }
         if self.repair_alert.visible() {
             self.repair_alert.draw_scrim();
-            self.repair_alert.draw(c"Cancel", c"Repair");
+            self.repair_alert.draw(tr_c(c"Cancel", c"Cancelar"), tr_c(c"Repair", c"Reparar"));
             let frames = self.repair_alert.frames();
             self.repair_frames.set(Some(frames));
             if self.repair_alert.is_open() && self.repair_alert.settled() {
