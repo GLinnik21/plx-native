@@ -905,7 +905,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
         new_hubs.push(HubRow {
             // the hub id the rest of the module matches on (hero-pool eligibility,
             // `hub_is_continue`), rather than the dedicated hub's own "continueWatching"
-            title: "Continue Watching".to_string(),
+            title: crate::i18n::t("Continue Watching").to_string(),
             hub_id: "home.continue".to_string(),
             key: String::new(),
             source: String::new(),

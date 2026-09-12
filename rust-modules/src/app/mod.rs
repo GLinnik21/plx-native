@@ -522,6 +522,10 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
 /// The ten-line public skeleton: preflight/construction, then the ordinary loop and teardown.
 #[no_mangle]
 pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
+    // The UI's language, decided BEFORE the first frame so no label is ever drawn in one tongue
+    // and re-drawn in another: the television's own UI locale, read once (see `i18n`'s module
+    // doc for why there is no in-app override in this cut).
+    crate::i18n::detect_and_set();
     let mut app = match enter_application(pms_host,pms_port) { Ok(app) => app, Err(code) => return code };
     unsafe { run_and_shutdown(&mut app) }
 }

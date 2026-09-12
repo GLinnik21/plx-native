@@ -35,6 +35,7 @@ mod http; // the ONE door out of the control plane: dispatch a Plex REST request
 #[cfg(feature = "devtriggers")]
 mod hwcnt; // direct userspace Mali r12p0 vinstr reader for the phase profiler
 mod img;
+mod i18n; // the runtime translation layer: the system locale picks the table, English is the key and the fallback
 mod imgcache; // a small on-disk image cache — today for profile avatars only, so the picker has faces offline
 mod keymanager; // public LS2 key stores: keymanager3, legacy Palm service, or unavailable
 mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound command long-poll
