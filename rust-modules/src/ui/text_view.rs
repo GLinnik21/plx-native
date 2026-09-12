@@ -38,6 +38,19 @@ struct Wrapped {
 }
 static mut WRAP_CACHE: Option<HashMap<u64, Rc<Wrapped>>> = None;
 
+#[cfg(test)]
+thread_local! { static FORBID_LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+#[cfg(test)]
+pub(crate) struct ForbidLive(bool);
+#[cfg(test)]
+impl ForbidLive {
+    pub(crate) fn enter() -> Self { Self(FORBID_LIVE.with(|v| v.replace(true))) }
+}
+#[cfg(test)]
+impl Drop for ForbidLive {
+    fn drop(&mut self) { FORBID_LIVE.with(|v| v.set(self.0)); }
+}
+
 fn wrap_memo(key: u64, compute: impl FnOnce() -> Wrapped) -> Rc<Wrapped> {
     let cache = unsafe { (*addr_of_mut!(WRAP_CACHE)).get_or_insert_with(HashMap::new) };
     if let Some(v) = cache.get(&key) {
@@ -52,6 +65,8 @@ fn wrap_memo(key: u64, compute: impl FnOnce() -> Wrapped) -> Rc<Wrapped> {
 }
 
 pub struct TextView<'a> {
+    measure: Option<&'a dyn crate::ui::machine::Measure>,
+    measured_wrap: std::cell::RefCell<Option<(u64, Rc<Wrapped>)>>,
     text: &'a str,
     sz: c_int,
     col: [f32; 4],
@@ -91,6 +106,8 @@ fn line_overlaps_band(row_y: f32, lh: f32, band: Option<(f32, f32)>) -> Option<(
 impl<'a> TextView<'a> {
     pub fn new(text: &'a str, sz: c_int, col: [f32; 4]) -> Self {
         Self {
+            measure: None,
+            measured_wrap: Default::default(),
             text,
             sz,
             col,
@@ -109,6 +126,35 @@ impl<'a> TextView<'a> {
     pub fn bold(mut self) -> Self {
         self.bold = 1;
         self
+    }
+    /// Borrow the frame's measurement capability for wrapping and inline-run placement.
+    /// Capability-backed wraps never consult the process-wide live-font memo: its entries
+    /// belong to a different measurement source and could hide a missing replay metric.
+    pub fn with_measure(mut self, measure: &'a dyn crate::ui::machine::Measure) -> Self {
+        self.measure = Some(measure);
+        *self.measured_wrap.get_mut() = None;
+        self
+    }
+
+    fn width(&self, text: &std::ffi::CStr, bold: bool) -> f32 {
+        match self.measure {
+            Some(measure) => measure.width(text, self.sz, bold),
+            None => {
+                #[cfg(test)]
+                assert!(!FORBID_LIVE.with(std::cell::Cell::get), "live TextView measurement forbidden");
+                crate::text::text_width(text.as_ptr(), self.sz, i32::from(bold))
+            }
+        }
+    }
+
+    fn elide(&self, text: &str, width: f32) -> String {
+        if self.measure.is_some() {
+            crate::text::elide_by(text, width, true, |s| self.measure(s))
+        } else {
+            #[cfg(test)]
+            assert!(!FORBID_LIVE.with(std::cell::Cell::get), "live TextView elision forbidden");
+            crate::text::elide(text, width, self.sz, self.bold, true)
+        }
     }
     /// line pitch (cap-top to cap-top). Defaults to `sz * 1.32`.
     pub fn leading(mut self, px: f32) -> Self {
@@ -159,7 +205,7 @@ impl<'a> TextView<'a> {
         self.lead
             .and_then(|(r, _)| CString::new(r).ok())
             .map(|c| {
-                crate::text::text_width(c.as_ptr(), self.sz, i32::from(self.lead_bold))
+                self.width(&c, self.lead_bold)
                     + self.measure(" ")
             })
             .unwrap_or(0.0)
@@ -236,12 +282,12 @@ impl<'a> TextView<'a> {
     fn measure(&self, s: &str) -> f32 {
         CString::new(s)
             .ok()
-            .map(|c| crate::text::text_width(c.as_ptr(), self.sz, self.bold))
+            .map(|c| self.width(&c, self.bold != 0))
             .unwrap_or(0.0)
     }
     /// pixel width of an already-NUL-terminated cached line — no allocation, draw-path safe.
     fn measure_c(&self, c: &CString) -> f32 {
-        crate::text::text_width(c.as_ptr(), self.sz, self.bold)
+        self.width(c, self.bold != 0)
     }
 
     /// wrapped lines for `width`, memoized (the pixel-wrap is too costly to redo every frame).
@@ -254,6 +300,21 @@ impl<'a> TextView<'a> {
         self.max_lines.hash(&mut h);
         // the lead run narrows line 0, so two views differing only in it wrap differently
         self.lead.map(|(r, _)| r).unwrap_or("").hash(&mut h);
+        if self.measure.is_some() {
+            // One borrowed view owns at most one wrap. Exact width/weight matter here;
+            // nothing can survive a new capability, replay, or frame through this memo.
+            width.to_bits().hash(&mut h);
+            self.lead_bold.hash(&mut h);
+            let key = h.finish();
+            if let Some((old, lines)) = self.measured_wrap.borrow().as_ref() {
+                if *old == key { return Rc::clone(lines); }
+            }
+            let lines = Rc::new(self.wrap_uncached(width));
+            *self.measured_wrap.borrow_mut() = Some((key, Rc::clone(&lines)));
+            return lines;
+        }
+        #[cfg(test)]
+        assert!(!FORBID_LIVE.with(std::cell::Cell::get), "live TextView wrap memo forbidden");
         wrap_memo(h.finish(), || self.wrap_uncached(width))
     }
 
@@ -313,7 +374,7 @@ impl<'a> TextView<'a> {
                 width
             };
             if let Some(last) = lines.last_mut() {
-                *last = crate::text::elide(last, w, self.sz, self.bold, true);
+                *last = self.elide(last, w);
             }
         }
         // safety: a lone token wider than the column can't be word-broken (a long URL/compound word,
@@ -327,7 +388,7 @@ impl<'a> TextView<'a> {
                 width
             };
             if self.measure(ln) > w {
-                *ln = crate::text::elide(ln, w, self.sz, self.bold, true);
+                *ln = self.elide(ln, w);
             }
         }
         // NUL-terminate once, here — every later frame draws these by pointer (interior NULs
@@ -393,7 +454,7 @@ impl<'a> TextView<'a> {
         // reserve the run's (bold) width so the last line clips short and "… MORE" never spills the column
         let reserve = run
             .and_then(|(r, _)| CString::new(r).ok())
-            .map(|c| crate::text::text_width(c.as_ptr(), self.sz, 1) + 16.0)
+            .map(|c| self.width(&c, true) + 16.0)
             .unwrap_or(0.0);
         // fade_last: the last line dissolves to nothing across this band ending at the wrap width
         // minus the reserved affordance gap. Loop-invariant, so hoisted out.
@@ -431,13 +492,7 @@ impl<'a> TextView<'a> {
             let clipped: Option<CString> =
                 if is_last && reserve > 0.0 && self.measure_c(ln) + reserve > frame.w {
                     let s = ln.to_str().unwrap_or("");
-                    CString::new(crate::text::elide(
-                        s,
-                        (frame.w - reserve).max(0.0),
-                        self.sz,
-                        self.bold,
-                        true,
-                    ))
+                    CString::new(self.elide(s, (frame.w - reserve).max(0.0)))
                     .ok()
                 } else {
                     None
@@ -519,6 +574,50 @@ impl<'a> TextView<'a> {
 mod tests {
     use super::*;
     use crate::ui::theme;
+
+    #[test]
+    fn measured_wrapping_keeps_live_semantics_and_cannot_reuse_another_owner() {
+        use crate::ui::machine::Measure;
+        let _serial = crate::testlock::serial();
+        // The host's uninitialized font path has a defined fallback. Supply that same source
+        // explicitly to compare the wrap algorithm, including lead, ellipsis and long tokens.
+        struct Fallback;
+        impl Measure for Fallback {
+            fn width(&self, s: &std::ffi::CStr, sz: i32, _: bool) -> f32 {
+                s.to_bytes().len() as f32 * sz as f32 * 0.5
+            }
+            fn cap_h(&self, sz: i32) -> f32 { sz as f32 }
+            fn line_h(&self, sz: i32) -> f32 { sz as f32 }
+        }
+        let samples = ["one two three four five six seven eight nine", "abcdefghijklmnopqrstuvw", "éclair 漢字 first second third"];
+        for text in samples {
+            let build = || TextView::new(text, theme::size::BODY, theme::TEXT_PRIMARY)
+                .leading(34.0).max_lines(2).lead_quiet("Prefix", theme::TEXT_SECONDARY);
+            let live = build().wrap(180.0);
+            let _forbid = ForbidLive::enter();
+            let measured = build().with_measure(&Fallback);
+            let lines = measured.wrap(180.0);
+            assert_eq!(lines.lines, live.lines);
+            assert_eq!(lines.truncated, live.truncated);
+            assert!(Rc::ptr_eq(&lines, &measured.wrap(180.0)), "reuse belongs to this view");
+            let missing = crate::ui::rec::TableMeasure::new(Default::default());
+            let _ = build().with_measure(&missing).wrap(180.0);
+            assert!(missing.take_miss().is_some(), "neither live nor another owner's memo may mask a missing table");
+            let _ = measured.with_measure(&missing).wrap(180.0);
+            assert!(missing.take_miss().is_some(), "changing capability must invalidate this view's memo too");
+        }
+        crate::text::take_measure_fault();
+    }
+
+    #[test]
+    fn a_forbidden_live_wrap_traps_even_a_warm_global_memo() {
+        let _serial = crate::testlock::serial();
+        let view = || TextView::new("warm live wrap", theme::size::BODY, theme::TEXT_PRIMARY);
+        view().measure_h(200.0);
+        let _forbid = ForbidLive::enter();
+        assert!(std::panic::catch_unwind(|| view().measure_h(200.0)).is_err());
+        crate::text::take_measure_fault();
+    }
 
     /// **Item 8's grey-band regression, as a pure decision.** `edge_feather` used to paint an
     /// opaque gradient over a scrolling viewport's edge regardless of which lines actually needed

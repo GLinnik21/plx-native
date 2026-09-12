@@ -28,7 +28,9 @@ not alphabet membership alone, establishes fixture provenance.
 Controlled replay supplies Home/Browse results through the production dispatcher and supplies
 Flow 12 Detail/Person results at their original store consumers. It binds the recorded Client
 explicitly and denies resource execution and data transport. Account, playback, and every other
-unlisted domain remain unsupported and fail closed before IO; both-mode completion remains open.
+unlisted domain remain unsupported and fail closed before IO. Product replay has two explicit
+modes: Targets substitutes each recorded Focus/Hit resolution before dependent effects, while
+Resolve runs the current engine/map and grades every resolution pointwise before continuing.
 
 The admission contract also records each synchronous worker-spawn answer with its full request
 identity and frame ordering. A refused attempt stays refused during replay, including its normal
@@ -51,7 +53,9 @@ The **anchors** include `1-boot-home-chip-grid`, `6-settings-family` (Privacy to
 document navigation), and `12-filmography-detail-return` (the owned Filmography surface, a
 library-matched credit opened in Detail, and both BACK steps). Phase 7 rerecorded the existing anchors
 after an observed loader refusal and added the content-return anchor. **Phase 11 rerecorded all
-three onto schema 2**, which carries the landing schedule above.
+three onto schema 2**, which carries the landing schedule above. **The product Resolve milestone
+rerecorded them onto schema 3**, adding a typed, bit-exact Width/Cap/Line measurement table, one
+final `fo` after all drains in each product frame, and ordered `rs` Focus/Hit observations.
 
 **Current migration:** Home, Settings, and Flow 12 Filmography anchors are accepted
 controlled-replay coverage. Flow 12 has typed initial state, exact synchronous admissions,
@@ -67,8 +71,9 @@ NO recorded frame hash changed. The committed artifacts could not be loaded at a
 (`replay: REFUSED — state shape 0x2ee80fef41949b4b recorded, 0x489bbd488180e355 here`, all three),
 which is the machine-checkable condition `rerecord` verifies for itself; nothing was accepted,
 because nothing could be compared. The current three anchor manifests carry `state_fp`
-`16109897700616989408` (`0xdf91da9ad5286ae0`). Clean replay summaries require
-`input_diffs=0 effect_diffs=0` as well as zero state, presentation, result, and landing diffs.
+`10352703632114781766` (`0x8fac311a39190e46`). Clean replay summaries require
+`input_diffs=0 effect_diffs=0 focus_diffs=0 hit_diffs=0` as well as zero state, presentation,
+result, and landing diffs.
 
 Flow 12's own history is worth keeping, because it is what the schedule was built for. Its phase-7
 recording was taken while `plxnative-detail` loaded the page with a BLOCKING fetch on the SDL

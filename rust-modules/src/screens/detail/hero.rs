@@ -418,7 +418,7 @@ pub(crate) fn has_people(d: &Detail) -> bool {
     !d.cast.is_empty() || hero_credit(d).is_some()
 }
 
-pub(crate) fn draw_people(p: Painter, d: &Detail, button_y: f32) {
+pub(crate) fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure) {
     use crate::ui::detail_layout::PEOPLE_W;
     let x = crate::ui::consts::SCR_W - crate::ui::consts::MARGIN_X - PEOPLE_W;
     let mut bottom = button_y + CD;
@@ -429,21 +429,21 @@ pub(crate) fn draw_people(p: Painter, d: &Detail, button_y: f32) {
             .take(PEOPLE_CAST)
             .map(|credit| credit.tag.as_str())
             .collect();
-        bottom -= people_line(p, "Starring", &names, x, bottom);
+        bottom -= people_line(p, "Starring", &names, x, bottom, measure);
     }
     if let Some((label, names)) = hero_credit(d) {
-        people_line(p, label, &names, x, bottom);
+        people_line(p, label, &names, x, bottom, measure);
     }
 }
 
-fn people_line(p: Painter, label: &str, names: &[&str], x: f32, bottom: f32) -> f32 {
+fn people_line(p: Painter, label: &str, names: &[&str], x: f32, bottom: f32, measure: &dyn Measure) -> f32 {
     use crate::ui::detail_layout::{PEOPLE_INK, PEOPLE_LEAD, PEOPLE_W};
     let names = names
         .iter()
         .map(|name| name.replace(' ', "\u{a0}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let view = TextView::new(&names, theme::size::CAPTION, PEOPLE_INK)
+    let view = TextView::new(&names, theme::size::CAPTION, PEOPLE_INK).with_measure(measure)
         .leading(PEOPLE_LEAD)
         .max_lines(PEOPLE_MAX_LINES)
         .h(HAlign::Right)

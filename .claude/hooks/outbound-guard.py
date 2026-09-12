@@ -242,6 +242,11 @@ SYNTHETIC_ID = re.compile(r"^s[0-9a-f]{8}$")
 
 MIN_LITERAL = 8                 # see the docstring: below this the files hold only public things
 MAX_READ = 512 * 1024           # a payload file this big is not a PR body
+MAX_METRIC_TEXT_BYTES = 16384   # ui/rec.rs: MetricKey::valid
+U32_MAX = (1 << 32) - 1
+U64_MAX = (1 << 64) - 1
+I32_MIN = -(1 << 31)
+I32_MAX = (1 << 31) - 1
 
 # Values that are in these files sometimes but identify nothing, plus the two the project keeps on
 # purpose. Compared lowercased.
@@ -824,25 +829,87 @@ def synthetic_strings(node, out):
             synthetic_strings(v, out)
 
 
+def _canonical_int(value, low, high):
+    """JSON bools/floats are not integers in the recording wire format."""
+    return type(value) is int and low <= value <= high
+
+
+def _unique_object(pairs):
+    """Build a JSON object only when every field has one spelling."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def strict_fixture_json(text):
+    return json.loads(text, object_pairs_hook=_unique_object)
+
+
+def metric_strings(doc):
+    """(valid, decoded text values) for one canonical top-level metrics record.
+
+    Width is raw bytes in private recordings.  The public-fixture exception is narrower: decode
+    only ui/rec.rs's exact typed envelope, with the runtime's byte bound, then subject its UTF-8
+    text to the same closed alphabet as ordinary JSON strings.  Other numeric arrays are product
+    payloads and are never guessed to be text.
+    """
+    if not isinstance(doc, dict) or doc.get("t") != "metrics":
+        return True, []
+    if set(doc) != {"f", "t", "q", "bits"}:
+        return False, []
+    if not _canonical_int(doc["f"], 0, U64_MAX) or not _canonical_int(doc["bits"], 0, U32_MAX):
+        return False, []
+    query = doc.get("q")
+    if not isinstance(query, dict):
+        return False, []
+    kind = query.get("kind")
+    if kind == "Width":
+        if set(query) != {"kind", "text", "sz", "bold"}:
+            return False, []
+        text = query["text"]
+        if (not isinstance(text, list) or len(text) > MAX_METRIC_TEXT_BYTES
+                or not _canonical_int(query["sz"], I32_MIN, I32_MAX)
+                or type(query["bold"]) is not bool
+                or any(not _canonical_int(value, 0, 255) for value in text)
+                or 0 in text):
+            return False, []
+        try:
+            return True, [bytes(text).decode("utf-8", errors="strict")]
+        except UnicodeDecodeError:
+            return False, []
+    if kind in ("Cap", "Line"):
+        if set(query) != {"kind", "sz"} or not _canonical_int(query["sz"], I32_MIN, I32_MAX):
+            return False, []
+        return True, []
+    return False, []
+
+
 def offending_strings(text, alphabet):
     """The string values of a JSON / JSONL text that are outside the alphabet (never printed)."""
     literals, pats = alphabet
     bad = []
     docs = []
     try:
-        docs.append(json.loads(text))
+        docs.append(strict_fixture_json(text))
     except Exception:
         for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
-                docs.append(json.loads(line))
+                docs.append(strict_fixture_json(line))
             except Exception:
                 bad.append(line)
     for d in docs:
         vals = []
         synthetic_strings(d, vals)
+        metric_ok, metric_vals = metric_strings(d)
+        vals.extend(metric_vals)
+        if not metric_ok:
+            bad.append(None)
         for v in vals:
             if v in literals or any(p.fullmatch(v) for p in pats):
                 continue

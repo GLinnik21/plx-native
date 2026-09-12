@@ -171,6 +171,7 @@ fn entry_reachable(p: &Person) -> bool {
 
 #[derive(Clone, Copy, Default)]
 struct HeaderFlow {
+    bio_truncated: bool,
     exp_h: f32,
     exp_d: f32,
     portrait_y: f32,
@@ -214,7 +215,9 @@ fn header_flow(
         y += if pending && bio.is_empty() {
             BIO_LEAD * BIO_LINES as f32
         } else {
-            bio_view(bio, 1.0).measure_h(BIO_W)
+            let view = bio_view(bio, 1.0, measure);
+            f.bio_truncated = view.truncates(BIO_W);
+            view.measure_h(BIO_W)
         };
     }
     if has_entry {
@@ -239,15 +242,16 @@ fn header_flow(
     f
 }
 
-fn bio_view(bio: &str, a: f32) -> TextView<'_> {
+fn bio_view<'a>(bio: &'a str, a: f32, measure: &'a dyn Measure) -> TextView<'a> {
     TextView::new(
         bio,
         theme::size::BODY,
         theme::with_a(theme::TEXT_READING, a),
     )
+    .with_measure(measure)
     .leading(BIO_LEAD)
     .max_lines(BIO_LINES)
-    .fade_last(more_w() + BIO_MORE_GAP)
+    .fade_last(measure.width(MORE, theme::size::BODY, true) + BIO_MORE_GAP)
 }
 
 fn text_w(d: f32) -> f32 {
@@ -256,13 +260,6 @@ fn text_w(d: f32) -> f32 {
 
 fn col_x(d: f32) -> f32 {
     MARGIN_X + d + BAND_GAP
-}
-
-fn more_w() -> f32 {
-    // Called from `bio_view` (below), itself reachable with no `Measure` in scope (a pure
-    // `TextView` builder) — see `header_flow`'s doc for why `TtfMeasure` is the right capability
-    // to reach for directly here rather than threading a parameter through every caller.
-    crate::text::TtfMeasure.width(MORE, theme::size::BODY, true)
 }
 
 fn cstr_elide(s: &str, w: f32, sz: std::os::raw::c_int, bold: std::os::raw::c_int, measure: &dyn Measure) -> CString {
@@ -275,8 +272,8 @@ fn cstr_elide(s: &str, w: f32, sz: std::os::raw::c_int, bold: std::os::raw::c_in
 
 /// Is there more biography than the header shows? Shared by the truncation mark and the (deferred,
 /// out-of-scope) bio panel's own gate.
-fn bio_is_truncated(p: &Person) -> bool {
-    !p.bio.is_empty() && bio_view(&p.bio, 1.0).truncates(BIO_W)
+fn bio_is_truncated(p: &Person, measure: &dyn Measure) -> bool {
+    !p.bio.is_empty() && bio_view(&p.bio, 1.0, measure).truncates(BIO_W)
 }
 
 fn shelf_block_h_at(band: f32) -> f32 {
@@ -869,11 +866,11 @@ impl PersonScreen {
         )
     }
 
-    fn entry_rect(&self, p: &Person) -> Rect {
+    fn entry_rect(&self, p: &Person, measure: &dyn Measure) -> Rect {
         let Some(ey) = self.header.entry_y else {
             return Rect::new(MARGIN_X, HEADER_TOP, 0.0, 1.0);
         };
-        let w = entry_w(p, &self.entry_count_c);
+        let w = entry_w(p, &self.entry_count_c, measure);
         Rect::new(MARGIN_X, HEADER_TOP + ey, w.max(1.0), ENTRY_H)
     }
 
@@ -976,12 +973,12 @@ impl PersonScreen {
     /// OK on the header: opens the biography panel when the bio is truncated. Mirrors
     /// `header_ok`'s tail (the overlay guard lives in `step`'s `Input` arm now — see the module
     /// doc for why the raw key is intercepted before the engine ever turns it into `Activate`).
-    fn activate_header<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) {
+    fn activate_header<H: ContentLike>(&mut self, measure: &dyn Measure, fx: &mut Effects<'_, H>) {
         self.header_marked = true;
         let Some(p) = self.person() else {
             return;
         };
-        if bio_is_truncated(p) {
+        if bio_is_truncated(p, measure) {
             // The GATE is the page's, and stays the page's: the panel exists exactly when the
             // `MORE` mark is drawn, and both read `bio_is_truncated` — which depends on this
             // header's own column width. A surface asked to re-derive it would be how the mark and
@@ -1001,8 +998,10 @@ impl PersonScreen {
     /// the sheet through the same door the OK press uses, and asking the page first is what stops
     /// the trigger opening a panel an interactive press would have refused. `DetailScreen::
     /// tracks_available` is the precedent and the reason.
+    /// The scenario has no frame capability; it reads the header's last measured answer and
+    /// waits for the next measure after a store invalidation, just as the painted header does.
     pub(crate) fn bio_available(&self) -> bool {
-        self.person().is_some_and(bio_is_truncated)
+        self.person().is_some() && !self.header_dirty && self.header.bio_truncated
     }
 
     fn activate_entry<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) {
@@ -1106,13 +1105,13 @@ impl PersonScreen {
         );
 
         let col_x_ = col_x(d);
-        let truncated = bio_is_truncated(person);
+        let truncated = bio_is_truncated(person, measure);
         let marked = focus_elem == Some(HEADER_ELEM) && self.header_marked && truncated;
         let mark = flow
             .bio_y
             .filter(|_| marked && !person.bio.is_empty())
             .map(|by| {
-                let bio = bio_view(&person.bio, 1.0);
+                let bio = bio_view(&person.bio, 1.0, measure);
                 let bh = bio.measure_h(BIO_W);
                 let ink =
                     bio.last_line_cap_y(by, bh) - by + measure.cap_h(theme::size::BODY);
@@ -1161,7 +1160,7 @@ impl PersonScreen {
                 }
             }
         } else if let Some(by) = flow.bio_y {
-            let bio = bio_view(&person.bio, 1.0);
+            let bio = bio_view(&person.bio, 1.0, measure);
             let bh = bio.measure_h(BIO_W);
             bio.draw(p, Rect::new(col_x_, by, BIO_W, 0.0));
             if truncated {
@@ -1183,7 +1182,7 @@ impl PersonScreen {
             }
         }
         if let Some(y) = flow.entry_y {
-            self.draw_entry(p, person, MARGIN_X, y, focus_elem == Some(ENTRY_ELEM));
+            self.draw_entry(p, person, MARGIN_X, y, focus_elem == Some(ENTRY_ELEM), measure);
         }
     }
 
@@ -1273,8 +1272,8 @@ impl PersonScreen {
         .draw(env, p);
     }
 
-    fn draw_entry(&self, p: Painter, person: &Person, x: f32, y: f32, focused: bool) {
-        let w = entry_w(person, &self.entry_count_c);
+    fn draw_entry(&self, p: Painter, person: &Person, x: f32, y: f32, focused: bool, measure: &dyn Measure) {
+        let w = entry_w(person, &self.entry_count_c, measure);
         let e = if focused {
             crate::ui::widgets::CTRL_FOCUS_SCALE
         } else {
@@ -1333,12 +1332,7 @@ impl PersonScreen {
 const SHELF_TITLE: [&std::ffi::CStr; NSHELF] = [c"Movies", c"Shows"];
 
 /// The Filmography entry pill's width, sized to its own runs.
-fn entry_w(_p: &Person, entry_count_c: &std::ffi::CStr) -> f32 {
-    // Reached from both the draw path and focus-placement geometry (`entry_rect`, answered from
-    // `Focusable::place`, which is not always given a fresh `Cx` at every call site) — the same
-    // "pure geometry helper" shape `header_flow`'s doc names, so this goes through `TtfMeasure`
-    // directly rather than inventing a parameter for callers that may not have one to hand.
-    let m = crate::text::TtfMeasure;
+fn entry_w(_p: &Person, entry_count_c: &std::ffi::CStr, m: &dyn Measure) -> f32 {
     let label = m.width(c"Filmography", theme::size::LABEL, true);
     let count = if entry_count_c.to_bytes().is_empty() {
         0.0
@@ -1393,7 +1387,7 @@ impl<H: ContentLike> Focusable<H> for PersonScreen {
                 seat: Seat::First,
                 reachable: AxisMask::VERTICAL,
                 edge: [EdgeRule::Geometric, down, EdgeRule::Stop, EdgeRule::Stop],
-                extent: self.entry_rect(p),
+                extent: self.entry_rect(p, cx.measure),
                 len: 1,
                 elem: ElemKind::Bare,
             });
@@ -1450,7 +1444,7 @@ impl<H: ContentLike> Focusable<H> for PersonScreen {
                 if !entry_reachable(p) {
                     return None;
                 }
-                let r = self.entry_rect(p);
+                let r = self.entry_rect(p, cx.measure);
                 Some(Placed {
                     rect: r,
                     rest_rect: r,
@@ -1615,7 +1609,7 @@ impl<H: ContentLike> Machine<H> for PersonScreen {
             }
             ScreenEvent::Activate(e) => {
                 match self.person().and_then(|p| self.locate(p, *e)) {
-                    Some(Located::Header) => self.activate_header(fx),
+                    Some(Located::Header) => self.activate_header(cx.measure, fx),
                     Some(Located::Entry) => self.activate_entry(fx),
                     _ => {}
                 }
@@ -1815,7 +1809,7 @@ impl PersonScreen {
             },
         );
         if entry_reachable(person) {
-            let r = self.entry_rect(person);
+            let r = self.entry_rect(person, f.measure);
             f.stop(
                 hp,
                 Stop {
@@ -1889,7 +1883,7 @@ mod tests {
         }
     }
 
-    fn cx(m: &FixtureMeasure) -> Cx<'_, PersonHost> {
+    fn cx(m: &dyn Measure) -> Cx<'_, PersonHost> {
         Cx {
             views: (),
             tick: Tick::default(),
@@ -1933,6 +1927,38 @@ mod tests {
 
     fn focus_of(s: &PersonScreen, kind: usize, col: usize) -> crate::ui::machine::FocusKey<u32> {
         s.shelf_key(s.person().unwrap(), kind, col)
+    }
+
+    #[test]
+    #[cfg(feature = "devtriggers")]
+    fn populated_person_geometry_uses_recorded_metrics() {
+        let _serial = crate::testlock::serial();
+        let path = crate::paths::in_runtime_dir("plxnative-personbio");
+        assert!(!path.exists(), "this test needs an isolated runtime root");
+        std::fs::write(&path, "A populated biography whose words must pass through the recorded measurement capability. ".repeat(60)).unwrap();
+        let mut s = seed(3, 2);
+        crate::person::install_credits_for_test(&[("Actor", 9)]);
+        std::fs::remove_file(path).unwrap();
+        assert!(!s.person().unwrap().bio.is_empty());
+        crate::ui::rec::assert_measured_geometry(|measure| {
+            s.remeasure_header(s.person().unwrap(), measure);
+            let context = cx(measure);
+            let mut groups = Vec::new();
+            Focusable::<PersonHost>::groups(&s, &context, &mut groups);
+            assert_eq!(groups.len(), 4);
+            let mut bits = Vec::new();
+            for g in groups {
+                bits.extend([g.extent.x, g.extent.y, g.extent.w, g.extent.h].map(f32::to_bits));
+            }
+            for key in [HEADER_ELEM, ENTRY_ELEM, focus_of(&s, 0, 0).elem, focus_of(&s, 1, 0).elem] {
+                for at in [At::Drawn, At::SpringTarget] {
+                    let p = Focusable::<PersonHost>::place(&s, &key, &context, at).unwrap();
+                    bits.extend([p.rect.x, p.rect.y, p.rect.w, p.rect.h].map(f32::to_bits));
+                }
+            }
+            bits
+        });
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     /// **The frozen-animator regression class, closed for the header skeleton's spinner (phase 12

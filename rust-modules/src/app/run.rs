@@ -48,6 +48,7 @@ pub(super) fn recorder_end_frame(
     focus: &str,
     tree: u64,
 ) -> bool {
+    rec.measurements(bridge);
     rec.content_end();
     rec.end_frame(&|| super::recorder::state_hash(
         press, route, overlay, focus, tree, bridge.session_subhash(), bridge.consent_subhash(),
@@ -1012,7 +1013,9 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         app.ptr.last_motion = app.last_input;
         app.ptr.cur_hidden = false;
         let (mx, my) = ptr_xy(&app.ev);
-        app.rec.input(super::recorder::enc_pointer("pointer", mx as i32, my as i32));
+        if app.boot_initial.is_none() {
+            app.rec.input(super::recorder::enc_pointer("pointer", mx as i32, my as i32));
+        }
         if app.ptr.prev_mx >= 0.0 {
             app.ptr.mot_accum += (mx - app.ptr.prev_mx).abs() + (my - app.ptr.prev_my).abs();
         }
@@ -1074,7 +1077,9 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         app.last_input = clock::now();
         {
             let (cx, cy) = ptr_xy(&app.ev);
-            app.rec.input(super::recorder::enc_pointer("click", cx as i32, cy as i32));
+            if app.boot_initial.is_none() {
+                app.rec.input(super::recorder::enc_pointer("click", cx as i32, cy as i32));
+            }
         }
         // The button is DOWN from here until its up, which is the whole of what the pointer
         // machine now records about it: motion in that window is a DRAG (§7.5) rather than a
@@ -1149,7 +1154,9 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         app.last_input = clock::now();
         {
             let (cx, cy) = ptr_xy(&app.ev);
-            app.rec.input(super::recorder::enc_pointer("release", cx as i32, cy as i32));
+            if app.boot_initial.is_none() {
+                app.rec.input(super::recorder::enc_pointer("release", cx as i32, cy as i32));
+            }
         }
         // a click that armed the tvOS press (a detail card) releases on the button-up,
         // the pointer's twin of the OK key-up: without it the dip would sit there until
@@ -2751,7 +2758,7 @@ pub(crate) unsafe fn shutdown(
 /// An unknown kind is logged once per kind rather than silently skipped.
 unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
     if app.boot_initial.is_some() {
-        match super::bootstrap::effects::decode_input(v) {
+        match super::recorder::decode_input(v) {
             Ok(input) if input.source == crate::ui::machine::Source::Script => {
                 // The typed initial scenario regenerates this internal step at its recorded
                 // clock. Dispatch still observes and grades it once; it is not external ingress.
@@ -2797,6 +2804,23 @@ unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
 /// The original source and event timestamp survive; replay does not synthesize a new SDL time.
 unsafe fn controlled_key_input(app: &mut App, event: crate::ui::machine::InputEvent<u32>) {
     use crate::ui::machine::{InputKind, Key, Edge};
+    if matches!(event.kind, InputKind::Pointer{..}|InputKind::Click{..}|InputKind::Drag{..}) {
+        app.last_input=event.at.ms;
+        app.ptr.last_motion=event.at.ms;
+        app.ptr.cur_hidden=false;
+        if matches!(event.kind,InputKind::Click{..}) { app.ptr.button_down=true; }
+        crate::ui::idle::invalidate();
+        app.inputs.push(event);
+        return;
+    }
+    if matches!(event.kind,InputKind::Key { key:Key::Ok,sym:0,wcode:0,edge:Edge::Up,at_edge:false })
+        && event.source==crate::ui::machine::Source::Sdl {
+        app.last_input=event.at.ms;
+        app.input.press.release(event.at.ms);
+        app.ptr.button_down=false;
+        app.inputs.push(event);
+        return;
+    }
     let InputKind::Key { key, sym, wcode, edge, at_edge: false } = event.kind else {
         app.rec.refuse("unsupported controlled Home input"); return;
     };
@@ -2980,6 +3004,95 @@ mod lifecycle_regression_tests {
         unsafe {
             ingest_sdl_event(app, fr);
         }
+    }
+
+    #[test]
+    fn controlled_sdl_pointer_gestures_match_ordinary_ingress() {
+        let _serial=crate::testlock::serial();
+        let mut observed=Vec::new();
+        for controlled in [false,true] {
+            let mut app=app();
+            super::super::bridge::show_page(&mut app.pages,
+                AppArg::Settings(crate::screens::family::SettingsPage::Root));
+            frame(&mut app,0);
+            if controlled {
+                app.boot_initial=Some(super::super::bootstrap::Initial::synthetic_home(1,32517,Some("root".into())).unwrap());
+            }
+            let mut fr=Frame::begin(&app.player.session);
+            let mut steps=Vec::new();
+            for (et,x,y) in [(SDL_MOUSEBUTTONDOWN,200i32,300i32),
+                (SDL_MOUSEMOTION,400,300),(SDL_MOUSEBUTTONUP,400,300)] {
+                clock::set_replay(100);
+                app.ev[20..24].copy_from_slice(&x.to_ne_bytes());
+                app.ev[24..28].copy_from_slice(&y.to_ne_bytes());
+                event(&mut app,&mut fr,et);
+                steps.push((app.inputs.iter().map(|e|super::super::bootstrap::effects::input(e).unwrap()).collect::<Vec<_>>(),
+                    app.ptr.button_down,app.ptr.prev_mx.to_bits(),app.ptr.mot_accum.to_bits()));
+                app.inputs.clear();
+            }
+            app.ev=encode_key(crate::ui::consts::SDLK_DOWN,0,true);
+            event(&mut app,&mut fr,SDL_KEYDOWN);
+            assert!(app.ptr.dpad_mode);
+            assert_eq!(app.ptr.mot_accum,0.0);
+            steps.push((app.inputs.iter().map(|e|super::super::bootstrap::effects::input(e).unwrap()).collect::<Vec<_>>(),
+                app.ptr.button_down,app.ptr.prev_mx.to_bits(),app.ptr.mot_accum.to_bits()));
+            app.inputs.clear();
+            app.ev=[0;128];
+            app.ev[24..28].copy_from_slice(&300i32.to_ne_bytes());
+            for x in [405i32,410,415] {
+                app.ev[20..24].copy_from_slice(&x.to_ne_bytes());
+                event(&mut app,&mut fr,SDL_MOUSEMOTION);
+                steps.push((app.inputs.iter().map(|e|super::super::bootstrap::effects::input(e).unwrap()).collect::<Vec<_>>(),
+                    app.ptr.button_down,app.ptr.prev_mx.to_bits(),app.ptr.mot_accum.to_bits()));
+                app.inputs.clear();
+            }
+            observed.push(steps);
+        }
+        assert_eq!(observed[0],observed[1],"arming capture must preserve SDL gesture policy and bookkeeping");
+    }
+
+    #[test]
+    fn controlled_sdl_records_one_owned_event_after_hitmap_for_each_pointer_edge() {
+        use crate::ui::{machine::Tick,rec::{MemSink,Header,Recording},screen::{Stop,Hover,Activate},Rect};
+        let _serial=crate::testlock::serial();
+        let mut app=app();
+        super::super::bridge::show_page(&mut app.pages,AppArg::Settings(crate::screens::family::SettingsPage::Root));
+        frame(&mut app,0);
+        let key=app.pages.focus().unwrap();
+        app.pages.input.hit.fill(vec![Stop {key,rect:Rect::FULL,rest_rect:Rect::FULL,clip:Rect::FULL,
+            hover:Hover::Focus,activate:Activate::Press}]);
+        app.pages.input.hit.swap();
+        let initial=super::super::bootstrap::Initial::synthetic_home(1,32517,Some("root".into())).unwrap();
+        let sink=MemSink::default();
+        let segments=sink.segments.clone();
+        let manifest=Header::new(super::super::recorder::state_fp(),&initial).to_json().to_string();
+        app.rec=super::super::recorder::Recplay::recording_with_sink(&initial,Box::new(sink)).unwrap();
+        app.boot_initial=Some(initial);
+        app.rec.prepare_resources(&mut app.bridge);
+        app.rec.tick(100,0.016);
+        clock::set_replay(100);
+        let mut fr=Frame::begin(&app.player.session);
+        for et in [SDL_MOUSEBUTTONDOWN,SDL_MOUSEMOTION,SDL_MOUSEBUTTONUP] {
+            app.ev[20..24].copy_from_slice(&400i32.to_ne_bytes());
+            app.ev[24..28].copy_from_slice(&300i32.to_ne_bytes());
+            event(&mut app,&mut fr,et);
+        }
+        assert_eq!(app.inputs.len(),3);
+        app.pages.frame_with(&mut app.bridge,Tick {ms:100,dt_us:16000},
+            std::mem::take(&mut app.inputs),Vec::new(),&mut app.rec,false);
+        app.rec.measurements(&app.bridge);
+        app.rec.end_frame(&||0);
+        app.rec.finish();
+        let recording=Recording::parse(&manifest,
+            &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),super::super::recorder::state_fp()).unwrap();
+        let inputs=&recording.frames[0].inputs;
+        assert_eq!(inputs.len(),3,"never record raw+owned duplicates");
+        assert!(inputs.iter().all(|v|v["kind"]=="owned"));
+        assert_eq!(inputs[0]["body"]["kind"],"click");
+        assert_eq!(inputs[1]["body"]["kind"],"pointer");
+        for v in &inputs[..2] { assert_eq!(v["body"]["hit"],key.elem); }
+        assert_eq!(inputs[2]["body"]["edge"],"Up");
+        crate::ui::landgate::disarm();
     }
 
     struct Rig {

@@ -140,7 +140,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                     section_hubs: rig.section_hubs.view(),
                     search: rig.search.view(), session: crate::route::idle_session_for_test(),
                 },
-                rig.measure,
+                &rig.measure,
             );
             let placed = page.place(&key.elem, &cx, At::Drawn).unwrap();
             let (selected, opener) = rig.library_selection(&d, key.entry, Some(key)).unwrap();

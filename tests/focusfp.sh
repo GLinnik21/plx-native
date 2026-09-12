@@ -11,8 +11,8 @@
 #
 # Phase 0 of the UI restructure runs this as a LIVE-SIM SMOKE: a flow passes when the app stayed
 # alive and produced at least MIN_LINES fingerprint lines. From phase 2 the flows are replayed
-# from the committed recording instead (restructure spec §15.4). Resolve mode remains a separate
-# follow-up; `--replay` here grades the production state, presentation, results and effects.
+# from the committed recording instead (restructure spec §15.4). --targets (also --replay) feeds
+# recorded resolution; --resolve grades the real engine/map before recorded continuation.
 #
 # Flow 10 (root BACK at Home / picker / QR) is a television flow — on the simulator a root BACK is
 # a log line and nothing else — and is listed here as SKIP so the numbering matches the spec.
@@ -40,6 +40,7 @@ PMS=""
 ONLY=""
 REC=""
 REPLAY=""
+MODE=""
 MIN_LINES=2
 BOOT_WAIT=25     # seconds to wait for the boot marker before giving up on a flow
 STEP=0.9         # seconds between tokens — a human D-pad cadence, and past every settle spring
@@ -51,8 +52,11 @@ while [ $# -gt 0 ]; do
     --only) ONLY="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
-    --rec) REC=1; shift ;;
-    --replay) REPLAY=1; shift ;;
+    --rec|--replay|--targets|--resolve)
+      [ -z "$MODE" ] || { echo "focusfp: conflicting modes" >&2; exit 2; }
+      MODE="$1"
+      if [ "$1" = --rec ]; then REC=1; else REPLAY=1; fi
+      shift ;;
     -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "focusfp: unknown argument $1" >&2; exit 2 ;;
   esac
@@ -113,7 +117,9 @@ run_flow() {
   if [ -n "$REPLAY" ]; then
     local fixture="${REPLAY_FIXTURE:-$ROOT/tests/fixtures/replay/$n-$name}"
     [ -d "$fixture" ] || { echo "  [SKIP] $n $name: no committed fixture at $fixture"; return 2; }
-    printf '%s' "$fixture" > "$d/plxnative-recplay"
+    local resolution=targets
+    [ "$MODE" = --resolve ] && resolution=resolve
+    printf 'v1\n%s\n%s' "$resolution" "$fixture" > "$d/plxnative-recplay"
   fi
   for t in $triggers; do
     case "$t" in
@@ -150,14 +156,30 @@ run_flow() {
       return 1
     fi
     verdict=$(grep -E '^replay: done ' "$log" | tail -1 || true)
-    grep -E '^replay: (diverge|present|INITIAL)' "$log" | head -20 | sed 's/^/    /' || true
+    grep -E '^replay: (diverge|input diverge|present|INITIAL)' "$log" | sed 's/^/    /' || true
     if [ -z "$verdict" ]; then
       echo "  [FAIL] $n $name: no \`replay: done\` line after ${waited}s ($log)"; return 1
     fi
-    case "$verdict" in
-      *verdict=SAME*) echo "  [PASS] $n $name: $verdict"; return 0 ;;
-      *) echo "  [FAIL] $n $name: $verdict"; return 1 ;;
-    esac
+    if python3 - "$log" <<'PY'
+import re
+import sys
+lines = [line.strip() for line in open(sys.argv[1]) if line.startswith('replay: done ')]
+fields = ('diverged', 'present_diffs', 'input_diffs', 'result_diffs', 'land_diffs',
+          'effect_diffs', 'focus_diffs', 'hit_diffs')
+ok = len(lines) == 1
+if ok:
+    pairs = re.findall(r'(\w+)=(\w+)', lines[0])
+    values = dict(pairs)
+    ok = len(values) == len(pairs) and values.get('verdict') == 'SAME'
+    ok = ok and all(values.get(field) == '0' for field in fields)
+    ok = ok and all(values.get(field, '').isdigit() and int(values[field]) > 0 for field in ('frames', 'graded'))
+sys.exit(0 if ok else 1)
+PY
+    then
+      echo "  [PASS] $n $name: $verdict"; return 0
+    else
+      echo "  [FAIL] $n $name: $verdict"; return 1
+    fi
   fi
   sleep 2   # posters and the async landings the first keys must not race
   if [ -n "$tokens" ]; then

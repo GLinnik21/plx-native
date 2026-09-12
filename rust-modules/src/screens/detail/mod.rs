@@ -334,11 +334,12 @@ impl DetailScreen {
         f: &mut DrawFrame<'_, '_, H>,
         focus: Option<FocusKey<u32>>,
     ) {
+        let measure = f.cx.measure;
         let Some(d) = self.detail() else { return };
         match focus.and_then(|k| self.locate(k.elem)) {
             Some(Located::Season(i)) => season::draw(
                 f.painter
-                    .translate(0.0, self.section_top(1, d) - self.scroll.pos),
+                    .translate(0.0, self.section_top(1, d, measure) - self.scroll.pos),
                 &self.season_metrics,
                 self.tabs,
                 d.cur_season,
@@ -351,7 +352,7 @@ impl DetailScreen {
                 d,
                 i,
                 row,
-                self.section_top(2, d) - self.scroll.pos,
+                self.section_top(2, d, measure) - self.scroll.pos,
                 self.episode_scroll.pos,
                 self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0) * f.press.scale,
                 f.measure,
@@ -361,7 +362,7 @@ impl DetailScreen {
                 d,
                 &self.related,
                 i,
-                self.section_top(3, d) - self.scroll.pos,
+                self.section_top(3, d, measure) - self.scroll.pos,
                 f.press.scale,
                 f.measure,
             ),
@@ -380,9 +381,10 @@ impl DetailScreen {
         (i >= 0).then(|| crate::pms::movie(i as usize)).flatten()
     }
 
-    fn hero_chain(&self) -> crate::ui::detail_layout::HeroChain {
+    fn hero_chain(&self, measure: &dyn crate::ui::machine::Measure) -> crate::ui::detail_layout::HeroChain {
         let (lead, synopsis) = hero_blurb(self.detail(), self.selected());
         let synopsis_h = crate::ui::hero_synopsis(&synopsis, &lead)
+            .with_measure(measure)
             .measure_h(crate::ui::detail_layout::HERO_TEXT_W);
         crate::ui::detail_layout::hero_chain(
             synopsis_h,
@@ -391,8 +393,8 @@ impl DetailScreen {
         )
     }
 
-    fn content_top(&self) -> f32 {
-        self.hero_chain().btn_y + hero::CD + theme::space::XL
+    fn content_top(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        self.hero_chain(measure).btn_y + hero::CD + theme::space::XL
     }
 
     fn sections(&self, d: Option<&Detail>) -> ([i32; 6], usize) {
@@ -421,14 +423,14 @@ impl DetailScreen {
         (out, n)
     }
 
-    fn section_top(&self, section: i32, d: &Detail) -> f32 {
+    fn section_top(&self, section: i32, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
         let (sections, n) = self.sections(Some(d));
-        let mut y = self.content_top();
+        let mut y = self.content_top(measure);
         for (pos, &sec) in sections[..n].iter().enumerate().skip(1) {
             if sec == section {
                 return y;
             }
-            y += self.block_h(sec, d);
+            y += self.block_h(sec, d, measure);
             let next = sections.get(pos + 1).copied();
             y += if sec == 1 && next == Some(2) {
                 TAB_EP_GAP
@@ -439,10 +441,10 @@ impl DetailScreen {
         y
     }
 
-    fn block_h(&self, section: i32, d: &Detail) -> f32 {
+    fn block_h(&self, section: i32, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
         match section {
             1 => season::ROW_H,
-            2 => episodes::block_h(d),
+            2 => episodes::block_h(d, measure),
             3 => related::block_h(),
             4 => cast::block_h(),
             _ => 0.0,
@@ -558,6 +560,7 @@ impl DetailScreen {
 
 impl<H: ContentLike> Focusable<H> for DetailScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        let measure = cx.measure;
         let set = self.hero_set();
         let widths = hero::hero_widths(
             cx.measure,
@@ -567,7 +570,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             self.named_show(),
         );
         let (_, hero_n) = hero::hero_ctls(set);
-        let hero_y = self.hero_chain().btn_y;
+        let hero_y = self.hero_chain(measure).btn_y;
         let hero_last = hero::hero_btn_rect_at(set, hero_n.saturating_sub(1), hero_y, widths);
         out.push(GroupSpec {
             id: hero::HERO_GROUP,
@@ -593,7 +596,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
         let Some(d) = self.detail() else { return };
         let (sections, n) = self.sections(Some(d));
         for &section in &sections[1..n] {
-            let top = self.section_top(section, d) - self.scroll_target;
+            let top = self.section_top(section, d, measure) - self.scroll_target;
             match section {
                 1 => out.push(GroupSpec {
                     id: season::SEASON_GROUP,
@@ -623,7 +626,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                         crate::ui::consts::MARGIN_X,
                         top,
                         crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
-                        episodes::block_h(d),
+                        episodes::block_h(d, measure),
                     ),
                     len: d.episodes.len().min(episodes::MAX_ITEMS) * 2,
                     elem: ElemKind::Card,
@@ -747,6 +750,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
     }
 
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
+        let measure = cx.measure;
         let located = self.locate(*key).filter(|l| self.valid(*l))?;
         let d = self.detail();
         let vertical = if at == At::Drawn {
@@ -766,7 +770,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                     self.named_show(),
                 );
                 let base =
-                    hero::hero_btn_rect_at(set, i, self.hero_chain().btn_y - vertical, widths);
+                    hero::hero_btn_rect_at(set, i, self.hero_chain(measure).btn_y - vertical, widths);
                 (
                     base.scaled(self.ctl_pop.scale(i)),
                     base.scaled(crate::ui::widgets::CTRL_FOCUS_SCALE),
@@ -776,7 +780,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             Located::Season(i) => {
                 let base = self.season_metrics.rect(
                     i,
-                    self.section_top(1, d?) - vertical,
+                    self.section_top(1, d?, measure) - vertical,
                     self.tab_scroll.pos,
                 )?;
                 (
@@ -787,11 +791,11 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             }
             Located::Episode(i, row) => {
                 let d = d?;
-                let top = self.section_top(2, d) - vertical;
+                let top = self.section_top(2, d, measure) - vertical;
                 let base = match row {
                     episodes::Row::Still => episodes::still_rect(i, top, self.episode_scroll.pos),
                     episodes::Row::Text => {
-                        episodes::meta_rect(d.episodes.get(i)?, i, top, self.episode_scroll.pos)
+                        episodes::meta_rect(d.episodes.get(i)?, i, top, self.episode_scroll.pos, measure)
                     }
                 };
                 let drawn = if row == episodes::Row::Still {
@@ -807,7 +811,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 (drawn, rest, Some(i as u32))
             }
             Located::Related(i) => {
-                let top = self.section_top(3, d?) - vertical;
+                let top = self.section_top(3, d?, measure) - vertical;
                 (
                     related::rect(&self.related, i, top, at == At::Drawn),
                     related::rect(&self.related, i, top, false),
@@ -815,7 +819,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 )
             }
             Located::Cast(i) => {
-                let top = self.section_top(4, d?) - vertical;
+                let top = self.section_top(4, d?, measure) - vertical;
                 (
                     cast::rect(&self.cast, i, top, at == At::Drawn),
                     cast::rect(&self.cast, i, top, false),
@@ -824,11 +828,11 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             }
             Located::About(i) => {
                 let d = d?;
-                let top = self.section_top(5, d) - vertical;
+                let top = self.section_top(5, d, measure) - vertical;
                 let base = if i == 0 {
-                    self.about_rows.card_rect(d, top)
+                    self.about_rows.card_rect(d, top, measure)
                 } else {
-                    self.about_rows.languages_rect(top)
+                    self.about_rows.languages_rect(top, measure)
                 };
                 (base, base, Some(i as u32))
             }
@@ -885,7 +889,8 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
         }
     }
 
-    fn seat(&self, group: GroupId, from: Placed, _cx: &Cx<'_, H>) -> FocusKey<u32> {
+    fn seat(&self, group: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        let measure = cx.measure;
         let d = self.detail();
         let from_i = from.index.unwrap_or(0) as usize;
         let elem = if group == hero::HERO_GROUP {
@@ -915,7 +920,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 from_i,
             );
             let row = if d.is_some_and(|d| {
-                from.rect.cy() > self.section_top(2, d) - self.scroll_target + episodes::block_h(d)
+                from.rect.cy() > self.section_top(2, d, measure) - self.scroll_target + episodes::block_h(d, measure)
             }) {
                 episodes::Row::Text
             } else {
@@ -1025,7 +1030,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                         rk: self.rk.clone(),
                     });
                 }
-                self.reveal_focus(cx.focus.current);
+                self.reveal_focus(cx.focus.current, cx.measure);
                 fx.invalidate(Provenance::Input);
                 Handled::Yes
             }
@@ -1040,7 +1045,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                     }
                 }
                 self.pump_restore();
-                self.reveal_focus(cx.focus.current);
+                self.reveal_focus(cx.focus.current, cx.measure);
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
             }
@@ -1049,7 +1054,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                     self.return_pending = false;
                     self.restore_intent = None;
                 }
-                self.reveal_focus(Some(*to));
+                self.reveal_focus(Some(*to), cx.measure);
                 if let Some(located) = self.locate(to.elem) {
                     if let Located::Season(i) = located {
                         if matches!(by, By::Dir | By::Pointer) {
@@ -1190,11 +1195,12 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
     fn prepare(&mut self, _budget: &mut Budget, _cx: &Cx<'_, H>) {}
 
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+        let measure = f.cx.measure;
         crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let p = f.painter;
         let nav_page_alpha = f.nav_page_alpha;
         let d = self.detail();
-        self.draw_backdrop(p, d);
+        self.draw_backdrop(p, d, f.measure);
         let hero_vis = hero_alpha(self.scroll.pos, HERO_FADE);
         if hero_vis > 0.01 {
             self.draw_hero(p.translate(0.0, -self.scroll.pos).alpha(hero_vis), f, d, nav_page_alpha);
@@ -1208,8 +1214,8 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                 .and_then(|k| self.locate(k.elem));
             let (sections, n) = self.sections(Some(d));
             for &section in &sections[1..n] {
-                let top = self.section_top(section, d) - self.scroll.pos;
-                if top > crate::ui::consts::SCR_H || top + self.block_h(section, d) < 0.0 {
+                let top = self.section_top(section, d, measure) - self.scroll.pos;
+                if top > crate::ui::consts::SCR_H || top + self.block_h(section, d, measure) < 0.0 {
                     continue;
                 }
                 match section {
@@ -1285,7 +1291,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
         } else if crate::metadata::detail_loading() {
             crate::ui::widgets::Spinner::new(
                 crate::ui::consts::SCR_W * 0.5,
-                (self.content_top() + crate::ui::consts::SCR_H) * 0.5 - self.scroll.pos,
+                (self.content_top(measure) + crate::ui::consts::SCR_H) * 0.5 - self.scroll.pos,
                 26.0,
             )
             .phase(self.spin_ms as u32)
@@ -1351,8 +1357,8 @@ impl DetailScreen {
             .unwrap_or((self.sid, self.rk.clone(), String::new()))
     }
 
-    fn draw_backdrop(&self, p: Painter, d: Option<&Detail>) {
-        let sf = (self.scroll.pos / (self.content_top() - crate::ui::detail_layout::TOP_MARGIN))
+    fn draw_backdrop(&self, p: Painter, d: Option<&Detail>, measure: &dyn crate::ui::machine::Measure) {
+        let sf = (self.scroll.pos / (self.content_top(measure) - crate::ui::detail_layout::TOP_MARGIN))
             .clamp(0.0, 1.0);
         let art_alpha = 1.0 - sf;
         let (sid, _, path) = self.art_identity(d);
@@ -1402,6 +1408,7 @@ impl DetailScreen {
     }
 
     fn draw_hero<H: ContentLike>(&self, p: Painter, cx: &Cx<'_, H>, d: Option<&Detail>, nav_page_alpha: f32) {
+        let measure = cx.measure;
         use crate::ui::detail_layout::{HERO_TEXT_W, TITLE_BOTTOM};
 
         let (_, rk, _) = self.art_identity(d);
@@ -1422,8 +1429,8 @@ impl DetailScreen {
         );
 
         let (lead, synopsis) = hero_blurb(d, self.selected());
-        let synopsis_view = crate::ui::hero_synopsis(&synopsis, &lead);
-        let chain = self.hero_chain();
+        let synopsis_view = crate::ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
+        let chain = self.hero_chain(measure);
         if let Some(d) = d {
             self.draw_identity_line(p, d, chain.meta_y, cx.measure);
             self.draw_ratings(p, d, chain.ratings_y, cx.measure);
@@ -1436,7 +1443,7 @@ impl DetailScreen {
         }
         if let Some(d) = d {
             hero::draw_facts(p, d, chain.facts_y, cx.measure);
-            hero::draw_people(p, d, chain.btn_y);
+            hero::draw_people(p, d, chain.btn_y, measure);
         }
         self.draw_buttons(p, cx, chain.btn_y, nav_page_alpha);
     }
@@ -1608,7 +1615,7 @@ impl DetailScreen {
         let (sections, n) = self.sections(Some(d));
         let hide_at = compact_title_hide_pos(&sections, n, d.is_show)
             .map(|position| {
-                (self.section_top(sections[position], d) - crate::ui::detail_layout::TOP_MARGIN)
+                (self.section_top(sections[position], d, measure) - crate::ui::detail_layout::TOP_MARGIN)
                     .max(0.0)
             })
             .unwrap_or(f32::MAX);
@@ -1919,12 +1926,12 @@ impl LogicalState for DetailScreen {
 }
 
 impl DetailScreen {
-    fn reveal_focus(&mut self, focus: Option<FocusKey<u32>>) {
+    fn reveal_focus(&mut self, focus: Option<FocusKey<u32>>, measure: &dyn crate::ui::machine::Measure) {
         if self.return_waiting() { return; }
         let Some(located) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.locate(key.elem)) else { return };
         let Some(detail) = self.detail() else { return };
         self.scroll_target = if located.section() == 0 { 0.0 } else {
-            (self.section_top(located.section(), detail) - crate::ui::detail_layout::TOP_MARGIN).max(0.0)
+            (self.section_top(located.section(), detail, measure) - crate::ui::detail_layout::TOP_MARGIN).max(0.0)
         };
     }
 
@@ -2241,6 +2248,7 @@ impl DetailScreen {
         cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>,
     ) {
+        let measure = cx.measure;
         match ctl {
             hero::HeroCtl::Play => {
                 self.play_hero(false, fx);
@@ -2258,7 +2266,7 @@ impl DetailScreen {
                         [self.disc_unfurl[0].pos, self.disc_unfurl[1].pos],
                         self.named_show(),
                     );
-                    let mut rect = hero::hero_btn_rect_at(set, i, self.hero_chain().btn_y, widths);
+                    let mut rect = hero::hero_btn_rect_at(set, i, self.hero_chain(measure).btn_y, widths);
                     rect.y -= self.scroll.pos;
                     // The ANCHOR travels on the argument, bit for bit, so the surface places
                     // itself off the pill without the page or a static holding a `Rect` for it.

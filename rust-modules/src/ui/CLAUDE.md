@@ -493,12 +493,14 @@ but geometry authority remains in the container members/`ChromeSnapshot`; do not
 unused `reveal`/`pill_at` getters as that authority. Final chrome ownership remains pending the
 separate integration review, including the profile/label caches and tab-glass state.
 
-The UI engine fixture replay (`ui/replay.rs`'s `--targets`/`--resolve`) is also separate from the
-product recorder. The recorder has typed pre-effect initialization and closed result/admission
-injection for supported Home, Settings, and Flow 12 content domains. It is not a
-whole-application recorder: unsupported domains remain fail-closed, `tests/focusfp.sh --replay`
-has no product `--resolve` mode, and `make check` does not close a committed scenario-replay run.
-Phase-12 ownership gates do not prove whole-application deterministic restore.
+The UI engine fixture replay (`ui/replay.rs`'s `--targets`/`--resolve`) remains separate from the
+product recorder, but the product now exposes the same two mode names through
+`plxnative-recplay`: `tests/focusfp.sh --targets` substitutes recorded Focus/Hit resolutions and
+`--resolve` grades the current engine/map pointwise before continuation. The recorder has typed
+pre-effect initialization, closed result/admission injection and captured Width/Cap/Line metrics
+for supported Home, Settings, and Flow 12 content domains. It is not a whole-application recorder:
+unsupported domains remain fail-closed, and `make check` alone does not run the committed
+scenario replays. Phase-12 ownership gates do not prove all-domain deterministic restore.
 
 ### The restructure spike (phases 2-i → 3b of `~/.claude/plans/ui-plxnative-structured-phoenix.md`)
 

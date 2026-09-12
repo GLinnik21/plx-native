@@ -85,9 +85,10 @@ pub(crate) fn still_rect(i: usize, top: f32, scroll: f32) -> Rect {
     Rect::new(strip_x(i) - scroll, top, W, H)
 }
 
-pub(crate) fn meta_layout(ep: &Episode) -> (f32, f32, f32) {
+pub(crate) fn meta_layout(ep: &Episode, measure: &dyn crate::ui::machine::Measure) -> (f32, f32, f32) {
     let title_h = TextView::new(&ep.title, theme::size::BODY, theme::TEXT_PRIMARY)
         .bold()
+        .with_measure(measure)
         .leading(TITLE_LEAD)
         .max_lines(2)
         .measure_h(W)
@@ -97,6 +98,7 @@ pub(crate) fn meta_layout(ep: &Episode) -> (f32, f32, f32) {
         0.0
     } else {
         TextView::new(&ep.summary, theme::size::CAPTION, theme::TEXT_SECONDARY)
+            .with_measure(measure)
             .leading(SUMMARY_LEAD)
             .max_lines(SUMMARY_MAX_LINES)
             .measure_h(W)
@@ -116,8 +118,8 @@ pub(crate) fn meta_layout(ep: &Episode) -> (f32, f32, f32) {
     (date_y, summary_y, bottom + META_BOTTOM_PAD)
 }
 
-pub(crate) fn meta_rect(ep: &Episode, i: usize, top: f32, scroll: f32) -> Rect {
-    let (_, _, h) = meta_layout(ep);
+pub(crate) fn meta_rect(ep: &Episode, i: usize, top: f32, scroll: f32, measure: &dyn crate::ui::machine::Measure) -> Rect {
+    let (_, _, h) = meta_layout(ep, measure);
     Rect::new(
         strip_x(i) - scroll - TEXT_PAD_X,
         top + H + META_TOP - TEXT_PAD_Y,
@@ -126,11 +128,11 @@ pub(crate) fn meta_rect(ep: &Episode, i: usize, top: f32, scroll: f32) -> Rect {
     )
 }
 
-pub(crate) fn block_h(d: &Detail) -> f32 {
+pub(crate) fn block_h(d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
     H + d
         .episodes
         .iter()
-        .map(|e| meta_layout(e).2)
+        .map(|e| meta_layout(e, measure).2)
         .fold(0.0, f32::max)
         + META_TOP
 }
@@ -288,9 +290,9 @@ fn draw_cell(
 
     let text_top = H + META_TOP;
     let dim = theme::TEXT_TERTIARY;
-    let (date_y, summary_y, _) = meta_layout(ep);
+    let (date_y, summary_y, _) = meta_layout(ep, measure);
     if row == Some(Row::Text) {
-        widgets::text_block_highlight(p, meta_rect(ep, i, 0.0, 0.0));
+        widgets::text_block_highlight(p, meta_rect(ep, i, 0.0, 0.0, measure));
     }
     if let Ok(kicker) = CString::new(format!("EPISODE {}", ep.index)) {
         p.text(
@@ -313,6 +315,7 @@ fn draw_cell(
         },
     )
     .bold()
+    .with_measure(measure)
     .leading(TITLE_LEAD)
     .max_lines(2)
     .draw(p, Rect::new(x, text_top + TITLE_DY, W, 0.0));
@@ -326,6 +329,7 @@ fn draw_cell(
                 dim
             },
         )
+        .with_measure(measure)
         .leading(SUMMARY_LEAD)
         .max_lines(SUMMARY_MAX_LINES)
         .draw(p, Rect::new(x, text_top + summary_y, W, 0.0));

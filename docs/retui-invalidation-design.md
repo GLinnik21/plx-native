@@ -26,11 +26,12 @@
 > **Replay boundary (phase 12):** this note does not close the broader recorder contract in §0.8/
 > §5.5. The bounded driver covers controlled Home, Settings, and typed Flow 12 content; it
 > restores typed pre-effect inputs and injects Home/Browse and Flow 12 Detail/Person results
-> without live data IO. Other domains remain unsupported, and the committed
-> `focusfp.sh --replay` path does not expose the UI engine's `--resolve` mode. The
+> without live data IO. Other domains remain unsupported. The committed product path now exposes
+> `focusfp.sh --targets` and `--resolve`: the former substitutes recorded Focus/Hit resolutions;
+> the latter grades the current engine/map pointwise and continues from recorded truth. The
 > structural phase-12 gates therefore check specific structural invariants; they are not an
 > overall proof of UI ownership, whole-application
-> deterministic restore or scenario replay; those remain separate implementation work.
+> deterministic restore, or all-domain scenario replay.
 
 > **Field names in this document predate 2026-08-01 and the old name was REUSED.** Where it says
 > `FPS=`, today's heartbeat says **`loop=`** (loop iterations); where it says `pres=`, today's says

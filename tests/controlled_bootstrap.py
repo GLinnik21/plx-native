@@ -95,10 +95,11 @@ def main():
                             ('ffprobe', 'http://203.0.113.10:9')]:
             (root / ('plxnative-' + name)).write_text(value)
 
-    def replay_case(name, recording, expected, with_ambient=False, both=False):
+    def replay_case(name, recording, expected, with_ambient=False, both=False, mode='targets'):
         root = out / name
         root.mkdir()
-        (root / 'plxnative-recplay').write_text(str(recording))
+        assert mode in ('targets', 'resolve')
+        (root / 'plxnative-recplay').write_text('v1\n' + mode + '\n' + str(recording))
         if with_ambient:
             ambient(root)
         if both:
@@ -119,7 +120,7 @@ def main():
                 assert code == 0, name
                 assert all(' %s=0' % field in summaries[-1] for field in
                            ('diverged', 'present_diffs', 'input_diffs', 'result_diffs',
-                            'land_diffs', 'effect_diffs')), name
+                            'land_diffs', 'effect_diffs', 'focus_diffs', 'hit_diffs')), name
         assert before == snapshot(root), name + ': ambient persistence changed or was created'
         assert not attempts, name + ': primary network attempt'
         result = {'case': name, 'exit': code, 'expected': expected, 'nonmutation': True,
@@ -219,6 +220,11 @@ def main():
         recording = record / 'plxnative-recordings/latest'
         assert not (record / 'auth.json').exists(), 'typed record must not load/mint an ambient session'
         rows = [json.loads(line) for line in (recording / 'rec-0000.jsonl').read_text().splitlines() if line.strip()]
+        ticks = [row['f'] for row in rows if row['t'] == 'tick']
+        assert [row['f'] for row in rows if row['t'] == 'fo'] == ticks, 'one canonical focus truth per frame'
+        assert all(set(row) == {'f', 't', 'entry', 'elem', 'group'} for row in rows if row['t'] == 'fo')
+        assert any(row['t'] == 'rs' and row['payload']['kind'] == 'Focus' and row['payload']['phase'] == 1
+                   for row in rows), 'the product must observe real direction resolutions'
         assert sum(row['t'] == 'in' and row.get('kind') == 'owned' for row in rows) == 10
         assert not any(row['t'] == 'eff' and 'unsupported' in row.get('payload', {}) for row in rows)
         assert sum(row['t'] == 'eff' and isinstance(row.get('payload', {}).get('delivery'), dict)
@@ -247,8 +253,15 @@ def main():
         thread.start()
         replay_case('fresh', recording, 'SAME')
         replay_case('ambient', recording, 'SAME', with_ambient=True)
+        replay_case('resolve-fresh', recording, 'SAME', mode='resolve')
+        replay_case('resolve-ambient', recording, 'SAME', with_ambient=True, mode='resolve')
 
         changes = {
+            'missing-focus': lambda m, r: r.__setitem__(slice(None), [row for row in r if not (row['t'] == 'fo' and row['f'] == 0)]),
+            'duplicate-focus': lambda m, r: r.insert(next(i for i, row in enumerate(r) if row['t'] == 'fo'),
+                                                    next(row.copy() for row in r if row['t'] == 'fo')),
+            'malformed-focus': lambda m, r: next(row for row in r if row['t'] == 'fo').pop('group'),
+            'invalid-focus-entry': lambda m, r: next(row for row in r if row['t'] == 'fo').__setitem__('entry', 0),
             'missing-init': lambda m, r: m['init'].pop('data'),
             'malformed-init': lambda m, r: m['init'].__setitem__('data', False),
             'old-shape': lambda m, r: m.__setitem__('state_fp', m['state_fp'] ^ 1),

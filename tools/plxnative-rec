@@ -42,6 +42,11 @@ from collections import Counter
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 FIXTURES = os.path.join(ROOT, "tests", "fixtures", "replay")
+MAX_METRIC_TEXT_BYTES = 16384   # ui/rec.rs: MetricKey::valid
+U32_MAX = (1 << 32) - 1
+U64_MAX = (1 << 64) - 1
+I32_MIN = -(1 << 31)
+I32_MAX = (1 << 31) - 1
 
 
 def load(d):
@@ -86,6 +91,65 @@ def strings(node, out):
             strings(v, out)
 
 
+def _canonical_int(value, low, high):
+    """JSON bools/floats are not integers in the recording wire format."""
+    return type(value) is int and low <= value <= high
+
+
+def _unique_object(pairs):
+    """Build a JSON object only when every field has one spelling."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def strict_json(text):
+    return json.loads(text, object_pairs_hook=_unique_object)
+
+
+def metric_strings(doc):
+    """(valid, decoded text values) for one canonical top-level metrics record.
+
+    MetricKey::Width deliberately stores raw bytes so private recordings remain byte-exact and
+    can distinguish non-UTF-8 C strings.  A *public* synthetic fixture has a narrower contract:
+    only the canonical ui/rec.rs envelope is decoded, and its bytes must be bounded UTF-8 text
+    that the closed alphabet can grade.  Numeric arrays anywhere else are application data, not
+    an implicit string encoding, and are not interpreted here.
+    """
+    if not isinstance(doc, dict) or doc.get("t") != "metrics":
+        return True, []
+    if set(doc) != {"f", "t", "q", "bits"}:
+        return False, []
+    if not _canonical_int(doc["f"], 0, U64_MAX) or not _canonical_int(doc["bits"], 0, U32_MAX):
+        return False, []
+    query = doc.get("q")
+    if not isinstance(query, dict):
+        return False, []
+    kind = query.get("kind")
+    if kind == "Width":
+        if set(query) != {"kind", "text", "sz", "bold"}:
+            return False, []
+        text = query["text"]
+        if (not isinstance(text, list) or len(text) > MAX_METRIC_TEXT_BYTES
+                or not _canonical_int(query["sz"], I32_MIN, I32_MAX)
+                or type(query["bold"]) is not bool
+                or any(not _canonical_int(value, 0, 255) for value in text)
+                or 0 in text):
+            return False, []
+        try:
+            return True, [bytes(text).decode("utf-8", errors="strict")]
+        except UnicodeDecodeError:
+            return False, []
+    if kind in ("Cap", "Line"):
+        if set(query) != {"kind", "sz"} or not _canonical_int(query["sz"], I32_MIN, I32_MAX):
+            return False, []
+        return True, []
+    return False, []
+
+
 def check(d):
     lits, pats = alphabet()
     bad = 0
@@ -95,10 +159,20 @@ def check(d):
             continue
         with open(p, encoding="utf-8") as f:
             text = f.read()
-        docs = [json.loads(text)] if n.endswith(".json") else [json.loads(l) for l in text.splitlines() if l.strip()]
+        try:
+            docs = [strict_json(text)] if n.endswith(".json") else [strict_json(l) for l in text.splitlines() if l.strip()]
+        except (ValueError, json.JSONDecodeError):
+            bad += 1
+            print("  %s: malformed or duplicate-key JSON" % n)
+            continue
         for doc in docs:
             vals = []
             strings(doc, vals)
+            metric_ok, metric_vals = metric_strings(doc)
+            vals.extend(metric_vals)
+            if not metric_ok:
+                bad += 1
+                print("  %s: a malformed public metric record" % n)
             for v in vals:
                 if v in lits or any(pt.fullmatch(v) for pt in pats):
                     continue

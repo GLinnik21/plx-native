@@ -41,7 +41,7 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 
-fn cx<'a>(measure: &'a crate::ui::fixture::FixtureMeasure, elem: Option<u32>) -> Cx<'a, TestHost> {
+fn cx<'a>(measure: &'a dyn crate::ui::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
     Cx {
         views: (),
         tick: Default::default(),
@@ -139,6 +139,51 @@ fn clear() {
     crate::metadata::set_current_for_test(None);
 }
 
+#[test]
+fn populated_detail_geometry_uses_recorded_metrics() {
+    let sid = ServerId::UNSET;
+    let mut d = fixture(sid);
+    d.title = "Measured show".into();
+    d.part = "/synthetic-part".into();
+    d.audio = vec![crate::metadata::Stream {
+        lang: "A long measured original audio language name".into(),
+        codec: "aac".into(),
+        ..Default::default()
+    }];
+    d.summary = "A synopsis with enough separate words to wrap into several measured lines. ".repeat(30);
+    for ep in &mut d.episodes {
+        ep.title = "A measured episode with a longer title".into();
+        ep.summary = "Episode prose must also use the supplied metrics. ".repeat(8);
+    }
+    let _serial = install(d);
+    crate::ui::rec::assert_measured_geometry(|measure| {
+        let mut s = bare(sid, "show");
+        s.about_rows.update(s.detail().unwrap());
+        s.season_metrics.update(s.detail().unwrap(), measure);
+        let context = cx(measure, None);
+        let mut groups = Vec::new();
+        Focusable::<TestHost>::groups(&s, &context, &mut groups);
+        assert!(groups.len() >= 5, "exercise the populated production groups");
+        let mut bits = Vec::new();
+        for g in groups {
+            bits.extend([g.extent.x, g.extent.y, g.extent.w, g.extent.h].map(f32::to_bits));
+        }
+        assert!(s.tracks_available());
+        let mut elems = vec![about::CARD_ELEM, about::LANGUAGES_ELEM];
+        let (controls, n) = hero::hero_ctls(s.hero_set());
+        elems.extend(controls[..n].iter().map(|ctl| ctl.elem()));
+        elems.extend(s.keys.iter().map(|key| key.elem));
+        for elem in elems {
+            for at in [At::Drawn, At::SpringTarget] {
+                let p = Focusable::<TestHost>::place(&s, &elem, &context, at).unwrap_or_else(|| panic!("populated element {elem} must place"));
+                bits.extend([p.rect.x, p.rect.y, p.rect.w, p.rect.h].map(f32::to_bits));
+            }
+        }
+        bits
+    });
+    clear();
+}
+
 fn stop(key: FocusKey<u32>, placed: Placed) -> Stop<u32> {
     Stop {
         key,
@@ -170,7 +215,7 @@ fn expect_move(outcome: Outcome<u32>, expectation: &str) -> FocusKey<u32> {
 fn scroll_to(screen: &mut DetailScreen, section: i32) {
     let top = {
         let detail = screen.detail().expect("fixture detail must be mounted");
-        screen.section_top(section, detail)
+        screen.section_top(section, detail, &crate::ui::fixture::FixtureMeasure)
     };
     screen.scroll.jump(top);
     screen.scroll_target = top;

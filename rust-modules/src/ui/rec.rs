@@ -3,10 +3,12 @@
 //!
 //! **Format.** A directory: `manifest.json` (the header) and `rec-NNNN.jsonl` segments, one JSON
 //! object per line, `{"f":<frame>,"t":"<kind>",…}`. Kinds per frame: `tick` (EVERY frame),
-//! `present` (the bit and WHY), `in` (an input, with its recorded resolution), `eff` (an effect,
-//! `from`/`e`/`addr`), `async` (an adapter result's address and payload or blob hash), `land`
-//! (schema 2: how many landings a STORE consumed on this frame — the schedule `ui::landgate`
-//! holds a replay to), `life`, `timer`, `st` (the logical-state hash, on every EVENT frame). The
+//! `present` (the bit and WHY), `in` (an input), `eff` (an effect, `from`/`e`/`addr`), `async`
+//! (an adapter result's address and payload or blob hash), `land` (how many landings a STORE
+//! consumed on this frame — the schedule `ui::landgate` holds a replay to), `life`, `timer`, `st`
+//! (the logical-state hash, on every EVENT frame), plus schema-3 `metrics` typed measurement
+//! records, pointwise `rs` Focus/Hit resolutions and exactly one final `fo` product-focus
+//! observation per frame. The
 //! header carries `schema`,
 //! `state_fp`, the build, the features, the armed triggers, `init` (the application's initial
 //! conditions, `H::Init`) and the clock origin.
@@ -39,13 +41,17 @@ mod strict_json;
 
 /// The record format's version. A recording from another schema is REFUSED, both printed.
 ///
+/// **3 (product resolve): typed measurement queries.** `metrics` now carries the exact query
+/// identity and the answer's `f32` bits (`{q,bits}`), including width, cap-height and line-height.
+/// Schema 2's `{s,sz,b,w,h}` row cannot represent those three capabilities losslessly.
+///
 /// **2 (phase 11): `land`.** A recording now carries the frame every STORE consumed a landing on
 /// — the schedule `ui::landgate` holds a replay's live landings to (§3.3 step 3). Schema 1 could
 /// not: the only per-frame arrival it recorded was the dispatcher's `async`, so every result the
 /// legacy pumps drain OUTSIDE that drain had no recorded frame at all, and a schema-1 recording
 /// replayed under the gate would silently grade nothing. Refusing it is the honest answer;
 /// `tools/plxnative-rec rerecord` is the verb (`tests/fixtures/replay/README.md`).
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 /// Segment rotation.
 pub const SEGMENT_BYTES: usize = 2 * 1024 * 1024;
 /// The hard cap on one recording (spec §5.3, settled on the tmpfs measurement).
@@ -536,7 +542,12 @@ impl Writer {
     }
 
     pub fn metrics(&mut self, f: u64, text: &str, sz: i32, bold: bool, w: f32, h: f32) {
-        self.line(json!({"f": f, "t": "metrics", "s": text, "sz": sz, "b": bold, "w": w, "h": h}));
+        self.metric(f, &MetricKey::Width { text: text.as_bytes().to_vec(), sz, bold }, w.to_bits());
+        self.metric(f, &MetricKey::Line { sz }, h.to_bits());
+    }
+
+    pub(crate) fn metric(&mut self, f: u64, key: &MetricKey, bits: u32) {
+        self.line(json!({"f": f, "t": "metrics", "q": key, "bits": bits}));
     }
 
     pub fn state(&mut self, f: u64, hash: u64) {
@@ -547,6 +558,11 @@ impl Writer {
     /// `(entry, elem)` or none.
     pub fn focus(&mut self, f: u64, focus: Option<(u32, u32, Option<u32>)>) {
         self.line(json!({"f": f, "t": "fo", "entry": focus.map(|x| x.0), "elem": focus.map(|x| x.1), "group": focus.and_then(|x| x.2)}));
+    }
+
+    /// A product resolution observation, before the dependent screen effects.
+    pub fn resolution(&mut self, f: u64, payload: Value) {
+        self.line(json!({"f":f, "t":"rs", "payload":payload}));
     }
 
     /// One write per frame. Rotates at `SEGMENT_BYTES`, stops at `CAP_BYTES` with a final note.
@@ -637,14 +653,15 @@ pub struct Frame {
     pub st: Option<u64>,
     /// The recorded focus after the drains: `Some(None)` is "recorded as none".
     pub focus: Option<Option<(u32, u32, Option<u32>)>>,
+    pub resolutions: Vec<Value>,
 }
 
 /// A loaded recording.
 pub struct Recording {
     pub header: Header,
     pub frames: Vec<Frame>,
-    /// `metrics{key: (w, h)}` — the side table replay's `TableMeasure` answers from.
-    pub metrics: HashMap<(String, i32, bool), (f32, f32)>,
+    /// Exact query identities and f32 answer bits for replay's measurement capability.
+    pub metrics: HashMap<MetricKey, u32>,
     pub stopped_at: Option<u64>,
 }
 
@@ -709,7 +726,17 @@ impl Recording {
                         fr.present = Some(v["bit"].as_bool().ok_or_else(|| malformed(n,"bit"))?);
                         fr.present_why = v["why"].as_str().map(String::from);
                     }
-                    "in" => fr.inputs.push(v.clone()),
+                    "in" => {
+                        if fr.focus.is_some() { return Err(malformed(n,"input after final focus")); }
+                        fr.inputs.push(v.clone());
+                    }
+                    "rs" => {
+                        if fr.focus.is_some() { return Err(malformed(n,"resolution after final focus")); }
+                        if v.as_object().is_none_or(|o| o.len() != 3) || v.get("payload").is_none() {
+                            return Err(malformed(n,"resolution envelope"));
+                        }
+                        fr.resolutions.push(v.clone());
+                    }
                     "eff" => fr.effects.push(v.clone()),
                     "async" => fr.results.push(v.clone()),
                     "land" => {
@@ -728,19 +755,17 @@ impl Recording {
                     }
                     "timer" => { checked_u32(&v,"id",n)?; fr.life.push(v.clone()); }
                     "metrics" => {
-                        let key = (v["s"].as_str().ok_or_else(|| malformed(n,"metric text"))?.to_owned(),
-                            v["sz"].as_i64().and_then(|n| i32::try_from(n).ok()).ok_or_else(|| malformed(n,"metric size"))?,
-                            v["b"].as_bool().ok_or_else(|| malformed(n,"metric bold"))?);
-                        let metric = |field| -> Result<f32, RecError> {
-                            let value = v[field].as_f64().ok_or_else(|| malformed(n,field))? as f32;
-                            if !value.is_finite() { return Err(malformed(n,field)); }
-                            Ok(value)
-                        };
-                        let value = (metric("w")?,metric("h")?);
-                        if let Some((w,h)) = metrics.insert(key,value) {
-                            if w.to_bits() != value.0.to_bits() || h.to_bits() != value.1.to_bits() {
-                                return Err(malformed(n,"conflicting metrics"));
-                            }
+                        if v.as_object().is_none_or(|o| o.len()!=4) { return Err(malformed(n,"metric fields")); }
+                        let key: MetricKey = serde_json::from_value(v["q"].clone())
+                            .map_err(|_|malformed(n,"metric query"))?;
+                        if !key.valid() { return Err(malformed(n,"metric query bounds")); }
+                        let bits = checked_u32(&v,"bits",n)?;
+                        if metrics.len() >= MAX_METRICS && !metrics.contains_key(&key) {
+                            return Err(malformed(n,"metric table bounds"));
+                        }
+                        budget.charge(key.bytes()+64).map_err(|what|malformed(n,what))?;
+                        if let Some(old) = metrics.insert(key,bits) {
+                            if old!=bits { return Err(malformed(n,"conflicting metrics")); }
                         }
                     }
                     "st" => {
@@ -749,6 +774,10 @@ impl Recording {
                     }
                     "fo" => {
                         if fr.focus.is_some() { return Err(malformed(n,"duplicate focus")); }
+                        if v.as_object().is_none_or(|o| o.len() != 5)
+                            || ["entry","elem","group"].iter().any(|key| v.get(*key).is_none()) {
+                            return Err(malformed(n,"focus envelope"));
+                        }
                         fr.focus = Some(if v["entry"].is_null() && v["elem"].is_null() && v["group"].is_null() { None }
                             else { Some((checked_u32(&v,"entry",n)?,checked_u32(&v,"elem",n)?,
                                 if v["group"].is_null() { None } else { Some(checked_u32(&v,"group",n)?) })) });
@@ -824,45 +853,204 @@ impl Recording {
     }
 }
 
-/// The replay `Measure` (spec §4.3): answers from the recording's metrics table; a miss is a
-/// HARD failure the replay driver reads after every frame.
+/// Canonical measurement identity. Raw CStr bytes distinguish non-UTF8 strings too.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag="kind", deny_unknown_fields)]
+pub enum MetricKey {
+    Width { text: Vec<u8>, sz: i32, bold: bool },
+    Cap { sz: i32 },
+    Line { sz: i32 },
+}
+
+const MAX_METRICS: usize = 65536;
+const MAX_METRIC_BYTES: usize = 4 * 1024 * 1024;
+impl MetricKey {
+    fn bytes(&self) -> usize { match self { Self::Width { text,.. }=>text.len(), _=>0 } }
+    fn valid(&self) -> bool {
+        match self { Self::Width {text,..}=>text.len()<=16384 && !text.contains(&0), _=>true }
+    }
+}
+
+/// Replay answers only from captured bits; a miss must be consumed before grading the frame.
 pub struct TableMeasure {
-    table: HashMap<(String, i32, bool), (f32, f32)>,
-    miss: std::cell::Cell<Option<(String, i32, bool)>>,
+    table: HashMap<MetricKey,u32>,
+    miss: std::cell::RefCell<Option<MetricKey>>,
+    #[cfg(test)]
+    queries: std::cell::RefCell<Vec<MetricKey>>,
 }
 
 impl TableMeasure {
-    pub fn new(table: HashMap<(String, i32, bool), (f32, f32)>) -> Self {
+    pub fn new(table: HashMap<MetricKey,u32>) -> Self {
         Self {
             table,
-            miss: std::cell::Cell::new(None),
+            miss: std::cell::RefCell::new(None),
+            #[cfg(test)]
+            queries: Default::default(),
         }
     }
 
     /// The first key that was not in the table, if any (and clears it).
-    pub fn take_miss(&self) -> Option<(String, i32, bool)> {
-        self.miss.take()
+    pub fn take_miss(&self) -> Option<MetricKey> {
+        self.miss.borrow_mut().take()
+    }
+    fn query(&self, key: MetricKey) -> f32 {
+        #[cfg(test)]
+        self.queries.borrow_mut().push(key.clone());
+        if let Some(bits)=self.table.get(&key) { return f32::from_bits(*bits); }
+        self.miss.borrow_mut().get_or_insert(key);
+        0.0
     }
 }
 
 impl Measure for TableMeasure {
     fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
-        let key = (s.to_string_lossy().to_string(), sz, bold);
-        match self.table.get(&key) {
-            Some((w, _)) => *w,
-            None => {
-                if self.miss.take().is_none() {
-                    self.miss.set(Some(key));
-                }
-                0.0
-            }
-        }
+        self.query(MetricKey::Width { text:s.to_bytes().to_vec(), sz, bold })
     }
     fn cap_h(&self, sz: i32) -> f32 {
-        sz as f32 * 0.7
+        self.query(MetricKey::Cap {sz})
     }
     fn line_h(&self, sz: i32) -> f32 {
-        sz as f32 * 1.2
+        self.query(MetricKey::Line {sz})
+    }
+}
+
+/// App-owned capability. Pending replay cannot touch a font, even before recorder attachment.
+pub(crate) enum Measurements {
+    Live(&'static dyn Measure),
+    Pending(std::cell::Cell<bool>),
+    Record { source: &'static dyn Measure, capture: std::cell::RefCell<MetricCapture> },
+    Replay(TableMeasure),
+}
+
+#[derive(Default)]
+pub(crate) struct MetricCapture {
+    table: HashMap<MetricKey,u32>,
+    pending: Vec<(MetricKey,u32)>,
+    bytes: usize,
+    failed: bool,
+    #[cfg(test)]
+    queries: Vec<MetricKey>,
+}
+impl Measurements {
+    #[cfg(test)]
+    pub(crate) fn queries(&self)->Vec<MetricKey> {
+        match self {
+            Self::Replay(table)=>table.queries.take(),
+            Self::Record {capture,..}=>std::mem::take(&mut capture.borrow_mut().queries),
+            _=>Vec::new(),
+        }
+    }
+    pub(crate) fn record(source: &'static dyn Measure) -> Self {
+        Self::Record { source, capture:Default::default() }
+    }
+    pub(crate) fn prepare(&mut self, replay: Option<&HashMap<MetricKey,u32>>) {
+        match self {
+            Self::Live(source)=>*self=match replay {
+                Some(table)=>Self::Replay(TableMeasure::new(table.clone())),
+                None=>Self::record(*source),
+            },
+            Self::Pending(failed) if !failed.get()=>{
+                if let Some(table)=replay { *self=Self::Replay(TableMeasure::new(table.clone())); }
+            },
+            _=>{},
+        }
+    }
+    pub(crate) fn retire(&mut self) {
+        if let Self::Record {source,..}=self { *self=Self::Live(*source); }
+    }
+    pub(crate) fn drain(&self) -> Result<Vec<(MetricKey,u32)>, &'static str> {
+        match self {
+            Self::Pending(_)=>Err("measurement capability not attached before use"),
+            Self::Replay(table) if table.take_miss().is_some()=>Err("replay measurement table miss"),
+            Self::Record {capture,..}=>{
+                let mut capture=capture.borrow_mut();
+                if capture.failed { return Err("recording measurement bounds or conflicting answer"); }
+                Ok(std::mem::take(&mut capture.pending))
+            },
+            _=>Ok(Vec::new()),
+        }
+    }
+    fn query(&self, key: MetricKey, live: impl FnOnce(&dyn Measure)->f32) -> f32 {
+        match self {
+            Self::Live(source)=>live(*source),
+            Self::Pending(failed)=>{ failed.set(true); 0.0 },
+            Self::Replay(table)=>table.query(key),
+            Self::Record {source,capture}=>{
+                let answer=live(*source);
+                let bits=answer.to_bits();
+                let mut capture=capture.borrow_mut();
+                #[cfg(test)]
+                capture.queries.push(key.clone());
+                if let Some(old)=capture.table.get(&key) {
+                    if *old!=bits { capture.failed=true; }
+                } else if !key.valid() || capture.table.len()>=MAX_METRICS
+                    || capture.bytes+key.bytes()+64>MAX_METRIC_BYTES {
+                    capture.failed=true;
+                } else {
+                    capture.bytes+=key.bytes()+64;
+                    capture.table.insert(key.clone(),bits);
+                    capture.pending.push((key,bits));
+                }
+                answer
+            },
+        }
+    }
+}
+impl Measure for Measurements {
+    fn width(&self,s:&CStr,sz:i32,bold:bool)->f32 {
+        if let Self::Live(source)=self { return source.width(s,sz,bold); }
+        self.query(MetricKey::Width {text:s.to_bytes().to_vec(),sz,bold},|m|m.width(s,sz,bold))
+    }
+    fn cap_h(&self,sz:i32)->f32 {
+        if let Self::Live(source)=self { return source.cap_h(sz); }
+        self.query(MetricKey::Cap {sz},|m|m.cap_h(sz))
+    }
+    fn line_h(&self,sz:i32)->f32 {
+        if let Self::Live(source)=self { return source.line_h(sz); }
+        self.query(MetricKey::Line {sz},|m|m.line_h(sz))
+    }
+}
+
+/// Prove a lower-layer geometry closure uses only the supplied measurement capability. The
+/// first pass captures fixture answers; fresh table owners then reproduce the exact geometry and
+/// reject every table with one required key removed. App-level recorder tests separately prove
+/// that both Targets and Resolve install this same table through `Bridge`.
+#[cfg(test)]
+pub(crate) fn assert_measured_geometry(mut geometry: impl FnMut(&dyn Measure) -> Vec<u32>) {
+    static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
+    let _no_live_font = crate::ui::text_view::ForbidLive::enter();
+    crate::text::take_measure_fault();
+    let capture = Measurements::record(&FIXTURE);
+    let expected = geometry(&capture);
+    assert!(
+        !crate::text::take_measure_fault(),
+        "product geometry bypassed Measure through a live font"
+    );
+    let metrics: HashMap<_, _> = capture.drain().unwrap().into_iter().collect();
+    assert!(!metrics.is_empty(), "geometry did not exercise measurement");
+
+    let replay = Measurements::Replay(TableMeasure::new(metrics.clone()));
+    assert_eq!(
+        geometry(&replay),
+        expected,
+        "replay geometry must retain exact f32 bits"
+    );
+    replay.drain().unwrap();
+    assert!(
+        !crate::text::take_measure_fault(),
+        "table replay touched a live font"
+    );
+
+    for key in metrics.keys() {
+        let mut missing = metrics.clone();
+        missing.remove(key);
+        let replay = Measurements::Replay(TableMeasure::new(missing));
+        geometry(&replay);
+        assert_eq!(
+            replay.drain(),
+            Err("replay measurement table miss"),
+            "missing required metric accepted: {key:?}"
+        );
     }
 }
 
@@ -880,6 +1068,21 @@ pub fn state_fp(shapes: &[&str]) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn focus_truth_requires_exact_nullable_fields_and_post_input_order() {
+        use super::*;
+        let manifest=serde_json::json!({"schema":SCHEMA,"state_fp":1}).to_string();
+        let tick="{\"f\":0,\"t\":\"tick\",\"ms\":0,\"dt_us\":0}\n";
+        let good="{\"f\":0,\"t\":\"fo\",\"entry\":null,\"elem\":null,\"group\":null}\n";
+        assert!(Recording::parse(&manifest,&[format!("{tick}{good}").as_bytes()],1).is_ok());
+        for bad in ["{\"f\":0,\"t\":\"fo\"}\n".to_string(),
+            good.replace("null","false"),good.replace("\"elem\":null","\"elem\":1"),
+            good.replace("\"group\":null","\"group\":4294967296"),
+            format!("{good}{good}"),format!("{good}{{\"f\":0,\"t\":\"in\"}}\n"),
+            format!("{good}{{\"f\":0,\"t\":\"rs\",\"payload\":{{}}}}\n")] {
+            assert!(Recording::parse(&manifest,&[format!("{tick}{bad}").as_bytes()],1).is_err(),"{bad}");
+        }
+    }
     use super::*;
 
     #[test]
@@ -1267,12 +1470,68 @@ mod tests {
     #[test]
     fn a_replay_measure_miss_fails_loudly() {
         let mut t = HashMap::new();
-        t.insert(("Play".to_string(), 28, false), (61.0f32, 30.0f32));
+        t.insert(MetricKey::Width {text:b"Play".to_vec(),sz:28,bold:false},61.0f32.to_bits());
         let m = TableMeasure::new(t);
         assert_eq!(m.width(c"Play", 28, false), 61.0);
         assert!(m.take_miss().is_none());
         let _ = m.width(c"Pause", 28, false);
-        assert_eq!(m.take_miss(), Some(("Pause".to_string(), 28, false)));
+        assert_eq!(m.take_miss(), Some(MetricKey::Width {text:b"Pause".to_vec(),sz:28,bold:false}));
+    }
+
+    #[test]
+    fn all_missing_metric_kinds_are_hard_failures() {
+        let m = TableMeasure::new(HashMap::new());
+        m.cap_h(28);
+        assert!(m.take_miss().is_some(), "cap height must never be guessed");
+        m.line_h(28);
+        assert!(m.take_miss().is_some(), "line height must never be guessed");
+        m.width(c"missing", 28, false);
+        m.width(c"also missing", 28, false);
+        assert!(m.take_miss().is_some(), "a second miss must not erase the first");
+    }
+
+    #[test]
+    fn measurement_wire_preserves_query_identity_and_every_answer_bit() {
+        struct Bits;
+        impl Measure for Bits {
+            fn width(&self,_:&CStr,_:i32,bold:bool)->f32 {f32::from_bits(if bold {0x80000000}else{0x41abcdef})}
+            fn cap_h(&self,_:i32)->f32 {f32::from_bits(1)}
+            fn line_h(&self,_:i32)->f32 {f32::from_bits(0x7fc01234)}
+        }
+        static BITS:Bits=Bits;
+        let m=Measurements::record(&BITS);
+        let text=CStr::from_bytes_with_nul(b"\xff\0").unwrap();
+        let answers=[m.width(text,-28,true),m.width(text,28,false),m.cap_h(28),m.line_h(28)].map(f32::to_bits);
+        assert_eq!(answers,[0x80000000,0x41abcdef,1,0x7fc01234]);
+        let sink=MemSink::default();
+        let segments=sink.segments.clone();
+        let header=Header::new(3,&Init);
+        let mut w=Writer::open(Box::new(sink),&header,0).unwrap();
+        w.tick(0,Tick::default());
+        for (key,bits) in m.drain().unwrap() { w.metric(0,&key,bits); }
+        w.flush_frame().unwrap();
+        let parsed=Recording::parse(&header.to_json().to_string(),
+            &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),3).unwrap();
+        let replay=TableMeasure::new(parsed.metrics);
+        assert_eq!([replay.width(text,-28,true),replay.width(text,28,false),
+            replay.cap_h(28),replay.line_h(28)].map(f32::to_bits),answers);
+        assert!(replay.take_miss().is_none());
+        replay.width(c"�",-28,true);
+        assert!(replay.take_miss().is_some(),"raw CStr bytes must never collapse through lossy UTF-8");
+    }
+
+    #[test]
+    fn measurement_capture_is_bounded_and_pending_replay_cannot_fall_back() {
+        static M:crate::ui::fixture::FixtureMeasure=crate::ui::fixture::FixtureMeasure;
+        let m=Measurements::record(&M);
+        let Measurements::Record {capture,..}=&m else {unreachable!()};
+        capture.borrow_mut().bytes=MAX_METRIC_BYTES;
+        m.width(c"overflow",28,false);
+        assert!(m.drain().is_err());
+        let mut pending=Measurements::Pending(Default::default());
+        pending.cap_h(28);
+        pending.prepare(Some(&HashMap::new()));
+        assert!(pending.drain().is_err(),"late attachment must not erase an early query fault");
     }
 
     #[test]

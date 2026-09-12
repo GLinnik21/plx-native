@@ -240,8 +240,32 @@ class ContentFocusFlows(unittest.TestCase):
 
 
 class FocusFpAccounting(unittest.TestCase):
+    def test_product_modes_are_explicit_exclusive_and_grade_all_counters(self):
+        summary = ('replay: done frames=1 graded=1 diverged=0 present_diffs=0 input_diffs=0 '
+                   'result_diffs=0 land_diffs=0 effect_diffs=0 focus_diffs=0 hit_diffs=0 verdict=SAME')
+        for mode in ('--replay', '--targets', '--resolve'):
+            expected = 'resolve' if mode == '--resolve' else 'targets'
+            script = ('#!/bin/sh\nroot="$PLXNATIVE_RUNTIME_DIR"\n'
+                      'test "$(sed -n 1p "$root/plxnative-recplay")" = v1 || exit 3\n'
+                      f'test "$(sed -n 2p "$root/plxnative-recplay")" = {expected} || exit 3\n'
+                      f'printf "hubs: landed\\n{summary}\\n" > "$root/plxnative-events.log"\n')
+            result = self._run_isolated_focusfp(script, '--only', '1', mode=mode)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for pair in (('--rec', '--replay'), ('--targets', '--resolve'), ('--resolve', '--replay'),
+                     ('--targets', '--targets')):
+            result = self._run_isolated_focusfp('#!/bin/sh\nexit 88\n', pair[1], mode=pair[0])
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('conflicting modes', result.stderr)
+        for field in ('input_diffs', 'focus_diffs', 'hit_diffs'):
+            for bad in (summary.replace(field + '=0', field + '=1'),
+                        summary.replace(' ' + field + '=0', '')):
+                script = ('#!/bin/sh\nroot="$PLXNATIVE_RUNTIME_DIR"\n'
+                          f'printf "hubs: landed\\n{bad}\\n" > "$root/plxnative-events.log"\n')
+                result = self._run_isolated_focusfp(script, '--only', '1', mode='--resolve')
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
     @staticmethod
-    def _run_isolated_focusfp(simulator, *args):
+    def _run_isolated_focusfp(simulator, *args, mode="--replay"):
         """Run a copied focusfp script against only the fixtures this accounting test needs."""
         fixture_names = (
             "1-boot-home-chip-grid",
@@ -268,7 +292,7 @@ class FocusFpAccounting(unittest.TestCase):
             env = os.environ.copy()
             env.update({"SIM_BIN": sim, "OUT": os.path.join(tmp, "out")})
             return subprocess.run(
-                [focusfp, "--pms", "127.0.0.1:9", "--replay", *args],
+                [focusfp, "--pms", "127.0.0.1:9", mode, *args],
                 cwd=repo,
                 env=env,
                 capture_output=True,
@@ -286,7 +310,7 @@ elif [ -e "$root/plxnative-filmography" ]; then
 else
     marker='hubs: landed'
 fi
-printf '%s\\nreplay: done frames=1 graded=1 diverged=0 present_diffs=0 verdict=SAME\\n' "$marker" > "$root/plxnative-events.log"
+printf '%s\\nreplay: done frames=1 graded=1 diverged=0 present_diffs=0 input_diffs=0 result_diffs=0 land_diffs=0 effect_diffs=0 focus_diffs=0 hit_diffs=0 verdict=SAME\\n' "$marker" > "$root/plxnative-events.log"
 exit 0
 """
         result = self._run_isolated_focusfp(script)
@@ -402,6 +426,98 @@ class ReplayFixtures(unittest.TestCase):
                         self.assertEqual(guard("tests/fixtures/replay/" + name + "/" + fn).returncode, 0,
                                          name + "/" + fn)
 
+    def test_metric_text_bytes_are_checked_at_both_public_fixture_boundaries(self):
+        """MetricKey::Width is byte-valued on disk, but public fixtures are UTF-8 synthetic text.
+
+        Exercise the two actual publication boundaries against an alphabet that already admits
+        the finite metric protocol words.  That arrangement is intentional: a private title must
+        not become publishable merely because ``Width`` itself is later admitted.
+        """
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run(["git", "init", "-q", root], check=True)
+            fixtures = os.path.join(root, "tests", "fixtures", "replay")
+            os.makedirs(fixtures)
+            os.makedirs(os.path.join(root, "tools"))
+            tool = os.path.join(root, "tools", "plxnative-rec")
+            shutil.copy(os.path.join(REPO_ROOT, "tools", "plxnative-rec"), tool)
+            alphabet_path = os.path.join(fixtures, "ALPHABET.json")
+            shutil.copy(os.path.join(self.FIXTURES, "ALPHABET.json"), alphabet_path)
+
+            recording = self._synthetic_recording(fixtures)
+            segment = os.path.join(recording, "rec-0000.jsonl")
+            relative = "tests/fixtures/replay/rec/rec-0000.jsonl"
+            hook = os.path.join(REPO_ROOT, ".claude", "hooks", "outbound-guard.py")
+
+            def outcomes(rows):
+                with open(segment, "w", encoding="utf-8") as f:
+                    for row in rows:
+                        f.write(json.dumps(row, separators=(",", ":")) + "\n")
+                cli = subprocess.run([sys.executable, tool, "check", recording],
+                                     capture_output=True, text=True, cwd=root)
+                guard = subprocess.run([sys.executable, hook], input=json.dumps({
+                    "tool_name": "Bash", "cwd": root, "tool_input": {
+                        "command": "gh pr create --body-file " + relative}}),
+                    capture_output=True, text=True, cwd=root)
+                return cli, guard
+
+            natural = [
+                {"f": 0, "t": "metrics", "q": {"kind": "Width",
+                 "text": list(b"s01234567"), "sz": 28, "bold": False}, "bits": 1},
+                {"f": 0, "t": "metrics", "q": {"kind": "Cap", "sz": 28}, "bits": 2},
+                {"f": 0, "t": "metrics", "q": {"kind": "Line", "sz": 28}, "bits": 3},
+            ]
+            for boundary, result in zip(("cli", "guard"), outcomes(natural)):
+                with self.subTest(case="natural", boundary=boundary):
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            private = "UnlistedHouseholdName"
+            bad_texts = [
+                list(private.encode("utf-8")),       # valid UTF-8, outside the closed alphabet
+                [0xff],                              # not UTF-8
+                [ord("s"), 0, ord("0")],           # C-string-invalid NUL
+                [115, 48, 49, 50, 51, 52, 53, 54, 55.0],  # noncanonical JSON number
+                [115, 48, 49, 50, 51, 52, 53, 54, True],  # bool is not an integer byte
+                [256],                               # outside byte bounds
+                [ord("s")] * 16385,                 # ui/rec.rs MetricKey::valid bound
+            ]
+            for index, text_bytes in enumerate(bad_texts):
+                row = {"f": 0, "t": "metrics", "q": {"kind": "Width",
+                       "text": text_bytes, "sz": 28, "bold": False}, "bits": 1}
+                for boundary, result in zip(("cli", "guard"), outcomes([row])):
+                    with self.subTest(case=index, boundary=boundary):
+                        self.assertEqual(result.returncode, 1 if boundary == "cli" else 2,
+                                         result.stdout + result.stderr)
+                        self.assertNotIn(private, result.stdout + result.stderr)
+
+            malformed = {"f": 0, "t": "metrics", "q": {"kind": "Unknown",
+                         "text": list(b"UnlistedHouseholdName"), "sz": 28, "bold": False},
+                         "bits": 1}
+            for boundary, result in zip(("cli", "guard"), outcomes([malformed])):
+                with self.subTest(case="unknown-byte-context", boundary=boundary):
+                    self.assertEqual(result.returncode, 1 if boundary == "cli" else 2,
+                                     result.stdout + result.stderr)
+                    self.assertNotIn(private, result.stdout + result.stderr)
+
+            # Ordinary json.loads keeps only the final spelling of a duplicate key. The raw file
+            # must not retain private bytes in an earlier spelling that both publishers overlook.
+            duplicate = ('{"f":0,"t":"metrics","q":{"kind":"Width",'
+                         '"text":' + json.dumps(list(private.encode("utf-8"))) + ','
+                         '"text":' + json.dumps(list(b"s01234567")) + ','
+                         '"sz":28,"bold":false},"bits":1}\n')
+            with open(segment, "w", encoding="utf-8") as f:
+                f.write(duplicate)
+            cli = subprocess.run([sys.executable, tool, "check", recording],
+                                 capture_output=True, text=True, cwd=root)
+            guard = subprocess.run([sys.executable, hook], input=json.dumps({
+                "tool_name": "Bash", "cwd": root, "tool_input": {
+                    "command": "gh pr create --body-file " + relative}}),
+                capture_output=True, text=True, cwd=root)
+            for boundary, result in zip(("cli", "guard"), (cli, guard)):
+                with self.subTest(case="duplicate-metric-key", boundary=boundary):
+                    self.assertEqual(result.returncode, 1 if boundary == "cli" else 2,
+                                     result.stdout + result.stderr)
+                    self.assertNotIn(private, result.stdout + result.stderr)
+
     @staticmethod
     def _strings(node, out):
         if isinstance(node, str):
@@ -425,6 +541,8 @@ class ReplayFixtures(unittest.TestCase):
                     continue
                 with open(os.path.join(d, fn), encoding="utf-8") as f:
                     text = f.read()
+                boundary = self._tool("check", d)
+                self.assertEqual(boundary.returncode, 0, boundary.stdout + boundary.stderr)
                 docs = ([json.loads(text)] if fn.endswith(".json")
                         else [json.loads(l) for l in text.splitlines() if l.strip()])
                 for doc in docs:
@@ -625,6 +743,24 @@ class ReplayFixtures(unittest.TestCase):
                 for name, contents in kept.items():
                     with open(os.path.join(fixtures, "flow", name), "rb") as f:
                         self.assertEqual(f.read(), contents)
+            # Product focus/hit differences are input-resolution differences, with dedicated
+            # subset counters. Neither the detail witness nor the aggregate can be adopted
+            # through the older state-only rebaseline, even alongside a real state mismatch.
+            for family in ('focus', 'hit'):
+                for detail, count in [(True, 1), (False, 1), (True, 0)]:
+                    log = os.path.join(tmp, family + '.log')
+                    with open(log, 'w') as f:
+                        if detail:
+                            f.write(f'replay: input diverge f=0 resolution_index=0 reason=changed resolution={family}\n')
+                        f.write('replay: diverge f=0 expected=0x0000000000000010 got=0x0000000000000020 inputs=1\n')
+                        f.write(f'replay: done frames=1 graded=1 diverged=1 input_diffs={count} {family}_diffs=1 verdict=DIVERGED\n')
+                    r = run('rebaseline', new, 'flow', '--log', log)
+                    self.assertEqual(r.returncode, 1, r.stdout)
+                    self.assertIn('input', r.stdout)
+                    self.assertFalse(os.path.exists(os.path.join(fixtures, 'flow', 'divergence.json')))
+                    for name, contents in kept.items():
+                        with open(os.path.join(fixtures, 'flow', name), 'rb') as f:
+                            self.assertEqual(f.read(), contents)
             # 4. a real record: accepted, and divergence.json is written beside the new recording
             log = os.path.join(tmp, "real.log")
             open(log, "w").write("replay: diverge f=0 expected=0x0000000000000010 got=0x0000000000000020 inputs=1\n"
