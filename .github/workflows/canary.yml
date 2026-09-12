@@ -1,0 +1,218 @@
+name: Public storage canary
+
+# Separate from release.yml by design: this publishes a test-only debug-id prerelease and never
+# changes releases/latest, the stable package manifest, or webosbrew.
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: 'Canary label: X.Y.Z-rc.N (for example 0.6.6-rc.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-storage-canary-${{ inputs.label }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: validate canary label
+    runs-on: ubuntu-latest
+    outputs:
+      label: ${{ steps.label.outputs.label }}
+      tag: ${{ steps.label.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: label
+        env:
+          LABEL: ${{ inputs.label }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$LABEL" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)$ ]]; then
+            echo "::error::label '$LABEL' must be X.Y.Z-rc.N, with N >= 1."
+            exit 1
+          fi
+          base="${BASH_REMATCH[1]}"
+          app_version=$(python3 -c "import json; print(json.load(open('pkg/appinfo.json'))['version'])")
+          [ "$base" = "$app_version" ] || {
+            echo "::error::label base $base does not match pkg/appinfo.json version $app_version."
+            exit 1
+          }
+          echo "label=$LABEL" >> "$GITHUB_OUTPUT"
+          echo "tag=canary/v$LABEL" >> "$GITHUB_OUTPUT"
+
+  host-checks:
+    name: host + shipping feature checks
+    runs-on: ubuntu-latest
+    needs: validate
+    env:
+      RUST_NIGHTLY: nightly
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev
+      - name: Install nightly Rust
+        run: rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component clippy --component rust-src
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: rust-modules
+      - name: Host checks
+        run: make check
+      - name: Type-check shipping feature set
+        run: CARGO_INCREMENTAL=0 cargo "+$RUST_NIGHTLY" check --manifest-path rust-modules/Cargo.toml --lib --no-default-features
+
+  build:
+    name: ARM package + compatibility gates
+    runs-on: ubuntu-24.04-arm
+    needs: [validate, host-checks]
+    env:
+      RUST_NIGHTLY: ${{ vars.RUST_NIGHTLY || 'nightly-2026-07-02' }}
+      RELEASE: '1'
+      FLAVOR: debug
+      SYMBOLS: '1'
+      PLX_SENTRY_DSN: ''
+      PLX_POSTHOG_KEY: ''
+      PLX_SENTRY_DSN_DEV: ${{ vars.PLX_SENTRY_DSN_DEV }}
+      PLX_POSTHOG_KEY_DEV: ${{ vars.PLX_POSTHOG_KEY_DEV }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Install pinned nightly Rust
+        run: |
+          rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component rust-src
+          rustup run "$RUST_NIGHTLY" rustc --version
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: rust-modules
+          key: armv7-build-std
+      - id: ndk
+        uses: ./.github/actions/webos-ndk
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            vendor/ffmpeg-prefix
+            vendor/ffmpeg-build
+          key: ffmpeg-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh') }}
+      - name: Build, package, and prove canary configuration
+        env:
+          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
+        run: |
+          set -euo pipefail
+          make -j"$(nproc)"
+          make ipk symbols
+          grep -q -- '--no-default-features' pkg/.build-config
+          grep -q '+symbols' pkg/.build-config
+          [ -n "$PLX_SENTRY_DSN_DEV" ] || { echo '::error::PLX_SENTRY_DSN_DEV is required for the public canary.'; exit 1; }
+          [ -n "$PLX_POSTHOG_KEY_DEV" ] || { echo '::error::PLX_POSTHOG_KEY_DEV is required for the public canary.'; exit 1; }
+          [ -z "$PLX_SENTRY_DSN$PLX_POSTHOG_KEY" ] || { echo '::error::production telemetry is present in canary build.'; exit 1; }
+          grep -q 'tel:' pkg/.build-config
+          python3 -c 'import os; b=open("pkg/plxnative","rb").read(); assert os.environ["PLX_SENTRY_DSN_DEV"].encode() in b; assert os.environ["PLX_POSTHOG_KEY_DEV"].encode() in b'
+          test -s pkg/plxnative.debug
+          idof() { readelf -n "$1" | awk '/Build ID/{print $3}'; }
+          [ "$(idof pkg/plxnative)" = "$(idof pkg/plxnative.debug)" ]
+          ls pkg/com.beb.plxnative.debug_*_arm.ipk >/dev/null
+      - name: Upload matching debug files to development Sentry
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG || 'gleb-linnik' }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT_DEV || 'plx-native-dev' }}
+        run: |
+          set -euo pipefail
+          [ -n "$SENTRY_AUTH_TOKEN" ] || { echo '::error::SENTRY_AUTH_TOKEN is required.'; exit 1; }
+          [ "$SENTRY_PROJECT" = plx-native-dev ] || { echo "::error::canary DIFs must upload to plx-native-dev, not $SENTRY_PROJECT."; exit 1; }
+          npx --yes @sentry/cli@3.7.0 debug-files check pkg/plxnative.debug
+          npx --yes @sentry/cli@3.7.0 debug-files upload --include-sources pkg/plxnative.debug pkg/plxnative
+      - name: ELF and package assertions
+        env:
+          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
+          REQUIRE_PACKAGE: '1'
+        run: |
+          ./ci/check-elf.sh
+          python3 ci/check-package.py
+      - name: Install firmware compatibility tools
+        run: |
+          set -euo pipefail
+          tag=v20260731-e1bb0c0
+          declare -A sha256=(
+            [fw-symbols]=639721a0c2248b13e5984930b53729cc201f022725954086aca35e2ccae515b5
+            [ipk-verify]=2868b4b2efc097939ab11117c9266d796f0326ee48c90f80070766814fb174d9
+          )
+          for package in fw-symbols ipk-verify; do
+            file="webosbrew-toolbox-${package}_0.4.0-1_arm64.deb"
+            curl -fsSLo "$file" "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${tag}/$file"
+            echo "${sha256[$package]}  $file" | sha256sum -c -
+          done
+          sudo apt-get install -y ./webosbrew-toolbox-*.deb
+      - name: Firmware compatibility gates
+        run: |
+          set -euo pipefail
+          webosbrew-ipk-verify --details --format markdown --fw-releases '>=4.0' pkg/*.ipk | tee -a "$GITHUB_STEP_SUMMARY"
+          ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data --min-release 4.4.2 pkg/plxnative | tee -a "$GITHUB_STEP_SUMMARY"
+          ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data --min-release 4.4.2 pkg/plxnative-storage | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Stage public canary asset
+        env:
+          LABEL: ${{ needs.validate.outputs.label }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp pkg/com.beb.plxnative.debug_*_arm.ipk "dist/plxnative-debug-v${LABEL}.ipk"
+          sha256sum "dist/plxnative-debug-v${LABEL}.ipk" > dist/canary.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: public-storage-canary
+          path: |
+            dist/plxnative-debug-v${{ needs.validate.outputs.label }}.ipk
+            dist/canary.sha256
+          if-no-files-found: error
+
+  publish:
+    name: publish public prerelease
+    runs-on: ubuntu-latest
+    needs: [validate, build]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Refuse to overwrite an immutable canary
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null || { echo "::error::$TAG already exists; choose a new rc label."; exit 1; }
+          ! gh release view "$TAG" >/dev/null 2>&1 || { echo "::error::release $TAG already exists; choose a new rc label."; exit 1; }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: public-storage-canary
+          path: dist
+      - name: Verify and publish test-only prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          LABEL: ${{ needs.validate.outputs.label }}
+        run: |
+          set -euo pipefail
+          sha256sum -c dist/canary.sha256
+          gh release create "$TAG" "dist/plxnative-debug-v${LABEL}.ipk" \
+            --target "$GITHUB_SHA" \
+            --title "Public storage canary v${LABEL}" \
+            --prerelease \
+            --latest=false \
+            --notes 'Test-only storage canary. It installs beside the stable PlxNative app; do not treat it as a stable release.'
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .prerelease)" = true
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .target_commitish)" = "$GITHUB_SHA"
+          test "$(git ls-remote --tags origin "refs/tags/$TAG" | awk '{print $1}')" = "$GITHUB_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[0].uploader.login')" = 'github-actions[bot]'
+          mkdir -p verify
+          gh release download "$TAG" --pattern "plxnative-debug-v${LABEL}.ipk" --dir verify
+          test "$(sha256sum "verify/plxnative-debug-v${LABEL}.ipk" | cut -d' ' -f1)" = "$(cut -d' ' -f1 dist/canary.sha256)"
