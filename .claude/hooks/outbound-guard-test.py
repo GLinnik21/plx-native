@@ -246,14 +246,40 @@ def recording_case():
     os.makedirs(fix, exist_ok=True)
     with open(os.path.join(ROOT, "tests", "fixtures", "replay", "ALPHABET.json"), "w") as f:
         json.dump({"patterns": ["s[0-9a-f]{8}", "[0-9]+"],
-                   "literals": ["tick", "st", "in", "key", "ok"]}, f)
+                   "literals": ["tick", "st", "in", "key", "ok", "metrics",
+                                "fo", "rs", "Focus", "Hit", "Width", "Cap", "Line"]}, f)
     with open(os.path.join(fix, "rec-0000.jsonl"), "w") as f:
         f.write('{"f":0,"t":"tick","ms":0}\n'
-                '{"f":0,"t":"in","kind":"key","key":"ok","title":"s0a1b2c3d"}\n' + line)
+                '{"f":0,"t":"in","kind":"key","key":"ok","title":"s0a1b2c3d"}\n'
+                '{"f":0,"t":"metrics","q":{"kind":"Width","text":[115,48,97,49,98,50,99,51,100],"sz":28,"bold":false},"bits":1}\n'
+                '{"f":0,"t":"metrics","q":{"kind":"Cap","sz":28},"bits":2}\n'
+                '{"f":0,"t":"metrics","q":{"kind":"Line","sz":28},"bits":3}\n' + line)
     bad = os.path.join(ROOT, "tests", "fixtures", "replay", "leaky")
     os.makedirs(bad, exist_ok=True)
     with open(os.path.join(bad, "rec-0000.jsonl"), "w") as f:
         f.write('{"f":0,"t":"in","kind":"key","key":"ok","title":"Film Club Night"}\n')
+    bad_metric_paths = []
+    for name, text in (("private-metric", list(b"UnlistedHouseholdName")),
+                       ("nonutf8-metric", [255]),
+                       ("nul-metric", [115, 0, 48]),
+                       ("noncanonical-metric", [115, 48.0]),
+                       ("out-of-range-metric", [256]),
+                       ("oversized-metric", [115] * 16385)):
+        metric_dir = os.path.join(ROOT, "tests", "fixtures", "replay", name)
+        os.makedirs(metric_dir, exist_ok=True)
+        metric_path = os.path.join(metric_dir, "rec-0000.jsonl")
+        with open(metric_path, "w") as f:
+            json.dump({"f": 0, "t": "metrics", "q": {"kind": "Width", "text": text,
+                      "sz": 28, "bold": False}, "bits": 1}, f)
+            f.write("\n")
+        bad_metric_paths.append("tests/fixtures/replay/%s/rec-0000.jsonl" % name)
+    duplicate_dir = os.path.join(ROOT, "tests", "fixtures", "replay", "duplicate-metric")
+    os.makedirs(duplicate_dir, exist_ok=True)
+    with open(os.path.join(duplicate_dir, "rec-0000.jsonl"), "w") as f:
+        f.write('{"f":0,"t":"metrics","q":{"kind":"Width",'
+                '"text":[85,110,108,105,115,116,101,100,72,111,117,115,101,104,111,108,100,78,97,109,101],'
+                '"text":[115,48,49,50,51,52,53,54,55],"sz":28,"bold":false},"bits":1}\n')
+    bad_metric_paths.append("tests/fixtures/replay/duplicate-metric/rec-0000.jsonl")
     for cmd, want in (
         ("gh release upload v1 plxnative-recordings/rec-0000.jsonl", BLOCK),
         ("gh release upload v1 /tmp/anything/plxnative-recordings/rec-0000.jsonl", BLOCK),
@@ -265,6 +291,7 @@ def recording_case():
         ("git commit -m 'fixtures: leaky' tests/fixtures/replay/leaky/rec-0000.jsonl", BLOCK),
         ("git commit -m 'fixtures: the boot recording' tests/fixtures/replay/demo/rec-0000.jsonl",
          ALLOW),
+        *[("gh pr create --body-file " + path, BLOCK) for path in bad_metric_paths],
     ):
         got = blocked(cmd)
         if got != want:

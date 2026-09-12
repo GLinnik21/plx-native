@@ -290,7 +290,7 @@ impl LogicalState for Initial {
 pub(crate) enum Preflight {
     Live,
     Record,
-    Replay { initial: Initial, recording: Recording },
+    Replay { initial: Initial, recording: Recording, mode: super::recorder::ReplayMode },
 }
 
 impl Preflight {
@@ -301,12 +301,13 @@ impl Preflight {
         match (rec, replay) {
             (Some(_), Some(_)) => Err("conflicting recorder modes"),
             (None, Some(path)) => {
-                if path.is_empty() { return Err("missing replay directory"); }
-                let recording = Recording::load(std::path::Path::new(&path), super::recorder::state_fp())
+                let (mode, path) = super::recorder::ReplayMode::parse(&path)?;
+                let recording = Recording::load(std::path::Path::new(path), super::recorder::state_fp())
                     .map_err(|_| "invalid or incompatible recording")?;
                 let initial = Initial::decode(recording.header.init_data.clone(), recording.header.init_hash)?;
                 super::recorder::validate_controlled(&recording, &initial)?;
-                Ok(Self::Replay { initial, recording })
+                super::recorder::validate_resolution_recording(&recording)?;
+                Ok(Self::Replay { initial, recording, mode })
             }
             (Some(option), None) if option.is_empty() => Ok(Self::Record),
             (Some(_), None) => Err("unsupported recorder option"),

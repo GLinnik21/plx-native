@@ -15,7 +15,8 @@ It supersedes the older steps 5–7 sketch in `ui-system-migration.md` where the
 This is a historical view-tree plan, not a claim that the product's recorder/restore/resolve
 architecture or end-to-end replay proof is complete. Controlled Home, Settings, and typed Flow 12
 content now have typed initial restoration and recorded-result ingress without live replay data
-IO; both-mode completion and broader all-domain replay remain open. Those broader §0.8/§5.5
+IO. Product Targets and Resolve modes now both run those committed domains; broader all-domain
+replay remains open. Those broader §0.8/§5.5
 obligations are outside this view-tree scope.
 
 The **only correctness signal is `make`** (ARM cross-build; no host runtime). Every step below is

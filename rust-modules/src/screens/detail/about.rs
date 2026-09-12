@@ -6,7 +6,7 @@
 use std::ffi::CString;
 
 use crate::metadata::Detail;
-use crate::ui::machine::GroupId;
+use crate::ui::machine::{GroupId, Measure};
 use crate::ui::text_view::TextView;
 use crate::ui::{theme, Painter, Rect};
 
@@ -130,9 +130,10 @@ impl Rows {
         self.dirty = true;
     }
 
-    pub(crate) fn card_rect(&self, d: &Detail, top: f32) -> Rect {
+    pub(crate) fn card_rect(&self, d: &Detail, top: f32, measure: &dyn Measure) -> Rect {
         let width = CARD_W - 2.0 * CARD_PAD;
         let synopsis = TextView::new(&d.summary, theme::size::CAPTION, theme::TEXT_HEADING)
+            .with_measure(measure)
             .leading(30.0)
             .max_lines(5);
         let h = synopsis.measure_h(width).max(30.0);
@@ -144,14 +145,15 @@ impl Rows {
         )
     }
 
-    pub(crate) fn languages_rect(&self, top: f32) -> Rect {
+    pub(crate) fn languages_rect(&self, top: f32, measure: &dyn Measure) -> Rect {
         let mut h = 68.0;
         if let Some(orig) = &self.orig_audio {
-            h += pair_h(orig);
+            h += pair_h(orig, measure);
         }
         if !self.audio_list.is_empty() {
             h += 34.0
                 + TextView::new(&self.audio_list, theme::size::LABEL, theme::TEXT_HEADING)
+                    .with_measure(measure)
                     .leading(32.0)
                     .max_lines(6)
                     .measure_h(500.0);
@@ -182,7 +184,7 @@ impl Rows {
             0,
             1,
         );
-        let card = self.card_rect(d, top);
+        let card = self.card_rect(d, top, measure);
         if focused == Some(CARD_ELEM) {
             crate::ui::widgets::text_block_highlight(p, card);
         }
@@ -212,6 +214,7 @@ impl Rows {
             );
         }
         TextView::new(&d.summary, theme::size::CAPTION, theme::TEXT_HEADING)
+            .with_measure(measure)
             .leading(30.0)
             .max_lines(5)
             .fade_last(90.0)
@@ -229,12 +232,12 @@ impl Rows {
             1,
         );
 
-        self.draw_information(p, x, top + COL_Y);
-        self.draw_languages(p, top + COL_Y, focused == Some(LANGUAGES_ELEM), tracks);
+        self.draw_information(p, x, top + COL_Y, measure);
+        self.draw_languages(p, top + COL_Y, focused == Some(LANGUAGES_ELEM), tracks, measure);
         self.draw_accessibility(p, 1360.0, top + COL_Y, measure);
     }
 
-    fn draw_information(&self, p: Painter, x: f32, y: f32) {
+    fn draw_information(&self, p: Painter, x: f32, y: f32, measure: &dyn Measure) {
         text_at(
             p,
             x,
@@ -246,13 +249,13 @@ impl Rows {
         );
         let mut yy = y + 68.0;
         for (label, value) in &self.info {
-            yy += draw_pair(p, x, yy, label, value);
+            yy += draw_pair(p, x, yy, label, value, measure);
         }
     }
 
-    fn draw_languages(&self, p: Painter, y: f32, focused: bool, tracks: bool) {
+    fn draw_languages(&self, p: Painter, y: f32, focused: bool, tracks: bool, measure: &dyn Measure) {
         if focused {
-            crate::ui::widgets::text_block_highlight(p, self.languages_rect(y - COL_Y));
+            crate::ui::widgets::text_block_highlight(p, self.languages_rect(y - COL_Y, measure));
         }
         text_at(
             p,
@@ -265,7 +268,7 @@ impl Rows {
         );
         let mut yy = y + 68.0;
         if let Some(orig) = &self.orig_audio {
-            yy += draw_pair(p, LANG_X, yy, "Original Audio", orig);
+            yy += draw_pair(p, LANG_X, yy, "Original Audio", orig, measure);
         }
         if !self.audio_list.is_empty() {
             text_at(
@@ -278,6 +281,7 @@ impl Rows {
                 "Audio",
             );
             TextView::new(&self.audio_list, theme::size::LABEL, theme::TEXT_HEADING)
+                .with_measure(measure)
                 .leading(32.0)
                 .max_lines(6)
                 .fade_last(90.0)
@@ -287,7 +291,7 @@ impl Rows {
             p.text(
                 c"MORE".as_ptr(),
                 LANG_X + 500.0,
-                self.languages_rect(y - COL_Y).y + self.languages_rect(y - COL_Y).h - 30.0,
+                self.languages_rect(y - COL_Y, measure).y + self.languages_rect(y - COL_Y, measure).h - 30.0,
                 theme::size::CAPTION,
                 theme::TEXT_TERTIARY,
                 2,
@@ -336,6 +340,7 @@ impl Rows {
                 measure,
             );
             let h = TextView::new(desc, theme::size::CAPTION, theme::TEXT_HEADING)
+                .with_measure(measure)
                 .leading(30.0)
                 .max_lines(4)
                 .draw(p, Rect::new(x, yy + 52.0, 500.0, 0.0));
@@ -344,9 +349,10 @@ impl Rows {
     }
 }
 
-fn pair_h(value: &str) -> f32 {
+fn pair_h(value: &str, measure: &dyn Measure) -> f32 {
     34.0 + TextView::new(value, theme::size::LABEL, theme::TEXT_HEADING)
         .bold()
+        .with_measure(measure)
         .leading(30.0)
         .max_lines(2)
         .measure_h(520.0)
@@ -354,7 +360,7 @@ fn pair_h(value: &str) -> f32 {
         + 22.0
 }
 
-fn draw_pair(p: Painter, x: f32, y: f32, label: &str, value: &str) -> f32 {
+fn draw_pair(p: Painter, x: f32, y: f32, label: &str, value: &str, measure: &dyn Measure) -> f32 {
     text_at(
         p,
         x,
@@ -366,6 +372,7 @@ fn draw_pair(p: Painter, x: f32, y: f32, label: &str, value: &str) -> f32 {
     );
     let h = TextView::new(value, theme::size::LABEL, theme::TEXT_HEADING)
         .bold()
+        .with_measure(measure)
         .leading(30.0)
         .max_lines(2)
         .draw(p, Rect::new(x, y + 34.0, 520.0, 0.0));

@@ -144,6 +144,18 @@ pub const CARRY_GROWTH_FRAMES: u8 = 8;
 /// Every method has a no-op default so an unarmed frame costs a vtable call per event and nothing
 /// else. `NoTap` is the unarmed implementation.
 pub trait Tap<H: Host> {
+    /// None is a live/recording dispatch; false feeds targets, true grades real resolution.
+    fn resolution_mode(&self) -> Option<bool> { None }
+    /// Recording must make the same pure validation/measurement queries as replay.
+    fn resolution_active(&self) -> bool { self.resolution_mode().is_some() }
+    fn resolution_error(&mut self, _reason: &'static str) {}
+    fn resolve_focus(&mut self, _f: u64, _phase: u8, _entry: EntryId,
+        actual: Option<FocusAnswer<H::Elem>>) -> Option<FocusAnswer<H::Elem>> { actual }
+    fn resolve_hit(&mut self, _f: u64, _kind: PointerKind, _entry: Option<EntryId>,
+        actual: Option<super::hit::Resolution<H::Elem>>) -> Option<super::hit::Resolution<H::Elem>> { actual }
+    /// A final observation, including None; the optional outer value requests continuation.
+    fn focus_continuation(&mut self, _f: u64, _engine: bool,
+        _actual: Option<(u32, u32, Option<u32>)>) -> Option<Option<(u32, u32, Option<u32>)>> { None }
     fn tick(&mut self, _f: u64, _t: Tick) {}
     fn input(&mut self, _f: u64, _ev: &InputEvent<H::Elem>) {}
     fn result(&mut self, _f: u64, _addr: &Addr, _msg: &H::Msg) {}
@@ -155,6 +167,14 @@ pub trait Tap<H: Host> {
     /// `(entry, index, group)`.
     fn focus(&mut self, _f: u64, _focus: Option<(u32, u32, Option<u32>)>) {}
     fn frame_done(&mut self, _f: u64) {}
+}
+
+/// The complete answer at one engine call, before any dependent effects are emitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FocusAnswer<K> {
+    pub outcome: Outcome<K>,
+    pub focus: Option<FocusKey<K>>,
+    pub group: Option<GroupId>,
 }
 
 pub struct NoTap;
@@ -712,7 +732,6 @@ where
         //    (external_events_are_drained_before_effect_results).
         let mut head: Vec<Stamped<H>> = Vec::new();
         for mut ev in inputs {
-            tap.input(f, &ev);
             // the Input machine's own half first (§3.4): keyboard ownership, the press edges,
             // dpad mode, the pointer resolved against the hit map
             let pointer = match ev.kind {
@@ -726,7 +745,17 @@ where
                     if self.hit_page() {
                         let owner_e = self.owner_entry();
                         let focused = self.focus();
-                        let res = self.input.hit.resolve(owner_e, kind, x, y, focused);
+                        let actual = (tap.resolution_mode() != Some(false)).then(||
+                            self.input.hit.resolve(owner_e, kind, x, y, focused));
+                        let Some(res) = tap.resolve_hit(f, kind, owner_e, actual) else {
+                            tap.resolution_error("missing hit resolution");
+                            continue;
+                        };
+                        if tap.resolution_active() && [res.hit, res.focus, res.activate.map(|v| v.0)].into_iter().flatten()
+                            .any(|k| !self.valid_resolution_key(rig, &self.parts(tick), k, None, false)) {
+                            tap.resolution_error("impossible hit resolution");
+                            continue;
+                        }
                         match &mut ev.kind {
                             InputKind::Pointer { hit, .. } | InputKind::Click { hit, .. } | InputKind::Drag { hit, .. } => {
                                 *hit = res.hit.map(|k| k.elem);
@@ -796,6 +825,7 @@ where
                     }
                 }
             }
+            tap.input(f, &ev);
             match ev.kind {
                 // With a page, this transition belongs to its ordered input delivery below,
                 // not this pre-pass over the entire batch. No page means no queued delivery.
@@ -945,7 +975,34 @@ where
         }
         report.steps_post = self.drain(rig, &parts, MAX_STEPS_POST, &mut report, tap);
         // §7.3 step 6: after every landing and before draw, the owner's reconcile
-        self.reconcile(rig, &parts, &mut report);
+        self.reconcile(rig, &parts, &mut report, tap);
+        let continuation = tap.focus_continuation(f, self.engine_page(), self.focus_record());
+        // Engine continuations were applied per call and checked by the tap. Only Legacy
+        // consumes an unchecked final target. Avoid a replay-only layout query here.
+        if let Some(recorded) = continuation.filter(|_| !self.engine_page()) {
+            match recorded {
+                None => self.set_focus_in(None, None),
+                Some((entry, elem, group)) => {
+                    let key = FocusKey { entry:EntryId(entry), elem:H::Elem::of_index(elem) };
+                    if key.elem.index() == Some(elem) && self.owner_entry()==Some(key.entry) {
+                        if self.focus_record() != recorded {
+                            // set() deliberately ignores a same-key move. Recorded continuation
+                            // also restores the group (pointer focus can have no group).
+                            if self.focus()==Some(key) { self.set_focus_in(None,None); }
+                            self.set_focus_in(Some(key), group.map(GroupId));
+                        }
+                    } else { tap.resolution_error("impossible final focus"); }
+                }
+            }
+        }
+        if tap.resolution_active() && self.engine_page() {
+            if let Some(key)=self.focus() {
+                let group=self.input.engine.current_group(InputOwner::Entry(key.entry));
+                if !self.valid_resolution_key(rig,&self.parts(tick),key,group,self.engine_page() && group.is_some()) {
+                    tap.resolution_error("impossible final focus");
+                }
+            }
+        }
         tap.focus(f, self.focus_record());
         let timers_fired = report.steps_pre > 0 && event_frame;
         if event_frame || timers_fired {
@@ -1336,7 +1393,7 @@ where
                 Fx::Deliver(to, delivery) => {
                     steps += 1;
                     let mut out: Vec<Stamped<H>> = Vec::new();
-                    self.execute_deliver(rig, parts, to, delivery, &mut out, report);
+                    self.execute_deliver(rig, parts, to, delivery, &mut out, report, tap);
                     self.absorb(out);
                 }
                 Fx::Timer { id, after_ms } => {
@@ -1426,6 +1483,7 @@ where
         delivery: Delivery<H>,
         out: &mut Vec<Stamped<H>>,
         report: &mut FrameReport,
+        tap: &mut dyn Tap<H>,
     ) {
         match (to, delivery) {
             (MachineId::Instance(instance), Delivery::Keyboard { up }) => {
@@ -1460,7 +1518,7 @@ where
                     return;
                 }
                 let event = if held { ScreenEvent::PressHold(id) } else { ScreenEvent::PressCommit(id) };
-                self.execute_deliver(rig, parts, to, Delivery::Screen(event), out, report);
+                self.execute_deliver(rig, parts, to, Delivery::Screen(event), out, report, tap);
             }
             (MachineId::Instance(id), Delivery::Screen(ev)) => {
                 // An OS ownership edge takes effect at its position in the delivery stream.
@@ -1562,7 +1620,7 @@ where
                     self.pending_back = true;
                 }
                 // the engine's half: after the owner's refusal, and after an Enter / a hold
-                self.after_step(rig, &addressed, id, &ev, handled, out);
+                self.after_step(rig, &addressed, id, &ev, handled, out, tap);
                 // WillLeave and Unmount are queued after structural commit. Keep the engine's
                 // read snapshot available until the retiring body's final step has consumed it.
                 if matches!(ev, ScreenEvent::Unmount) {
@@ -1607,6 +1665,7 @@ where
         ev: &ScreenEvent<H>,
         handled: Handled,
         out: &mut Vec<Stamped<H>>,
+        tap: &mut dyn Tap<H>,
     ) {
         let Some(entry) = self.nav.entry_of_instance(id) else {
             return;
@@ -1631,13 +1690,9 @@ where
                         self.nav.entry(entry).and_then(|e| e.ret.focus),
                     ),
                 };
-                let Dispatcher { nav, input, .. } = self;
-                let Some(view) = Self::owner_view(nav, entry) else {
-                    return;
-                };
-                let Split { views, measure, .. } = rig.split();
-                let cx = parts.cx::<H>(views, measure);
-                if let Outcome::Moved { from, to, by } = input.engine.enter(owner, &view, target, restored, &cx) {
+                let outcome = self.focus_resolution(rig, parts, entry, 0, tap,
+                    |engine, view, cx| engine.enter(owner, view, target, restored, cx));
+                if let Outcome::Moved { from, to, by } = outcome {
                     out.push(Stamped {
                         from: MachineId::Input,
                         fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::FocusMoved { from, to, by })),
@@ -1660,16 +1715,10 @@ where
                         return; // re-delivered under EdgeRule::Screen and still unhandled: dropped
                     }
                     let mut links = Vec::new();
-                    let outcome = {
-                        let Dispatcher { nav, input, .. } = self;
-                        let Some(view) = Self::owner_view(nav, entry) else {
-                            return;
-                        };
+                    let outcome = self.focus_resolution(rig, parts, entry, 1, tap, |engine, view, cx| {
                         view.page.links(&mut links);
-                        let Split { views, measure, .. } = rig.split();
-                        let cx = parts.cx::<H>(views, measure);
-                        input.engine.move_dir(owner, &view, &links, dir, &cx)
-                    };
+                        engine.move_dir(owner, view, &links, dir, cx)
+                    });
                     if self.input.engine.take_fell_back() {
                         rig.log("focus: no current focus — seated by the first group's policy");
                     }
@@ -1783,9 +1832,76 @@ where
         }
     }
 
+    fn valid_resolution_key(&self, rig: &mut dyn Rig<H>, parts: &CxParts<H::Elem>, key: FocusKey<H::Elem>,
+        group: Option<GroupId>, check_group: bool) -> bool {
+        if self.owner_entry() != Some(key.entry) { return false; }
+        let Some(view) = Self::owner_view(&self.nav, key.entry) else { return false; };
+        let Split { views, measure, .. } = rig.split();
+        let cx = parts.cx::<H>(views, measure);
+        view.place(&key.elem, &cx, At::SpringTarget).is_some()
+            && (!check_group || view.group_of(&key.elem, &cx) == group)
+    }
+
+    /// Resolve on a scratch scope during replay. An experimental algorithm cannot pollute
+    /// remembered groups before the recorded answer is installed and its effects are emitted.
+    fn focus_resolution(&mut self, rig: &mut dyn Rig<H>, parts: &CxParts<H::Elem>, entry: EntryId,
+        phase: u8, tap: &mut dyn Tap<H>,
+        resolve: impl FnOnce(&mut super::focus::FocusEngine<H::Elem>, &PageWithStrip<'_, H>, &Cx<'_, H>) -> Outcome<H::Elem>,
+    ) -> Outcome<H::Elem> {
+        let owner = InputOwner::Entry(entry);
+        let mode = tap.resolution_mode();
+        let before = self.input.engine.current(owner);
+        let actual = if mode == Some(false) { None } else {
+            let Some(view) = Self::owner_view(&self.nav, entry) else { return Outcome::Nothing; };
+            let Split { views, measure, .. } = rig.split();
+            let cx = parts.cx::<H>(views, measure);
+            let mut scratch = mode.map(|_|super::focus::FocusEngine::new());
+            let engine = if let Some(scratch)=scratch.as_mut() {
+                if let Some(key) = before {
+                    scratch.set(owner, key, self.input.engine.current_group(owner), super::screen::By::Restore);
+                }
+                scratch.restore_remembered(entry, &self.input.engine.remembered_for(entry));
+                scratch
+            } else { &mut self.input.engine };
+            let outcome = resolve(engine, &view, &cx);
+            Some(FocusAnswer { outcome, focus:engine.current(owner), group:engine.current_group(owner) })
+        };
+        let Some(answer) = tap.resolve_focus(self.frame, phase, entry, actual) else {
+            tap.resolution_error("missing focus resolution");
+            return Outcome::Nothing;
+        };
+        if tap.resolution_active() {
+            let valid = match answer.outcome {
+                Outcome::Moved { from, to, .. } => from == before && answer.focus == Some(to)
+                    && (phase == 0 || before != Some(to))
+                    && (before != Some(to) || answer.group == self.input.engine.current_group(owner)),
+                Outcome::Nothing | Outcome::Edge(_) => answer.focus == before
+                    && answer.group == self.input.engine.current_group(owner),
+            } && match answer.focus {
+                // Use the same pre-resolution context for recording and replay; a place()
+                // query may read focus as well as metrics. Only the recorded continuation
+                // is allowed to change that context for the next dependent delivery.
+                Some(key) => {
+                    // `enter` emits a same-key Restore as a reveal notification. If that key was
+                    // pointer-focused, its legitimate group is None and FocusEngine::set keeps it
+                    // that way; only a move to a different key must prove a geometric group.
+                    let moved_to_new = matches!(answer.outcome,
+                        Outcome::Moved { to, .. } if before != Some(to));
+                    self.valid_resolution_key(rig, parts, key, answer.group,
+                        moved_to_new || answer.group.is_some())
+                },
+                None => answer.group.is_none(),
+            };
+            if !valid { tap.resolution_error("impossible focus resolution"); return Outcome::Nothing; }
+            if mode.is_some() { self.set_focus_in(answer.focus, answer.group); }
+        }
+        answer.outcome
+    }
+
     /// §7.3 step 6: the owner's pure `reconcile` on the current key; a different answer is a
     /// `Reconcile` move delivered before draw.
-    fn reconcile(&mut self, rig: &mut dyn Rig<H>, parts: &CxParts<H::Elem>, report: &mut FrameReport) {
+    fn reconcile(&mut self, rig: &mut dyn Rig<H>, parts: &CxParts<H::Elem>, report: &mut FrameReport,
+        tap: &mut dyn Tap<H>) {
         if !self.engine_page() {
             return;
         }
@@ -1793,15 +1909,8 @@ where
             return;
         };
         let owner = InputOwner::Entry(entry);
-        let outcome = {
-            let Dispatcher { nav, input, .. } = self;
-            let Some(view) = Self::owner_view(nav, entry) else {
-                return;
-            };
-            let Split { views, measure, .. } = rig.split();
-            let cx = parts.cx::<H>(views, measure);
-            input.engine.reconcile(owner, &view, &cx)
-        };
+        let outcome = self.focus_resolution(rig, parts, entry, 2, tap,
+            |engine, view, cx| engine.reconcile(owner, view, cx));
         if let Outcome::Moved { from, to, by } = outcome {
             if self.input.arm.is_some_and(|arm| arm.key.entry == entry && arm.key != to) {
                 // A catalog reconciliation changes the cursor, not the identity of an ongoing
@@ -1810,7 +1919,7 @@ where
             }
             if let Some(id) = self.nav.instance_of(entry) {
                 let mut out = Vec::new();
-                self.execute_deliver(rig, parts, MachineId::Instance(id), Delivery::Screen(ScreenEvent::FocusMoved { from, to, by }), &mut out, report);
+                self.execute_deliver(rig, parts, MachineId::Instance(id), Delivery::Screen(ScreenEvent::FocusMoved { from, to, by }), &mut out, report, tap);
                 self.absorb(out);
             }
         }
@@ -2013,6 +2122,121 @@ where
 /// the first prepared+drawn frame that stops it. The arithmetic and the line's shape are pinned in
 /// `diag::heartbeat`; what is pinned HERE is that the two events are wired to the right places and
 /// that the word on the line is the screen's own `Screen::name()`.
+#[cfg(test)]
+mod product_resolution_contract_tests {
+    use super::*;
+    use crate::ui::fixture::{FixtureArg,FixtureHost,FixtureRig};
+
+    struct RecordingAudit { errors:Vec<&'static str> }
+    impl Tap<FixtureHost> for RecordingAudit {
+        fn resolution_active(&self)->bool { true }
+        fn resolve_focus(&mut self,_:u64,_:u8,_:EntryId,actual:Option<FocusAnswer<u32>>)
+            ->Option<FocusAnswer<u32>> { actual }
+        fn resolve_hit(&mut self,_:u64,_:PointerKind,_:Option<EntryId>,actual:Option<super::super::hit::Resolution<u32>>)
+            ->Option<super::super::hit::Resolution<u32>> { actual }
+        fn resolution_error(&mut self,reason:&'static str) { self.errors.push(reason); }
+    }
+
+    struct CorruptSameKeyGroup { errors:Vec<&'static str>, touched:bool }
+    impl Tap<FixtureHost> for CorruptSameKeyGroup {
+        fn resolution_active(&self)->bool { true }
+        fn resolve_focus(&mut self,_:u64,_:u8,_:EntryId,actual:Option<FocusAnswer<u32>>)
+            ->Option<FocusAnswer<u32>> {
+            actual.map(|mut answer| {
+                if matches!(answer.outcome,Outcome::Moved { from:Some(from),to,.. } if from==to)
+                    && answer.group.is_some() {
+                    answer.group=None;
+                    self.touched=true;
+                }
+                answer
+            })
+        }
+        fn resolve_hit(&mut self,_:u64,_:PointerKind,_:Option<EntryId>,actual:Option<super::super::hit::Resolution<u32>>)
+            ->Option<super::super::hit::Resolution<u32>> { actual }
+        fn resolution_error(&mut self,reason:&'static str) { self.errors.push(reason); }
+    }
+
+    #[test]
+    fn pointer_selected_page_returns_on_the_same_key_without_inventing_a_group() {
+        let mut d=Dispatcher::<FixtureHost>::new();
+        let mut rig=FixtureRig::new();
+        let mut tap=RecordingAudit{errors:Vec::new()};
+        d.request(MachineId::Nav,NavOp::Root(FixtureArg::Home));
+        d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+        let key=FocusKey{entry:d.owner_entry().unwrap(),elem:1};
+        d.set_focus(Some(key)); // pointer focus deliberately owns no remembered group
+        assert_eq!(d.focus_record(),Some((key.entry.0,1,None)));
+
+        d.request(MachineId::Nav,NavOp::Push(FixtureArg::Page(41)));
+        d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+        d.request(MachineId::Nav,NavOp::Pop);
+        d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+
+        assert_eq!(d.focus(),Some(key));
+        assert_eq!(d.focus_record(),Some((key.entry.0,1,None)),
+            "a same-key restore is only a reveal notification; it must preserve pointer ownership");
+        assert!(tap.errors.is_empty(),"valid pointer return was refused: {:?}",tap.errors);
+    }
+
+    #[test]
+    fn same_key_restore_cannot_erase_a_retained_group() {
+        let mut d=Dispatcher::<FixtureHost>::new();
+        let mut rig=FixtureRig::new();
+        let mut tap=CorruptSameKeyGroup{errors:Vec::new(),touched:false};
+        d.request(MachineId::Nav,NavOp::Root(FixtureArg::Home));
+        d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+        let key=d.focus().unwrap();
+        assert!(d.focus_record().unwrap().2.is_some());
+
+        d.request(MachineId::Nav,NavOp::Push(FixtureArg::Page(42)));
+        d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+        d.request(MachineId::Nav,NavOp::Pop);
+        d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+
+        assert!(tap.touched,"the negative control did not reach a same-key grouped restore");
+        assert_eq!(tap.errors,vec!["impossible focus resolution"]);
+        assert_eq!(d.focus(),Some(key));
+        assert!(d.focus_record().unwrap().2.is_some(),"the invalid continuation changed the group");
+    }
+
+    #[test]
+    fn legacy_pages_keep_recorded_hits_and_never_enter_replay_resolvers() {
+        struct LegacyTap { resolve:bool, pointers:usize, target:Option<(u32,u32,Option<u32>)> }
+        impl Tap<FixtureHost> for LegacyTap {
+            fn resolution_mode(&self)->Option<bool>{Some(self.resolve)}
+            fn resolve_focus(&mut self,_:u64,_:u8,_:EntryId,_:Option<FocusAnswer<u32>>)->Option<FocusAnswer<u32>> {
+                panic!("a legacy page must never consult the engine");
+            }
+            fn resolve_hit(&mut self,_:u64,_:PointerKind,_:Option<EntryId>,_:Option<super::super::hit::Resolution<u32>>)
+                ->Option<super::super::hit::Resolution<u32>> { panic!("a legacy page must never consult the map"); }
+            fn focus_continuation(&mut self,_:u64,engine:bool,_:Option<(u32,u32,Option<u32>)>)
+                ->Option<Option<(u32,u32,Option<u32>)>> { assert!(!engine);Some(self.target) }
+            fn input(&mut self,_:u64,ev:&InputEvent<u32>){
+                if let InputKind::Pointer{hit,..}=ev.kind {assert_eq!(hit,Some(77));self.pointers+=1;}
+            }
+        }
+        for resolve in [false,true] {
+            let mut d=Dispatcher::<FixtureHost>::new();
+            let mut rig=FixtureRig::new();
+            let mut tap=LegacyTap{resolve,pointers:0,target:None};
+            d.request(MachineId::Nav,NavOp::Root(FixtureArg::Legacy));
+            d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+            let owner=d.owner_entry().unwrap();
+            tap.target=Some((owner.0,77,None));
+            d.input.hit.fill(vec![Stop {key:FocusKey{entry:owner,elem:88},rect:Rect::FULL,rest_rect:Rect::FULL,
+                clip:Rect::FULL,hover:super::super::screen::Hover::Focus,activate:Activate::Press}]);
+            d.input.hit.swap();
+            d.frame_with(&mut rig,Tick::default(),vec![InputEvent{at:Tick::default(),source:super::super::machine::Source::Replay,
+                kind:InputKind::Pointer{x:10.0,y:10.0,hit:Some(77)}}],vec![],&mut tap,false);
+            assert_eq!(tap.pointers,1);
+            assert_eq!(d.focus(),Some(FocusKey{entry:owner,elem:77}));
+            tap.target=None;
+            d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+            assert_eq!(d.focus(),None,"recorded None clears the previous target");
+        }
+    }
+}
+
 #[cfg(test)]
 mod cold_open_tests {
     use super::*;

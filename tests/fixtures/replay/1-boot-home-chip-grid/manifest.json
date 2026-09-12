@@ -146,8 +146,8 @@
   "hash": 12095931326688800222,
   "probe": "controlled=home version=1"
  },
- "schema": 2,
- "state_fp": 16109897700616989408,
+ "schema": 3,
+ "state_fp": 10352703632114781766,
  "triggers": [
   "plxnative-app-init",
   "plxnative-rec",

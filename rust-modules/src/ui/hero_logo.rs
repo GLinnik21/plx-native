@@ -145,6 +145,13 @@ impl<'a> HeroLogo<'a> {
     /// for both the logo tint and the fallback text (the value all three sites passed already).
     /// Draws only through `p`, so the caller's cascade alpha fades logo and fallback identically.
     pub fn draw(&self, p: Painter, band: Rect, measure: &dyn Measure) {
+        // Resolve the fallback before consulting the asynchronous texture cache. A recording and
+        // its replay need the same measurement census even when the logo happened to be resident
+        // in only one run; texture residency is paint state, not logical replay state.
+        let (_, _, _, sz) = self.rung.bounds();
+        let line = crate::text::elide_by(self.title, band.w, false, |t| {
+            measure.width_str(t, sz, true)
+        });
         // The hero draws the item the shelf under it has focused, and that shelf is the server
         // being browsed — so its clearLogo is asked of the current server. An item that came from
         // somewhere else (a merged Continue Watching row) names its own, once items carry one.
@@ -155,10 +162,6 @@ impl<'a> HeroLogo<'a> {
             p.tex(tex, place(band, w, h, self.align), 0.0, theme::TEXT_PRIMARY);
             return;
         }
-        let (_, _, _, sz) = self.rung.bounds();
-        let line = crate::text::elide_by(self.title, band.w, false, |t| {
-            measure.width_str(t, sz, true)
-        });
         // `cs` must outlive the draw — `Label` holds a non-owning pointer (ui/CLAUDE.md's first gotcha)
         let Ok(cs) = std::ffi::CString::new(line) else {
             return;

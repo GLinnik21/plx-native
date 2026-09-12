@@ -137,9 +137,10 @@ Checks:
   and inspected against the baseline. Artifacts: `/tmp/plx-phase7-verify.T1jf77/retired-visual/`.
 - Final Python harness run after fixture updates passed (253 tests).
 
-The product recorder still uses the existing live-store replay path. These results do not claim
-adapter-independent playback or the explicit pointwise `--resolve` grading mode, which remains
-unwired for product recordings as documented in `docs/agent-reference.md`.
+At the time of this measurement the product recorder still used the live-store replay path and
+the explicit pointwise `--resolve` mode was unwired. It has since been implemented:
+`tests/focusfp.sh --resolve` now grades product Focus/Hit answers pointwise before recorded
+continuation. The phase-7 results themselves still make no adapter-independent playback claim.
 
 Native capture is pending. The read-only TV-lock status probe reported the set unreachable.
 No lease was acquired and no wake, deploy, launch, sound or panel command was sent. The owner was

@@ -451,8 +451,8 @@ fn an_open_request_does_not_outlive_its_page() {
 fn the_episode_text_highlight_fits_the_block_the_flow_already_reserves() {
     let d = detail(ServerId::UNSET, "show");
     for (i, ep) in d.episodes.iter().enumerate() {
-        let r = episodes::meta_rect(ep, i, 0.0, 0.0);
-        assert!(r.y + r.h <= episodes::block_h(&d) + theme::space::SM);
+        let r = episodes::meta_rect(ep, i, 0.0, 0.0, &crate::ui::fixture::FixtureMeasure);
+        assert!(r.y + r.h <= episodes::block_h(&d, &crate::ui::fixture::FixtureMeasure) + theme::space::SM);
     }
 }
 
@@ -832,7 +832,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                             let placed = Focusable::<TestHost>::place(&screen, &key.elem, &context, At::Drawn).expect("every drawn control places");
                             // Same primitive geometry used by draw_buttons; its painter scroll
                             // translation must match the screen-space hit placement exactly.
-                            let mut painted = hero::hero_btn_rect_at(set, i, screen.hero_chain().btn_y, widths);
+                            let mut painted = hero::hero_btn_rect_at(set, i, screen.hero_chain(&crate::ui::fixture::FixtureMeasure).btn_y, widths);
                             painted.y -= scroll;
                             assert_eq!((placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
                                 (painted.x, painted.y, painted.w, painted.h),
@@ -937,12 +937,12 @@ fn a_long_synopsis_keeps_the_first_section_one_region_gap_below_the_buttons() {
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
     let detail = screen.detail().unwrap();
-    let chain = screen.hero_chain();
+    let chain = screen.hero_chain(&crate::ui::fixture::FixtureMeasure);
     assert_eq!(
-        screen.section_top(1, detail),
+        screen.section_top(1, detail, &crate::ui::fixture::FixtureMeasure),
         chain.btn_y + hero::CD + theme::space::XL
     );
-    assert_eq!(screen.content_top(), screen.section_top(1, detail));
+    assert_eq!(screen.content_top(&crate::ui::fixture::FixtureMeasure), screen.section_top(1, detail, &crate::ui::fixture::FixtureMeasure));
     clear();
 }
 

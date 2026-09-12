@@ -379,10 +379,11 @@ The same deletion repeats at `library.rs:816/872`, `detail.rs:981/993`, `profile
 > remember to apply.
 >
 > **Scope of “BUILT”:** this is the hit-map/focus ownership mechanism only. It does not mean the
-> broader recorder contract is closed: controlled Home now restores typed inputs and supplies
-> recorded results without live data IO, but this does not cover every application/adapter input;
-> `tests/focusfp.sh` has no `--resolve` switch, and
-> `make check` does not close a committed scenario-replay run. Those are separate proof and
+> broader recorder contract is closed: controlled replay remains bounded to supported domains,
+> but `tests/focusfp.sh` now exposes both `--targets` and `--resolve`; Resolve grades product
+> Focus/Hit answers pointwise before recorded continuation. This still does not establish
+> whole-application deterministic restore, and `make check` alone does not run committed
+> scenario replays. Those are separate proof and
 > implementation work, not evidence supplied by D2 or this section.
 >
 > **Revised.** An earlier draft deferred this as over-scoped, on the reasoning that it "explicitly

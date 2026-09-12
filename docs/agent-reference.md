@@ -1506,8 +1506,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   activation. `AppFrameV4` includes physical Consent and the initial-input digest. Private recordings can contain
   credentials in typed initialization/effects: only explicitly synthetic inputs may become
   fixtures. `tests/controlled_bootstrap.py` exercises this representative production path with
-  fresh/contrasting roots and outbound IO denied. Blobs, cross-target operation, both-mode
-  completion, and unsupported domains remain unsupported/open. The following phase-11/12 description is
+  fresh/contrasting roots and outbound IO denied. Blobs, cross-target operation and unsupported
+  domains remain unsupported/open; controlled product replay supports both Targets and Resolve
+  modes. The following phase-11/12 description is
   historical, not a claim that current replay falls back to live stores.
   Named historical highlights: **`/tmp/plxnative-rec[=blobs]`** (the RECORDER of
   the UI restructure, spec §5.3 — every frame's tick and present bit, every input the loop acted
@@ -1522,31 +1523,21 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   recording: the loop runs on the recorded ticks through `app::clock`, re-injects each frame's
   inputs through the remote FIFO's own synthesis, grades the state hash frame by frame — every
   mismatch is its own `replay: diverge` line and the run continues — and ends with one `replay:
-  done … verdict=SAME|DIVERGED` line; `tests/focusfp.sh --replay` drives it over the committed
-  fixtures. **The stores still fetch live under a replay, but since phase 11 the frame a result
-  is OBSERVED on is the recorded one** (`ui::landgate`, spec §3.3 step 3): every landing SITE —
+  done … verdict=SAME|DIVERGED` line; `tests/focusfp.sh --targets` (`--replay`) and `--resolve`
+  drive it over committed product fixtures. Supported stores receive recorded results with
+  resource execution denied; unsupported domains fail closed. The historical phase-11 driver
+  instead fetched live while constraining the frame a result was OBSERVED on
+  (`ui::landgate`, spec §3.3 step 3): every landing SITE —
   Home's hubs and each legacy pump's mailbox take — consumes through a schedule of `(frame,
   arrivals)` pairs per store, an early arrival WAITS for its frame, the due frame polls for a
   bounded moment, and late/extra/missing ride the summary as `land_diffs`. Before it, flow 12's
   one recorded landing sat on frame 1 and every replay observed it on frame 0, which — a spring
-  started a frame early never re-converging bit for bit — diverged 927 of 928 frames. Since 2026-09-07 the recorder also writes one `fo` FOCUS record per frame (entry,
-  element, group), and the library replay has two MODES: targets — every input replayed with its
-  recorded resolution, what `plxnative-recplay` runs — and resolve, which runs the focus engine
-  and the hit map for real on every engine page, reports each focus mismatch as its own line and
-  CONTINUES from the recording (`ui::replay::run_resolve`; exercised only by the host suite's
-  `FixtureHost` pages — nothing wires it to a real screen, so an on-device recording never runs in
-  this mode. That is no longer because every product page is the blank route-word page: since phase 5b
-  (2026-09-07) the Settings family and first-run Favourites answer
-  `FocusSource::Engine`/`HitSource::Engine` for real, and phase 7 adds Detail, Person and the
-  Filmography surface. `tests/fixtures/replay/6-settings-family/` is a committed synthetic simulator
-  recording of the first set — replayed the only way `plxnative-recplay` runs anything, in
-  `targets` mode. Engine pages replay in `resolve` mode via `FixtureHost` only — **restructure
-  phase 12 (D2) converted the last two holdouts**, `screens::player::PlayerScreen` and its
-  overlay, so `FocusSource::Legacy`/`HitSource::Legacy` no longer answers for ANY product screen
-  (it survives only as `ui/fixture.rs`'s own deliberately-Legacy test double); the player replays
-  on device by target only for the same reason every other Engine screen still does — `resolve`
-  mode is wired to the host suite's `FixtureHost` pages, not to a real screen, so an on-device
-  recording never runs in that mode regardless of which `FocusSource` the route answers. Both names are `dev::DIAG`, so
+  started a frame early never re-converging bit for bit — diverged 927 of 928 frames. The current
+  schema writes exactly one final `fo` focus record after all drains in every product frame and
+  ordered `rs` records for each Focus/Hit resolution point. Product replay has two modes: Targets
+  feeds recorded answers; Resolve computes and compares the real engine/hit-map answers pointwise,
+  increments `focus_diffs`/`hit_diffs`, and then continues from recorded answers. A typed,
+  bit-exact Width/Cap/Line table prevents replay from consulting a live font. Both names are `dev::DIAG`, so
   neither moves the boot screen; both armed at once is
   refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
   logs `softfloat: … MATCH|DIVERGE` against the host's pinned hash and writes the table beside
