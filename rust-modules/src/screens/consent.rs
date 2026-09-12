@@ -244,22 +244,22 @@ impl ConsentPage {
         self.table.header_ink = theme::TEXT_READING;
         let sections = match self.mode {
             Mode::FirstRun { .. } => vec![Section::new("")
-                .row(Row::new(ROW_EXAMPLE).chevron(true))
-                .row(Row::new(ROW_POLICY).chevron(true))],
+                .row(Row::new(crate::i18n::t(ROW_EXAMPLE)).chevron(true))
+                .row(Row::new(crate::i18n::t(ROW_POLICY)).chevron(true))],
             Mode::Settings => {
                 let (errors, usage) = self.draft;
                 vec![
-                    Section::new("Reporting")
-                        .row(Row::new(ROW_ERRORS).detail(ROW_ERRORS_SUB).toggle(errors))
-                        .row(Row::new(ROW_USAGE).detail(ROW_USAGE_SUB).toggle(usage)),
-                    Section::new("Information")
-                        .row(Row::new(DOC_TITLE_CRASH).detail("Field-by-field preview of the crash/error report.").chevron(true))
-                        .row(Row::new(DOC_TITLE_USAGE).detail("Field-by-field preview of product analytics events.").chevron(true))
-                        .row(Row::new(ROW_POLICY).detail("The complete PlxNative privacy policy for this build.").chevron(true))
-                        .row(Row::new(DOC_TITLE_ERRORS_ID).detail("The identifier on your crash reports, and how to have them deleted.").chevron(true))
-                        .row(Row::new(DOC_TITLE_ANALYTICS_ID).detail("The identifier on your analytics, and how to have it deleted.").chevron(true)),
-                    Section::new("On this TV").row(
-                        Row::new(ROW_DELETE).detail("Sign out and remove PlxNative data from this TV.").chevron(true),
+                    Section::new(crate::i18n::t("Reporting"))
+                        .row(Row::new(crate::i18n::t(ROW_ERRORS)).detail(crate::i18n::t(ROW_ERRORS_SUB)).toggle(errors))
+                        .row(Row::new(crate::i18n::t(ROW_USAGE)).detail(crate::i18n::t(ROW_USAGE_SUB)).toggle(usage)),
+                    Section::new(crate::i18n::t("Information"))
+                        .row(Row::new(crate::i18n::t(DOC_TITLE_CRASH)).detail(crate::i18n::t("Field-by-field preview of the crash/error report.")).chevron(true))
+                        .row(Row::new(crate::i18n::t(DOC_TITLE_USAGE)).detail(crate::i18n::t("Field-by-field preview of product analytics events.")).chevron(true))
+                        .row(Row::new(crate::i18n::t(ROW_POLICY)).detail(crate::i18n::t("The complete PlxNative privacy policy for this build.")).chevron(true))
+                        .row(Row::new(crate::i18n::t(DOC_TITLE_ERRORS_ID)).detail(crate::i18n::t("The identifier on your crash reports, and how to have them deleted.")).chevron(true))
+                        .row(Row::new(crate::i18n::t(DOC_TITLE_ANALYTICS_ID)).detail(crate::i18n::t("The identifier on your analytics, and how to have it deleted.")).chevron(true)),
+                    Section::new(crate::i18n::t("On this TV")).row(
+                        Row::new(crate::i18n::t(ROW_DELETE)).detail(crate::i18n::t("Sign out and remove PlxNative data from this TV.")).chevron(true),
                     ),
                 ]
             }
@@ -271,13 +271,21 @@ impl ConsentPage {
     }
 
     fn title(&self) -> &'static str {
-        match self.mode {
+        let en = match self.mode {
             Mode::Settings => SETTINGS_TITLE,
             Mode::FirstRun { product: false, .. } => CRASH_TITLE,
             Mode::FirstRun { product: true, .. } => PRODUCT_TITLE,
-        }
+        };
+        crate::i18n::t(en)
     }
     fn body(&self) -> &'static str {
+        if crate::i18n::is_es() {
+            return match self.mode {
+                Mode::Settings => super::consent_es::SETTINGS_COPY_ES,
+                Mode::FirstRun { product: false, .. } => super::consent_es::CRASH_BODY_ES,
+                Mode::FirstRun { product: true, .. } => super::consent_es::PRODUCT_BODY_ES,
+            };
+        }
         match self.mode {
             Mode::Settings => SETTINGS_COPY,
             Mode::FirstRun { product: false, .. } => CRASH_BODY,
@@ -286,9 +294,9 @@ impl ConsentPage {
     }
     fn crumb(&self) -> Option<&'static str> {
         match self.mode {
-            Mode::Settings => Some(CRUMB_SETTINGS),
+            Mode::Settings => Some(crate::i18n::t(CRUMB_SETTINGS)),
             Mode::FirstRun { product: false, .. } => None,
-            Mode::FirstRun { product: true, .. } => Some(CRASH_TITLE),
+            Mode::FirstRun { product: true, .. } => Some(crate::i18n::t(CRASH_TITLE)),
         }
     }
     fn copy_size(&self) -> std::os::raw::c_int {
@@ -422,7 +430,7 @@ impl ConsentPage {
             RowId::ErrorsId => self.open_preview(PreviewKind::ErrorsId, fx),
             RowId::AnalyticsId => self.open_preview(PreviewKind::AnalyticsId, fx),
             RowId::Delete => {
-                self.alert.open_with_body(tr_c(c"Delete all local data?", c"¿Borrar todos los datos locales?"), DELETE_SCOPE);
+                self.alert.open_with_body(tr_c(c"Delete all local data?", c"¿Borrar todos los datos locales?"), if crate::i18n::is_es() { super::consent_es::DELETE_SCOPE_ES } else { DELETE_SCOPE });
                 self.state.alert = true;
                 // the alert traps focus: seat the engine on its answers
                 fx.push(Fx::Deliver(
@@ -939,21 +947,21 @@ impl PreviewPage {
         };
         let (title, subtitle): (&str, &str) = match kind {
             PreviewKind::ErrorsId => (
-                DOC_TITLE_ERRORS_ID,
-                "The random identifier attached to crash and error reports from this sign-in, and how to have those reports deleted.",
+                crate::i18n::t(DOC_TITLE_ERRORS_ID),
+                if crate::i18n::is_es() { super::consent_es::ERRORS_ID_SUBTITLE_ES } else { "The random identifier attached to crash and error reports from this sign-in, and how to have those reports deleted." },
             ),
             PreviewKind::AnalyticsId => (
-                DOC_TITLE_ANALYTICS_ID,
-                "The random identifier attached to product analytics from this sign-in, and how to have those events deleted.",
+                crate::i18n::t(DOC_TITLE_ANALYTICS_ID),
+                if crate::i18n::is_es() { super::consent_es::ANALYTICS_ID_SUBTITLE_ES } else { "The random identifier attached to product analytics from this sign-in, and how to have those events deleted." },
             ),
-            PreviewKind::Policy => (ROW_POLICY, "How PlxNative handles local data, Plex services and optional reporting."),
+            PreviewKind::Policy => (crate::i18n::t(ROW_POLICY), if crate::i18n::is_es() { super::consent_es::POLICY_SUBTITLE_ES } else { "How PlxNative handles local data, Plex services and optional reporting." }),
             PreviewKind::Crash => (
-                DOC_TITLE_CRASH,
-                "What is actually sent: the exact fields a crash or error report can carry — only when error reporting is on.",
+                crate::i18n::t(DOC_TITLE_CRASH),
+                if crate::i18n::is_es() { super::consent_es::CRASH_SUBTITLE_ES } else { "What is actually sent: the exact fields a crash or error report can carry — only when error reporting is on." },
             ),
             PreviewKind::Usage => (
-                DOC_TITLE_USAGE,
-                "What is actually sent: the exact fields a product analytics event can carry — only when usage reporting is on.",
+                crate::i18n::t(DOC_TITLE_USAGE),
+                if crate::i18n::is_es() { super::consent_es::USAGE_SUBTITLE_ES } else { "What is actually sent: the exact fields a product analytics event can carry — only when usage reporting is on." },
             ),
         };
         let text = match kind {
@@ -1069,14 +1077,21 @@ impl Screen<InnerHost> for PreviewPage {
 /// mock-up: a field added to any of these schemas appears here, in front of the person being asked
 /// to consent to it, the same argument the old combined `preview` made.
 pub(crate) fn preview_crash() -> String {
-    let mut out = String::from(
-        "Crashes / Errors — what is actually sent to Sentry in Germany, and only when error \
+    let es = crate::i18n::is_es();
+    let mut out = String::from(if es {
+        super::consent_es::PREVIEW_CRASH_INTRO_ES
+    } else {
+        "Crashes / Errors \u{2014} what is actually sent to Sentry in Germany, and only when error \
          reporting is on. Random and build-specific values are placeholders; fixed classes below \
          are representative values from the closed domains in the Privacy notice. Nothing else is \
          sent. The crash report identifier is random, is created only when crash reports are \
-         enabled, and is shown here as a placeholder.\n\n",
-    );
-    out.push_str("Native crash report (only when error reporting is on):\n");
+         enabled, and is shown here as a placeholder.\n\n"
+    });
+    out.push_str(if es {
+        super::consent_es::CRASH_NATIVE_LABEL_ES
+    } else {
+        "Native crash report (only when error reporting is on):\n"
+    });
     let crash = crate::telemetry::native::preview_event();
     let crash_text = serde_json::from_slice::<serde_json::Value>(&crash)
         .ok()
@@ -1086,24 +1101,34 @@ pub(crate) fn preview_crash() -> String {
     for (label, body) in crate::telemetry::crashreport::preview_events() {
         out.push_str("\n\n");
         out.push_str(label);
-        out.push_str(" (only if native capture is unavailable):\n");
+        out.push_str(if es {
+            super::consent_es::CRASH_FALLBACK_SUFFIX_ES
+        } else {
+            " (only if native capture is unavailable):\n"
+        });
         let text = serde_json::from_slice::<serde_json::Value>(&body)
             .ok()
             .and_then(|v| serde_json::to_string_pretty(&v).ok())
             .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
         out.push_str(&text);
     }
-    out.push_str("\n\nHandled playback error (only when error reporting is on):\n");
+    out.push_str(if es {
+        super::consent_es::CRASH_PLAYBACK_LABEL_ES
+    } else {
+        "\n\nHandled playback error (only when error reporting is on):\n"
+    });
     let handled = crate::telemetry::playback::preview_event();
     let handled_text = serde_json::from_slice::<serde_json::Value>(&handled)
         .ok()
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| String::from_utf8_lossy(&handled).into_owned());
     out.push_str(&handled_text);
-    out.push_str(
+    out.push_str(if es {
+        super::consent_es::CRASH_SIGNIN_LABEL_ES
+    } else {
         "\n\nSign-in problem report (automatically only when error reporting is on; otherwise \
-         only when you press Send report, and then without the crash report identifier):\n",
-    );
+         only when you press Send report, and then without the crash report identifier):\n"
+    });
     let incident = crate::telemetry::incident::preview_event();
     let incident_text = serde_json::from_slice::<serde_json::Value>(&incident)
         .ok()
@@ -1124,14 +1149,21 @@ pub(crate) fn preview_crash() -> String {
 /// minted only when product analytics is enabled; error-only consent creates none.
 pub(crate) fn preview_usage() -> String {
     use crate::diag::schema::DiagEvent;
-    let mut out = String::from(
-        "Analytics / Usage — what is actually sent to PostHog in Germany, and only when usage \
+    let es = crate::i18n::is_es();
+    let mut out = String::from(if es {
+        super::consent_es::PREVIEW_USAGE_INTRO_ES
+    } else {
+        "Analytics / Usage \u{2014} what is actually sent to PostHog in Germany, and only when usage \
          reporting is on, with a random Analytics ID. Random and build-specific values \
          are placeholders; fixed classes below are representative values from the closed domains \
          in the Privacy notice. Nothing else is sent. The usage identifier is random and is \
-         created only when product analytics is enabled.\n\n",
-    );
-    out.push_str("Usage events (only when usage reporting is on):\n");
+         created only when product analytics is enabled.\n\n"
+    });
+    out.push_str(if es {
+        super::consent_es::USAGE_EVENTS_LABEL_ES
+    } else {
+        "Usage events (only when usage reporting is on):\n"
+    });
     for e in [
         DiagEvent::AppLaunch,
         DiagEvent::RouteEntered { screen: "home" },
@@ -1240,12 +1272,20 @@ fn preview() -> String {
 /// ever turned back on, so "off" really does mean the old handle is gone.
 fn analytics_id_document() -> String {
     match consent::current().and_then(|c| c.install_id).as_deref() {
-        Some(id) => format!(
+        Some(id) => if crate::i18n::is_es() {
+            super::consent_es::ANALYTICS_ID_DOC_ES.replace("{id}", id).replace("{CONTACT_EMAIL}", CONTACT_EMAIL)
+        } else {
+            format!(
             "YOUR ANALYTICS ID\n\n{id}\n\nWHAT IT IS\n\nA random identifier created on this television when you turned product analytics on. It is attached to analytics events so they can be counted as coming from one Analytics ID: one uninterrupted opt-in on one television. It is not derived from your Plex account, your television or anything about you, and it is never sent with crash reports, which carry a separate Crash report ID of their own.\n\nHOW TO HAVE THESE EVENTS DELETED\n\nWrite to {CONTACT_EMAIL} and quote the identifier above. It is the only handle these events carry, so a request without it cannot be matched to anything.\n\nHOW IT ENDS\n\nTurning product analytics off deletes this identifier, and turning analytics on again creates a different one. Signing out removes it as well, and the next person to sign in is asked afresh; so does Delete all local data. Events already sent keep the old identifier, which is why it is worth copying down before you turn analytics off if you intend to ask for their deletion."
-        ),
-        None => format!(
+            )
+        },
+        None => if crate::i18n::is_es() {
+            super::consent_es::NO_ANALYTICS_ID_DOC_ES.replace("{CONTACT_EMAIL}", CONTACT_EMAIL)
+        } else {
+            format!(
             "NO ANALYTICS ID\n\nProduct analytics is off, so this installation has no analytics identifier and is sending no analytics events.\n\nAn identifier is created only when you turn product analytics on, and deleting it is what turning it off does. If you had analytics on before and want events from that period deleted, write to {CONTACT_EMAIL} — but note that the identifier they carry was destroyed when analytics was turned off, so it can no longer be looked up from this television.\n\nCrash reports do not use this identifier. They carry a separate Crash report ID, shown on its own row while crash reports are on."
-        ),
+            )
+        },
     }
 }
 
@@ -1261,12 +1301,20 @@ fn analytics_id_document() -> String {
 /// owed the reason.
 fn errors_id_document() -> String {
     match consent::current().and_then(|c| c.errors_id).as_deref() {
-        Some(id) => format!(
+        Some(id) => if crate::i18n::is_es() {
+            super::consent_es::ERRORS_ID_DOC_ES.replace("{id}", id).replace("{CONTACT_EMAIL}", CONTACT_EMAIL)
+        } else {
+            format!(
             "YOUR CRASH REPORT ID\n\n{id}\n\nWHAT IT IS\n\nA random identifier created on this television when you turned crash reports on. It is attached to every crash and error report so that repeated crashes under one Crash report ID are counted once, which is what tells a problem that hit many people apart from one television that hit it many times. It is not derived from your Plex account, your television or anything about you, and it is never sent with product analytics, which has a separate Analytics ID of its own.\n\nHOW TO HAVE THESE REPORTS DELETED\n\nWrite to {CONTACT_EMAIL} and quote the identifier above. It is the only handle these reports carry, so a request without it cannot be matched to anything.\n\nHOW IT ENDS\n\nTurning crash reports off deletes this identifier, and turning them on again creates a different one. Signing out removes it as well, and the next person to sign in is asked afresh; so does Delete all local data. Reports already sent keep the old identifier, which is why it is worth copying down before you turn crash reports off if you intend to ask for their deletion."
-        ),
-        None => format!(
+            )
+        },
+        None => if crate::i18n::is_es() {
+            super::consent_es::NO_ERRORS_ID_DOC_ES.replace("{CONTACT_EMAIL}", CONTACT_EMAIL)
+        } else {
+            format!(
             "NO CRASH REPORT ID\n\nCrash reports are off, so this installation has no crash report identifier and is sending no crash or error reports.\n\nAn identifier is created only when you turn crash reports on, and deleting it is what turning them off does. If you had crash reports on before and want reports from that period deleted, write to {CONTACT_EMAIL} — but note that the identifier they carry was destroyed when crash reports were turned off, so it can no longer be looked up from this television."
-        ),
+            )
+        },
     }
 }
 
