@@ -61,15 +61,16 @@ looking at:
   promotes it. A helper exit between those phases therefore leaves the prior sign-in readable.
   The legacy `com.palm.keymanager` AES-CFB interface is not used. Legacy `<id>-auth.json`,
   `state/auth.json`, `state/session.json` and consent files are read only as migration sources.
-  Every open of those legacy files (and of the telemetry spool and crashmark files) repairs the
-  mode back to 0600 in place
+  Every active read of those legacy session/consent files and of the runtime telemetry spool and
+  crashmark repairs the mode back to 0600 in place
   if it has grown group/other bits, rather than refusing to read or append to a file this install
   still owns. **Repairing the mode is not the same claim as trusting the content it protected while
   it was wide open**: a mode widened only to add a group/other READ bit is a disclosure problem and
   the content still loads, but any group/other WRITE bit means another uid could have rewritten the
   bytes, so that content is never trusted — the session and consent files are discarded rather than
-  parsed, a marker or probe file is ignored and deleted, and the telemetry spool is truncated rather
-  than appended onto. **A write-widened SESSION file is QUARANTINED rather than deleted**: it is
+  parsed, a marker or probe file is ignored and deleted, and the active runtime telemetry spool is
+  truncated rather than appended onto. Persistent legacy telemetry queues are cleanup-only: their
+  records are never opened or imported. **A write-widened SESSION file is QUARANTINED rather than deleted**: it is
   renamed to the source name with `.untrusted` beside itself, still 0600, and never parsed or opened again
   by anything in the app — it is kept for the television's owner to inspect, those bytes being the
   only record of what was tampered with. **Only the most recent one is kept**: a later tampering

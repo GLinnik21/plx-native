@@ -645,14 +645,14 @@ fn apply_worker_cutoff(operation: &Operation) -> bool {
         return true;
     }
     let mut complete = if tenure_cleanup.is_some() {
-        spool::purge_all_local() & native::sync_change(&Consent::default())
+        spool::purge_runtime_all() & native::sync_change(&Consent::default())
     } else {
         let cutoff = Consent {
             errors: !*enabling_errors,
             usage: !*enabling_usage,
             ..Default::default()
         };
-        spool::purge_withdrawn(&cutoff)
+        spool::purge_before_opt_in(&cutoff)
     };
     if *enabling_errors {
         complete &= crashreport::discard_pending_before_opt_in();
@@ -1113,6 +1113,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             spool::set_test_path(Some(dir.join("spool.bin")));
+            *crashreport::TEST_ROOT.lock().unwrap() = Some(dir.clone());
             Self {
                 dir,
                 saved: consent::current(),
@@ -1124,6 +1125,8 @@ mod tests {
         fn drop(&mut self) {
             crate::storage_worker::drain_for_test();
             spool::set_test_path(None);
+            *spool::TEST_LEGACY.lock().unwrap() = None;
+            *crashreport::TEST_ROOT.lock().unwrap() = None;
             redirect_for_test(None);
             consent::install(self.saved.take().unwrap_or_default());
             let _ = std::fs::remove_dir_all(&self.dir);
@@ -1278,6 +1281,57 @@ mod tests {
         assert!(!wrote_yes.load(std::sync::atomic::Ordering::Acquire));
         assert!(consent::current().is_some_and(|c| c.usage));
         assert!(!consent::allows_usage());
+    }
+
+    #[test]
+    fn enabling_error_reports_does_not_depend_on_legacy_spool_storage() {
+        let _g = crate::testlock::serial();
+        let reset = AsyncReset::new("errors-without-legacy-spool");
+        consent::install(Consent::default());
+        // A regular file used as the parent deterministically models an inaccessible legacy
+        // directory, including when tests run as root. The runtime queue remains writable.
+        let blocked = reset.dir.join("legacy-parent");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        *spool::TEST_LEGACY.lock().unwrap() = Some(vec![blocked.join("spool.bin")]);
+        assert!(spool::append(&queue::Record {
+            category: queue::Category::Errors,
+            dest: queue::Dest::Sentry,
+            event_id: "pre-consent-error".into(),
+            body: b"{}".to_vec(),
+        }));
+        let executor = crate::storage_worker::Executor::start(1).unwrap();
+        let wrote_db8_consent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let wrote_db8_consent_job = wrote_db8_consent.clone();
+        let decision = Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: true,
+            errors_scope: consent::ERRORS_SCOPE,
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        };
+
+        let status = submit_operation(
+            decision,
+            false,
+            Box::new(move || {
+                wrote_db8_consent_job.store(true, std::sync::atomic::Ordering::Release);
+                outcome(
+                    persistence::PersistResult::Durable,
+                    persistence::CleanupResult::Complete,
+                )
+            }),
+            |job| executor.submit(job),
+        )
+        .wait_blocking();
+
+        assert_eq!(status.failure, None);
+        assert!(wrote_db8_consent.load(std::sync::atomic::Ordering::Acquire));
+        assert!(consent::allows_errors());
+        assert_eq!(status.write, PersistenceState::Durable);
+        assert_eq!(status.cleanup, persistence::CleanupResult::Complete,
+            "an inert legacy queue must not surface as a failed current consent action");
+        assert!(spool::read().iter().all(|record| record.event_id != "pre-consent-error"),
+            "publishing prospective consent must not revive an old active-queue record");
     }
 
     #[test]

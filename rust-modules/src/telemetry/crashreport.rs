@@ -608,10 +608,125 @@ pub(crate) fn event_id_for(build_id: &str, seq: usize, r: &Report) -> String {
     format!("{a:016x}{b:016x}")
 }
 
-/// How much of the append-only crash log has already been reported.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
+/// An offset belongs to a particular file AND prefix, not just a length. The prefix fingerprint
+/// also catches truncation/rewrite of the same inode and inode reuse after unlink.
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
 struct Mark {
     reported_bytes: u64,
+    identity: Option<(u64, u64)>,
+    prefix_hash: u64,
+}
+
+#[derive(Default)]
+struct Snapshot {
+    bytes: Vec<u8>,
+    identity: Option<(u64, u64)>,
+}
+
+impl Snapshot {
+    fn mark(&self) -> Mark {
+        Mark {
+            reported_bytes: self.bytes.len() as u64,
+            identity: self.identity,
+            prefix_hash: prefix_hash(&self.bytes),
+        }
+    }
+}
+
+fn prefix_hash(bytes: &[u8]) -> u64 {
+    prefix_hash_from(0xcbf2_9ce4_8422_2325, bytes)
+}
+
+fn prefix_hash_from(seed: u64, bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .fold(seed, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3))
+}
+
+fn log_path() -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(root) = TEST_ROOT.lock().unwrap().as_ref() {
+        return root.join("plxnative-crash.log");
+    }
+    crate::paths::in_runtime_dir("plxnative-crash.log")
+}
+
+fn mark_paths() -> Vec<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(root) = TEST_ROOT.lock().unwrap().as_ref() {
+        return vec![root.join("telemetry-crashmark.json")];
+    }
+    crate::paths::telemetry_crashmark_candidates()
+}
+
+#[cfg(test)]
+pub(crate) static TEST_ROOT: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// Read bytes and identity from the SAME non-following descriptor. A missing log is a valid
+/// empty generation, while unreadable, oversized or peer-writable logs fail the prospective cutoff.
+fn read_snapshot(path: &std::path::Path) -> std::io::Result<Snapshot> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let f = match std::fs::OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK).open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Snapshot::default()),
+        Err(e) => return Err(e),
+    };
+    let meta = f.metadata()?;
+    if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() }
+        || !crate::plex::session::repair_owned_mode(&f, &meta, path).content_trusted() {
+        return Err(std::io::ErrorKind::PermissionDenied.into());
+    }
+    const MAX_LOG: u64 = 4 * 1024 * 1024;
+    let mut bytes = Vec::new();
+    f.take(MAX_LOG + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_LOG {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    Ok(Snapshot { bytes, identity: Some((meta.dev(), meta.ino())) })
+}
+
+/// Build a prospective-consent cutoff without the importer allocation limit. A long-running
+/// process may have more than 4 MiB of local crash diagnostics; that must not disable the user's
+/// reporting choice. This streams a bounded buffer while hashing the complete existing prefix.
+fn cutoff_mark(path: &std::path::Path) -> std::io::Result<Mark> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Snapshot::default().mark()),
+        Err(error) => return Err(error),
+    };
+    let meta = file.metadata()?;
+    if !meta.is_file()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || !crate::plex::session::repair_owned_mode(&file, &meta, path).content_trusted()
+    {
+        return Err(std::io::ErrorKind::PermissionDenied.into());
+    }
+    let mut hash = 0xcbf2_9ce4_8422_2325;
+    let mut total = 0u64;
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or(std::io::ErrorKind::InvalidData)?;
+        hash = prefix_hash_from(hash, &chunk[..read]);
+    }
+    Ok(Mark {
+        reported_bytes: total,
+        identity: Some((meta.dev(), meta.ino())),
+        prefix_hash: hash,
+    })
 }
 
 fn consume_native_match(
@@ -657,10 +772,9 @@ fn consume_native_match(
 /// **The mark advances only after the records are durably queued**, never before the enqueue, or a
 /// spool write that fails leaves the report both unsent and permanently skipped.
 ///
-/// **A log SHORTER than the mark means the file was replaced** — a factory reset, a reinstall, or
-/// somebody clearing `/tmp` — so the mark is reset to zero rather than used to skip records that
-/// are not the ones it was counting. Keeping it would silently drop exactly the crashes from a
-/// freshly reinstalled app, which is when they matter most.
+/// **Replacement invalidates the offset even when the new log is longer.** The runtime mark binds
+/// the offset to a file identity and prefix hash. A missing/untrusted mark conservatively cuts off
+/// the existing log, so upgrading cannot send diagnostics from before the new consent boundary.
 ///
 /// **No debug image without a build id.** An image entry carrying an empty or wrong `debug_id` does
 /// not degrade to an unsymbolicated frame with a warning; it produces `missing_symbol` and no error
@@ -673,16 +787,13 @@ pub(crate) fn report_pending_for(
     if !consent.errors {
         return; // no consent for this category — nothing is read and nothing is queued
     }
-    let path = crate::paths::in_runtime_dir("plxnative-crash.log");
-    // `read_owned_regular`, not a bare `std::fs::read`: same ownership/regular-file/symlink
-    // guard as `read_mark` below — this reader was the larger of the two and the one this file's
-    // table actually names, so it is the one worth getting right first.
-    let Some(bytes) = crate::plex::session::read_owned_regular(&path) else {
+    let Ok(snapshot) = read_snapshot(&log_path()) else {
         return;
     };
-
-    let from = resume_from(bytes.len() as u64, read_mark().reported_bytes) as usize;
+    let bytes = &snapshot.bytes;
+    let from = resume_from(&snapshot, read_mark().as_ref());
     if from >= bytes.len() {
+        write_mark(&snapshot.mark());
         return;
     }
     // Lossy on purpose: this file is written by a signal handler and by the panic hook, and one
@@ -694,7 +805,7 @@ pub(crate) fn report_pending_for(
         None => parse(&fresh),
     };
     if reports.is_empty() {
-        write_mark(bytes.len() as u64);
+        write_mark(&snapshot.mark());
         return;
     }
     let current_build_id = super::sentry::build_id();
@@ -722,7 +833,9 @@ pub(crate) fn report_pending_for(
             continue;
         }
         let did = super::sentry::debug_id(bid);
-        let event_id = event_id_for(bid, from + i, r);
+        // A replacement log can contain an identical fault at the same offset. Its file identity
+        // participates only in the hashed event id so it is not deduplicated as the old crash.
+        let event_id = event_id_for(&format!("{bid}:{:?}", snapshot.identity), from + i, r);
         let body = match r {
             Report::Fault(f) => {
                 sentry_body(f, &event_id, bid, did.as_deref(), errors_id.as_deref())
@@ -749,7 +862,7 @@ pub(crate) fn report_pending_for(
         }) { "yes" } else { "partial/no" }
     ));
     if queued + native_wins == reports.len() {
-        write_mark(bytes.len() as u64);
+        write_mark(&snapshot.mark());
     }
 }
 
@@ -758,51 +871,32 @@ pub(crate) fn report_pending_for(
 /// private watermark before publishing the new consent keeps those local diagnostics local while
 /// allowing the next crash to be reported normally.
 pub(crate) fn discard_pending_before_opt_in() -> bool {
-    let path = crate::paths::in_runtime_dir("plxnative-crash.log");
-    let meta = match std::fs::metadata(path) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
-        Err(_) => return false,
-    };
-    write_mark(meta.len())
+    cutoff_mark(&log_path()).is_ok_and(|mark| write_mark(&mark))
 }
 
-/// Where in the crash log to start reading, given its size and the watermark.
-///
-/// Pure, because the interesting case cannot be produced on demand: **a log SHORTER than the mark
-/// means the file was replaced** — a reinstall, a factory reset, somebody clearing `/tmp` — and the
-/// mark is then counting bytes that no longer exist. Using it would skip the first N bytes of a
-/// brand-new log, silently dropping exactly the crashes of a freshly reinstalled app, which is when
-/// they matter most. It resets instead, and re-reporting is bounded by the deterministic
-/// [`event_id_for`], which Sentry dedupes.
-fn resume_from(log_len: u64, mark: u64) -> u64 {
-    if log_len < mark {
-        crate::log(
-            "telemetry: crash log is shorter than the watermark — reading it from the start",
-        );
+fn resume_from(snapshot: &Snapshot, mark: Option<&Mark>) -> usize {
+    let Some(mark) = mark else { return snapshot.bytes.len() };
+    let Ok(offset) = usize::try_from(mark.reported_bytes) else { return 0 };
+    if snapshot.identity != mark.identity || offset > snapshot.bytes.len()
+        || prefix_hash(&snapshot.bytes[..offset]) != mark.prefix_hash {
         return 0;
     }
-    mark
+    offset
 }
 
-fn read_mark() -> Mark {
-    // `read_owned_regular` rather than a bare `std::fs::read`: same ownership/regular-file/
-    // `O_NOFOLLOW` checks every other owned file in this app gets, plus the 2026-09-10 repair-on-
-    // read (a widened mode is fixed in place, not merely tolerated) — see `session.rs`'s "Storage
-    // model" doc. This file only carries a byte watermark, but a symlink planted at its name in the
-    // shared `/media/developer` namespace should still be refused rather than followed.
-    crate::paths::telemetry_crashmark_candidates()
+fn read_mark() -> Option<Mark> {
+    mark_paths()
         .iter()
-        .filter_map(|p| crate::plex::session::read_owned_regular(p))
+        .filter_map(|p| crate::plex::session::read_owned_regular_trusted(p))
+        .filter_map(|(bytes, trust)| trust.content_trusted().then_some(bytes))
         .find_map(|b| serde_json::from_slice::<Mark>(&b).ok())
-        .unwrap_or_default()
 }
 
-fn write_mark(reported_bytes: u64) -> bool {
-    let Ok(json) = serde_json::to_vec(&Mark { reported_bytes }) else {
+fn write_mark(mark: &Mark) -> bool {
+    let Ok(json) = serde_json::to_vec(mark) else {
         return false;
     };
-    let stored = crate::paths::telemetry_crashmark_candidates()
+    let stored = mark_paths()
         .iter()
         .any(|p| crate::plex::session::write_atomic(p, &json));
     if !stored {
@@ -1166,13 +1260,79 @@ mod tests {
     /// crashes of a freshly reinstalled app.
     #[test]
     fn a_replaced_crash_log_is_read_from_the_start() {
-        assert_eq!(
-            resume_from(4096, 1024),
-            1024,
-            "the ordinary case skips what was reported"
-        );
-        assert_eq!(resume_from(512, 1024), 0, "a shorter log is a new file");
-        assert_eq!(resume_from(1024, 1024), 1024, "nothing new is not a reset");
+        let mut snapshot = Snapshot { bytes: vec![b'a'; 1024], identity: Some((1, 2)) };
+        let mark = snapshot.mark();
+        assert_eq!(resume_from(&snapshot, Some(&mark)), 1024);
+        snapshot.bytes.extend_from_slice(&vec![b'b'; 3072]);
+        assert_eq!(resume_from(&snapshot, Some(&mark)), 1024, "append retains the cutoff");
+        snapshot.bytes.truncate(512);
+        assert_eq!(resume_from(&snapshot, Some(&mark)), 0, "a shorter log is new");
+    }
+
+    #[test]
+    fn a_recreated_longer_crash_log_does_not_inherit_the_old_offset() {
+        let _g = crate::testlock::serial();
+        let root = std::env::temp_dir().join(format!("plx-crash-generation-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("crash.log");
+        std::fs::write(&path, REC).unwrap();
+        let mark = read_snapshot(&path).unwrap().mark();
+        // Keep the old inode alive to make replacement deterministic even on inode-reusing FSs.
+        std::fs::rename(&path, root.join("old.log")).unwrap();
+        std::fs::write(&path, REC.repeat(2)).unwrap();
+        let replacement = read_snapshot(&path).unwrap();
+        assert_eq!(resume_from(&replacement, Some(&mark)), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_same_inode_rewrite_and_missing_mark_are_conservative() {
+        let mut snapshot = Snapshot { bytes: REC.as_bytes().to_vec(), identity: Some((1, 2)) };
+        let mark = snapshot.mark();
+        snapshot.bytes[0] = b'x';
+        snapshot.bytes.extend_from_slice(REC.as_bytes());
+        assert_eq!(resume_from(&snapshot, Some(&mark)), 0, "a changed prefix invalidates the offset");
+        assert_eq!(resume_from(&snapshot, None), snapshot.bytes.len(), "without a cutoff existing crashes stay local");
+    }
+
+    #[test]
+    fn opt_in_skips_existing_crashes_but_imports_a_later_append_once() {
+        use std::io::Write;
+        let _g = crate::testlock::serial();
+        let root = std::env::temp_dir().join(format!("plx-crash-cutoff-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        *TEST_ROOT.lock().unwrap() = Some(root.clone());
+        super::super::spool::set_test_path(Some(root.join("spool.bin")));
+        assert!(super::super::spool::purge_runtime_all());
+        std::fs::write(log_path(), REC).unwrap();
+        assert!(discard_pending_before_opt_in());
+        let consent = super::super::consent::Consent { errors: true, ..Default::default() };
+        report_pending_for(&consent, &[]);
+        assert!(super::super::spool::read().is_empty());
+        std::fs::OpenOptions::new().append(true).open(log_path()).unwrap().write_all(REC.as_bytes()).unwrap();
+        report_pending_for(&consent, &[]);
+        assert_eq!(super::super::spool::read().len(), 1);
+        report_pending_for(&consent, &[]);
+        assert_eq!(super::super::spool::read().len(), 1);
+        *TEST_ROOT.lock().unwrap() = None;
+        super::super::spool::set_test_path(None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_oversized_local_log_cannot_disable_error_reporting_opt_in() {
+        let _g = crate::testlock::serial();
+        let root = std::env::temp_dir().join(format!("plx-crash-large-cutoff-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        *TEST_ROOT.lock().unwrap() = Some(root.clone());
+        std::fs::write(log_path(), vec![b'x'; 4 * 1024 * 1024 + 1]).unwrap();
+
+        assert!(discard_pending_before_opt_in());
+        let mark = read_mark().expect("the complete existing prefix is cut off");
+        assert_eq!(mark.reported_bytes, 4 * 1024 * 1024 + 1);
+
+        *TEST_ROOT.lock().unwrap() = None;
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// The watermark commonly lands after a process marker and before that process later crashes.

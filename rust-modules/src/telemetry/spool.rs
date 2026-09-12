@@ -3,7 +3,7 @@
 //! [`queue`](super::queue) is the pure half — framing, caps, acknowledgement, all of it bytes in
 //! and records out. This is the impure half: which file, who may touch it, and in what order. The
 //! split is the same one `queue`'s own doc argues for, and it is what lets the interesting failures
-//! (a power cut mid-write, an append racing a compaction) be *tested* instead of reasoned about.
+//! (a killed process mid-write, an append racing a compaction) be *tested* instead of reasoned about.
 //!
 //! # There is exactly ONE writer, because the obvious cheap fix is a worse bug
 //!
@@ -29,11 +29,9 @@
 //!
 //! # One path per process
 //!
-//! The candidate list is a SEARCH ORDER, for [`crate::paths`]' reason: which of the two `/media`
-//! directories is writable depends on the jail profile. But a search order applied independently to
-//! reads and writes is a split brain — read the file that exists, write the first that accepts, and
-//! on a set where those differ every record written is invisible to the next read. Resolved once,
-//! cached, preferring a spool that already exists over one that merely could.
+//! The bounded queue lives in this install's runtime root. It survives a process restart but is
+//! disposable across a TV reboot. Persistent legacy queues are cleanup targets only: importing
+//! them could revive records collected under a previous consent or account.
 
 use super::queue::{self, Record};
 use std::path::PathBuf;
@@ -65,9 +63,7 @@ fn path() -> Option<PathBuf> {
     PATH.get_or_init(resolve).clone()
 }
 
-/// Prefer a spool that already exists — a reinstall or a jail change can move which candidate is
-/// writable, and picking a fresh empty file over one holding a crash report is the one ordering
-/// that loses the report this whole module exists to keep.
+/// Resolve only the runtime candidate, never a persistent legacy queue.
 fn resolve() -> Option<PathBuf> {
     resolve_from(crate::paths::telemetry_spool_candidates())
 }
@@ -120,7 +116,7 @@ fn read_locked() -> Vec<Record> {
     }
     let d = queue::decode_all(&bytes);
     if d.dropped_bytes > 0 {
-        // Expected after a power cut, and worth one line either way: a non-zero count after a CLEAN
+        // Expected after an interrupted write, and worth one line either way: a non-zero count after a CLEAN
         // shutdown means something worse than a torn write.
         crate::log(&format!(
             "telemetry: spool recovered {} records, {} bytes discarded",
@@ -141,11 +137,9 @@ const UNKNOWN: usize = usize::MAX;
 /// Add one record.
 ///
 /// **One `write(2)` in the ordinary case**, and no `fsync`. This is called from the frame loop, and
-/// what it has to survive is the process dying — a SAM kill, a SIGSEGV, somebody pulling the plug
-/// on a frozen picture — which the write alone already does, because the record is in the page
-/// cache and the kernel outlives the process. `fsync` buys durability across a POWER cut, and
-/// paying a synchronous disk round trip on every route change to narrow that window is the wrong
-/// trade for this data. The compaction below syncs, and so does every flush.
+/// what it has to survive is the process dying — a SAM kill or a SIGSEGV — because the record is
+/// in the page cache and the kernel outlives the process. A TV reboot discards the runtime queue.
+/// Compaction and flush still use the shared atomic writer, including its sync protocol.
 ///
 /// It used to be a read-modify-write of the whole spool, per event, on that same thread.
 pub(crate) fn append(r: &Record) -> bool {
@@ -295,6 +289,17 @@ pub(crate) fn commit_retiring(retired: &[String]) {
 /// record's consent was the single press that queued it, not either standing switch, so there is
 /// no decision here for it to be withdrawn BY — see that variant's doc.
 pub(crate) fn purge_withdrawn(c: &super::consent::Consent) -> bool {
+    let active = purge_before_opt_in(c);
+    // Legacy queues are never read or sent again, so failure to delete one is diagnostic residue,
+    // not a failure to apply this consent decision. Keep strict erasure reporting for sign-out /
+    // Delete all in `purge_all_local`, where the user explicitly asked to remove every local byte.
+    let _ = purge_legacy();
+    active
+}
+
+/// Only this queue can ever be sent. An inaccessible legacy queue is reported as incomplete
+/// cleanup, but cannot prevent a new durable consent decision authorising prospective capture.
+pub(crate) fn purge_before_opt_in(c: &super::consent::Consent) -> bool {
     if c.errors && c.usage {
         return true;
     }
@@ -313,9 +318,7 @@ pub(crate) fn purge_withdrawn(c: &super::consent::Consent) -> bool {
             before - all.len()
         ));
     }
-    // Always rewrite and sync, even when the decoded queue was empty. An empty read is not proof
-    // that no stale file exists at another candidate; the resolved canonical spool must carry the
-    // cutoff before a new opt-in can become effective.
+    // Commit the cutoff even when the decoded queue was empty.
     write_locked(&all)
 }
 
@@ -328,6 +331,12 @@ pub(crate) fn purge_withdrawn(c: &super::consent::Consent) -> bool {
 /// report" and that Delete all local data "removes all of it". Called only from
 /// `telemetry::forget_with_receipt()`, never from the ordinary consent-change path `purge_withdrawn` guards.
 pub(crate) fn purge_all_local() -> bool {
+    let active = purge_runtime_all();
+    let legacy = purge_legacy();
+    active && legacy
+}
+
+pub(crate) fn purge_runtime_all() -> bool {
     let _g = lock();
     let all = read_locked();
     let n = all.len();
@@ -341,8 +350,48 @@ pub(crate) fn purge_all_local() -> bool {
     }
 }
 
+fn legacy_candidates() -> Vec<PathBuf> {
+    #[cfg(test)]
+    {
+        if let Some(candidates) = TEST_LEGACY.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return candidates;
+        }
+        if test_path().is_some() {
+            return Vec::new();
+        }
+    }
+    crate::paths::telemetry_legacy_spool_candidates()
+}
+
+/// Never resolve or read these files. Visit every alternative even after an earlier failure;
+/// retrying cleanup on subsequent decisions/sign-outs cannot revive any of their contents.
+fn purge_legacy() -> bool {
+    let _g = lock();
+    let active = path();
+    let mut complete = true;
+    for candidate in legacy_candidates() {
+        if active.as_ref() == Some(&candidate) {
+            continue;
+        }
+        let removed = match std::fs::remove_file(&candidate) {
+            Ok(()) => candidate.parent().and_then(|p| std::fs::File::open(p).ok())
+                .is_some_and(|p| p.sync_all().is_ok()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(_) => false,
+        };
+        complete &= removed;
+    }
+    if !complete {
+        crate::log("telemetry: legacy spool cleanup incomplete; legacy queues remain excluded");
+    }
+    complete
+}
+
 #[cfg(test)]
 static TEST_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) static TEST_LEGACY: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
 
 #[cfg(test)]
 fn test_path() -> Option<PathBuf> {
@@ -448,6 +497,39 @@ mod tests {
         assert_eq!(resolve_from(vec![external.clone(), state.clone()]), Some(state.clone()));
         assert!(!external.exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn erasure_removes_every_alternative_so_restart_cannot_resurrect_it() {
+        let _g = crate::testlock::serial();
+        let scratch = Scratch::new("alternatives");
+        let alternatives = ["external", "internal", "state"].map(|extension| scratch.0.with_extension(extension));
+        for alternative in &alternatives {
+            assert!(crate::plex::session::write_atomic(alternative, &queue::encode(&rec("old")).unwrap()));
+        }
+        *TEST_LEGACY.lock().unwrap() = Some(alternatives.to_vec());
+        assert!(purge_all_local());
+        let erased = alternatives.iter().all(|p| !p.exists());
+        *TEST_LEGACY.lock().unwrap() = None;
+        for alternative in alternatives { let _ = std::fs::remove_file(alternative); }
+        assert!(erased, "a later resolver could resurrect the alternative queue");
+    }
+
+    #[test]
+    fn withdrawal_visits_later_alternatives_after_a_cleanup_failure() {
+        let _g = crate::testlock::serial();
+        let scratch = Scratch::new("withdraw-alternatives");
+        let alternative = scratch.0.with_extension("legacy");
+        assert!(append(&rec("current-usage")));
+        assert!(crate::plex::session::write_atomic(&alternative, &queue::encode(&rec("old")).unwrap()));
+        // The active spool is a file, so this first legacy candidate cannot be accessed as a path.
+        *TEST_LEGACY.lock().unwrap() = Some(vec![scratch.0.join("blocked"), alternative.clone()]);
+        assert!(purge_withdrawn(&super::super::consent::Consent { usage: true, ..Default::default() }));
+        let erased = !alternative.exists();
+        assert_eq!(ids(), vec!["current-usage"], "the still-consented runtime category survives");
+        *TEST_LEGACY.lock().unwrap() = None;
+        let _ = std::fs::remove_file(alternative);
+        assert!(erased, "an earlier cleanup error must not skip later legacy alternatives");
     }
 
     /// **The record queued while a flush was on the network must survive that flush's commit.**

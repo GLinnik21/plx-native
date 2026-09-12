@@ -404,6 +404,26 @@ fn acl_only_envelope(envelope: &str) -> bool {
         == Some("db8-acl-only-v1")
 }
 
+#[cfg(any(
+    all(
+        target_os = "linux",
+        target_arch = "arm",
+        not(feature = "hostsim"),
+        not(test)
+    ),
+    test
+))]
+fn preserve_unknown_preferences(current: &serde_json::Value, next: &mut serde_json::Value) {
+    let (Some(current), Some(next)) = (current.as_object(), next.as_object_mut()) else {
+        return;
+    };
+    for (key, value) in current {
+        if key != "playback_quality" && !next.contains_key(key) {
+            next.insert(key.clone(), value.clone());
+        }
+    }
+}
+
 #[cfg(all(
     target_os = "linux",
     target_arch = "arm",
@@ -427,16 +447,26 @@ fn protection_for_auth_write(
     major: u32,
     may_fallback: bool,
     existing_acl_only: bool,
+    existing_protected: bool,
 ) -> ProtectionRequest {
-    if (1..=4).contains(&major) {
-        ProtectionRequest::Db8AclOnlyExplicit
-    } else if may_fallback {
-        ProtectionRequest::KeymanagerWithAclFallback
+    if may_fallback {
+        if (1..=4).contains(&major) {
+            ProtectionRequest::Db8AclOnlyExplicit
+        } else {
+            ProtectionRequest::KeymanagerWithAclFallback
+        }
     } else if existing_acl_only {
         ProtectionRequest::Db8AclOnlyExplicit
+    } else if existing_protected {
+        // Preserve the protection already earned by this record even if firmware classification
+        // changes.  The OS-major policy is only a default for a new record; it must never turn a
+        // routine refresh of healthy ciphertext into plaintext-at-rest.
+        ProtectionRequest::KeymanagerRequired
+    } else if (1..=4).contains(&major) {
+        ProtectionRequest::Db8AclOnlyExplicit
     } else {
-        // A routine refresh over healthy ciphertext must fail closed. Only a fresh login or an
-        // explicit legacy import is allowed to trade encryption at rest for login durability.
+        // A routine refresh/new non-authenticated write on newer firmware fails closed. Only a
+        // fresh login or an explicit legacy import may trade encryption for login durability.
         ProtectionRequest::KeymanagerRequired
     }
 }
@@ -462,7 +492,7 @@ fn commit_session(
     migration: bool,
     authority: super::SaveAuthority,
 ) -> CanonicalCommit {
-    let (public, protected) = match super::split_canonical(session) {
+    let (mut public, protected) = match super::split_canonical(session) {
         Ok(parts) => parts,
         Err(()) => return CanonicalCommit::Failed(StoreError::InvalidSchema),
     };
@@ -470,6 +500,12 @@ fn commit_session(
         Ok(loaded) => loaded,
         Err(error) => return CanonicalCommit::Failed(helper_error(error)),
     };
+    if let HelperLoad::Present(snapshot) = &loaded {
+        preserve_unknown_preferences(
+            &snapshot.state.public.preferences,
+            &mut public.preferences,
+        );
+    }
     let may_fallback = migration || authority == super::SaveAuthority::FreshReauthentication;
     let mutation = match &loaded {
         HelperLoad::Missing if migration => WireMutation::AdvanceMigration {
@@ -479,7 +515,7 @@ fn commit_session(
                     Err(_) => return CanonicalCommit::Failed(StoreError::InvalidSchema),
                 },
                 auth_plaintext: crate::storage::wire::SecretString(protected),
-                protection: protection_for_auth_write(crate::webos::info().major, true, false),
+                protection: protection_for_auth_write(crate::webos::info().major, true, false, false),
             },
         },
         HelperLoad::Missing if authority == super::SaveAuthority::PublicOnly => {
@@ -491,7 +527,7 @@ fn commit_session(
                 Err(_) => return CanonicalCommit::Failed(StoreError::InvalidSchema),
             },
             payload: crate::storage::wire::SecretString(protected),
-            protection: protection_for_auth_write(crate::webos::info().major, may_fallback, false),
+            protection: protection_for_auth_write(crate::webos::info().major, may_fallback, false, false),
         },
         HelperLoad::Present(snapshot) if migration => WireMutation::AdvanceMigration {
             migration: MigrationMutation::SessionComplete {
@@ -500,7 +536,7 @@ fn commit_session(
                     Err(_) => return CanonicalCommit::Failed(StoreError::InvalidSchema),
                 },
                 auth_plaintext: crate::storage::wire::SecretString(protected),
-                protection: protection_for_auth_write(crate::webos::info().major, true, false),
+                protection: protection_for_auth_write(crate::webos::info().major, true, false, false),
             },
         },
         HelperLoad::Present(_) if authority == super::SaveAuthority::PublicOnly => {
@@ -540,6 +576,7 @@ fn commit_session(
                             .auth_envelope
                             .as_deref()
                             .is_some_and(acl_only_envelope),
+                        snapshot.state.auth_envelope.is_some(),
                     ),
                 }
             } else {
@@ -719,12 +756,12 @@ mod db8_policy_tests {
     #[test]
     fn old_firmware_uses_acl_directly_and_newer_firmware_requests_crypto_with_fallback() {
         assert!(matches!(
-            protection_for_auth_write(4, true, false),
+            protection_for_auth_write(4, true, false, false),
             ProtectionRequest::Db8AclOnlyExplicit
         ));
         for major in [0, 5, 9, 11] {
             assert!(matches!(
-                protection_for_auth_write(major, true, false),
+                protection_for_auth_write(major, true, false, false),
                 ProtectionRequest::KeymanagerWithAclFallback
             ));
         }
@@ -733,25 +770,45 @@ mod db8_policy_tests {
     #[test]
     fn fallback_is_limited_to_fresh_auth_or_import_on_new_firmware() {
         assert!(matches!(
-            protection_for_auth_write(11, true, false),
+            protection_for_auth_write(11, true, false, false),
             ProtectionRequest::KeymanagerWithAclFallback
         ));
         assert!(matches!(
-            protection_for_auth_write(11, false, false),
+            protection_for_auth_write(11, false, false, false),
             ProtectionRequest::KeymanagerRequired
         ));
         assert!(matches!(
-            protection_for_auth_write(11, false, true),
+            protection_for_auth_write(11, false, true, true),
             ProtectionRequest::Db8AclOnlyExplicit
         ));
         assert!(matches!(
-            protection_for_auth_write(11, true, true),
+            protection_for_auth_write(11, true, true, true),
             ProtectionRequest::KeymanagerWithAclFallback
         ));
         assert!(matches!(
-            protection_for_auth_write(4, true, false),
+            protection_for_auth_write(4, true, false, false),
             ProtectionRequest::Db8AclOnlyExplicit
         ));
+        assert!(matches!(
+            protection_for_auth_write(4, false, false, true),
+            ProtectionRequest::KeymanagerRequired
+        ));
+    }
+
+    #[test]
+    fn a_public_preferences_rewrite_preserves_future_keys() {
+        let current = serde_json::json!({
+            "playback_quality": {"kind":"Original"},
+            "future_preference": {"version": 2, "enabled": true}
+        });
+        let mut next = serde_json::json!({
+            "playback_quality": {"kind":"Auto"}
+        });
+
+        preserve_unknown_preferences(&current, &mut next);
+
+        assert_eq!(next["playback_quality"]["kind"], "Auto");
+        assert_eq!(next["future_preference"], current["future_preference"]);
     }
 
     #[test]

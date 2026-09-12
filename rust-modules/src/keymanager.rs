@@ -820,11 +820,14 @@ pub(crate) fn open_checked(sealed: &Sealed) -> (Option<Vec<u8>>, Option<LastRefu
     (plain, local)
 }
 
-pub(crate) fn remove(backend: &Backend, key: &str) {
+/// Remove one app-owned key. The result is acknowledged so callers that still hold the envelope
+/// can retain it as durable retry information instead of deleting the only record of which key
+/// remains to be retired.
+pub(crate) fn remove(backend: &Backend, key: &str) -> bool {
     if key != KEY_NAME {
-        return;
+        return true;
     }
-    let _ = match backend {
+    let removed = match backend {
         Backend::Keymanager3 => call(
             "luna://com.webos.service.keymanager3/removeKey",
             &json!({"name": key}),
@@ -833,7 +836,13 @@ pub(crate) fn remove(backend: &Backend, key: &str) {
             "luna://com.palm.keymanager/remove",
             &json!({"keyname": key}),
         ),
-    };
+    }
+    .as_ref()
+    .is_some_and(|reply| {
+        succeeded(reply)
+            // Keymanager3's documented idempotent terminal: there is no key left to retire.
+            || error_code(reply) == Some(-10001)
+    });
     // `clear()` deletes the key and the file in one sign-out. A later sign-in in the same process
     // must run key creation again rather than trusting the now-stale backend cache.
     SELECTED.store(UNKNOWN, Ordering::Relaxed);
@@ -843,6 +852,7 @@ pub(crate) fn remove(backend: &Backend, key: &str) {
     // Same reasoning for the key-outcome vocabulary: a fresh sign-in earns its own `generateKey`
     // call and must not inherit the account that just signed out's.
     LAST_KEY_OUTCOME.store(KEY_OUTCOME_UNKNOWN, Ordering::Relaxed);
+    removed
 }
 
 fn succeeded(v: &Value) -> bool {
@@ -3245,6 +3255,24 @@ mod tests {
         SELECTED.store(MODERN, Ordering::Relaxed);
         remove(&Backend::Keymanager3, super::KEY_NAME);
         assert_eq!(SELECTED.load(Ordering::Relaxed), UNKNOWN);
+    }
+
+    #[test]
+    fn key_retirement_is_acknowledged_and_missing_is_already_complete() {
+        let _guard = crate::testlock::serial();
+        reset();
+        platform::script_for_test(vec![(
+            "removeKey",
+            Ok(json!({"returnValue": false, "errorCode": -10001})),
+        )]);
+        assert!(remove(&Backend::Keymanager3, super::KEY_NAME));
+
+        platform::script_for_test(vec![(
+            "removeKey",
+            Ok(json!({"returnValue": false, "errorCode": -20030})),
+        )]);
+        assert!(!remove(&Backend::Keymanager3, super::KEY_NAME));
+        platform::reset_for_test();
     }
 
     #[test]

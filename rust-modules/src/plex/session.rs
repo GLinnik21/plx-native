@@ -114,6 +114,10 @@
 //!
 //! **What each shipped version actually wrote, and what this build does when it finds it:**
 //!
+//! The probe/marker rows below describe the retained JSON/host adapter. Shipping ARM delegates
+//! protection to the private DB8 helper and retires these application-side artifacts after a
+//! canonical DB8 load; it does not use them to classify or promote the DB8 record.
+//!
 //! | on disk | v0.6.0 / v0.6.1 wrote it as | v0.6.2 added | this build reads it as |
 //! |---|---|---|---|
 //! | bare `Session` JSON, 0600 | the only shape that ever existed | — | `Ready{plaintext:true}` |
@@ -1512,10 +1516,14 @@ struct CanonicalSessionAuth {
 }
 
 #[derive(Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 struct CanonicalSessionPreferences {
     #[serde(default, deserialize_with = "de_soft_playback_quality")]
     playback_quality: Option<PlaybackQuality>,
+    /// Parsed only so a future preference does not make the known fields disappear. The shipping
+    /// adapter merges these opaque keys from the current DB8 public payload before every rewrite;
+    /// they are not promoted into the Session domain object.
+    #[serde(flatten)]
+    extensions: BTreeMap<String, Value>,
 }
 
 /// Split a typed session at the encryption boundary used by the DB8 helper.
@@ -1528,6 +1536,7 @@ pub(crate) fn split_canonical(
 ) -> Result<(crate::storage::state::PublicPayload, String), ()> {
     let preferences = serde_json::to_value(CanonicalSessionPreferences {
         playback_quality: session.playback_quality,
+        extensions: BTreeMap::new(),
     })
     .map_err(|_| ())?;
     let pins = serde_json::to_value(&session.home_pins).map_err(|_| ())?;
@@ -2770,10 +2779,7 @@ fn read_locked() -> ReadState {
                             result,
                             persistence::CanonicalCommit::Durable { verified: true, .. }
                         ) {
-                            let mut parents = std::collections::BTreeSet::new();
-                            if !remove_cleanup_file(&path, &mut parents)
-                                || !sync_cleanup_parents(parents)
-                            {
+                            if !retire_previous_canonical_json(false) {
                                 crate::log("session: canonical JSON migration committed but source cleanup failed");
                             }
                         }
@@ -2785,11 +2791,7 @@ fn read_locked() -> ReadState {
                         persistence::commit_cleared(),
                         persistence::CanonicalCommit::Durable { verified: true, .. }
                     ) {
-                        let mut parents = std::collections::BTreeSet::new();
-                        let path = persistence::path();
-                        if !remove_cleanup_file(&path, &mut parents)
-                            || !sync_cleanup_parents(parents)
-                        {
+                        if !retire_previous_canonical_json(false) {
                             crate::log("session: cleared JSON migration committed but source cleanup failed");
                         }
                     }
@@ -2851,11 +2853,26 @@ fn read_locked() -> ReadState {
                         result,
                         persistence::CanonicalCommit::Durable { verified: true, .. }
                     ) {
-                        let mut parents = std::collections::BTreeSet::new();
-                        if !remove_cleanup_file(&path, &mut parents)
-                            || !sync_cleanup_parents(parents)
+                        #[cfg(all(
+                            target_os = "linux",
+                            target_arch = "arm",
+                            not(feature = "hostsim"),
+                            not(test)
+                        ))]
+                        sweep_other_candidates(std::path::Path::new("/db8-canonical"));
+                        #[cfg(not(all(
+                            target_os = "linux",
+                            target_arch = "arm",
+                            not(feature = "hostsim"),
+                            not(test)
+                        )))]
                         {
-                            crate::log("session: canonical migration committed but legacy cleanup failed");
+                            let mut parents = std::collections::BTreeSet::new();
+                            if !remove_cleanup_file(&path, &mut parents)
+                                || !sync_cleanup_parents(parents)
+                            {
+                                crate::log("session: canonical migration committed but legacy cleanup failed");
+                            }
                         }
                     } else if matches!(result, persistence::CanonicalCommit::Uncertain { .. }) {
                         *UNCERTAIN_LEGACY_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -2866,9 +2883,39 @@ fn read_locked() -> ReadState {
             state
         }
         persistence::CanonicalRead::Data { payload, .. } => {
-            read_candidates(Some((persistence::path(), payload.into_bytes())))
+            let state = read_candidates(Some((persistence::path(), payload.into_bytes())));
+            #[cfg(all(
+                target_os = "linux",
+                target_arch = "arm",
+                not(feature = "hostsim"),
+                not(test)
+            ))]
+            if matches!(state, ReadState::Ready { .. }) {
+                // Both cleanup passes are retryable.  A previous launch may have committed DB8
+                // successfully and then lost access to one of the source directories before it
+                // could retire the old credentials.
+                sweep_other_candidates(std::path::Path::new("/db8-canonical"));
+                if !retire_previous_canonical_json(false) {
+                    crate::log("session: DB8 loaded but previous canonical cleanup remains incomplete");
+                }
+                if !retire_legacy_probe_artifacts() {
+                    crate::log("session: DB8 loaded but legacy probe cleanup remains incomplete");
+                }
+            }
+            state
         }
-        persistence::CanonicalRead::Cleared { .. } => ReadState::Cleared,
+        persistence::CanonicalRead::Cleared { .. } => {
+            #[cfg(all(
+                target_os = "linux",
+                target_arch = "arm",
+                not(feature = "hostsim"),
+                not(test)
+            ))]
+            if !retry_legacy_cleanup_after_clear() {
+                crate::log("session: cleared DB8 tenure still has legacy cleanup residue");
+            }
+            ReadState::Cleared
+        }
         persistence::CanonicalRead::Blocked(_) => ReadState::CanonicalBlocked,
     }
 }
@@ -3300,15 +3347,196 @@ fn sweep_other_candidates(winner: &std::path::Path) {
             continue;
         }
         remove_temp_siblings(&stale);
-        if read_owned_regular_trusted(&stale).is_some_and(|(bytes, trust)| {
-            trust.content_trusted() && is_unrecognized_secure_envelope(&bytes)
+        let trusted = read_owned_regular_trusted(&stale);
+        if trusted.as_ref().is_some_and(|(bytes, trust)| {
+            trust.content_trusted() && is_unrecognized_secure_envelope(bytes)
         }) {
             log_foreign_envelope_kept_once();
             continue;
         }
-        let _ = remove_cleanup_file(&stale, &mut parents);
+        #[cfg(all(
+            target_os = "linux",
+            target_arch = "arm",
+            not(feature = "hostsim"),
+            not(test)
+        ))]
+        let retired_key = trusted.and_then(|(bytes, trust)| {
+            if !trust.content_trusted() {
+                return None;
+            }
+            serde_json::from_slice::<SecureEnvelope>(&bytes)
+                .ok()
+                .filter(|envelope| envelope.format == SECURE_FORMAT && envelope.version == 1)
+                .map(|envelope| (envelope.sealed.backend, envelope.sealed.key))
+        });
+        #[cfg(all(
+            target_os = "linux",
+            target_arch = "arm",
+            not(feature = "hostsim"),
+            not(test)
+        ))]
+        let key_retired = retired_key
+            .as_ref()
+            .is_none_or(|(backend, key)| crate::keymanager::remove(backend, key));
+        #[cfg(not(all(
+            target_os = "linux",
+            target_arch = "arm",
+            not(feature = "hostsim"),
+            not(test)
+        )))]
+        let key_retired = true;
+        if key_retired {
+            let _ = remove_cleanup_file(&stale, &mut parents);
+        } else {
+            crate::log("session: legacy Keymanager key cleanup failed; keeping its envelope for retry");
+        }
+        #[cfg(all(
+            target_os = "linux",
+            target_arch = "arm",
+            not(feature = "hostsim"),
+            not(test)
+        ))]
+        if let Some(aside) = untrusted_path(&stale) {
+            let _ = remove_cleanup_file(&aside, &mut parents);
+        }
     }
     let _ = sync_cleanup_parents(parents);
+}
+
+/// Retry retirement of the short-lived JSON canonical store that preceded DB8.  Its filename is
+/// not an `auth_paths()` candidate, so the ordinary sweep and sign-out loop cannot see it.  A
+/// verified DB8 record is already authoritative; retaining the wrapper only leaves token bytes
+/// (and, for an old sealed payload, its Keymanager key) behind after a transient unlink failure.
+#[cfg(all(
+    target_os = "linux",
+    target_arch = "arm",
+    not(feature = "hostsim"),
+    not(test)
+))]
+fn retire_previous_canonical_json(force: bool) -> bool {
+    let path = persistence::path();
+    let previous = persistence::load_legacy_json();
+    let unrecognized_secure = matches!(
+        &previous,
+        persistence::CanonicalRead::Data { payload, .. }
+            if is_unrecognized_secure_envelope(payload.as_bytes())
+    );
+    let retired_key = match &previous {
+        persistence::CanonicalRead::Data { payload, .. } => {
+            serde_json::from_str::<SecureEnvelope>(payload)
+                .ok()
+                .filter(|envelope| envelope.format == SECURE_FORMAT && envelope.version == 1)
+                .map(|envelope| (envelope.sealed.backend, envelope.sealed.key))
+        }
+        _ => None,
+    };
+    if !force
+        && (unrecognized_secure
+            || !matches!(
+            previous,
+            persistence::CanonicalRead::Data { .. }
+                | persistence::CanonicalRead::Cleared { .. }
+                | persistence::CanonicalRead::Missing
+        ))
+    {
+        return false;
+    }
+
+    let key_retired = retired_key
+        .as_ref()
+        .is_none_or(|(backend, key)| crate::keymanager::remove(backend, key));
+    if !key_retired {
+        crate::log("session: previous canonical Keymanager cleanup failed; keeping its envelope for retry");
+        return false;
+    }
+
+    let mut parents = std::collections::BTreeSet::new();
+    remove_temp_siblings(&path);
+    let mut complete = true;
+    if let Some(aside) = untrusted_path(&path) {
+        complete &= remove_cleanup_file(&aside, &mut parents);
+    }
+    complete &= remove_cleanup_file(&path, &mut parents);
+    complete &= sync_cleanup_parents(parents);
+    complete
+}
+
+/// DB8's helper owns Keymanager policy on shipping ARM.  The pre-DB8 cross-launch probe and its
+/// verdict sidecars must not keep calling the application-side key API or override the protection
+/// class reported by the canonical helper.
+#[cfg(all(
+    target_os = "linux",
+    target_arch = "arm",
+    not(feature = "hostsim"),
+    not(test)
+))]
+fn retire_legacy_probe_artifacts() -> bool {
+    let mut parents = std::collections::BTreeSet::new();
+    let mut complete = true;
+    for path in probe_paths() {
+        let probe = read_owned_regular_trusted(&path).and_then(|(bytes, trust)| {
+            trust
+                .content_trusted()
+                .then(|| serde_json::from_slice::<ProbeFile>(&bytes).ok())
+                .flatten()
+        });
+        let key_retired = probe.as_ref().is_none_or(|probe| {
+            crate::keymanager::remove(&probe.sealed.backend, &probe.sealed.key)
+        });
+        remove_temp_siblings(&path);
+        if key_retired {
+            complete &= remove_cleanup_file(&path, &mut parents);
+        } else {
+            complete = false;
+            crate::log("session: legacy probe key cleanup failed; keeping its envelope for retry");
+        }
+    }
+    for path in refused_marker_paths()
+        .into_iter()
+        .chain(proven_marker_paths())
+        .chain(unavailable_marker_paths())
+    {
+        remove_temp_siblings(&path);
+        complete &= remove_cleanup_file(&path, &mut parents);
+    }
+    let synced = sync_cleanup_parents(parents);
+    complete && synced
+}
+
+/// A DB8 tombstone is terminal, but cleanup after its commit is not. Re-run every legacy erasure
+/// on later cold boots so a power loss or temporary jail denial between those two phases cannot
+/// leave credentials indefinitely while the application reports a clean signed-out state.
+#[cfg(all(
+    target_os = "linux",
+    target_arch = "arm",
+    not(feature = "hostsim"),
+    not(test)
+))]
+fn retry_legacy_cleanup_after_clear() -> bool {
+    let mut complete = retire_previous_canonical_json(true);
+    let mut parents = std::collections::BTreeSet::new();
+    for path in auth_paths() {
+        let retired_key = read_owned_regular(&path)
+            .and_then(|bytes| serde_json::from_slice::<SecureEnvelope>(&bytes).ok())
+            .filter(|envelope| envelope.format == SECURE_FORMAT && envelope.version == 1)
+            .map(|envelope| (envelope.sealed.backend, envelope.sealed.key));
+        let key_retired = retired_key
+            .as_ref()
+            .is_none_or(|(backend, key)| crate::keymanager::remove(backend, key));
+        remove_temp_siblings(&path);
+        if let Some(aside) = untrusted_path(&path) {
+            complete &= remove_cleanup_file(&aside, &mut parents);
+        }
+        if key_retired {
+            complete &= remove_cleanup_file(&path, &mut parents);
+        } else {
+            complete = false;
+        }
+    }
+    complete &= retire_legacy_probe_artifacts();
+    complete &= crate::telemetry::cleanup_after_account_clear();
+    let synced = sync_cleanup_parents(parents);
+    complete && synced
 }
 
 /// A successful lower-tier rename is not enough: a readable old higher-tier
@@ -3397,11 +3625,15 @@ fn load_cold_owned() -> Session {
         let s = if let Some(s) = cached() {
             s
         } else {
-            // Stage B1 (issue #76): resolve a PRIOR launch's cross-launch probe before anything
-            // else this cold path does — see `check_probe`'s doc. It touches neither `CACHE` nor
-            // `LOCKED_STATE`, so ordering against `read_locked` below only matters for the very
-            // rare install that is simultaneously locked AND has an outstanding probe; either order
-            // reaches the same two markers.
+            // The retained JSON/host adapter resolves its prior cross-launch probe here. Shipping
+            // ARM delegates protection to the DB8 helper and retires these sidecars after a
+            // canonical load, so it must not run the obsolete application-side key probe first.
+            #[cfg(not(all(
+                target_os = "linux",
+                target_arch = "arm",
+                not(feature = "hostsim"),
+                not(test)
+            )))]
             check_probe();
             // Probe reports above belong to a different file. Only reports appended after this
             // boundary may describe the session candidate read captured below.
@@ -4320,6 +4552,12 @@ fn persist_helper(s: &Session, authority: SaveAuthority) -> PersistOutcome {
             // DB8 is authoritative only after its helper returned the committed candidate.  From
             // that point recognized legacy copies must not be able to shadow it on a later boot.
             sweep_other_candidates(std::path::Path::new("/db8-canonical"));
+            if !retire_previous_canonical_json(false) {
+                crate::log("session: DB8 save committed but previous canonical cleanup remains incomplete");
+            }
+            if !retire_legacy_probe_artifacts() {
+                crate::log("session: DB8 save committed but legacy probe cleanup remains incomplete");
+            }
             if let Some(outcome) = protection {
                 let _ = crate::telemetry::storage::report_keymanager_protection(
                     outcome,
@@ -5453,16 +5691,21 @@ fn clear_outcome_disk() -> ClearOutcome {
     ))]
     if matches!(canonical, persistence::CanonicalCommit::Durable { .. }) {
         cleanup_failed |= !crate::telemetry::cleanup_after_account_clear();
+        // `state/session.json` was the canonical wrapper immediately before DB8 and is not part
+        // of `auth_paths()`.  ClearTenure must retire it even if an earlier migration committed
+        // DB8 but failed between commit and source unlink.
+        cleanup_failed |= !retire_previous_canonical_json(true);
+        cleanup_failed |= !retire_legacy_probe_artifacts();
     }
     let mut cleanup_parents = std::collections::BTreeSet::new();
     for path in auth_paths() {
-        if let Some(bytes) = read_owned_regular(&path) {
-            if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
-                if envelope.format == SECURE_FORMAT && envelope.version == 1 {
-                    crate::keymanager::remove(&envelope.sealed.backend, &envelope.sealed.key);
-                }
-            }
-        }
+        let retired_key = read_owned_regular(&path)
+            .and_then(|bytes| serde_json::from_slice::<SecureEnvelope>(&bytes).ok())
+            .filter(|envelope| envelope.format == SECURE_FORMAT && envelope.version == 1)
+            .map(|envelope| (envelope.sealed.backend, envelope.sealed.key));
+        let key_retired = retired_key
+            .as_ref()
+            .is_none_or(|(backend, key)| crate::keymanager::remove(backend, key));
         remove_temp_siblings(&path);
         // A quarantined copy (`quarantine_untrusted`) holds the bytes of a tampered-with file that
         // belonged to the account now signing out. It exists for the owner to inspect, not to
@@ -5470,7 +5713,12 @@ fn clear_outcome_disk() -> ClearOutcome {
         if let Some(aside) = untrusted_path(&path) {
             cleanup_failed |= !remove_cleanup_file(&aside, &mut cleanup_parents);
         }
-        cleanup_failed |= !remove_cleanup_file(&path, &mut cleanup_parents);
+        if key_retired {
+            cleanup_failed |= !remove_cleanup_file(&path, &mut cleanup_parents);
+        } else {
+            cleanup_failed = true;
+            crate::log("session: sign-out could not retire a legacy key; keeping its envelope for retry");
+        }
     }
     // The marker carries no credential, but leaving it behind would keep a FUTURE sign-in on this
     // same install pinned to plaintext for no reason connected to the account that just left.
@@ -5492,7 +5740,14 @@ fn clear_outcome_disk() -> ClearOutcome {
     // The unanswered-launch counter goes too: it describes a run of launches against THIS
     // envelope, and the envelope has just been deleted.
     clear_unavailable_marker();
-    // An in-flight probe belongs to the account that just signed out — a new sign-in earns its own.
+    // The retained JSON/host adapter owns these probes. Shipping ARM retired them above through
+    // the acknowledged key cleanup path; deleting one here would lose the only retry descriptor.
+    #[cfg(not(all(
+        target_os = "linux",
+        target_arch = "arm",
+        not(feature = "hostsim"),
+        not(test)
+    )))]
     for path in probe_paths() {
         remove_temp_siblings(&path);
         cleanup_failed |= !remove_cleanup_file(&path, &mut cleanup_parents);
@@ -5706,6 +5961,23 @@ mod tests {
         assert_eq!(reopened.account_token, original.account_token);
         assert_eq!(reopened.server.token, original.server.token);
         assert_eq!(reopened.playback_quality, None);
+    }
+
+    #[test]
+    fn future_public_preference_does_not_hide_a_known_preference() {
+        let original: Session = serde_json::from_value(serde_json::json!({
+            "client_id": "client-fixture",
+            "account_token": "account-secret-fixture",
+            "server": {"token":"server-secret-fixture"},
+            "playback_quality": "720p_4_mbps"
+        }))
+        .unwrap();
+        let (mut public, protected) = split_canonical(&original).unwrap();
+        public.preferences["future_preference"] = serde_json::json!({"version": 2});
+
+        let reopened = join_canonical(&public, &protected).unwrap();
+
+        assert_eq!(reopened.playback_quality, original.playback_quality);
     }
 
     #[test]

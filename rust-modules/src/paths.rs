@@ -589,33 +589,14 @@ pub(crate) fn session_candidates() -> Vec<(PathBuf, SessionTier)> {
     v
 }
 
-/// Candidate locations for the telemetry decision, best first — **the same tier as the session**,
-/// and that choice has a consequence worth stating rather than discovering.
-///
-/// It goes here, not in [`runtime_dir`], because the runtime root on a television is `/tmp` and
-/// `/tmp` is cleared by a reboot: a consent decision that evaporated overnight would re-ask a
-/// person who had already answered, which is both worse for them and the exact pattern that makes
-/// a consent prompt feel like nagging rather than a choice.
-///
-/// External candidates can outlive an uninstall; the app-local fallback is removed with the app.
-/// None outlive a sign-out: the decision belongs to the account that gave it, and
-/// `auth::forget_account` unlinks every candidate here (through `telemetry::forget`) when that
-/// account signs out, so a change of owner IS a fresh question. That is also why the
-/// file holds a DECISION and, only after opt-in, one random identifier PER CHANNEL (the
-/// crash-report id and the analytics id, each owned by its own switch) — and why withdrawing a
-/// channel DELETES its identifier rather than merely disabling it. Recorded in `PRIVACY.md`,
-/// because a user cannot audit a file they cannot reach.
-///
-/// Outside the `plxnative-` trigger namespace by construction, since it is not in the runtime root
-/// at all — so it cannot suppress the who's-watching picker the way anything in `/tmp` would.
-/// The spool, beside the decision that authorised it.
-///
-/// **Same directories, same search order, different file** — and not merged into
-/// `telemetry.json` for one reason: the decision is small, rewritten rarely and must survive
-/// anything, while the spool is up to half a megabyte rewritten after every flush. Sharing one file
-/// would put the consent record itself at risk on every single upload, which is the one piece of
-/// state whose loss changes what the app is allowed to do.
+/// Disposable bounded telemetry storage. On TV this shares `/tmp`'s reboot lifecycle with the
+/// crash log; it never imports queues from the old persistent directories.
 pub(crate) fn telemetry_spool_candidates() -> Vec<PathBuf> {
+    vec![in_runtime_dir("telemetry-spool.bin")]
+}
+
+/// Old queues are cleanup targets only, never read or migrated into the active spool.
+pub(crate) fn telemetry_legacy_spool_candidates() -> Vec<PathBuf> {
     telemetry_candidates()
         .into_iter()
         .map(|p| {
@@ -630,34 +611,15 @@ pub(crate) fn telemetry_spool_candidates() -> Vec<PathBuf> {
         .collect()
 }
 
-/// How much of the append-only crash log has already been reported, beside the spool.
-///
-/// **A watermark rather than a truncation, and that is the whole reason this file exists.**
-/// `plxnative-crash.log` is append-only and survives a relaunch BY DESIGN — `docs/agent-reference.md` names it the
-/// thing to read after a crash-and-restart and `tools/crash-report.sh` parses it — so the telemetry
-/// reader may not consume it. Recording a byte offset lets a human and this module read the same
-/// file without either disturbing the other.
-///
-/// Not in the runtime root with the log it points into, deliberately. The runtime root is `/tmp` on
-/// this television: a watermark that vanished with a reboot would re-report every crash still in
-/// the log, and the one thing worse than losing a crash report is sending it four times. It lives
-/// beside the decision that authorised sending it, which is also the directory that survives a
-/// reinstall.
+/// The crash cutoff has exactly the same reboot lifecycle as the log it describes. Legacy
+/// persistent byte offsets are never imported: they cannot identify the runtime log's generation.
 pub(crate) fn telemetry_crashmark_candidates() -> Vec<PathBuf> {
-    telemetry_candidates()
-        .into_iter()
-        .map(|p| {
-            p.with_file_name(p.file_name().map_or_else(
-                || "telemetry-crashmark.json".into(),
-                |n| {
-                    n.to_string_lossy()
-                        .replace("telemetry.json", "telemetry-crashmark.json")
-                },
-            ))
-        })
-        .collect()
+    vec![in_runtime_dir("telemetry-crashmark.json")]
 }
 
+/// Legacy consent JSON candidates, best first. The shipping persistence adapter owns durable
+/// consent through DB8; these locations remain migration and cleanup inputs. Unlike the runtime
+/// spool, the consent decision must survive a reboot so the app does not ask again each morning.
 pub(crate) fn telemetry_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     // A steerable build keeps its own, for exactly the reason the session file does: several
@@ -1017,19 +979,20 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_state_fallback_keeps_spool_and_crashmark_beside_the_decision() {
+    fn telemetry_runtime_files_do_not_follow_persistent_consent_candidates() {
         let decision = super::app_dir().join("state/telemetry.json");
         let index = super::telemetry_candidates()
             .iter()
             .position(|p| p == &decision)
             .expect("packaged telemetry decision fallback");
         assert_eq!(
-            super::telemetry_spool_candidates()[index],
+            super::telemetry_legacy_spool_candidates()[index],
             super::app_dir().join("state/telemetry-spool.bin")
         );
         assert_eq!(
-            super::telemetry_crashmark_candidates()[index],
-            super::app_dir().join("state/telemetry-crashmark.json")
+            super::telemetry_crashmark_candidates(),
+            vec![super::in_runtime_dir("telemetry-crashmark.json")]
         );
+        assert_eq!(super::telemetry_spool_candidates(), vec![super::in_runtime_dir("telemetry-spool.bin")]);
     }
 }

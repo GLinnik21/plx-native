@@ -135,8 +135,7 @@ file aside unread, under the same name with `.untrusted` on the end, which signi
 all local data attempts to remove and reports if cleanup is incomplete — or
 `identity_unavailable` — the saved sign-in records which system-bus identity protected it, and
 this launch could not register as that one, so nothing was decided about the key — your saved
-sign-in is left as it is, unless this happened while checking an earlier install for a stale probe
-file, in which case that unrelated probe file is removed), the numeric error code the key
+sign-in is left as it is), the numeric error code the key
 service replied with when one was reached, how the session is protected right now (`none` /
 `plaintext` / `secure` / `secure_locked` / `secure_refused` / `secure_unavailable` / `unknown`), and whether this install has already
 recorded that its key service is refused. When it is known, it also says whether the device key
@@ -148,7 +147,7 @@ application identity, and whether it instead used a fixed name on the system bus
 only where this television's system bus grants it, never both at once, and which of them (if
 either) this app gets is what decides whether a key sealed on one launch is still this app's on
 the next; a television that grants neither is `No` to both. Separately from those two facts about
-this launch, the report also says which identity protected the saved sign-in (or the probe file)
+this launch, the report also says which identity protected the saved sign-in
 the report is actually about — `app_id`, `named`, `anonymous`, or `none` where the report is about
 nothing protected at all — because the whole question is whether the two differ. It contains no key material, ciphertext, plaintext or
 file path, and carries the same Crash report ID as a crash report, and the same television model,
@@ -167,6 +166,10 @@ happened, for the rest of that one launch only — it is discarded, never sent, 
 if the app closes before you answer. The exception is a Keymanager fallback: its closed,
 non-secret failure evidence remains in the ACL envelope, so a later launch can recreate the same
 consent-gated report. It is still never sent after you answer No.
+
+On shipping ARM builds, the private DB8 helper is authoritative for credential protection. Old
+application-side probe and marker files are cleanup artifacts only: after DB8 is authoritative,
+the app removes them without asking Keymanager to reopen their payload.
 
 The same storage error report also covers `sign_in_not_persisted` — a fresh sign-in whose file
 could not be kept the way this television decided to keep it. That report additionally says what

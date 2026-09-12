@@ -395,9 +395,16 @@ fn load_helper(legacy: &[PathBuf]) -> Consent {
                     }
                 }
             };
+            // A verified DB8 migration makes the old files non-authoritative, but it does not
+            // prove that their earlier unlink succeeded.  Retry retirement on every cold load so
+            // a temporary jail/filesystem failure cannot leave an account decision behind while
+            // later launches falsely advertise cleanup as complete.
+            let cleanup = remove_legacy_sources(
+                std::iter::once(root().join("consent.json")).chain(legacy.iter().cloned()),
+            );
             publish(PersistOutcome {
                 write: PersistResult::NotAttempted,
-                cleanup: CleanupResult::Complete,
+                cleanup,
             });
             return consent;
         }
@@ -421,7 +428,9 @@ fn load_helper(legacy: &[PathBuf]) -> Consent {
             },
         );
         let cleanup = if commit.result == PersistResult::Durable && commit.verified {
-            remove_legacy_sources([previous_path])
+            remove_legacy_sources(
+                std::iter::once(previous_path).chain(legacy.iter().cloned()),
+            )
         } else {
             CleanupResult::NotAttempted
         };
@@ -436,16 +445,12 @@ fn load_helper(legacy: &[PathBuf]) -> Consent {
         PreviousCanonical::Missing => match legacy_consent(legacy) {
             Ok(found) => found,
             Err(()) => {
-                let commit = helper_commit(
-                    &loaded,
-                    WireMutation::AdvanceMigration {
-                        migration: MigrationMutation::CompleteEmpty {
-                            domain: Domain::Consent,
-                        },
-                    },
-                );
+                // Invalid, untrusted and temporarily unreadable legacy sources are deliberately
+                // unresolved.  Recording CompleteEmpty here would make a transient EACCES (or a
+                // conflicting second candidate) permanent and the valid decision would never be
+                // reconsidered on a later launch.
                 publish(PersistOutcome {
-                    write: commit.result,
+                    write: PersistResult::Failed,
                     cleanup: CleanupResult::NotAttempted,
                 });
                 return Consent::default();
