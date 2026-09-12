@@ -2,8 +2,9 @@
 //! login (account token → server discovery → profile switch), the chosen server's verified
 //! [`Origin`] and the profile's token are written here. A stable build can therefore resume a
 //! stored HTTPS origin without plex.tv when it remains reachable; an explicit developer-trigger
-//! build may also resume a plaintext HTTP origin for lab use. Lives in the writable app dir (device-only; never in the
-//! repo). The token fields are secrets — this file's contents are never logged.
+//! build may also resume a plaintext HTTP origin for lab use. On a television the authoritative
+//! record lives in the packaged helper's private DB8 kind; legacy files are migration inputs only.
+//! Token fields are secrets and are never logged.
 //!
 //! ## One server, and then the ROSTER
 //!
@@ -19,9 +20,22 @@
 //! (`docs/agent-reference.md`), so a stored "last seen" would be a number that cannot be compared with
 //! anything and would invite an expiry rule built on it.
 //!
-//! ## Storage: encrypted when it can be, 0600 always, and STAYS 0600 once refused
+//! ## Shipping storage: private DB8 plus an explicit crypto policy
 //!
-//! [`save`] asks `keymanager::seal` to device-key-encrypt the file and falls back to a mode-0600
+//! The app sends typed Session mutations to `<appid>.storage` over a private same-UID socket. DB8
+//! stores one fixed-ID object whose canonical state is an opaque JSON string, so DB8 cannot inject
+//! reserved fields into nested arrays. Public preferences remain readable when auth is locked.
+//! On new and unknown webOS, fresh auth attempts Keymanager3 first and may fall back to an
+//! explicitly diagnosed ACL-only envelope inside private DB8 when crypto fails. Public/routine
+//! mutations never downgrade existing healthy ciphertext. The policy selects ACL-only directly
+//! for reported webOS majors 1–4; runtime evidence currently covers webOS 4.10.2 only.
+//!
+//! ## Legacy JSON migration adapter
+//!
+//! The retained file adapter below describes formats written by earlier 0.6 builds and the host
+//! compatibility tests. During a television migration it may ask `keymanager::open_checked` to
+//! open an old envelope, but successful migration rewrites the typed value through DB8. Its old
+//! save path asks `keymanager::seal` to device-key-encrypt the file and falls back to a mode-0600
 //! plaintext file when no usable Key Manager is available. **Once an install has proven it cannot
 //! read its own sealed envelope back — [`LOCKED_RECOVERABLE`], issue #76 — that install keeps the
 //! 0600 file until sign-out or erase**, never only for the one launch that found it: the verdict is
@@ -160,7 +174,7 @@ pub fn current_gen() -> u32 {
 
 /// Legacy session file locations, best first — see [`crate::paths::session_candidates`] for why
 /// this remains a migration SEARCH ORDER rather than the canonical destination. The canonical
-/// `state/session.json` record is prepended by the production adapter. The short version: webOS picks one
+/// `state/session.json` record is decoded separately by the production adapter. The short version: webOS picks one
 /// of two jail profiles by install prefix, and they disagree about which directories are writable,
 /// so the one hardcoded path was correct under Developer Mode and did not exist under a Homebrew
 /// Channel install — where `save()` then dropped the error and the user re-did the QR sign-in on
@@ -1478,6 +1492,110 @@ pub struct Session {
     pub(crate) extensions: BTreeMap<String, Value>,
 }
 
+/// The credential-bearing half of [`Session`] stored inside the canonical state's protected
+/// payload.  Keeping this shape here, beside `Session`, makes the classification exhaustive: a
+/// newly-added session field cannot silently drift into the DB8-public half through a generic
+/// `serde_json::Value` copy.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalSessionAuth {
+    format: String,
+    version: u32,
+    account_token: String,
+    server: ServerRef,
+    user: UserRef,
+    home_users: Vec<HomeUserRef>,
+    sources: Vec<SourceRef>,
+    /// Unknown top-level fields may contain credentials introduced by a newer client.  Protect
+    /// them by default instead of guessing that an unfamiliar value is a harmless preference.
+    extensions: BTreeMap<String, Value>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct CanonicalSessionPreferences {
+    #[serde(default, deserialize_with = "de_soft_playback_quality")]
+    playback_quality: Option<PlaybackQuality>,
+}
+
+/// Split a typed session at the encryption boundary used by the DB8 helper.
+///
+/// The returned public object is still protected by the helper-owned private DB8 kind, but it is
+/// deliberately readable while Keymanager is unavailable.  The returned string contains every
+/// credential and all unknown extensions and must only cross the authenticated helper socket.
+pub(crate) fn split_canonical(
+    session: &Session,
+) -> Result<(crate::storage::state::PublicPayload, String), ()> {
+    let preferences = serde_json::to_value(CanonicalSessionPreferences {
+        playback_quality: session.playback_quality,
+    })
+    .map_err(|_| ())?;
+    let pins = serde_json::to_value(&session.home_pins).map_err(|_| ())?;
+    let recents = serde_json::to_value(&session.recent_searches).map_err(|_| ())?;
+    let auth = serde_json::to_string(&CanonicalSessionAuth {
+        format: "plxnative-session-auth".into(),
+        version: 1,
+        account_token: session.account_token.clone(),
+        server: session.server.clone(),
+        user: session.user.clone(),
+        home_users: session.home_users.clone(),
+        sources: session.sources.clone(),
+        extensions: session.extensions.clone(),
+    })
+    .map_err(|_| ())?;
+    Ok((
+        crate::storage::state::PublicPayload {
+            preferences,
+            client_id: (!session.client_id.is_empty()).then(|| session.client_id.clone()),
+            // Profile/server bootstrap metadata is personal and only useful together with its
+            // token, so it stays in CanonicalSessionAuth rather than being duplicated here.
+            profile: Value::Null,
+            pins,
+            recents,
+            consent: Value::Null,
+            scopes: Value::Null,
+            ids: Value::Null,
+            account_extensions: Value::Null,
+        },
+        auth,
+    ))
+}
+
+/// Reassemble the domain type after the helper has opened the protected auth payload.
+///
+/// Public preferences degrade independently: one malformed optional setting must not discard a
+/// valid token bundle.  The protected half is strict because accepting the wrong auth schema as a
+/// session would turn corruption into an authenticated state.
+pub(crate) fn join_canonical(
+    public: &crate::storage::state::PublicPayload,
+    protected: &str,
+) -> Result<Session, ()> {
+    let auth: CanonicalSessionAuth = serde_json::from_str(protected).map_err(|_| ())?;
+    if auth.format != "plxnative-session-auth" || auth.version != 1 {
+        return Err(());
+    }
+    let preferences = serde_json::from_value::<CanonicalSessionPreferences>(
+        public.preferences.clone(),
+    )
+    .unwrap_or_default();
+    let home_pins = serde_json::from_value(public.pins.clone()).unwrap_or_default();
+    let recent_searches = serde_json::from_value(public.recents.clone()).unwrap_or_default();
+    Ok(Session {
+        client_id: public.client_id.clone().unwrap_or_default(),
+        account_token: auth.account_token,
+        server: auth.server,
+        user: auth.user,
+        home_users: auth.home_users,
+        sources: auth.sources,
+        home_pins,
+        recent_searches,
+        playback_quality: preferences.playback_quality,
+        // Visual atmosphere is a disposable cache and intentionally does not enter DB8.
+        last_hero_blur: None,
+        extensions: auth.extensions,
+    })
+}
+
 /// Remember the hero envelope Home is showing right now, best-effort, for [`Session::last_hero_blur`].
 ///
 /// Cheap to call on every route-ground latch: [`update`] is a single read-modify-write, and this
@@ -2636,6 +2754,50 @@ fn read_locked() -> ReadState {
     match persistence::load() {
         persistence::CanonicalRead::Missing => {
             *LAST_LEGACY_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            #[cfg(all(
+                target_os = "linux",
+                target_arch = "arm",
+                not(feature = "hostsim"),
+                not(test)
+            ))]
+            match persistence::load_legacy_json() {
+                persistence::CanonicalRead::Data { payload, .. } => {
+                    let path = persistence::path();
+                    let state = read_candidates(Some((path.clone(), payload.into_bytes())));
+                    if let ReadState::Ready { session, .. } = &state {
+                        let (result, _) = persistence::migrate_session(&path, session);
+                        if matches!(
+                            result,
+                            persistence::CanonicalCommit::Durable { verified: true, .. }
+                        ) {
+                            let mut parents = std::collections::BTreeSet::new();
+                            if !remove_cleanup_file(&path, &mut parents)
+                                || !sync_cleanup_parents(parents)
+                            {
+                                crate::log("session: canonical JSON migration committed but source cleanup failed");
+                            }
+                        }
+                    }
+                    return state;
+                }
+                persistence::CanonicalRead::Cleared { .. } => {
+                    if matches!(
+                        persistence::commit_cleared(),
+                        persistence::CanonicalCommit::Durable { verified: true, .. }
+                    ) {
+                        let mut parents = std::collections::BTreeSet::new();
+                        let path = persistence::path();
+                        if !remove_cleanup_file(&path, &mut parents)
+                            || !sync_cleanup_parents(parents)
+                        {
+                            crate::log("session: cleared JSON migration committed but source cleanup failed");
+                        }
+                    }
+                    return ReadState::Cleared;
+                }
+                persistence::CanonicalRead::Blocked(_) => return ReadState::CanonicalBlocked,
+                persistence::CanonicalRead::Missing => {}
+            }
             let state = read_candidates(None);
             if !matches!(state, ReadState::Missing) {
                 if let Some((path, bytes)) = LAST_LEGACY_SOURCE
@@ -2643,13 +2805,40 @@ fn read_locked() -> ReadState {
                     .unwrap_or_else(|e| e.into_inner())
                     .clone()
                 {
+                    #[cfg(all(
+                        target_os = "linux",
+                        target_arch = "arm",
+                        not(feature = "hostsim"),
+                        not(test)
+                    ))]
+                    let _ = &bytes;
                     // A legacy source is retired only after the domain reader selected it as a
                     // valid Session. In particular, a recognized secure envelope that is locked
                     // or unavailable remains at its old name until an explicit fresh sign-in;
                     // a newer/foreign envelope must remain recoverable by a newer binary.
                     let migratable = matches!(&state, ReadState::Ready { .. });
                     let (result, _) = if migratable {
-                        persistence::migrate_exact(&path, &bytes)
+                        #[cfg(all(
+                            target_os = "linux",
+                            target_arch = "arm",
+                            not(feature = "hostsim"),
+                            not(test)
+                        ))]
+                        {
+                            let ReadState::Ready { session, .. } = &state else {
+                                unreachable!()
+                            };
+                            persistence::migrate_session(&path, session)
+                        }
+                        #[cfg(not(all(
+                            target_os = "linux",
+                            target_arch = "arm",
+                            not(feature = "hostsim"),
+                            not(test)
+                        )))]
+                        {
+                            persistence::migrate_exact(&path, &bytes)
+                        }
                     } else {
                         (
                             persistence::CanonicalCommit::Failed(
@@ -2658,7 +2847,10 @@ fn read_locked() -> ReadState {
                             path.clone(),
                         )
                     };
-                    if matches!(result, persistence::CanonicalCommit::Durable { .. }) {
+                    if matches!(
+                        result,
+                        persistence::CanonicalCommit::Durable { verified: true, .. }
+                    ) {
                         let mut parents = std::collections::BTreeSet::new();
                         if !remove_cleanup_file(&path, &mut parents)
                             || !sync_cleanup_parents(parents)
@@ -3488,6 +3680,11 @@ pub(crate) fn update_ordinary(edit: impl FnOnce(&Session) -> Option<Session>) ->
     async_persistence::update_ordinary(edit)
 }
 
+/// Admit a mutation which may change protected account, server, profile, or source state.
+pub(crate) fn update_protected_ordinary(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
+    async_persistence::update_protected_ordinary(edit)
+}
+
 pub(crate) fn poll_ordinary_persistence() -> async_persistence::Status {
     async_persistence::poll_ordinary()
 }
@@ -3587,6 +3784,8 @@ pub(crate) fn latest_persistence_status() -> async_persistence::Status {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SaveAuthority {
+    /// Update only the typed public projection and preserve existing ciphertext byte-for-byte.
+    PublicOnly,
     Routine,
     FreshReauthentication,
 }
@@ -3732,30 +3931,32 @@ fn save_with_authority_disk(s: &Session, authority: SaveAuthority) -> PersistOut
     outcome
 }
 
-/// **What a save actually did to the file.** Every branch of [`save_locked`] ends at exactly one
-/// of these, and one line of the event log says which — the only place a device log states the
-/// difference between a sign-in that reached the disk and one that is alive for this run only.
+/// **What a save actually did to restart-authoritative storage.** Every branch of [`save_locked`]
+/// ends at exactly one of these, and one line of the event log says which — the only place a
+/// device log states the difference between a sign-in that became durable and one that is alive
+/// for this run only. Shipping ARM uses helper-owned DB8; host tests and legacy migration retain
+/// the file adapter.
 ///
 /// The wire words ([`PersistOutcome::wire`]) are a vocabulary shared with the telemetry layer and
 /// with whatever reads a log: they are part of the contract, not a debug rendering, and are not
 /// renamed without renaming them there too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistOutcome {
-    /// The 0600 plaintext file was written — the ordinary fallback, the recovery over a locked
-    /// envelope, and every install that has not earned sealed storage yet.
+    /// An ACL-only protected-auth record was durably written. In shipping ARM this is the private
+    /// DB8 envelope; the legacy/host adapter represents the same outcome as a mode-0600 file.
     PersistedPlaintext,
-    /// A fresh `keymanager::seal` envelope was written.
+    /// A Keymanager-protected auth envelope was durably written.
     PersistedSealed,
-    /// Nothing was written, on purpose: a secure file this build could read is already there and
-    /// this save had no business replacing it. [`PreserveReason`] says which rule kept it.
+    /// Nothing was written, on purpose: a secure record this build could read is already there
+    /// and this save had no business replacing it. [`PreserveReason`] says which rule kept it.
     PreservedExistingSecure(PreserveReason),
-    /// Nothing was written, on purpose: the file is a secure envelope of a format or version this
+    /// Nothing was written, on purpose: the record is a secure envelope of a format or version this
     /// build does not recognize (`LOCKED_UNRECOVERABLE`), which no save may ever touch — it may be
     /// a NEWER build's envelope that reads perfectly again after the upgrade. Only [`clear`]
     /// removes it.
     BlockedUnknownEnvelope,
-    /// No authoritative new session was persisted: candidate writes failed, or
-    /// an older higher-priority file could not be removed and would shadow them.
+    /// No authoritative new session was persisted: the helper/write failed, or a legacy
+    /// higher-priority candidate could not be removed and would shadow the destination.
     /// Nothing about the key service is claimed. Reported as `StorageStage::WriteFailed`.
     WriteFailed,
     /// The `Session` (or the envelope wrapping it) would not serialize — a bug, not a device
@@ -3848,7 +4049,7 @@ pub fn last_persist_outcome() -> Option<PersistOutcome> {
 fn save_locked(s: &Session, authority: SaveAuthority) -> PersistOutcome {
     *LAST_SESSION_WRITE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     let outcome = persist_locked(s, authority);
-    if authority == SaveAuthority::Routine {
+    if authority != SaveAuthority::FreshReauthentication {
         *LAST_SESSION_WRITE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
     *LAST_PERSIST.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
@@ -3868,6 +4069,22 @@ fn persist_locked(s: &Session, authority: SaveAuthority) -> PersistOutcome {
     // Before the write, not after: a failed persist still means these names are live in THIS run,
     // and the log wants them redacted either way.
     publish_identities(s);
+    #[cfg(all(
+        target_os = "linux",
+        target_arch = "arm",
+        not(feature = "hostsim"),
+        not(test)
+    ))]
+    {
+        return persist_helper(s, authority);
+    }
+    #[cfg(not(all(
+        target_os = "linux",
+        target_arch = "arm",
+        not(feature = "hostsim"),
+        not(test)
+    )))]
+    {
     let Ok(json) = serde_json::to_vec_pretty(s) else {
         return PersistOutcome::SerializationFailed;
     };
@@ -4082,6 +4299,70 @@ fn persist_locked(s: &Session, authority: SaveAuthority) -> PersistOutcome {
     );
     report_write_failed();
     PersistOutcome::WriteFailed
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    target_arch = "arm",
+    not(feature = "hostsim"),
+    not(test)
+))]
+fn persist_helper(s: &Session, authority: SaveAuthority) -> PersistOutcome {
+    let commit = persistence::commit_session_with_authority(s, authority);
+    match commit {
+        persistence::CanonicalCommit::Durable {
+            verified,
+            protection,
+            ..
+        } => {
+            async_persistence::note_commit_durable();
+            // DB8 is authoritative only after its helper returned the committed candidate.  From
+            // that point recognized legacy copies must not be able to shadow it on a later boot.
+            sweep_other_candidates(std::path::Path::new("/db8-canonical"));
+            if let Some(outcome) = protection {
+                let _ = crate::telemetry::storage::report_keymanager_protection(
+                    outcome,
+                    verified,
+                );
+            }
+            match protection {
+                Some(crate::storage::wire::ProtectionOutcome {
+                    class: crate::storage::wire::ProtectionClass::Keymanager,
+                    ..
+                }) => {
+                    LAST_CLASS.store(CLASS_SECURE, std::sync::atomic::Ordering::Relaxed);
+                    PersistOutcome::PersistedSealed
+                }
+                Some(crate::storage::wire::ProtectionOutcome {
+                    class: crate::storage::wire::ProtectionClass::Db8AclOnly,
+                    ..
+                }) => {
+                    LAST_CLASS.store(CLASS_PLAINTEXT, std::sync::atomic::Ordering::Relaxed);
+                    PersistOutcome::PersistedPlaintext
+                }
+                None if crate::webos::info().major > 0 && crate::webos::info().major <= 4 => {
+                    LAST_CLASS.store(CLASS_PLAINTEXT, std::sync::atomic::Ordering::Relaxed);
+                    PersistOutcome::PersistedPlaintext
+                }
+                None => {
+                    // Current helpers return protection for every state containing auth. Keep a
+                    // missing field fail-safe in the UI/telemetry classification rather than
+                    // claiming plaintext or ciphertext without evidence.
+                    PersistOutcome::WriteFailed
+                }
+            }
+        }
+        persistence::CanonicalCommit::Uncertain { stage, errno } => {
+            async_persistence::note_commit_uncertain(stage, errno);
+            PersistOutcome::WriteFailed
+        }
+        persistence::CanonicalCommit::Failed(error) => {
+            async_persistence::note_commit_failed(error);
+            report_write_failed();
+            PersistOutcome::WriteFailed
+        }
+    }
 }
 
 /// Stage B2 (issue #76): no restart-authoritative write succeeded —
@@ -5164,6 +5445,15 @@ fn clear_outcome_disk() -> ClearOutcome {
     // siblings go too — `peek` cannot read one, so it is not a resurrection risk, but a sign-out
     // that leaves a live account token in a file on a rooted television is not a sign-out.
     let mut cleanup_failed = cleanup.is_err();
+    #[cfg(all(
+        target_os = "linux",
+        target_arch = "arm",
+        not(feature = "hostsim"),
+        not(test)
+    ))]
+    if matches!(canonical, persistence::CanonicalCommit::Durable { .. }) {
+        cleanup_failed |= !crate::telemetry::cleanup_after_account_clear();
+    }
     let mut cleanup_parents = std::collections::BTreeSet::new();
     for path in auth_paths() {
         if let Some(bytes) = read_owned_regular(&path) {
@@ -5346,6 +5636,77 @@ impl Session {
 mod tests {
     use super::*;
     use crate::storage::RecordStore;
+
+    #[test]
+    fn canonical_split_keeps_credentials_out_of_the_public_payload_and_roundtrips() {
+        let original: Session = serde_json::from_value(serde_json::json!({
+            "client_id": "client-fixture",
+            "account_token": "account-secret-fixture",
+            "server": {
+                "name": "primary", "machine_id": "machine-1", "address": "192.0.2.1",
+                "port": 32400, "token": "server-secret-fixture",
+                "origin": "https://machine-1.plex.direct:32400"
+            },
+            "user": {
+                "id": 7, "uuid": "profile-1", "title": "Profile", "thumb": "/avatar",
+                "token": "profile-secret-fixture"
+            },
+            "home_users": [{
+                "id": 7, "uuid": "profile-1", "title": "Profile", "thumb": "/avatar",
+                "protected": true, "admin": false
+            }],
+            "sources": [{
+                "machine_id": "machine-1", "name": "primary", "shared_by": "", "owned": true,
+                "address": "192.0.2.1", "port": 32400, "token": "source-secret-fixture",
+                "origin": "https://machine-1.plex.direct:32400"
+            }],
+            "home_pins": [{
+                "user": "profile-1", "asked": true,
+                "on": [{"machine_id":"machine-1","key":1}], "off": []
+            }],
+            "recent_searches": [{"user":"profile-1","terms":["query-fixture"]}],
+            "playback_quality": "720p_4_mbps",
+            "future_secret_field": {"token":"extension-secret-fixture"}
+        }))
+        .unwrap();
+
+        let (public, protected) = split_canonical(&original).unwrap();
+        let public_text = serde_json::to_string(&public).unwrap();
+        for secret in [
+            "account-secret-fixture",
+            "server-secret-fixture",
+            "profile-secret-fixture",
+            "source-secret-fixture",
+            "extension-secret-fixture",
+        ] {
+            assert!(!public_text.contains(secret), "public DB8 state leaked {secret}");
+            assert!(protected.contains(secret), "protected payload lost {secret}");
+        }
+        assert!(public_text.contains("client-fixture"));
+        assert!(public_text.contains("query-fixture"));
+
+        let reopened = join_canonical(&public, &protected).unwrap();
+        assert_eq!(
+            serde_json::to_value(reopened).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
+    }
+
+    #[test]
+    fn malformed_public_preferences_do_not_destroy_a_valid_auth_payload() {
+        let original: Session = serde_json::from_value(serde_json::json!({
+            "client_id": "client-fixture",
+            "account_token": "account-secret-fixture",
+            "server": {"token":"server-secret-fixture"}
+        }))
+        .unwrap();
+        let (mut public, protected) = split_canonical(&original).unwrap();
+        public.preferences = serde_json::json!({"playback_quality": {"future": true}});
+        let reopened = join_canonical(&public, &protected).unwrap();
+        assert_eq!(reopened.account_token, original.account_token);
+        assert_eq!(reopened.server.token, original.server.token);
+        assert_eq!(reopened.playback_quality, None);
+    }
 
     #[test]
     fn application_snapshot_reads_do_not_wait_for_the_disk_writer() {

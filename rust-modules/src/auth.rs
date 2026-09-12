@@ -35,8 +35,8 @@ pub enum Phase {
     Switching,
     /// Credentials resolved — the main loop should install them and go Home.
     Ready,
-    /// Consent and Session revocation are effective in memory; their ordered durable tombstones
-    /// are still resolving on the shared persistence worker.
+    /// Consent and Session revocation are effective in memory; their shared durable ClearTenure
+    /// transaction is still resolving on the persistence worker.
     Resetting,
     /// A step failed; show the message and allow a retry.
     Error,
@@ -531,7 +531,11 @@ fn poll_reset() {
         )) => (true, cleanup_failed),
         _ => (false, false),
     };
-    let consent_durable = consent.write == crate::telemetry::PersistenceState::Durable;
+    let consent_durable = matches!(
+        consent.write,
+        crate::telemetry::PersistenceState::Durable
+            | crate::telemetry::PersistenceState::Delegated
+    );
     if !consent_durable || !session_durable || reset.session_admission_failed {
         log(&format!(
             "auth: local account reset not durable consent={:?} consent_failure={:?} session_durable={session_durable}",
@@ -1697,7 +1701,7 @@ pub fn start_switch(from: Picker) {
                         c.users = users;
                         true
                     });
-                    live && session::update_ordinary(|s| {
+                    live && session::update_protected_ordinary(|s| {
                         (s.client_id == cid && s.account_token == tok && s.user.uuid == profile)
                             .then(|| Session {
                                 home_users: roster,
@@ -1757,8 +1761,9 @@ pub fn erase_local_state() {
 /// **The telemetry decision ends with the tenure too** (`telemetry::forget_with_receipt`), and its
 /// admission goes FIRST. Admission publishes the unanswered decision before any worker I/O, which
 /// is the instant every producer's gate closes and the sender stops picking up records. Consent and
-/// Session clear operations then enter the same FIFO in that order; this controller remains in
-/// [`Phase::Resetting`] until both cleared records are durably confirmed. Cleanup is reported
+/// cleanup and the Session-owned `ClearTenure` transaction then enter the same FIFO in that order;
+/// this controller remains in [`Phase::Resetting`] until that shared tombstone is durably
+/// confirmed. Cleanup is reported
 /// separately and is not disguised as reset durability. The admission must precede [`sign_out`]'s
 /// later `start_login`, which emits `SignInStarted` on its first line: consent belongs to the person
 /// who gave it, and the next account must be asked afresh rather than reporting under the departed
@@ -3600,7 +3605,7 @@ pub fn refresh_roster() {
         // share, while dropping a machine plex.tv no longer names.
         let applied = with_live_epoch(epoch, || {
             let mut reconciled: Option<(Vec<SourceRef>, ServerRef, bool, bool)> = None;
-            let admitted = session::update_ordinary(|s| {
+            let admitted = session::update_protected_ordinary(|s| {
                 if !same_session_identity(s, &sess) {
                     return None;
                 }
@@ -3802,7 +3807,7 @@ pub(crate) fn request_endpoint_refresh(id: ServerId) {
             // home-user roster updates instead of whole-saving the older probe snapshot.
             let mut from_disk = None;
             if !pending {
-                let _ = session::update_ordinary(|disk| {
+                let _ = session::update_protected_ordinary(|disk| {
                     if !same_session_identity(disk, &sess) {
                         return None;
                     }
@@ -4117,7 +4122,7 @@ fn merge_profile_roster(
     if !apply_pending {
         let expected = expected.clone();
         let next = next.clone();
-        let _ = session::update_ordinary(|disk| {
+        let _ = session::update_protected_ordinary(|disk| {
             same_session_identity(disk, &expected).then(|| next.clone())
         });
     }

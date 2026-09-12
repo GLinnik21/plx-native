@@ -305,9 +305,8 @@ pub(crate) fn runtime_dir() -> &'static Path {
     })
 }
 
-/// Canonical per-install persistence root. Television packages carry `state/` beside the app;
-/// hostsim keeps the same shape under its private instance runtime root so tests never touch the
-/// checkout or a shared host directory.
+/// Legacy JSON/host-simulator persistence root. Shipping television state is helper-owned DB8;
+/// this path exists for old-record migration and for host tests that must never touch the checkout.
 pub(crate) fn persistent_state_root() -> PathBuf {
     #[cfg(test)]
     if let Some(root) = TEST_PERSISTENT_STATE_ROOT
@@ -337,8 +336,8 @@ pub(crate) fn redirect_persistent_state_root_for_test(root: Option<PathBuf>) {
         .unwrap_or_else(|e| e.into_inner()) = root;
 }
 
-/// Prepare the hostsim-only state root without following a pre-existing symlink. TV packages must
-/// supply `state/`; a missing TV directory is an adapter error, never something this helper creates.
+/// Prepare the hostsim-only state root without following a pre-existing symlink. Television code
+/// may inspect an existing directory as a migration source but never creates it as an authority.
 pub(crate) fn ensure_persistent_state_root() -> std::io::Result<()> {
     if !ENV_STEERABLE {
         return Ok(());
@@ -532,19 +531,16 @@ pub(crate) enum SessionTier {
     Developer,
     /// `/media/internal/.<id>-auth.json` — the retail-jail writable fallback.
     Internal,
-    /// Inside the app install directory — canonical `state/session.json` is managed separately;
-    /// this tier names only a legacy migration path.
+    /// Inside the app install directory; this tier names only a legacy migration path.
     AppDir,
 }
 
 /// Legacy candidate locations for the persisted session, best first, each with the
-/// [`SessionTier`] it is. They are migration inputs; the canonical output is `state/session.json`.
+/// [`SessionTier`] it is. They are migration inputs; television output goes to private DB8.
 ///
 /// The two established external locations remain first for compatibility with existing sessions.
-/// Some newer Developer Mode jails refuse both, so the IPK now provides `state/` as an app-local
-/// fallback. Native probes verified owner-mode files there across a restart on the affected newer
-/// TV and across a normal appInstallService update on the older development TV. The old app-root
-/// file remains last as a migration source.
+/// The old app-root file remains last as a migration source. Hostsim uses its private state root;
+/// no shipping television path here is a live fallback.
 pub(crate) fn session_candidates() -> Vec<(PathBuf, SessionTier)> {
     let mut v = Vec::new();
     // A steerable build gets its own identity, first. Without this every concurrent simulator
@@ -950,8 +946,8 @@ mod tests {
         }
     }
 
-    /// The preferred session path stays outside the app directory for existing-install
-    /// compatibility; packaged state is a fallback, not a forced migration.
+    /// The legacy search order stays stable so existing files can be migrated deterministically;
+    /// none of these paths is the shipping DB8 destination.
     #[test]
     fn preferred_session_path_survives_a_reinstall() {
         let c: Vec<std::path::PathBuf> = super::session_candidates()
@@ -996,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn packaged_state_is_the_app_local_fallback_after_both_external_tiers() {
+    fn packaged_state_legacy_candidate_follows_both_external_tiers() {
         let paths: Vec<_> = super::session_candidates()
             .into_iter()
             .map(|(p, _)| p)
@@ -1012,7 +1008,7 @@ mod tests {
         let state = paths
             .iter()
             .position(|p| p == &super::app_dir().join("state/auth.json"))
-            .expect("packaged state/auth.json fallback");
+            .expect("packaged state/auth.json migration candidate");
         assert!(developer < internal && internal < state);
         assert_eq!(
             super::session_candidates()[state].1,

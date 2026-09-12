@@ -4,6 +4,7 @@
   "vendor": "beb",
   "type": "native",
   "main": "plxnative",
+  "requiredPermissions": ["database.operation", "securitykey.operation"],
   "title": "PlxNative",
   "appDescription": "Unofficial native Plex client - not affiliated with Plex",
   "icon": "icon.png",

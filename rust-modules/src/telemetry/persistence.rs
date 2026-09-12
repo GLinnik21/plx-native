@@ -7,12 +7,24 @@
 use super::consent::Consent;
 #[cfg(test)]
 use crate::storage::JsonStore;
-use crate::storage::{Record, RecordKey, RecordState, RecordStore, StoreError};
+use crate::storage::{Record, RecordKey, RecordState, RecordStore};
+#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+use crate::storage::StoreError;
 use std::path::{Path, PathBuf};
 
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+use crate::storage::{
+    client::{self, Load as HelperLoad},
+    state::{self, Generation, MigrationProgress},
+    wire::{CommitStatus, Domain, MigrationMutation, Response, WireMutation},
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // `Delegated` is produced only by the shipping webOS adapter.
 pub(crate) enum PersistResult {
     NotAttempted,
+    /// Durability belongs to the immediately-following atomic Session `ClearTenure` operation.
+    Delegated,
     Durable,
     Uncertain,
     Failed,
@@ -61,14 +73,17 @@ pub(super) fn operation_root() -> PathBuf {
     root()
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
 fn store() -> Result<impl RecordStore, StoreError> {
     crate::storage::open(root())
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
 fn store_at(root: PathBuf) -> Result<impl RecordStore, StoreError> {
     crate::storage::open(root)
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
 fn cleanup_canonical(store: &impl RecordStore) -> CleanupResult {
     if store.cleanup(RecordKey::Consent).is_ok() {
         CleanupResult::Complete
@@ -121,6 +136,12 @@ fn remove_legacy_sources(paths: impl IntoIterator<Item = PathBuf>) -> CleanupRes
 /// Load canonical consent, falling back to trusted legacy candidates only when canonical is
 /// absent. A malformed, inaccessible, future, or otherwise present canonical record is terminal.
 pub(crate) fn load(legacy: &[PathBuf]) -> Consent {
+    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+    {
+        return load_helper(legacy);
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+    {
     #[cfg(not(test))]
     if crate::paths::ensure_persistent_state_root().is_err() {
         publish(PersistOutcome {
@@ -199,6 +220,290 @@ pub(crate) fn load(legacy: &[PathBuf]) -> Consent {
         return Consent::default();
     };
     load_legacy_and_migrate(&store, legacy)
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+fn helper_expected(snapshot: &client::Snapshot) -> Option<(&str, state::Expected)> {
+    Some((&snapshot.db_rev, snapshot.state.expected()))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+#[derive(Clone, Copy)]
+struct HelperCommit {
+    result: PersistResult,
+    verified: bool,
+}
+
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+fn helper_commit(loaded: &HelperLoad, mutation: WireMutation) -> HelperCommit {
+    let operation = match Generation::random() {
+        Ok(operation) => operation,
+        Err(_) => {
+            return HelperCommit {
+                result: PersistResult::Failed,
+                verified: false,
+            }
+        }
+    };
+    let expected = match loaded {
+        HelperLoad::Missing => None,
+        HelperLoad::Present(snapshot) => helper_expected(snapshot),
+    };
+    match client::commit(expected, operation, mutation) {
+        Ok(Response::Commit {
+            status: CommitStatus::Committed,
+            applied: Some(_),
+            verified,
+            ..
+        }) => HelperCommit {
+            result: PersistResult::Durable,
+            verified,
+        },
+        Ok(Response::Reconcile {
+            status: crate::storage::wire::ReconcileStatus::Applied,
+            applied: Some(_),
+            ..
+        }) => HelperCommit {
+            result: PersistResult::Durable,
+            verified: false,
+        },
+        Ok(Response::Commit {
+            status: CommitStatus::Unavailable,
+            ..
+        })
+        | Ok(Response::Reconcile {
+            status: crate::storage::wire::ReconcileStatus::Unknown,
+            ..
+        }) => HelperCommit {
+            result: PersistResult::Uncertain,
+            verified: false,
+        },
+        _ => HelperCommit {
+            result: PersistResult::Failed,
+            verified: false,
+        },
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+fn legacy_consent(legacy: &[PathBuf]) -> Result<Option<(Consent, Vec<PathBuf>)>, ()> {
+    let mut found: Option<(Consent, Vec<PathBuf>)> = None;
+    for path in legacy {
+        match read_legacy(path) {
+            LegacyRead::Missing => {}
+            LegacyRead::Valid(bytes, candidate) => {
+                // The bytes were read and trust-checked by `read_legacy`; the DB8 migration stores
+                // the typed split, while the legacy JSON backend below preserves the exact bytes.
+                let _ = bytes.len();
+                if let Some((existing, sources)) = &mut found {
+                    if existing != &candidate {
+                        return Err(());
+                    }
+                    sources.push(path.clone());
+                } else {
+                    found = Some((candidate, vec![path.clone()]));
+                }
+            }
+            LegacyRead::Untrusted | LegacyRead::Invalid => return Err(()),
+        }
+    }
+    Ok(found)
+}
+
+#[cfg(any(
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    test
+))]
+enum PreviousCanonical {
+    Missing,
+    Data(Consent),
+    Cleared,
+    Blocked,
+}
+
+/// Decode the complete `plxnative-record` wrapper used by the JSON canonical store that preceded
+/// DB8. A corrupt/future record is terminal and is never treated like an absent legacy source.
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+fn previous_canonical_consent() -> PreviousCanonical {
+    previous_canonical_consent_at(root())
+}
+
+#[cfg(any(
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    test
+))]
+fn previous_canonical_consent_at(root: PathBuf) -> PreviousCanonical {
+    match std::fs::symlink_metadata(&root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => PreviousCanonical::Missing,
+        Err(_) => PreviousCanonical::Blocked,
+        Ok(metadata) if !metadata.is_dir() => PreviousCanonical::Blocked,
+        Ok(_) => {
+            let Ok(store) = crate::storage::open(root) else {
+                return PreviousCanonical::Blocked;
+            };
+            match store.load(RecordKey::Consent) {
+                Ok(None) => PreviousCanonical::Missing,
+                Ok(Some(Record {
+                    state: RecordState::Cleared,
+                    ..
+                })) => PreviousCanonical::Cleared,
+                Ok(Some(Record {
+                    state: RecordState::Data { payload },
+                    ..
+                })) => serde_json::from_str::<Consent>(&payload)
+                    .map(super::consent::migrate_loaded)
+                    .map(PreviousCanonical::Data)
+                    .unwrap_or(PreviousCanonical::Blocked),
+                Err(_) => PreviousCanonical::Blocked,
+            }
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+fn load_helper(legacy: &[PathBuf]) -> Consent {
+    let loaded = match client::load() {
+        Ok(loaded) => loaded,
+        Err(_) => {
+            publish(PersistOutcome {
+                write: PersistResult::Failed,
+                cleanup: CleanupResult::NotAttempted,
+            });
+            return Consent::default();
+        }
+    };
+    if let HelperLoad::Present(snapshot) = &loaded {
+        if snapshot.state.migrations.consent.progress == MigrationProgress::Complete {
+            let slots = state::ConsentPayload {
+                consent: snapshot.state.public.consent.clone(),
+                scopes: snapshot.state.public.scopes.clone(),
+                ids: snapshot.state.public.ids.clone(),
+            };
+            let consent = if slots.consent.is_null() && slots.scopes.is_null() && slots.ids.is_null()
+            {
+                Consent::default()
+            } else {
+                match super::consent::join_canonical(&slots) {
+                    Ok(consent) => super::consent::migrate_loaded(consent),
+                    Err(()) => {
+                        publish(PersistOutcome {
+                            write: PersistResult::Failed,
+                            cleanup: CleanupResult::NotAttempted,
+                        });
+                        return Consent::default();
+                    }
+                }
+            };
+            publish(PersistOutcome {
+                write: PersistResult::NotAttempted,
+                cleanup: CleanupResult::Complete,
+            });
+            return consent;
+        }
+    }
+    let previous_path = root().join("consent.json");
+    let previous = previous_canonical_consent();
+    if matches!(previous, PreviousCanonical::Blocked) {
+        publish(PersistOutcome {
+            write: PersistResult::Failed,
+            cleanup: CleanupResult::NotAttempted,
+        });
+        return Consent::default();
+    }
+    if matches!(previous, PreviousCanonical::Cleared) {
+        let commit = helper_commit(
+            &loaded,
+            WireMutation::AdvanceMigration {
+                migration: MigrationMutation::CompleteEmpty {
+                    domain: Domain::Consent,
+                },
+            },
+        );
+        let cleanup = if commit.result == PersistResult::Durable && commit.verified {
+            remove_legacy_sources([previous_path])
+        } else {
+            CleanupResult::NotAttempted
+        };
+        publish(PersistOutcome {
+            write: commit.result,
+            cleanup,
+        });
+        return Consent::default();
+    }
+    let found = match previous {
+        PreviousCanonical::Data(consent) => Some((consent, vec![previous_path])),
+        PreviousCanonical::Missing => match legacy_consent(legacy) {
+            Ok(found) => found,
+            Err(()) => {
+                let commit = helper_commit(
+                    &loaded,
+                    WireMutation::AdvanceMigration {
+                        migration: MigrationMutation::CompleteEmpty {
+                            domain: Domain::Consent,
+                        },
+                    },
+                );
+                publish(PersistOutcome {
+                    write: commit.result,
+                    cleanup: CleanupResult::NotAttempted,
+                });
+                return Consent::default();
+            }
+        },
+        PreviousCanonical::Cleared | PreviousCanonical::Blocked => unreachable!(),
+    };
+    let (consent, sources, mutation) = match found {
+        Some((consent, sources)) => {
+            let slots = match super::consent::split_canonical(&consent) {
+                Ok(slots) => slots,
+                Err(()) => {
+                    publish(PersistOutcome {
+                        write: PersistResult::Failed,
+                        cleanup: CleanupResult::NotAttempted,
+                    });
+                    return Consent::default();
+                }
+            };
+            let value = match serde_json::to_value(slots) {
+                Ok(value) => value,
+                Err(_) => {
+                    publish(PersistOutcome {
+                        write: PersistResult::Failed,
+                        cleanup: CleanupResult::NotAttempted,
+                    });
+                    return Consent::default();
+                }
+            };
+            (
+                consent,
+                sources,
+                WireMutation::AdvanceMigration {
+                    migration: MigrationMutation::ConsentComplete { consent: value },
+                },
+            )
+        }
+        None => (
+            Consent::default(),
+            Vec::new(),
+            WireMutation::AdvanceMigration {
+                migration: MigrationMutation::CompleteEmpty {
+                    domain: Domain::Consent,
+                },
+            },
+        ),
+    };
+    let commit = helper_commit(&loaded, mutation);
+    let cleanup = if commit.result == PersistResult::Durable && commit.verified {
+        remove_legacy_sources(sources)
+    } else {
+        CleanupResult::NotAttempted
+    };
+    publish(PersistOutcome {
+        write: commit.result,
+        cleanup,
+    });
+    consent
 }
 
 enum LegacyRead {
@@ -222,6 +527,7 @@ fn read_legacy(path: &Path) -> LegacyRead {
     }
 }
 
+#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
 fn load_legacy_and_migrate(store: &impl RecordStore, legacy: &[PathBuf]) -> Consent {
     let mut found: Option<(Consent, Vec<(PathBuf, Vec<u8>)>)> = None;
     for path in legacy {
@@ -333,6 +639,13 @@ pub(super) fn record_at(
     legacy: &[PathBuf],
     canonical_root: PathBuf,
 ) -> PersistOutcome {
+    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+    {
+        let _ = canonical_root;
+        return record_helper(consent, legacy);
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+    {
     let store = match store_at(canonical_root) {
         Ok(store) => store,
         Err(_) => {
@@ -423,10 +736,76 @@ pub(super) fn record_at(
     };
     publish(outcome);
     outcome
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+fn record_helper(consent: &Consent, legacy: &[PathBuf]) -> PersistOutcome {
+    let loaded = match client::load() {
+        Ok(loaded) => loaded,
+        Err(_) => {
+            let outcome = PersistOutcome {
+                write: PersistResult::Failed,
+                cleanup: CleanupResult::NotAttempted,
+            };
+            publish(outcome);
+            return outcome;
+        }
+    };
+    let slots = match super::consent::split_canonical(consent) {
+        Ok(slots) => slots,
+        Err(()) => {
+            let outcome = PersistOutcome {
+                write: PersistResult::Failed,
+                cleanup: CleanupResult::NotAttempted,
+            };
+            publish(outcome);
+            return outcome;
+        }
+    };
+    let payload = match serde_json::to_value(slots) {
+        Ok(payload) => payload,
+        Err(_) => {
+            let outcome = PersistOutcome {
+                write: PersistResult::Failed,
+                cleanup: CleanupResult::NotAttempted,
+            };
+            publish(outcome);
+            return outcome;
+        }
+    };
+    let commit = helper_commit(&loaded, WireMutation::UpdateConsent { payload });
+    let cleanup = if commit.result == PersistResult::Durable && commit.verified {
+        remove_legacy_sources(legacy.iter().cloned())
+    } else {
+        CleanupResult::NotAttempted
+    };
+    let outcome = PersistOutcome {
+        write: commit.result,
+        cleanup,
+    };
+    publish(outcome);
+    outcome
 }
 
 /// Write a canonical cleared tombstone, then remove stale legacy copies best-effort.
 pub(super) fn forget_at(legacy: &[PathBuf], canonical_root: PathBuf) -> PersistOutcome {
+    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+    {
+        let _ = canonical_root;
+        // Session's immediately-following ClearTenure is the one atomic DB8 revocation for both
+        // domains. Consent has already been unpublished before this worker job runs. Legacy
+        // sources remain until that one transaction is confirmed durable.
+        let _ = legacy;
+        let outcome = PersistOutcome {
+            write: PersistResult::Delegated,
+            cleanup: CleanupResult::NotAttempted,
+        };
+        publish(outcome);
+        return outcome;
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+    {
     let store = match store_at(canonical_root) {
         Ok(store) => store,
         Err(_) => {
@@ -481,6 +860,15 @@ pub(super) fn forget_at(legacy: &[PathBuf], canonical_root: PathBuf) -> PersistO
     };
     publish(outcome);
     outcome
+    }
+}
+
+/// Retire consent sources only after Session's shared `ClearTenure` transaction is confirmed.
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+pub(crate) fn cleanup_after_combined_clear(legacy: &[PathBuf]) -> CleanupResult {
+    remove_legacy_sources(
+        std::iter::once(root().join("consent.json")).chain(legacy.iter().cloned()),
+    )
 }
 
 #[cfg(test)]
@@ -588,6 +976,32 @@ mod tests {
             !source.exists(),
             "legacy source survived a durable migration"
         );
+    }
+
+    #[test]
+    fn previous_json_wrapper_yields_nested_consent_and_tombstone() {
+        let _g = crate::testlock::serial();
+        let fixture = Fixture::new("prior-wrapper");
+        let store = JsonStore::new(fixture.root.clone()).unwrap();
+        assert_eq!(
+            store.commit(
+                RecordKey::Consent,
+                &Record::data(4, serde_json::to_string(&old_yes()).unwrap()),
+            ),
+            Ok(crate::storage::CommitReceipt::Durable)
+        );
+        match previous_canonical_consent_at(fixture.root.clone()) {
+            PreviousCanonical::Data(consent) => assert_eq!(consent, old_yes()),
+            _ => panic!("the wrapper was not decoded as Consent data"),
+        }
+        assert_eq!(
+            store.commit(RecordKey::Consent, &Record::cleared(5)),
+            Ok(crate::storage::CommitReceipt::Durable)
+        );
+        assert!(matches!(
+            previous_canonical_consent_at(fixture.root.clone()),
+            PreviousCanonical::Cleared
+        ));
     }
 
     #[test]

@@ -571,7 +571,7 @@ RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/release/libplxnative_modu
 SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c))
 OBJS = $(SRCS:.c=.o)
 
-all: pkg/plxnative
+all: pkg/plxnative pkg/plxnative-storage
 
 # per-file compile; each object depends on ALL headers so a header edit rebuilds all
 src/%.o: src/%.c $(wildcard src/*.h) Makefile
@@ -667,7 +667,18 @@ $(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo +$(RUST_NIGHTLY) build --release --target $(RUST_TARGET) \
-	    --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)
+	    --lib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)
+
+# The helper uses the existing NDK's real LS2 and glib libraries, without app/media linkage.
+pkg/plxnative-storage: $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs Makefile
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
+	  CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER='$(CC)' \
+	  cargo +$(RUST_NIGHTLY) rustc --release --target $(RUST_TARGET) \
+	    --bin plxnative-storage --target-dir $(RUST_TDIR) --no-default-features -- \
+	    -C link-arg=--sysroot=$(SYSROOT) -L native=$(SYSROOT)/usr/lib \
+	    -C link-arg=-Wl,-rpath-link,$(SYSROOT)/usr/lib -C link-arg=-Wl,--build-id=sha1
+	cp rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/release/plxnative-storage $@
+	chmod 755 $@
 
 # link C objects + the Rust staticlib. gcc pulls in libgcc_s (the ARM-EHABI
 # unwinder Rust's panic_unwind std references) + libc/pthread/dl/m/rt itself.
@@ -1060,7 +1071,8 @@ check: lint
 	@# it would be too late to learn otherwise. It also cross-checks the three copies of the app id
 	@# (here, ci/flavor.py, rust-modules/src/paths.rs), which no compiler can.
 	python3 ci/flavor.py --selftest
-	python3 ci/test_state_package.py
+	python3 ci/test_storage_service_package.py
+	CARGO_INCREMENTAL=0 cargo +$(RUST_NIGHTLY) test --manifest-path rust-modules/Cargo.toml --bin plxnative-storage --no-default-features
 	@# ...and the stamp decoder `ci/check-package.py` grades every "is this a RELEASE build?"
 	@# assertion through. It is pure string arithmetic over values only THIS file produces, and it
 	@# had been wrong since the telemetry field was added to RUST_CFG — decoding every real stamp as
@@ -1214,7 +1226,7 @@ sentry-symbols: symbols
 	@SENTRY_ORG='$(SENTRY_ORG)' SENTRY_PROJECT='$(SENTRY_PROJECT)' \
 	  $(SENTRY_CLI) debug-files upload --include-sources pkg/plxnative.debug pkg/plxnative
 
-ipk: pkg/plxnative $(APPINFO) release-guard
+ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
 	rm -rf ipkroot/data/usr && mkdir -p $(STAGE)/licenses
 	cp $(APP_FILES) $(STAGE)/

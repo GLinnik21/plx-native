@@ -170,6 +170,8 @@ fn activate_boot(ready: BootReady) -> Activated {
     // on this worker, before the app leaves its boot gate.
     crate::diag::replay_deferred();
     storage::replay_deferred();
+    #[cfg(feature = "devtriggers")]
+    crate::dev::run_storage_diagnostics();
     Activated { consent: c }
 }
 
@@ -265,6 +267,7 @@ fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PersistenceState {
     Pending,
+    Delegated,
     Durable,
     Uncertain,
     Failed,
@@ -559,6 +562,7 @@ fn status_from_outcome(
     operation_cleanup: bool,
 ) -> RevisionStatus {
     let write = match outcome.write {
+        persistence::PersistResult::Delegated => PersistenceState::Delegated,
         persistence::PersistResult::Durable => PersistenceState::Durable,
         persistence::PersistResult::Uncertain => PersistenceState::Uncertain,
         persistence::PersistResult::Failed | persistence::PersistResult::NotAttempted => {
@@ -575,6 +579,13 @@ fn status_from_outcome(
         },
         failure: (write == PersistenceState::Failed).then_some(QueueFailure::CanonicalWriteFailed),
     }
+}
+
+/// Called on the persistence worker after the shared account tombstone is durable.
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+pub(crate) fn cleanup_after_account_clear() -> bool {
+    persistence::cleanup_after_combined_clear(&candidates())
+        != persistence::CleanupResult::Failed
 }
 
 fn is_latest(revision: u64) -> bool {

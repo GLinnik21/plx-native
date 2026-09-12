@@ -607,6 +607,22 @@ pub(crate) fn ls2_identity_probe_if_armed() {
     ls2_probe();
 }
 
+/// Best-effort dynamic-service activation hint for the storage helper.
+///
+/// The helper publishes readiness from its startup path, so neither a successful method reply nor
+/// delivery of `/wake` is required.  This call runs only on the persistence worker and its result
+/// is deliberately ignored; the authenticated Unix-socket `Hello` is the sole readiness proof.
+#[cfg(all(
+    target_os = "linux",
+    target_arch = "arm",
+    not(feature = "hostsim"),
+    not(test)
+))]
+pub(crate) fn activate_storage_helper(service: &str) {
+    let uri = format!("luna://{service}/wake");
+    let _ = ls2::call_once(&uri, "{}");
+}
+
 #[cfg(all(not(feature = "hostsim"), not(test)))]
 fn launch_home() -> bool {
     let payload = format!("{{\"id\":\"{HOME_APP_ID}\"}}");

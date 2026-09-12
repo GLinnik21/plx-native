@@ -45,14 +45,24 @@ looking at:
   developer-trigger build can allow that lab path, and it logs the exception without the URL.
   Anything that disables, downgrades or bypasses these rules is in scope; so is any path where a
   failure to *set* a security option results in a request going out anyway.
-- **The canonical session record.** `state/session.json` carries one access token per server your
-  account can reach inside a versioned opaque record. Legacy `<id>-auth.json` and `state/auth.json`
-  files are read only as migration sources. The record payload is encrypted with the firmware's authenticated Key Manager where
-  `com.webos.service.keymanager3` is available and permitted, with a 0600 plaintext compatibility
-  fallback otherwise. The legacy `com.palm.keymanager` AES-CFB interface is not used because it
-  provides no authenticated-encryption operation. The file is always created 0600 through
-  `open(2)`'s own mode argument, and every open of it (and of the telemetry decision file, the
-  telemetry spool, and every marker/probe file beside them) repairs the mode back to 0600 in place
+- **The canonical session record.** A packaged native helper owns one private DB8 kind and one
+  fixed-ID object containing typed Session, Consent and operation-ledger state as an opaque JSON
+  string. The app/helper socket is mode 0600 and requires matching kernel peer credentials. On new
+  and unknown webOS a fresh auth write attempts authenticated Keymanager3 first, then may use an
+  explicit private-DB8 ACL-only envelope if crypto fails; that downgrade must emit closed,
+  consent-gated diagnostics. Public settings/routine refreshes never downgrade existing healthy
+  ciphertext. The policy selects ACL-only directly for reported webOS majors 1–4; runtime evidence
+  currently covers webOS 4.10.2 only.
+  Keymanager removal deletes the service's DB8 key blob; exact 11.2 firmware does not establish
+  irreversible hardware revocation or protection against a root-level restoration of old DB8
+  storage.
+  Routine encrypted auth replacement is two-phase: the prior envelope remains active while a
+  bounded pending candidate is persisted and authenticated, and only a second exact-revision CAS
+  promotes it. A helper exit between those phases therefore leaves the prior sign-in readable.
+  The legacy `com.palm.keymanager` AES-CFB interface is not used. Legacy `<id>-auth.json`,
+  `state/auth.json`, `state/session.json` and consent files are read only as migration sources.
+  Every open of those legacy files (and of the telemetry spool and crashmark files) repairs the
+  mode back to 0600 in place
   if it has grown group/other bits, rather than refusing to read or append to a file this install
   still owns. **Repairing the mode is not the same claim as trusting the content it protected while
   it was wide open**: a mode widened only to add a group/other READ bit is a disclosure problem and
@@ -71,10 +81,10 @@ looking at:
   is that it must not still be at the name the next launch reads. The consent file and the telemetry spool are deliberately
   unchanged: a discarded decision and a truncated spool leave nothing worth keeping. A downgrade of an existing encrypted file, a way to read it from another
   process, or a way to make the app write it somewhere world-readable is in scope.
-- **The packaged state directory.** The IPK carries an empty per-install `state/` directory with
-  uid 0, gid 5000 and mode 0775. It is a writable container for the jailed app; runtime files such
-  as `state/session.json` and `state/consent.json` are created owner-only at 0600 and are not package
-  payload. The package checker grades the actual IPK member, not just the staging directory.
+- **The packaged storage service.** The IPK carries the native helper and package/service metadata,
+  but no writable canonical state directory or runtime record. DB8 owns durability; the helper's
+  transient `/tmp/<appid>.storage-runtime` contains only a private rendezvous/socket and a
+  payload-free failure stage. Normal uninstall removes the private kind; package updates retain it.
 - **The Developer Mode shared-namespace exposure, and why it is not the same claim as the above.**
   A **sideloaded Developer Mode** install runs under `jail_native_devmode.conf`, which
   mounts `/media/developer` **read-write for the whole directory**, measured `drwxrwxrwx` root:root

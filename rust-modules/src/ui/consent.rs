@@ -483,7 +483,7 @@ fn notice_kind(status: RevisionStatus, decision_effective: bool) -> Option<Persi
         PersistenceState::Durable if status.cleanup_failed() => {
             Some(PersistenceNoticeKind::CleanupFailed)
         }
-        PersistenceState::Durable => None,
+        PersistenceState::Durable | PersistenceState::Delegated => None,
         PersistenceState::Uncertain => Some(PersistenceNoticeKind::Uncertain),
         PersistenceState::Failed if !decision_effective => Some(PersistenceNoticeKind::NotApplied),
         PersistenceState::Failed => Some(PersistenceNoticeKind::Failed),

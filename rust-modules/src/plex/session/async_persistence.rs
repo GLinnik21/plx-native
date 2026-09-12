@@ -342,6 +342,7 @@ impl Coordinator {
     fn update_ordinary(
         &self,
         executor: &dyn Submitter,
+        authority: SaveAuthority,
         edit: impl FnOnce(&Session) -> Option<Session>,
     ) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -362,7 +363,7 @@ impl Coordinator {
         };
         let command = next.clone();
         let receipt = self.submit_locked(&mut state, revision, executor, move || {
-            execute_write(command, SaveAuthority::Routine)
+            execute_write(command, authority)
         });
         match receipt {
             Ok(receipt) => {
@@ -418,7 +419,7 @@ impl Coordinator {
             return false;
         };
         let receipt = self.submit_locked(&mut state, revision, executor, move || {
-            execute_write(snapshot, SaveAuthority::Routine)
+            execute_write(snapshot, SaveAuthority::PublicOnly)
         });
         match receipt {
             Ok(receipt) => {
@@ -622,7 +623,13 @@ pub(super) fn update(
 /// Replacing a pending receipt stays bounded: the newer admitted snapshot already contains the
 /// older edit, and the coordinator's latest cell becomes the relevant durability verdict.
 pub(super) fn update_ordinary(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
-    coordinator().update_ordinary(&EXECUTOR, edit)
+    coordinator().update_ordinary(&EXECUTOR, SaveAuthority::PublicOnly, edit)
+}
+
+pub(super) fn update_protected_ordinary(
+    edit: impl FnOnce(&Session) -> Option<Session>,
+) -> bool {
+    coordinator().update_ordinary(&EXECUTOR, SaveAuthority::Routine, edit)
 }
 
 /// Main-loop hook: poll the one retained ordinary receipt and publish/log its terminal result.

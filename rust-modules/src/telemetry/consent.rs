@@ -325,6 +325,85 @@ pub(crate) struct Consent {
     pub(crate) extensions: BTreeMap<String, serde_json::Value>,
 }
 
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalDecision {
+    asked_version: u32,
+    errors: bool,
+    usage: bool,
+    errors_declined_scope: u32,
+    usage_declined_scope: u32,
+    extensions: BTreeMap<String, serde_json::Value>,
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalScopes {
+    errors: u32,
+    usage: u32,
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalIds {
+    analytics: Option<String>,
+    errors: Option<String>,
+}
+
+/// Split consent into the three DB8-public slots the canonical state clears atomically on logout.
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+pub(crate) fn split_canonical(
+    consent: &Consent,
+) -> Result<crate::storage::state::ConsentPayload, ()> {
+    Ok(crate::storage::state::ConsentPayload {
+        consent: serde_json::to_value(CanonicalDecision {
+            asked_version: consent.asked_version,
+            errors: consent.errors,
+            usage: consent.usage,
+            errors_declined_scope: consent.errors_declined_scope,
+            usage_declined_scope: consent.usage_declined_scope,
+            extensions: consent.extensions.clone(),
+        })
+        .map_err(|_| ())?,
+        scopes: serde_json::to_value(CanonicalScopes {
+            errors: consent.errors_scope,
+            usage: consent.usage_scope,
+        })
+        .map_err(|_| ())?,
+        ids: serde_json::to_value(CanonicalIds {
+            analytics: consent.install_id.clone(),
+            errors: consent.errors_id.clone(),
+        })
+        .map_err(|_| ())?,
+    })
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+pub(crate) fn join_canonical(
+    payload: &crate::storage::state::ConsentPayload,
+) -> Result<Consent, ()> {
+    let decision: CanonicalDecision =
+        serde_json::from_value(payload.consent.clone()).map_err(|_| ())?;
+    let scopes: CanonicalScopes =
+        serde_json::from_value(payload.scopes.clone()).map_err(|_| ())?;
+    let ids: CanonicalIds = serde_json::from_value(payload.ids.clone()).map_err(|_| ())?;
+    Ok(Consent {
+        asked_version: decision.asked_version,
+        errors: decision.errors,
+        usage: decision.usage,
+        install_id: ids.analytics,
+        errors_id: ids.errors,
+        errors_scope: scopes.errors,
+        usage_scope: scopes.usage,
+        errors_declined_scope: decision.errors_declined_scope,
+        usage_declined_scope: decision.usage_declined_scope,
+        extensions: decision.extensions,
+    })
+}
+
 impl fmt::Debug for Consent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Consent")
@@ -851,6 +930,28 @@ pub(crate) fn install_id() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_consent_slots_roundtrip_every_policy_field_and_identifier() {
+        let original = Consent {
+            asked_version: 9,
+            errors: true,
+            usage: true,
+            install_id: Some("analytics-fixture".into()),
+            errors_id: Some("errors-fixture".into()),
+            errors_scope: 7,
+            usage_scope: 8,
+            errors_declined_scope: 5,
+            usage_declined_scope: 6,
+            extensions: [("future".into(), serde_json::json!({"enabled":true}))]
+                .into_iter()
+                .collect(),
+        };
+        let slots = split_canonical(&original).unwrap();
+        assert_eq!(join_canonical(&slots).unwrap(), original);
+        assert!(slots.ids.to_string().contains("analytics-fixture"));
+        assert!(!slots.consent.to_string().contains("analytics-fixture"));
+    }
 
     /// The default is OFF, for both, and unanswered — not "off because someone said no".
     #[test]

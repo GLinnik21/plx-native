@@ -1,6 +1,6 @@
 # PlxNative Privacy Policy
 
-Applies to PlxNative 0.6.4. Last updated 11 September 2026.
+Applies to PlxNative 0.6.6. Last updated 12 September 2026.
 
 ## Who is responsible for PlxNative data
 
@@ -32,30 +32,24 @@ random Analytics ID if you turned product analytics on, any report waiting to be
 marker recording how much of the crash log has already been read.
 It keeps no bookmark of its own for where you stopped watching: playback position is held by your
 Plex Media Server. The Settings screen can sign out and remove PlxNative data from this television.
-The packaged application directory contains an empty `state/` directory. The canonical session and
-reporting-decision records are `state/session.json` and `state/consent.json`; older external and
-app-local `auth.json`/telemetry paths are migration candidates only. Runtime records are not package
-payload.
+The canonical session and reporting decision share one versioned record in a private database kind
+owned by PlxNative's packaged storage service. The database object contains only its fixed metadata
+and an opaque typed JSON document; older external and app-local `auth.json`/telemetry files are
+migration candidates only and are removed only after the new record is verified.
 
-Your sign-in is protected with this television's own key service when one is available and this
-install has shown it can be trusted: the app checks, on a later launch, that the television's key
-service can still open something it sealed before, and only after that check has passed does it
-seal your actual sign-in with it — until then the sign-in is kept in an owner-only file that only
-PlxNative can read, exactly as it is on a television with no such service at all. Two small,
-content-only markers on disk record the outcome of that check so it is not repeated forever: one
-records that the key service has been shown to work on this install (`secure-storage.proven`), the
-other that it has been shown NOT to (`secure-storage.refused`). Neither carries key material.
-
-If that key service later stops answering, your sealed sign-in is left exactly as it is rather
-than being replaced: the sign-in screen says so and offers to try again, and only signing in again
-replaces what is stored. A third content-only marker (`secure-storage.unavailable`) counts how
-many launches in a row have gone unanswered, so a key service that never comes back settles rather
-than asking forever; it is removed as soon as one launch reads the sign-in successfully, and it too
-carries no key material.
+On newer and unknown webOS versions, PlxNative first attempts to encrypt your tokens through the
+television's authenticated Keymanager3 service. If it cannot do so during a fresh sign-in or
+migration, it may keep that newly supplied token bundle in an explicit ACL-only envelope inside
+the private database kind so sign-in still survives; the failure is eligible for the storage
+diagnostic described below. An ordinary settings change never replaces existing healthy
+ciphertext. PlxNative selects the same ACL-only form directly when the television reports webOS
+major 1–4; runtime evidence currently covers webOS 4.10.2 only. Private database access is isolation and persistence, not encryption
+and not protection from root access.
 
 Those lifetimes differ. Signing out immediately clears the in-memory sign-in and reporting gates,
-then queues a non-identifying canonical cleared record so the app will not re-import the old
-account. The app does not permit a new sign-in until that cleared record is durably confirmed. It
+then queues one non-identifying `ClearTenure` tombstone covering both Session and reporting consent
+so the app will not re-import the old account. The app does not permit a new sign-in until that
+tombstone is durably confirmed. It
 also queues removal of the old sign-in material, servers registered with it and their tokens — and with them your
 optional-reporting answers, both identifiers and any queued report,
 because those choices were made by the person who signed in and say nothing about whoever signs
@@ -132,7 +126,10 @@ attempt to seal or open your saved sign-in fails, or the file itself cannot be w
 report contains which step failed
 (`generate_key`, `begin_encrypt`, `finish_encrypt`, `begin_decrypt`, `finish_decrypt`,
 `roundtrip_mismatch`, `envelope_unparseable`, `envelope_locked`, `no_reply`, `unreachable`,
-`write_failed`, `untrusted_mode` — this television found the saved sign-in file writable by
+`write_failed`, `keymanager_fallback` (a fresh sign-in was kept ACL-only after Keymanager3 failed),
+`keymanager_fail_closed` (a routine encrypted update was refused or rolled back instead of
+downgrading the existing sign-in),
+`untrusted_mode` — this television found the saved sign-in file writable by
 another app on the device, so rather than trust its contents it stopped using them and set the
 file aside unread, under the same name with `.untrusted` on the end, which signing out or Delete
 all local data attempts to remove and reports if cleanup is incomplete — or
@@ -156,13 +153,20 @@ the report is actually about — `app_id`, `named`, `anonymous`, or `none` where
 nothing protected at all — because the whole question is whether the two differ. It contains no key material, ciphertext, plaintext or
 file path, and carries the same Crash report ID as a crash report, and the same television model,
 SoC, hardware revision, webOS release and the `rtkmem`/`install` sandbox facts a crash report
-carries. It may also carry the compact candidate-location summary described below: which of this
+carries. A `keymanager_fallback` or `keymanager_fail_closed` report additionally carries only
+closed operation, stage, failure-category and error-code words plus the service's numeric error
+code when present; closed `fallback_reason`, `fallback_phase` and `prior_protection_outcome` words;
+whether DB8 commit/readback was verified; the numeric helper protocol; and whether the diagnostic
+came from runtime or the developer-only synthetic test. It may
+also carry the compact candidate-location summary described below: which of this
 television's candidate sign-in locations were checked and how each went, using only closed words
 and small numbers, never a path. It is sent only once you have
 answered the crash-reports question Yes; a report found before that question is answered (which
 can happen on the very first launch after an update) waits in memory, dated to when it actually
 happened, for the rest of that one launch only — it is discarded, never sent, if you answer No or
-if the app closes before you answer.
+if the app closes before you answer. The exception is a Keymanager fallback: its closed,
+non-secret failure evidence remains in the ACL envelope, so a later launch can recreate the same
+consent-gated report. It is still never sent after you answer No.
 
 The same storage error report also covers `sign_in_not_persisted` — a fresh sign-in whose file
 could not be kept the way this television decided to keep it. That report additionally says what

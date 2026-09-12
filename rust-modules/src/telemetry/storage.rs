@@ -31,7 +31,10 @@
 //! [`send_now`] first and, only when that refuses because the question is still open
 //! ([`should_defer`]), holds the context in the small in-memory [`DEFERRED`] queue (cap
 //! [`DEFERRED_CAP`], session-only — never persisted, so a crash or relaunch before the question is
-//! answered loses it) rather than the old behaviour of dropping it outright. [`replay_deferred`],
+//! answered loses that queued instance) rather than the old behaviour of dropping it outright.
+//! A Keymanager fallback is the narrow exception: its closed, non-secret failure evidence belongs
+//! to the persisted ACL envelope, so a later load can recreate the same consent-gated report.
+//! [`replay_deferred`],
 //! called from `telemetry::record_with_receipt` right after a new decision publishes (same call site as
 //! `diag::replay_deferred`, issue #75's twin for the sign-in funnel), sends every held report
 //! through [`send_now`] on a "yes" and drops the whole queue with nothing sent on a "no" — either
@@ -39,8 +42,9 @@
 //! keeps the timestamp it was ORIGINALLY found at ([`event_body`]'s `occurred_at_ms` argument),
 //! not the time the question finally got answered. **A report found before the question is
 //! answered is discarded if you answer No, if you SIGN OUT, or if the app closes before you answer
-//! at all** — it is never written to disk, so it does not survive past the launch that found it,
-//! and [`forget`] is what keeps it from surviving past the ACCOUNT that found it either (review
+//! at all** — the queue itself is never written to disk. Persisted fallback evidence is still
+//! never sent after No. [`forget`] is what keeps deferred state from surviving past the ACCOUNT
+//! that found it either (review
 //! finding, 2026-09-11: it used to, and the next account's "yes" then sent it under that account's
 //! Crash report ID).
 
@@ -113,8 +117,13 @@ impl SessionStorageClass {
     #[allow(dead_code)]
     fn _assert_all_variants_covered(v: Self) {
         match v {
-            Self::Unknown | Self::None | Self::Plaintext | Self::Secure | Self::SecureLocked
-            | Self::SecureRefused | Self::SecureUnavailable => {}
+            Self::Unknown
+            | Self::None
+            | Self::Plaintext
+            | Self::Secure
+            | Self::SecureLocked
+            | Self::SecureRefused
+            | Self::SecureUnavailable => {}
         }
     }
 
@@ -204,6 +213,19 @@ pub(crate) enum StorageStage {
     ///
     /// Constructed only by [`report_sign_in_not_persisted`].
     SignInNotPersisted,
+    /// A fresh sign-in or legacy import remained durable in the helper's private DB8 kind after
+    /// Keymanager3 failed. The closed helper failure fields say exactly which safe fallback path
+    /// was taken without carrying service text, key material, or the auth payload.
+    #[cfg_attr(
+        not(any(
+            test,
+            all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))
+        )),
+        allow(dead_code)
+    )]
+    KeymanagerFallback,
+    #[allow(dead_code)]
+    KeymanagerFailClosed,
 }
 
 impl StorageStage {
@@ -225,6 +247,8 @@ impl StorageStage {
         Self::UntrustedMode,
         Self::IdentityUnavailable,
         Self::SignInNotPersisted,
+        Self::KeymanagerFallback,
+        Self::KeymanagerFailClosed,
     ];
 
     #[cfg(test)]
@@ -244,7 +268,9 @@ impl StorageStage {
             | Self::WriteFailed
             | Self::UntrustedMode
             | Self::IdentityUnavailable
-            | Self::SignInNotPersisted => {}
+            | Self::SignInNotPersisted
+            | Self::KeymanagerFallback
+            | Self::KeymanagerFailClosed => {}
         }
     }
 
@@ -264,6 +290,8 @@ impl StorageStage {
             Self::UntrustedMode => "untrusted_mode",
             Self::IdentityUnavailable => "identity_unavailable",
             Self::SignInNotPersisted => "sign_in_not_persisted",
+            Self::KeymanagerFallback => "keymanager_fallback",
+            Self::KeymanagerFailClosed => "keymanager_fail_closed",
         }
     }
 }
@@ -364,6 +392,19 @@ pub(crate) struct StorageExtra {
     /// The explicit [`report_error_with_candidate_reads`] path carries it for the load that owns
     /// the report; ordinary reports leave this field absent.
     pub candidate_reads: Option<String>,
+    /// Closed helper-side Keymanager diagnostic words. These are present only when a fresh auth
+    /// write fell back to ACL-only DB8; no raw LS2 message, key name, token, or payload crosses
+    /// the helper boundary.
+    pub keymanager_operation: Option<&'static str>,
+    pub keymanager_stage: Option<&'static str>,
+    pub keymanager_failure_category: Option<&'static str>,
+    pub keymanager_error_code: Option<&'static str>,
+    pub fallback_reason: Option<&'static str>,
+    pub fallback_phase: Option<&'static str>,
+    pub prior_protection_outcome: Option<&'static str>,
+    pub db8_commit_verified: Option<bool>,
+    pub helper_protocol: Option<u32>,
+    pub diagnostic_source: Option<&'static str>,
 }
 
 /// `occurred_at_ms` is a Unix-epoch millisecond stamp, carried as Sentry's own `timestamp` field
@@ -433,6 +474,34 @@ pub(crate) fn event_body_with_extra(
     if let Some(reads) = &extra.candidate_reads {
         storage_ctx["candidate_reads"] = Value::from(reads.as_str());
     }
+    if let Some(word) = extra.keymanager_operation {
+        storage_ctx["keymanager_operation"] = Value::from(word);
+    }
+    if let Some(word) = extra.keymanager_stage {
+        storage_ctx["keymanager_stage"] = Value::from(word);
+    }
+    if let Some(word) = extra.keymanager_failure_category {
+        storage_ctx["keymanager_failure_category"] = Value::from(word);
+    }
+    if let Some(word) = extra.keymanager_error_code {
+        storage_ctx["keymanager_error_code"] = Value::from(word);
+    }
+    for (key, word) in [
+        ("fallback_reason", extra.fallback_reason),
+        ("fallback_phase", extra.fallback_phase),
+        ("prior_protection_outcome", extra.prior_protection_outcome),
+        ("diagnostic_source", extra.diagnostic_source),
+    ] {
+        if let Some(word) = word {
+            storage_ctx[key] = Value::from(word);
+        }
+    }
+    if let Some(verified) = extra.db8_commit_verified {
+        storage_ctx["db8_commit_verified"] = Value::from(verified);
+    }
+    if let Some(protocol) = extra.helper_protocol {
+        storage_ctx["helper_protocol"] = Value::from(protocol);
+    }
     let mut body = serde_json::json!({
         "event_id": event_id,
         "platform": "native",
@@ -455,6 +524,20 @@ pub(crate) fn event_body_with_extra(
         },
         "contexts": {"storage": storage_ctx},
     });
+    if let (Some(operation), Some(stage), Some(category)) = (
+        extra.keymanager_operation,
+        extra.keymanager_stage,
+        extra.keymanager_failure_category,
+    ) {
+        body["fingerprint"] = serde_json::json!([
+            "storage-error",
+            stage_code,
+            operation,
+            stage,
+            category,
+            extra.diagnostic_source.unwrap_or("runtime")
+        ]);
+    }
     if !dist.is_empty() {
         body["dist"] = Value::String(dist.to_string());
     }
@@ -730,17 +813,348 @@ pub(crate) fn report_sign_in_not_persisted(
             persist_outcome: Some(persist_outcome),
             preserve_reason,
             candidate_reads: Some(candidate_reads),
+            ..StorageExtra::default()
         },
     );
     match outcome {
         ReportOutcome::Sent | ReportOutcome::Deferred => {
-            REPORTED_SIGN_IN.lock().unwrap_or_else(|e| e.into_inner()).push(shape);
+            REPORTED_SIGN_IN
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(shape);
         }
         ReportOutcome::Dropped => {
-            DROPPED_SIGN_IN.lock().unwrap_or_else(|e| e.into_inner()).push(shape);
+            DROPPED_SIGN_IN
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(shape);
         }
     }
     outcome
+}
+
+/// Report the deliberate availability fallback used only after a fresh auth/import Keymanager3
+/// attempt failed. The helper wire type is a closed, payload-free vocabulary; convert it with
+/// exhaustive matches so an arbitrary service string can never reach Sentry by accident.
+#[cfg(any(
+    test,
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))
+))]
+pub(crate) fn report_keymanager_protection(
+    outcome: crate::storage::wire::ProtectionOutcome,
+    db8_commit_verified: bool,
+) -> ReportOutcome {
+    let Some(failure) = outcome.fallback else {
+        return ReportOutcome::Dropped;
+    };
+    report_keymanager_diagnostic(KeymanagerDiagnostic {
+        failure,
+        fallback: outcome.fallback_context,
+        preservation: None,
+        db8_commit_verified,
+        synthetic: false,
+    })
+}
+
+#[cfg(any(
+    test,
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))
+))]
+pub(crate) fn report_keymanager_fail_closed(
+    failure: crate::storage::wire::KeymanagerFailure,
+    preservation: crate::storage::wire::AuthPreservation,
+    db8_commit_verified: bool,
+) -> ReportOutcome {
+    report_keymanager_diagnostic(KeymanagerDiagnostic {
+        failure,
+        fallback: None,
+        preservation: Some(preservation),
+        db8_commit_verified,
+        synthetic: false,
+    })
+}
+
+/// Dedupe is bounded and process-local. A durable acknowledged bit would require a new DB8
+/// operation from the report acknowledgement path (and reporting failures of that operation),
+/// creating a recursive dependency on the storage we diagnose. Persisted fallback evidence is
+/// retried next launch; Sentry groups it by closed cause. No claim of exactly-once delivery.
+#[cfg(any(
+    test,
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))
+))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct KeymanagerDiagnostic {
+    failure: crate::storage::wire::KeymanagerFailure,
+    fallback: Option<crate::storage::wire::FallbackContext>,
+    preservation: Option<crate::storage::wire::AuthPreservation>,
+    db8_commit_verified: bool,
+    synthetic: bool,
+}
+
+#[cfg(any(
+    test,
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))
+))]
+fn keymanager_context(diagnostic: KeymanagerDiagnostic) -> (StorageErrorContext, StorageExtra) {
+    use crate::storage::wire::{
+        AuthPreservation, ErrorCode, FallbackPhase, FallbackReason, KeymanagerFailureCategory,
+        KeymanagerOperation, KeymanagerStage,
+    };
+    let failure = diagnostic.failure;
+    let operation = match failure.operation {
+        KeymanagerOperation::Seal => "seal",
+        KeymanagerOperation::Open => "open",
+        KeymanagerOperation::Readback => "readback",
+    };
+    let stage = match failure.stage {
+        KeymanagerStage::Validate => "validate",
+        KeymanagerStage::Generate => "generate",
+        KeymanagerStage::Begin => "begin",
+        KeymanagerStage::Finish => "finish",
+        KeymanagerStage::Roundtrip => "roundtrip",
+    };
+    let category = match failure.category {
+        KeymanagerFailureCategory::Unavailable => "unavailable",
+        KeymanagerFailureCategory::Timeout => "timeout",
+        KeymanagerFailureCategory::ServiceRejected => "service_rejected",
+        KeymanagerFailureCategory::InvalidResponse => "invalid_response",
+        KeymanagerFailureCategory::Other => "other",
+    };
+    let code = match failure.code {
+        ErrorCode::Invalid => "invalid",
+        ErrorCode::Unavailable => "unavailable",
+        ErrorCode::Timeout => "timeout",
+        ErrorCode::Capability => "capability",
+        ErrorCode::Authentication => "authentication",
+        ErrorCode::Protocol => "protocol",
+        ErrorCode::Corrupt => "corrupt",
+    };
+
+    let ctx = StorageErrorContext {
+        stage: if diagnostic.preservation.is_some() {
+            StorageStage::KeymanagerFailClosed
+        } else {
+            StorageStage::KeymanagerFallback
+        },
+        service_error_code: failure.service_code.map(i64::from),
+        class: match diagnostic.preservation {
+            Some(AuthPreservation::Unchanged | AuthPreservation::Restored) => {
+                SessionStorageClass::Secure
+            }
+            Some(AuthPreservation::Uncertain) => SessionStorageClass::Unknown,
+            None => SessionStorageClass::Plaintext,
+        },
+        refused_marker: false,
+        key_outcome: None,
+        registered_with_app_id: false,
+        registered_with_name: false,
+        sealed_identity: None,
+    };
+    (
+        ctx,
+        StorageExtra {
+            keymanager_operation: Some(operation),
+            keymanager_stage: Some(stage),
+            keymanager_failure_category: Some(category),
+            keymanager_error_code: Some(code),
+            fallback_reason: diagnostic.fallback.map(|context| match context.reason {
+                FallbackReason::FreshLogin => "fresh_login",
+                FallbackReason::LegacyImport => "legacy_import",
+            }),
+            fallback_phase: diagnostic.fallback.map(|context| match context.phase {
+                FallbackPhase::Seal => "seal",
+                FallbackPhase::PostwriteReadbackRepair => "postwrite_readback_repair",
+            }),
+            prior_protection_outcome: diagnostic
+                .preservation
+                .map(|preservation| match preservation {
+                    AuthPreservation::Unchanged => "unchanged",
+                    AuthPreservation::Restored => "restored",
+                    AuthPreservation::Uncertain => "uncertain",
+                }),
+            db8_commit_verified: Some(diagnostic.db8_commit_verified),
+            helper_protocol: Some(crate::storage::wire::PROTOCOL),
+            diagnostic_source: Some(if diagnostic.synthetic {
+                "synthetic"
+            } else {
+                "runtime"
+            }),
+            ..StorageExtra::default()
+        },
+    )
+}
+
+#[cfg(any(
+    test,
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))
+))]
+fn report_keymanager_diagnostic(diagnostic: KeymanagerDiagnostic) -> ReportOutcome {
+    {
+        let mut reported = REPORTED_KEYMANAGER_FALLBACK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if reported.contains(&diagnostic)
+            || DROPPED_KEYMANAGER_FALLBACK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&diagnostic)
+        {
+            return ReportOutcome::Dropped;
+        }
+        if reported.len() >= 64 {
+            reported.remove(0);
+        }
+        // Reserve before sending without holding a mutex across spooling/consent work.
+        reported.push(diagnostic);
+    }
+    let (ctx, extra) = keymanager_context(diagnostic);
+    let outcome = report_error_with_extra(ctx, extra);
+    if outcome == ReportOutcome::Dropped {
+        let mut reported = REPORTED_KEYMANAGER_FALLBACK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut dropped = DROPPED_KEYMANAGER_FALLBACK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if dropped.len() >= 64 {
+            dropped.remove(0);
+        }
+        dropped.push(diagnostic);
+        reported.retain(|entry| entry != &diagnostic);
+    }
+    outcome
+}
+
+#[cfg(any(
+    test,
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))
+))]
+static REPORTED_KEYMANAGER_FALLBACK: std::sync::Mutex<Vec<KeymanagerDiagnostic>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(any(
+    test,
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))
+))]
+static DROPPED_KEYMANAGER_FALLBACK: std::sync::Mutex<Vec<KeymanagerDiagnostic>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Fixed synthetic inputs share the real serializer and consent gate. This constructor has no
+/// access to Session, the helper, LS2, or credentials and is absent from shipping builds.
+#[cfg(any(
+    test,
+    all(
+        feature = "devtriggers",
+        target_os = "linux",
+        target_arch = "arm",
+        not(feature = "hostsim")
+    )
+))]
+fn synthetic_keymanager_diagnostic(scenario: &str) -> Option<KeymanagerDiagnostic> {
+    use crate::storage::wire::*;
+    let (operation, stage, code, category, service_code, phase, preservation) = match scenario {
+        "unavailable" => (
+            KeymanagerOperation::Seal,
+            KeymanagerStage::Generate,
+            ErrorCode::Unavailable,
+            KeymanagerFailureCategory::Unavailable,
+            None,
+            FallbackPhase::Seal,
+            None,
+        ),
+        "timeout" => (
+            KeymanagerOperation::Seal,
+            KeymanagerStage::Begin,
+            ErrorCode::Timeout,
+            KeymanagerFailureCategory::Timeout,
+            None,
+            FallbackPhase::Seal,
+            None,
+        ),
+        "service-rejected" => (
+            KeymanagerOperation::Seal,
+            KeymanagerStage::Generate,
+            ErrorCode::Capability,
+            KeymanagerFailureCategory::ServiceRejected,
+            Some(-42),
+            FallbackPhase::Seal,
+            None,
+        ),
+        "invalid-response" => (
+            KeymanagerOperation::Seal,
+            KeymanagerStage::Finish,
+            ErrorCode::Corrupt,
+            KeymanagerFailureCategory::InvalidResponse,
+            None,
+            FallbackPhase::Seal,
+            None,
+        ),
+        "readback-repair" => (
+            KeymanagerOperation::Readback,
+            KeymanagerStage::Roundtrip,
+            ErrorCode::Corrupt,
+            KeymanagerFailureCategory::InvalidResponse,
+            None,
+            FallbackPhase::PostwriteReadbackRepair,
+            None,
+        ),
+        "strict" => (
+            KeymanagerOperation::Seal,
+            KeymanagerStage::Generate,
+            ErrorCode::Unavailable,
+            KeymanagerFailureCategory::Unavailable,
+            None,
+            FallbackPhase::Seal,
+            Some(AuthPreservation::Unchanged),
+        ),
+        "strict-pending" => (
+            KeymanagerOperation::Readback,
+            KeymanagerStage::Begin,
+            ErrorCode::Timeout,
+            KeymanagerFailureCategory::Timeout,
+            None,
+            FallbackPhase::Seal,
+            Some(AuthPreservation::Unchanged),
+        ),
+        _ => return None,
+    };
+    Some(KeymanagerDiagnostic {
+        failure: KeymanagerFailure {
+            operation,
+            stage,
+            code,
+            category,
+            service_code,
+        },
+        fallback: preservation.is_none().then_some(FallbackContext {
+            reason: if scenario == "service-rejected" {
+                FallbackReason::LegacyImport
+            } else {
+                FallbackReason::FreshLogin
+            },
+            phase,
+        }),
+        preservation,
+        db8_commit_verified: preservation.is_none() || scenario == "strict-pending",
+        synthetic: true,
+    })
+}
+
+#[cfg(any(
+    test,
+    all(
+        feature = "devtriggers",
+        target_os = "linux",
+        target_arch = "arm",
+        not(feature = "hostsim")
+    )
+))]
+pub(crate) fn inject_keymanager_scenario(scenario: &str) -> bool {
+    let Some(diagnostic) = synthetic_keymanager_diagnostic(scenario) else {
+        return false;
+    };
+    let _ = report_keymanager_diagnostic(diagnostic);
+    true
 }
 
 /// Which (`persist_outcome`, `preserve_reason`) shapes this PROCESS has already reported as
@@ -784,6 +1198,22 @@ pub(crate) fn forget() {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
+    #[cfg(any(
+        test,
+        all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))
+    ))]
+    REPORTED_KEYMANAGER_FALLBACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    #[cfg(any(
+        test,
+        all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))
+    ))]
+    DROPPED_KEYMANAGER_FALLBACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }
 
 /// **A real "Yes" gives a dropped sign-in report its one attempt back** — the exact twin of
@@ -792,6 +1222,14 @@ pub(crate) fn forget() {
 /// process later turns Errors on in Settings.
 pub(crate) fn retry_dropped_sign_in() {
     DROPPED_SIGN_IN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    #[cfg(any(
+        test,
+        all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))
+    ))]
+    DROPPED_KEYMANAGER_FALLBACK
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
@@ -877,6 +1315,7 @@ pub(crate) fn preview_event() -> Vec<u8> {
             candidate_reads: Some(
                 "developer:open_failed:13,internal:missing,app_dir:plaintext".into(),
             ),
+            ..StorageExtra::default()
         },
     )
 }
@@ -884,6 +1323,190 @@ pub(crate) fn preview_event() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const KM_SCENARIOS: [&str; 7] = [
+        "unavailable",
+        "timeout",
+        "service-rejected",
+        "invalid-response",
+        "readback-repair",
+        "strict",
+        "strict-pending",
+    ];
+
+    #[test]
+    fn synthetic_keymanager_events_have_distinct_closed_fingerprints_and_complete_context() {
+        let mut fingerprints = std::collections::HashSet::new();
+        for scenario in KM_SCENARIOS {
+            let diagnostic = synthetic_keymanager_diagnostic(scenario).unwrap();
+            let (ctx, extra) = keymanager_context(diagnostic);
+            let body: Value = serde_json::from_slice(&event_body_with_extra(
+                "fixture-event",
+                "fixture-build",
+                None,
+                1_000,
+                ctx,
+                &extra,
+            ))
+            .unwrap();
+            let storage = &body["contexts"]["storage"];
+            assert!(
+                fingerprints.insert(body["fingerprint"].to_string()),
+                "distinct cause collapsed: {scenario}"
+            );
+            for field in [
+                "keymanager_operation",
+                "keymanager_stage",
+                "keymanager_failure_category",
+                "keymanager_error_code",
+                "helper_protocol",
+                "db8_commit_verified",
+                "diagnostic_source",
+            ] {
+                assert!(!storage[field].is_null(), "{scenario}: missing {field}");
+            }
+            assert_eq!(storage["diagnostic_source"], "synthetic");
+            assert_eq!(storage["helper_protocol"], crate::storage::wire::PROTOCOL);
+            if scenario == "strict" || scenario == "strict-pending" {
+                assert_eq!(storage["stage"], "keymanager_fail_closed");
+                assert_eq!(storage["class"], "secure");
+                assert_eq!(storage["prior_protection_outcome"], "unchanged");
+                assert_eq!(storage["db8_commit_verified"], scenario == "strict-pending");
+                assert!(storage.get("fallback_reason").is_none());
+            } else {
+                assert_eq!(storage["stage"], "keymanager_fallback");
+                assert_eq!(storage["class"], "plaintext");
+                assert_eq!(storage["db8_commit_verified"], true);
+                assert_eq!(
+                    storage["fallback_reason"],
+                    if scenario == "service-rejected" {
+                        "legacy_import"
+                    } else {
+                        "fresh_login"
+                    }
+                );
+                assert_eq!(
+                    storage["fallback_phase"],
+                    if scenario == "readback-repair" {
+                        "postwrite_readback_repair"
+                    } else {
+                        "seal"
+                    }
+                );
+            }
+            if scenario == "timeout" {
+                assert_eq!(storage["keymanager_error_code"], "timeout");
+            }
+            if scenario == "service-rejected" {
+                assert_eq!(storage["service_error_code"], -42);
+            }
+            let keys: Vec<_> = storage
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            for forbidden in [
+                "token",
+                "payload",
+                "ciphertext",
+                "key_name",
+                "errorText",
+                "path",
+            ] {
+                assert!(!keys.contains(&forbidden));
+            }
+        }
+        for input in [
+            "",
+            "all",
+            "timeout\nprivate",
+            "payload=token",
+            "unavailable ",
+            "/tmp/secret",
+        ] {
+            assert!(synthetic_keymanager_diagnostic(input).is_none());
+        }
+        let mut diagnostic = synthetic_keymanager_diagnostic("strict").unwrap();
+        diagnostic.preservation = Some(crate::storage::wire::AuthPreservation::Restored);
+        assert_eq!(
+            keymanager_context(diagnostic).0.class,
+            SessionStorageClass::Secure
+        );
+        diagnostic.preservation = Some(crate::storage::wire::AuthPreservation::Uncertain);
+        assert_eq!(
+            keymanager_context(diagnostic).0.class,
+            SessionStorageClass::Unknown
+        );
+    }
+
+    #[test]
+    fn all_synthetic_keymanager_reports_obey_no_unanswered_and_yes_consent() {
+        let _serial = crate::testlock::serial();
+        for scenario in KM_SCENARIOS {
+            reset();
+            forget();
+            super::super::consent::install(stored_no());
+            assert!(inject_keymanager_scenario(scenario));
+            assert!(send_attempts().is_empty());
+            assert_eq!(deferred_len(), 0);
+
+            forget();
+            super::super::consent::install(unanswered());
+            assert!(inject_keymanager_scenario(scenario));
+            assert!(send_attempts().is_empty());
+            assert_eq!(deferred_len(), 1);
+            assert!(inject_keymanager_scenario(scenario));
+            assert_eq!(deferred_len(), 1, "same process must not queue duplicates");
+            super::super::consent::install(errors_on_at_scope_6());
+            replay_deferred();
+            assert_eq!(send_attempts().len(), 1);
+            let (_, _, extra) = &send_attempts()[0];
+            assert_eq!(extra.diagnostic_source, Some("synthetic"));
+            assert_eq!(extra.helper_protocol, Some(crate::storage::wire::PROTOCOL));
+            assert_eq!(deferred_len(), 0);
+        }
+        forget();
+        reset();
+    }
+
+    #[test]
+    fn keymanager_fallback_accepts_only_closed_wire_diagnostics() {
+        let _reporter: fn(crate::storage::wire::ProtectionOutcome, bool) -> ReportOutcome =
+            report_keymanager_protection;
+        let _strict_reporter: fn(
+            crate::storage::wire::KeymanagerFailure,
+            crate::storage::wire::AuthPreservation,
+            bool,
+        ) -> ReportOutcome = report_keymanager_fail_closed;
+    }
+
+    #[test]
+    fn later_opt_in_rearms_a_previously_dropped_fallback() {
+        let _serial = crate::testlock::serial();
+        let failure = crate::storage::wire::KeymanagerFailure {
+            operation: crate::storage::wire::KeymanagerOperation::Seal,
+            stage: crate::storage::wire::KeymanagerStage::Generate,
+            code: crate::storage::wire::ErrorCode::Timeout,
+            category: crate::storage::wire::KeymanagerFailureCategory::Timeout,
+            service_code: None,
+        };
+        DROPPED_KEYMANAGER_FALLBACK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(KeymanagerDiagnostic {
+                failure,
+                fallback: None,
+                preservation: None,
+                db8_commit_verified: true,
+                synthetic: false,
+            });
+        retry_dropped_sign_in();
+        assert!(DROPPED_KEYMANAGER_FALLBACK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty());
+    }
 
     fn context() -> StorageErrorContext {
         StorageErrorContext {
@@ -985,7 +1608,10 @@ mod tests {
             .map(|i| i.code())
             .collect();
         for c in &codes {
-            assert!(c.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'), "{c}");
+            assert!(
+                c.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'),
+                "{c}"
+            );
         }
         assert!(
             !codes.contains(&"none"),
@@ -1150,7 +1776,10 @@ mod tests {
             context(),
         ))
         .expect("event JSON");
-        assert!(v.get("timestamp").is_none(), "expected no timestamp key, got {v}");
+        assert!(
+            v.get("timestamp").is_none(),
+            "expected no timestamp key, got {v}"
+        );
     }
 
     /// **The two owner hints are separate fields, and a report has to tell them apart.** They are
@@ -1381,8 +2010,14 @@ mod tests {
     /// production clear short of sign-out, so every test that raises a `SignInNotPersisted` report
     /// has to start from an empty one or inherit the previous test's suppression.
     fn clear_sign_in_dedup() {
-        super::REPORTED_SIGN_IN.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        super::DROPPED_SIGN_IN.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        super::REPORTED_SIGN_IN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        super::DROPPED_SIGN_IN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// (a) An unanswered install's locked-read context is HELD rather than dropped, and a later
@@ -1404,7 +2039,11 @@ mod tests {
             registered_with_name: false,
             sealed_identity: None,
         };
-        assert_ne!(report_error(ctx), ReportOutcome::Sent, "must not claim to have sent it");
+        assert_ne!(
+            report_error(ctx),
+            ReportOutcome::Sent,
+            "must not claim to have sent it"
+        );
         assert_eq!(deferred_len(), 1, "the report must be HELD, not dropped");
         assert!(send_attempts().is_empty(), "nothing may be attempted yet");
 
@@ -1430,7 +2069,11 @@ mod tests {
         super::super::consent::install(stored_no());
         super::super::consent::request_for_test(errors_on_at_scope_6());
         assert_ne!(report_error(context()), ReportOutcome::Sent);
-        assert_eq!(deferred_len(), 1, "pending enable was confused with a stored No");
+        assert_eq!(
+            deferred_len(),
+            1,
+            "pending enable was confused with a stored No"
+        );
         assert!(send_attempts().is_empty());
         reset();
         super::super::consent::install(unanswered());
@@ -1467,7 +2110,11 @@ mod tests {
 
         report_error(context());
 
-        assert_eq!(deferred_len(), 0, "nothing may be held when the gate already passes");
+        assert_eq!(
+            deferred_len(),
+            0,
+            "nothing may be held when the gate already passes"
+        );
         assert_eq!(
             send_attempts().len(),
             1,
@@ -1523,7 +2170,11 @@ mod tests {
         super::super::consent::install(errors_on_pending_scope_6_extension());
 
         assert_ne!(report_error(context()), ReportOutcome::Sent);
-        assert_eq!(deferred_len(), 1, "a pending extension gets the same second chance");
+        assert_eq!(
+            deferred_len(),
+            1,
+            "a pending extension gets the same second chance"
+        );
 
         reset();
         super::super::consent::install(unanswered());
@@ -1544,7 +2195,11 @@ mod tests {
             StorageStage::BeginDecrypt,
             StorageStage::FinishDecrypt,
         ];
-        assert_eq!(stages.len(), DEFERRED_CAP + 1, "exercise exactly one past the cap");
+        assert_eq!(
+            stages.len(),
+            DEFERRED_CAP + 1,
+            "exercise exactly one past the cap"
+        );
         for stage in stages {
             report_error(StorageErrorContext { stage, ..context() });
         }
@@ -1579,7 +2234,8 @@ mod tests {
             std::fs::read_to_string(_p).unwrap_or_default()
         });
         assert!(
-            logged.contains("storage report: stage=write_failed class=secure_locked outcome=dropped"),
+            logged
+                .contains("storage report: stage=write_failed class=secure_locked outcome=dropped"),
             "missing the stage/class/outcome line: {logged}"
         );
 
@@ -1670,8 +2326,7 @@ mod tests {
         ];
         documented.sort_unstable();
         assert_eq!(
-            keys,
-            documented,
+            keys, documented,
             "the storage report's fields changed. This is a consent decision with two answers and \
              no third: if the new field widens WHAT is collected past \"how your sign-in is \
              stored\", bump `consent::ERRORS_SCOPE` and add its `SCOPE_CHANGES` row (that re-asks \
@@ -1683,7 +2338,7 @@ mod tests {
 
     /// **The issue #76 report-lane fields are a documented list of their own** (`StorageExtra`,
     /// carried alongside a context rather than on it — see that type's doc for why). Same routing
-    /// decision as [`the_storage_report_fields_are_a_documented_list`]: all three answer "how your
+    /// decision as [`the_storage_report_fields_are_a_documented_list`]: all seven answer "how your
     /// sign-in is stored" — the exact purpose Errors scope 6 already covers — so they bumped
     /// `consent::NOTICE_REVISION` (4) rather than `consent::ERRORS_SCOPE`, and are described in
     /// `PRIVACY.md`/`ui::legal` instead of re-asking anyone.
@@ -1698,7 +2353,15 @@ mod tests {
             &StorageExtra::default(),
         ))
         .expect("event JSON");
-        for key in ["persist_outcome", "preserve_reason", "candidate_reads"] {
+        for key in [
+            "persist_outcome",
+            "preserve_reason",
+            "candidate_reads",
+            "keymanager_operation",
+            "keymanager_stage",
+            "keymanager_failure_category",
+            "keymanager_error_code",
+        ] {
             assert!(
                 without["contexts"]["storage"].get(key).is_none(),
                 "an empty StorageExtra must omit {key}, not send a placeholder"
@@ -1715,6 +2378,11 @@ mod tests {
                 persist_outcome: Some("preserved_existing_secure"),
                 preserve_reason: Some("not_proven"),
                 candidate_reads: Some("developer:open_failed:13,internal:missing".to_string()),
+                keymanager_operation: Some("seal"),
+                keymanager_stage: Some("generate"),
+                keymanager_failure_category: Some("timeout"),
+                keymanager_error_code: Some("unavailable"),
+                ..StorageExtra::default()
             },
         ))
         .expect("event JSON");
@@ -1726,6 +2394,16 @@ mod tests {
         assert_eq!(
             with["contexts"]["storage"]["candidate_reads"],
             "developer:open_failed:13,internal:missing"
+        );
+        assert_eq!(with["contexts"]["storage"]["keymanager_operation"], "seal");
+        assert_eq!(with["contexts"]["storage"]["keymanager_stage"], "generate");
+        assert_eq!(
+            with["contexts"]["storage"]["keymanager_failure_category"],
+            "timeout"
+        );
+        assert_eq!(
+            with["contexts"]["storage"]["keymanager_error_code"],
+            "unavailable"
         );
     }
 
@@ -1748,15 +2426,16 @@ mod tests {
             None,
             "developer:open_failed:13".to_string(),
         );
-        assert_ne!(outcome, ReportOutcome::Deferred, "scope 6 is already accepted");
+        assert_ne!(
+            outcome,
+            ReportOutcome::Deferred,
+            "scope 6 is already accepted"
+        );
 
         let sent = send_attempts();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].0.stage, StorageStage::SignInNotPersisted);
-        assert_eq!(
-            sent[0].2.persist_outcome,
-            Some("blocked_unknown_envelope")
-        );
+        assert_eq!(sent[0].2.persist_outcome, Some("blocked_unknown_envelope"));
         assert_eq!(sent[0].2.preserve_reason, None);
         assert_eq!(
             sent[0].2.candidate_reads.as_deref(),
@@ -2045,7 +2724,8 @@ mod tests {
             sent.iter().map(|(ctx, _, _)| ctx.stage).collect::<Vec<_>>()
         );
         assert!(
-            sent.iter().any(|(ctx, _, _)| ctx.stage == StorageStage::UntrustedMode),
+            sent.iter()
+                .any(|(ctx, _, _)| ctx.stage == StorageStage::UntrustedMode),
             "the session-read report was not attempted: {:?}",
             sent.iter().map(|(ctx, _, _)| ctx.stage).collect::<Vec<_>>()
         );
@@ -2106,7 +2786,8 @@ mod tests {
             .filter(|(c, _, _)| c.stage == StorageStage::SignInNotPersisted)
             .count();
         assert_eq!(
-            n, 1,
+            n,
+            1,
             "three commits of the same non-persisting outcome must raise one report, got {:?}",
             send_attempts()
         );

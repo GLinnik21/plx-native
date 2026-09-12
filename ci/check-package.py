@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and title
-from mkipk import state_archive_errors  # noqa: E402 — exact data.tar.gz state contract
+from mkipk import storage_archive_errors  # noqa: E402 — exact data.tar.gz helper contract
 
 ROOT = Path(__file__).resolve().parent.parent
 FAILURES: list[str] = []
@@ -1089,7 +1089,7 @@ if artifact_data is not None:
         modes = {Path(m.name).name: m.mode & 0o777 for m in members}
         paths = {m.name.lstrip("./") for m in members}
         owners = {(m.uname, m.gname) for m in members}
-        state_errors = state_archive_errors(artifact_data, appinfo["id"])
+        state_errors = storage_archive_errors(artifact_data, appinfo["id"])
     check(expected <= names, f"payload carries all {len(expected)} app files")
     check(modes.get("plxnative") == 0o755,
           "native app is executable by its jailed runtime uid")
@@ -1108,7 +1108,7 @@ if artifact_data is not None:
     check(owners <= {("root", "root"), ("", "")},
           f"payload is not owned by the developer's account (saw {sorted(owners)})")
     check(not state_errors,
-          "the IPK data.tar.gz carries one empty state directory with uid 0, gid 5000, mode 0775"
+          "the IPK carries its private native storage service and no writable app state"
           + (f" ({'; '.join(state_errors)})" if state_errors else ""))
     # webOS's *package* descriptor, distinct from the app's appinfo.json. Absent from every ipk
     # built before 2026-08-02 and undetectable from the dev loop, which scp's into an app dir the

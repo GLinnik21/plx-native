@@ -49,9 +49,8 @@ third party can rebuild the package and get the same bytes, which the README tel
 For ordinary application payload members, this file matches ares-package's layout — the same bare
 `ar` member names and the same `usr/palm/applications/<id>` +
 `usr/palm/packages/<id>/packageinfo.json` layout (verified by diffing an ares-built package
-against ours). The synthesized state directory is an intentional native-app runtime contract
-with numeric gid 5000, so it is checked separately rather than described as an ares-equivalent
-default. One thing this file does better:
+against ours). Native service metadata is synthesized from the same flavor identity;
+durable state lives outside the application payload. One thing this file does better:
 `Installed-Size` here is KiB, per Debian and what opkg expects, where ares-package writes BYTES.
 The control file carries `webOS-Package-Format-Version` and `webOS-Packager-Version` so the
 submission check's presence heuristic is satisfied honestly; the packager string names this file
@@ -81,58 +80,70 @@ import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and 
 
 # Any fixed epoch works; 2010-01-01 is safely inside the range old opkg builds accept.
 EPOCH = 1262304000
-STATE_GID = 5000
+STORAGE_PERMISSIONS = ["database.operation", "securitykey.operation"]
 
 
-def stage_state(repo: Path, data: Path, app: dict) -> Path:
-    """Create the empty per-install state directory in the staged application tree.
-
-    Runtime state is deliberately never copied from the checkout.  A checked-in ``pkg/state``
-    directory is therefore an error even when it is empty-looking to a caller: any entry beneath
-    it would become account data in every install.  The directory's webOS metadata is carried by
-    the tar writer below; the host staging directory only needs the writable mode for inspection.
-    """
-    source = repo / "pkg" / "state"
-    if os.path.lexists(source):
-        if source.is_symlink() or not source.is_dir() or any(source.iterdir()):
-            raise SystemExit(f"{source} must be absent or an empty directory; runtime state is not packaged")
-    appdir = data / "usr" / "palm" / "applications" / app["id"]
-    state = appdir / "state"
-    if os.path.lexists(state):
-        if state.is_symlink() or not state.is_dir() or any(state.iterdir()):
-            raise SystemExit(f"{state} is non-empty or not a directory; runtime state is not packaged")
-    else:
-        state.mkdir(parents=True)
-    state.chmod(0o775)
-    return state
+def stage_storage_service(repo: Path, data: Path, app: dict) -> Path:
+    """Stage the native owner whose installer-generated LS2 name survives app restarts."""
+    executable = repo / "pkg/plxnative-storage"
+    if not executable.is_file() or executable.is_symlink():
+        raise SystemExit("native storage helper is missing; build pkg/plxnative-storage first")
+    service_id = app["id"] + ".storage"
+    target = data / "usr/palm/services" / service_id
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(executable, target / "plxnative-storage")
+    (target / "plxnative-storage").chmod(0o755)
+    (target / "services.json").write_text(json.dumps({
+        "id": service_id, "description": "PlxNative private storage",
+        "engine": "native", "executable": "plxnative-storage",
+        "services": [{"name": service_id, "commands": []}],
+    }, indent=4) + "\n")
+    return target
 
 
-def state_archive_errors(blob: bytes, app_id: str) -> list[str]:
-    """Return violations for the required empty state directory in a data.tar.gz blob."""
-    state_name = f"usr/palm/applications/{app_id}/state"
+def storage_archive_errors(blob: bytes, app_id: str) -> list[str]:
+    """Grade the archive itself: private activation-only service, identities, modes, no state."""
+    errors = []
+    service_id = app_id + ".storage"
+    prefix = f"usr/palm/services/{service_id}/"
     try:
         with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
-            members = tf.getmembers()
-    except (tarfile.TarError, OSError) as exc:
-        return [f"data.tar.gz is unreadable: {exc}"]
-    matches = [m for m in members if m.name == state_name]
-    errors = []
-    if len(matches) != 1:
-        errors.append(f"state directory appears exactly once (saw {len(matches)})")
-    elif not matches[0].isdir():
-        errors.append("state member is a directory")
-    else:
-        member = matches[0]
-        if (member.mode & 0o7777) != 0o775:
-            errors.append(f"state directory mode is exactly 0775 (saw {member.mode & 0o7777:04o})")
-        if member.uid != 0:
-            errors.append(f"state directory uid is 0 (saw {member.uid})")
-        if member.gid != STATE_GID:
-            errors.append(f"state directory gid is {STATE_GID} (saw {member.gid})")
-        if member.gname:
-            errors.append(f"state directory gname is empty (saw {member.gname!r})")
-    if any(m.name.startswith(state_name + "/") for m in members):
-        errors.append("state directory is empty")
+            entries = tf.getmembers()
+            members = {m.name.removeprefix("./"): m for m in entries}
+            if len(members) != len(entries):
+                errors.append("duplicate archive members are forbidden")
+            if any(n.startswith(f"usr/palm/applications/{app_id}/state") for n in members):
+                errors.append("obsolete writable app state is forbidden")
+            files = {n for n, m in members.items() if m.isfile() and n.startswith("usr/palm/services/")}
+            if files != {prefix + "services.json", prefix + "plxnative-storage"}:
+                errors.append("service payload must contain exactly this flavor's descriptor and helper")
+            executable = members.get(prefix + "plxnative-storage")
+            if executable is None or not executable.isfile() or executable.mode & 0o7777 != 0o755:
+                errors.append("storage helper must be a regular executable with mode 0755")
+            elif executable.uid != 0 or executable.gid != 0:
+                errors.append("storage helper must have normalized root ownership")
+            else:
+                header = tf.extractfile(executable).read(20)
+                if len(header) != 20 or header[:6] != b"\x7fELF\x01\x01" or header[18:20] != b"\x28\x00":
+                    errors.append("storage helper must be a little-endian ARM ELF32 binary")
+            for name in (prefix + "services.json", f"usr/palm/packages/{app_id}/packageinfo.json", f"usr/palm/applications/{app_id}/appinfo.json"):
+                member = members.get(name)
+                if member is None or not member.isfile():
+                    errors.append("missing regular " + name)
+                    continue
+                metadata = json.load(tf.extractfile(member))
+                if name.endswith("services.json"):
+                    if metadata != {"id": service_id, "description": "PlxNative private storage", "engine": "native", "executable": "plxnative-storage", "services": [{"name": service_id, "commands": []}]}:
+                        errors.append("service identity/activation-only metadata differs")
+                else:
+                    if metadata.get("id") != app_id or metadata.get("requiredPermissions") != STORAGE_PERMISSIONS:
+                        errors.append("app/package identity or storage capability groups differ")
+                    if name.endswith("packageinfo.json") and (metadata.get("app") != app_id or metadata.get("services") != [service_id]):
+                        errors.append("package/app/service membership differs")
+            if any(Path(n).name in {"auth.json", "state.json", "rendezvous.json", "storage.sock"} for n in members):
+                errors.append("runtime credentials or rendezvous files must not be packaged")
+    except (tarfile.TarError, OSError, ValueError) as exc:
+        errors.append("unreadable storage archive: " + type(exc).__name__)
     return errors
 
 
@@ -147,22 +158,12 @@ def add_tree(tf: tarfile.TarFile, src: Path, arc_root: str, skip: set = ()) -> N
         if rel in skip:
             continue
         ti = tf.gettarinfo(str(p), arcname=f"{arc_root}/{rel}" if arc_root else rel)
-        is_state_dir = (
-            p.is_dir()
-            and p.name == "state"
-            and rel.startswith("usr/palm/applications/")
-            and rel.count("/") == 4
-        )
-        ti.uid = 0
-        ti.gid = STATE_GID if is_state_dir else 0
-        ti.uname = ""
-        ti.gname = "" if is_state_dir else "root"
-        if not is_state_dir:
-            ti.uname = "root"
+        ti.uid = ti.gid = 0
+        ti.uname = ti.gname = "root"
         ti.mtime = EPOCH
         # Normalise mode: the binary and directories executable, everything else 0644. Otherwise
         # a stray local chmod changes the archive.
-        ti.mode = 0o775 if is_state_dir else (0o755 if (ti.isdir() or p.name in {"plxnative", "sentry-crash"}) else 0o644)
+        ti.mode = 0o755 if (ti.isdir() or p.name in {"plxnative", "plxnative-storage", "sentry-crash"}) else 0o644
         if ti.isfile():
             with open(p, "rb") as fh:
                 tf.addfile(ti, fh)
@@ -198,6 +199,8 @@ def write_packageinfo(data: Path, app: dict) -> Path:
     out.write_text(json.dumps({
         "app": app["id"],
         "id": app["id"],
+        "services": [app["id"] + ".storage"],
+        "requiredPermissions": STORAGE_PERMISSIONS,
         "loc_name": app["title"],
         "package_format_version": 2,
         "vendor": app["vendor"],
@@ -331,7 +334,7 @@ def main() -> int:
     if [p.name for p in staged] != [app["id"]]:
         sys.exit(f"staged applications/{[p.name for p in staged]} does not match appinfo id {app['id']}")
     write_packageinfo(root / "data", app)
-    stage_state(repo, root / "data", app)
+    stage_storage_service(repo, root / "data", app)
     # Before `control_with_size`, which sums the staged tree for `Installed-Size`.
     locales = stage_resources(repo, root / "data", app)
     control, kib = control_with_size(root / "ctl" / "control", root / "data", flav)

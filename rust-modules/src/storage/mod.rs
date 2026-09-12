@@ -12,12 +12,36 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+// The canonical DB8 engine is introduced before its transport/adapters replace JsonStore.
+#[allow(dead_code)]
+pub(crate) mod state;
+#[cfg(any(
+    all(
+        target_os = "linux",
+        target_arch = "arm",
+        not(test),
+        not(feature = "hostsim")
+    ),
+    test
+))]
+#[path = "../storage_service/wire.rs"]
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) mod wire;
+#[cfg(all(
+    target_os = "linux",
+    target_arch = "arm",
+    not(test),
+    not(feature = "hostsim")
+))]
+pub(crate) mod client;
+
 const FORMAT: &str = "plxnative-record";
 const VERSION: u64 = 1;
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The two records currently owned by the application.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(all(target_os = "linux", target_arch = "arm"), allow(dead_code))]
 pub(crate) enum RecordKey {
     Session,
     Consent,
@@ -73,6 +97,7 @@ pub(crate) struct Record {
     pub(crate) state: RecordState,
 }
 
+#[cfg_attr(all(target_os = "linux", target_arch = "arm"), allow(dead_code))]
 impl Record {
     pub(crate) fn data(revision: u64, payload: String) -> Self {
         Self {
@@ -109,6 +134,10 @@ pub(crate) enum CommitReceipt {
 
 /// The operation at which an I/O outcome occurred. These names intentionally carry no path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    allow(dead_code)
+)]
 pub(crate) enum CommitStage {
     CreateTemp,
     Write,
@@ -122,6 +151,7 @@ pub(crate) enum CommitStage {
 
 /// A persistence failure that is safe to print: it has no path and never contains a payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Helper-only variants are compiled out of host adapters and vice versa.
 pub(crate) enum StoreError {
     Io { stage: CommitStage, errno: i32 },
     RootNotDirectory,
@@ -140,6 +170,11 @@ pub(crate) enum StoreError {
     UnsupportedVersion,
     DomainKeyMismatch,
     RootChanged,
+    HelperUnavailable,
+    HelperAuthentication,
+    HelperProtocol,
+    AuthLocked,
+    Conflict,
 }
 
 /// A bounded read of an owned legacy file. `trusted` is false when group/other write bits were
@@ -185,6 +220,10 @@ pub(crate) fn read_owned_bytes(path: &Path) -> Result<Option<(Vec<u8>, bool)>, S
 
 /// The backend contract. There is intentionally no blanket implementation: callers hold the
 /// single-writer contract for each `JsonStore` instance.
+#[cfg_attr(
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    allow(dead_code)
+)]
 pub(crate) trait RecordStore {
     fn load(&self, key: RecordKey) -> Result<Option<Record>, StoreError>;
     fn commit(&self, key: RecordKey, record: &Record) -> Result<CommitReceipt, StoreError>;
@@ -273,6 +312,10 @@ impl JsonStore {
     /// Remove only abandoned temporary files for `key`, using the held directory descriptor.
     /// Callers serialize this with commits for the same key. Unrelated names, symlinks, foreign
     /// owners, and widened-mode files are left untouched.
+    #[cfg_attr(
+        all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+        allow(dead_code)
+    )]
     pub(crate) fn cleanup_temporaries(&self, key: RecordKey) -> Result<(), StoreError> {
         self.check_root()?;
         let prefix = format!(".{}.new-", key.file_name());
@@ -525,6 +568,10 @@ fn remove_at(directory: &File, name: &str) {
     }
 }
 
+#[cfg_attr(
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    allow(dead_code)
+)]
 fn unlink_at(directory: &File, name: &str) -> io::Result<()> {
     let name = std::ffi::CString::new(name)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid temporary name"))?;
@@ -536,6 +583,10 @@ fn unlink_at(directory: &File, name: &str) -> io::Result<()> {
     }
 }
 
+#[cfg_attr(
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    allow(dead_code)
+)]
 struct Directory(*mut libc::DIR);
 
 impl Drop for Directory {
@@ -546,6 +597,10 @@ impl Drop for Directory {
     }
 }
 
+#[cfg_attr(
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    allow(dead_code)
+)]
 fn directory_names(directory: &File) -> io::Result<Vec<String>> {
     let duplicate = unsafe { libc::dup(directory.as_raw_fd()) };
     if duplicate < 0 {
@@ -571,6 +626,10 @@ fn directory_names(directory: &File) -> io::Result<Vec<String>> {
     Ok(names)
 }
 
+#[cfg_attr(
+    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)),
+    allow(dead_code)
+)]
 fn safe_temp_name(name: &str, prefix: &str) -> bool {
     let Some(suffix) = name.strip_prefix(prefix) else {
         return false;
