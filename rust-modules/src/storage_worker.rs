@@ -20,16 +20,35 @@ pub(crate) enum SubmitError {
     StartFailed,
 }
 
-pub(crate) struct TypedTicket<R>(Receiver<R>);
+pub(crate) struct TypedTicket<R> {
+    result: Receiver<R>,
+    worker: Receiver<()>,
+}
 
 impl<R> TypedTicket<R> {
     pub(crate) fn try_recv(&self) -> Result<R, TryRecvError> {
-        self.0.try_recv()
+        match self.result.try_recv() {
+            Err(TryRecvError::Disconnected)
+                if matches!(self.worker.try_recv(), Err(TryRecvError::Empty)) =>
+            {
+                // The operation has started unwinding, but the worker has not yet closed its
+                // command receiver. Keep the failure private until a following submit is
+                // guaranteed to observe Stopped rather than enqueue behind a dead worker.
+                Err(TryRecvError::Empty)
+            }
+            result => result,
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn wait_blocking(self) -> Result<R, mpsc::RecvError> {
-        self.0.recv()
+        match self.result.recv() {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                let _ = self.worker.recv();
+                Err(error)
+            }
+        }
     }
 }
 
@@ -71,7 +90,9 @@ impl Executor {
         Self::from_writer(Writer::start("persistence", capacity, |job: Job| job()))
     }
 
-    fn from_writer(result: Result<Writer<Job, ()>, std::io::Error>) -> Result<Self, std::io::Error> {
+    fn from_writer(
+        result: Result<Writer<Job, ()>, std::io::Error>,
+    ) -> Result<Self, std::io::Error> {
         result.map(|writer| Self { writer })
     }
 
@@ -83,8 +104,11 @@ impl Executor {
         let job: Job = Box::new(move || {
             let _ = reply.send(operation());
         });
-        match self.writer.submit(job) {
-            Ok(_) => Ok(TypedTicket(result)),
+        match self.writer.submit_ticket(job) {
+            Ok(worker) => Ok(TypedTicket {
+                result,
+                worker: worker.0,
+            }),
             Err(SubmitErrorGeneric::Full(_)) => Err(SubmitError::Full),
             Err(SubmitErrorGeneric::Stopped(_)) => Err(SubmitError::Stopped),
         }
@@ -106,16 +130,16 @@ pub(crate) enum SubmitErrorGeneric<C> {
     Stopped(C),
 }
 
-#[cfg(test)]
 pub(crate) struct Ticket<R>(Receiver<R>);
 
-#[cfg(test)]
 impl<R> Ticket<R> {
+    #[cfg(test)]
     pub(crate) fn try_recv(&self) -> Result<R, TryRecvError> {
         self.0.try_recv()
     }
 
     /// Only background callers and tests may wait; the SDL thread polls `try_recv` instead.
+    #[cfg(test)]
     pub(crate) fn wait_blocking(self) -> Result<R, mpsc::RecvError> {
         self.0.recv()
     }
@@ -143,23 +167,35 @@ impl<C: Send + 'static, R: Send + 'static> Writer<C, R> {
             ));
         }
         let (sender, receiver) = mpsc::sync_channel::<(C, mpsc::Sender<R>)>(capacity);
-        crate::task::spawn(name, move || {
-            while let Ok((command, reply)) = receiver.recv() {
-                let result = handle(command);
-                // Dropping a ticket cancels interest, not an already accepted durable write.
-                let _ = reply.send(result);
+        crate::task::spawn(name, move || loop {
+            let Ok((command, reply)) = receiver.recv() else {
+                break;
+            };
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(command))) {
+                Ok(result) => {
+                    // Dropping a ticket cancels interest, not an already accepted durable write.
+                    let _ = reply.send(result);
+                }
+                Err(panic) => {
+                    // Close the command side before the current ticket. Without this explicit
+                    // order, unwinding drops `reply` first and leaves a small interval where a
+                    // producer can enqueue work behind a worker that has already failed.
+                    drop(receiver);
+                    drop(reply);
+                    std::panic::resume_unwind(panic);
+                }
             }
         })
         .ok_or_else(|| std::io::Error::other("storage worker unavailable"))?;
         Ok(Self { sender })
     }
 
+    #[cfg(test)]
     pub(crate) fn submit(&self, command: C) -> Result<(), SubmitErrorGeneric<C>> {
         let (tx, _rx) = mpsc::channel();
         self.submit_with_reply(command, tx)
     }
 
-    #[cfg(test)]
     pub(crate) fn submit_ticket(&self, command: C) -> Result<Ticket<R>, SubmitErrorGeneric<C>> {
         let (tx, rx) = mpsc::channel();
         self.submit_with_reply(command, tx).map(|()| Ticket(rx))
@@ -173,7 +209,9 @@ impl<C: Send + 'static, R: Send + 'static> Writer<C, R> {
         match self.sender.try_send((command, tx)) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full((command, _))) => Err(SubmitErrorGeneric::Full(command)),
-            Err(TrySendError::Disconnected((command, _))) => Err(SubmitErrorGeneric::Stopped(command)),
+            Err(TrySendError::Disconnected((command, _))) => {
+                Err(SubmitErrorGeneric::Stopped(command))
+            }
         }
     }
 }
@@ -310,7 +348,40 @@ mod tests {
         })
         .unwrap();
         assert!(accepted(&writer, ()).wait_blocking().is_err());
-        assert!(matches!(writer.submit(()), Err(SubmitErrorGeneric::Stopped(()))));
+        assert!(matches!(
+            writer.submit(()),
+            Err(SubmitErrorGeneric::Stopped(()))
+        ));
+    }
+
+    #[test]
+    fn typed_failure_is_not_visible_until_the_executor_is_stopped() {
+        let (unwound_tx, unwound_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer = Writer::start("paused panicking executor", 1, move |job: Job| {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
+                Ok(()) => (),
+                Err(panic) => {
+                    unwound_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    std::panic::resume_unwind(panic);
+                }
+            }
+        })
+        .unwrap();
+        let executor = Executor::from_writer(Ok(writer)).unwrap();
+        let ticket = executor
+            .submit(|| -> () { panic!("injected typed worker failure") })
+            .unwrap();
+
+        // The real Job closure has unwound and dropped its typed sender, while the outer worker
+        // is deliberately still alive. The public ticket must not expose Disconnected yet.
+        unwound_rx.recv().unwrap();
+        assert!(matches!(ticket.try_recv(), Err(TryRecvError::Empty)));
+
+        release_tx.send(()).unwrap();
+        assert!(ticket.wait_blocking().is_err());
+        assert!(matches!(executor.submit(|| ()), Err(SubmitError::Stopped)));
     }
 
     #[test]
