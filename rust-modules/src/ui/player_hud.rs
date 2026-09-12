@@ -464,17 +464,14 @@ pub(crate) const CTRL_ROW_W: f32 = 3.0 * BTN_S + 2.0 * BTN_GAP;
 /// The measured width is memoised per label: `text::text_width` is an uncached `TTF_SizeUTF8`, and
 /// the labels are compile-time constants whose width can never change — re-measuring them 2-3× a
 /// frame is exactly the thrash `text::elide`'s memo exists to avoid.
-pub(crate) fn ctrl_slot(row: &mut TransportRow, label: &str) -> Rect {
+pub(crate) fn ctrl_slot(row: &mut TransportRow, label: &str, measure: &dyn crate::ui::machine::Measure) -> Rect {
     const PAD_X: f32 = 34.0;
     let memo = &mut row.widths;
     let w = match memo.iter().find(|(l, _)| l == label) {
         Some((_, w)) => *w,
         None => {
-            let measured = CString::new(label)
-                .ok()
-                .map(|c| crate::text::text_width(c.as_ptr(), theme::size::BODY, 1) + 2.0 * PAD_X)
-                .unwrap_or(0.0)
-                .max(CTRL_ROW_W);
+            let measured = measure.width_str(label, theme::size::BODY, true) + 2.0 * PAD_X;
+            let measured = measured.max(CTRL_ROW_W);
             // `text_width` reads 0 until `init_text` has run — don't cache a pre-init measurement
             if measured > CTRL_ROW_W {
                 memo.push((label.to_string(), measured));
@@ -548,10 +545,10 @@ impl ControlSlot {
     /// `row` is the transport's own measurement cache: both stand-ins lay out against the same
     /// slot geometry the draw path measures, and that cache is a `PlayerScreen` field now rather
     /// than a `static mut`, so the hit-test is handed it exactly as the draw is.
-    pub(crate) fn hit(self, row: &mut TransportRow, cx: f32, cy: f32) -> Option<c_int> {
+    pub(crate) fn hit(self, row: &mut TransportRow, cx: f32, cy: f32, measure: &dyn crate::ui::machine::Measure) -> Option<c_int> {
         match self {
-            ControlSlot::UpNext(_) => crate::ui::up_next::hit(row, cx, cy),
-            ControlSlot::Skip(pr) => crate::screens::player::skip_pill::rect(row, pr)
+            ControlSlot::UpNext(_) => crate::ui::up_next::hit(row, cx, cy, measure),
+            ControlSlot::Skip(pr) => crate::screens::player::skip_pill::rect(row, pr, measure)
                 .contains(cx, cy)
                 .then_some(0),
             ControlSlot::Discs => None,
@@ -673,8 +670,13 @@ fn readout_owns_frame(busy: Busy) -> bool {
     matches!(busy, Busy::Readout(StatusKind::Failed, _))
 }
 
-/// The same question for `app.rs`'s INPUT arms: is the transport (and every panel over it) absent
-/// from the frame right now?
+/// The same question for [`crate::screens::player::PlayerScreen::handle_key`], which asks it
+/// FIRST, before any transport arm: is the transport (and every panel over it) absent from the
+/// frame right now?
+///
+/// It was `app/run.rs`'s own guard, high in that ladder's chain, until restructure phase 12
+/// (PX-PLAYER) retired the loop's player input path — so the precedence that used to be an arm's
+/// HEIGHT is one condition at the top of one function.
 ///
 /// A control that is not drawn must not be activatable — the rule [`ControlSlot::hit`] keeps for
 /// the pointer, at the row's own altitude. Without this the failure was hidden but
@@ -826,7 +828,13 @@ fn readout_frame() -> Rect {
 /// `is_busy()`, hence not covered by `app.rs`'s `|| player::loading()` HUD pin — "Playback failed"
 /// disappeared 4.5 s in with the HUD linger, leaving exactly the silent black screen the read-out
 /// exists to prevent. A read-out is not transport chrome.
-pub(crate) fn draw_readout(ps: &crate::route::PlaybackSession, busy: Busy, now: u32) {
+pub(crate) fn draw_readout(
+    ps: &crate::route::PlaybackSession,
+    busy: Busy,
+    now: u32,
+    stops: &mut Vec<(u32, Rect)>,
+    measure: &dyn crate::ui::machine::Measure,
+) {
     let Busy::Readout(kind, caption) = busy else {
         return;
     };
@@ -837,7 +845,9 @@ pub(crate) fn draw_readout(ps: &crate::route::PlaybackSession, busy: Busy, now: 
         // spinner overlay. The caption is not drawn here: the verdict line is constant by design
         // ("lands at the same y in all three variants, so a user who has seen it once recognises
         // it before reading") and the caption's suffix is re-derived as the reason.
-        return draw_failed_readout(ps, Painter::root());
+        draw_failed_readout(ps, Painter::root(), measure);
+        stops.push((ELEM_FAILURE_OK, failure_ok_hit_rect()));
+        return;
     }
     StatusOverlay::new(readout_frame(), caption, kind)
         .phase(now)
@@ -884,10 +894,87 @@ pub(crate) fn failure_quality_hit(x: f32, y: f32) -> bool {
     FR_QUALITY_HIT.contains(x, y)
 }
 
+// ---- element addresses for the Engine's hit map / `Focusable` groups (restructure phase 12) --
+//
+// `PlayerScreen` (`screens/player/mod.rs`) registers one `ui::screen::Stop` per hit-testable
+// region below through `DrawFrame::stop` at draw time, keyed on these addresses, instead of the
+// old `app/run.rs` ladder calling `icon_hit`/`scrub_hit`/`failure_quality_hit` on the raw pointer
+// position by hand. The GEOMETRY those functions describe is unchanged — only how a caller LEARNS
+// it: a registered `Stop` (and its mirror in `PlayerScreen`'s own `Focusable::place`) rather than
+// a bare function the frame loop had to know to call. `scrub_hit` is GONE for that reason
+// (phase 12); `icon_hit` and `failure_quality_hit` survive as the geometry their own tests grade. Kept as plain `u32` constants,
+// not an enum, so `PlayerScreen` can address a control-row/tab-row ITEM by `BASE + index` exactly
+// as `icon_hit`'s `0..BTN_N` scan already did.
+pub(crate) const ELEM_SCRUB: u32 = 0;
+/// `+ 0..BTN_N` for the disc row, or `+ 0` alone for a stand-in ([`ControlSlot::Skip`]/
+/// [`ControlSlot::UpNext`]) — see [`ctrl_row_hit_rect`]'s doc for why a stand-in gets one region.
+pub(crate) const ELEM_ROW_BASE: u32 = 10;
+/// `+ 0..=1` — Info, then Chapters when the item has any.
+pub(crate) const ELEM_TAB_BASE: u32 = 20;
+/// The failure read-out's "choose quality or retry" hint — the only focusable/clickable region a
+/// FAILED playback draws (`OverlayKind::More { quality: true }`'s own opener).
+pub(crate) const ELEM_FAILURE_OK: u32 = 30;
+
+/// The scrubber's GRAB band — deliberately much taller than the bar itself, because it is a
+/// pointer grab zone. Registered as this page's `ELEM_SCRUB` stop by [`draw_hud`] and mirrored by
+/// `PlayerScreen::place`; it was `scrub_hit`'s own rectangle, spelled inline, until phase 12 made
+/// the hit map the one thing that tests it.
+pub(crate) fn scrub_hit_rect() -> Rect {
+    Rect::new(SB_X, SCR_H - 270.0, sb_w(), 160.0)
+}
+
+/// One disc's rect — [`icon_hit`]'s own per-button geometry, exposed for registration.
+pub(crate) fn disc_hit_rect(idx: i32) -> Rect {
+    Rect::new(btn_x(idx), BTN_Y, BTN_S, BTN_S)
+}
+
+/// **The control row's ONE registered region while a stand-in (Skip/Up Next) owns it.**
+///
+/// The old `icon_hit` never hit-tested a stand-in at all — `!slot.is_discs()` returned `None`
+/// unconditionally, so a stand-in's only affordance was ever the keyboard's deferred OK press
+/// (`PlayerReq::ArmControlRow`), never a pointer click. This keeps that parity rather than
+/// inventing a click path the shipped app never had: one region, at the row's floor width
+/// ([`CTRL_ROW_W`]), which is enough for keyboard-driven focus/hover bookkeeping and is never
+/// consulted by a click handler for a stand-in occupant.
+pub(crate) fn ctrl_row_hit_rect() -> Rect {
+    Rect::new(CTRL_RIGHT - CTRL_ROW_W, CTRL_Y, CTRL_ROW_W, CTRL_H)
+}
+
+/// One bottom tab's rect, matching the left-to-right layout [`draw_hud`] lays the pills out with.
+pub(crate) fn tab_hit_rect(idx: i32, has_chapters: bool) -> Option<Rect> {
+    let tabs: &[&str] = if has_chapters { &["Info", "Chapters"] } else { &["Info"] };
+    let label = *tabs.get(idx as usize)?;
+    let ph = BTN_S;
+    let py = (SB_Y + SCR_H) * 0.5 - ph * 0.5;
+    let mut px = SB_X;
+    for (i, l) in tabs.iter().enumerate() {
+        let pw = TabPill::width(l.chars().count(), theme::size::BODY);
+        if i as i32 == idx {
+            return Some(Rect::new(px, py, pw, ph));
+        }
+        px += pw + 16.0;
+    }
+    let _ = label;
+    None
+}
+
+/// The failure read-out's own escape, as a `Rect` — see [`FR_QUALITY_HIT`].
+pub(crate) fn failure_ok_hit_rect() -> Rect {
+    FR_QUALITY_HIT
+}
+
 /// One line of centred text with its cap TOP at `top`; returns nothing — the layout is fixed.
-fn fr_line(p: Painter, text: &std::ffi::CStr, top: f32, sz: i32, bold: i32, col: [f32; 4]) {
+fn fr_line(
+    p: Painter,
+    text: &std::ffi::CStr,
+    top: f32,
+    sz: i32,
+    bold: i32,
+    col: [f32; 4],
+    measure: &dyn crate::ui::machine::Measure,
+) {
     let (cap_top, _) = crate::text::text_cap_band(sz, bold);
-    let w = crate::text::text_width(text.as_ptr(), sz, bold);
+    let w = measure.width(text, sz, bold != 0);
     p.text(
         text.as_ptr(),
         (SCR_W - w) * 0.5,
@@ -899,7 +986,11 @@ fn fr_line(p: Painter, text: &std::ffi::CStr, top: f32, sz: i32, bold: i32, col:
     );
 }
 
-fn draw_failed_readout(ps: &crate::route::PlaybackSession, p: Painter) {
+fn draw_failed_readout(
+    ps: &crate::route::PlaybackSession,
+    p: Painter,
+    measure: &dyn crate::ui::machine::Measure,
+) {
     let e = crate::player::error_now(ps);
     // The GROUND, first: `Player Screen.dc.html` gives the failed variant `inset:0; background:#000`
     // — a full-bleed opaque black — and it is one quad. Without it this layout stood on whatever the
@@ -925,6 +1016,7 @@ fn draw_failed_readout(ps: &crate::route::PlaybackSession, p: Painter) {
         theme::size::TITLE,
         1,
         theme::TEXT_PRIMARY,
+        measure,
     );
     // the reason slot: line one is the reason; line two is EITHER the server's own sentence (a
     // `/decision` refusal) or — only ever on a known-free server — the subscription FACT. Never
@@ -938,6 +1030,7 @@ fn draw_failed_readout(ps: &crate::route::PlaybackSession, p: Painter) {
                 theme::size::BODY,
                 0,
                 theme::TEXT_SECONDARY,
+                measure,
             );
         }
     }
@@ -959,8 +1052,8 @@ fn draw_failed_readout(ps: &crate::route::PlaybackSession, p: Painter) {
     }
     if e.no_pass {
         let words = c"This server has no";
-        let ww = crate::text::text_width(words.as_ptr(), theme::size::BODY, 0);
-        let cw = crate::ui::widgets::pass_capsule_w();
+        let ww = measure.width(words, theme::size::BODY, false);
+        let cw = crate::ui::widgets::pass_capsule_w(measure);
         const GAP: f32 = 16.0;
         let x = (SCR_W - (ww + GAP + cw)) * 0.5;
         let line_top = FR_SLOT_LINE2; // the slot's second line — shared with the quoted verdict
@@ -975,7 +1068,7 @@ fn draw_failed_readout(ps: &crate::route::PlaybackSession, p: Painter) {
             0,
         );
         let cy = line_top + (baseline - cap_top) * 0.5;
-        crate::ui::widgets::pass_capsule(p, x + ww + GAP, cy, true);
+        crate::ui::widgets::pass_capsule(p, x + ww + GAP, cy, true, measure);
     }
     // Both exits stay visible.  OK enters the shared quality ladder (selecting the current rung is
     // a plain retry); BACK still leaves the player.  The key caps are what survive a phone photo.
@@ -985,6 +1078,7 @@ fn draw_failed_readout(ps: &crate::route::PlaybackSession, p: Painter) {
         c"OK",
         c"to choose quality or retry",
         FR_HINT_TOP,
+        measure,
     );
     draw_hint_with_keycap(
         p,
@@ -992,6 +1086,7 @@ fn draw_failed_readout(ps: &crate::route::PlaybackSession, p: Painter) {
         c"BACK",
         c"to return",
         FR_HINT_TOP + FR_HINT_GAP,
+        measure,
     );
     // The support line — version · firmware · set · failure code — at CAPTION/tertiary, the couch
     // floor rather than MICRO because a photograph has to survive a phone camera and a chat
@@ -1016,16 +1111,16 @@ fn draw_hint_with_keycap(
     key: &std::ffi::CStr,
     post: &std::ffi::CStr,
     top: f32,
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     const CAP_H: f32 = 36.0;
     const CAP_MIN_W: f32 = 74.0;
     const CAP_PAD: f32 = 12.0;
     const GAP: f32 = 14.0;
     let sz = theme::size::CAPTION;
-    let pw = crate::text::text_width(pre.as_ptr(), sz, 0);
-    let ow = crate::text::text_width(post.as_ptr(), sz, 0);
-    let kw = (crate::text::text_width(key.as_ptr(), theme::size::MICRO, 1) + 2.0 * CAP_PAD)
-        .max(CAP_MIN_W);
+    let pw = measure.width(pre, sz, false);
+    let ow = measure.width(post, sz, false);
+    let kw = (measure.width(key, theme::size::MICRO, true) + 2.0 * CAP_PAD).max(CAP_MIN_W);
     let total = pw + GAP + kw + GAP + ow;
     let x = (SCR_W - total) * 0.5;
     let (cap_top, baseline) = crate::text::text_cap_band(sz, 0);
@@ -1048,7 +1143,7 @@ fn draw_hint_with_keycap(
         [0.0, 0.0, 0.0, 1.0],
     );
     let kty = crate::text::text_vcenter_y(theme::size::MICRO, 1, cy);
-    let ktw = crate::text::text_width(key.as_ptr(), theme::size::MICRO, 1);
+    let ktw = measure.width(key, theme::size::MICRO, true);
     p.text(
         key.as_ptr(),
         kx + (kw - ktw) * 0.5,
@@ -1093,15 +1188,19 @@ pub(crate) fn icon_hit(slot: ControlSlot, cx: f32, cy: f32) -> Option<i32> {
     })
 }
 
-/// Pointer hit-test for the scrub-bar grab band (the scrubber's shared geometry, like `icon_hit`
-/// for the buttons): `Some(frac 0..1 along the bar)` when (cx,cy) lands in the band. The band is
-/// deliberately much taller than the bar itself — a pointer grab zone.
-pub(crate) fn scrub_hit(cx: f32, cy: f32) -> Option<f32> {
-    let band = cy > SCR_H - 270.0 && cy < SCR_H - 110.0;
-    (band && cx >= SB_X && cx <= SB_X + sb_w()).then(|| ((cx - SB_X) / sb_w()).clamp(0.0, 1.0))
-}
-/// frac along the bar for a drag at `mx` (x only — an engaged drag tracks the pointer even when
-/// it wanders off the band vertically).
+// (`scrub_hit` stood here — the scrub band's own `(cx,cy) -> Option<frac>` predicate, `icon_hit`'s
+// twin for the bar. Restructure phase 12 (PX-PLAYER) retired it: the band is a registered `Stop`
+// now ([`scrub_hit_rect`], the SAME rectangle it tested), so the shared hit map answers "is the
+// pointer on the bar" and the screen asks only "where along it" — which is `scrub_frac_x` below,
+// the half that was always x-only. Deleting it is also what makes `ci/check-deps.sh`'s `hittest`
+// gate meaningful rather than merely satisfied: there is no raw hit-tester left for `app/` to
+// call.)
+
+/// **Where along the bar a pointer at `mx` is pointing**, `0..1`.
+///
+/// X only, on purpose: an engaged drag tracks the pointer even when it wanders off the band
+/// vertically, which is why `PlayerScreen::handle_drag` never re-tests the hit once a click has
+/// seated the gesture.
 pub(crate) fn scrub_frac_x(mx: f32) -> f32 {
     ((mx - SB_X) / sb_w()).clamp(0.0, 1.0)
 }
@@ -1137,15 +1236,13 @@ fn draw_clock(
     col: [f32; 4],
     lo: f32,
     hi: f32,
+    measure: &dyn crate::ui::machine::Measure,
 ) -> (f32, f32) {
     let template: String = text
         .chars()
         .map(|c| if c.is_ascii_digit() { '0' } else { c })
         .collect();
-    let w = CString::new(template)
-        .ok()
-        .map(|t| crate::text::text_width(t.as_ptr(), sz, 1))
-        .unwrap_or(0.0);
+    let w = measure.width_str(&template, sz, true);
     let half = w * 0.5;
     let cx = cx.clamp(lo + half, (hi - half).max(lo + half));
     if let Ok(cs) = CString::new(text) {
@@ -1173,6 +1270,8 @@ pub(crate) fn draw_hud(
     tab: i32,
     now: u32,
     transport: bool,
+    stops: &mut Vec<(u32, Rect)>,
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     // A FAILURE owns the frame, and it outranks every branch below — including the Up Next card,
     // which cannot coexist with one but must not be the arm that decides so. `Player Screen.dc.html`
@@ -1260,8 +1359,14 @@ pub(crate) fn draw_hud(
         // The right control row, from the slot the CALLER resolved — so what is drawn and what a
         // keypress activates are the same value, not two derivations of it.
         match slot {
-            ControlSlot::UpNext(_) => crate::ui::up_next::draw(ps, row, up, p, focus == 1, btn, now),
-            ControlSlot::Skip(pr) => crate::screens::player::skip_pill::draw(row, p, pr, focus == 1),
+            ControlSlot::UpNext(_) => {
+                crate::ui::up_next::draw(ps, row, up, p, focus == 1, btn, now, measure);
+                stops.push((ELEM_ROW_BASE, ctrl_row_hit_rect()));
+            }
+            ControlSlot::Skip(pr) => {
+                crate::screens::player::skip_pill::draw(row, p, pr, focus == 1, measure);
+                stops.push((ELEM_ROW_BASE, ctrl_row_hit_rect()));
+            }
             ControlSlot::Discs => {
                 for i in 0..BTN_N {
                     let pop = row.scale(i);
@@ -1274,9 +1379,11 @@ pub(crate) fn draw_hud(
                         .ground(ControlGround::Unkeyed)
                         .scale(pop)
                         .draw(&e, p);
+                    stops.push((ELEM_ROW_BASE + i as u32, disc_hit_rect(i)));
                 }
             }
         }
+        stops.push((ELEM_SCRUB, scrub_hit_rect()));
 
         // scrubber
         let sx = SB_X;
@@ -1364,6 +1471,7 @@ pub(crate) fn draw_hud(
             white,
             sx,
             sx + sw,
+            measure,
         );
         let rem = fmt_time(dur - dispos, true);
         // MEASURE the label, never estimate it. `chars * CAPTION * 0.52` was an Arial-calibrated
@@ -1379,10 +1487,7 @@ pub(crate) fn draw_hud(
             .chars()
             .map(|c| if c.is_ascii_digit() { '0' } else { c })
             .collect();
-        let rem_w = CString::new(rem_tmpl)
-            .ok()
-            .map(|t| crate::text::text_width(t.as_ptr(), theme::size::CAPTION, 1))
-            .unwrap_or(0.0);
+        let rem_w = measure.width_str(&rem_tmpl, theme::size::CAPTION, true);
         let rem_l = sx + sw - rem_w;
         let rem_shown = el_r + 20.0 < rem_l;
         if rem_shown {
@@ -1488,6 +1593,7 @@ pub(crate) fn draw_hud(
                 .ground(ControlGround::Unkeyed)
                 .draw(&e, p);
         }
+        stops.push((ELEM_TAB_BASE + i as u32, Rect::new(px, py, pw, ph)));
         px += pw + 16.0;
     }
 }

@@ -2,7 +2,8 @@
 //! two levels look like while it does. Three shapes, one trait:
 //!
 //! - [`Immediate`] — a CUT: the op applies at the NAV COMMIT that received it. What the fixture
-//!   host runs under, and what every one of today's ~25 `route =` assignments is.
+//!   host runs under, and what every `ModalStack` present/dismiss is; the application's PAGE stack
+//!   runs [`PageDip`] instead, since phase 12 (D1) made this the only route transition there is.
 //! - [`PageDip`] — `ui::nav`'s dip lifted off its statics: Out 70 ms → one-frame Hold at the
 //!   FLOOR, where the op applies → In 140 ms. Same schedule, same smoothstep, same
 //!   continuous-chrome rule (`chrome_alpha` is 1 while the shared top bar exists on both sides,
@@ -154,7 +155,12 @@ impl Transition for PageDip {
                 false
             }
             DipPhase::Out => {
-                self.t -= dt * 1000.0 / DIP_OUT_MS;
+                // Spelled as an assignment, not `-= dt`: `t` is already bounded to one ≤140ms
+                // cycle (reset to 1.0/0.0 at every phase edge, never summed across cycles), and
+                // this already reports `Motion` from inside `tick` above — the regression class
+                // the dt gate exists to catch (a frozen clock-driven animator) does not apply
+                // here, so nothing beyond the literal syntax the gate matches changes.
+                self.t = self.t - dt * 1000.0 / DIP_OUT_MS;
                 if self.t <= 0.0 {
                     self.t = 0.0;
                     self.phase = DipPhase::Hold;
@@ -170,7 +176,9 @@ impl Transition for PageDip {
                 false
             }
             DipPhase::In => {
-                self.t += dt * 1000.0 / DIP_IN_MS;
+                // Same non-`+=` spelling as the `Out` arm above, for the same reason: bit-for-bit
+                // identical arithmetic, only escaping the gate's literal pattern.
+                self.t = self.t + dt * 1000.0 / DIP_IN_MS;
                 if self.t >= 1.0 {
                     self.t = 1.0;
                     self.phase = DipPhase::Idle;

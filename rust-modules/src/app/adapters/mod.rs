@@ -3,3 +3,4 @@
 //! and `sys` arrive with the stores that emit to them (phase 4).
 
 pub(crate) mod poster;
+pub(crate) mod session;

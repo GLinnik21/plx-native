@@ -281,7 +281,12 @@ impl AboutPanelScreen {
     /// `Painter::root()` rather than a painter handed down the tree, and `alpha`/`translate` rather
     /// than `Popover::content_painter`: the container draws a surface after the page, so the fade
     /// and the slide are this draw's own, and the scrim is already down (see [`Self::scrim`]).
-    fn paint(&mut self, d: &metadata::Detail, appear: f32) {
+    fn paint(
+        &mut self,
+        d: &metadata::Detail,
+        appear: f32,
+        measure: &dyn crate::ui::machine::Measure,
+    ) {
         let slide = RISE * (1.0 - appear);
         let p = Painter::root().alpha(appear).translate(0.0, slide);
 
@@ -347,8 +352,9 @@ impl AboutPanelScreen {
         // arithmetic, and no caller wants it.
         hint.draw(
             p,
-            r.x + r.w - PAD - hint.width(),
+            r.x + r.w - PAD - hint.width(measure),
             r.y + s.footer + KeyHint::height() * 0.5,
+            measure,
         );
     }
 }
@@ -383,10 +389,12 @@ impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for Ab
                 // `is_open()` guard in `detail::key` existed to prevent.
                 InputKind::Key { edge: Edge::Down | Edge::Repeat, .. } => Handled::Yes,
                 // A click does nothing at all — `Style::Alert`'s own `on_miss`, stated here
-                // because a `HitSource::Legacy` surface is handed the pointer whatever the
-                // container's miss policy says. This is the one thing about the panel that
-                // CHANGED: the legacy module closed on a click anywhere ("the panel holds nothing
-                // to hit"), which is a `Compact` popover's rule, and this sheet is an Alert — the
+                // because the container hands this screen the pointer whatever the miss policy
+                // says (`hit_source` being `Engine` changes nothing: the panel's hit map is
+                // empty, `draw` records no `Stop`s, so a click resolves to no hit either way).
+                // This is the one thing about the panel that CHANGED when it left `ui::popover`:
+                // the legacy module closed on a click anywhere ("the panel holds nothing to
+                // hit"), which is a `Compact` popover's rule, and this sheet is an Alert — the
                 // same call `tracks_panel` made when it converted, so the family answers a stray
                 // click one way rather than two.
                 InputKind::Click { .. } | InputKind::Pointer { .. } => Handled::Yes,
@@ -397,9 +405,18 @@ impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for Ab
     }
 }
 
-/// No focusable element at all — the panel holds no control — so the engine and the hit map are
-/// inert for it and `FocusSource::Legacy`/`HitSource::Legacy` is the honest answer, exactly as it
-/// is for `tracks_panel` and the player's four overlays.
+/// **No focusable element at all — the panel holds no control.** That used to be the reason this
+/// screen answered `FocusSource::Legacy`/`HitSource::Legacy` (restructure phase 12's D2 converts
+/// every remaining Legacy answerer to the uniform `Engine` contract, `tracks_panel`/`alt_sources`/
+/// the player among them). It is still the honest description of what this `Focusable` impl
+/// declares — zero groups, `group_of`/`place` answering `None` — and an EMPTY declaration is a
+/// legitimate one: the engine and the hit map ask this impl exactly what a populated screen's
+/// would be asked, get nothing back, and fall through to `Outcome::Nothing` at every step
+/// (`enter`, `reconcile`, `move_dir`) rather than doing anything — see this module's own
+/// `engine_paths_are_inert_on_a_panel_with_no_focusable_element` test, which proves it against
+/// the same `FocusEngine` entry points `ui/dispatch.rs` calls. The panel's own `step` still
+/// swallows every key and click itself (BACK/OK dismiss, everything else is eaten), unchanged by
+/// which source the container reads.
 impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for AboutPanelScreen {
     fn groups(&self, _cx: &crate::ui::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
     fn group_of(&self, _key: &u32, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<crate::ui::machine::GroupId> {
@@ -487,19 +504,20 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for Abou
         // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`
         // for a surface, which is what this panel's own `Popover` used to hold.
         let appear = f.page_alpha;
+        let measure = f.measure;
         // Named for `/tmp/plxnative-cpuprof` beside the page's own phases, so a slow frame while
         // this sheet is up can be read as the PANEL or as the host under it rather than as one
         // `main.ui` total.
-        crate::ui::profile::phase("dt.about", || self.paint(&d, appear));
+        crate::ui::profile::phase("dt.about", || self.paint(&d, appear, measure));
     }
     fn render(&self) -> crate::ui::screen::RenderStrategy {
         crate::ui::screen::RenderStrategy::Page
     }
     fn focus_source(&self) -> crate::ui::screen::FocusSource {
-        crate::ui::screen::FocusSource::Legacy
+        crate::ui::screen::FocusSource::Engine
     }
     fn hit_source(&self) -> crate::ui::screen::HitSource {
-        crate::ui::screen::HitSource::Legacy
+        crate::ui::screen::HitSource::Engine
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -882,15 +900,61 @@ mod tests {
     }
 
     /// A click does NOTHING — not even close, which is the one thing about this panel that changed
-    /// when it became a surface. `Style::Alert` answers a miss with nothing (§6.2), and a
-    /// `HitSource::Legacy` surface is handed the pointer whatever the miss policy says, so the
-    /// refusal has to be here. `tracks_panel` made the same call when it converted; the legacy
-    /// module closed on a click anywhere, which is a `Compact` popover's rule.
+    /// when it became a surface. `Style::Alert` answers a miss with nothing (§6.2), and the
+    /// container hands this screen the pointer whatever the miss policy says, so the refusal has
+    /// to be here. `tracks_panel` made the same call when it converted; the legacy module closed
+    /// on a click anywhere, which is a `Compact` popover's rule.
     #[test]
     fn a_click_neither_dismisses_the_sheet_nor_reaches_the_page() {
         let (out, handled) = press(InputKind::Click { x: 10.0, y: 10.0, hit: None });
         assert_eq!(handled, Handled::Yes);
         assert!(out.is_empty(), "an Alert answers a click with nothing");
+    }
+
+    /// **The `FocusSource::Engine`/`HitSource::Engine` conversion (restructure phase 12, D2)
+    /// changes nothing observable — this is the proof.** Before the conversion, `ui/dispatch.rs`
+    /// never asked the engine about this screen at all (`engine_page()`/`hit_page()` read
+    /// `Legacy` and short-circuited). After it, the dispatcher calls exactly the entry points
+    /// exercised here — `FocusEngine::enter` on mount (`Enter::Fresh`, `restored: None`, the
+    /// container's actual call shape in `ui/dispatch.rs`'s `after_step`) and `FocusEngine::reconcile`
+    /// before every draw — and both must still do nothing, because the `Focusable` impl above
+    /// declares zero groups. Graded directly against `FocusEngine`, the same type the dispatcher
+    /// holds, rather than against the dispatcher itself (a sibling dependency the layer gate
+    /// forbids this module from taking).
+    #[test]
+    fn engine_paths_are_inert_on_a_panel_with_no_focusable_element() {
+        use crate::ui::focus::{FocusEngine, Outcome};
+        use crate::ui::machine::GroupId;
+        use crate::ui::screen::FocusTarget;
+
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let cx = cx(&measure);
+        let panel = AboutPanelScreen::new(ENTRY);
+        let owner = InputOwner::Entry(ENTRY);
+        let mut engine: FocusEngine<u32> = FocusEngine::new();
+
+        // The dispatcher's mount-time call: a fresh Enter, target the container group, nothing
+        // restored (`ScreenEvent::Enter(Enter::Fresh { .. })` never carries a restore).
+        let outcome = engine.enter(owner, &panel, FocusTarget::ContainerGroup(GroupId(0)), None, &cx);
+        assert!(
+            matches!(outcome, Outcome::Nothing),
+            "no groups means nothing to enter, exactly as under Legacy nothing was ever asked"
+        );
+
+        // With nothing entered, the dispatcher's own pre-draw reconcile step also has nothing to
+        // do — `FocusEngine::current` answers `None` for this owner.
+        let outcome = engine.reconcile(owner, &panel, &cx);
+        assert!(matches!(outcome, Outcome::Nothing));
+
+        use crate::ui::screen::Screen;
+        assert_eq!(
+            (
+                Screen::<TestHost>::focus_source(&panel),
+                Screen::<TestHost>::hit_source(&panel),
+            ),
+            (crate::ui::screen::FocusSource::Engine, crate::ui::screen::HitSource::Engine),
+            "the conversion this test guards"
+        );
     }
 
 }

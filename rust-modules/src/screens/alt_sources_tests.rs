@@ -3,7 +3,18 @@
 //! page teardown is as against the FADE a BACK is).
 
 use super::*;
-use crate::metadata::{alt_install, alt_restamp_owners, alt_source_count, alt_stand_in};
+use crate::metadata::{alt_source_count, alt_stand_in};
+use crate::stores::metadata::MetadataCmd;
+
+/// D3 test helper: `metadata::alt_install`/`alt_restamp_owners` are private now, reached only
+/// through `stores::metadata::apply` — these wrap that so the call sites below read exactly as
+/// they did before the visibility change.
+fn alt_install(sid: ServerId, rk: &str, copies: Vec<AltCopy>) -> bool {
+    crate::stores::metadata::apply(MetadataCmd::AltInstall { sid, rk: rk.to_string(), copies })
+}
+fn alt_restamp_owners() -> bool {
+    crate::stores::metadata::apply(MetadataCmd::AltRestampOwners)
+}
 
 fn sid(n: u16) -> ServerId {
     ServerId::from_raw(n)
@@ -662,4 +673,267 @@ fn a_reset_hides_the_menu_at_once_while_back_fades_it() {
         "…but the sheet is still fading"
     );
     assert!(ms.prune().is_empty());
+}
+
+// ---- the Engine focus/hit contract (phase 12, D2) --------------------------------------------
+//
+// A single-column `Focusable` over `self.table`'s own cursor, following `AccountMenuScreen`'s
+// worked pattern: one `GroupKind::Column` of `Bare` elements, `EdgeRule::Stop` on every side
+// (this is a standalone surface with nowhere else to escape to), UP/DOWN and OK read entirely
+// off the engine (`Focusable::neighbour`/`groups` + the `FocusMoved`/`Activate` events it
+// delivers) rather than off raw key syms and hand-rolled `hit_row` coordinate math.
+//
+// Before this conversion `step` decoded UP/DOWN syms and raw `Pointer`/`Click` coordinates
+// itself, and `focus_source`/`hit_source` answered `Legacy` — a suite run against that shape
+// (raw `InputKind::Key{sym: SDLK_DOWN}` moving `table.sel`, `InputKind::Click{x,y}` resolving
+// through `table.hit_row` to commit or dismiss) passed green. The conversion below changes the
+// SIGNATURE those tests drove through — UP/DOWN and click resolution are the engine's job now,
+// delivered to `step` as `FocusMoved`/`Activate`, not raw key/pointer events — so, per this
+// repo's own rule for a fix that changes what a test can even call (`AGENTS.md`'s testing
+// section, the `prime`/`generation` example), these tests are written against the NEW seam and
+// say so here rather than claim a historical red that cannot exist for a mechanism swap: the
+// observable behaviour they pin (row navigation order, which copy a commit opens, BACK closes
+// the panel) is exactly what the removed raw-input tests pinned before the rewrite, verified by
+// hand against both trees during the conversion.
+mod focus_and_hit {
+    use super::*;
+    use crate::screens::registry::{AppFx, AppMsg, PageMemory};
+    use crate::ui::machine::{
+        Canon, Chrome, Edge, FocusKey, FocusRead, Handled, Host, InputEvent, InputKind,
+        InputOwner, Key, LogicalState, Machine, PressRead, ScreenId, Source, Tick,
+    };
+    use crate::ui::screen::{
+        At, Dir, Focusable, FocusSource, HitSource, Screen, ScreenArg, ScreenEvent, Step,
+    };
+
+    #[derive(Clone)]
+    struct FixtureArg;
+    impl LogicalState for FixtureArg {
+        fn write(&self, _: &mut Canon) {}
+        fn probe(&self, _: &mut String) {}
+    }
+    impl ScreenArg for FixtureArg {
+        fn chrome(&self) -> Chrome {
+            Chrome::None
+        }
+        fn id(&self) -> ScreenId {
+            ScreenId(1)
+        }
+        fn title(&self) -> Option<&str> {
+            None
+        }
+        fn same_instance(&self, _: &Self) -> bool {
+            true
+        }
+    }
+    struct HostFixture;
+    impl Host for HostFixture {
+        type Arg = FixtureArg;
+        type Fx = AppFx;
+        type Msg = AppMsg;
+        type Elem = u32;
+        type Views<'a> = ();
+        type Init = FixtureArg;
+        type Memory = PageMemory;
+    }
+    fn fixture_cx(focus: Option<FocusKey<u32>>) -> crate::ui::machine::Cx<'static, HostFixture> {
+        crate::ui::machine::Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &crate::ui::fixture::FixtureMeasure,
+            focus: FocusRead { current: focus, ..Default::default() },
+            press: PressRead::default(),
+            owner: InputOwner::Entry(EntryId(5)),
+        }
+    }
+    fn key_event(key: Key, edge: Edge) -> ScreenEvent<HostFixture> {
+        ScreenEvent::Input(InputEvent {
+            at: Tick::default(),
+            source: Source::Script,
+            kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false },
+        })
+    }
+
+    /// Two copies, so the panel has two real rows to walk and to commit against.
+    fn two_row_panel() -> (AltSourcesScreen, ServerId, ServerId) {
+        let here = sid(1);
+        let there = sid(2);
+        let mut p = panel(here, "4");
+        p.rows = rows(
+            &[
+                copy(1, "Movies", "", "4", "1080"),
+                copy(2, "Film Club", "friend", "9", "4k"),
+            ],
+            here,
+            "4",
+        );
+        p.table.compact = false;
+        let mut sec = Section::new("");
+        for r in &p.rows {
+            sec = sec.row(Row::new(r.label.clone()).detail(r.detail.clone()).checked(r.checked));
+        }
+        p.table.set_sections(vec![sec], 0, false);
+        (p, here, there)
+    }
+
+    #[test]
+    fn focus_and_hit_source_are_engine() {
+        let (p, ..) = two_row_panel();
+        assert_eq!(
+            <AltSourcesScreen as Screen<HostFixture>>::focus_source(&p),
+            FocusSource::Engine
+        );
+        assert_eq!(
+            <AltSourcesScreen as Screen<HostFixture>>::hit_source(&p),
+            HitSource::Engine
+        );
+    }
+
+    /// **One `Column` group of two `Bare` rows**, matching the two rows the panel built, with
+    /// `EdgeRule::Stop` on every side (there is nowhere else on this standalone surface to hand a
+    /// direction off to).
+    #[test]
+    fn groups_is_one_column_sized_to_the_row_count() {
+        let (p, ..) = two_row_panel();
+        let cx = fixture_cx(None);
+        let mut groups = Vec::new();
+        Focusable::<HostFixture>::groups(&p, &cx, &mut groups);
+        assert_eq!(groups.len(), 1);
+        let g = groups[0];
+        assert_eq!(g.len, 2);
+        assert!(matches!(g.kind, crate::ui::screen::GroupKind::Column));
+        assert!(matches!(g.elem, crate::ui::screen::ElemKind::Bare));
+        assert!(g.edge.iter().all(|e| matches!(e, crate::ui::screen::EdgeRule::Stop)));
+    }
+
+    /// **`neighbour` walks the table's own rows, and stops at either end** — the same order
+    /// UP/DOWN produced by hand before the conversion (`table.move_sel`).
+    #[test]
+    fn neighbour_walks_rows_and_stops_at_the_ends() {
+        let (p, ..) = two_row_panel();
+        let entry = p.entry;
+        let cx = fixture_cx(None);
+        let row0 = FocusKey { entry, elem: 0 };
+        let row1 = FocusKey { entry, elem: 1 };
+        assert!(matches!(
+            Focusable::<HostFixture>::neighbour(&p, row0, Dir::Down, &cx),
+            Step::Move(k) if k == row1
+        ));
+        assert!(matches!(
+            Focusable::<HostFixture>::neighbour(&p, row1, Dir::Down, &cx),
+            Step::Edge
+        ));
+        assert!(matches!(
+            Focusable::<HostFixture>::neighbour(&p, row0, Dir::Up, &cx),
+            Step::Edge
+        ));
+        assert!(matches!(
+            Focusable::<HostFixture>::neighbour(&p, row1, Dir::Up, &cx),
+            Step::Move(k) if k == row0
+        ));
+    }
+
+    /// `place` answers exactly `TableView::row_frame`'s own geometry — the hit map the draw
+    /// registers is this same walk, not a second copy of it.
+    #[test]
+    fn place_matches_the_tables_own_row_geometry() {
+        let (p, ..) = two_row_panel();
+        let cx = fixture_cx(None);
+        let want = p.table.row_frame(p.frame(), 1).expect("row 1 is drawn");
+        let placed = Focusable::<HostFixture>::place(&p, &1, &cx, At::Drawn).expect("row 1 places");
+        assert_eq!(
+            (placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
+            (want.x, want.y, want.w, want.h)
+        );
+        assert!(Focusable::<HostFixture>::place(&p, &9, &cx, At::Drawn).is_none());
+    }
+
+    /// **FocusMoved is what keeps `table.sel` in step with the engine** — the draw and `hit_row`-
+    /// free row highlight both read `table.sel`, so this is the one write that has to land.
+    #[test]
+    fn focus_moved_seats_the_drawn_selection() {
+        let (mut p, ..) = two_row_panel();
+        let entry = p.entry;
+        let cx = fixture_cx(None);
+        let mut buf = Vec::new();
+        let mut present = crate::ui::present::Present::default();
+        let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+        let ev = ScreenEvent::FocusMoved {
+            from: None,
+            to: FocusKey { entry, elem: 1 },
+            by: crate::ui::screen::By::Dir,
+        };
+        assert_eq!(Machine::step(&mut p, &ev, &cx, &mut fx), Handled::Yes);
+        assert_eq!(p.table.sel, 1);
+    }
+
+    /// **`Activate` on the row you are NOT standing on navigates to it**, exactly what OK/click
+    /// used to do through `commit`'s old `self.table.sel` read — now driven by the elem the
+    /// engine names directly.
+    #[test]
+    fn activating_another_row_reports_that_copy_and_dismisses() {
+        let (mut p, _here, there) = two_row_panel();
+        let entry = p.entry;
+        let host = p.arg.host;
+        let cx = fixture_cx(Some(FocusKey { entry, elem: 1 }));
+        let mut buf = Vec::new();
+        let mut present = crate::ui::present::Present::default();
+        {
+            let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+            let ev = ScreenEvent::Activate(1);
+            assert_eq!(Machine::step(&mut p, &ev, &cx, &mut fx), Handled::Yes);
+        }
+        assert!(
+            buf.iter().any(|s| matches!(
+                &s.fx,
+                crate::ui::machine::Fx::Nav(crate::ui::machine::NavOp::Dismiss(e)) if *e == entry
+            )),
+            "the panel closes on any commit"
+        );
+        let opened = buf.iter().find_map(|s| match &s.fx {
+            crate::ui::machine::Fx::Deliver(
+                crate::ui::machine::MachineId::Instance(h),
+                crate::ui::machine::Delivery::Screen(ScreenEvent::App(AppMsg::AltSourceOpen(
+                    crate::screens::registry::ContentArg::Detail { sid, rk },
+                ))),
+            ) if *h == host => Some((*sid, rk.clone())),
+            _ => None,
+        });
+        assert_eq!(opened, Some((there, "9".to_string())), "row 1 is the friend's copy");
+    }
+
+    /// **Activating the row you are already standing on reports nothing to navigate to** — the
+    /// pure `action_at` rule the panel's `commit` defers to, exercised here through the same
+    /// `Activate` seam a real OK press now takes.
+    #[test]
+    fn activating_the_current_row_only_dismisses() {
+        let (mut p, ..) = two_row_panel();
+        let entry = p.entry;
+        let cx = fixture_cx(Some(FocusKey { entry, elem: 0 }));
+        let mut buf = Vec::new();
+        let mut present = crate::ui::present::Present::default();
+        let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+        let ev = ScreenEvent::Activate(0);
+        assert_eq!(Machine::step(&mut p, &ev, &cx, &mut fx), Handled::Yes);
+        assert!(buf.iter().all(|s| !matches!(
+            &s.fx,
+            crate::ui::machine::Fx::Deliver(.., crate::ui::machine::Delivery::Screen(ScreenEvent::App(_)))
+        )));
+    }
+
+    #[test]
+    fn back_dismisses_the_panel() {
+        let (mut p, ..) = two_row_panel();
+        let entry = p.entry;
+        let cx = fixture_cx(None);
+        let mut buf = Vec::new();
+        let mut present = crate::ui::present::Present::default();
+        let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+        let ev = key_event(Key::Back, Edge::Down);
+        assert_eq!(Machine::step(&mut p, &ev, &cx, &mut fx), Handled::Yes);
+        assert!(matches!(
+            buf.last().map(|s| &s.fx),
+            Some(crate::ui::machine::Fx::Nav(crate::ui::machine::NavOp::Dismiss(e))) if *e == entry
+        ));
+    }
 }

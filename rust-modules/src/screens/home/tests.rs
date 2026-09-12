@@ -151,7 +151,7 @@ fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
     assert!(groups
         .iter()
         .all(|g| g.id != crate::ui::containers::tabs::STRIP));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn the_pager_is_not_a_focus_stop_and_the_rows_end_pages_instead() {
     assert!(s.flip(snapshot.view(), 1));
     assert_ne!(s.carousel, before);
     assert_eq!(engine.current(owner).unwrap().elem, HERO_INFO_ELEM);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -206,7 +206,7 @@ fn the_top_band_reports_the_chip_and_the_pills_as_one_answer() {
         dir: Dir::Up,
         to: crate::ui::containers::tabs::STRIP
     }));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -239,7 +239,7 @@ fn step_row_stays_inside_the_addressable_rows() {
         Focusable::<TestHost>::neighbour(&s, last, Dir::Right, &cx(snapshot.view(), Some(last))),
         Step::Edge
     ));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn the_status_readout_tells_loading_empty_and_failed_apart() {
         assert!(status_read(crate::pms::hubs_snapshot().view()).is_none(),
             "a failed refresh retains playable content, not a replacement readout");
     }
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn the_status_screen_takes_ok_but_never_the_top_band() {
     assert!(has_home(&out, |r| matches!(r, HomeReq::Play { .. })));
     assert!(!out.iter().any(|s| matches!(&s.fx,
         Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Retry))))));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -368,7 +368,7 @@ fn drawn_hero_geometry_follows_slide_and_the_captured_press_scale() {
             }
         }
     }
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -387,7 +387,7 @@ fn status_action_geometry_does_not_inherit_the_previous_hero_pop_or_slide() {
     let drawn = Focusable::<TestHost>::place(&s, &key.elem, &context, At::Drawn).unwrap();
     assert_eq!((drawn.rect.x, drawn.rect.y, drawn.rect.w, drawn.rect.h),
         (base.x, base.y, base.w, base.h));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -410,7 +410,7 @@ fn drawn_card_geometry_includes_press_but_its_rest_anchor_does_not() {
         let opener = s.focused_rect(Some(key), &context, At::Drawn).unwrap();
         assert!((opener.w - CARD_W * s.grid.shelves[0].scale(0)).abs() < 0.01);
     }
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1151,7 +1151,7 @@ fn engine_links_hero_to_the_first_shelf_and_back() {
         panic!("hero DOWN must move")
     };
     assert_eq!(to.elem, s.rows[0].elems[0]);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1191,7 +1191,7 @@ fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
         panic!("first-shelf DOWN must reach the second shelf");
     };
     assert_eq!(to.elem, second_elem);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1217,7 +1217,7 @@ fn down_from_the_last_shelf_never_reenters_the_offscreen_hero() {
         engine.move_dir(owner, &s, &links, Dir::Down, &context),
         Outcome::Nothing
     );
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1301,7 +1301,7 @@ fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
     assert!(has_home(&b, |r| matches!(r, HomeReq::Play { rk, .. } if rk == "1")));
     assert_ne!(hero_picture.hash(), grid_picture.hash(),
         "the same input activates different items, so these cannot be the same logical state");
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1333,7 +1333,7 @@ fn the_home_census_covers_input_motion_and_current_projection() {
     // These extents are part of SHAPE, not merely runtime sequence lengths.
     assert_eq!(HERO_NBTN, 2);
     assert_eq!(crate::ui::card_row::MAX_ROW_ITEMS, 24);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1362,7 +1362,7 @@ fn an_explicit_hero_reseat_keeps_the_fold_animation_unlike_page_restoration() {
     });
     assert_eq!(s.snap_target, 0.0);
     assert_eq!(s.snap.pos, 1.0, "fresh reseating still animates the door");
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1379,7 +1379,7 @@ fn shelf_viewports_follow_identity_across_a_catalog_reorder() {
     assert_eq!(s.rows[1].identity, identity);
     assert_eq!(s.grid.shelves[1].scroll_x(), 900.0);
     assert_eq!(s.grid.shelves[0].scroll_x(), 0.0);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1403,7 +1403,7 @@ fn an_empty_loading_publication_does_not_consume_restored_viewports() {
     let ready = crate::pms::hubs_snapshot();
     restored.sync_catalog(&cx(ready.view(), None));
     assert_eq!(restored.grid.shelves[1].scroll_x(), 900.0);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1439,7 +1439,7 @@ fn visible_tick_emits_both_store_work_requests_after_the_step() {
         })
         .collect();
     assert_eq!(work, vec![StoreWork::Hubs, StoreWork::BrowseDiscovery]);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1473,7 +1473,7 @@ fn continue_watching_commit_plays_while_an_ordinary_shelf_opens_detail() {
         &detail,
         |r| matches!(r, HomeReq::Detail { rk, .. } if rk == "1")
     ));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1499,7 +1499,7 @@ fn holding_a_shelf_card_opens_the_item_menu_without_activation() {
         r,
         HomeReq::Play { .. } | HomeReq::Detail { .. }
     )));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1523,7 +1523,7 @@ fn a_partially_visible_focused_row_allows_hover_to_its_neighbors_only() {
         assert!(stop.rest_rect.y < 40.0);
         assert_eq!(stop.hover, expected);
     }
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1551,7 +1551,7 @@ fn drawn_stops_feed_the_real_hit_map_with_scoped_card_keys() {
     );
     assert_eq!(resolution.hit, Some(card));
     assert_eq!(resolution.activate, Some((card, Activate::Press)));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1588,7 +1588,7 @@ fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint(
         &out,
         |req| matches!(req, HomeReq::Play { rk, .. } if rk == "1")
     ));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1627,7 +1627,7 @@ fn back_from_grid_folds_to_hero_before_root_back() {
     assert!(root
         .iter()
         .any(|stamped| matches!(&stamped.fx, Fx::App(AppFx::Loop(LoopReq::BackAtRoot)))));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 fn enter_target(out: &[Stamped<TestHost>]) -> Option<FocusTarget<u32>> {
@@ -1681,7 +1681,7 @@ fn addressed_focus_commands_reseat_only_through_enter_fresh() {
         );
         assert!(matches!(enter_target(&strip), Some(FocusTarget::Elem(key)) if key.elem == elem));
     }
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1709,7 +1709,7 @@ fn addressed_carousel_commands_mutate_the_owned_identity_not_focus() {
         &ScreenEvent::App(AppMsg::Home(HomeCmd::Flip(1))),
     );
     assert_ne!(s.carousel, before);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1740,7 +1740,7 @@ fn loading_has_no_phantom_hero_and_terminal_status_has_one_action() {
             None
         );
     }
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1791,7 +1791,7 @@ fn first_catalog_landing_reseats_the_default_cta_unless_the_strip_was_chosen() {
         }),
     );
     assert!(enter_target(&out).is_none());
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1813,7 +1813,7 @@ fn addressed_item_menu_uses_the_current_owned_grid_item() {
         &out,
         |req| matches!(req, HomeReq::ItemMenu { rk, .. } if rk == "1")
     ));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1843,5 +1843,50 @@ fn parent_read_only_api_projects_engine_focus_without_setters() {
     let empty_context = cx(snapshot.view(), None);
     let mut frame = DrawFrame::new(&empty_context, Painter::root());
     s.redraw_focused(&mut frame, None);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+}
+
+#[test]
+fn the_hero_carousel_auto_advance_reports_motion_on_every_tick_while_armed() {
+    // D4 (phase 12): `hero_auto`'s countdown itself is deliberately UNCHANGED arithmetic — it is
+    // hashed `LogicalState` across three committed replay fixtures, and moving it onto
+    // `motion::Ramp` measurably diverged the hash (`tests/focusfp.sh --replay`, flow 1). What DID
+    // change is the actual bug this conversion exists to catch: the countdown never reported
+    // `Motion`, so a hero left mid-count-down on an otherwise-settled screen could silently freeze
+    // under `ui::idle`'s present gate, exactly like the `Xfade`/`Spinner` cases the module doc
+    // already names. `tick` now notes `Motion` explicitly every frame the countdown runs.
+    let _guard = crate::testlock::serial();
+    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot();
+    assert!(
+        snapshot.view().hero_count() > 1,
+        "the auto-advance branch only arms with more than one hero slot"
+    );
+    let mut s = screen(snapshot.view());
+    let (_, _, motion) = step(
+        &mut s,
+        snapshot.view(),
+        None,
+        &ScreenEvent::Tick(Tick {
+            ms: 16,
+            dt_us: 16_000,
+        }),
+    );
+    assert!(
+        motion,
+        "the hero countdown must report Motion on every tick while the carousel auto-advance is armed"
+    );
+    // A second tick, still short of HERO_AUTO_S, keeps reporting motion rather than going quiet
+    // once started.
+    let (_, _, motion_again) = step(
+        &mut s,
+        snapshot.view(),
+        None,
+        &ScreenEvent::Tick(Tick {
+            ms: 32,
+            dt_us: 16_000,
+        }),
+    );
+    assert!(motion_again, "the ramp must keep reporting motion on the next tick too");
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }

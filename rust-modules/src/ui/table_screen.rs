@@ -71,8 +71,8 @@ impl<'a> Header<'a> {
     }
 
     /// The one drawing routine, for both loops.
-    pub fn paint(&self, p: Painter) {
-        self.layout.draw_narrative(p, self.crumb, self.title, self.copy, self.copy_size);
+    pub fn paint(&self, p: Painter, measure: &dyn Measure) {
+        self.layout.draw_narrative(p, self.crumb, self.title, self.copy, self.copy_size, measure);
     }
 }
 
@@ -110,7 +110,7 @@ where
 impl<H: Host> Part<H> for Header<'_> {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
-        self.paint(f.painter);
+        self.paint(f.painter, f.measure);
     }
 }
 
@@ -138,8 +138,8 @@ impl TablePart<'_> {
         }
     }
 
-    pub fn paint(&self, p: Painter) {
-        self.table.draw(p, self.frame);
+    pub fn paint(&self, p: Painter, measure: &dyn Measure) {
+        self.table.draw(p, self.frame, measure);
     }
 }
 
@@ -191,7 +191,7 @@ where
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, rect: Rect) {
         let p = f.painter;
         self.frame = rect;
-        self.paint(p);
+        self.paint(p, f.measure);
         // every selectable row is a stop (rule 11: hover parks, a click activates)
         for i in 0..self.table.n_rows() {
             if self.table.next_selectable(i, 0) != Some(i) {
@@ -421,9 +421,9 @@ impl<'a> TableScreen<'a> {
     }
 
     /// The legacy loop's draw: header, then table.
-    pub fn paint(&self, p: Painter) {
-        self.header.paint(p);
-        self.table.paint(p);
+    pub fn paint(&self, p: Painter, measure: &dyn Measure) {
+        self.header.paint(p, measure);
+        self.table.paint(p, measure);
     }
 }
 
@@ -636,8 +636,8 @@ impl<'a> DocumentScreen<'a> {
         }
     }
 
-    pub fn paint(&mut self, p: Painter) {
-        self.header.paint(p);
+    pub fn paint(&mut self, p: Painter, measure: &dyn Measure) {
+        self.header.paint(p, measure);
         self.doc.paint(p);
     }
 }

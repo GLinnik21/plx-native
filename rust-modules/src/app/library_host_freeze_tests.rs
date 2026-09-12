@@ -39,7 +39,7 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
 
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    frame(&mut d, &mut rig, Route::Library, tick(0), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     assert_eq!(users(), 0, "a bare library page freezes nothing");
     let page = d.nav.top_page().unwrap().id;
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
@@ -61,7 +61,7 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
         )),
     );
     for i in 1..40 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let menu = d
         .nav
@@ -80,7 +80,7 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
 
     d.request(MachineId::Nav, NavOp::Dismiss(menu));
     for i in 40..120 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     assert!(
         d.nav.modals.surfaces.is_empty(),
@@ -135,12 +135,12 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
 
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    frame(&mut d, &mut rig, Route::Library, tick(0), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
     // park the grid focus deep, and let every boot spring settle
     Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 });
     for i in 1..80 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     let listing = rig.listing.view().id().unwrap();
@@ -159,24 +159,24 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
         })),
     );
     for i in 80..120u32 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let menu = d.nav.modals.surfaces.first().expect("the menu is up").entry.id;
 
     // a settled panel over a settled page: nothing moves, and in particular the panel's own
     // appear spring (`ModalStack::tick`, now in a scope of its own) is not the page's motion
     crate::ui::idle::frame_begin(1.0 / 60.0);
-    frame(&mut d, &mut rig, Route::Library, tick(120), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(120), vec![]);
     assert!(!crate::ui::idle::page_moving(), "a settled host does not move");
 
     // dismiss: input returns to the page while the panel is still visible, and the page is driven
     d.request(MachineId::Nav, NavOp::Dismiss(menu));
-    frame(&mut d, &mut rig, Route::Library, tick(121), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(121), vec![]);
     Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::FocusGrid { row: 0, col: 0 });
     let mut moved = 0;
     for i in 122..136u32 {
         crate::ui::idle::frame_begin(1.0 / 60.0);
-        let (_, report) = frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        let (_, report) = frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
         if !crate::ui::idle::present_moving() {
             continue;
         }

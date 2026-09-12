@@ -36,6 +36,17 @@
 //! working code; the re-evaluation declined it and is logged in the decision doc. What that
 //! re-evaluation turned up instead is the divergence above: of the five copies of the idiom, only
 //! two handled a refused spawn. The piece worth sharing was the spawn, not the mailbox.
+//!
+//! **This module is also the allowlist boundary of `ci/check-deps.sh`'s `threads` gate**
+//! (restructure spec §15.2, phase 12): every `std::thread::spawn` call outside this file, in
+//! production code, is a violation — checked file by file across the whole crate, with a
+//! `#[cfg(test)] mod` block excluded (a unit test's own mock TCP/HTTP peer stands in for a real
+//! peer and is not a worker). Verified 2026-09-10: it is already empty, i.e. every real worker
+//! this crate spawns — the demux/media threads, `aq`, `stream`, `imgcache`, `ff`, `http`, `auth`,
+//! `curlio`/`route::decision`, the Plex client/transcoder, `browse`, `player`, `ui::present`,
+//! `ui::landgate` — already calls [`spawn`]/[`spawn_small`], not `std::thread::spawn` directly.
+//! `ci/allow/threads.txt` is that gate's allowlist and it, too, is empty for the same reason; a
+//! new production `thread::spawn` outside this file fails CI rather than waiting for a review.
 
 use std::io;
 use std::marker::PhantomData;

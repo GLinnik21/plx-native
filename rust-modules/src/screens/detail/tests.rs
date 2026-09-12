@@ -38,7 +38,10 @@ impl Host for TestHost {
     type Msg = AppMsg;
     type Elem = u32;
     type Views<'a> = ();
-    type Init = crate::screens::family::NoInit;
+    // `super::super::` (detail -> screens -> family) rather than the absolute spelling: `family`
+    // is the Settings family's shared vocabulary, not a sibling screen — see `screens::family`'s
+    // own module doc, and `screens::legal`/`screens::settings`'s identical `super::family::` use.
+    type Init = super::super::family::NoInit;
     type Memory = PageMemory;
 }
 
@@ -85,6 +88,7 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP),
         spin_ms: 0.0,
+        spin_phase: crate::ui::motion::Phase::default(),
     };
     screen.sync_keys();
     screen
@@ -134,7 +138,11 @@ fn clear() {
     // The *Also available* store outlives a page, so a test that seeded it hands the next one an
     // empty one — the addressed store cannot MIS-answer, but it can answer for an item a later
     // test happens to reuse the pair of.
-    crate::metadata::alt_install(crate::plex::ServerId::UNSET, "", Vec::new());
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::AltInstall {
+        sid: crate::plex::ServerId::UNSET,
+        rk: String::new(),
+        copies: Vec::new(),
+    });
 }
 
 fn step(
@@ -794,13 +802,17 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                 // The *Also available* control's gate is the STORE, addressed by the page's own
                 // pair — seeded here the way a landed cross-source resolve seeds it, never by
                 // opening the panel.
-                crate::metadata::alt_install(sid, "hero-hit", if alt {
-                    vec![
-                        crate::metadata::AltCopy { sid, rk: "hero-hit".into(), ..Default::default() },
-                        crate::metadata::AltCopy { sid: other, rk: "hero-copy".into(), ..Default::default() },
-                    ]
-                } else {
-                    Vec::new()
+                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::AltInstall {
+                    sid,
+                    rk: "hero-hit".into(),
+                    copies: if alt {
+                        vec![
+                            crate::metadata::AltCopy { sid, rk: "hero-hit".into(), ..Default::default() },
+                            crate::metadata::AltCopy { sid: other, rk: "hero-copy".into(), ..Default::default() },
+                        ]
+                    } else {
+                        Vec::new()
+                    },
                 });
                 let mut screen = bare(&_guard, sid, "hero-hit");
                 let set = screen.hero_set();
@@ -932,157 +944,6 @@ fn a_long_synopsis_keeps_the_first_section_one_region_gap_below_the_buttons() {
     );
     assert_eq!(screen.content_top(), screen.section_top(1, detail));
     clear();
-}
-
-/// The *Also available* surface, mounted for the copy `(sid, rk)` names, with `copies` in the
-/// store — the seeding route a landed cross-source resolve takes, never `open_for`.
-fn alt_panel(
-    sid: ServerId,
-    rk: &str,
-    copies: Vec<crate::metadata::AltCopy>,
-) -> crate::screens::alt_sources::AltSourcesScreen {
-    crate::metadata::alt_install(sid, rk, copies);
-    crate::screens::alt_sources::AltSourcesScreen::new(
-        EntryId(9),
-        crate::screens::alt_sources::AltSourcesArg {
-            host: crate::ui::machine::InstanceId(1),
-            sid,
-            rk: rk.to_string(),
-            anchor: [300.0f32, 800.0, 300.0, 60.0].map(f32::to_bits),
-        },
-    )
-}
-
-fn key_down(sym: u32, key: crate::ui::machine::Key) -> ScreenEvent<TestHost> {
-    ScreenEvent::Input(crate::ui::machine::InputEvent {
-        at: Default::default(),
-        source: crate::ui::machine::Source::Script,
-        kind: crate::ui::machine::InputKind::Key {
-            key,
-            sym,
-            wcode: 0,
-            edge: crate::ui::machine::Edge::Down,
-            at_edge: false,
-        },
-    })
-}
-
-fn drive(
-    panel: &mut crate::screens::alt_sources::AltSourcesScreen,
-    event: &ScreenEvent<TestHost>,
-) -> Vec<crate::ui::machine::Stamped<TestHost>> {
-    let measure = crate::ui::fixture::FixtureMeasure;
-    let context = cx(&measure, None);
-    let mut effects = Vec::new();
-    let mut present = crate::ui::present::Present::new();
-    {
-        let mut sink = Effects::new(
-            &mut effects,
-            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(9)),
-            &mut present,
-        );
-        Machine::<TestHost>::step(panel, event, &context, &mut sink);
-    }
-    effects
-}
-
-#[test]
-fn ok_on_another_copy_asks_for_that_servers_page_and_leaves_this_one_alone() {
-    let _guard = crate::testlock::serial();
-    crate::plex::reset_servers_for_test();
-    let here = crate::plex::register_for_test("here", "127.0.0.1", 1, "t", "c1");
-    let other = crate::plex::register_for_test("other", "127.0.0.2", 2, "t", "c2");
-    let mut panel = alt_panel(
-        here,
-        "m1",
-        vec![
-            crate::metadata::AltCopy {
-                sid: here,
-                rk: "m1".into(),
-                library: "Movies".into(),
-                ..Default::default()
-            },
-            crate::metadata::AltCopy {
-                sid: other,
-                rk: "copy".into(),
-                library: "Shared Movies".into(),
-                ..Default::default()
-            },
-        ],
-    );
-    drive(
-        &mut panel,
-        &key_down(crate::ui::consts::SDLK_DOWN, crate::ui::machine::Key::Other),
-    );
-    let effects = drive(
-        &mut panel,
-        &key_down(crate::ui::consts::SDLK_RETURN, crate::ui::machine::Key::Ok),
-    );
-    // the surface DISMISSES itself and NAMES the destination; the page performs the navigation
-    assert!(
-        effects.iter().any(|e| matches!(
-            &e.fx,
-            Fx::Nav(crate::ui::machine::NavOp::Dismiss(id)) if *id == EntryId(9)
-        )),
-        "the picker closes on the press"
-    );
-    let asked = effects.iter().find_map(|e| match &e.fx {
-        Fx::Deliver(
-            crate::ui::machine::MachineId::Instance(host),
-            crate::ui::machine::Delivery::Screen(ScreenEvent::App(AppMsg::AltSourceOpen(arg))),
-        ) => Some((*host, arg.clone())),
-        _ => None,
-    });
-    assert_eq!(
-        asked,
-        Some((
-            crate::ui::machine::InstanceId(1),
-            ContentArg::Detail {
-                sid: other,
-                rk: "copy".into()
-            }
-        )),
-        "the page it reports to is the one on its argument"
-    );
-    clear();
-    crate::plex::reset_servers_for_test();
-}
-
-#[test]
-fn ok_on_the_copy_you_are_on_dismisses_and_navigates_nowhere() {
-    let _guard = crate::testlock::serial();
-    crate::plex::reset_servers_for_test();
-    let here = crate::plex::register_for_test("here", "127.0.0.1", 1, "t", "c1");
-    let mut panel = alt_panel(
-        here,
-        "m1",
-        vec![crate::metadata::AltCopy {
-            sid: here,
-            rk: "m1".into(),
-            library: "Movies".into(),
-            ..Default::default()
-        }],
-    );
-    let effects = drive(
-        &mut panel,
-        &key_down(crate::ui::consts::SDLK_RETURN, crate::ui::machine::Key::Ok),
-    );
-    assert!(
-        effects.iter().any(|e| matches!(
-            &e.fx,
-            Fx::Nav(crate::ui::machine::NavOp::Dismiss(id)) if *id == EntryId(9)
-        )),
-        "it still closes"
-    );
-    assert!(
-        !effects.iter().any(|e| matches!(
-            &e.fx,
-            Fx::Deliver(_, crate::ui::machine::Delivery::Screen(ScreenEvent::App(AppMsg::AltSourceOpen(_))))
-        )),
-        "…and asks for no page at all"
-    );
-    clear();
-    crate::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -1223,6 +1084,93 @@ fn season_focus_debounces_the_load_without_storing_a_focus_cursor() {
         "the future load deadline is logical state"
     );
     clear();
+}
+
+/// **The frozen-animator regression class, closed for the season-settle countdown (phase 12 D4).**
+/// `season_settle` used to be a raw `+= dt` accumulator; it is now driven by `motion::Ramp`, which
+/// reports `Motion` from inside its own `advance`. This drives the exact same FocusMoved → Tick
+/// sequence as the debounce test above but keeps its own `Present` alive across both steps to
+/// check the report directly, rather than only the resulting value.
+#[test]
+fn a_pending_season_settle_reports_motion_from_inside_advance() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    let to = FocusKey {
+        entry: EntryId(7),
+        elem: season::elem(1).unwrap(),
+    };
+    step(
+        &mut screen,
+        &ScreenEvent::FocusMoved {
+            from: Some(FocusKey {
+                entry: EntryId(7),
+                elem: season::elem(0).unwrap(),
+            }),
+            to,
+            by: By::Dir,
+        },
+        Some(to.elem),
+    );
+    assert_eq!(screen.pending_season, Some(1));
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let context = cx(&measure, Some(to.elem));
+    let mut present = crate::ui::present::Present::new();
+    let _ = present.take(0);
+    let mut effects = Vec::new();
+    for ms in [50, 100, 150] {
+        let mut sink = Effects::new(
+            &mut effects,
+            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+            &mut present,
+        );
+        Machine::<TestHost>::step(
+            &mut screen,
+            &ScreenEvent::Tick(crate::ui::machine::Tick { ms, dt_us: 50_000 }),
+            &context,
+            &mut sink,
+        );
+        assert!(
+            present.take(ms),
+            "a pending season settle must present every frame it is on screen (ms={ms})"
+        );
+    }
+    clear();
+}
+
+/// **The frozen-animator regression class, closed for the page's own loading spinner (phase 12
+/// D4).** `spin_ms` used to be a raw `+= dt` accumulator with `fx.note(Motion)` gated on `!loaded`
+/// a few lines below it. Now it is `motion::Phase`. A `bare` screen with no metadata installed
+/// (unlike every other test in this file, which calls `install` first) has `detail()` answer
+/// `None` — `!loaded` — which is exactly the skeleton-spinner state.
+#[test]
+fn the_loading_spinner_reports_motion_on_every_tick_while_unloaded() {
+    let sid = ServerId::UNSET;
+    let guard = crate::testlock::serial();
+    let mut screen = bare(&guard, sid, "show");
+    assert!(screen.detail().is_none(), "no metadata installed for this test");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let context = cx(&measure, None);
+    let mut present = crate::ui::present::Present::new();
+    let _ = present.take(0);
+    let mut effects = Vec::new();
+    for ms in [16, 32, 48] {
+        let mut sink = Effects::new(
+            &mut effects,
+            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+            &mut present,
+        );
+        Machine::<TestHost>::step(
+            &mut screen,
+            &ScreenEvent::Tick(crate::ui::machine::Tick { ms, dt_us: 16_667 }),
+            &context,
+            &mut sink,
+        );
+        assert!(
+            present.take(ms),
+            "an unloaded detail page's spinner must present every frame (ms={ms})"
+        );
+    }
 }
 
 /// Explicit source→destination inventory. This is bookkeeping, not behavioral proof; every named

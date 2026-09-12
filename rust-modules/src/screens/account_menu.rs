@@ -389,9 +389,10 @@ impl<H: AppLike> Screen<H> for AccountMenuScreen {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         let r = self.frame();
+        let measure = f.measure;
         Glass::CACHED.panel(p, r, 0.0, PANEL_RAD);
         crate::ui::profile::phase("glass.foreground", || {
-            self.table.draw(p, r);
+            self.table.draw(p, r, measure);
         });
         for elem in 0..self.rows.len() as u32 {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
@@ -562,24 +563,24 @@ mod tests {
 
     /// The seam the mount actually uses: the crate-global active profile really does reach the
     /// header, and clearing it (sign-out) really does fall back through the persisted session.
-    /// Takes `testlock::serial()` for the whole test — `set_current`/`current` are process-global.
+    /// Takes `testlock::serial()` for the whole test — the publication resource is process-global.
     #[test]
     fn the_live_profile_global_feeds_the_header() {
         let _serial = crate::testlock::serial();
-        let restore = crate::plex::session::current();
+        let restore = crate::plex::session::current_snapshot();
         let s = local(Session {
             account_token: "acct".into(),
             home_users: vec![owner("Gleb"), managed("Kid")],
             ..Default::default()
         });
-        crate::plex::session::set_current(Some(UserRef {
+        crate::plex::session::publish_profile_for_test(Some(UserRef {
             title: "Kid".into(),
             ..Default::default()
-        }));
+        }), 41);
         let picked = menu(&s, crate::plex::session::current().as_ref()).0;
-        crate::plex::session::set_current(None);
+        crate::plex::session::publish_profile_for_test(None, 42);
         let cleared = menu(&s, crate::plex::session::current().as_ref()).0;
-        crate::plex::session::set_current(restore); // BEFORE the asserts: a failure must not leak
+        crate::plex::session::publish_profile_for_test(restore.user.clone(), restore.generation);
         assert_eq!(picked, "Kid");
         assert_eq!(cleared, "Gleb");
     }

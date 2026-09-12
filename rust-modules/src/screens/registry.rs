@@ -2,12 +2,12 @@
 //! screen may ask for (`AppFx`), the messages a machine receives (`AppMsg`), and the requests an
 //! owned screen makes of the legacy LOOP (`LoopReq`) while the two coexist (§14).
 //!
-//! **…and, since restructure phase 10, the concrete `ScreenArg` ([`AppArg`]), the page alphabet it
-//! is spelled in ([`Route`]) and the one `mount` match ([`AppMounter`])** — which §2.1 always put
-//! here and which lived in `app/bridge.rs` until then. The blocker was stated in this doc and is
-//! gone: the argument carried the legacy `Route`, `Route` was `app`-private, and a screen may not
-//! name `app::`. `Route` MOVED (the loop reads it through `app::nav`'s re-export and its own uses
-//! retire in phase 12), so the argument and the mounter could follow it. What §0's criterion 5 buys
+//! **…and, since restructure phase 10, the concrete `ScreenArg` ([`AppArg`]) and the one `mount`
+//! match ([`AppMounter`])** — which §2.1 always put here and which lived in `app/bridge.rs` until
+//! then. The blocker was stated in this doc and is gone: the argument carried the legacy `Route`,
+//! `Route` was `app`-private, and a screen may not name `app::`. `Route` moved here in phase 10
+//! and was FOLDED INTO [`AppArg`] in phase 12 — its seven mountable values are flat variants and
+//! the enum is gone (§15.2), so a page argument is one value rather than a value inside a value. What §0's criterion 5 buys
 //! for that is the thing this module is for: **a new screen touches its own `screens/<name>.rs`,
 //! this file, `dev/scenarios.rs` and `tests/manifest.json` and nothing else** — the variant, the id,
 //! the `mount` arm and the recorded shape ([`SCREEN_SHAPES`]) are all here.
@@ -34,6 +34,8 @@ use crate::ui::screen::{Mounter, ReturnState, Screen};
 
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub(crate) enum AppFx {
+    Session(crate::auth::SessionCmd),
+    SessionEffect(crate::auth::owner::SessionFx),
     /// A store command, executed as a `Deliver` to the store machine in the same drain.
     Store(StoreId, StoreCmd),
     /// Poll only the store work this visible route owns, after its read-only step returns.
@@ -98,7 +100,8 @@ pub(crate) struct ItemMenuReq {
 ///
 /// A panel on the player's page-owned `ModalStack` owns its own state and its own input, but not
 /// the playback: seeking, pausing, applying a quality rung and leaving for a detail page all need
-/// the `MainThread` token and the legacy `Route`/`Trail`, none of which a screen may name (§2.1).
+/// the `MainThread` token and the container ops `app::bridge` owns, neither of which a screen may
+/// name (§2.1).
 /// So the panel decides and the loop performs, exactly as `LibraryReq` does for the Library.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum PlayerReq {
@@ -109,6 +112,17 @@ pub(crate) enum PlayerReq {
     Transport(Option<bool>),
     /// Seek to this position in ns and resume if paused — the Chapters strip's OK.
     SeekTo(i64),
+    /// **Commit a SCRUB to this position, and leave a paused film paused** (restructure phase 12,
+    /// PX-PLAYER) — `app::playback::commit_seek`, the other half of the pair above.
+    ///
+    /// The difference is the reason there are two. [`SeekTo`](PlayerReq::SeekTo) RESUMES, because
+    /// a viewer who picked a chapter asked to watch it. A scrub does not: the transport's bar is
+    /// how a PAUSED film is moved, and starting it there is a behaviour nobody asked for. Holding
+    /// the pause across the seek needs three pieces of state that are the loop's and no screen's —
+    /// `App::repause_at`, `TX.resume_pend` and the bounded seek-preroll feed override that lets
+    /// the pipeline decode the landed frame without publishing a viewer Resume — which is why this
+    /// is a request rather than something `PlayerScreen` performs.
+    CommitSeek(i64),
     /// Apply the `…` popover's chosen row.
     More(crate::ui::more_menu::Action),
     /// Apply the Info card's focused action.
@@ -125,6 +139,24 @@ pub(crate) enum PlayerReq {
     /// take the playback session's `&mut`, which a screen never has (§2.2) — so the panel decides
     /// and the loop performs, exactly as every other request in this enum.
     CommitTrack(crate::ui::track_menu::TrackCommit),
+    /// **Present one of the four overlays directly** (restructure phase 12) — the tabs row's OK
+    /// (`OverlayKind::Info`/`::Chapters`, the old `key_ok`'s `focus == 2` arm) and the failure
+    /// read-out's own recovery escape (`OverlayKind::More { quality: true }`, the old
+    /// `key_player_failed`'s `ChooseQuality` arm). Both used to reach
+    /// `super::bridge::open_player_overlay` straight from the loop's key ladder; `PlayerScreen`
+    /// may not name that function itself (§2.2), so it asks instead.
+    OpenOverlay(crate::screens::player::overlay::OverlayKind),
+    /// **OK landed on the transport's own control row** — whichever disc, the Skip pill or the Up
+    /// Next tile currently occupies it (restructure phase 12, the old `key_ok`'s `focus == 1`
+    /// arm). Arms the same tvOS press dip [`ArmInfoPress`](PlayerReq::ArmInfoPress) does; the
+    /// loop's existing commit-frame dispatch (`app/run.rs`'s `Route::Player =>
+    /// activate_player_row(...)`) is unchanged and performs whatever the row decides once the
+    /// spring-back has played.
+    ArmControlRow,
+    /// **Leave the player** — the one ritual the STOP key, a BACK with nothing else open, and the
+    /// failure read-out's own BACK escape all perform (`exit_player`; restructure phase 12,
+    /// replacing `app/run.rs`'s direct calls to it from the player's own key arms).
+    Exit,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -805,8 +837,17 @@ pub(crate) trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a>;
 }
 
+/// Session's immutable frame publication; playback retains its separate `session` view.
+pub(crate) trait AuthLike: AppLike + Sized {
+    fn auth<'a>(cx: &Cx<'a, Self>) -> crate::auth::SessionRead<'a>;
+}
+
 /// The application's messages (spec §3.1).
 pub(crate) enum AppMsg {
+    Session(crate::auth::owner::SessionEvent),
+    RestartReply { correlation: u32, accepted: bool },
+    SelectionReply { correlation: u32, accepted: bool, flow_epoch: u64 },
+    BackReply { correlation: u32, resumed: bool },
     Store(StoreCmd),
     StoreWork(StoreWork),
     HubsResult(crate::stores::hubs::HubsResult),
@@ -837,27 +878,13 @@ pub(crate) enum LoopReq {
     /// Privacy & data → Delete all local data, confirmed: erase, sign out, land on sign-in.
     /// Retires when Session owns the sign-in (phase 6).
     DeleteAllLocalData,
+    /// The ordered Session erase and local-file sweep completed; leave the old account's UI.
+    LocalDataErased,
     /// The first-run Favourites screen (`Route::Onboard`) finished: enter Home. Retires with the
     /// route enum (phase 12, after 6 puts Login/Profiles/Onboard on one stack).
     OnboardDone,
     /// The first-run Favourites screen's BACK: the profile picker. Same retirement.
     OnboardBack,
-    /// **Phase 6.** BACK at the ROOT of the QR sign-in or the who's-watching picker — nothing of
-    /// this app is behind either, exactly the case [`BackAtRoot`] names, but this one is NOT that
-    /// variant, because it is not merely "hand the screen to the television": `auth::cancel()`
-    /// gets to decide FIRST whether there is a stored session to fall back to (issues #16-#18's
-    /// rule, carried forward verbatim from the legacy `key_onboarding`/`onboarding_back` ladder
-    /// this replaces — see `app::input::login_or_profiles_root_back`, which the loop's request
-    /// drain calls). The SCREEN answers the other half of the old ladder's job — `onboarding_back`
-    /// used to take a `pin_pad_open` bool so the loop could tell a picker's own PIN keypad BACK
-    /// apart from a real root press; since phase 6 that state lives on the screen's own focus
-    /// engine, not a legacy static the loop can still read, so the screen now decides that part
-    /// itself (closing its own pad and answering `Handled::Yes` with NO request, exactly as
-    /// `screens::consent`'s Settings-mode BACK declines rather than asking the loop) and pushes
-    /// this request only when it has decided the press really is its root. No payload: the two
-    /// screens' root-press handling is identical bar one log word, which the loop derives from
-    /// its own `Route` at the point it drains this.
-    AuthBackAtRoot,
     /// **Phase 10, the profile menu's five rows.** `screens::account_menu` is a surface on the
     /// shared `ModalStack` and owns its own rows, cursor and dismissal — but not one of the five
     /// things a row DOES. Three call `crate::auth` and then flip `app.route` (a screen may not
@@ -893,13 +920,17 @@ impl<H: Host<Elem = u32, Fx = AppFx, Msg = AppMsg>> AppLike for H {}
 /// from the screen that owns the frame.
 ///
 /// **`LOGIN`/`PROFILES` are phase 6's addition, and they are `route=` words, not `overlay=` ones**
-/// — the QR sign-in and the who's-watching picker are app-stack PAGES (`AppArg::Legacy(Route::…)`),
-/// never a surface on the `ModalStack`, exactly as first-run Favourites was in 5b. They MUST stay
-/// the literal strings `"login"`/`"profiles"`: `app::route_word` prints the same two words for the
-/// same two routes, and `bridge::frame`'s `debug_assert_eq!(word, route_word(route), …)` is what
-/// would catch the two drifting apart — `tests/run.py` selects fps samples by these words
-/// (`tests/manifest.json`'s `route` field), so a changed spelling silently disarms a scene rather
-/// than failing anything visible.
+/// — the QR sign-in and the who's-watching picker are app-stack PAGES (`AppArg::Login` /
+/// `AppArg::Profiles`, flat variants since phase 12 folded the page alphabet in here), never a
+/// surface on the `ModalStack`, exactly as first-run Favourites was in 5b. They MUST stay the
+/// literal strings `"login"`/`"profiles"`, and the reason changed shape in D1 rather than going
+/// away: `app::words::route_word` prints the same two words for the same two arguments, and the
+/// `debug_assert_eq!(word, route_word(route), …)` in `bridge::frame` that used to catch the two
+/// drifting is GONE — with one route authority there is nothing to compare a mirror against, so
+/// the heartbeat word simply IS the top screen's own `Screen::name`. The equality is now the
+/// tables' to keep, and `app::words::heartbeat_word_tests` derives both rather than transcribing
+/// either. `tests/run.py` selects fps samples by these words (`tests/manifest.json`'s `route`
+/// field), so a changed spelling silently disarms a scene rather than failing anything visible.
 pub(crate) mod word {
     pub(crate) const HOME: &str = "home";
     /// The profile menu (`screens::account_menu`). An `overlay=` word since phase 10 — it was a
@@ -918,11 +949,11 @@ pub(crate) mod word {
     pub(crate) const LEGAL: &str = "legal";
     pub(crate) const CONSENT: &str = "consent";
     pub(crate) const ONBOARD: &str = "onboard";
-    /// The QR sign-in (`screens::login::LoginScreen`). Same spelling as `app::route_word`'s
-    /// `Route::Login` arm — see this module's doc for why that equality is load-bearing.
+    /// The QR sign-in (`screens::login::LoginScreen`). Same spelling as `app::words::route_word`'s
+    /// `AppArg::Login` arm — see this module's doc for why that equality is load-bearing.
     pub(crate) const LOGIN: &str = "login";
     /// The who's-watching picker (`screens::profiles::ProfilesScreen`). Same spelling as
-    /// `app::route_word`'s `Route::Profiles` arm — see this module's doc.
+    /// `app::words::route_word`'s `AppArg::Profiles` arm — see this module's doc.
     pub(crate) const PROFILES: &str = "profiles";
 }
 
@@ -1143,96 +1174,26 @@ mod tests {
 // the page alphabet, the screen argument and the one mount match
 // ---------------------------------------------------------------------------------------------
 
-/// **The PAGE alphabet** — one value per page the application stack can hold, and the payload of
-/// [`AppArg::Legacy`].
-///
-/// It lived in `app/nav.rs` as the legacy navigation model's own enum until restructure phase 10,
-/// and the reason it MOVED rather than being copied is the layer rule (§2.1): this module owns the
-/// concrete `ScreenArg` and the one `mount` match, both of which are written over these nine
-/// values — so while `Route` was `app`-private, the registry could hold neither. That was the
-/// blocker this module's own doc used to name.
-///
-/// What the LOOP still does with it is unchanged and retires in phase 12 (§14: "`Route` survives
-/// only as its argument"): `app::nav` re-exports the name, so every `super::Route` spelling in
-/// `app/` still resolves. What is left after that retirement is exactly this — the alphabet a page
-/// argument is spelled in.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Route {
-    Login,    // plex.tv sign-in (QR) — shown when there's no usable session
-    Profiles, // "who's watching" Plex Home picker
-    /// **"Which libraries do you want?"** — the *Favorite libraries* route (`screens::onboard`,
-    /// an OWNED screen since phase 5b: this route still names the page, but the dispatcher mounts,
-    /// steps, focuses and draws it, and the loop's ladders never see its keys), the
-    /// third and last onboarding screen and the only one that is not about credentials: which of
-    /// the granted libraries this profile wants, asked once PER PROFILE and only when the roster
-    /// holds more than one. It asked "what goes on your Home?" until 2026-09-05, and both the words
-    /// and the SCOPE changed: favourites fill Home's shelves, decide which type pills the top strip
-    /// draws at all, and scope the Library's own Sources picker. The grant is untouched, and Search
-    /// still reaches every granted library. Between the picker and
-    /// Home, so a household member answers for themselves rather than inheriting the answer of
-    /// whoever set the television up.
-    Onboard,
-    Home,
-    Library, // owned screens/library page; sort/filter/source panels are LibraryMenu entries
-    Detail,
-    /// The person/actor page (screens/person.rs), reached by OK on a detail page's cast
-    /// headshot. Exclusive with Detail like every other node — what is UNDER it is the BACK
-    /// trail's business (`ui::trail`), not this enum's, which is exactly why the trail
-    /// exists: a `Route` names one screen, and person→detail→person is three.
-    Person,
-    /// The Search screen (`screens::search`'s `SearchScreen`). A PEER of Home and the Library, not
-    /// a stacking page: it is reached from the strip's last pill and BACK from it returns to Home,
-    /// so it needs no trail node of its own — what it OPENS stacks, but it does not.
-    Search,
-    /// Playback. Its four panels are NOT here — they are entries on the player page's own
-    /// `ModalStack` (`screens::player::overlay::OverlayKind`), and the container owns which is up.
-    Player,
-}
+// (The nine-value page alphabet `Route`, plus `route_wears_tab_bar` and `page_word`, stood here — the PAGE alphabet, a second
+// enum whose nine values `AppArg::Legacy` wrapped. **Phase 12 folded it in rather than renaming
+// it** (spec §14: "`Route` survives only as its argument"; §15.2: the enum is gone): the seven
+// values that could actually mount are flat `AppArg` variants below, and the two that could not
+// (`Detail`, `Person`) are gone entirely, because a page with an ITEM IDENTITY has always mounted
+// from `AppArg::Content` and the `Legacy(Detail | Person)` arm of the mounter was a
+// `debug_assert!(false)` nothing constructed.
+//
+// What the fold removed, beyond one enum: the two-level `match` every chrome, identity and mount
+// question was written over; `route_wears_tab_bar`, whose only in-registry caller was
+// [`AppArg::chrome`] and which is that function's body now; `page_word`, a second nine-word table
+// beside `Screen::name`; and `AppArg::route()`, the "which of the two spellings is this page"
+// resolution that every reader in `app/` had to perform first.)
 
-/// Which routes draw the shared top tab bar — the ONE test behind `ui::nav`'s continuous-chrome
-/// rule. Exhaustive on purpose: a new screen must not be able to answer this by accident. (Both
-/// popovers that used to wear a route are SURFACES since phase 10 and neither is a route at all,
-/// so the page each stands on is the top page and answers this for itself — which is what the card
-/// menu's own `Route::ItemMenu { over } => route_wears_tab_bar(over.route())` arm was arranging by
-/// hand. Detail and Person have no bar, which is what makes every transition to or from them fade
-/// the bar with the page.)
+/// **A screen argument: everything the container needs to mount one screen, and nothing else.**
 ///
-/// It moved here with [`Route`] because [`AppArg::chrome`] is its first reader and a screen
-/// argument may not name `app::`; the loop reads it through `app::nav`'s re-export, unchanged.
-pub(crate) fn route_wears_tab_bar(r: Route) -> bool {
-    match r {
-        Route::Home | Route::Library | Route::Search => true,
-        Route::Login
-        | Route::Profiles
-        | Route::Onboard
-        | Route::Detail
-        | Route::Person
-        | Route::Player => false,
-    }
-}
-
-/// A page's own name, for the one `debug_assert!` in the mounter that can name a route.
-///
-/// Deliberately NOT `app::route_word`, which is the HEARTBEAT's table and belongs to the loop:
-/// this is a panic message, and lifting nine words for it would give `heartbeat_word_tests` a
-/// second table to keep in step. The two agree today because both spell the page's own name;
-/// nothing depends on their agreeing.
-fn page_word(r: Route) -> &'static str {
-    match r {
-        Route::Login => "login",
-        Route::Profiles => "profiles",
-        Route::Onboard => "onboard",
-        Route::Home => "home",
-        Route::Library => "library",
-        Route::Detail => "detail",
-        Route::Person => "person",
-        Route::Search => "search",
-        Route::Player => "player",
-    }
-}
-
-/// A screen argument: the legacy `Route` (§14: "`Route` survives only as its argument"), or an
-/// OWNED screen — the Settings surface and the first-run consent surface (both `RouteSurface`).
+/// Three families in one enum, distinguished by nothing but which variant it is: the seven flat
+/// PAGES the application stack can hold, the CONTENT pages that carry an item identity, and the
+/// surfaces a `ModalStack` presents. `AppArg::Legacy(Route)` and the nine-value page alphabet it
+/// wrapped were folded in here in phase 12 (§15.2: the enum is gone) — see the note above.
 ///
 /// **Both owned variants carry the page their inner stack is ROOTED at**, which is there for the
 /// dev boot targets and for nothing else. `/tmp/plxnative-settings=privacy` has to put a headless
@@ -1282,7 +1243,32 @@ pub(crate) enum AppArg {
     /// `AboutPanel`'s reasons: the sheet describes `person::current()`, it opens at the top of the
     /// prose every time, and the host it is presented over is the container's own knowledge.
     PersonBio,
-    Legacy(Route),
+    /// plex.tv sign-in (QR) — shown when there is no usable session.
+    Login,
+    /// The "who's watching" Plex Home picker.
+    Profiles,
+    /// **"Which libraries do you want?"** — the *Favorite libraries* screen, the third and last
+    /// onboarding page and the only one that is not about credentials: which of the granted
+    /// libraries this profile wants, asked once PER PROFILE and only when the roster holds more
+    /// than one. Favourites fill Home's shelves, decide which type pills the top strip draws at
+    /// all, and scope the Library's own Sources picker; the grant is untouched, and Search still
+    /// reaches every granted library.
+    Onboard,
+    /// The Home shelves — the app's ROOT page, and the one page that is always there.
+    Home,
+    /// The Library browse grid. Its sort/filter/source panels are [`Self::LibraryMenu`] entries;
+    /// WHICH library is the `browse` store's business, not this argument's, which is why it
+    /// carries nothing (the grid is re-ENTERED, never re-queried).
+    Library,
+    /// The Search screen. A PEER of Home and the Library, not a stacking page: it is reached from
+    /// the strip's last pill and BACK from it returns to Home. What it OPENS stacks; it does not.
+    Search,
+    /// Playback. Its four panels are NOT here — they are entries on the player page's own
+    /// `ModalStack` ([`Self::PlayerOverlay`]), and the container owns which one is up.
+    Player,
+    /// A page with an ITEM IDENTITY — a detail page, a person page, a filmography. Two of these
+    /// are two entries (`person → detail → person` is three), which is the whole reason the
+    /// identity rides on the argument instead of being a variant of a page alphabet.
     Content(ContentArg),
     /// The Settings family, rooted at this page (`SettingsPage::Root` for every real opening).
     Settings(SettingsPage),
@@ -1291,7 +1277,7 @@ pub(crate) enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub(crate) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,Home,Library,Detail,Person,Search,Player},Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub(crate) const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,AccountMenu,\
@@ -1316,20 +1302,17 @@ impl LogicalState for AppArg {
             // menus; 6/7 are the two Detail panels above.
             Self::AccountMenu => { c.u32(8); }
             Self::ItemMenu(arg) => { c.u32(9); arg.write(c); }
-            Self::Legacy(route) => {
-                c.u32(0);
-                match route {
-                    Route::Login => { c.u32(0); }
-                    Route::Profiles => { c.u32(1); }
-                    Route::Onboard => { c.u32(2); }
-                    Route::Home => { c.u32(3); }
-                    Route::Library => { c.u32(6); }
-                    Route::Detail => { c.u32(7); }
-                    Route::Person => { c.u32(8); }
-                    Route::Search => { c.u32(9); }
-                    Route::Player => { c.u32(10); }
-                }
-            }
+            // The seven PAGE variants keep the canon bytes `Legacy(Route)` wrote — a `0` tag and
+            // then the route's own — so a recording taken before the fold and one taken after are
+            // byte-comparable at every page frame. Only the SHAPE STRING moved, which is what the
+            // fixtures are re-recorded for.
+            Self::Login => { c.u32(0).u32(0); }
+            Self::Profiles => { c.u32(0).u32(1); }
+            Self::Onboard => { c.u32(0).u32(2); }
+            Self::Home => { c.u32(0).u32(3); }
+            Self::Library => { c.u32(0).u32(6); }
+            Self::Search => { c.u32(0).u32(9); }
+            Self::Player => { c.u32(0).u32(10); }
             Self::Content(arg) => { c.u32(1); arg.write(c); }
             Self::Settings(page) => { c.u32(2); page.write(c); }
             Self::FirstRunConsent(stage) => { c.u32(3).u8(*stage); }
@@ -1339,10 +1322,29 @@ impl LogicalState for AppArg {
 }
 
 impl crate::ui::screen::ScreenArg for AppArg {
+    /// **Which pages draw the shared top tab bar** — `route_wears_tab_bar`'s body, in the one
+    /// place that ever asked it. Exhaustive on purpose: a new screen must not be able to answer
+    /// this by accident, because the page each surface stands on is what answers for the chrome
+    /// under it. Detail and Person have no bar, which is what makes every transition to or from
+    /// them fade the bar with the page.
     fn chrome(&self) -> Chrome {
         match self {
-            AppArg::Legacy(r) if route_wears_tab_bar(*r) => Chrome::TabBar,
-            _ => Chrome::None,
+            AppArg::Home | AppArg::Library | AppArg::Search => Chrome::TabBar,
+            AppArg::Login
+            | AppArg::Profiles
+            | AppArg::Onboard
+            | AppArg::Player
+            | AppArg::Content(_)
+            | AppArg::Settings(_)
+            | AppArg::FirstRunConsent(_)
+            | AppArg::LibraryMenu(_)
+            | AppArg::AccountMenu
+            | AppArg::ItemMenu(_)
+            | AppArg::PlayerOverlay(_)
+            | AppArg::AltSources(_)
+            | AppArg::TracksPanel(_)
+            | AppArg::AboutPanel
+            | AppArg::PersonBio => Chrome::None,
         }
     }
     fn id(&self) -> ScreenId {
@@ -1367,15 +1369,17 @@ impl crate::ui::screen::ScreenArg for AppArg {
             // three row sets of ONE screen, and `same_instance` must never let the container think
             // it is holding two of them.
             AppArg::ItemMenu(_) => 20,
-            AppArg::Legacy(Route::Login) => 1,
-            AppArg::Legacy(Route::Profiles) => 2,
-            AppArg::Legacy(Route::Onboard) => 3,
-            AppArg::Legacy(Route::Home) => 4,
-            AppArg::Legacy(Route::Library) => 7,
-            AppArg::Legacy(Route::Detail) => 8,
-            AppArg::Legacy(Route::Person) => 9,
-            AppArg::Legacy(Route::Search) => 10,
-            AppArg::Legacy(Route::Player) => 11,
+            // The seven page ids are the ones `Legacy(Route)` computed, unchanged: an id is a
+            // screen's identity in a recorded state and in `same_instance`, so they are allocated
+            // forward and a fold may not renumber them. 5 and 6 are vacant (the two popover routes
+            // phase 10 deleted); 8 and 9 belong to Detail and Person, which mount from `Content`.
+            AppArg::Login => 1,
+            AppArg::Profiles => 2,
+            AppArg::Onboard => 3,
+            AppArg::Home => 4,
+            AppArg::Library => 7,
+            AppArg::Search => 10,
+            AppArg::Player => 11,
             // The ROOT payload is a boot address, not an identity: one Settings surface and one
             // consent question, whichever page each happens to have been rooted at.
             AppArg::Settings(_) => 12,
@@ -1415,9 +1419,32 @@ impl crate::ui::screen::ScreenArg for AppArg {
 // the mounter: the one match
 // ---------------------------------------------------------------------------------------------
 
+/// **What a detail page that is about to mount should be RESTORED to** — the one payload the
+/// container's own `ReturnState` cannot supply, because the page has never been on this stack.
+///
+/// Its two users are the `/tmp/plxnative-detail` boot trigger (a hard cut onto a page nobody
+/// navigated from) and a show opened ON A PARTICULAR SEASON, which is the mount a page argument
+/// cannot express: an argument names a PAGE, and a season is a tab inside one. It was a
+/// `ui::trail::Node` until phase 12, i.e. a whole history entry used as a carrier for its `Spot`.
+#[derive(Clone)]
+pub(crate) struct DetailSeed {
+    pub(crate) sid: crate::plex::ServerId,
+    pub(crate) rk: String,
+    pub(crate) spot: crate::metadata::Spot,
+}
+
 #[derive(Default)]
 pub(crate) struct AppMounter {
-    pub(crate) seed: Option<crate::ui::trail::Node>,
+    pub(crate) seed: Option<DetailSeed>,
+    /// **Where the NEXT player instance returns to** — the entry that was on top when the push was
+    /// asked for, stamped at the press and consumed by the mount exactly as `player_hud_ms` is.
+    ///
+    /// A seed rather than something the mounter derives, for the reason the auto-advance rule
+    /// needs: `play_up_next` starts a new item while the player is ALREADY mounted, so nothing is
+    /// seeded and nothing is consumed — the origin the user actually came from survives however
+    /// many episodes the chain runs for. That was `Origin::Unchanged` and a `set_origin` call;
+    /// it is now the absence of a write.
+    pub(crate) player_origin: Option<crate::screens::player::Origin>,
     pub(crate) library_kind: Option<crate::browse::SecKind>,
     /// How long the NEXT player instance pins its transport for, in ms — `HUD_LINGER_MS` for an
     /// ordinary start and `HUD_HEADLESS_MS` for a capture run. It is a seed rather than a constant
@@ -1438,7 +1465,7 @@ pub(crate) struct AppMounter {
 /// it for its own host exactly as the dispatcher instantiates everything else.
 impl<H> Mounter<H> for AppMounter
 where
-    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike,
+    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike,
 {
     fn mount(
         &mut self,
@@ -1446,7 +1473,7 @@ where
         arg: &AppArg,
         ret: &ReturnState<u32, PageMemory>,
         cx: &Cx<'_, H>,
-        _fx: &mut Effects<'_, H>,
+        fx: &mut Effects<'_, H>,
     ) -> Box<dyn Screen<H>> {
         let entry = match cx.owner {
             crate::ui::machine::InputOwner::Entry(e) => e,
@@ -1475,8 +1502,8 @@ where
                 let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone());
                 if let PageMemory::Detail(spot) = &ret.memory {
                     page.restore_memory(spot);
-                } else if let Some(crate::ui::trail::Node::Detail { sid: seed_sid, rk: seed_rk, spot }) = self.seed.take() {
-                    if seed_sid == *sid && seed_rk == *rk { page.restore(&spot); }
+                } else if let Some(seed) = self.seed.take() {
+                    if seed.sid == *sid && seed.rk == *rk { page.restore(&seed.spot); }
                 }
                 Box::new(page)
             }
@@ -1492,7 +1519,7 @@ where
             }
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
             // word stays the loop's while the loop still names the page
-            AppArg::Legacy(Route::Onboard) => Box::new(crate::screens::onboard::OnboardScreen::first_run(entry)),
+            AppArg::Onboard => Box::new(crate::screens::onboard::OnboardScreen::first_run(entry)),
             // Phase 6: the QR sign-in and the who's-watching picker are OWNED screens too, mounted
             // exactly the same way — the route word is still the loop's (`route_word`), and
             // naming the route is the whole of (re)mounting either: a fresh instance is built
@@ -1500,21 +1527,27 @@ where
             // every remaining `app::input`/`app::run` call site drop its own `enter()`-equivalent
             // reset (see `input::enter_profiles_from_onboard`'s doc for the same argument made
             // about `screens::onboard` in 5b).
-            AppArg::Legacy(Route::Login) => Box::new(crate::screens::login::LoginScreen::new(entry)),
-            AppArg::Legacy(Route::Profiles) => Box::new(crate::screens::profiles::ProfilesScreen::new(entry)),
-            AppArg::Legacy(Route::Home) => {
+            AppArg::Login => Box::new(crate::screens::login::LoginScreen::new(entry, H::auth(cx))),
+            AppArg::Profiles => {
+                let screen = crate::screens::profiles::ProfilesScreen::new(entry, H::auth(cx));
+                fx.push(crate::ui::machine::Fx::App(AppFx::Session(
+                    crate::auth::SessionCmd::DismissPinError,
+                )));
+                Box::new(screen)
+            }
+            AppArg::Home => {
                 let mut page = crate::screens::home::HomeScreen::new(entry, id);
                 if let PageMemory::Home(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
-            AppArg::Legacy(Route::Library) => {
+            AppArg::Library => {
                 let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
                     .unwrap_or(crate::browse::SecKind::Movie);
                 let mut page = crate::screens::library::LibraryScreen::new(entry, id, kind);
                 if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
-            AppArg::Legacy(Route::Search) => {
+            AppArg::Search => {
                 let mut page = crate::screens::search::SearchScreen::new(entry, id);
                 if let PageMemory::Search(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
@@ -1524,30 +1557,23 @@ where
             // and that answers `RenderStrategy::VideoPlane`. Its transport is pinned from the
             // instant it mounts (`AppMounter::player_hud_ms`), never from the keypress that asked
             // for the playback.
-            AppArg::Legacy(Route::Player) => {
+            AppArg::Player => {
                 let mut page = crate::screens::player::PlayerScreen::new(entry);
+                // **Where BACK, Stop and EOS land** (§5.1). Captured at the MOUNT, from the page
+                // that was on top when the push was asked for — never read live, because an
+                // overlay opening on this page's own stack changes the input owner and must not
+                // be mistaken for a new origin.
+                page.origin = self.player_origin.take();
                 page.hud.extend(cx.tick.ms, self.player_hud_ms.take().unwrap_or(crate::screens::player::input::HUD_LINGER_MS));
                 page.publish();
                 Box::new(page)
             }
-            // **Phase 10: the `Legacy` arm is EXHAUSTIVE.** The fallback that mounted a route
-            // WORD as a blank page is gone — every route above mounts an owned screen, and the
-            // two `Route` values left cannot reach here at all, for the reason stated below.
-            //
-            // The fold this comment used to describe is gone with its subjects: `Route::Account`
-            // and `Route::ItemMenu` were popovers wearing a route, and both are surfaces on the
-            // `ModalStack` now (`AppArg::AccountMenu` / `AppArg::ItemMenu`), so there is no host
-            // page to fold onto and `page_of` — the identity function for every other variant —
-            // is deleted rather than left as a second name for "the page".
-            // Detail and Person carry an ITEM IDENTITY, which a `Legacy(Route)` has no room for,
-            // so their pages mount from a `Content` arg and `AppArg::from_node` answers `Content`
-            // for both nodes. Nothing constructs the `Legacy` spelling; if anything ever does, it
-            // lands on Home rather than on a blank page, because a screen with nothing on it is
-            // precisely what the retired fallback was and what this arm exists to have removed.
-            AppArg::Legacy(r @ (Route::Detail | Route::Person)) => {
-                debug_assert!(false, "{}: a page with an identity mounts from a Content arg", page_word(*r));
-                Box::new(crate::screens::home::HomeScreen::new(entry, id))
-            }
+            // **The `Legacy(Detail | Person)` arm stood here** — a `debug_assert!(false)` and a
+            // fall back to Home for two `Route` values nothing could construct, because a page
+            // with an ITEM IDENTITY has no room for one in a bare page name and mounts from
+            // `AppArg::Content`. Phase 12's fold deleted the two values with the enum, so the
+            // match is exhaustive over pages that can really mount and there is no unreachable
+            // arm left to keep honest.
             AppArg::Settings(root) => Box::new(RouteSurface::new(entry, id, Family::Settings, *root)),
             AppArg::FirstRunConsent(stage) => Box::new(RouteSurface::new(
                 entry,
@@ -1568,9 +1594,9 @@ where
 /// fps samples by these strings, and a scene keyed on a word the app cannot print fails on the
 /// television as "only 0 post-warmup samples", which is indistinguishable from a real regression.
 ///
-/// The PAGE variants (`Legacy`, `Content`) are excluded on purpose and by name rather than by a
-/// wildcard: a page's word is `route=`, and it comes from `app::route_word` over
-/// `app::EVERY_ROUTE`. `Settings` and `FirstRunConsent` appear once each because their payload is
+/// The PAGE variants (the seven flat pages and `Content`) are excluded on purpose and by name
+/// rather than by a wildcard: a page's word is `route=`, and it is the top page's own
+/// `Screen::name`. `Settings` and `FirstRunConsent` appear once each because their payload is
 /// a boot ADDRESS rather than an identity (`ScreenArg::id` collapses it the same way), and the
 /// family's inner stack is what decides its word at any moment — `RouteSurface::top_word`.
 #[cfg(test)]
@@ -1631,9 +1657,16 @@ pub(crate) fn every_surface_arg() -> Vec<AppArg> {
             | AppArg::PlayerOverlay(_)
             | AppArg::Settings(_)
             | AppArg::FirstRunConsent(_) => {}
-            // The two PAGE variants. Named rather than swept into a `_`, so the exhaustiveness
+            // The eight PAGE variants. Named rather than swept into a `_`, so the exhaustiveness
             // above is real and a new SURFACE variant cannot land in a catch-all.
-            AppArg::Legacy(_) | AppArg::Content(_) => {
+            AppArg::Login
+            | AppArg::Profiles
+            | AppArg::Onboard
+            | AppArg::Home
+            | AppArg::Library
+            | AppArg::Search
+            | AppArg::Player
+            | AppArg::Content(_) => {
                 panic!("a page argument is not a surface: its word is `route=`")
             }
         }
@@ -1710,14 +1743,30 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// graded the sheet opening and closing with a hole between, and its page cursor was a `static mut`
 /// no `LogicalState` could see.
 ///
+/// **Phase 12, the player's pointer drag** (0x2ba1_a831_5580_d0b1 → this): `screens::player::SHAPE`
+/// gains `scrub.drag:bool`. It is not a new piece of state — it was `app::input::Pointer::drag`, a
+/// field of the LOOP's pointer machine, which is precisely why a recording taken before this
+/// could not see it: the recorder hashes screens and the loop's own shapes, and a scrub gesture
+/// half-owned by each hashed as neither. PX-PLAYER moves the whole gesture onto `PlayerScreen`, so
+/// "a pointer is dragging the bar" is now a field of the page whose preview it moves, and a replay
+/// that diverges on it says so instead of showing a preview nobody recorded.
+///
+/// **Phase 12, the fold of `Route` into `AppArg`** (0xd7b2_a9a4_39f9_706f → this): `ARG_SHAPE`
+/// loses its nested `Legacy:Route{…}` and gains the seven page names flat. **No recorded byte
+/// moved** — `LogicalState::write` still emits the `0` tag and the same per-page tag it wrote as
+/// `Legacy(Route)`, deliberately, so a page frame hashes identically before and after. What
+/// changed is the SHAPE STRING, which is what a shape pin is for: the fixtures are re-recorded
+/// because their header names the shape, not because their frames disagree.
+///
 /// `#[cfg(test)]` because the pin is an ASSERTION about the array above and never a value the
 /// app reads — `state_fp()` hashes [`SCREEN_SHAPES`] itself.
 #[cfg(test)]
-const SCREEN_SHAPES_PIN: u64 = 0x2ba1_a831_5580_d0b1;
+const SCREEN_SHAPES_PIN: u64 = 0xb7cc_e355_9fd5_f0f9;
 
 #[cfg(test)]
 mod arg_tests {
     use super::*;
+    use crate::ui::screen::ScreenArg as _;
 
     /// **The screen half of the recorder's shape pin** (§5.4), asserted here rather than in
     /// `app/recorder.rs` because this is the array a new screen joins — so the bump lands in the
@@ -1750,6 +1799,55 @@ mod arg_tests {
                     );
                 }
             }
+        }
+    }
+
+    // ---- the bar-wearing alphabet -------------------------------------------------------------
+
+    /// **The profile chip is offered on exactly the pages that wear the shared top bar.**
+    ///
+    /// This test used to be `the_profile_popover_stands_on_the_page_it_was_opened_from`, and it
+    /// graded `Route::Account { over: BarHost }` through `page_of`: the chip is a stop on all
+    /// three bar screens, so the route had to CARRY the page underneath or a press on the
+    /// Library's chip would cut to Home under the panel and strand the user there on dismissal.
+    ///
+    /// The menu is a `ModalStack` surface since phase 10, so that whole class of bug is gone by
+    /// construction — a surface is presented OVER the top page and never replaces it, which is
+    /// why `Route::Account` and `BarHost` are both deleted. What survives of the old rule is the
+    /// half `BarHost::of` answered: WHICH pages have a chip to press at all. It is derived from
+    /// `ScreenArg::chrome` now (the chip is a control on that bar), so the two cannot drift —
+    /// which is exactly what `BarHost::of`'s own hand-written three-route list could do.
+    /// `app::bridge`'s `the_profile_menu_is_a_surface_over_the_page_whose_chip_was_pressed`
+    /// grades the other half, on a real tree.
+    ///
+    /// It is asked of `ScreenArg::chrome` DIRECTLY, here, rather than of its one-line consumer
+    /// (`app::input::wears_the_chip`, which is `chrome() == Chrome::TabBar` and nothing else):
+    /// this file is where a page argument joins the alphabet, so the bar-wearing set and the
+    /// screen that joins it land in the same commit. A `screens/` module may not name
+    /// `crate::app::` at all (`ci/check-deps.sh`'s `layer` gate), which is the same boundary
+    /// stated as a rule.
+    #[test]
+    fn the_profile_chip_is_offered_on_exactly_the_bar_wearing_pages() {
+        for r in [AppArg::Home, AppArg::Library, AppArg::Search] {
+            assert!((r.chrome() == Chrome::TabBar), "a bar-wearing page carries the chip");
+        }
+        for r in [
+            AppArg::Content(crate::screens::registry::ContentArg::Detail {
+                sid: crate::plex::ServerId::UNSET, rk: String::new(),
+            }),
+            AppArg::Content(crate::screens::registry::ContentArg::Person {
+                sid: crate::plex::ServerId::UNSET, key: String::new(), guid: String::new(),
+                name: String::new(), thumb: String::new(),
+            }),
+            AppArg::Login,
+            AppArg::Profiles,
+            AppArg::Onboard,
+            AppArg::Player,
+        ] {
+            assert!(
+                !(r.chrome() == Chrome::TabBar),
+                "only the bar-wearing screens carry the profile chip"
+            );
         }
     }
 }

@@ -792,7 +792,7 @@ impl Screen<InnerHost> for ConsentPage {
         let layout = RouteLayout::screen();
         Header::new(layout, self.crumb(), self.title(), self.body())
             .with_copy_size(self.copy_size())
-            .paint(p);
+            .paint(p, f.measure);
         let labels = self.band_labels();
         let alert_open = self.alert.is_open();
         // Rule 9's guard (see `Self::uncommitted`'s doc), threaded through the SAME two builder
@@ -1547,7 +1547,12 @@ mod tests {
     fn both_privacy_policy_doors_open_the_same_document() {
         let idx = PreviewKind::ALL.iter().position(|k| *k == PreviewKind::Policy).unwrap() as u8;
         let page = PreviewPage::new(EntryId(1), idx);
-        assert_eq!(page.text, crate::screens::legal::privacy_policy());
+        // `super::super::` rather than `crate::screens::`: from inside `mod tests` (nested one
+        // level under `consent`) the relative spelling is two hops — `tests` -> `consent` ->
+        // `screens` — which is the same distinction `screens::family`'s own test module documents
+        // for the identical trap. The absolute form is what `ci/check-deps.sh`'s `sibling` gate
+        // greps for; this is the same call, unrewritten in every other respect.
+        assert_eq!(page.text, super::super::legal::privacy_policy());
     }
 
     /// **The regression `PreviewState::pos` exists to close.** Before that field, `PreviewState`

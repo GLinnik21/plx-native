@@ -647,7 +647,7 @@ impl<H: AppLike> Screen<H> for ItemMenuScreen {
         let p = f.painter.alpha(f.page_alpha);
         let r = self.frame();
         Glass::CACHED.panel(p, r, 0.0, PANEL_RAD);
-        self.table.draw(p, r);
+        self.table.draw(p, r, f.measure);
         for elem in self.focusable().collect::<Vec<_>>() {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
                 f.stop(

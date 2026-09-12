@@ -23,6 +23,13 @@ and its operator. PlxNative’s developer does not receive them.
 
 ## Data stored on this television
 
+PlxNative has a developer-only input/frame recorder used to reproduce and test bugs. It is not
+part of the app you installed: a release build has the whole `/tmp/plxnative-*` developer-trigger
+surface, including the recorder, compiled out — there is no code path in a release binary that can
+open, write or read a recording, on this television or off it. It exists only in development
+builds used to build and test PlxNative itself, is started only by explicitly arming it on that
+build, and its recordings never leave the device it was made on.
+
 PlxNative stores your Plex account token and a separate token for each server you use, the
 addresses and identifiers of those servers, the profile you selected together with the profile
 names and pictures on your account, your Home library choices, your recent searches, your playback

@@ -134,15 +134,15 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     crate::browse::seed_items_for_test(120);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+    frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
-    frame(&mut d, &mut rig, Route::Library, tick(1), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(1), vec![]);
     Bridge::library_command(
         &mut d,
         crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 },
     );
     for i in 2..80 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let old_entry = d.nav.top_page().unwrap().id;
     let (item, opener) = rig.library_selection(&d, old_entry, d.focus()).unwrap();
@@ -183,20 +183,18 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
             },
         )),
     );
-    frame(&mut d, &mut rig, Route::Library, tick(80), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(80), vec![]);
     let InputOwner::Entry(menu_entry) = d.nav.input_owner().unwrap() else {
         unreachable!()
     };
     assert_ne!(menu_entry, old_entry);
     select(&mut d, &rig, 2);
     let mut saves = Saves::default();
-    let trail = super::super::Trail::new();
     for i in 81..120 {
-        super::frame_with_tap(
+        frame_with_tap(
             &mut d,
             &mut rig,
-            Route::Library,
-            &trail,
+            AppArg::Library,
             tick(i),
             vec![],
             &mut saves,
@@ -212,13 +210,13 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     );
     d.request(MachineId::Nav, NavOp::Dismiss(menu_entry));
     crate::browse::seed_items_for_test(120);
-    frame(&mut d, &mut rig, Route::Library, tick(120), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(120), vec![]);
     Bridge::library_command(
         &mut d,
         crate::screens::registry::LibraryCmd::FocusGrid { row: 3, col: 1 },
     );
     for i in 121..200 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let (b_item, _) = rig.library_selection(&d, old_entry, d.focus()).unwrap();
     assert_ne!(
@@ -226,11 +224,10 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
         "same rating-key namespace on two actual servers"
     );
     for i in 200..210 {
-        let (_, report) = super::frame_with_tap(
+        let (_, report) = frame_with_tap(
             &mut d,
             &mut rig,
-            Route::Home,
-            &trail,
+            AppArg::Home,
             tick(i),
             vec![],
             &mut saves,
@@ -246,7 +243,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     );
     rig.enter_library(crate::browse::SecKind::Movie);
     for i in 210..290 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let entry = d.nav.top_page().unwrap().id;
     assert_ne!(entry, old_entry);
@@ -259,7 +256,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     );
     select(&mut d, &rig, 0);
     for i in 290..370 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     assert_eq!(rig.directory.view().current(), Some(0));
     let (returned, opener) = rig

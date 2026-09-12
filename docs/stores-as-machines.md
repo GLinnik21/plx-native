@@ -1,5 +1,14 @@
 # Stores as machines — restructure phase 4
 
+R2B-E endpoint recovery: `stores::apply` returns a `StoreOutcome` containing the existing
+`changed` verdict and a bounded, deduplicated set of endpoint requests in first-observation
+order. Hubs failure/refetch/retry, Browse discovery and ViewState's hub refetch propagate that
+set to their callers. Generic store steps use the layer-neutral `StoreEffectHost`; Bridge and
+Onboard translate requests to `AppFx::Session(RequestEndpoint)`. Boot/run accumulate outcomes
+locally and share the temporary app-side Session command executor with Bridge. Data modules
+no longer execute auth recovery directly. Physical Session ownership remains the next R2B
+package: the temporary executor still calls the existing auth controller.
+
 The design note for spec v4 (`ui-plxnative-structured-phoenix.md`) phase 4, written from the
 code rather than from the spec's sentence, because the sentence hides four decisions the tree
 forces. Read `rust-modules/src/stores/mod.rs` for the vocabulary; this is the reasoning.
@@ -89,15 +98,42 @@ about to establish. That fact is what decides §3 below.
    `Fx::Deliver(MachineId::Store(ord), Delivery::Machine(AppMsg::Store(cmd)))`, and `Rig::deliver`
    steps the store. A migrated screen emits the effect; a legacy screen calls the shim. Both end in
    the same `step`.
-4. **`Landing` is complete** (spec §5.2): per-addressee admission (`inflight_cap`), `Refused` and
-   `Dropped` on the control lane, per-landing drop counters, and the four §15.1 tests
-   (`the_landing_cap_drops_the_newest_and_hashes_the_count`,
-   `a_full_landing_replies_dropped_and_retires_inflight`, `a_refused_spawn_lands_a_refusal_event`,
-   `a_same_rating_key_on_a_different_server_is_skipped`).
+4. **`Landing` reserves one terminal per exact admitted address** (spec §5.2, R2Q1 clarification).
+   Both a per-addressee cap and a total cap bound running requests plus undrained terminals.
+   `admit` returns typed `Duplicate` or `Capacity`; the requester handles rejection synchronously,
+   without spawning or queueing a refusal. Unlimited rejected attempts cannot have a bounded
+   queued answer each. OS spawn refusal AFTER admission remains a reserved `Refused` terminal.
+   A full one-shot data lane atomically queues one `Dropped` terminal in arrival order;
+   duplicate/unknown publications cannot complete a second request. `clear` discards queued terminals but only
+   cancels running reservations: their workers queue sequenced, payload-free acknowledgements;
+   reservations retire and cancellation drops are counted when the main thread drains or clears
+   those terminals, which are never delivered to the addressee.
+   Metadata propagates the admission outcome directly and settles a rejected new generation's
+   spinner immediately. Drop counters include discarded terminals per canonical MachineId.
+   **R2Q2 adds explicit streams on this same transport:** `admit` remains one-shot;
+   `admit_stream` reserves one operation for ordered `progress` followed by exactly one terminal.
+   `Landed::terminal` distinguishes the two; draining progress never retires admission. Stream
+   `put` uses its reserved terminal slot even when the capped data queue is full. An overflowing
+   `progress` instead closes the stream with one ordered `Dropped`; the producer must stop and
+   cannot replace that partial-flow failure with later success. Queue storage is bounded by the
+   data cap plus accepted terminal reservations. `cancel(addr)` discards only that operation's
+   queued progress/terminal on the main thread, retaining running reservations until their
+   ordered acknowledgement is consumed; `clear` applies this to all operations. A worker creates
+   `completion_guard(addr)` inside its running closure: early return or unwind queues `Dropped`
+   once, while an explicit terminal already queued/consumed makes guard drop a no-op. The caller
+   still answers OS spawn refusal, because no worker guard exists when the closure never starts.
+   This clarifies §5.2's one-answer rule for §2.3's multievent login protocol as one terminal per
+   admitted stream, with progress explicitly nonterminal. Metadata remains strictly one-shot.
+   The bounds count records/reservations, not bytes of unconstrained payloads: Session integration
+   must enforce QR/HTTP/result payload limits. Session adapter wiring and full queued-payload
+   canonical replay hashing remain mandatory subsequent work.
 5. **The detail mailbox carries identity.** `metadata`'s one-slot `DETAIL_SLOT` becomes a
    `Landing` keyed on `(ServerId, ratingKey)`: a landing for a different server's item of the same
    number is skipped rather than installed, which is the gap the spec's evidence line names
    (`DetailResult` at metadata.rs:2021 carried no `(sid, rk)`).
+   A wrong-key result is a discarded terminal: it releases its reservation but does not settle
+   the awaited item's spinner. A subsequent valid success must belong to a newly admitted
+   request; a second terminal for the discarded address is ignored.
 6. **A store's step is O(result size).** `browse` sized a section's item vector to the listing's
    `totalSize` on the main thread when the first page landed — `Vec<Option<PmsMovie>>` of every
    item in the library, allocated in the drain. The store is chunked by PAGE now (`SecItems`): the

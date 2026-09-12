@@ -708,7 +708,7 @@ impl TracksPanelScreen {
 /// A vertical cursor through the scrolling body: it lays runs out top-down, applies the feather's
 /// alpha per run, and — when `measure` is set — walks the same flow without drawing so the content
 /// height is produced by the very code that draws it.
-struct Flow {
+struct Flow<'a> {
     p: Painter,
     /// screen y of the next block's top, already scrolled
     y: f32,
@@ -718,9 +718,13 @@ struct Flow {
     measure: bool,
     /// content height accumulated in CONTENT space (unscrolled), for `CONTENT_H`
     h: f32,
+    /// The text-measurement capability (spec §4.3, D4) — named `tm` rather than `measure` because
+    /// this struct's own `measure` field already means "measuring pass, not drawing" (see the doc
+    /// above); the two are unrelated booleans-vs-capability and sharing a name would read as one.
+    tm: &'a dyn crate::ui::machine::Measure,
 }
 
-impl Flow {
+impl Flow<'_> {
     fn advance(&mut self, dy: f32) {
         self.y += dy;
         self.h += dy;
@@ -754,7 +758,7 @@ impl Flow {
                 // elide by CHARACTER, which `text::elide` does — the file path and every language
                 // name here can be non-ASCII (`"Українська"`), and a byte-wise cut would split a
                 // UTF-8 sequence
-                let cut = crate::text::elide(s, w, sz, bold as c_int, false);
+                let cut = crate::text::elide_by(s, w, false, |t| self.tm.width_str(t, sz, bold));
                 if let Ok(cs) = CString::new(cut) {
                     let mut l = Label::new(cs.as_ptr(), sz, col).v(VAlign::CapTop).h(align);
                     if bold {
@@ -835,13 +839,9 @@ fn track_line(f: &mut Flow, row: &TrackRow, x: f32, w: f32) {
         if a > 0.002 {
             let pa = f.p.alpha(a);
             let nw = w * NAME_FRAC;
-            if let Ok(cs) = CString::new(crate::text::elide(
-                &row.name,
-                nw,
-                theme::size::LABEL,
-                1,
-                false,
-            )) {
+            if let Ok(cs) = CString::new(crate::text::elide_by(&row.name, nw, false, |t| {
+                f.tm.width_str(t, theme::size::LABEL, true)
+            })) {
                 Label::new(cs.as_ptr(), theme::size::LABEL, theme::TEXT_HEADING)
                     .bold()
                     .v(VAlign::CapTop)
@@ -854,13 +854,9 @@ fn track_line(f: &mut Flow, row: &TrackRow, x: f32, w: f32) {
                 // that exists so this is not a hand-tuned offset
                 let dy =
                     crate::text::baseline_y(theme::size::CAPTION, 0, theme::size::LABEL, 1, f.y);
-                if let Ok(cs) = CString::new(crate::text::elide(
-                    &row.detail,
-                    dw,
-                    theme::size::CAPTION,
-                    0,
-                    false,
-                )) {
+                if let Ok(cs) = CString::new(crate::text::elide_by(&row.detail, dw, false, |t| {
+                    f.tm.width_str(t, theme::size::CAPTION, false)
+                })) {
                     Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
                         .h(HAlign::Right)
                         .v(VAlign::CapTop)
@@ -913,6 +909,7 @@ fn body_flow(
     edges: (bool, bool),
     p: Painter,
     measure: bool,
+    tm: &dyn crate::ui::machine::Measure,
 ) -> f32 {
     let mut f = Flow {
         p,
@@ -921,6 +918,7 @@ fn body_flow(
         edges,
         measure,
         h: 0.0,
+        tm,
     };
     let cw = (band.w - 2.0 * COL_GAP) / 3.0;
 
@@ -972,7 +970,7 @@ impl TracksPanelScreen {
     /// `&mut self` because the walk MEASURES: the body is laid out twice, once silently to produce the
     /// content height the page count and the rail describe and once for real, and that height is the
     /// panel's state.
-    fn paint(&mut self, d: &Detail, appear: f32) {
+    fn paint(&mut self, d: &Detail, appear: f32, measure: &dyn crate::ui::machine::Measure) {
         let r = panel_rect();
         let slide = RISE * (1.0 - appear);
         let p = Painter::root().alpha(appear).translate(0.0, slide);
@@ -988,13 +986,9 @@ impl TracksPanelScreen {
             .v(VAlign::CapTop)
             .draw(p, Rect::new(cx, y, cw, theme::alert::EYEBROW_LEAD));
         y += theme::alert::EYEBROW_LEAD + GAP_EYEBROW_TITLE;
-        if let Ok(cs) = CString::new(crate::text::elide(
-            &d.title,
-            cw,
-            theme::size::TITLE,
-            1,
-            false,
-        )) {
+        if let Ok(cs) = CString::new(crate::text::elide_by(&d.title, cw, false, |t| {
+            measure.width_str(t, theme::size::TITLE, true)
+        })) {
             Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
                 .bold()
                 .v(VAlign::CapTop)
@@ -1004,13 +998,9 @@ impl TracksPanelScreen {
         // the server's own path for the part. One line, ellipsised, micro, tertiary — it is the
         // panel's subject, not its content, and it can be arbitrarily long.
         if !d.file.is_empty() {
-            if let Ok(cs) = CString::new(crate::text::elide(
-                &d.file,
-                cw,
-                theme::size::MICRO,
-                0,
-                false,
-            )) {
+            if let Ok(cs) = CString::new(crate::text::elide_by(&d.file, cw, false, |t| {
+                measure.width_str(t, theme::size::MICRO, false)
+            })) {
                 Label::new(cs.as_ptr(), theme::size::MICRO, theme::TEXT_TERTIARY)
                     .v(VAlign::CapTop)
                     .draw(p, Rect::new(cx, y, cw, PATH_H));
@@ -1024,7 +1014,7 @@ impl TracksPanelScreen {
         let model = content_of(d);
         // measure first, off the same walk the draw uses, so the page count and the rail describe the
         // content actually about to be drawn rather than the previous item's
-        let content = body_flow(&model, band, 0.0, (false, false), p, true);
+        let content = body_flow(&model, band, 0.0, (false, false), p, true, measure);
         self.content_h = content;
         let pages = pages_for(content, band.h);
         let page = self.page.clamp(1, pages);
@@ -1033,7 +1023,7 @@ impl TracksPanelScreen {
         // the hard bound. The feather dissolves runs approaching the edge; this is what guarantees
         // nothing is painted outside the band at all, including a run the ramp has not reached yet.
         p.clip(band);
-        body_flow(&model, band, scroll, edges, p, false);
+        body_flow(&model, band, scroll, edges, p, false, measure);
         p.clip_clear();
 
         // ---- the rail ----------------------------------------------------------------------------
@@ -1080,7 +1070,7 @@ impl TracksPanelScreen {
         // — which HUGS its label's cap band, where the design's KeyCap is a fixed 82x36 with a MICRO
         // bold label. The shared cap is the fixed band, so the panels all draw one object.)
         let back_hint = crate::ui::widgets::KeyHint::new(c"Press", c"BACK", c"to return");
-        back_hint.draw(p, cx + cw - back_hint.width(), cy);
+        back_hint.draw(p, cx + cw - back_hint.width(measure), cy, measure);
     }
 }
 
@@ -1103,9 +1093,11 @@ impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for Tr
             }
             ScreenEvent::Input(input) => match input.kind {
                 // BACK and OK both close: there is nothing here to commit, so OK can only mean
-                // "done reading". A CLICK is swallowed and does nothing — `Style::Alert`'s own
-                // `on_miss`, stated here because a `HitSource::Legacy` surface is handed the
-                // pointer whatever the container's miss policy says.
+                // "done reading". A CLICK is swallowed and does nothing: `Focusable::groups`
+                // above registers a group with no drawn stop, so the engine's own hit resolution
+                // (`HitSource::Engine`, phase 12) never finds a target under the pointer and
+                // `Style::Alert`'s `on_miss` (`OnMiss::Nothing`) is the container's answer before
+                // this raw arm is even reached — kept here as the same explicit no-op regardless.
                 InputKind::Key {
                     key: Key::Back | Key::Ok,
                     edge: Edge::Down,
@@ -1132,13 +1124,31 @@ impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for Tr
     }
 }
 
-/// This panel has no focusable element at all — its one cursor is a PAGE — so the engine and the
-/// hit map are inert for it and `FocusSource::Legacy`/`HitSource::Legacy` is the honest answer,
-/// exactly as it is for the player's four overlays.
+/// This panel has no ROW-shaped focusable content — its one cursor is a PAGE — but it still
+/// answers `FocusSource::Engine`/`HitSource::Engine` (phase 12, D2): the single-element `Document`
+/// idiom `ui/geom.rs`'s own `Document` group uses for exactly this shape ("a group of ONE element
+/// that scrolls inside and leaves only at its ends", spec §7.3 step 2), reimplemented directly here
+/// because that helper is built on `DocumentReader` and this sheet's PAGED body walk
+/// ([`body_flow`]) is not one. `groups`/`place`/`seat` exist so `Enter`/`reconcile` have a real
+/// element to seat rather than `Outcome::Nothing`; the UP/DOWN paging itself stays entirely inside
+/// [`TracksPanelScreen::step`], which already declines nothing (BACK/OK/paging keys are all
+/// `Handled::Yes`), so the engine's own direction/OK arms in `after_step` never fire for this
+/// screen — the mechanism swap changes nothing this sheet's keys or clicks do.
 impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for TracksPanelScreen {
-    fn groups(&self, _cx: &crate::ui::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
-    fn group_of(&self, _key: &u32, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<crate::ui::machine::GroupId> {
-        None
+    fn groups(&self, _cx: &crate::ui::machine::Cx<'_, H>, out: &mut Vec<crate::ui::screen::GroupSpec>) {
+        out.push(crate::ui::screen::GroupSpec {
+            id: crate::ui::machine::GroupId(0),
+            kind: crate::ui::screen::GroupKind::Document,
+            seat: crate::ui::screen::Seat::First,
+            reachable: crate::ui::screen::AxisMask::BOTH,
+            edge: [crate::ui::screen::EdgeRule::Stop; 4],
+            extent: panel_rect(),
+            len: 1,
+            elem: crate::ui::screen::ElemKind::Control,
+        });
+    }
+    fn group_of(&self, key: &u32, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<crate::ui::machine::GroupId> {
+        (*key == 0).then_some(crate::ui::machine::GroupId(0))
     }
     fn neighbour(
         &self,
@@ -1146,22 +1156,37 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for T
         _dir: crate::ui::screen::Dir,
         _cx: &crate::ui::machine::Cx<'_, H>,
     ) -> crate::ui::screen::Step<u32> {
+        // The one element never MOVES — paging is the screen's own arm, not the engine's (see the
+        // impl doc) — so every direction answers `Edge`, which `EdgeRule::Stop` turns into "stay
+        // put" rather than an escape off this standalone sheet.
         crate::ui::screen::Step::Edge
     }
     fn place(
         &self,
-        _key: &u32,
+        key: &u32,
         _cx: &crate::ui::machine::Cx<'_, H>,
         _at: crate::ui::screen::At,
     ) -> Option<crate::ui::screen::Placed> {
-        None
+        (*key == 0).then(|| crate::ui::screen::Placed {
+            rect: panel_rect(),
+            rest_rect: panel_rect(),
+            clip: panel_rect(),
+            index: Some(0),
+        })
     }
     fn reconcile(
         &self,
         want: crate::ui::machine::FocusKey<u32>,
         _cx: &crate::ui::machine::Cx<'_, H>,
     ) -> crate::ui::machine::FocusKey<u32> {
-        want
+        if want.elem == 0 {
+            want
+        } else {
+            crate::ui::machine::FocusKey {
+                entry: self.entry,
+                elem: 0,
+            }
+        }
     }
     fn seat(
         &self,
@@ -1227,16 +1252,17 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for Trac
         // Named for `/tmp/plxnative-cpuprof` beside the page's own phases, so a slow frame while
         // this sheet is up can be read as the PANEL or as the host under it rather than as one
         // `main.ui` total. It is the scene `fps:page-panel` grades.
-        crate::ui::profile::phase("dt.tracks", || self.paint(d, appear));
+        let measure = f.measure;
+        crate::ui::profile::phase("dt.tracks", || self.paint(d, appear, measure));
     }
     fn render(&self) -> crate::ui::screen::RenderStrategy {
         crate::ui::screen::RenderStrategy::Page
     }
     fn focus_source(&self) -> crate::ui::screen::FocusSource {
-        crate::ui::screen::FocusSource::Legacy
+        crate::ui::screen::FocusSource::Engine
     }
     fn hit_source(&self) -> crate::ui::screen::HitSource {
-        crate::ui::screen::HitSource::Legacy
+        crate::ui::screen::HitSource::Engine
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -1765,5 +1791,190 @@ mod tests {
             movie.has_own_file(),
             "a leaf has a part, so there is a file to describe"
         );
+    }
+
+    // ---- the Engine focus/hit contract (phase 12, D2) -----------------------------------------
+    //
+    // `TracksPanelScreen::step` never changed by this conversion — every key and pointer arm
+    // above is untouched text, and it still answers `Handled::Yes` for BACK/OK/paging/click
+    // before the engine's own direction/OK arm (`ui::dispatch::Dispatcher::after_step`, gated on
+    // `Handled::No`) ever gets a turn — so there is no key or click behaviour here that the
+    // Legacy→Engine mechanism swap could have changed, and no "watch it fail" step applies: the
+    // only new surface is the `Focusable` bookkeeping `Enter`/`reconcile` read, which the old
+    // Legacy stub never exercised at all (its `groups` was empty, so `enter` short-circuited to
+    // `Outcome::Nothing`). These tests pin exactly that bookkeeping, plus the unchanged step()
+    // contract, against ANY future regression that tries to grow this sheet a second cursor.
+    use crate::screens::registry::{AppFx, AppMsg};
+    use crate::ui::machine::{
+        Edge, EntryId, FocusKey, FocusRead, GroupId, Handled, Host, InputEvent, InputKind,
+        InputOwner, Key, LogicalState, Machine, PressRead, Source, Tick,
+    };
+    use crate::ui::screen::{At, Dir, Focusable, ScreenArg, ScreenEvent, Step};
+
+    #[derive(Clone)]
+    struct FixtureArg;
+    impl LogicalState for FixtureArg {
+        fn write(&self, _: &mut crate::ui::machine::Canon) {}
+        fn probe(&self, _: &mut String) {}
+    }
+    impl ScreenArg for FixtureArg {
+        fn chrome(&self) -> crate::ui::machine::Chrome {
+            crate::ui::machine::Chrome::None
+        }
+        fn id(&self) -> crate::ui::machine::ScreenId {
+            crate::ui::machine::ScreenId(1)
+        }
+        fn title(&self) -> Option<&str> {
+            None
+        }
+        fn same_instance(&self, _: &Self) -> bool {
+            true
+        }
+    }
+    struct HostFixture;
+    impl Host for HostFixture {
+        type Arg = FixtureArg;
+        type Fx = AppFx;
+        type Msg = AppMsg;
+        type Elem = u32;
+        type Views<'a> = ();
+        type Init = FixtureArg;
+        type Memory = ();
+    }
+    fn fixture_cx(focus: Option<FocusKey<u32>>) -> crate::ui::machine::Cx<'static, HostFixture> {
+        crate::ui::machine::Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &crate::ui::fixture::FixtureMeasure,
+            focus: FocusRead { current: focus, ..Default::default() },
+            press: PressRead::default(),
+            owner: InputOwner::Entry(EntryId(9)),
+        }
+    }
+    fn panel(entry: EntryId) -> TracksPanelScreen {
+        TracksPanelScreen::new(entry, TracksPanelArg { page: 1 })
+    }
+    fn key_event(key: Key, sym: u32) -> ScreenEvent<HostFixture> {
+        ScreenEvent::Input(InputEvent {
+            at: Tick::default(),
+            source: Source::Script,
+            kind: InputKind::Key { key, sym, wcode: 0, edge: Edge::Down, at_edge: false },
+        })
+    }
+
+    #[test]
+    fn focus_and_hit_source_are_engine() {
+        let p = panel(EntryId(1));
+        assert_eq!(
+            <TracksPanelScreen as crate::ui::screen::Screen<HostFixture>>::focus_source(&p),
+            crate::ui::screen::FocusSource::Engine
+        );
+        assert_eq!(
+            <TracksPanelScreen as crate::ui::screen::Screen<HostFixture>>::hit_source(&p),
+            crate::ui::screen::HitSource::Engine
+        );
+    }
+
+    /// **The Focusable contract is exactly one stationary element.** `groups` answers a single
+    /// `Document` group of length 1 over the fixed panel frame; every direction from its one
+    /// element answers `Edge` (there is nothing else to move to, and `EdgeRule::Stop` turns that
+    /// into "stay put" rather than an escape from this standalone sheet); `place` answers only
+    /// for element 0; `reconcile`/`seat` always land on element 0.
+    #[test]
+    fn the_focusable_contract_is_one_stationary_element() {
+        let entry = EntryId(3);
+        let p = panel(entry);
+        let cx = fixture_cx(None);
+        let mut groups = Vec::new();
+        Focusable::<HostFixture>::groups(&p, &cx, &mut groups);
+        assert_eq!(groups.len(), 1, "one group: the page itself");
+        let g = groups[0];
+        assert_eq!(g.len, 1, "one element: there are no rows to walk");
+        assert!(matches!(g.kind, crate::ui::screen::GroupKind::Document));
+        assert!(g.edge.iter().all(|e| matches!(e, crate::ui::screen::EdgeRule::Stop)));
+        assert_eq!(
+            (g.extent.x, g.extent.y, g.extent.w, g.extent.h),
+            (panel_rect().x, panel_rect().y, panel_rect().w, panel_rect().h)
+        );
+
+        assert_eq!(Focusable::<HostFixture>::group_of(&p, &0, &cx), Some(GroupId(0)));
+        assert_eq!(Focusable::<HostFixture>::group_of(&p, &1, &cx), None);
+
+        let key0 = FocusKey { entry, elem: 0 };
+        for dir in [Dir::Up, Dir::Down, Dir::Left, Dir::Right] {
+            assert!(matches!(
+                Focusable::<HostFixture>::neighbour(&p, key0, dir, &cx),
+                Step::Edge
+            ));
+        }
+
+        let placed0 = Focusable::<HostFixture>::place(&p, &0, &cx, At::Drawn).expect("element 0 places");
+        assert_eq!(
+            (placed0.rect.x, placed0.rect.y, placed0.rect.w, placed0.rect.h),
+            (panel_rect().x, panel_rect().y, panel_rect().w, panel_rect().h)
+        );
+        assert!(Focusable::<HostFixture>::place(&p, &1, &cx, At::Drawn).is_none());
+
+        assert_eq!(
+            Focusable::<HostFixture>::reconcile(&p, FocusKey { entry, elem: 7 }, &cx),
+            key0,
+            "any other key reconciles onto the one real element"
+        );
+        assert_eq!(Focusable::<HostFixture>::reconcile(&p, key0, &cx), key0);
+        assert_eq!(
+            Focusable::<HostFixture>::seat(&p, GroupId(0), placed0, &cx),
+            key0
+        );
+    }
+
+    /// **BACK/OK/paging/click stay exactly the screen's own arms.** Fed through `Machine::step`
+    /// with the Engine fixture host, they behave precisely as they did against the Legacy stub —
+    /// this is the "confirm the same behaviour still holds" half of the conversion, and it holds
+    /// trivially because the match arms below are untouched by the Focusable rewrite above.
+    #[test]
+    fn keys_and_paging_are_still_fully_handled_by_the_screen() {
+        let entry = EntryId(4);
+        let mut p = panel(entry);
+        let cx = fixture_cx(Some(FocusKey { entry, elem: 0 }));
+        let mut buf = Vec::new();
+        let mut present = crate::ui::present::Present::default();
+
+        {
+            let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+            let back = key_event(Key::Back, 0);
+            assert_eq!(Machine::step(&mut p, &back, &cx, &mut fx), Handled::Yes);
+        }
+        assert!(
+            matches!(
+                buf.last().map(|s| &s.fx),
+                Some(crate::ui::machine::Fx::Nav(crate::ui::machine::NavOp::Dismiss(e))) if *e == entry
+            ),
+            "BACK dismisses the sheet exactly as it always did"
+        );
+        buf.clear();
+
+        {
+            let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+            let ok = key_event(Key::Ok, 0);
+            assert_eq!(Machine::step(&mut p, &ok, &cx, &mut fx), Handled::Yes);
+        }
+        assert!(
+            matches!(
+                buf.last().map(|s| &s.fx),
+                Some(crate::ui::machine::Fx::Nav(crate::ui::machine::NavOp::Dismiss(e))) if *e == entry
+            ),
+            "OK dismisses too — there is nothing here to commit"
+        );
+        buf.clear();
+
+        p.content_h = body_rect().h * 3.0; // several pages of content
+        assert_eq!(p.page, 1);
+        {
+            let mut fx = crate::ui::machine::Effects::new(&mut buf, crate::ui::machine::MachineId::Input, &mut present);
+            let down = key_event(Key::Down, SDLK_DOWN);
+            assert_eq!(Machine::step(&mut p, &down, &cx, &mut fx), Handled::Yes);
+        }
+        assert_eq!(p.page, 2, "DOWN pages the body, still inside the screen's own step");
+        assert!(buf.is_empty(), "paging is not a navigation effect");
     }
 }

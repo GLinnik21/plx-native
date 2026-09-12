@@ -50,7 +50,7 @@
 //! **Cost outside a recording or a replay is one relaxed `AtomicBool` load** ([`ARMED`]): the
 //! helpers return the closure's own answer and never take the lock.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -90,11 +90,11 @@ struct State {
     mode: Mode,
     frame: u64,
     /// Ordinals that consumed a landing on the current frame (recording: the frame's record).
-    lands: Vec<u32>,
+    lands: BTreeMap<u32,u32>,
     /// Replay: each ordinal's recorded `(frame, arrivals left on it)`, oldest first.
-    sched: Vec<VecDeque<(u64, u32)>>,
+    sched: BTreeMap<u32,VecDeque<(u64, u32)>>,
     /// Replay: the ordinal already spent its due-frame wait budget on the current frame.
-    waited: Vec<bool>,
+    waited: BTreeSet<u32>,
     /// Replay: mismatches observed since the last drain, `(frame, ordinal, why)`.
     diffs: Vec<(u64, u32, Diff)>,
 }
@@ -127,9 +127,9 @@ static ARMED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<State> = Mutex::new(State {
     mode: Mode::Off,
     frame: 0,
-    lands: Vec::new(),
-    sched: Vec::new(),
-    waited: Vec::new(),
+    lands: BTreeMap::new(),
+    sched: BTreeMap::new(),
+    waited: BTreeSet::new(),
     diffs: Vec::new(),
 });
 
@@ -138,31 +138,32 @@ fn with<T>(f: impl FnOnce(&mut State) -> T) -> T {
     f(&mut s)
 }
 
-fn grow<T: Clone + Default>(v: &mut Vec<T>, n: usize) {
-    if v.len() <= n {
-        v.resize(n + 1, T::default());
-    }
-}
-
 /// Arm the RECORDING half: from here every consumed landing is stamped with its frame.
 pub fn arm_recording() {
     with(|s| {
-        *s = State { mode: Mode::Recording, frame: 0, lands: Vec::new(), sched: Vec::new(),
-            waited: Vec::new(), diffs: Vec::new() };
+        *s = State { mode: Mode::Recording, frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(),
+            waited: BTreeSet::new(), diffs: Vec::new() };
     });
     ARMED.store(true, Ordering::Relaxed);
 }
 
 /// Arm the REPLAY half with the recorded schedule: `sched[ord]` is that ordinal's recorded
 /// `(frame, arrivals on it)` pairs, in order.
+#[cfg(test)]
 pub fn arm_replay(sched: Vec<Vec<(u64, u32)>>) {
+    arm_sparse_replay(sched.into_iter().enumerate().map(|(i,queue)| (i as u32,queue)).collect());
+}
+
+/// Schedule storage is proportional to recorded entries, never the numeric ordinal. This is
+/// the same landing policy as the dense fixture spelling, with full-width identities retained.
+pub fn arm_sparse_replay(sched: BTreeMap<u32,Vec<(u64,u32)>>) {
     with(|s| {
         *s = State {
             mode: Mode::Replaying,
             frame: 0,
-            lands: Vec::new(),
-            sched: sched.into_iter().map(VecDeque::from).collect(),
-            waited: Vec::new(),
+            lands: BTreeMap::new(),
+            sched: sched.into_iter().map(|(ord,queue)| (ord,VecDeque::from(queue))).collect(),
+            waited: BTreeSet::new(),
             diffs: Vec::new(),
         };
     });
@@ -173,8 +174,8 @@ pub fn arm_replay(sched: Vec<Vec<(u64, u32)>>) {
 pub fn disarm() {
     ARMED.store(false, Ordering::Relaxed);
     with(|s| {
-        *s = State { mode: Mode::Off, frame: 0, lands: Vec::new(), sched: Vec::new(),
-            waited: Vec::new(), diffs: Vec::new() };
+        *s = State { mode: Mode::Off, frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(),
+            waited: BTreeSet::new(), diffs: Vec::new() };
     });
 }
 
@@ -185,8 +186,8 @@ pub fn begin_frame(f: u64) {
     }
     with(|s| {
         s.frame = f;
-        s.lands.iter_mut().for_each(|x| *x = 0);
-        s.waited.iter_mut().for_each(|x| *x = false);
+        s.lands.clear();
+        s.waited.clear();
     });
 }
 
@@ -206,15 +207,14 @@ fn phase(ord: StoreOrd) -> Phase {
         if s.mode != Mode::Replaying {
             return Phase::Free;
         }
-        let i = ord.0 as usize;
-        match s.sched.get(i).and_then(|q| q.front()).map(|&(at, _)| at) {
+        let i = ord.0;
+        match s.sched.get(&i).and_then(|q| q.front()).map(|&(at, _)| at) {
             // still ahead of us: leave the mailbox alone until the frame comes round. A second
             // arrival on a frame whose recorded arrivals are all spent is held here too — that is
             // the count doing its work.
             Some(at) if at > s.frame => Phase::Hold,
             Some(at) if at == s.frame => {
-                grow(&mut s.waited, i);
-                if std::mem::replace(&mut s.waited[i], true) {
+                if !s.waited.insert(i) {
                     Phase::Free // this store already spent its wait on this frame
                 } else {
                     Phase::Due
@@ -238,26 +238,25 @@ fn wait_for<T>(mut f: impl FnMut() -> Option<T>) -> Option<T> {
     None
 }
 
-/// This store consumed a landing on this frame. Idempotent within one frame: a store with
-/// several landing sites advances its cursor once.
+/// This store consumed one batch on this frame. Each consumed batch advances its count once;
+/// supplied-result ingress reports the same batch boundary without polling a live mailbox.
 pub fn landed(ord: StoreOrd) {
     if !ARMED.load(Ordering::Relaxed) {
         return;
     }
     with(|s| {
-        let i = ord.0 as usize;
-        grow(&mut s.lands, i);
+        let i = ord.0;
         if s.mode == Mode::Recording {
-            s.lands[i] += 1;
+            *s.lands.entry(i).or_default() += 1;
             return;
         }
         let frame = s.frame;
-        let why = match s.sched.get_mut(i).and_then(|q| q.front_mut()) {
+        let why = match s.sched.get_mut(&i).and_then(|q| q.front_mut()) {
             Some((at, left)) => {
                 let late = *at < frame; // `*at > frame` cannot happen: `phase` held the site
                 *left -= 1;
                 if *left == 0 {
-                    s.sched[i].pop_front();
+                    s.sched.get_mut(&i).expect("current schedule").pop_front();
                 }
                 if late { Some(Diff::Late) } else { None }
             }
@@ -315,10 +314,10 @@ pub fn take_frame_lands() -> Vec<(StoreOrd, u32)> {
     }
     with(|s| {
         let mut out = Vec::new();
-        for (i, landed) in s.lands.iter_mut().enumerate() {
+        for (i, landed) in s.lands.iter_mut() {
             let n = std::mem::take(landed);
             if n > 0 {
-                out.push((StoreOrd(i as u32), n));
+                out.push((StoreOrd(*i), n));
             }
         }
         out
@@ -335,17 +334,21 @@ pub fn take_diffs() -> Vec<(u64, u32, Diff)> {
 }
 
 /// REPLAY, at the end: every recorded landing this run never produced.
+#[cfg(test)]
 pub fn unmatched() -> Vec<(u32, u64)> {
+    unmatched_counts().into_iter().flat_map(|(ord,frame,count)| std::iter::repeat_n((ord,frame),count as usize)).collect()
+}
+
+/// Missing counts remain aggregated: a corrupt large count cannot request that many entries.
+pub fn unmatched_counts() -> Vec<(u32,u64,u32)> {
     if !ARMED.load(Ordering::Relaxed) {
         return Vec::new();
     }
     with(|s| {
         let mut out = Vec::new();
-        for (i, q) in s.sched.iter_mut().enumerate() {
+        for (i, q) in s.sched.iter_mut() {
             while let Some((at, left)) = q.pop_front() {
-                for _ in 0..left {
-                    out.push((i as u32, at));
-                }
+                out.push((*i,at,left));
             }
         }
         out

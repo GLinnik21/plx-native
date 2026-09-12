@@ -100,7 +100,7 @@ def check(d):
             vals = []
             strings(doc, vals)
             for v in vals:
-                if v in lits or any(pt.match(v) for pt in pats):
+                if v in lits or any(pt.fullmatch(v) for pt in pats):
                     continue
                 bad += 1
                 # the value is NOT printed: that is the leak by a shorter route
@@ -110,11 +110,16 @@ def check(d):
 
 def cmd_info(d):
     header, frames = load(d)
+    features = header.get("features", [])
+    # Validate the container first: iterating a scalar string would disclose an
+    # otherwise rejected value as individually permitted characters.
+    features_text = ",".join(safe_value(v) for v in features) if isinstance(features, list) else "<redacted>"
     ev = sum(1 for f in frames if f["st"] is not None)
     pres = sum(1 for f in frames if f["present"])
     print("recording: %s" % d)
     print("  schema=%s state_fp=%s build=%s features=%s" % (
-        header.get("schema"), header.get("state_fp"), header.get("build"), ",".join(header.get("features", []))))
+        safe_value(header.get("schema")), safe_value(header.get("state_fp")),
+        safe_value(header.get("build")), features_text))
     print("  frames=%d event_frames=%d presented=%d" % (len(frames), ev, pres))
     counts = Counter(kind for frame in frames for kind in frame["kinds"])
     print("  inputs=%d effects=%d results=%d landings=%d lifecycle=%d" % (
@@ -126,6 +131,16 @@ def cmd_check(d):
     bad = check(d)
     print("%s: %s" % (d, "synthetic" if bad == 0 else "%d string(s) outside the alphabet" % bad))
     return 0 if bad == 0 else 1
+
+
+def safe_value(value):
+    """Only protocol/synthetic strings can reach the default diagnostic printer."""
+    if value is None or type(value) in (int, bool):
+        return str(value)
+    lits, pats = alphabet()
+    if isinstance(value, str) and (value in lits or any(p.fullmatch(value) for p in pats)):
+        return value
+    return "<redacted>"
 
 
 def cmd_diff(a, b, unsafe):
@@ -141,11 +156,11 @@ def cmd_diff(a, b, unsafe):
             n += 1
             continue
         if x["st"] != y["st"]:
-            kinds = ",".join(sorted(set(x["kinds"]) | set(y["kinds"])))
-            print("diverge f=%d a=%s b=%s kinds=[%s]" % (fr, x["st"], y["st"], kinds))
+            kinds = ",".join(sorted({safe_value(k) for k in x["kinds"] + y["kinds"]}))
+            print("diverge f=%d a=%s b=%s kinds=[%s]" % (fr, safe_value(x["st"]), safe_value(y["st"]), kinds))
             n += 1
         if x["present"] != y["present"]:
-            print("present f=%d a=%s b=%s" % (fr, x["present"], y["present"]))
+            print("present f=%d a=%s b=%s" % (fr, safe_value(x["present"]), safe_value(y["present"])))
             n += 1
     if unsafe:
         print("(--unsafe prints nothing more today: payloads are compared as hashes)")
@@ -217,6 +232,7 @@ def cmd_rerecord(d, name):
 DIVERGE_RE = re.compile(r"^replay: diverge f=(\d+) expected=(0x[0-9a-f]+) got=(0x[0-9a-f]+) inputs=(\d+)")
 DONE_RE = re.compile(r"^replay: done .*verdict=(SAME|DIVERGED)")
 RESULT_DIFFS_RE = re.compile(r"\bresult_diffs=(\d+)\b")
+EFFECT_DIFFS_RE = re.compile(r"\beffect_diffs=(\d+)\b")
 
 
 def divergence_record(fixture_dir, log_path):
@@ -235,11 +251,16 @@ def divergence_record(fixture_dir, log_path):
         # sufficient for refusal, including an inconsistent summary or missing detail lines.
         if ln.startswith("replay: result diverge "):
             return None, "result divergences need an adapter adoption record; state-only rebaseline is refused"
+        if ln.startswith("replay: effect diverge "):
+            return None, "effect divergences need an effect adoption record; state-only rebaseline is refused"
         m = DONE_RE.match(ln)
         if m:
             results = RESULT_DIFFS_RE.search(ln)
             if results and int(results.group(1)) != 0:
                 return None, "result divergences need an adapter adoption record; state-only rebaseline is refused"
+            effects = EFFECT_DIFFS_RE.search(ln)
+            if effects and int(effects.group(1)) != 0:
+                return None, "effect divergences need an effect adoption record; state-only rebaseline is refused"
             verdict = m.group(1)
         m = DIVERGE_RE.match(ln)
         if m and first is None:

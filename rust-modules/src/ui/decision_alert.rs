@@ -11,7 +11,16 @@
 //! holding the body-free arithmetic, and it is kept deliberately: the next question this app asks
 //! will almost certainly be a bare one. The body is held on the ALERT
 //! rather than passed to [`DecisionAlert::draw`] because it moves the controls, and
-//! [`DecisionAlert::press_at`] has to compute the same panel the last draw did.
+//! [`DecisionAlert::frames`] — the geometry an owning Engine screen registers its own hit stops
+//! from — has to report the same panel the last draw did.
+//!
+//! **Focus and hit-testing are the owning screen's, not this type's** (restructure phase 12):
+//! `DecisionAlert` used to carry its own `move_focus`/`press_at` ladder, driven by a caller that
+//! translated a raw key or pointer event into a call here. The only remaining caller
+//! (`screens::consent::ConsentPage`) is an `Engine` screen: it registers the alert's two answers
+//! as ordinary focus-group elements through [`DecisionAlert::frames`] and moves this type's
+//! selection with [`DecisionAlert::set_choice`], exactly as it would any other control — so the
+//! two SDL-keysym-shaped methods had no caller left and are gone.
 //!
 //! **Every interactive exit — confirm, cancel, or BACK — takes [`DecisionAlert::dismiss`], never
 //! [`DecisionAlert::close`].** `close` is [`Popover::close`]'s case: a subject that vanished out
@@ -112,7 +121,7 @@ pub(crate) struct DecisionAlert {
     controls: CtlPop<2>,
     /// The optional paragraph under the question, held on the ALERT rather than passed to
     /// [`draw`](Self::draw). It has to be here because the body changes where the buttons are, and
-    /// [`press_at`](Self::press_at) must compute the same panel as the last draw did. A body passed
+    /// [`frames`](Self::frames) must report the same panel as the last draw did. A body passed
     /// per-frame would be correct for drawing and wrong for the first hit test after an open, which
     /// is precisely the frame a fast click lands on.
     body: Option<&'static str>,
@@ -136,10 +145,10 @@ impl DecisionAlert {
     pub(crate) fn is_open(&self) -> bool {
         self.pop.is_open()
     }
-    /// **Has the sheet finished arriving?** A key acts on the logical state, but a POINTER hit is
-    /// positional and [`Self::press_at`] tests FINAL coordinates while the sheet is still drawn
-    /// through the entrance painter — so an immediate click lands on a control that is displaced
-    /// and nearly invisible. Every pointer caller gates on this (`ui::route_screen`'s rule 11).
+    /// **Has the sheet finished arriving?** A key acts on the logical state, but a POINTER hit
+    /// tests FINAL coordinates ([`Self::frames`]) while the sheet is still drawn through the
+    /// entrance painter — so an immediate click lands on a control that is displaced and nearly
+    /// invisible. Every pointer caller gates on this (`ui::route_screen`'s rule 11).
     pub(crate) fn settled(&self) -> bool {
         self.pop.appear_settled()
     }
@@ -204,15 +213,6 @@ impl DecisionAlert {
         crate::ui::popover::note_own_damage();
         crate::ui::idle::invalidate();
     }
-    pub(crate) fn move_focus(&mut self, delta: i32) {
-        self.choice = if delta > 0 {
-            Choice::Destructive
-        } else {
-            Choice::Cancel
-        };
-        crate::ui::popover::note_own_damage();
-        crate::ui::idle::invalidate();
-    }
     pub(crate) fn update(&mut self, dt: f32) {
         if !self.visible() {
             return;
@@ -269,18 +269,6 @@ impl DecisionAlert {
             .scale(self.controls.scale(1))
             .draw(&env, p);
         });
-    }
-    pub(crate) fn press_at(&mut self, x: f32, y: f32) -> bool {
-        let l = self.measured();
-        if l.cancel.contains(x, y) {
-            self.set_choice(Choice::Cancel);
-            true
-        } else if l.destructive.contains(x, y) {
-            self.set_choice(Choice::Destructive);
-            true
-        } else {
-            false
-        }
     }
 }
 

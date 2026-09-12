@@ -204,7 +204,7 @@ re-verified 2026-08-13 and all but one still hold:**
 | `metadata.rs:1291-1307` | `pump_season`'s `d.rk != r.rk` ownership test |
 | `browse.rs:32-36` | `BrowseSection.key: i64` — **verified collision**: both servers have section `1` |
 | `route.rs:35` | `MACHINE_ID`, "cached once", feeds the PlayQueue `server://` uri |
-| `ui/trail.rs:42-59` | `Node::Detail{rk}` — navigation history itself is server-less |
+| ~~`ui/trail.rs:42-59`~~ | `Node::Detail{rk}` — navigation history itself was server-less. **Retired with the file** (restructure phase 12, D1): the app keeps no second history, and a page's identity is its `AppArg` — `ContentArg::Detail{sid, rk}` carries the `plex::ServerId` the fix would have added, so the concern is structurally closed rather than outstanding |
 
 Already server-agnostic, needing no work: `img.rs`, `player/engine.rs` + `threads.rs` (they consume
 a full URL), `plex/discover.rs`, and the single `X-Plex-Client-Identifier` — one device on N servers
@@ -324,9 +324,10 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
   only surface listing every GRANTED library, so a non-favourite has a way back. **As of phase 5b
   (2026-09-07) that is no longer one mechanism for both entry points**: the screen itself moved off
   the `static mut` `ui::onboard` module onto an owned `Screen` impl, `screens::onboard`'s
-  `OnboardScreen`, mounted twice (spec §6.2) — first-run still arrives as `Route::Onboard` (the
-  route this paragraph describes), but reached from Settings it is now a *page* of the Settings
-  family (`SettingsPage::Favourites`) rather than a second value the app's route enum takes, so the
+  `OnboardScreen`, mounted twice (spec §6.2) — first-run still arrives as its own page
+  (`AppArg::Onboard`, the route this paragraph describes), but reached from Settings it is now a
+  *page* of the Settings family (`SettingsPage::Favourites`) rather than a second value the app's
+  page alphabet takes, so the
   once/sec heartbeat's `route=` field no longer reads `onboard` for the Settings-opened case — only
   for the first-run one. A picker that could
   turn into an editor would let a library be un-favourited from inside the list of favourites and
@@ -553,8 +554,8 @@ Step 1's registry now has its first real consumer, and deliverable A of the desi
   — one level, one tick, no words. The editor was its own route (*Favorite libraries*,
   `ui::onboard`) until phase 5b (2026-09-07); reached from Settings it is now a PAGE of the
   Settings family (`SettingsPage::Favourites`, hosting `screens::onboard`'s owned `OnboardScreen`)
-  rather than a second value the route enum takes — deliverable A above has the mechanism, and
-  first-run alone still arrives as `Route::Onboard`. Either way it remains the one surface listing
+  rather than a second value the page alphabet takes — deliverable A above has the mechanism, and
+  first-run alone still arrives as `AppArg::Onboard`. Either way it remains the one surface listing
   every GRANTED library, so a non-favourite has a way back. The chip itself now heads the Library's
   document rather than leading a toolbar. `TableView` gained the two things it was missing for it: a drawn `Section::accessory`
   (declared but never painted before) and `Section::dim`.

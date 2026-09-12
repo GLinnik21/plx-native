@@ -56,13 +56,11 @@ pub(crate) mod master_detail; // RESTRUCTURE (spec §10): reusable two-region fo
 // Library is owned by screens::library; its legacy state/focus model is retired.
 // `login` retired (phase 6): the QR sign-in is `screens::login::LoginScreen` now, an owned
 // `Screen` mounted through `app::bridge` rather than a `Popover` reached through `app.rs`'s key
-// ladders. Its one surviving reader was `screens::login::LoginScreen::resync`'s
-// `delete_leftovers` count, which moved to `auth::delete_leftovers()` in this same pass — see
-// `app/boot.rs`'s boot-order comment for the retirement note this module's own row in
-// `ui/CLAUDE.md` still needs updating to match.
+// ladders. Its deletion readout now borrows the Session owner's immutable publication;
+// no module-level deletion counter remains for a newly mounted screen to poll.
 pub(crate) mod motion; // RESTRUCTURE (spec §4.2): the spring integrators' own exp/sin_cos + the soft-float table
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
-pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
+pub mod nav; // the page transition's PRESENTATION, published once a frame from the container
 pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub mod player_hud;
@@ -84,7 +82,6 @@ pub mod text_view;
 pub(crate) mod text_buffer;
 pub mod theme;
 pub mod track_menu;
-pub mod trail; // the BACK trail: which pages are behind the one on screen (app.rs pops it)
 pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
 pub mod widgets;
 pub mod xfade; // content cross-fade: fade out → swap the data at the floor → fade in
@@ -1099,7 +1096,7 @@ pub trait Column {
     fn height(&self, i: usize) -> f32;
     fn gap_before(&self, i: usize) -> f32;
     fn focus_child(&self) -> Option<usize>;
-    fn draw_child(&self, i: usize, env: &Env, p: Painter);
+    fn draw_child(&self, i: usize, env: &Env, p: Painter, measure: &dyn crate::ui::machine::Measure);
 }
 
 impl ScrollColumn {
@@ -1127,7 +1124,7 @@ impl ScrollColumn {
     /// Draw every present child, scrolled and band-culled — off-screen children are SKIPPED by
     /// culling (this flow culls rather than using the `Painter::clip` scissor). The focused child is never culled (the scroll keeps it at
     /// `margin`). The child `Painter` is pre-translated to the child origin, so children draw 0-based.
-    pub fn draw(&self, c: &impl Column, env: &Env, p: Painter) {
+    pub fn draw(&self, c: &impl Column, env: &Env, p: Painter, measure: &dyn crate::ui::machine::Measure) {
         let ps = p.translate(0.0, -self.scroll.pos);
         let f = c.focus_child();
         let mut y = self.top;
@@ -1137,7 +1134,7 @@ impl ScrollColumn {
             }
             let h = c.height(i);
             if Some(i) == f || on_axis(y - self.scroll.pos, h, env.screen.h, 0.0) {
-                c.draw_child(i, env, ps.translate(0.0, y));
+                c.draw_child(i, env, ps.translate(0.0, y), measure);
             }
             y += h;
         }

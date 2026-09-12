@@ -80,6 +80,18 @@ pub(crate) struct Scrub {
     /// beside the HUD because it IS the gesture — `begin`/`disengage` and the per-frame continuous
     /// advance are the only things that move it, and the draw path reads the published copy.
     pub(crate) ns: i64,
+    /// **A pointer is DRAGGING the bar right now** (restructure phase 12, PX-PLAYER).
+    ///
+    /// It was `app::input::Pointer::drag`, a field of the loop's pointer machine — which is what
+    /// made pointer scrubbing disappear the moment `PlayerScreen` began answering
+    /// `HitSource::Engine`: the flag's only producer was `app/run.rs`'s own click block, and that
+    /// block became unreachable while its two readers (the motion arm's preview and the
+    /// button-up's commit) stayed live and idle. The gesture is the screen's, so the flag is too.
+    ///
+    /// It is what distinguishes a drag from a HELD KEY on the same preview: the key gesture runs
+    /// the accelerating ramp from `Tick`, and a drag must not — the pointer says where the preview
+    /// is, once per motion event, and an advance underneath it would fight the hand.
+    pub(crate) drag: bool,
 }
 impl Scrub {
     /// No scrub in progress and no tap commit pending — where the loop starts.
@@ -92,12 +104,13 @@ impl Scrub {
         commit_at: 0,
         reveal: false,
         ns: -1,
+        drag: false,
     };
     /// Start a WHOLE gesture in `now`/`fwd` — every field, not the four a press happens to care
     /// about.
     ///
-    /// Two sites end a scrub without [`disengage`](Self::disengage) — the pointer drag's mouse-up
-    /// commit, and `key_scrub`'s own drag cancel — and `exit_player` never touches this at all, so
+    /// A gesture can also end without [`disengage`](Self::disengage) — a pointer drag's commit, or
+    /// a fresh key press arriving on top of one — and `exit_player` never touches this at all, so
     /// `hold`/`hold_since` can outlive the gesture that set them and even the playback session.
     /// Arming only `dir`/`alive` on top of that leaves the per-frame advance reading a `hold_since`
     /// from minutes ago: its acceleration ramp is measured from there, so the first frame of a
@@ -110,14 +123,29 @@ impl Scrub {
         self.alive = now;
         self.commit_at = 0; // more input → cancel a pending tap commit
         self.reveal = false;
+        self.drag = false; // a key gesture supersedes a pointer one
     }
-    /// End the gesture: no direction, no continuous hold, and no reveal pending. `commit_at` is
-    /// deliberately NOT cleared — four of the five call sites leave a pending tap commit alone, and
-    /// the fifth IS that commit and clears the field itself right after calling this.
+    /// End the gesture: no direction, no continuous hold, no drag and no reveal pending.
+    /// `commit_at` is deliberately NOT cleared — most call sites leave a pending tap commit alone,
+    /// and the one that IS that commit clears the field itself right after calling this.
     pub(crate) fn disengage(&mut self) {
         self.dir = 0;
         self.hold = false;
         self.reveal = false;
+        self.drag = false;
+    }
+    /// **Where a target may legally land**: never before zero, and never inside the last three
+    /// seconds, which is a seek past the point the pipeline can prime from. The one place the two
+    /// bounds are written, shared by the key hop, the continuous ramp and the pointer drag — they
+    /// were three copies of the same four lines in `app/run.rs` and `app/playback.rs`.
+    pub(crate) fn clamp_target(ns: i64, duration_ns: i64) -> i64 {
+        let cap = duration_ns - 3_000_000_000;
+        let ns = ns.max(0);
+        if cap > 0 && ns > cap {
+            cap
+        } else {
+            ns
+        }
     }
 }
 /// The player HUD's focus cursor: WHICH row owns focus, plus the index WITHIN each of the
@@ -294,7 +322,8 @@ pub(crate) const HUD_MENU_MS: u32 = 8000; // a modal menu is up (track/chapter n
 pub(crate) const HUD_HEADLESS_MS: u32 = 60_000; // autoplay/headless runs pin the HUD up for capture
 
 /// What a LEFT/RIGHT press on the player route is spent on, given the transport's visibility and
-/// where the HUD's ring is parked. Pure, and the only arm of `key_scrub` a host test can reach.
+/// where the HUD's ring is parked. Pure, which is what lets a host test grade the one decision
+/// the whole LEFT/RIGHT ladder turns on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ScrubPress {
     /// The transport was not on screen: the press raises it and moves nothing.
@@ -412,9 +441,9 @@ mod hud_visibility_tests {
         });
     }
 
-    /// **A LEFT/RIGHT press that finds the HUD hidden is spent RAISING it** — the rule `key_scrub`
-    /// is built around, and the one arm of that ladder no other test can reach (every other branch
-    /// of it drives the player's globals from inside the SDL loop).
+    /// **A LEFT/RIGHT press that finds the HUD hidden is spent RAISING it** — the rule the whole
+    /// scrub ladder (`PlayerScreen::key_scrub_fresh`) is built around, stated once so the arm and
+    /// its test cannot disagree.
     ///
     /// The pairing is the point: whatever the cursor is parked on, an invisible transport takes the
     /// press for itself, and the SAME cursor acts normally the moment the transport is on screen.
@@ -435,8 +464,46 @@ mod hud_visibility_tests {
         assert_eq!(scrub_press(true, 0, true), ScrubPress::Jump);
         assert_eq!(scrub_press(true, 1, true), ScrubPress::Row);
         assert_eq!(scrub_press(true, 2, true), ScrubPress::Tabs);
-        // the scrubber with nothing to move through is still not a Jump
+        // Duration belongs only to the scrubber. Indexed rows remain live without one.
+        assert_eq!(scrub_press(true, 1, false), ScrubPress::Row);
+        assert_eq!(scrub_press(true, 2, false), ScrubPress::Tabs);
+        // the scrubber itself with nothing to move through is still not a Jump
         assert_eq!(scrub_press(true, 0, false), ScrubPress::Nothing);
+    }
+
+    /// Sample a hand dismissal before the fresh bound press clears it, or the press would drive
+    /// hidden geometry while an otherwise-live linger timer is still counting down.
+    #[test]
+    fn a_hand_hidden_hud_still_takes_the_press_that_wakes_it() {
+        let ps = crate::route::PlaybackSession::IDLE;
+        with_state(PlaybackState::Playing, || {
+            let mut hud = HudState { until: 20_000, dismissed: true, ..HudState::IDLE };
+            hud.note_fresh_press(&ps, 10_000, false);
+            assert!(!hud.visible_at_press, "the press found a hand-hidden HUD");
+            assert!(!hud.dismissed, "the same bound press wakes it for the next decision");
+        });
+    }
+
+    /// End every live gesture owner while preserving the independently pending tap debounce.
+    #[test]
+    fn disengaging_ends_every_part_of_the_gesture() {
+        let mut scrub = Scrub { t: 11, dir: 1, hold: true, hold_since: 12, alive: 13,
+            commit_at: 14, reveal: true, ns: 15, drag: true };
+        scrub.disengage();
+        assert_eq!((scrub.dir, scrub.hold, scrub.reveal, scrub.drag), (0, false, false, false));
+        assert_eq!(scrub.commit_at, 14, "disengage must preserve the released tap's commit");
+    }
+
+    /// Dismissal outranks healthy playback, but never the stalled pipeline read-out.
+    #[test]
+    fn dismiss_wins_while_healthy_and_loses_while_stalled() {
+        let ps = crate::route::PlaybackSession::IDLE;
+        with_state(PlaybackState::Playing, || {
+            assert!(!hud_visible(&ps, 10_000, 20_000, true, true));
+        });
+        with_state(PlaybackState::Buffering, || {
+            assert!(hud_visible(&ps, 10_000, 1_000, false, true));
+        });
     }
 
     /// The HUD's own deadline arithmetic: `extend` never pulls a longer pin in, which is the rule

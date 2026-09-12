@@ -511,7 +511,15 @@ pub(crate) fn heading_flow(
 /// of this heading the host suite cannot grade — it opens no SDL_ttf, so there are no cap bands to
 /// measure (the same boundary `widgets`' anchor table works within); what the tests DO pin is the
 /// tokens it resolves from.
-pub(crate) fn draw_heading(p: Painter, title: &str, source: &str, x: f32, y: f32, max_w: f32) {
+pub(crate) fn draw_heading(
+    p: Painter,
+    title: &str,
+    source: &str,
+    x: f32,
+    y: f32,
+    max_w: f32,
+    measure: &dyn crate::ui::machine::Measure,
+) {
     heading_flow(title, source, |s, dx, sz, bold, ink| {
         // **`max_w` is a RIGHT BOUNDARY, and a run that would cross it is elided rather than
         // clipped** — through `text::elide`, the single truncation impl in the app, so a bounded
@@ -528,7 +536,7 @@ pub(crate) fn draw_heading(p: Painter, title: &str, source: &str, x: f32, y: f32
         }
         let owned;
         let s = if max_w.is_finite() {
-            owned = crate::text::elide(s, room, sz, bold, false);
+            owned = crate::text::elide_by(s, room, false, |t| measure.width_str(t, sz, bold != 0));
             owned.as_str()
         } else {
             s
@@ -682,6 +690,7 @@ pub(crate) fn draw_focused(
     sty: &RowStyle,
     resume: Option<f32>,
     label: &TileLabel,
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     let rad = sty.tile_radius(rect, s);
     // Home Screen focus treatment: soft drop-shadow + 1px perimeter sheen, both FOLDED into card()'s
@@ -708,7 +717,7 @@ pub(crate) fn draw_focused(
         // fits and looping under a marquee when it does not — Continue-Watching's amber play glyph
         // is a parameter of the same function, not a fourth path, so a glyph-led title marquees
         // exactly like a plain one.
-        title_marquee(p, rect, sty, t.as_ptr(), ty, label.glyph);
+        title_marquee(p, rect, sty, t.as_ptr(), ty, label.glyph, measure);
         ty += UNDER_LINE_H + UNDER_LINE_GAP;
     }
     if let Some(c) = &label.caption {
@@ -721,6 +730,7 @@ pub(crate) fn draw_focused(
             theme::size::CAPTION,
             0,
             theme::TEXT_SECONDARY,
+            measure,
         );
     }
 }
@@ -756,6 +766,7 @@ pub(crate) fn strip<'a>(
     resume: impl Fn(usize) -> Option<f32>,
     label: impl Fn(usize) -> TileLabel,
     extra: impl Fn(Painter, usize, f32, bool),
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     let sx = row.scroll_x();
     let pr = p.translate(-sx, 0.0);
@@ -787,6 +798,7 @@ pub(crate) fn strip<'a>(
             sty,
             resume(i),
             &label(i).revealed(row.band_reveal()),
+            measure,
         );
         extra(pr, i, x, true);
     }
@@ -1056,11 +1068,13 @@ thread_local! {
     /// identical title on a genuinely different item simply keeps the marquee running rather than
     /// resetting it, which is invisible — the two runs read the same either way.
     static MARQUEE_KEY: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
-    /// Elapsed ms since `MARQUEE_KEY` last changed, advanced from [`crate::ui::idle::dt`] because
-    /// this runs inside `draw`, which — unlike [`CardRow::update`] — gets no `dt` of its own.
-    /// `f64`: an `f32` accumulator stops moving at ~2^29 ms (six days on one title), where a
-    /// 16 ms frame is below its precision floor.
-    static MARQUEE_MS: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+    /// The [`crate::ui::idle::now_ms`] reading when `MARQUEE_KEY` last changed. `marquee_clock`
+    /// reads its elapsed time as `now_ms().wrapping_sub(this)` rather than summing a per-frame
+    /// delta — this runs inside `draw`, which — unlike [`CardRow::update`] — gets no `Tick` of its
+    /// own, so it cannot advance a `motion::Phase` directly, but a `wrapping_sub` of two absolute
+    /// readings is the same drift-free idiom `Phase::advance` uses, and needs no `f64` accumulator
+    /// to survive a six-day-old title the way the retired summed clock did.
+    static MARQUEE_START_MS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Advance (or restart) the marquee clock for `text`, returning its value in ms. Called once per
@@ -1068,6 +1082,7 @@ thread_local! {
 /// exactly once) — so this cannot double-advance within a frame the way a naively-shared clock read
 /// from two draws in the same pass would.
 fn marquee_clock(text: &str) -> f64 {
+    let now = crate::ui::idle::now_ms();
     let changed = MARQUEE_KEY.with(|k| {
         let mut k = k.borrow_mut();
         if k.as_str() == text {
@@ -1078,14 +1093,10 @@ fn marquee_clock(text: &str) -> f64 {
         }
     });
     if changed {
-        MARQUEE_MS.with(|m| m.set(0.0));
+        MARQUEE_START_MS.with(|m| m.set(now));
         0.0
     } else {
-        MARQUEE_MS.with(|m| {
-            let v = m.get() + crate::ui::idle::dt() as f64 * 1000.0;
-            m.set(v);
-            v
-        })
+        MARQUEE_START_MS.with(|m| now.wrapping_sub(m.get()) as f64)
     }
 }
 
@@ -1125,27 +1136,39 @@ fn glyph_lead(sz: std::os::raw::c_int, glyph: bool) -> f32 {
 /// fourth title path: before it, the glyph line was a dead end that never fell through to a
 /// marquee at all, so a long Continue-Watching title elided instead of animating like every other
 /// shelf's focused label.
-fn title_marquee(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f32, glyph: bool) {
+fn title_marquee(
+    p: Painter,
+    rect: Rect,
+    sty: &RowStyle,
+    text: *const c_char,
+    y: f32,
+    glyph: bool,
+    measure: &dyn crate::ui::machine::Measure,
+) {
     let (sz, bold) = (theme::size::LABEL, 1);
     let isz = play_icon_size(sz);
     let lead = glyph_lead(sz, glyph);
     let full = under_budget(sty);
     let budget = full - lead;
-    let w = crate::text::text_width(text, sz, bold);
+    let w = if text.is_null() {
+        0.0
+    } else {
+        measure.width(unsafe { std::ffi::CStr::from_ptr(text) }, sz, bold != 0)
+    };
     if w <= budget {
         // a fitting title RELEASES the clock, so an overflowing one focused again later starts
         // from its rest beat rather than resuming mid-glide
         MARQUEE_KEY.with(|k| k.borrow_mut().clear());
         if glyph {
-            play_label_fit(p, rect, sty, text, y, isz, sz, bold);
+            play_label_fit(p, rect, sty, text, y, isz, sz, bold, measure);
         } else {
-            under_label(p, rect, sty, text, y, sz, bold, theme::TEXT_PRIMARY);
+            under_label(p, rect, sty, text, y, sz, bold, theme::TEXT_PRIMARY, measure);
         }
         return;
     }
     let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
     let t_ms = marquee_phase(marquee_clock(&s), w, budget);
-    // The clock above advances by `idle::dt` ON DRAWN FRAMES ONLY, and a drawn frame is one the
+    // The clock above advances by `idle::now_ms` ON DRAWN FRAMES ONLY, and a drawn frame is one the
     // present gate let through. So the rest beat has to buy its own frames, or it never ends: a
     // focused overflowing title was reproduced sitting clipped and motionless at 4 s and again at
     // 7 s of focus (sim, 2026-09-02) — the screen settled inside the hold, presents stopped, the
@@ -1254,12 +1277,13 @@ fn under_label(
     sz: std::os::raw::c_int,
     bold: std::os::raw::c_int,
     col: [f32; 4],
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     let budget = under_budget(sty);
     let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
-    let short = crate::text::elide(&s, budget, sz, bold, false);
+    let short = crate::text::elide_by(&s, budget, false, |t| measure.width_str(t, sz, bold != 0));
     if let Ok(tc) = std::ffi::CString::new(short) {
-        let w = crate::text::text_width(tc.as_ptr(), sz, bold);
+        let w = measure.width(&tc, sz, bold != 0);
         // Same screen-space clamp as the wrapped title's — see [`edge_clamp`]. Expressed on the
         // run's LEFT edge and converted back, so one function owns the rule for both blocks.
         let cx = edge_clamp(p, rect.cx() - w * 0.5, w, sty) + w * 0.5;
@@ -1281,10 +1305,15 @@ fn play_label_fit(
     isz: f32,
     sz: std::os::raw::c_int,
     bold: std::os::raw::c_int,
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     // The run already fits its window (the caller checked), so it is drawn verbatim — no elide,
     // no copy.
-    let tw = crate::text::text_width(text, sz, bold);
+    let tw = if text.is_null() {
+        0.0
+    } else {
+        measure.width(unsafe { std::ffi::CStr::from_ptr(text) }, sz, bold != 0)
+    };
     let gw = isz + PLAY_ICON_GAP + tw;
     // The [glyph + gap + name] group as ONE block, clamped in screen space like the other two —
     // see [`edge_clamp`].
@@ -1595,18 +1624,19 @@ mod tests {
     }
 
     /// [`marquee_clock`] restarts at zero the instant the focused text changes, and keeps
-    /// advancing by real elapsed time while it stays the same — the pure half of "the phase clock
-    /// resets when focus moves to another tile" (the impure half, reading `idle::dt`, is not
-    /// unit-testable and is exercised by [`title_marquee`] instead).
+    /// advancing by real elapsed time (read off [`crate::ui::idle::now_ms`]) while it stays the
+    /// same. `frame_begin` stands in for the real frame loop's own per-frame call, advancing the
+    /// same clock `title_marquee` reads in production — nothing about `marquee_clock` itself is
+    /// untestable now that it reads an absolute snapshot instead of summing a `dt` of its own.
     #[test]
     fn the_marquee_clock_restarts_when_the_focused_text_changes() {
         MARQUEE_KEY.with(|k| k.borrow_mut().clear());
-        MARQUEE_MS.with(|m| m.set(0.0));
+        crate::ui::idle::frame_begin(0.0);
         assert_eq!(marquee_clock("Alpha"), 0.0, "first sight of a title starts at 0");
-        // idle::dt() defaults to 1/60s on a thread that never called frame_begin — advancing while
-        // the key is unchanged must add real, nonzero time.
+        crate::ui::idle::frame_begin(1.0 / 60.0);
         let t1 = marquee_clock("Alpha");
         assert!(t1 > 0.0, "the clock must advance while the title holds focus");
+        crate::ui::idle::frame_begin(1.0 / 60.0);
         let t2 = marquee_clock("Alpha");
         assert!(t2 > t1, "and keep advancing frame over frame");
         assert_eq!(

@@ -107,7 +107,7 @@ impl LibraryScreen {
                 let origin = self.layout.shelf_y(index, self.scroll.pos);
                 if !shelf_on_screen(origin, self.layout.shelf_pitch(index)) { continue; }
                 card_row::draw_heading(p, &shelf.title, "", MARGIN_X,
-                    origin - crate::ui::consts::TITLE_DY - row.motion.lift(), layout::GRID_RIGHT - MARGIN_X);
+                    origin - crate::ui::consts::TITLE_DY - row.motion.lift(), layout::GRID_RIGHT - MARGIN_X, f.measure);
                 let focused = f.focus.current.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
                 for col in 0..row.elems.len() {
                     if focused == Some(col) { continue; }
@@ -127,7 +127,7 @@ impl LibraryScreen {
                 }
             }
             card_row::draw_heading(p, "All", "", MARGIN_X,
-                CONTENT_TOP + self.layout.grid_block_top() - self.scroll.pos, layout::GRID_RIGHT - MARGIN_X);
+                CONTENT_TOP + self.layout.grid_block_top() - self.scroll.pos, layout::GRID_RIGHT - MARGIN_X, f.measure);
         }
         if self.readout == Readout::Loading {
             // Preserve the Library's standalone loading spinner, outside either content fade.
@@ -190,12 +190,12 @@ impl LibraryScreen {
         let resume = if shelf.landscape { None } else { item.resume_frac() };
         if focused {
             card_row::draw_focused(p, art, rect, scale, style, resume,
-                &shelf_label(shelf, col).revealed(model.motion.band_reveal()));
+                &shelf_label(shelf, col).revealed(model.motion.band_reveal()), f.measure);
         } else {
             card_row::draw_tile(p, art, rect, scale, style, resume);
         }
         if shelf.landscape {
-            crate::ui::widgets::still_overlay(p, item, rect, style.tile_radius(rect, scale), shelf.is_continue);
+            crate::ui::widgets::still_overlay(p, item, rect, style.tile_radius(rect, scale), shelf.is_continue, f.measure);
         }
     }
 

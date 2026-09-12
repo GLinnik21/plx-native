@@ -449,7 +449,7 @@ which the linking section explains is load-bearing rather than tidy.
   entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
   `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap>` to fault the app deliberately ON the
   television — `segv` is a real null write, the rest are `raise`.
-- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `plex_run` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `nav.rs`), `system.rs` (wayland),
+- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `plex_run` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
   pinned** libavformat shipped beside the binary, *not* the TV's), `stream.rs`/`aq.rs` (HTTP socket
@@ -779,7 +779,20 @@ which the linking section explains is load-bearing rather than tidy.
 - **App-switch lifecycle (was a black-screen bug), handled in `app/run.rs` (the `0x103`–`0x106` arms of the frame loop):** the TV sends SDL app
   events — `0x103`/`0x104` (will/did enter **background**) and `0x105`/`0x106` (will/did enter
   **foreground**). On background during playback the loop **suspends the buffer-feed** (preserving the
-  session) and drops to Home. On foreground `0x106` it tracks one exact Load attempt at a time,
+  session) and **PARKS the page stack**: `Dispatcher::suspend`, which sends `ScreenEvent::Suspend`
+  down every mounted body and moves nothing. **It used to drop to Home and that was a bug**, fixed
+  by restructure phase 12 (D1): writing `route = Home` turned into a `Root(Home)` that RETIRED the
+  player entry and the page it was launched from, so `0x106` minted a fresh player over a stack
+  that was now just Home. Nothing noticed while the two things that would have — the playback
+  session and the player's return target — lived outside the tree; the return target is an
+  `EntryId` on the page beneath the player now, so destroying entries destroys the way back.
+  **Consequence when reading a log: the heartbeat reports `route=player` while the app is
+  backgrounded**, not `route=home`. On foreground `0x106` it un-parks (`Dispatcher::resume`, called
+  on both edges because it is idempotent and webOS promises nothing about their order); the player
+  is still the top entry, because the park moved nothing, so the `show_page(Player)` beside the
+  reload is ordinarily a no-op and is written out only so that a foreground finding the player gone
+  puts it back rather than resuming a session with nothing on screen. It then
+  tracks one exact Load attempt at a time,
   follows reducer-approved superseding or rollback attempts, retries an exact failure without
   repeating route preparation, and applies the saved clock only after `Started`. In-app
   Home/Settings are *overlays* and do **not** fire these — only a real OS app-switch does. Preserve
@@ -1277,7 +1290,10 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   call `ui::idle::invalidate()` — **a new async landing that repaints must add a call there**, or
   it arrives invisibly until the next keypress. **So must anything that animates from a CLOCK
   rather than a spring** — a millisecond ramp, a phase, a countdown — since `note_spring` cannot see
-  it: `Xfade::tick` (every route dip) and `Spinner::draw` (every loading read-out) both shipped
+  it: `Xfade::tick` (the CONTENT cross-fade — the Library's grid and page, Search's results,
+  Filmography's preview; it was the ROUTE dip too until restructure phase 12 moved that to
+  `ui::containers::transition::PageDip`, which reports from inside its own `tick` by construction)
+  and `Spinner::draw` (every loading read-out) both shipped
   FROZEN before they were made to report, and no fps scene caught it because those grade `loop=`.
   The rest test is visibility — magnitude-relative, capped under a quarter pixel, velocity judged
   as `vel*dt` (the travel this frame) — not a bare epsilon.
@@ -1316,8 +1332,17 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   line per screen MOUNT, unarmed. `ms` is from the frame that mounted the body to the first frame
   it both prepared and DREW — so a mount and a first draw in one iteration reads `ms=0`, which is
   the honest answer and not a broken instrument; `prepared` is whether that frame's budget refused
-  nothing. One route does not produce it: the PLAYER, whose page still answers
-  `FocusSource::Legacy` and is therefore drawn by the loop rather than by the container.
+  nothing. **This paragraph's reason for excepting the player is now FALSE and unverified in its
+  replacement, both worth stating plainly**: it used to except the PLAYER on the grounds that its
+  page answered `FocusSource::Legacy` and was therefore drawn by the loop rather than by the
+  container; restructure phase 12 (D2) converted `PlayerScreen` to `FocusSource::Engine`, so that
+  reason is gone. Whether `coldopen` now actually fires on a player mount was NOT re-measured by
+  the package that made this change (`make check`'s device/full-suite paths were unavailable in
+  its environment). D1 has since retired the loop's own page dispatch — there is no `Route` and no
+  hand-rolled player draw arm left in `app/run.rs`, so the structural reason to doubt it is gone
+  too — but that is an argument, not a measurement: whether `coldopen` actually fires on a player
+  mount has still not been observed. This is owed to TV session 8 (phase 12's device pass): boot
+  into the player route and read the heartbeat before trusting either answer.
 - **The heartbeat fields were RENAMED 2026-08-01 and the old name was REUSED**, so a log or doc
   predating that reads as the opposite of what it says. Old `FPS=` is today's **`loop=`** (loop
   iterations); old `pres=` is today's **`fps=`** (frames presented). An old `FPS=60` says nothing
@@ -1473,10 +1498,22 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   by-hand run inherits whatever the last session armed; and any non-DIAG trigger left behind also
   suppresses the who's-watching picker, silently changing which screen you boot to. The
   **`tv-session` skill** drives all of this (clear → arm → launch → assert) and owns the
-  screen-to-trigger recipes. Named highlights: **`/tmp/plxnative-rec[=blobs]`** (the RECORDER of
+  screen-to-trigger recipes. **Controlled Home bootstrap update:** `plxnative-rec` and
+  `plxnative-recplay` now use a typed pre-effect Session/consent/Home initializer, explicit
+  recorded Client bindings and supplied Home/Browse results. Replay denies live data IO and
+  compares supported effects as well as state; malformed/unsupported input fails closed before
+  resource activation. `AppFrameV3` includes the initial-input digest. Private recordings can
+  contain credentials in typed initialization/effects: only explicitly synthetic inputs may
+  become fixtures. `tests/controlled_bootstrap.py` exercises this representative production path
+  with fresh/contrasting roots and outbound IO denied. Other domains, blobs, cross-target and
+  both-mode completion remain unsupported/open. The following phase-11/12 description is
+  historical, not a claim that current replay falls back to live stores.
+  Named historical highlights: **`/tmp/plxnative-rec[=blobs]`** (the RECORDER of
   the UI restructure, spec §5.3 — every frame's tick and present bit, every input the loop acted
-  on and, on each input frame, the hash of the app's logical state: the press machine, the route
-  and overlay words and the focus fingerprint. It writes `plxnative-recordings/latest/` in the
+  on and, on each event frame, the hash of the covered logical state: the press machine, the route
+  and overlay words, the focus fingerprint, the container-tree hash and Session's cached logical
+  digest. The digest adds no raw Session credentials; it does not supply Session restoration
+  from AppInit or complete all-domain replay. It writes `plxnative-recordings/latest/` in the
   runtime root — a DIFFERENT name from the trigger file, which is why the directory is not
   `plxnative-rec/` — private, gitignored and refused by the outbound guard; `tests/focusfp.sh
   --rec` records a flow and `tools/plxnative-rec import` turns a recording taken against
@@ -1502,10 +1539,13 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `FocusSource::Engine`/`HitSource::Engine` for real, and phase 7 adds Detail, Person and the
   Filmography surface. `tests/fixtures/replay/6-settings-family/` is a committed synthetic simulator
   recording of the first set — replayed the only way `plxnative-recplay` runs anything, in
-  `targets` mode. Engine pages replay in `resolve` mode; the player is the one route left that
-  cannot, since it still answers `FocusSource::Legacy`/`HitSource::Legacy` — it is the LAST screen
-  that does, the blank route-word page every unmigrated route used to mount having been deleted in
-  phase 10; it replays on device by target only). Both names are `dev::DIAG`, so
+  `targets` mode. Engine pages replay in `resolve` mode via `FixtureHost` only — **restructure
+  phase 12 (D2) converted the last two holdouts**, `screens::player::PlayerScreen` and its
+  overlay, so `FocusSource::Legacy`/`HitSource::Legacy` no longer answers for ANY product screen
+  (it survives only as `ui/fixture.rs`'s own deliberately-Legacy test double); the player replays
+  on device by target only for the same reason every other Engine screen still does — `resolve`
+  mode is wired to the host suite's `FixtureHost` pages, not to a real screen, so an on-device
+  recording never runs in that mode regardless of which `FocusSource` the route answers. Both names are `dev::DIAG`, so
   neither moves the boot screen; both armed at once is
   refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
   logs `softfloat: … MATCH|DIVERGE` against the host's pinned hash and writes the table beside

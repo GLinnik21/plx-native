@@ -37,11 +37,20 @@ fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) 
     Option::deserialize(d)
 }
 
+/// Preflight validates private data without constructing or consulting a native Client.
+pub(crate) fn validate_binding(value: Value, instance: u32) -> Result<u32, &'static str> {
+    let payload: Payload = serde_json::from_value(value).map_err(|_| "invalid hubs result")?;
+    if payload.kind != "hubs" || payload.version != 1 || payload.sid.raw() != 0
+        || payload.client != Some(instance) || payload.token_gen != instance {
+        return Err("unsupported hubs binding");
+    }
+    Ok(payload.seq)
+}
+
 /// A decoder never guesses that an unknown client means an unchecked fixture. `None` is only
 /// reproduced when the encoded payload explicitly had no client (host fixtures); a real worker
 /// always supplies one. The mapping may bind a recorded id to a different process's instance id.
 /// Preserve the request's token generation verbatim so stale-token refusal still runs on delivery.
-#[cfg_attr(not(test), allow(dead_code))] // replay bootstrap/result injection is the next caller
 pub(crate) fn decode(
     value: Value,
     mut client: impl FnMut(u32) -> Option<&'static crate::plex::Client>,

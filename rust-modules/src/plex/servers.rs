@@ -376,6 +376,10 @@ pub fn current() -> ServerId {
 /// Point `client()` at another registered server. `false` (and no change) for an id that names
 /// no client — retargeting to nothing would turn every `client()` into a panic.
 pub fn set_current(id: ServerId) -> bool {
+    // `CURRENT` is a crate global; a test that flips it outside `crate::testlock::serial()` lands
+    // in the middle of some other module's test — see `lib.rs::testlock`.
+    #[cfg(test)]
+    crate::testlock::assert_held("the plex server registry (set_current)");
     let ok = client_for(id).is_some();
     if ok {
         // Release, pairing with `current()`'s Acquire: publishes the slot store that
@@ -741,6 +745,15 @@ pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerI
 /// beside it (`ResolvePin::for_origin`), `None` otherwise. The registry records it on the
 /// published `Client` for the control plane and in `crate::net::resolve` for the media plane;
 /// that table is append-only, so a pin is never retracted — see its doc for why that is sound.
+/// Captured bootstrap identity: same registry/refresh path, without a lazy session-file read.
+pub(crate) fn register_captured_origin(machine_id: &str, origin: &Origin, token: &str,
+    pin: Option<&ResolvePin>, client_id: &str) -> ServerId {
+    let id = register_lazy(machine_id, origin, token, pin, &|| client_id.to_owned());
+    #[cfg(not(test))]
+    super::serverinfo::refresh(id);
+    id
+}
+
 pub fn register_origin(
     machine_id: &str,
     origin: &Origin,
@@ -790,12 +803,16 @@ pub(crate) fn register_with_client_id(
     token: &str,
     client_id: &str,
 ) -> ServerId {
+    // Same crate-global registry guard as `register_lazy` (which this reaches through
+    // `register_origin_with_client_id`) — named directly here too, since this is the entry point
+    // D5 names and `register_lazy`'s own assertion is one call away rather than at this frame.
+    #[cfg(test)]
+    crate::testlock::assert_held("the plex server registry (register_with_client_id)");
     register_origin_with_client_id(machine_id, &Origin::http(host, port), token, client_id)
 }
 
 /// [`register_origin_with_client_id`] with a resolve pin — the seam for the test that is about the
 /// PIN. Same contract: no session file, no worker.
-#[cfg(test)]
 pub(crate) fn register_pinned_with_client_id(
     machine_id: &str,
     origin: &Origin,
@@ -824,6 +841,12 @@ fn register_lazy(
     pin: Option<&ResolvePin>,
     client_id: &dyn Fn() -> String,
 ) -> ServerId {
+    // The registry's SLOTS/COUNT/ACTIVE/CURRENT tables are crate globals — a test reaching this
+    // through `register_with_client_id`/`register_origin_with_client_id`/
+    // `register_pinned_with_client_id` without `crate::testlock::serial()` writes them outside the
+    // lock, exactly what `lib.rs::testlock` exists to catch.
+    #[cfg(test)]
+    crate::testlock::assert_held("the plex server registry (register)");
     // Recorded BEFORE the client is published, so no request made through the new pointer can
     // reach `curlio` ahead of the table entry it will look for. Once per (host, port); the
     // log line below names the pin only when it is new, so a token-only re-registration of the
@@ -1034,6 +1057,9 @@ pub(crate) fn finish_profile_switch(installed: &[ServerId]) {
 /// It does NOT free anything and does not lower [`COUNT`] — see the module doc on why a slot number
 /// is never handed out twice.
 pub(crate) fn revoke_all() {
+    // Same crate-global registry `register_lazy`/`set_current` guard — see `lib.rs::testlock`.
+    #[cfg(test)]
+    crate::testlock::assert_held("the plex server registry (revoke_all)");
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let n = COUNT.load(Ordering::Acquire);
     let floor = FLOOR.load(Ordering::Acquire);

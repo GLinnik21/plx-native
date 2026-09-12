@@ -701,7 +701,7 @@ fn whole_text_commits_and_keyboard_edges_round_trip_in_order() {
     d.frame(&mut rig, tick(0), vec![], vec![], &mut tap);
     d.frame(&mut rig, tick(16), inputs, vec![], &mut tap);
     assert_eq!(events_of(&d, 0).matches("\"system_owner\"").count(), edits.len() + 1);
-    tap.w.finish();
+    tap.w.finish().unwrap();
     let manifest = json!({"schema": super::rec::SCHEMA, "state_fp": fixture_state_fp(),
         "init": {"probe": "seed=1", "hash": init.hash()}}).to_string();
     let segments = segments.borrow();
@@ -810,7 +810,7 @@ fn resolve_mode_reports_every_mismatch_and_continues_from_the_recording() {
     d.frame(&mut rig, tick(32), vec![key(Key::Right, tick(32))], vec![], &mut tap);
     d.frame(&mut rig, tick(48), vec![], vec![], &mut tap);
     assert_eq!(elem(&d), Some(2));
-    tap.w.finish();
+    tap.w.finish().unwrap();
     let manifest = serde_json::to_string(&json!({
         "schema": super::rec::SCHEMA, "state_fp": fixture_state_fp(),
         "init": {"probe": "seed=1", "hash": FixtureInit { seed: 1 }.hash()}

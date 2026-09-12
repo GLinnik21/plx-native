@@ -381,7 +381,7 @@ pub(crate) fn sanitize_query(q: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Replace the query. Idempotent on an unchanged string, so a caller may hand it every frame.
-pub(crate) fn set_query(q: &str) {
+fn set_query(q: &str) {
     let q = &*sanitize_query(q);
     // Two different changes, and only one of them is news for the SERVER: the field draws the raw
     // string (so a typed space must repaint), while the fetch is addressed to the trimmed one (so
@@ -413,7 +413,7 @@ pub(crate) fn set_query(q: &str) {
             };
             // …and the debounce restarts with it: the fetch is owed to the LAST keystroke, not to
             // the first one of the burst.
-            *addr_of_mut!(SETTLE) = 0.0;
+            *addr_of_mut!(SETTLE_US) = 0;
             *addr_of_mut!(ARMED) = real_query;
         }
     }
@@ -435,6 +435,7 @@ pub(crate) fn query_gen() -> u32 {
 /// Publish a bounded catalog through the real retained-view boundary, without network work.
 #[cfg(test)]
 pub(crate) fn publish_shelves_for_test(shelves: Vec<Shelf>) {
+    crate::testlock::assert_held("the search store (publish_shelves_for_test)");
     // A published catalog represents completed source answers, not merely painted rows over
     // still-pending requests. Keep it valid when a real owned-screen Tick pumps the store.
     VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
@@ -468,7 +469,7 @@ pub(crate) fn shelves() -> &'static [Shelf] {
 /// Editing both by the same rule is the same result at the same cost as the walk itself.
 ///
 /// Returns whether anything matched. **MAIN THREAD.**
-pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
+fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
     let mut hit = false;
     let mut flip = |it: &mut Item| {
         if let Item::Media(m) = it {
@@ -502,6 +503,10 @@ pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
 /// bursts, so this is a shade longer — a five-letter word costs ONE round trip rather than four.
 /// It is the whole reason the "called as the user types" endpoint is affordable at all.
 const SETTLE_S: f32 = 0.25;
+
+/// [`SETTLE_S`] in whole microseconds — the unit [`SETTLE_US`] actually accumulates in, so the
+/// debounce is an exact integer comparison rather than a summed `f32`.
+const SETTLE_US_TARGET: u32 = (SETTLE_S * 1_000_000.0) as u32;
 
 /// Items asked for **per hub** — `plex-openapi.json`: "The number of items to return per hub. 3 if
 /// not specified", which is why the parameter is always sent at all.
@@ -607,9 +612,16 @@ static IN_FLIGHT: [AtomicBool; NSRC] = [const { AtomicBool::new(false) }; NSRC];
 /// [`Source::retry_cd`].
 const RETRY_FRAMES: u32 = 120;
 
-/// Seconds the current query has held still, and whether it is still owed a fetch. Main thread
-/// only, advanced by [`pump`] — the `season_settle` accumulator, one screen over.
-static mut SETTLE: f32 = 0.0;
+/// Microseconds the current query has held still, and whether it is still owed a fetch. Main
+/// thread only, advanced by [`pump`] — the `season_settle` accumulator's cousin one screen over,
+/// but WHOLE MICROSECONDS rather than a summed `f32`: [`pump`]'s `dt` argument already comes from
+/// a real `Tick.dt_us` (`stores::search::pump`'s own caller reads it off `parts.tick`), and a
+/// per-frame delta that size round-trips through `f32` exactly, so converting it back once and
+/// accumulating the integer is what removes the drift `check-deps.sh`'s `dt` gate exists to catch
+/// — without this debounce needing a `motion::Ramp` of its own (it is not logical state, not
+/// hashed and not replayed; see the retired `ci/allow/dt.txt`'s header for why it was ever this
+/// gate's lowest-stakes entry).
+static mut SETTLE_US: u32 = 0;
 static mut ARMED: bool = false;
 
 /// What one source's finished fetch delivers. `None` means the fetch FAILED (transport, parse, or
@@ -759,7 +771,7 @@ pub(crate) fn pump(dt: f32) -> bool {
             supersede();
             unsafe {
                 *addr_of_mut!(SHELVES) = None;
-                *addr_of_mut!(SETTLE) = 0.0;
+                *addr_of_mut!(SETTLE_US) = 0;
                 *addr_of_mut!(ARMED) = true;
             }
         } else {
@@ -768,9 +780,13 @@ pub(crate) fn pump(dt: f32) -> bool {
     }
     unsafe {
         if *addr_of!(ARMED) {
-            let s = &mut *addr_of_mut!(SETTLE);
-            *s += dt;
-            if *s >= SETTLE_S {
+            // Realistic per-frame deltas (tens of milliseconds) round-trip through `f32` exactly,
+            // so converting once here and accumulating the whole-microsecond integer is exact —
+            // see `SETTLE_US`'s doc for why that, and not a summed `f32`, is what this reads.
+            let dt_us = (dt * 1_000_000.0).round() as u32;
+            let s = &mut *addr_of_mut!(SETTLE_US);
+            *s = s.saturating_add(dt_us);
+            if *s >= SETTLE_US_TARGET {
                 *addr_of_mut!(ARMED) = false;
                 if let Some(q) = terms(query()) {
                     crate::log(&format!(
@@ -1193,15 +1209,46 @@ fn tag_hit(t: &crate::plex::Tag, sid: ServerId, favs: &[(ServerId, i64, bool)]) 
 
 /// Drop everything — the account changed, so both the query and the results belong to someone
 /// else. Called beside `browse::reset()`.
-pub(crate) fn reset() {
+fn reset() {
     supersede();
     VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
     unsafe {
         *addr_of_mut!(QUERY) = None;
         *addr_of_mut!(SHELVES) = None;
         *addr_of_mut!(STATE) = State::Idle;
-        *addr_of_mut!(SETTLE) = 0.0;
+        *addr_of_mut!(SETTLE_US) = 0;
         *addr_of_mut!(ARMED) = false;
+    }
+}
+
+/// `stores::search`'s one door onto every [`SearchCmd`](crate::stores::search::SearchCmd) (D3):
+/// the match used to live in `stores/search.rs::run`, calling `set_query`/`reset`/
+/// `set_watched_local` across the module boundary. Relocating it here is what lets those three
+/// go private; `RememberRecent`/`ClearRecents`/`SetQueryScoped` still address `search::recents`
+/// and `search::scope`, which stay `pub(crate)` (out of this package's scope, per the census).
+pub(crate) fn run(cmd: crate::stores::search::SearchCmd) -> bool {
+    use crate::stores::search::SearchCmd;
+    match cmd {
+        SearchCmd::SetQuery(q) => {
+            set_query(&q);
+            true
+        }
+        SearchCmd::SetQueryScoped { profile_generation, query } => {
+            if profile_generation != crate::plex::session::current_gen() { return false; }
+            set_query(&query);
+            true
+        }
+        SearchCmd::RememberRecent { profile_generation, term } => {
+            crate::search::recents::remember(profile_generation, &term)
+        }
+        SearchCmd::ClearRecents { profile_generation } => {
+            crate::search::recents::clear(profile_generation)
+        }
+        SearchCmd::Reset => {
+            reset();
+            true
+        }
+        SearchCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(sid, &rk, on),
     }
 }
 
@@ -1541,7 +1588,7 @@ mod tests {
         let gen1 = GEN.load(Ordering::SeqCst);
         pump(0.016);
         assert_eq!(GEN.load(Ordering::SeqCst), gen1, "it settles");
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// The other half, and the one that costs nothing to get wrong until a user types: with NO
@@ -1571,7 +1618,7 @@ mod tests {
             crate::browse::sections_gen(),
             "…but the snapshot is current, so the next query does not open by re-arming"
         );
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     // ---- favourites RANK, and never filter (§6) --------------------------------------------
@@ -2361,4 +2408,7 @@ pub(crate) fn settling() -> bool {
 }
 
 #[cfg(test)]
-pub(crate) fn debounce_elapsed_for_test() -> f32 { unsafe { *addr_of!(SETTLE) } }
+pub(crate) fn debounce_elapsed_for_test() -> f32 {
+    crate::testlock::assert_held("the search store (debounce_elapsed_for_test)");
+    unsafe { *addr_of!(SETTLE_US) as f32 / 1_000_000.0 }
+}

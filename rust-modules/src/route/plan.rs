@@ -1033,12 +1033,17 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                     } else {
                         // Part GET 503s after a transcode MDE. Sample the remux we would actually play.
                         remux_probed = true;
+                        // GET parameters do not install PMS's part selection. Use the same
+                        // remux policy as playback, before either the decision or media GET.
+                        // A client-rendered subtitle is not a burn; only env.sub_sid requests one.
+                        let probe_audio = encode_audio_id(true, audio_id, env.audio_sid, tracks);
+                        put_selection(env.sid, plan.part_id, probe_audio, env.sub_sid);
                         measure_remote_remux(
                             client,
                             rk,
                             &session,
-                            audio_id,
-                            subtitle_id,
+                            probe_audio,
+                            env.sub_sid,
                             source_transport_kbps,
                         )
                     }

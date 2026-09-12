@@ -144,7 +144,7 @@ fn apply(out: Vec<Stamped<TestHost>>) -> Vec<bool> {
     // selection/query acceptance. The retained fixture views refresh only after this drain.
     out.into_iter()
         .filter_map(|effect| match effect.fx {
-            Fx::App(AppFx::Store(_, command)) => Some(crate::stores::apply(command)),
+            Fx::App(AppFx::Store(_, command)) => Some(crate::stores::apply(command).changed),
             _ => None,
         })
         .collect()

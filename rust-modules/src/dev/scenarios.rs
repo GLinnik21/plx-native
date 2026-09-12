@@ -33,10 +33,9 @@
 
 use crate::app::App;
 use crate::app::run::Frame;
-use crate::app::nav::{Nav, Route};
+use crate::screens::registry::AppArg;
 use crate::screens::registry::HomeCmd;
 use crate::ui::machine::{Key, Tick};
-use crate::ui::trail::Node;
 use std::os::raw::c_int;
 
 /// The dev triggers read ONCE at boot and consulted by the loop every frame after (each is
@@ -386,7 +385,11 @@ pub(crate) fn replay_trigger_value() -> Option<String> {
 /// "Content navigation during the legacy route transition" was never true of this type, which
 /// exists only to script a boot trigger through the real focus/activate path.
 pub(crate) struct ContentBoot {
-    target: Node,
+    /// The page this boot is waiting for, as its own identity. It was a `ui::trail::Node` — a
+    /// whole history entry — for the `(sid, rk)` pair and the `Spot`'s season inside it.
+    sid: crate::plex::ServerId,
+    rk: String,
+    season: Option<i64>,
     down: u32,
     right: u32,
     activate: bool,
@@ -401,9 +404,17 @@ pub(crate) struct ContentBoot {
 }
 
 impl ContentBoot {
-    pub(crate) fn new(target: Node) -> Self {
+    /// Is the page this boot is waiting for the one on top?
+    fn is_top(&self, d: &crate::ui::dispatch::Dispatcher<crate::app::bridge::AppHost>) -> bool {
+        matches!(d.top_arg(), Some(AppArg::Content(crate::screens::registry::ContentArg::Detail { sid, rk }))
+            if *sid == self.sid && *rk == self.rk)
+    }
+
+    pub(crate) fn new(sid: crate::plex::ServerId, rk: String) -> Self {
         Self {
-            target,
+            sid,
+            rk,
+            season: None,
             down: crate::dev::read("detailsec").and_then(|s| s.parse().ok()).unwrap_or(0),
             right: crate::dev::read("detailcol").and_then(|s| s.parse().ok()).unwrap_or(0),
             activate: crate::dev::flag("detailok") || crate::dev::flag("detailplay"),
@@ -450,8 +461,8 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
     } else {
         let loaded = crate::metadata::current().map(|d|
             (d.sid, d.rk.as_str(), d.seasons.get(d.cur_season).map(|s| s.index)));
-        bridge::page_node(&app.pages).is_some_and(|n| n.same_page(&boot.target))
-            && detail_boot_ready(&boot.target, loaded, crate::metadata::detail_loading(), crate::metadata::season_loading())
+        boot.is_top(&app.pages)
+            && detail_boot_ready(boot.sid, &boot.rk, boot.season, loaded, crate::metadata::detail_loading(), crate::metadata::season_loading())
     };
     // A complete landing must have passed through the screen's StoreChanged step first.
     if !boot.admit_landing(ready) {
@@ -496,7 +507,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
                 ContentArg::Filmography { sid, key })));
             return;
         }
-    } else if bridge::page_node(&app.pages).is_some_and(|n| n.same_page(&boot.target)) {
+    } else if boot.is_top(&app.pages) {
         let key = if boot.down > 0 {
             boot.down -= 1;
             Some(Key::Down)
@@ -522,8 +533,8 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
                     .and_then(|i| i.screen.as_any())
                     .and_then(|a| a.downcast_ref::<crate::screens::detail::DetailScreen>())
                     .is_some_and(|d| d.tracks_available());
-                if let (Some(host), true, Node::Detail { sid, rk, .. }) = (host, available, &boot.target) {
-                    let (sid, rk) = (*sid, rk.clone());
+                if let (Some(host), true) = (host, available) {
+                    let (sid, rk) = (boot.sid, boot.rk.clone());
                     bridge::open_content_panel(
                         &mut app.pages,
                         host,
@@ -545,10 +556,8 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
             // item, so a `down`/`right` script that reached it on one film would miss it on the
             // next — and `fps:about-panel` needs the same screen every run.
             if crate::dev::flag("about") {
-                if let (Some(host), Node::Detail { sid, rk, .. }) =
-                    (app.pages.top_page(), &boot.target)
-                {
-                    let (sid, rk) = (*sid, rk.clone());
+                if let Some(host) = app.pages.top_page() {
+                    let (sid, rk) = (boot.sid, boot.rk.clone());
                     bridge::open_content_panel(
                         &mut app.pages,
                         host,
@@ -571,38 +580,37 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
     app.scenarios.content_boot = Some(boot);
 }
 
-fn detail_boot_ready(target: &Node, loaded: Option<(crate::plex::ServerId, &str, Option<i64>)>, detail_loading: bool, season_loading: bool) -> bool {
-    let Node::Detail { sid, rk, spot } = target else { return false };
+fn detail_boot_ready(sid: crate::plex::ServerId, rk: &str, want_season: Option<i64>,
+    loaded: Option<(crate::plex::ServerId, &str, Option<i64>)>, detail_loading: bool, season_loading: bool) -> bool {
     !detail_loading && !season_loading && loaded.is_some_and(|(server, key, season)|
-        server == *sid && key == rk && spot.season.is_none_or(|wanted| season == Some(wanted)))
+        server == sid && key == rk && want_season.is_none_or(|wanted| season == Some(wanted)))
 }
 
 #[cfg(test)]
 mod content_boot_tests {
     use super::*;
-    use crate::metadata::Spot;
 
     #[test]
     fn delayed_detail_and_season_landings_do_not_consume_headless_directions() {
-        let target = Node::Detail { sid: crate::plex::ServerId::UNSET, rk: "1001".into(),
-            spot: Spot { season: Some(2), ..Default::default() } };
-        let mut boot = ContentBoot { target: target.clone(), down: 2, right: 1,
+        let sid = crate::plex::ServerId::UNSET;
+        let mut boot = ContentBoot { sid, rk: "1001".into(), season: Some(2), down: 2, right: 1,
             activate: true, filmography: false, bio: false, waiting_person: false, ready_seen: false };
-        let loaded = Some((crate::plex::ServerId::UNSET, "1001", Some(2)));
+        let ready_for = |loaded, d, sl| detail_boot_ready(sid, "1001", Some(2), loaded, d, sl);
+        let loaded = Some((sid, "1001", Some(2)));
         for ready in [
-            detail_boot_ready(&target, None, true, false),
-            detail_boot_ready(&target, loaded, true, false),
-            detail_boot_ready(&target, Some((crate::plex::ServerId::UNSET, "1001", Some(1))), false, false),
-            detail_boot_ready(&target, loaded, false, true),
+            ready_for(None, true, false),
+            ready_for(loaded, true, false),
+            ready_for(Some((sid, "1001", Some(1))), false, false),
+            ready_for(loaded, false, true),
         ] {
             assert!(!boot.admit_landing(ready));
             assert_eq!((boot.down, boot.right), (2, 1));
         }
-        assert!(!boot.admit_landing(detail_boot_ready(&target, loaded, false, false)),
+        assert!(!boot.admit_landing(ready_for(loaded, false, false)),
             "the landing frame is left for the screen to publish its sections");
-        assert!(boot.admit_landing(detail_boot_ready(&target, loaded, false, false)));
+        assert!(boot.admit_landing(ready_for(loaded, false, false)));
         assert_eq!((boot.down, boot.right), (2, 1));
-        assert!(!detail_boot_ready(&target, Some((crate::plex::ServerId::UNSET, "1002", Some(2))), false, false));
+        assert!(!ready_for(Some((sid, "1002", Some(2))), false, false));
     }
 }
 
@@ -617,10 +625,11 @@ mod content_boot_tests {
 /// `app::search_owned_tests::a_seeded_boot_query_survives_the_freshly_mounted_screens_first_sync`,
 /// which calls this function directly and does NOT drive [`super::read`] itself (that one line is
 /// not covered by a host test; a full `App`/SDL frame would be needed to reach it).
-pub(crate) fn apply_search_boot_trigger(q: &str, route: &mut Route, trail: &mut crate::ui::trail::Trail) {
+pub(crate) fn apply_search_boot_trigger(q: &str, d: &mut crate::ui::dispatch::Dispatcher<crate::app::bridge::AppHost>) {
     crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(q.trim().to_string()));
-    trail.push(Node::Search);
-    *route = Route::Search;
+    // A peer of Home, exactly as an interactive press on the strip's last pill is — and a ROOT
+    // rather than a push, because at boot there is nothing above the root to stand on.
+    crate::app::bridge::nav_root(d, AppArg::Search);
 }
 
 /// `now - at >= gap_ms`, read as SIGNED so a future `at` (a `delay=` in force) correctly does not
@@ -667,7 +676,7 @@ use crate::app::run::pin_headless_hud;
 fn autoplay_arm(app: &mut App, fr: &mut Frame) {
     use crate::screens::player::input::HUD_HEADLESS_MS;
     if !app.scenarios.auto_tried
-        && !matches!(app.route, Route::Player | Route::Login | Route::Profiles)
+        && !matches!(app.route(), AppArg::Player | AppArg::Login | AppArg::Profiles)
         && fr.now.wrapping_sub(app.t0) > 2000
     {
         app.scenarios.auto_tried = true;
@@ -700,10 +709,9 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
                 crate::app::playback::start_playback(&mut app.player.session,
                     &mut app.adapters.player,
                     0,
-                    crate::app::nav::origin_here(app.route, &app.trail),
+                    crate::app::playback::Origin::Here,
                     HUD_HEADLESS_MS,
-                    &mut app.route,
-                    &mut app.play_from,
+                    None,
                     &mut app.pages,
                     &mut app.bridge,
                 );
@@ -724,10 +732,10 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
                 _ => crate::browse::SecKind::Movie,
             };
             app.bridge.enter_library(kind);
-            app.route = Route::Library;
+            crate::app::bridge::nav_root(&mut app.pages, AppArg::Library);
         }
         if let Some(q) = crate::dev::read("search") {
-            apply_search_boot_trigger(&q, &mut app.route, &mut app.trail);
+            apply_search_boot_trigger(&q, &mut app.pages);
         }
         if let Some(s) = crate::dev::read("heroidx") {
             if let Ok(n) = s.parse::<c_int>() {
@@ -739,7 +747,7 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
 
 fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.settings_tried && fr.now.wrapping_sub(app.t0) > 800 {
-        if matches!(app.route, Route::Home) {
+        if matches!(app.route(), AppArg::Home) {
             app.scenarios.settings_tried = true;
             let page = match app.scenarios.dev.settings_boot.as_deref().map(str::trim).unwrap_or("root") {
                 "" | "root" => crate::screens::family::SettingsPage::Root,
@@ -763,8 +771,8 @@ fn press_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.press_tried && fr.now.wrapping_sub(app.t0) > 1600 {
         app.scenarios.press_tried = true;
         if crate::dev::flag("press")
-            && ((matches!(app.route, Route::Home) && app.bridge.home_grid_focused(&app.pages))
-                || (matches!(app.route, Route::Library) && crate::app::bridge::Bridge::library_card_focused(&app.pages)))
+            && ((matches!(app.route(), AppArg::Home) && app.bridge.home_grid_focused(&app.pages))
+                || (matches!(app.route(), AppArg::Library) && crate::app::bridge::Bridge::library_card_focused(&app.pages)))
         {
             app.inputs.push(crate::app::bridge::script_key(Key::Ok,
                 Tick { ms: fr.now, dt_us: 0 })[0].clone());
@@ -789,7 +797,7 @@ fn acct_arm(app: &mut App, fr: &mut Frame) {
     if app.scenarios.acct_tried || !crate::dev::scenarios::acct_armed() {
         return;
     }
-    if matches!(app.route, Route::Home) && app.pages.top_page().is_some() {
+    if matches!(app.route(), AppArg::Home) && app.pages.top_page().is_some() {
         app.scenarios.acct_tried = true;
         crate::app::bridge::open_account_menu(&mut app.pages);
     } else if fr.now.wrapping_sub(app.t0) > 12_000 {
@@ -814,7 +822,7 @@ fn acct_arm(app: &mut App, fr: &mut Frame) {
 /// retrying forever on a boot that never reaches a grid at all.
 fn itemmenu_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.itemmenu_tried && fr.now.wrapping_sub(app.t0) > 1800 {
-        if crate::dev::flag("itemmenu") && matches!(app.route, Route::Home) {
+        if crate::dev::flag("itemmenu") && matches!(app.route(), AppArg::Home) {
             app.bridge.request_home_menu(&app.pages);
             app.scenarios.itemmenu_tried = crate::app::bridge::item_menu_up(&app.pages)
                 || fr.now.wrapping_sub(app.t0) > 12_000;
@@ -854,9 +862,11 @@ fn detail_arm(app: &mut App, fr: &mut Frame) -> bool {
                 };
                 crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
                 crate::log(&format!("plxnative-detail: rk={rk} server={} start", sid.raw()));
-                crate::app::nav::push_detail(&mut app.trail, &mut app.route, sid, rk);
-                app.bridge.seed_node(app.trail.top());
-                app.scenarios.content_boot = Some(ContentBoot::new(app.trail.top().clone()));
+                // A HARD CUT onto the page: at boot there is no outgoing screen to replace, so a
+                // dip would fade the page up out of nothing and read as a slow app rather than a
+                // navigated one. `push_detail` + `seed_node` in one call.
+                crate::app::bridge::open_detail(&mut app.pages, &mut app.bridge, sid, rk, None, None);
+                app.scenarios.content_boot = Some(ContentBoot::new(sid, rk.to_string()));
             }
         }
     }
@@ -886,7 +896,7 @@ fn detail_arm(app: &mut App, fr: &mut Frame) -> bool {
 /// arm here uses for "this boot never got where it was going".
 fn play_arm(app: &mut App, fr: &mut Frame) -> bool {
     if !app.scenarios.play_tried
-        && !matches!(app.route, Route::Player | Route::Login | Route::Profiles)
+        && !matches!(app.route(), AppArg::Player | AppArg::Login | AppArg::Profiles)
         && fr.now.wrapping_sub(app.t0) > 500
     {
         app.scenarios.play_tried = true;
@@ -914,7 +924,7 @@ fn play_arm(app: &mut App, fr: &mut Frame) -> bool {
 fn play_await_tick(app: &mut App, fr: &mut Frame) {
     use crate::screens::player::input::HUD_LINGER_MS;
     let Some((sid, rk, deadline)) = app.scenarios.play_await.clone() else { return };
-    if matches!(app.route, Route::Player) {
+    if matches!(app.route(), AppArg::Player) {
         app.scenarios.play_await = None;
         return;
     }
@@ -955,10 +965,9 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
         crate::app::playback::start_playback(&mut app.player.session,
             &mut app.adapters.player,
             resume,
-            crate::app::nav::origin_here(app.route, &app.trail),
+            crate::app::playback::Origin::Here,
             HUD_LINGER_MS,
-            &mut app.route,
-            &mut app.play_from,
+            None,
             &mut app.pages,
             &mut app.bridge,
         );
@@ -967,7 +976,7 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
 
 fn autoseek_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.seek_tried
-        && matches!(app.route, Route::Player)
+        && matches!(app.route(), AppArg::Player)
         && crate::app::playback::dur() > 0
         && fr.now.wrapping_sub(app.t0) > 12000
     {
@@ -995,7 +1004,7 @@ fn autoseek_arm(app: &mut App, fr: &mut Frame) {
         }
     }
     if !app.scenarios.seek_script.is_empty()
-        && matches!(app.route, Route::Player)
+        && matches!(app.route(), AppArg::Player)
         && script_step_due(fr.now, app.scenarios.seek_script_at, app.scenarios.seek_gap_ms)
     {
         let step = app.scenarios.seek_script.remove(0);
@@ -1016,7 +1025,7 @@ fn autoseek_arm(app: &mut App, fr: &mut Frame) {
 fn qualityswitch_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.quality_tried {
         const QUALITY_SWITCH_OBSERVE_MS: u32 = 12_000;
-        let playing = matches!(app.route, Route::Player)
+        let playing = matches!(app.route(), AppArg::Player)
             && crate::app::playback::dur() > 0
             && crate::player::is_playing(&app.player.session);
         if !playing {
@@ -1034,7 +1043,7 @@ fn qualityswitch_arm(app: &mut App, fr: &mut Frame) {
         }
     }
     if !app.scenarios.quality_script.is_empty()
-        && matches!(app.route, Route::Player)
+        && matches!(app.route(), AppArg::Player)
         && script_step_due(fr.now, app.scenarios.quality_script_at, app.scenarios.quality_gap_ms)
     {
         let q = app.scenarios.quality_script.remove(0);
@@ -1045,14 +1054,14 @@ fn qualityswitch_arm(app: &mut App, fr: &mut Frame) {
 }
 
 fn autopause_arm(app: &mut App, fr: &mut Frame) {
-    if !app.scenarios.pause_tried && matches!(app.route, Route::Player) && fr.now.wrapping_sub(app.t0) > 6000 {
+    if !app.scenarios.pause_tried && matches!(app.route(), AppArg::Player) && fr.now.wrapping_sub(app.t0) > 6000 {
         app.scenarios.pause_tried = true;
         if let Some(script) = super::pause_script() {
             app.scenarios.pause_script = Some((fr.now.wrapping_add(script.delay_ms), script.hold_ms));
         }
     }
     if let Some((pause_at, hold_ms)) = app.scenarios.pause_script {
-        if matches!(app.route, Route::Player) && script_step_due(fr.now, pause_at, 0) {
+        if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, pause_at, 0) {
             if crate::app::lifecycle::set_transport_paused(&mut app.adapters.player, true) {
                 crate::log(&format!(
                     "autopause: Pause accepted hold={}ms",
@@ -1065,7 +1074,7 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
         }
     }
     if let Some(resume_at) = app.scenarios.pause_resume_at {
-        if matches!(app.route, Route::Player) && script_step_due(fr.now, resume_at, 0) {
+        if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, resume_at, 0) {
             if crate::app::lifecycle::set_transport_paused(&mut app.adapters.player, false) {
                 crate::log("autopause: Resume accepted");
                 app.scenarios.pause_resume_at = None;
@@ -1075,7 +1084,7 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
 }
 
 fn menu_arm(app: &mut App, fr: &mut Frame) {
-    if !app.scenarios.menu_tried && matches!(app.route, Route::Player) && fr.now.wrapping_sub(app.t0) > 6000 {
+    if !app.scenarios.menu_tried && matches!(app.route(), AppArg::Player) && fr.now.wrapping_sub(app.t0) > 6000 {
         app.scenarios.menu_tried = true;
         if let Some(t) = crate::dev::read("menu") {
             crate::app::bridge::open_player_overlay(&mut app.player.session,
@@ -1096,7 +1105,7 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
 }
 
 fn menupick_arm(app: &mut App, fr: &mut Frame) {
-    if !app.scenarios.menupick_tried && matches!(app.route, Route::Player) && fr.now.wrapping_sub(app.t0) > 7000 {
+    if !app.scenarios.menupick_tried && matches!(app.route(), AppArg::Player) && fr.now.wrapping_sub(app.t0) > 7000 {
         app.scenarios.menupick_tried = true;
         if let Some(s) = crate::dev::read("menupick") {
             let mut it = s.split(',');
@@ -1119,7 +1128,7 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
 }
 
 fn marker_arm(app: &mut App, _fr: &mut Frame) {
-    if !app.scenarios.marker_tried && matches!(app.route, Route::Player) && crate::player::is_playing(&mut app.player.session) {
+    if !app.scenarios.marker_tried && matches!(app.route(), AppArg::Player) && crate::player::is_playing(&mut app.player.session) {
         match crate::dev::read("marker") {
             Some(s) => {
                 let want = if s.eq_ignore_ascii_case("intro") {
@@ -1153,7 +1162,7 @@ fn marker_arm(app: &mut App, _fr: &mut Frame) {
 /// file appearing mid-run, and `dev::flag` is `false` at COMPILE time in a release build.
 pub(crate) fn maybe_replay_after_eos(app: &mut App) {
     if app.scenarios.replay_left > 0
-        && !matches!(app.route, Route::Player)
+        && !matches!(app.route(), AppArg::Player)
         && crate::dev::flag("playurl")
     {
         app.scenarios.replay_left -= 1;
@@ -1201,10 +1210,10 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
 /// `/tmp/plxnative-pickuser=<index>` — auto-select that roster tile once the who's-watching
 /// picker is up. Called from `app::run::update` at the position the arm always occupied.
 pub(crate) fn pickuser_tick(app: &mut App) {
-    if !(matches!(app.route, Route::Profiles)
+    if !(matches!(app.route(), AppArg::Profiles)
         && app.scenarios.pick_user.is_some()
-        && crate::auth::phase() == crate::auth::Phase::Profiles
-        && !crate::auth::users().is_empty())
+        && app.bridge.auth_read().0.phase == crate::auth::Phase::Profiles
+        && !app.bridge.auth_read().0.users.is_empty())
     {
         return;
     }
@@ -1213,7 +1222,7 @@ pub(crate) fn pickuser_tick(app: &mut App) {
     // because this call site cannot reach that method to ask it FOR us — see the phase-9 report
     // this arm's comment used to carry for the full account of why a protected roster index
     // refuses here rather than attempting a PIN-less switch plex.tv would refuse anyway.
-    let protected = crate::auth::users().get(idx).map(|u| u.protected).unwrap_or(false);
+    let protected = app.bridge.auth_read().0.users.get(idx).map(|u| u.protected).unwrap_or(false);
     if protected {
         crate::log(&format!(
             "pickuser: roster index {idx} is PROTECTED — refusing rather than attempting \
@@ -1222,31 +1231,35 @@ pub(crate) fn pickuser_tick(app: &mut App) {
         ));
     } else {
         crate::log(&format!("pickuser: auto-selecting roster index {idx}"));
-        crate::auth::select_profile(idx);
+        crate::app::bridge::execute_session_command(&mut app.pages,
+            crate::auth::SessionCmd::SelectProfile { index: idx, pin: None });
     }
 }
 
 /// `/tmp/plxnative-navosc` — bounce the route Home↔Library (or Home↔a named detail page) on a
 /// timer. Called from `app::run::land_results` at the position the arm always occupied.
 pub(crate) fn nav_osc_tick(app: &mut App, now: u32) {
-    use crate::app::nav::{nav_back, nav_open, nav_to, to_detail};
+    use crate::screens::registry::HomeTab;
     if app.scenarios.dev.nav_osc && now.wrapping_sub(app.scenarios.nav_osc_last) > 1400 {
         app.scenarios.nav_osc_last = now;
-        match app.route {
-            Route::Home if !app.scenarios.dev.nav_osc_rk.is_empty() => {
-                nav_open(app.route, to_detail(crate::plex::current_server(), &app.scenarios.dev.nav_osc_rk), None, &mut app.nav_pending)
+        match app.route() {
+            AppArg::Home if !app.scenarios.dev.nav_osc_rk.is_empty() => {
+                let rk = app.scenarios.dev.nav_osc_rk.clone();
+                crate::app::bridge::open_detail(&mut app.pages, &mut app.bridge,
+                    crate::plex::current_server(), &rk, None, None);
             }
-            Route::Detail => nav_back(app.route, &app.trail, &mut app.nav_pending),
-            Route::Home => {
+            AppArg::Content(_) => crate::app::bridge::nav_pop(&mut app.pages),
+            AppArg::Home => {
                 if let Some(kind) = crate::browse::tab_kind(0) {
-                    nav_to(app.route, Nav::Library(kind), &mut app.nav_pending)
+                    let tab = match kind {
+                        crate::browse::SecKind::Show => HomeTab::Shows,
+                        _ => HomeTab::Movies,
+                    };
+                    crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge, tab, None, None);
                 }
             }
-            Route::Library => nav_to(
-                app.route,
-                Nav::Home { focus_pill: Some(crate::ui::widgets::pill_at(1)) },
-                &mut app.nav_pending,
-            ),
+            AppArg::Library => crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge,
+                HomeTab::Home, Some(crate::app::chrome::pill_at(1)), None),
             _ => {}
         }
     }
@@ -1286,7 +1299,7 @@ pub(crate) fn home_osc_tick(app: &mut App, now: u32) {
 
 /// `/tmp/plxnative-libosc` — the Library twin of `homeosc`.
 pub(crate) fn lib_osc_tick(app: &mut App, now: u32) {
-    if app.scenarios.dev.lib_osc && matches!(app.route, Route::Library) && now.wrapping_sub(app.scenarios.lib_osc_last) > 350 {
+    if app.scenarios.dev.lib_osc && matches!(app.route(), AppArg::Library) && now.wrapping_sub(app.scenarios.lib_osc_last) > 350 {
         app.scenarios.lib_osc_last = now;
         crate::app::bridge::Bridge::library_command(&mut app.pages, crate::screens::registry::LibraryCmd::Sweep);
     }
@@ -1294,7 +1307,7 @@ pub(crate) fn lib_osc_tick(app: &mut App, now: u32) {
 
 /// `/tmp/plxnative-libswitch` — cycle EVERY Library switch on a timer.
 pub(crate) fn lib_switch_tick(app: &mut App, now: u32) {
-    if app.scenarios.dev.lib_switch && matches!(app.route, Route::Library) && now.wrapping_sub(app.scenarios.lib_switch_last) > 1400 {
+    if app.scenarios.dev.lib_switch && matches!(app.route(), AppArg::Library) && now.wrapping_sub(app.scenarios.lib_switch_last) > 1400 {
         app.scenarios.lib_switch_last = now;
         crate::app::bridge::Bridge::library_command(&mut app.pages, crate::screens::registry::LibraryCmd::SwitchStep(app.scenarios.lib_switch_step));
         app.scenarios.lib_switch_step = app.scenarios.lib_switch_step.wrapping_add(1);
@@ -1303,7 +1316,7 @@ pub(crate) fn lib_switch_tick(app: &mut App, now: u32) {
 
 /// `/tmp/plxnative-searchosc` — the Search twin of `homeosc`/`libosc`.
 pub(crate) fn search_osc_tick(app: &mut App, now: u32) {
-    if matches!(app.route, Route::Search) && app.scenarios.dev.search_osc && now.wrapping_sub(app.scenarios.search_osc_last) > 350 {
+    if matches!(app.route(), AppArg::Search) && app.scenarios.dev.search_osc && now.wrapping_sub(app.scenarios.search_osc_last) > 350 {
         app.scenarios.search_osc_last = now;
         let sym = if (now / 3000) % 2 == 0 { crate::ui::consts::SDLK_DOWN } else { crate::ui::consts::SDLK_UP };
         app.inputs.extend(crate::app::bridge::script_key(
@@ -1403,7 +1416,7 @@ pub(crate) fn consent_osc_tick(app: &mut App, now: u32, dt: f32) {
 
 /// `/tmp/plxnative-onboardosc` — sweep the first-run sources editor's focus.
 pub(crate) fn onboard_osc_tick(app: &mut App, now: u32, dt: f32) {
-    if app.scenarios.dev.onboard_osc && matches!(app.route, Route::Onboard) {
+    if app.scenarios.dev.onboard_osc && matches!(app.route(), AppArg::Onboard) {
         crate::ui::idle::invalidate();
         if now.wrapping_sub(app.scenarios.onboard_osc_last) > 520 {
             app.scenarios.onboard_osc_last = now;
@@ -1417,7 +1430,7 @@ pub(crate) fn onboard_osc_tick(app: &mut App, now: u32, dt: f32) {
 
 /// `/tmp/plxnative-detailosc` — sweep the detail page's focus down↔up.
 pub(crate) fn detail_osc_tick(app: &mut App, now: u32) {
-    if app.scenarios.dev.detail_osc && matches!(app.route, Route::Detail) {
+    if app.scenarios.dev.detail_osc && matches!(app.route(), AppArg::Content(crate::screens::registry::ContentArg::Detail { .. })) {
         let key = if (now / 450) % 2 == 0 { Key::Down } else { Key::Up };
         app.inputs.extend(crate::app::bridge::script_key(key, Tick { ms: now, dt_us: 0 }));
     }
@@ -1436,14 +1449,18 @@ pub(crate) fn consent_override() -> Option<String> {
     crate::dev::read("consent")
 }
 
-/// `/tmp/plxnative-rec` — read by `app::recorder::Recplay::arm`. The recorder/replay MECHANISM
+/// `/tmp/plxnative-rec` — read by controlled-bootstrap preflight. The recorder/replay MECHANISM
 /// stays in `app/recorder.rs` (this phase's instructions: it is not a scenario), but the raw
 /// trigger read goes through the one door every other trigger does.
-pub(crate) fn rec_trigger() -> Option<String> {
-    crate::dev::read("rec")
+pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
+    if !crate::dev::ENABLED { return Ok(None); }
+    crate::ui::rec::mode_value(&crate::paths::in_runtime_dir("plxnative-rec"))
+        .map_err(|_| "invalid recorder trigger")
 }
 
 /// `/tmp/plxnative-recplay` — see [`rec_trigger`].
-pub(crate) fn recplay_trigger() -> Option<String> {
-    crate::dev::read("recplay")
+pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
+    if !crate::dev::ENABLED { return Ok(None); }
+    crate::ui::rec::mode_value(&crate::paths::in_runtime_dir("plxnative-recplay"))
+        .map_err(|_| "invalid replay trigger")
 }

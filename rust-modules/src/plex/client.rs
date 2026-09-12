@@ -128,6 +128,8 @@ pub struct Client {
     /// Immutable process-local instance identity for adapter recordings, distinct from both the
     /// secret token and the Plex device identifier. A token swap must not rename this instance.
     instance_gen: u32,
+    data_io_disabled: std::sync::atomic::AtomicBool,
+    denied_data_requests: AtomicU32,
     /// HOW this server is reached — the tier of the connection that won the probe, or "nobody has
     /// said yet" ([`LINK_UNKNOWN`]). A property of the SERVER, not of the request, which is why it
     /// lives beside its address rather than being recomputed at a call site.
@@ -202,6 +204,14 @@ fn link_of_code(c: u8) -> Option<Location> {
 use super::identity::{device_name, DEVICE, MODEL, PROVIDES};
 
 impl Client {
+    pub(crate) fn capture_generation_seed() -> u32 { GEN_SEQ.load(Relaxed) }
+
+    /// Called only before constructing controlled resources in an empty registry.
+    pub(crate) fn restore_generation_seed(seed: u32) -> Result<(), &'static str> {
+        if seed == 0 || super::server_count() != 0 { return Err("invalid client initialization boundary"); }
+        GEN_SEQ.store(seed, Relaxed);
+        Ok(())
+    }
     /// Build a client for ONE server. `pub(super)`: a `Client` nobody can reach is useless, so
     /// the only construction site is [`super::servers::register`], which leaks it into the slot
     /// named by `id`.
@@ -232,6 +242,8 @@ impl Client {
             platform: super::identity::PLATFORM.into(),
             token_gen: AtomicU32::new(generation),
             instance_gen: generation,
+            data_io_disabled: std::sync::atomic::AtomicBool::new(false),
+            denied_data_requests: AtomicU32::new(0),
             link: AtomicU8::new(LINK_UNKNOWN),
             ip_version: AtomicU8::new(IP_UNKNOWN),
         }
@@ -313,6 +325,15 @@ impl Client {
         self.token_gen.load(Relaxed)
     }
     pub(crate) fn instance_gen(&self) -> u32 { self.instance_gen }
+    /// Resource capability only. Revocation is irreversible for this incarnation and never
+    /// changes a logical result; a controlled replay must supply that result through ingress.
+    pub(crate) fn disable_data_io(&self) { self.data_io_disabled.store(true, Relaxed); }
+    pub(crate) fn denied_data_requests(&self) -> u32 { self.denied_data_requests.load(Relaxed) }
+    fn may_send(&self) -> bool {
+        if !self.data_io_disabled.load(Relaxed) { return true; }
+        self.denied_data_requests.fetch_add(1, Relaxed);
+        false
+    }
     /// The host to DIAL — never bracketed, even for a v6 literal (see [`Origin::host`]). Unchanged
     /// in meaning and in bytes from when this was a plain field.
     pub fn host(&self) -> &str {
@@ -392,6 +413,7 @@ impl Client {
     /// wrapper this used to call folded every non-2xx into `None` for everybody, which is why a
     /// probe could not tell a 401 from a dead router.
     fn send(&self, path_no_token: &str, method: Method, headers: &[&str]) -> Option<http::Reply> {
+        if !self.may_send() { return None; }
         let owned = pms_headers(headers);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         http::request(
@@ -414,6 +436,7 @@ impl Client {
         headers: &[&str],
         deadline: std::time::Instant,
     ) -> http::RequestOutcome {
+        if !self.may_send() { return http::RequestOutcome::Transport; }
         let owned = pms_headers(headers);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         http::request_until_outcome(
@@ -439,6 +462,7 @@ impl Client {
     /// the connect deadline but has no 25 s whole-transfer cutoff; on plaintext it is the same
     /// socket policy `stream.rs` has always used.
     fn body_2xx_bulk(&self, path_no_token: &str, headers: &[&str]) -> Option<Vec<u8>> {
+        if !self.may_send() { return None; }
         let owned = pms_headers(headers);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         let r = http::request_bulk(
@@ -547,6 +571,7 @@ impl Client {
     /// The token is therefore in the CALLER's string. It must not be logged — the poster store
     /// logs no keys, and neither may anything else that holds one.
     pub(crate) fn fetch_built(&self, path_with_token: &str) -> Option<Vec<u8>> {
+        if !self.may_send() { return None; }
         // NOT `body_2xx`, for the same reason this method exists at all: that helper appends the
         // token, and this path already ends in one.
         let owned = pms_headers(&[]);

@@ -10,27 +10,28 @@
 //! the recording's answer silently: it grades the application's machines, not the engine.
 //!
 //! The application supplies the decoding of its own inputs and results (`Codec`), because the
-//! library does not know what an `ElemKey` or an `AsyncPayload` is.
+//! library does not know what an `ElemKey` or an `AsyncPayload` is. A decode refusal stops before
+//! stepping that frame; only well-formed divergences continue.
 #![allow(dead_code)] // phase 2: the product driver lands with the recorder trigger
 
 use serde_json::Value;
 
 use super::dispatch::{Dispatcher, Rig, Tap};
 use super::geom::IndexElem;
-use super::machine::{Addr, EntryId, FocusKey, Host, InputEvent, Tick};
+use super::machine::{Addr, EntryId, FocusKey, Host, InputEvent, InputKind, Tick};
 use super::rec::Recording;
 
 /// The two replay modes (§5.5).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
-    /// Feed each input with its recorded resolution: the engine is bypassed.
+    /// Run the engine, then restore recorded frame focus without grading the engine's answer.
     Targets,
     /// Run the engine for real and grade its answer against the recording, continuing from the
     /// recorded resolution on a mismatch.
     Resolve,
 }
 
-/// How the application spells its inputs and results in a recording.
+/// How the application spells its inputs and results in a recording. `None` refuses the frame.
 pub trait Codec<H: Host> {
     fn decode_input(&self, v: &Value) -> Option<InputEvent<H::Elem>>;
     fn decode_result(&self, v: &Value) -> Option<(Addr, H::Msg)>;
@@ -43,7 +44,28 @@ pub struct Divergence {
     pub expected: u64,
     pub got: u64,
     /// The recorded input kinds on that frame, for the `--safe` printer (never payloads).
-    pub inputs: Vec<String>,
+    pub inputs: Vec<&'static str>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecodeStream {
+    Input,
+    Result,
+}
+
+impl DecodeStream {
+    fn label(self) -> &'static str {
+        match self { Self::Input => "input", Self::Result => "result" }
+    }
+}
+
+/// A codec refusal at the original recording position, without copying any payload bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecodeFailure {
+    pub frame: u64,
+    pub stream: DecodeStream,
+    /// Zero-based index within this frame's input or result stream.
+    pub index: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -51,6 +73,7 @@ pub struct Report {
     pub frames: u64,
     pub graded: u64,
     pub divergences: Vec<Divergence>,
+    pub decode_failure: Option<DecodeFailure>,
     /// A measurement the table could not answer: a hard failure.
     pub measure_miss: Option<(String, i32, bool)>,
     /// Present bits that differed `(frame, recorded, got)`.
@@ -62,6 +85,7 @@ pub struct Report {
 impl Report {
     pub fn is_clean(&self) -> bool {
         self.divergences.is_empty()
+            && self.decode_failure.is_none()
             && self.measure_miss.is_none()
             && self.present_diffs.is_empty()
             && self.focus_diffs.is_empty()
@@ -87,6 +111,10 @@ impl Report {
         }
         if let Some((_, sz, bold)) = &self.measure_miss {
             out.push(format!("measure-miss sz={sz} bold={bold}"));
+        }
+        if let Some(failure) = self.decode_failure {
+            out.push(format!("decode-refused f={} stream={} index={}",
+                failure.frame, failure.stream.label(), failure.index));
         }
         out
     }
@@ -131,6 +159,19 @@ where
     d.focus_record()
 }
 
+fn input_label<K>(kind: &InputKind<K>) -> &'static str {
+    match kind {
+        InputKind::Key { .. } => "key",
+        InputKind::Pointer { .. } => "pointer",
+        InputKind::Click { .. } => "click",
+        InputKind::Drag { .. } => "drag",
+        InputKind::Wheel { .. } => "wheel",
+        InputKind::Text(_) => "text",
+        InputKind::PointerHidden => "pointer_hidden",
+        InputKind::SystemKeyboard(_) => "keyboard",
+    }
+}
+
 pub fn run<H: Host>(
     rec: &Recording,
     codec: &dyn Codec<H>,
@@ -144,18 +185,27 @@ where
 {
     let mut report = Report::default();
     let mut silent = Silent;
-    for fr in &rec.frames {
+    'frames: for fr in &rec.frames {
         let tick = fr.tick.unwrap_or(Tick::default());
-        let inputs: Vec<InputEvent<H::Elem>> = fr
-            .inputs
-            .iter()
-            .filter_map(|v| codec.decode_input(v))
-            .collect();
-        let results: Vec<(Addr, H::Msg)> = fr
-            .results
-            .iter()
-            .filter_map(|v| codec.decode_result(v))
-            .collect();
+        // Decode both streams before the dispatcher sees any part of this frame. A refusal
+        // leaves completed frames intact and applies nothing from the offending frame.
+        let mut inputs = Vec::with_capacity(fr.inputs.len());
+        for (index, value) in fr.inputs.iter().enumerate() {
+            let Some(input) = codec.decode_input(value) else {
+                report.decode_failure = Some(DecodeFailure { frame: fr.f, stream: DecodeStream::Input, index });
+                break 'frames;
+            };
+            inputs.push(input);
+        }
+        let mut results = Vec::with_capacity(fr.results.len());
+        for (index, value) in fr.results.iter().enumerate() {
+            let Some(result) = codec.decode_result(value) else {
+                report.decode_failure = Some(DecodeFailure { frame: fr.f, stream: DecodeStream::Result, index });
+                break 'frames;
+            };
+            results.push(result);
+        }
+        let labels = inputs.iter().map(|input| input_label(&input.kind)).collect();
         // Both modes run the engine — a screen hears the `FocusMoved` its recorded twin heard, so
         // its own state stays comparable. They differ in what a mismatch IS: `Targets` takes the
         // recording's answer silently (the engine is not what is being graded); `Resolve`
@@ -191,11 +241,7 @@ where
                     frame: fr.f,
                     expected,
                     got,
-                    inputs: fr
-                        .inputs
-                        .iter()
-                        .map(|v| v["kind"].as_str().unwrap_or("?").to_string())
-                        .collect(),
+                    inputs: labels,
                 });
             }
         }

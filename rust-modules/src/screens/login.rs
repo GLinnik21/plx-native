@@ -10,38 +10,34 @@
 //! no press bounce, exactly as they did under the old `key()` ladder, because `StatusOverlay`'s
 //! action never wore the app's tvOS press treatment either (see that widget's own doc).
 //!
-//! **`step` is the ONLY place this screen ever reads [`crate::auth`].** The QR triple (code,
-//! bitmap, generation) has to come off ONE lock or a frame can mix two codes — `auth::QrCode`'s own
-//! doc — and `draw`/`prepare` must not each take a second, independent snapshot of a flow another
-//! thread can move between them. So every `Tick` refreshes `phase`/`qr_gen`/`qr_code`/`qr_replaced`/
-//! `error`/`delete_leftovers` from `crate::auth` exactly once, and every other method — `draw`,
-//! `prepare`, `Focusable`'s geometry — reads only those cached fields. This is a stricter rule than
-//! `screens::onboard` follows for its own external reads (`crate::browse::…` stays fine to poll live
-//! from `draw`), and it is stricter on purpose here: the QR bitmap is a GL upload this screen must
-//! not repeat on every frame, and the digits/bitmap/generation triple is the one place in this
-//! family where "read it twice" is an observable bug rather than a style question.
+//! The constructor and each `Tick` consume one immutable [`auth::SessionRead`] publication through
+//! [`AuthLike`]. The QR code, bitmap and generation therefore come from one retained snapshot; draw,
+//! prepare and focus geometry read only the screen's cached fields. Commands travel as typed
+//! [`auth::SessionCmd`] effects. A stalled-wait clock is reset only by its matching accepted
+//! [`AppMsg::RestartReply`], never when the request is merely emitted.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
+use std::sync::Arc;
 
 use crate::auth::{self, Phase};
 use crate::ui::frame::Budget;
 use crate::ui::label::HAlign;
 use crate::ui::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key,
-    LogicalState, Machine, Measure,
+    LogicalState, Machine, Measure, Tick,
 };
 use crate::ui::route_screen::{RouteGround, RouteLayout};
 use crate::ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, FocusTarget,
-    Focusable, GroupKind, GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen,
-    ScreenEvent, Seat, Step, Stop,
+    Focusable, GroupKind, GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent,
+    Seat, Step, Stop,
 };
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::{Spinner, StatusKind, StatusOverlay, BTN_PILL_AIR};
 use crate::ui::{theme, Env, Painter, Rect, View};
 
-use super::registry::{word, AppFx, AppLike, LoopReq};
+use super::registry::{word, AppFx, AppLike, AppMsg, AuthLike};
 
 /// The one focusable element this screen ever mints, and the group it lives in — there is never a
 /// second, so both are constants rather than an index space. `GroupId(0)` matches the container's
@@ -237,14 +233,23 @@ fn qr_layout(layout: RouteLayout) -> QrLayout {
 /// second, drifting copy of it (`ui/table_screen.rs`'s rule: "the DRAW reads the same formula").
 /// `StatusOverlay` itself is unchanged and is still what actually PAINTS the pill; this only
 /// answers where it painted it.
-fn status_action_rect(measure: &dyn Measure, label: &CStr, working: bool, has_reason: bool) -> Rect {
+fn status_action_rect(
+    measure: &dyn Measure,
+    label: &CStr,
+    working: bool,
+    has_reason: bool,
+) -> Rect {
     let frame = Rect::FULL;
     let cy = frame.cy();
     let cap_h = measure.line_h(theme::size::BODY);
     // `Working` straddles the frame centre with the spinner above it; every other kind this screen
     // ever seats a control in (Failed, Deleted, and Working once it has stalled) centres the
     // caption on the frame — `StatusOverlay::bands`'s own asymmetry, ported as-is.
-    let cap_y = if working { cy + theme::space::XS } else { cy - cap_h * 0.5 };
+    let cap_y = if working {
+        cy + theme::space::XS
+    } else {
+        cy - cap_h * 0.5
+    };
     let mut below = cap_y + cap_h;
     if has_reason {
         below += theme::space::SM + measure.line_h(theme::size::CAPTION);
@@ -303,6 +308,8 @@ struct LoginState {
     qr_replaced: bool,
     has_control: bool,
     delete_leftovers: u32,
+    next_correlation: Option<u32>,
+    pending_restart: Option<u32>,
 }
 
 impl LogicalState for LoginState {
@@ -312,21 +319,48 @@ impl LogicalState for LoginState {
         w.bool(self.qr_replaced);
         w.bool(self.has_control);
         w.u32(self.delete_leftovers);
+        w.option(self.next_correlation, |w, correlation| {
+            w.u32(correlation);
+        });
+        w.option(self.pending_restart, |w, correlation| {
+            w.u32(correlation);
+        });
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "login phase={} qr_gen={} replaced={} control={} leftovers={}",
-            self.phase, self.qr_gen, self.qr_replaced, self.has_control, self.delete_leftovers
+            "login phase={} qr_gen={} replaced={} control={} leftovers={} next={:?} restart={:?}",
+            self.phase,
+            self.qr_gen,
+            self.qr_replaced,
+            self.has_control,
+            self.delete_leftovers,
+            self.next_correlation,
+            self.pending_restart,
         ));
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct PendingRestart {
+    correlation: u32,
+    wait: Wait,
+}
+
 pub(crate) struct LoginScreen {
     entry: EntryId,
-    /// Free-running rotation clock for the spinner. Render-only, never hashed.
+    /// Free-running rotation clock for the spinner, in ms — cached each tick from
+    /// [`spin_phase`](Self::spin_phase)'s `advance`. Render-only, never hashed.
     spin_ms: f32,
-    /// How long the CURRENT wait has been on screen — reset by `tick` whenever [`Wait`] changes.
+    /// How long the CURRENT wait has been on screen, in ms — cached each tick from
+    /// [`phase_clock`](Self::phase_clock)'s `advance`, reset whenever [`Wait`] changes.
     phase_ms: f32,
+    /// The underlying clocks for [`spin_ms`](Self::spin_ms)/[`phase_ms`](Self::phase_ms)
+    /// (`motion::Phase` — spec phase 12 D4): an UNBOUNDED clock-driven animator reports `Motion`
+    /// from inside its own `advance`, the way [`motion::Ramp`](crate::ui::motion::Ramp) does for a
+    /// bounded one, rather than the raw `+= dt` these two fields used to accumulate with
+    /// `fx.note(Motion)` called separately, out of band, below.
+    spin_phase: crate::ui::motion::Phase,
+    phase_clock: crate::ui::motion::Phase,
     wait: Wait,
     /// The uploaded GL texture of Plex's QR PNG (0 until decoded+uploaded) and which generation it
     /// describes. Render resources only — built and freed in [`Screen::prepare`], never in `step`,
@@ -339,27 +373,31 @@ pub(crate) struct LoginScreen {
     /// is 0, and the two are set and cleared together.
     qr_px: (u32, u32),
     /// PNG bytes `tick` captured this frame, awaiting [`Screen::prepare`]'s decode+upload — the
-    /// hand-off between "read `crate::auth` once" (step) and "touch GL" (prepare). `None` once
+    /// hand-off between "retain one Session publication" (step) and "touch GL" (prepare). `None` once
     /// consumed, or when nothing new has been published.
-    qr_png_pending: Option<(u64, Vec<u8>)>,
-    /// Everything this screen ever reads from [`crate::auth`], refreshed exactly once per `Tick` —
-    /// see the module doc for why `draw`/`prepare` may not read `crate::auth` themselves.
+    qr_png_pending: Option<(u64, Arc<[u8]>)>,
+    /// Everything this screen retains from Session's immutable publication, refreshed once per
+    /// `Tick`; `draw` and `prepare` never perform another read.
     phase: Phase,
     qr_gen: u64,
-    qr_code: String,
+    qr_code: Arc<str>,
     qr_replaced: bool,
-    error: String,
+    error: Arc<str>,
     delete_leftovers: usize,
+    next_correlation: Option<u32>,
+    pending_restart: Option<PendingRestart>,
     ground: RouteGround,
     state: LoginState,
 }
 
 impl LoginScreen {
-    pub(crate) fn new(entry: EntryId) -> Self {
+    pub(crate) fn new(entry: EntryId, auth: auth::SessionRead<'_>) -> Self {
         let mut s = Self {
             entry,
             spin_ms: 0.0,
             phase_ms: 0.0,
+            spin_phase: crate::ui::motion::Phase::default(),
+            phase_clock: crate::ui::motion::Phase::default(),
             wait: (Phase::Idle, 0),
             qr_tex: 0,
             qr_tex_gen: 0,
@@ -367,10 +405,12 @@ impl LoginScreen {
             qr_png_pending: None,
             phase: Phase::Idle,
             qr_gen: 0,
-            qr_code: String::new(),
+            qr_code: Arc::from(""),
             qr_replaced: false,
-            error: String::new(),
+            error: Arc::from(""),
             delete_leftovers: 0,
+            next_correlation: Some(1),
+            pending_restart: None,
             ground: RouteGround::new(),
             state: LoginState {
                 phase: 0,
@@ -378,25 +418,26 @@ impl LoginScreen {
                 qr_replaced: false,
                 has_control: false,
                 delete_leftovers: 0,
+                next_correlation: Some(1),
+                pending_restart: None,
             },
         };
-        // Read once at construction — not a `draw`-time poll, a one-time seed exactly mirroring
-        // `ui/login.rs`'s own `Scene::new`/`init`, which read `auth::qr_generation()` the same way.
+        // Read once at construction — not a `draw`-time poll — so the first frame is coherent
+        // even when Mount/Tick are still queued behind it.
         // Without it, a mount that lands straight in `Phase::Deleted` (Settings' "Delete all local
         // data", confirmed) would draw its FIRST frame from the constructor's own placeholder
         // `Phase::Idle` — the wrong branch — because the container's default `Enter` (and this
         // screen's own first `draw`) both run before this screen's first `Tick` ever could.
-        s.wait = s.resync();
+        s.wait = s.resync(auth);
         s
     }
 
-    /// Refresh every field this screen caches from [`crate::auth`] — see the struct's own doc for
-    /// why this is the ONLY place any of them is read. Called once at construction and again on
-    /// every `Tick`.
+    /// Refresh every field this screen caches from one immutable Session publication. Called once
+    /// at construction and again on every `Tick` through [`AuthLike`].
     ///
     /// **Returns the `(phase, qr_generation)` pair it just sampled**, so a caller that ALSO needs
     /// to know what changed — `tick`'s own wait-restart clock — reads the exact values this method
-    /// cached instead of asking `crate::auth` a second time. `tick` used to do exactly that: it
+    /// cached instead of asking for a second publication. `tick` used to do exactly that: it
     /// computed `let live: Wait = (auth::phase(), auth::qr_generation());` several lines before
     /// calling `resync`, which then read the identical pair out of `crate::auth` again on its own.
     /// That is precisely the "read it twice" bug the module doc calls out by name — a retry (or a
@@ -404,45 +445,41 @@ impl LoginScreen {
     /// could hand the wait-restart clock a phase that disagreed with the one this method cached,
     /// so the clock could reset (or fail to reset) against a `Wait` that was never actually drawn.
     /// Threading the sample through the return value makes the two agree by construction.
-    fn resync(&mut self) -> Wait {
-        self.phase = auth::phase();
-        self.qr_gen = auth::qr_generation();
+    fn resync(&mut self, auth: auth::SessionRead<'_>) -> Wait {
+        let snapshot = auth.0;
+        self.phase = snapshot.phase;
+        self.qr_gen = snapshot.qr_generation;
         if self.phase == Phase::Waiting {
             // ONE read of the code, generation and bitmap together — `auth::QrCode`'s own doc says
             // why: taking them separately can mix the new digits with the old bitmap, or cache a
             // fresh bitmap under a stale generation.
-            let qr = auth::qr_snapshot();
-            self.qr_code = qr.code;
-            self.qr_replaced = qr.replaced;
-            self.qr_png_pending = Some((qr.generation, qr.png));
+            self.qr_code = Arc::clone(&snapshot.code);
+            self.qr_replaced = snapshot.code_replaced;
+            self.qr_png_pending = Some((snapshot.qr_generation, Arc::clone(&snapshot.png)));
         }
         if self.phase == Phase::Error {
-            self.error = auth::error();
+            self.error = Arc::clone(&snapshot.error);
         }
         if self.phase == Phase::Deleted {
-            // `app::input::delete_all_local_data_and_sign_out` calls `auth::note_delete_leftovers`
-            // (moved off `ui::login`'s static onto `auth`'s own — see that setter's doc), and this
-            // reads the matching `auth::delete_leftovers()` getter. It has to come off a shared
-            // static rather than a constructor parameter: this screen is reconstructed fresh every
-            // time the route re-enters Login (`AppMounter::mount`), so nothing else ever holds a
-            // live `LoginScreen` instance to push the count onto before its first frame draws, and
-            // the frozen contract fixes `LoginScreen::new(EntryId)`'s signature. Reading the SAME
-            // static the setter already writes is the smallest connection between the two that
-            // needs no other lane's file.
-            self.delete_leftovers = crate::auth::delete_leftovers();
+            self.delete_leftovers = snapshot.delete_leftovers;
         }
+        self.sync_state();
+        (self.phase, self.qr_gen)
+    }
+
+    fn sync_state(&mut self) {
         self.state = LoginState {
             phase: phase_disc(self.phase),
             qr_gen: self.qr_gen,
             qr_replaced: self.qr_replaced,
             has_control: self.has_control(),
             delete_leftovers: self.delete_leftovers as u32,
+            next_correlation: self.next_correlation,
+            pending_restart: self.pending_restart.map(|pending| pending.correlation),
         };
-        (self.phase, self.qr_gen)
     }
 
-    fn tick<H: AppLike>(&mut self, dt: f32, fx: &mut Effects<'_, H>) {
-        self.spin_ms += dt * 1000.0;
+    fn tick<H: AuthLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let had_control = self.has_control();
 
         // ONE sample of `crate::auth` feeds both the wait-restart clock below and every cached
@@ -451,16 +488,32 @@ impl LoginScreen {
         // again independently right here, a few lines before calling `resync`, which read the
         // identical pair a second time on its own; a retry (or an automatic pin replacement)
         // landing in the gap between the two reads could disagree with itself within one tick.
-        let live: Wait = self.resync();
+        let live: Wait = self.resync(H::auth(cx));
 
         // Each wait gets its own clock. A flow that walks Creating → Waiting → Discovering is
         // making progress, and restarting the timer at every step is what stops a slow-but-healthy
         // sign-in from being offered a way out of itself.
         if wait_restarted(self.wait, live) {
             self.wait = live;
+            self.pending_restart = None;
+            self.phase_clock.reset(t);
             self.phase_ms = 0.0;
-        } else {
-            self.phase_ms += dt * 1000.0;
+        }
+
+        // Both clocks are `motion::Phase` (spec phase 12 D4): the raw `+= dt` this used to be, and
+        // the `fx.note(Motion)` below it, are now one call each — `advance` both reads the elapsed
+        // ms AND reports motion, so a caller that forgets to note motion for a still-running clock
+        // (the exact "ships frozen" bug class `control_has_spinner`'s own doc names) cannot
+        // separate the two any more. Both clocks are gated on the SAME `control_has_spinner`
+        // condition as the `fx.note` call they replace: `working_phase`/`Phase::Waiting`, the only
+        // phases whose escape thresholds `phase_ms` is timed against, are themselves a SUBSET of
+        // `control_has_spinner`'s true set, so this changes nothing about when the escape offer
+        // can appear — it only stops accumulating (freezes, harmlessly, since nothing reads it)
+        // while the spinner is not drawn at all (`Error`/`Deleted`).
+        if control_has_spinner(self.phase) {
+            let mut present = fx.present();
+            self.spin_ms = self.spin_phase.advance(t, &mut present);
+            self.phase_ms = self.phase_clock.advance(t, &mut present);
         }
 
         if self.has_control() && !had_control {
@@ -479,9 +532,7 @@ impl LoginScreen {
                 })),
             ));
         }
-        if control_has_spinner(self.phase) {
-            fx.note(crate::ui::present::PresentEvent::Motion);
-        }
+        self.sync_state();
     }
 
     fn control_kind(&self) -> Option<ControlKind> {
@@ -489,7 +540,9 @@ impl LoginScreen {
             Phase::Deleted => Some(ControlKind::StartLogin),
             Phase::Error => Some(ControlKind::Retry),
             Phase::Waiting if qr_escape_offered(self.phase_ms) => Some(ControlKind::RestartWait),
-            p if working_phase(p) && escape_offered(self.phase_ms) => Some(ControlKind::RestartWait),
+            p if working_phase(p) && escape_offered(self.phase_ms) => {
+                Some(ControlKind::RestartWait)
+            }
             _ => None,
         }
     }
@@ -521,30 +574,81 @@ impl LoginScreen {
         status_action_rect(measure, label_for(kind), working, has_reason)
     }
 
-    /// The control, pressed. Calls straight into `crate::auth`, exactly as `ui/login.rs`'s `key()`
-    /// did — these are synchronous, void-returning controller calls, not effects the loop performs
-    /// on this screen's behalf, so there is no `Fx` for them to travel through.
-    fn activate(&mut self) {
+    /// The control, pressed. Every action is a typed Session command. Restart additionally records
+    /// its addressed correlation and leaves the elapsed clock untouched until acceptance returns.
+    fn allocate_reply<H: AppLike>(&mut self, fx: &Effects<'_, H>) -> Option<auth::owner::ReplyTo> {
+        let crate::ui::machine::MachineId::Instance(instance) = fx.from() else {
+            return None;
+        };
+        let correlation = self.next_correlation?;
+        let next = correlation.checked_add(1)?;
+        self.next_correlation = Some(next);
+        Some(auth::owner::ReplyTo {
+            instance: instance.0,
+            correlation,
+        })
+    }
+
+    fn request_root_back<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
+        let Some(reply) = self.allocate_reply(fx) else {
+            self.sync_state();
+            return;
+        };
+        fx.push(Fx::App(AppFx::Session(auth::SessionCmd::BackAtRoot {
+            reply,
+        })));
+        self.sync_state();
+    }
+
+    fn activate<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
         match self.control_kind() {
-            Some(ControlKind::StartLogin) => auth::start_login(),
-            Some(ControlKind::Retry) => auth::retry(),
+            Some(ControlKind::StartLogin) => {
+                fx.push(Fx::App(AppFx::Session(auth::SessionCmd::StartLogin)));
+            }
+            Some(ControlKind::Retry) => {
+                fx.push(Fx::App(AppFx::Session(auth::SessionCmd::Retry)));
+            }
             Some(ControlKind::RestartWait) => {
                 // "requested", not "restarted": the press may still be refused (the flow moved on
                 // between this screen's last `Tick` and this key), and the event log is the one
                 // place that failure is read from — a claim it did something is exactly the wrong
                 // thing to have written there.
                 crate::log("login: user requested a restart of a stalled sign-in");
-                if auth::restart_stalled_wait(self.wait) {
-                    // The restart usually re-enters the phase it just left (a stalled `Creating`
-                    // starts another `Creating`), and `tick` only zeroes the clock when the wait's
-                    // IDENTITY changes — a fresh code changes it, a re-entered phase may not — so
-                    // without this the new attempt could inherit the dead one's age and show its
-                    // way out immediately.
-                    self.phase_ms = 0.0;
+                if self.pending_restart.is_none() {
+                    if let Some(reply) = self.allocate_reply(fx) {
+                        self.pending_restart = Some(PendingRestart {
+                            correlation: reply.correlation,
+                            wait: self.wait,
+                        });
+                        fx.push(Fx::App(AppFx::Session(auth::SessionCmd::RestartWait {
+                            phase: self.wait.0,
+                            qr_generation: self.wait.1,
+                            reply,
+                        })));
+                    }
                 }
             }
             None => {}
         }
+        self.sync_state();
+    }
+
+    fn restart_reply(&mut self, request: u32, correlation: u32, accepted: bool) {
+        if request != correlation {
+            return;
+        }
+        let Some(pending) = self.pending_restart else {
+            return;
+        };
+        if pending.correlation != correlation || pending.wait != self.wait {
+            return;
+        }
+        self.pending_restart = None;
+        if accepted {
+            self.phase_ms = 0.0;
+            self.phase_clock = crate::ui::motion::Phase::default();
+        }
+        self.sync_state();
     }
 
     fn draw_readout<H: AppLike>(
@@ -567,11 +671,15 @@ impl LoginScreen {
         }
         o.draw(env, p);
         if let Some(a) = action {
-            let rect = status_action_rect(f.measure, a, kind == StatusKind::Working, reason.is_some());
+            let rect =
+                status_action_rect(f.measure, a, kind == StatusKind::Working, reason.is_some());
             f.stop(
                 p,
                 Stop {
-                    key: crate::ui::machine::FocusKey { entry: self.entry, elem: CONTROL },
+                    key: crate::ui::machine::FocusKey {
+                        entry: self.entry,
+                        elem: CONTROL,
+                    },
                     rect,
                     rest_rect: rect,
                     clip: Rect::FULL,
@@ -582,7 +690,14 @@ impl LoginScreen {
         }
     }
 
-    fn draw_working<H: AppLike>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, env: &Env, msg: &str, focused: bool) {
+    fn draw_working<H: AppLike>(
+        &self,
+        f: &mut DrawFrame<'_, '_, H>,
+        p: Painter,
+        env: &Env,
+        msg: &str,
+        focused: bool,
+    ) {
         let caption = CString::new(msg).unwrap_or_default();
         let stuck = self.has_control();
         self.draw_readout(
@@ -599,8 +714,14 @@ impl LoginScreen {
         );
     }
 
-    fn draw_failed<H: AppLike>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, env: &Env, focused: bool) {
-        let reason = CString::new(self.error.clone()).unwrap_or_default();
+    fn draw_failed<H: AppLike>(
+        &self,
+        f: &mut DrawFrame<'_, '_, H>,
+        p: Painter,
+        env: &Env,
+        focused: bool,
+    ) {
+        let reason = CString::new(self.error.as_ref()).unwrap_or_default();
         self.draw_readout(
             f,
             p,
@@ -617,9 +738,24 @@ impl LoginScreen {
     /// must not wear the danger tint — the same distinction `StatusKind::Empty` carries for a
     /// library with nothing in it. A partial one is still not a FAILURE either: what it did do, it
     /// did.
-    fn draw_deleted<H: AppLike>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, env: &Env, focused: bool) {
+    fn draw_deleted<H: AppLike>(
+        &self,
+        f: &mut DrawFrame<'_, '_, H>,
+        p: Painter,
+        env: &Env,
+        focused: bool,
+    ) {
         let (verdict, reason) = deleted_readout(self.delete_leftovers);
-        self.draw_readout(f, p, env, verdict, StatusKind::Empty, Some(reason), Some(SIGN_IN), focused);
+        self.draw_readout(
+            f,
+            p,
+            env,
+            verdict,
+            StatusKind::Empty,
+            Some(reason),
+            Some(SIGN_IN),
+            focused,
+        );
     }
 
     /// **Deliberately takes no `focused` parameter, unlike its three siblings above.**
@@ -642,6 +778,7 @@ impl LoginScreen {
             "Sign in to Plex",
             "Use your phone camera to scan the code, or link this television manually with the address and code shown here.",
             theme::size::LABEL,
+            f.measure,
         );
         let right = qr_layout(layout);
 
@@ -656,7 +793,12 @@ impl LoginScreen {
         p.rrect(card, 24.0, 24.0, theme::SURFACE_QR_PLATE);
         if self.qr_tex != 0 {
             let pad = 30.0;
-            let inner = Rect::new(card.x + pad, card.y + pad, card.w - 2.0 * pad, card.h - 2.0 * pad);
+            let inner = Rect::new(
+                card.x + pad,
+                card.y + pad,
+                card.w - 2.0 * pad,
+                card.h - 2.0 * pad,
+            );
             // Plex's PNG is WHITE modules on a transparent ground; tint black so the modules render
             // dark on the white card (the transparent ground shows the card) → a scannable
             // black-on-white QR.
@@ -687,7 +829,7 @@ impl LoginScreen {
         let wy = right.status.cy();
         let escaping = qr_escape_offered(self.phase_ms);
         let status = waiting_status(self.qr_replaced, escaping);
-        let status_w = crate::text::text_width(status.as_ptr(), theme::size::BODY, 0);
+        let status_w = f.measure.width(status, theme::size::BODY, false);
         let sx = right.status.cx() - (wr * 2.0 + theme::space::SM + status_w) * 0.5;
         Spinner::new(sx + wr, wy, wr)
             .phase(self.spin_ms as u32)
@@ -708,7 +850,10 @@ impl LoginScreen {
             f.stop(
                 p,
                 Stop {
-                    key: crate::ui::machine::FocusKey { entry: self.entry, elem: CONTROL },
+                    key: crate::ui::machine::FocusKey {
+                        entry: self.entry,
+                        elem: CONTROL,
+                    },
                     rect: right.status,
                     rest_rect: right.status,
                     clip: Rect::FULL,
@@ -737,7 +882,11 @@ impl LoginScreen {
         let px = crate::img::img_decode_rgba(png.as_ptr(), png.len() as c_int, &mut w, &mut h);
         if !px.is_null() {
             self.qr_tex = crate::img::img_upload_rgba(px, w, h);
-            self.qr_px = if self.qr_tex != 0 { (w.max(0) as u32, h.max(0) as u32) } else { (0, 0) };
+            self.qr_px = if self.qr_tex != 0 {
+                (w.max(0) as u32, h.max(0) as u32)
+            } else {
+                (0, 0)
+            };
             self.qr_tex_gen = gen;
             crate::img::img_free(px);
         }
@@ -775,7 +924,12 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
     fn group_of(&self, key: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
         (self.has_control() && *key == CONTROL).then_some(CONTROL_GROUP)
     }
-    fn neighbour(&self, _key: crate::ui::machine::FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
+    fn neighbour(
+        &self,
+        _key: crate::ui::machine::FocusKey<u32>,
+        _dir: Dir,
+        _cx: &Cx<'_, H>,
+    ) -> Step<u32> {
         Step::Edge
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
@@ -783,44 +937,72 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
             return None;
         }
         let rect = self.control_rect(cx.measure);
-        Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: Some(0) })
+        Some(Placed {
+            rect,
+            rest_rect: rect,
+            clip: Rect::FULL,
+            index: Some(0),
+        })
     }
-    fn reconcile(&self, want: crate::ui::machine::FocusKey<u32>, _cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+    fn reconcile(
+        &self,
+        want: crate::ui::machine::FocusKey<u32>,
+        _cx: &Cx<'_, H>,
+    ) -> crate::ui::machine::FocusKey<u32> {
         want
     }
-    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
-        crate::ui::machine::FocusKey { entry: self.entry, elem: CONTROL }
+    fn seat(
+        &self,
+        _g: GroupId,
+        _from: Placed,
+        _cx: &Cx<'_, H>,
+    ) -> crate::ui::machine::FocusKey<u32> {
+        crate::ui::machine::FocusKey {
+            entry: self.entry,
+            elem: CONTROL,
+        }
     }
 }
 
-impl<H: AppLike> Machine<H> for LoginScreen {
+impl<H: AuthLike> Machine<H> for LoginScreen {
     type Ev = ScreenEvent<H>;
-    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+    fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             ScreenEvent::Tick(t) => {
-                self.tick(t.dt(), fx);
+                self.tick(*t, cx, fx);
                 Handled::Yes
             }
             ScreenEvent::Activate(_) => {
-                self.activate();
+                self.activate(fx);
                 fx.invalidate(crate::ui::present::Provenance::Input);
                 Handled::Yes
             }
-            // **This screen has no panel of its own to close first, so every BACK here is the
-            // root press** — the same one Home's is, for the same reason (nothing of this app is
-            // behind a first-ever sign-in). It is `LoopReq::AuthBackAtRoot`, not the plain
-            // `BackAtRoot` (`screens::consent`'s first stage) reaches for: `auth::cancel` has to
-            // decide FIRST whether there is a stored session to fall back into or the television's
-            // own Home is the answer instead, and that decision — together with the shared
-            // `webos::take_root_press` cooldown every root in this app shares — belongs to the LOOP
-            // (`app::input::login_or_profiles_root_back`, performed from this request), so this
-            // screen only ever ASKS for it. `AuthBackAtRoot`'s own doc has the full account of why
-            // it is a distinct variant rather than a payload on `BackAtRoot`.
+            ScreenEvent::Async(
+                crate::ui::machine::RequestId(request),
+                AppMsg::RestartReply {
+                    correlation,
+                    accepted,
+                },
+            ) => {
+                self.restart_reply(*request, *correlation, *accepted);
+                Handled::Yes
+            }
+            ScreenEvent::Async(
+                crate::ui::machine::RequestId(request),
+                AppMsg::BackReply { correlation, .. },
+            ) if request == correlation => Handled::Yes,
+            // This screen has no local panel to close, so BACK asks Session for its addressed root
+            // decision. Session/core owns stored-session resume, cooldown and platform handling.
             ScreenEvent::Input(InputEvent {
-                kind: InputKind::Key { key: Key::Back, edge: Edge::Down, .. },
+                kind:
+                    InputKind::Key {
+                        key: Key::Back,
+                        edge: Edge::Down,
+                        ..
+                    },
                 ..
             }) => {
-                fx.push(Fx::App(AppFx::Loop(LoopReq::AuthBackAtRoot)));
+                self.request_root_back(fx);
                 Handled::Yes
             }
             // **The QR texture has to be freed exactly here, and `Unmount` is the one event this
@@ -852,7 +1034,7 @@ impl<H: AppLike> Machine<H> for LoginScreen {
     }
 }
 
-impl<H: AppLike> Screen<H> for LoginScreen {
+impl<H: AuthLike> Screen<H> for LoginScreen {
     fn name(&self) -> &'static str {
         word::LOGIN
     }
@@ -881,7 +1063,9 @@ impl<H: AppLike> Screen<H> for LoginScreen {
             Phase::Waiting => self.draw_waiting(f, p),
             Phase::Error => self.draw_failed(f, p, &env, focused),
             Phase::Deleted => self.draw_deleted(f, p, &env, focused),
-            Phase::Discovering => self.draw_working(f, p, &env, "Finding your server\u{2026}", focused),
+            Phase::Discovering => {
+                self.draw_working(f, p, &env, "Finding your server\u{2026}", focused)
+            }
             _ => self.draw_working(f, p, &env, "Connecting to Plex\u{2026}", focused),
         }
     }
@@ -922,11 +1106,51 @@ impl<H: AppLike> Screen<H> for LoginScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, LazyLock};
+
     use crate::ui::consts::inside_safe;
-    use crate::ui::machine::{FocusRead, InputOwner, InstanceId, MachineId, PressRead, Source, Stamped};
+    use crate::ui::machine::{
+        FocusRead, Host, InputOwner, InstanceId, MachineId, PressRead, Source, Stamped,
+    };
     use crate::ui::present::Present;
 
-    use super::super::family::InnerHost;
+    struct SessionHost;
+
+    impl Host for SessionHost {
+        type Arg = super::super::family::SettingsPage;
+        type Fx = AppFx;
+        type Msg = AppMsg;
+        type Elem = u32;
+        type Views<'a> = auth::SessionRead<'a>;
+        type Init = super::super::family::NoInit;
+        type Memory = ();
+    }
+
+    impl AuthLike for SessionHost {
+        fn auth<'a>(cx: &Cx<'a, Self>) -> auth::SessionRead<'a> {
+            cx.views
+        }
+    }
+
+    fn snapshot(phase: Phase, qr_generation: u64, code: &str) -> auth::owner::SessionSnapshot {
+        auth::owner::SessionSnapshot {
+            flow_epoch: 0,
+            phase,
+            qr_generation,
+            code: Arc::from(code),
+            png: Arc::from(Vec::<u8>::new()),
+            code_replaced: false,
+            users: Arc::from(Vec::<auth::UserTile>::new()),
+            error: Arc::from(""),
+            pin_denied: false,
+            profile: None,
+            scope: auth::owner::ProfileScope(0),
+            delete_leftovers: 0,
+        }
+    }
+
+    static EMPTY_SNAPSHOT: LazyLock<auth::owner::SessionSnapshot> =
+        LazyLock::new(|| snapshot(Phase::Idle, 0, ""));
 
     /// **A partial wipe may not be reported as a whole one.** The sweep's candidate lists span
     /// both webOS install prefixes and the jail profiles disagree about which are writable, so a
@@ -959,7 +1183,10 @@ mod tests {
     /// `assert_eq!` and the literal millisecond boundaries below close that gap.
     #[test]
     fn a_wait_that_stops_looking_normal_grows_a_way_out() {
-        assert_eq!(ESCAPE_AFTER_MS, 12_000.0, "the documented twelve-second design number");
+        assert_eq!(
+            ESCAPE_AFTER_MS, 12_000.0,
+            "the documented twelve-second design number"
+        );
         assert!(!escape_offered(0.0), "a fresh wait offers nothing");
         assert!(
             !escape_offered(11_999.0),
@@ -1080,14 +1307,15 @@ mod tests {
     }
 
     /// A bare screen, built with NO read of `crate::auth` at all — for testing [`ControlKind`]'s
-    /// decision and the `Focusable` geometry in complete isolation from the process-global auth
-    /// controller (which `LoginScreen::new` deliberately reads, and which other tests running
-    /// concurrently in this binary may have left in an arbitrary state).
+    /// decision and the `Focusable` geometry without consulting even the local test host's
+    /// Session publication.
     fn bare_screen(phase: Phase, phase_ms: f32) -> LoginScreen {
         LoginScreen {
             entry: EntryId(0),
             spin_ms: 0.0,
             phase_ms,
+            spin_phase: crate::ui::motion::Phase::default(),
+            phase_clock: crate::ui::motion::Phase::default(),
             wait: (phase, 0),
             qr_tex: 0,
             qr_tex_gen: 0,
@@ -1095,12 +1323,22 @@ mod tests {
             qr_png_pending: None,
             phase,
             qr_gen: 0,
-            qr_code: String::new(),
+            qr_code: Arc::from(""),
             qr_replaced: false,
-            error: String::new(),
+            error: Arc::from(""),
             delete_leftovers: 0,
+            next_correlation: Some(1),
+            pending_restart: None,
             ground: RouteGround::new(),
-            state: LoginState { phase: 0, qr_gen: 0, qr_replaced: false, has_control: false, delete_leftovers: 0 },
+            state: LoginState {
+                phase: 0,
+                qr_gen: 0,
+                qr_replaced: false,
+                has_control: false,
+                delete_leftovers: 0,
+                next_correlation: Some(1),
+                pending_restart: None,
+            },
         }
     }
 
@@ -1131,31 +1369,54 @@ mod tests {
             Some(ControlKind::RestartWait)
         );
         assert_eq!(bare_screen(Phase::Discovering, 0.0).control_kind(), None);
-        assert_eq!(bare_screen(Phase::Discovering, 11_999.0).control_kind(), None);
+        assert_eq!(
+            bare_screen(Phase::Discovering, 11_999.0).control_kind(),
+            None
+        );
         assert_eq!(
             bare_screen(Phase::Discovering, 12_000.0).control_kind(),
             Some(ControlKind::RestartWait)
         );
         // Error and Deleted offer their control unconditionally — no clock involved.
-        assert_eq!(bare_screen(Phase::Error, 0.0).control_kind(), Some(ControlKind::Retry));
-        assert_eq!(bare_screen(Phase::Deleted, 0.0).control_kind(), Some(ControlKind::StartLogin));
+        assert_eq!(
+            bare_screen(Phase::Error, 0.0).control_kind(),
+            Some(ControlKind::Retry)
+        );
+        assert_eq!(
+            bare_screen(Phase::Deleted, 0.0).control_kind(),
+            Some(ControlKind::StartLogin)
+        );
         // The allowlist `working_phase` states explicitly: a phase the main loop is about to route
         // away from must never grow an escape that could call `auth::retry` on a flow that already
         // succeeded.
         for settled in [Phase::Idle, Phase::Profiles, Phase::Switching, Phase::Ready] {
-            assert_eq!(bare_screen(settled, 1_000_000.0).control_kind(), None, "{settled:?}");
+            assert_eq!(
+                bare_screen(settled, 1_000_000.0).control_kind(),
+                None,
+                "{settled:?}"
+            );
         }
     }
 
-    fn test_cx<'a>(m: &'a crate::ui::fixture::FixtureMeasure) -> Cx<'a, InnerHost> {
+    fn cx_with<'a>(
+        m: &'a crate::ui::fixture::FixtureMeasure,
+        snapshot: &'a auth::owner::SessionSnapshot,
+    ) -> Cx<'a, SessionHost> {
         Cx {
-            views: (),
+            views: snapshot.read(),
             tick: crate::ui::machine::Tick::default(),
             measure: m,
             press: PressRead::default(),
-            focus: FocusRead { current: None , ..Default::default() },
+            focus: FocusRead {
+                current: None,
+                ..Default::default()
+            },
             owner: InputOwner::Entry(EntryId(0)),
         }
+    }
+
+    fn test_cx<'a>(m: &'a crate::ui::fixture::FixtureMeasure) -> Cx<'a, SessionHost> {
+        cx_with(m, &EMPTY_SNAPSHOT)
     }
 
     /// The focus GROUP exists exactly when [`LoginScreen::has_control`] does, and its one element
@@ -1168,19 +1429,25 @@ mod tests {
 
         let quiet = bare_screen(Phase::Waiting, 0.0);
         let mut groups = Vec::new();
-        Focusable::<InnerHost>::groups(&quiet, &cx, &mut groups);
-        assert!(groups.is_empty(), "nothing to press while the code is fresh");
-        assert!(Focusable::<InnerHost>::place(&quiet, &CONTROL, &cx, At::Drawn).is_none());
-        assert!(Focusable::<InnerHost>::group_of(&quiet, &CONTROL, &cx).is_none());
+        Focusable::<SessionHost>::groups(&quiet, &cx, &mut groups);
+        assert!(
+            groups.is_empty(),
+            "nothing to press while the code is fresh"
+        );
+        assert!(Focusable::<SessionHost>::place(&quiet, &CONTROL, &cx, At::Drawn).is_none());
+        assert!(Focusable::<SessionHost>::group_of(&quiet, &CONTROL, &cx).is_none());
 
         let stuck = bare_screen(Phase::Waiting, QR_ESCAPE_AFTER_MS);
         groups.clear();
-        Focusable::<InnerHost>::groups(&stuck, &cx, &mut groups);
+        Focusable::<SessionHost>::groups(&stuck, &cx, &mut groups);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].elem, ElemKind::Bare);
         assert_eq!(groups[0].id, CONTROL_GROUP);
-        assert!(Focusable::<InnerHost>::place(&stuck, &CONTROL, &cx, At::Drawn).is_some());
-        assert_eq!(Focusable::<InnerHost>::group_of(&stuck, &CONTROL, &cx), Some(CONTROL_GROUP));
+        assert!(Focusable::<SessionHost>::place(&stuck, &CONTROL, &cx, At::Drawn).is_some());
+        assert_eq!(
+            Focusable::<SessionHost>::group_of(&stuck, &CONTROL, &cx),
+            Some(CONTROL_GROUP)
+        );
     }
 
     /// A stalled Working read-out draws its action pill LOWER than a settled one carrying the same
@@ -1261,9 +1528,10 @@ mod tests {
     #[test]
     fn status_action_rect_matches_the_widget_it_is_reproducing() {
         for (working, kind) in [(true, StatusKind::Working), (false, StatusKind::Failed)] {
-            for (has_reason, reason) in
-                [(false, None), (true, Some(c"This is taking longer than usual."))]
-            {
+            for (has_reason, reason) in [
+                (false, None),
+                (true, Some(c"This is taking longer than usual.")),
+            ] {
                 let mut o = StatusOverlay::new(Rect::FULL, c"caption", kind).action(ESCAPE);
                 if let Some(r) = reason {
                     o = o.reason(r);
@@ -1279,44 +1547,350 @@ mod tests {
         }
     }
 
-    fn step_ev(s: &mut LoginScreen, ev: &ScreenEvent<InnerHost>) -> (Handled, Vec<Stamped<InnerHost>>) {
+    /// **The frozen-animator regression class, closed for this screen's clock (phase 12 D4).**
+    /// `spin_ms`/`phase_ms` used to be raw `+= dt` accumulators with a SEPARATE, easy-to-forget
+    /// `fx.note(Motion)` a few lines below them — exactly the shape `Xfade`/`Spinner` shipped
+    /// frozen in before (`docs/agent-reference.md`'s idle section). Now both are `motion::Phase`,
+    /// which reports from inside its own `advance`, so this proves the report survives the
+    /// refactor: three real `Tick`s in a row, driven through `Machine::step` exactly as the loop
+    /// drives one, must each present. (The complementary "a settled read-out's clock does not
+    /// report" half is `control_has_spinner`'s own predicate, unchanged by this conversion, and is
+    /// not re-driven here through `resync`; the pure predicate already pins that settled half.)
+    #[test]
+    fn the_spinner_phase_reports_motion_on_every_tick_while_a_control_has_one() {
+        let mut s = LoginScreen::new(EntryId(0), EMPTY_SNAPSHOT.read());
         let m = crate::ui::fixture::FixtureMeasure;
         let cx = test_cx(&m);
         let mut present = Present::new();
-        let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
-        let handled = {
+        let _ = present.take(0);
+        let mut buf: Vec<Stamped<SessionHost>> = Vec::new();
+        for ms in [16, 32, 48] {
             let mut fx = Effects::new(&mut buf, MachineId::Instance(InstanceId(0)), &mut present);
-            Machine::<InnerHost>::step(s, ev, &cx, &mut fx)
+            let ev = ScreenEvent::Tick(Tick { ms, dt_us: 16_667 });
+            Machine::<SessionHost>::step(&mut s, &ev, &cx, &mut fx);
+            assert!(
+                present.take(ms),
+                "a live sign-in spinner must present every frame it is on screen (ms={ms})"
+            );
+        }
+    }
+
+    fn step_ev(
+        s: &mut LoginScreen,
+        ev: &ScreenEvent<SessionHost>,
+    ) -> (Handled, Vec<Stamped<SessionHost>>) {
+        let m = crate::ui::fixture::FixtureMeasure;
+        step_ev_with(s, ev, &EMPTY_SNAPSHOT, InstanceId(0), &m)
+    }
+
+    fn step_ev_with(
+        s: &mut LoginScreen,
+        ev: &ScreenEvent<SessionHost>,
+        snapshot: &auth::owner::SessionSnapshot,
+        instance: InstanceId,
+        m: &crate::ui::fixture::FixtureMeasure,
+    ) -> (Handled, Vec<Stamped<SessionHost>>) {
+        let cx = cx_with(m, snapshot);
+        let mut present = Present::new();
+        let mut buf: Vec<Stamped<SessionHost>> = Vec::new();
+        let handled = {
+            let mut fx = Effects::new(&mut buf, MachineId::Instance(instance), &mut present);
+            Machine::<SessionHost>::step(s, ev, &cx, &mut fx)
         };
         (handled, buf)
     }
 
-    fn key_back_down() -> ScreenEvent<InnerHost> {
+    fn key_back_down() -> ScreenEvent<SessionHost> {
         ScreenEvent::Input(InputEvent {
             at: crate::ui::machine::Tick::default(),
             source: Source::Script,
-            kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+            kind: InputKind::Key {
+                key: Key::Back,
+                sym: 0,
+                wcode: 0,
+                edge: Edge::Down,
+                at_edge: false,
+            },
         })
     }
 
-    /// **This screen has no panel of its own**, so every BACK is the root press — asked of the
-    /// loop (`LoopReq::AuthBackAtRoot`, performed by `app::input::login_or_profiles_root_back`)
-    /// rather than performed here, exactly as `screens::consent`'s first stage asks for the plain
-    /// `BackAtRoot` for the same underlying reason (that module's own
-    /// `back_at_the_first_consent_stage_is_the_root_press…` test in `app/bridge.rs` is the sibling
-    /// of this one, one layer up — the two variants differ because this root press needs
-    /// `auth::cancel`'s answer first, which `AuthBackAtRoot`'s own doc argues at length).
-    /// Deliberately built with [`bare_screen`] rather than `LoginScreen::new` — BACK's answer does
-    /// not depend on the phase at all, so this test owes `crate::auth` nothing.
+    #[test]
+    fn constructor_and_ticks_retain_coherent_host_publications_per_instance() {
+        let mut first_snapshot = snapshot(Phase::Waiting, 41, "AAAA");
+        first_snapshot.png = Arc::from(vec![1, 2, 3]);
+        let mut second_snapshot = snapshot(Phase::Error, 99, "BBBB");
+        second_snapshot.error = Arc::from("second failed");
+
+        let first = LoginScreen::new(EntryId(1), first_snapshot.read());
+        let mut second = LoginScreen::new(EntryId(2), second_snapshot.read());
+        assert_eq!(
+            (first.phase, first.qr_gen, first.qr_code.as_ref()),
+            (Phase::Waiting, 41, "AAAA")
+        );
+        assert_eq!(
+            first.qr_png_pending.as_ref().map(|(_, png)| png.as_ref()),
+            Some(&[1, 2, 3][..])
+        );
+        assert_eq!(
+            (second.phase, second.error.as_ref()),
+            (Phase::Error, "second failed")
+        );
+
+        let replacement = snapshot(Phase::Waiting, 100, "CCCC");
+        let m = crate::ui::fixture::FixtureMeasure;
+        step_ev_with(
+            &mut second,
+            &ScreenEvent::Tick(Tick {
+                ms: 16,
+                dt_us: 16_667,
+            }),
+            &replacement,
+            InstanceId(2),
+            &m,
+        );
+
+        assert_eq!(
+            (second.phase, second.qr_gen, second.qr_code.as_ref()),
+            (Phase::Waiting, 100, "CCCC")
+        );
+        assert_eq!(
+            (first.phase, first.qr_gen, first.qr_code.as_ref()),
+            (Phase::Waiting, 41, "AAAA")
+        );
+    }
+
+    #[test]
+    fn controls_emit_typed_session_commands_without_mutating_the_wait_clock() {
+        let mut retry = bare_screen(Phase::Error, 0.0);
+        let (_, retry_fx) = step_ev(&mut retry, &ScreenEvent::Activate(CONTROL));
+        assert!(retry_fx
+            .iter()
+            .any(|st| matches!(st.fx, Fx::App(AppFx::Session(auth::SessionCmd::Retry)))));
+
+        let mut start = bare_screen(Phase::Deleted, 0.0);
+        let (_, start_fx) = step_ev(&mut start, &ScreenEvent::Activate(CONTROL));
+        assert!(start_fx
+            .iter()
+            .any(|st| matches!(st.fx, Fx::App(AppFx::Session(auth::SessionCmd::StartLogin)))));
+
+        let mut restart = bare_screen(Phase::Waiting, QR_ESCAPE_AFTER_MS);
+        restart.wait = (Phase::Waiting, 7);
+        restart.qr_gen = 7;
+        let m = crate::ui::fixture::FixtureMeasure;
+        let published = snapshot(Phase::Waiting, 7, "AAAA");
+        let (_, restart_fx) = step_ev_with(
+            &mut restart,
+            &ScreenEvent::Activate(CONTROL),
+            &published,
+            InstanceId(44),
+            &m,
+        );
+        assert_eq!(
+            restart.phase_ms, QR_ESCAPE_AFTER_MS,
+            "emission is not acceptance"
+        );
+        assert!(restart_fx.iter().any(|st| matches!(
+            &st.fx,
+            Fx::App(AppFx::Session(auth::SessionCmd::RestartWait {
+                phase: Phase::Waiting,
+                qr_generation: 7,
+                reply,
+            })) if reply.instance == 44 && reply.correlation == 1
+        )));
+    }
+
+    #[test]
+    fn only_the_matching_accepted_restart_reply_resets_the_stalled_wait() {
+        let mut screen = bare_screen(Phase::Waiting, QR_ESCAPE_AFTER_MS);
+        screen.wait = (Phase::Waiting, 7);
+        screen.qr_gen = 7;
+        let published = snapshot(Phase::Waiting, 7, "AAAA");
+        let m = crate::ui::fixture::FixtureMeasure;
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Activate(CONTROL),
+            &published,
+            InstanceId(44),
+            &m,
+        );
+        assert_eq!(screen.pending_restart.map(|p| p.correlation), Some(1));
+
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(1),
+                AppMsg::RestartReply {
+                    correlation: 1,
+                    accepted: false,
+                },
+            ),
+            &published,
+            InstanceId(44),
+            &m,
+        );
+        assert_eq!(screen.phase_ms, QR_ESCAPE_AFTER_MS);
+        assert!(
+            screen.pending_restart.is_none(),
+            "a matching refusal is terminal"
+        );
+
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Activate(CONTROL),
+            &published,
+            InstanceId(44),
+            &m,
+        );
+        assert_eq!(screen.pending_restart.map(|p| p.correlation), Some(2));
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(99),
+                AppMsg::RestartReply {
+                    correlation: 2,
+                    accepted: true,
+                },
+            ),
+            &published,
+            InstanceId(44),
+            &m,
+        );
+        assert_eq!(
+            screen.phase_ms, QR_ESCAPE_AFTER_MS,
+            "a foreign request id is not acceptance"
+        );
+        assert_eq!(screen.pending_restart.map(|p| p.correlation), Some(2));
+
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(2),
+                AppMsg::RestartReply {
+                    correlation: 2,
+                    accepted: true,
+                },
+            ),
+            &published,
+            InstanceId(44),
+            &m,
+        );
+        assert_eq!(screen.phase_ms, 0.0);
+        assert!(screen.pending_restart.is_none());
+
+        screen.phase_ms = 321.0;
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(2),
+                AppMsg::RestartReply {
+                    correlation: 2,
+                    accepted: true,
+                },
+            ),
+            &published,
+            InstanceId(44),
+            &m,
+        );
+        assert_eq!(
+            screen.phase_ms, 321.0,
+            "a duplicate accepted reply is stale"
+        );
+    }
+
+    #[test]
+    fn phase_progress_retires_a_carried_restart_reply_and_exhaustion_emits_nothing() {
+        let waiting = snapshot(Phase::Waiting, 7, "AAAA");
+        let progressed = snapshot(Phase::Discovering, 7, "");
+        let m = crate::ui::fixture::FixtureMeasure;
+        let mut screen = bare_screen(Phase::Waiting, QR_ESCAPE_AFTER_MS);
+        screen.wait = (Phase::Waiting, 7);
+        screen.qr_gen = 7;
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Activate(CONTROL),
+            &waiting,
+            InstanceId(44),
+            &m,
+        );
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Tick(Tick {
+                ms: 16,
+                dt_us: 16_667,
+            }),
+            &progressed,
+            InstanceId(44),
+            &m,
+        );
+        assert!(screen.pending_restart.is_none());
+        screen.phase_ms = 222.0;
+        step_ev_with(
+            &mut screen,
+            &ScreenEvent::Async(
+                crate::ui::machine::RequestId(1),
+                AppMsg::RestartReply {
+                    correlation: 1,
+                    accepted: true,
+                },
+            ),
+            &progressed,
+            InstanceId(44),
+            &m,
+        );
+        assert_eq!(
+            screen.phase_ms, 222.0,
+            "the old wait's carried reply is stale"
+        );
+
+        let mut exhausted = bare_screen(Phase::Waiting, QR_ESCAPE_AFTER_MS);
+        exhausted.wait = (Phase::Waiting, 7);
+        exhausted.next_correlation = Some(u32::MAX);
+        let (_, effects) = step_ev_with(
+            &mut exhausted,
+            &ScreenEvent::Activate(CONTROL),
+            &waiting,
+            InstanceId(44),
+            &m,
+        );
+        assert!(effects
+            .iter()
+            .all(|st| !matches!(st.fx, Fx::App(AppFx::Session(_)))));
+        assert!(exhausted.pending_restart.is_none());
+        assert_eq!(exhausted.phase_ms, QR_ESCAPE_AFTER_MS);
+    }
+
+    /// **This screen has no panel of its own**, so every BACK is the typed Session root request.
     #[test]
     fn back_is_always_the_root_press() {
         let mut s = bare_screen(Phase::Waiting, 0.0);
         let (handled, effs) = step_ev(&mut s, &key_back_down());
         assert_eq!(handled, Handled::Yes);
         assert!(
-            effs.iter().any(|st| matches!(&st.fx, Fx::App(AppFx::Loop(LoopReq::AuthBackAtRoot)))),
-            "login has no panel of its own to close first — BACK asks the loop for the root press"
+            effs.iter().any(|st| matches!(
+                &st.fx,
+                Fx::App(AppFx::Session(auth::SessionCmd::BackAtRoot { reply }))
+                    if reply.instance == 0 && reply.correlation == 1
+            )),
+            "login has no panel of its own to close first — BACK asks Session for the root press"
         );
+    }
+
+    /// The old route classifier had a dedicated `Switching` arm. The owned screen's decision is
+    /// phase-independent, so pin that replacement with a real Switching publication and the
+    /// addressed instance/correlation Session receives.
+    #[test]
+    fn back_during_switching_is_still_the_owned_logins_root_press() {
+        let switching = snapshot(Phase::Switching, 17, "");
+        let mut s = LoginScreen::new(EntryId(9), switching.read());
+        let m = crate::ui::fixture::FixtureMeasure;
+        let (handled, effects) = step_ev_with(&mut s, &key_back_down(), &switching,
+            InstanceId(44), &m);
+        assert_eq!(handled, Handled::Yes);
+        assert!(effects.iter().any(|stamped| matches!(
+            &stamped.fx,
+            Fx::App(AppFx::Session(auth::SessionCmd::BackAtRoot { reply }))
+                if reply.instance == 44 && reply.correlation == 1
+        )), "Switching must not turn Login BACK into a local dismissal or an ignored key");
     }
 
     /// **The QR texture must not survive its screen — the leak `ScreenEvent::Unmount`'s own arm
@@ -1333,8 +1907,15 @@ mod tests {
         s.qr_px = (400, 400);
         let (handled, _) = step_ev(&mut s, &ScreenEvent::Unmount);
         assert_eq!(handled, Handled::Yes);
-        assert_eq!(s.qr_tex, 0, "an unmounting screen must not leak its GL texture id");
-        assert_eq!(s.qr_px, (0, 0), "…nor go on claiming its bytes in the frame's render set");
+        assert_eq!(
+            s.qr_tex, 0,
+            "an unmounting screen must not leak its GL texture id"
+        );
+        assert_eq!(
+            s.qr_px,
+            (0, 0),
+            "…nor go on claiming its bytes in the frame's render set"
+        );
     }
 
     /// **The QR bitmap is a render this SCREEN owns** — its own `upload_rgba`, its own
@@ -1347,14 +1928,14 @@ mod tests {
         use crate::ui::frame::RenderReport;
         let mut s = bare_screen(Phase::Waiting, 0.0);
         assert_eq!(
-            Screen::<InnerHost>::render_report(&s),
+            Screen::<SessionHost>::render_report(&s),
             RenderReport::NONE,
             "no code yet: this screen holds no render of its own"
         );
         s.qr_tex = 999;
         s.qr_px = (400, 400);
         assert_eq!(
-            Screen::<InnerHost>::render_report(&s),
+            Screen::<SessionHost>::render_report(&s),
             RenderReport::one(400, 400),
             "one texture, 400x400 RGBA8 = 640,000 bytes"
         );

@@ -58,9 +58,15 @@
 //! adaptive one — nothing measures a link or moves a rung on its own.
 #![allow(non_upper_case_globals)]
 use crate::ui::consts::*;
+use crate::ui::frame::Budget;
+use crate::ui::geom::IndexElem;
+use crate::ui::machine::{Cx, EntryId, FocusKey, GroupId, Host};
+use crate::ui::screen::{
+    Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
+    Hover, Part, Placed, Seat, Step, Stop,
+};
 use crate::ui::table::{Row, Section, TableView};
-use crate::ui::{theme, Rect};
-use std::os::raw::c_int;
+use crate::ui::{theme, Painter, Rect};
 
 /// What the highlighted row does on OK.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -132,30 +138,14 @@ impl MoreMenuState {
         self.table.sel
     }
 
-    pub(crate) fn move_focus(&mut self, sym: c_int) {
-        let s = sym as u32;
-        if s == SDLK_UP {
-            self.table.move_sel(-1);
-        } else if s == SDLK_DOWN {
-            self.table.move_sel(1);
-        }
-    }
-
-    /// Pointer hover: focus follows the cursor over the popover rows.
-    pub(crate) fn pointer_focus(&mut self, mx: f32, my: f32) {
-        if let Some(gi) = self.table.hit_row(self.panel_rect(), mx, my) {
-            self.table.sel = gi;
-        }
-    }
-
-    /// Pointer click: commit the row under the cursor (same as OK); a click elsewhere reports
-    /// `Action::None` and the caller dismisses like BACK.
-    pub(crate) fn click(&mut self, mx: f32, my: f32) -> Action {
-        if let Some(gi) = self.table.hit_row(self.panel_rect(), mx, my) {
-            self.table.sel = gi;
-            return self.on_ok();
-        }
-        Action::None
+    /// **Write back the engine's own focus cursor** (restructure phase 12): the Column group
+    /// [`MoreMenuPart`] answers is the source of geometry, but the ENGINE owns the current element
+    /// (§7.3 step 5) — the owner's `step` is the only place that mutates in response to a
+    /// `FocusMoved`, and this is `screens::player::overlay::PlayerOverlayScreen::step`'s write.
+    /// Both a D-pad move AND a pointer hover reach here now — hover parks focus THROUGH the engine
+    /// (§7.5), replacing this menu's own `pointer_focus`.
+    pub(crate) fn set_sel(&mut self, i: i32) {
+        self.table.sel = i;
     }
 
     /// Commit the highlighted row — dismissing the panel afterward is the container's job now, not
@@ -196,7 +186,7 @@ impl MoreMenuState {
         self.table.update(dt, h);
     }
 
-    pub(crate) fn draw(&mut self, appear: f32) {
+    pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
         // rises INTO place from below, toward the disc that opened it — reproduces exactly what
         // `Popover::painter(0.5, 16.0)` used to draw (scrim + content painter).
         let dim = theme::scrim_black(0.5 * appear);
@@ -206,7 +196,120 @@ impl MoreMenuState {
             .translate(0.0, 16.0 * (1.0 - appear));
         let r = self.panel_rect();
         p.rect(r, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
-        self.table.draw(p, r);
+        self.table.draw(p, r, measure);
+    }
+}
+
+/// **The Engine-shaped view of this popover** (restructure phase 12): one `Column` focus group
+/// over the flat Options+Quality row list, built fresh by
+/// `screens::player::overlay::PlayerOverlayScreen` each frame from a `&MoreMenuState` — the same
+/// borrowed-view shape `ui::table_screen::TablePart`/`ui::geom::Table` use for the other panels
+/// that are already a bare `TableView` in a frame, so this popover answers the same
+/// [`Focusable`]/[`Part`] query protocol they do. Every edge is `Stop`, exactly as
+/// `screens::account_menu::AccountMenuScreen`'s one `Column` group answers — this menu is a
+/// self-contained modal surface with nowhere else for focus to escape to.
+///
+/// **`state` is a SHARED reference** — every [`Focusable`] method here is a pure read (`&self`),
+/// and the owning screen's own `Focusable` impl only ever has `&self` too (§7.1: "the engine never
+/// mutates a screen"), so a mutable field would make this type unconstructable from there. The
+/// actual paint (`MoreMenuState::draw`) stays a direct call on the owned `Panel` from
+/// `PlayerOverlayScreen::draw`'s `&mut self`; [`Part::draw`] below only registers stops.
+pub(crate) struct MoreMenuPart<'a> {
+    pub(crate) state: &'a MoreMenuState,
+    pub(crate) entry: EntryId,
+    pub(crate) group: GroupId,
+}
+
+impl<H: Host> Focusable<H> for MoreMenuPart<'_>
+where
+    H::Elem: IndexElem,
+{
+    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        out.push(GroupSpec {
+            id: self.group,
+            kind: GroupKind::Column,
+            seat: Seat::Remembered,
+            reachable: AxisMask::VERTICAL,
+            edge: [EdgeRule::Stop; 4],
+            extent: self.state.panel_rect(),
+            len: self.state.rows.len(),
+            elem: ElemKind::Bare,
+        });
+    }
+    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        ((key.index()? as usize) < self.state.rows.len()).then_some(self.group)
+    }
+    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
+        let Some(i) = key.elem.index() else {
+            return Step::Edge;
+        };
+        let delta = match dir {
+            Dir::Up => -1,
+            Dir::Down => 1,
+            _ => return Step::Edge,
+        };
+        match self.state.table.next_selectable(i as i32, delta) {
+            Some(j) => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(j as u32) }),
+            None => Step::Edge,
+        }
+    }
+    fn place(&self, key: &H::Elem, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+        let i = key.index()?;
+        let r = self.state.table.row_frame(self.state.panel_rect(), i as i32)?;
+        Some(Placed {
+            rect: r,
+            rest_rect: r,
+            clip: self.state.panel_rect(),
+            index: Some(i),
+        })
+    }
+    fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        let i = want.elem.index().unwrap_or(0) as i32;
+        FocusKey {
+            entry: self.entry,
+            elem: H::Elem::of_index(self.state.table.settle(i).max(0) as u32),
+        }
+    }
+    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        FocusKey {
+            entry: self.entry,
+            elem: H::Elem::of_index(self.state.table.sel.max(0) as u32),
+        }
+    }
+}
+
+impl<H: Host> Part<H> for MoreMenuPart<'_>
+where
+    H::Elem: IndexElem,
+{
+    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
+    /// Registers every selectable row's stop (rule 11: hover parks, a click activates — the same
+    /// loop `TablePart::draw` runs over an ordinary page table); the popover's own paint happens
+    /// directly on the owned `MoreMenuState` from `PlayerOverlayScreen::draw` (struct doc above).
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
+        let p = Painter::root();
+        let r = self.state.panel_rect();
+        for i in 0..self.state.table.n_rows() {
+            if self.state.table.next_selectable(i, 0) != Some(i) {
+                continue;
+            }
+            if let Some(row) = self.state.table.row_frame(r, i) {
+                f.stop(
+                    p,
+                    Stop {
+                        key: FocusKey {
+                            entry: self.entry,
+                            elem: H::Elem::of_index(i as u32),
+                        },
+                        rect: row,
+                        rest_rect: row,
+                        clip: r,
+                        hover: Hover::Focus,
+                        activate: Activate::Direct,
+                    },
+                );
+            }
+        }
     }
 }
 
@@ -441,5 +544,118 @@ mod tests {
         assert_eq!(action_at(&rows, rows.len() as i32), Action::None);
         assert_eq!(action_at(&rows, -1), Action::None);
         assert_eq!(action_at(&[], 0), Action::None);
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    use crate::screens::registry::{AppFx, AppMsg, PageMemory};
+    use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+
+    struct HostFixture;
+    impl Host for HostFixture {
+        type Arg = crate::ui::fixture::FixtureArg;
+        type Fx = AppFx;
+        type Msg = AppMsg;
+        type Elem = u32;
+        type Views<'a> = ();
+        type Init = crate::ui::fixture::FixtureInit;
+        type Memory = PageMemory;
+    }
+
+    fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
+        let measure = crate::ui::fixture::FixtureMeasure;
+        test(&Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &measure,
+            focus: FocusRead::default(),
+            press: PressRead::default(),
+            owner: InputOwner::Entry(entry),
+        })
+    }
+
+    /// A three-row menu (`Stats for nerds` plus two synthetic quality rungs), built the same way
+    /// [`MoreMenuState::open_focused`] does but without a `PlaybackSession` — no row here reads
+    /// one.
+    fn three_row_menu() -> MoreMenuState {
+        let mut sec = Section::new("Options");
+        for label in ["Stats for nerds", "Rung A", "Rung B"] {
+            sec = sec.row(Row::new(label));
+        }
+        let mut table = TableView::new();
+        table.compact = true;
+        table.set_sections(vec![sec], 0, false);
+        MoreMenuState {
+            table,
+            rows: vec![
+                Action::ToggleStats,
+                Action::SetQuality(crate::route::Quality::Original),
+                Action::SetQuality(crate::route::Quality::Auto),
+            ],
+        }
+    }
+
+    /// **UP/DOWN step by one row and clamp at both ends**, over `TableView::next_selectable`,
+    /// exercised here through the real `Focusable` dispatch over `HostFixture`.
+    #[test]
+    fn up_down_step_by_one_and_clamp_at_both_ends() {
+        let e = EntryId(4);
+        let st = three_row_menu();
+        let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            let step = |i: u32, dir: Dir| {
+                match <MoreMenuPart as Focusable<HostFixture>>::neighbour(
+                    &part,
+                    FocusKey { entry: e, elem: i },
+                    dir,
+                    cx,
+                ) {
+                    Step::Move(k) => Some(k.elem),
+                    Step::Edge => None,
+                }
+            };
+            assert_eq!(step(0, Dir::Down), Some(1));
+            assert_eq!(step(1, Dir::Down), Some(2));
+            assert_eq!(step(2, Dir::Down), None, "the last row does not wrap");
+            assert_eq!(step(0, Dir::Up), None, "the first row does not wrap");
+            assert_eq!(step(1, Dir::Up), Some(0));
+            // LEFT/RIGHT are swallowed — this popover is ONE column, matching the old ladder's
+            // `Key::Up | Key::Down => …` arm with no Left/Right case at all.
+            assert!(matches!(step(1, Dir::Left), None));
+        });
+    }
+
+    /// `place` reports exactly the row rect `TableView::row_frame` (and so the old `draw`) would
+    /// paint at.
+    #[test]
+    fn place_matches_the_tables_own_row_frame() {
+        let e = EntryId(4);
+        let st = three_row_menu();
+        let r = st.panel_rect();
+        let want = st.table.row_frame(r, 1);
+        let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            let placed = <MoreMenuPart as Focusable<HostFixture>>::place(&part, &1u32, cx, At::Drawn);
+            assert_eq!(placed.map(|p| (p.rect.x, p.rect.y, p.rect.w, p.rect.h)), want.map(|r| (r.x, r.y, r.w, r.h)));
+        });
+    }
+
+    /// A stale cursor from a shorter previous row set settles onto the last real row —
+    /// `TableView::settle`'s own contract, reached here through `Focusable::reconcile`.
+    #[test]
+    fn a_stale_cursor_settles_onto_a_real_row() {
+        let e = EntryId(4);
+        let st = three_row_menu();
+        let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            let got = <MoreMenuPart as Focusable<HostFixture>>::reconcile(
+                &part,
+                FocusKey { entry: e, elem: 99 },
+                cx,
+            );
+            assert_eq!(got.elem, 2);
+        });
     }
 }

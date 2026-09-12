@@ -36,6 +36,10 @@ struct ListingData {
 }
 
 impl ListingSnapshot {
+    pub(crate) fn empty() -> Self { Self { data: None } }
+    #[cfg(test)]
+    pub(crate) fn empty_for_test() -> Self { Self::empty() }
+
     #[cfg(test)]
     pub(crate) fn with_cursor(mut self, cursor: super::Cursor) -> Self {
         if let Some(data) = &mut self.data { data.cursor = Some(Arc::new(cursor)); }

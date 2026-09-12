@@ -76,7 +76,14 @@ pub(crate) fn block_h() -> f32 {
     LABEL_H + RowStyle::CAST.h + UNDER_H
 }
 
-pub(crate) fn draw(p: Painter, d: &Detail, row: &CardRow, top: f32, focused: Option<usize>) {
+pub(crate) fn draw(
+    p: Painter,
+    d: &Detail,
+    row: &CardRow,
+    top: f32,
+    focused: Option<usize>,
+    measure: &dyn crate::ui::machine::Measure,
+) {
     p.text(
         c"Cast & Crew".as_ptr(),
         crate::ui::consts::MARGIN_X,
@@ -126,8 +133,10 @@ pub(crate) fn draw(p: Painter, d: &Detail, row: &CardRow, top: f32, focused: Opt
                 } else {
                     0.0
                 },
+                measure,
             );
         },
+        measure,
     );
 }
 
@@ -135,15 +144,21 @@ fn pop_drop(scale: f32) -> f32 {
     (RowStyle::CAST.h * (scale - 1.0) * 0.5).max(0.0)
 }
 
-fn label(p: Painter, name: &str, role: &str, cx: f32, row_y: f32, focused: bool, drop: f32) {
+fn label(
+    p: Painter,
+    name: &str,
+    role: &str,
+    cx: f32,
+    row_y: f32,
+    focused: bool,
+    drop: f32,
+    measure: &dyn crate::ui::machine::Measure,
+) {
     let budget = SLOT - 12.0;
-    if let Ok(name) = CString::new(crate::text::elide(
-        name,
-        budget,
-        theme::size::LABEL,
-        1,
-        false,
-    )) {
+    let name_elided = crate::text::elide_by(name, budget, false, |t| {
+        measure.width_str(t, theme::size::LABEL, true)
+    });
+    if let Ok(name) = CString::new(name_elided) {
         p.text(
             name.as_ptr(),
             cx,
@@ -161,13 +176,10 @@ fn label(p: Painter, name: &str, role: &str, cx: f32, row_y: f32, focused: bool,
     if role.is_empty() {
         return;
     }
-    if let Ok(role) = CString::new(crate::text::elide(
-        role,
-        budget,
-        theme::size::CAPTION,
-        0,
-        false,
-    )) {
+    let role_elided = crate::text::elide_by(role, budget, false, |t| {
+        measure.width_str(t, theme::size::CAPTION, false)
+    });
+    if let Ok(role) = CString::new(role_elided) {
         p.text(
             role.as_ptr(),
             cx,

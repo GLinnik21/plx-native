@@ -131,6 +131,14 @@ pub(crate) struct HubsSnapshot {
 }
 
 impl HubsSnapshot {
+    pub(crate) fn empty() -> Self {
+        Self { data: None, id: None, publication: Publication::Fetching, revision: None }
+    }
+    #[cfg(test)]
+    pub(crate) fn empty_for_test() -> Self {
+        Self::empty()
+    }
+
     pub(crate) fn view(&self) -> HubsView<'_> {
         HubsView {
             shelves: self.data.as_deref().map(Vec::as_slice).unwrap_or(&[]),
@@ -326,7 +334,7 @@ impl SecHubs {
 
 /// Arm a section's shelves and let the first fetch happen. Idempotent; call it every frame the
 /// screen wants shelves. **This is the only thing in the module that issues a request.**
-pub(crate) fn kick(sec: usize) {
+pub(super) fn kick(sec: usize) {
     let Some(st) = super::state_mut(sec) else {
         return;
     };
@@ -366,7 +374,7 @@ fn pump_spawns() {
 /// refetches its hubs for this reason (Continue Watching goes stale otherwise) and a per-section
 /// Continue Watching row needs the matching invalidation. The answer arrives as `Staged`, so a
 /// refresh never moves the grid under the eye.
-pub(crate) fn invalidate(sec: usize) {
+fn invalidate(sec: usize) {
     if let Some(st) = super::state_mut(sec) {
         if st.hubs.armed {
             st.hubs.fails = 0;
@@ -450,7 +458,7 @@ pub(crate) fn snapshot(sec: usize) -> HubsSnapshot {
 }
 /// Publish `sec`'s staged shelves if the caller says the ground may move. See
 /// [`SecHubs::commit_staged`]; the caller owes a focus re-resolve when this returns `true`.
-pub(crate) fn commit_staged(sec: usize, may_move: bool) -> bool {
+pub(super) fn commit_staged(sec: usize, may_move: bool) -> bool {
     super::state_mut(sec)
         .map(|s| s.hubs.commit_staged(may_move))
         .unwrap_or(false)
@@ -517,7 +525,7 @@ pub(crate) fn seed_landscape_for_test(sec: usize, show: &str) {
 ///
 /// This was the sixth store and it was not on the list; `viewstate::edit_local`'s five calls
 /// predate the Library growing shelves of its own.
-pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
+pub(super) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
     fn edit(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str, on: bool) -> bool {
         // `Arc::make_mut` clones the whole publication when a retained reader exists. Prove a hit
         // first, so an edit for some other library does not copy this section's catalog.
@@ -556,7 +564,7 @@ pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
 
 /// The item has left Continue Watching: drop it from every SECTION DECK that holds it, and nowhere
 /// else. A `*.inprogress.*` row is the only shelf that endpoint changes the membership of.
-pub(crate) fn left_the_deck(sid: ServerId, rk: &str) -> bool {
+pub(super) fn left_the_deck(sid: ServerId, rk: &str) -> bool {
     fn drop_from(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str) -> bool {
         if !shelves
             .iter()
@@ -602,7 +610,7 @@ pub(crate) fn left_the_deck(sid: ServerId, rk: &str) -> bool {
 ///
 /// Marks rather than fetches: `owed` is spent by [`pump_spawns`] under the single-flight, so a
 /// twelve-library table costs one request at a time rather than twelve at once.
-pub(crate) fn invalidate_all() {
+pub(super) fn invalidate_all() {
     for i in 0..super::sections().len() {
         invalidate(i);
     }

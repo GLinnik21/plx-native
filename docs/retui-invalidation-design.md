@@ -1,5 +1,36 @@
 # retui invalidation: the motion capability
 
+> **MOSTLY IMPLEMENTED (restructure phase 12, updated 2026-09-11) — read this note before the
+> "Decision" below, which now overstates what shipped.** `ui/idle.rs`'s whole-frame present gate
+> and `note_spring`/`invalidate()` (the DEFECT this note diagnoses) are real and live, and
+> `ui/machine.rs::Tick` (`ms`/`dt_us`, "the frame time (§4.1): one per frame, the ONLY clock a
+> machine sees") is the `Tick` type this note's "Decision" proposed. **What did NOT ship is the
+> enforcement this note built the whole case around**: `Tick::dt()` returns a bare `f32`, so
+> `self.foo += tick.dt() * 1000.0` still compiles exactly as freely as the hand-rolled `+= dt` this
+> note set out to make a compile error — the belt below is a grep, not a type-system guarantee, and
+> that gap is unchanged. What DID move (D4, 2026-09-11): the 12 files `ci/allow/dt.txt` used to
+> list are gone from the gate's allowlist because the file itself is deleted — `ci/check-deps.sh`'s
+> `dt` gate is zero-tolerance outside `ui/motion.rs` now, not merely a shrinking list. Five of the
+> twelve were real clock-driven animators (a hero auto-advance, three spinner/phase clocks, a
+> settle ramp) that now advance through `motion::Ramp`/`motion::Phase` off a real `Tick` and report
+> `Motion` from inside `advance()`, exactly the shape "Decision" wanted; `idle::dt()` itself — the
+> escape hatch a `draw`-time leaf with no `Tick` used to reach for — is deleted, replaced by an
+> absolute `idle::now_ms()` a caller diffs itself rather than summing. The other two (`Xfade`, the
+> `PageDip` in `ui/containers/transition.rs`) were deliberately NOT moved onto `Ramp`: both already
+> reported motion correctly through another mechanism, and their ramp value is HASHED replay state
+> in three screens' fixtures, so they clear the gate as bit-for-bit-identical rewrites instead. See
+> `rust-modules/src/ui/motion.rs`'s module doc for the integrators and `ci/check-deps.sh`'s `dt`
+> rule comment for the exact seam. Read "Decision" as the plan that landed the diagnosis and the
+> `Tick` type, not the compile-time guarantee.
+>
+> **Replay boundary (phase 12):** this note does not close the broader recorder contract in §0.8/
+> §5.5. Controlled Home now restores typed pre-effect inputs and injects recorded Home/Browse
+> results without live data IO. Other domains remain unsupported by that bounded driver, and the
+> committed `focusfp.sh --replay` path does not expose the UI engine's `--resolve` mode. The
+> structural phase-12 gates therefore check specific structural invariants; they are not an
+> overall proof of UI ownership, whole-application
+> deterministic restore or scenario replay; those remain separate implementation work.
+
 > **Field names in this document predate 2026-08-01 and the old name was REUSED.** Where it says
 > `FPS=`, today's heartbeat says **`loop=`** (loop iterations); where it says `pres=`, today's says
 > **`fps=`** (frames actually presented). The manifest gates moved too: `floor`→`loop_floor`,

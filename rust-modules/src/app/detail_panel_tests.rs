@@ -25,46 +25,32 @@ fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
     crate::plex::reset_servers_for_test();
     let here = crate::plex::register_for_test("park-here", "127.0.0.1", 1, "t", "c1");
     let other = crate::plex::register_for_test("park-other", "127.0.0.2", 2, "t", "c2");
-    crate::metadata::alt_install(
-        here,
-        "m1",
-        vec![
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::AltInstall {
+        sid: here,
+        rk: "m1".into(),
+        copies: vec![
             crate::metadata::AltCopy { sid: here, rk: "m1".into(), library: "Movies".into(), ..Default::default() },
             crate::metadata::AltCopy { sid: other, rk: "copy".into(), library: "Shared".into(), ..Default::default() },
         ],
-    );
-
-    // The loop's own trail drives the tree (`bridge::sync_page`), so the push below is a trail push
-    // followed by a frame on the new route — the shape the loop really produces.
-    let mut trail = super::super::Trail::new();
-    trail.push(super::super::Node::Detail {
-        sid: here,
-        rk: "m1".into(),
-        spot: Default::default(),
     });
-    let person = super::super::Node::Person {
-        sid: here,
-        key: "p1".into(),
-        guid: "g".into(),
-        name: "N".into(),
-        thumb: String::new(),
-    };
 
+    // Naming the page IS naming the item since the fold: the argument carries the identity, so
+    // a frame on `detail_arg("m1")` mounts that detail page and a frame on `person_arg("p1")`
+    // stacks the person page over it — which is the shape the loop really produces.
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     let mut t = 0u32;
     let run = |d: &mut Dispatcher<AppHost>,
                rig: &mut Bridge,
-               trail: &super::super::Trail,
                t: &mut u32,
-               route: Route,
+               route: AppArg,
                n: u32| {
         for _ in 0..n {
             *t += 1;
-            super::frame(d, rig, route, trail, tick(*t), vec![]);
+            frame(d, rig, route.clone(), tick(*t), vec![]);
         }
     };
-    run(&mut d, &mut rig, &trail, &mut t, Route::Detail, 4);
+    run(&mut d, &mut rig, &mut t, detail_arg("m1"), 4);
     let host = d.nav.top_page().and_then(|e| e.inst.as_ref()).expect("the page mounted").id;
 
     // the panel, presented the way the page asks for it
@@ -74,18 +60,17 @@ fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
         Some((here, "m1")),
         crate::screens::registry::ContentPanel::AltSources { anchor: [300.0f32, 800.0, 300.0, 60.0].map(f32::to_bits) },
     );
-    run(&mut d, &mut rig, &trail, &mut t, Route::Detail, 40);
+    run(&mut d, &mut rig, &mut t, detail_arg("m1"), 40);
     let panel = d.nav.modals.surfaces.first().expect("the picker is up").entry.id;
     let panel_inst = d.nav.instance_of(panel).expect("…and is mounted");
     // move its cursor, so "the same instance" is a claim about STATE and not only about an id.
     // Through the ordinary input path: the container gives the keys to the topmost open surface,
     // which is what makes this the picker's press and not the page's.
     t += 1;
-    super::frame(
+    frame(
         &mut d,
         &mut rig,
-        Route::Detail,
-        &trail,
+        detail_arg("m1"),
         tick(t),
         vec![InputEvent {
             at: tick(t),
@@ -99,13 +84,12 @@ fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
             },
         }],
     );
-    run(&mut d, &mut rig, &trail, &mut t, Route::Detail, 2);
+    run(&mut d, &mut rig, &mut t, detail_arg("m1"), 2);
     let moved = panel_sel(&d, panel);
     assert_eq!(moved, 1, "the cursor is on the second copy");
 
     // push a page OVER the detail page
-    trail.push(person);
-    run(&mut d, &mut rig, &trail, &mut t, Route::Person, 8);
+    run(&mut d, &mut rig, &mut t, person_arg("p1"), 8);
     assert!(
         d.nav.modals.surfaces.is_empty(),
         "the ACTIVE stack is the new page's, and it has none"
@@ -121,8 +105,7 @@ fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
     );
 
     // …and back
-    trail.back();
-    run(&mut d, &mut rig, &trail, &mut t, Route::Detail, 40);
+    run(&mut d, &mut rig, &mut t, detail_arg("m1"), 40);
     assert!(d.nav.covered_modals.is_empty(), "the park was collected");
     assert_eq!(
         d.nav.modals.surfaces.len(),

@@ -30,7 +30,7 @@ use crate::ui::hero_logo::{HeroLogo, LogoRung};
 use crate::ui::label::HAlign;
 use crate::ui::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
-    Leave, LogicalState, Machine,
+    Leave, LogicalState, Machine, Tick,
 };
 use crate::ui::present::{PresentEvent, Provenance};
 use crate::ui::screen::{
@@ -84,6 +84,12 @@ pub(crate) struct DetailScreen {
 
     // Logical decisions. None is a focus cursor.
     pending_season: Option<usize>,
+    /// Elapsed seconds of the current settle, hashed as part of logical state (`LogicalState::
+    /// write`). Deliberately still a raw per-frame increment (phase 12 D4 did NOT move this onto
+    /// `motion::Ramp`): a `Ramp`'s absolute-`Tick.ms` math computes the same real quantity through
+    /// a different float operation sequence that measurably diverges the hash against the
+    /// committed replay fixtures. The `tick` arm that advances it explains the fix that DID land —
+    /// the dwell timer now reports `Motion`, which it never did before.
     season_settle: f32,
     restore_intent: Option<RestoreIntent>,
 
@@ -102,7 +108,11 @@ pub(crate) struct DetailScreen {
     season_metrics: season::Metrics,
     about_rows: about::Rows,
     ground: AmbientWash,
+    /// Skeleton spinner clock, in ms — cached each tick from [`spin_phase`](Self::spin_phase)'s
+    /// `advance`. Render-only, never hashed.
     spin_ms: f32,
+    /// The underlying clock for [`spin_ms`](Self::spin_ms) (`motion::Phase`, phase 12 D4).
+    spin_phase: crate::ui::motion::Phase,
 }
 
 impl DetailScreen {
@@ -144,6 +154,7 @@ impl DetailScreen {
             about_rows: about::Rows::new(),
             ground,
             spin_ms: 0.0,
+            spin_phase: crate::ui::motion::Phase::default(),
         }
     }
 
@@ -343,6 +354,7 @@ impl DetailScreen {
                 self.section_top(2, d) - self.scroll.pos,
                 self.episode_scroll.pos,
                 self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0) * f.press.scale,
+                f.measure,
             ),
             Some(Located::Related(i)) => related::draw_focused(
                 f.painter,
@@ -351,6 +363,7 @@ impl DetailScreen {
                 i,
                 self.section_top(3, d) - self.scroll.pos,
                 f.press.scale,
+                f.measure,
             ),
             _ => {}
         }
@@ -1002,7 +1015,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                self.tick(t.dt(), cx, fx);
+                self.tick(*t, cx, fx);
                 Handled::Yes
             }
             ScreenEvent::Enter(_) => {
@@ -1187,7 +1200,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
             self.draw_hero(p.translate(0.0, -self.scroll.pos).alpha(hero_vis), f, d, nav_page_alpha);
         }
         if let Some(d) = d {
-            self.draw_compact_title(p, d, hero_vis);
+            self.draw_compact_title(p, d, hero_vis, f.measure);
             let focus = f
                 .focus
                 .current
@@ -1223,6 +1236,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                                 _ => None,
                             },
                             |i| self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0),
+                            f.measure,
                         );
                         if crate::metadata::season_loading() {
                             crate::ui::widgets::Spinner::new(
@@ -1244,6 +1258,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                             Some(Located::Related(i)) => Some(i),
                             _ => None,
                         },
+                        f.measure,
                     ),
                     4 => cast::draw(
                         p,
@@ -1254,6 +1269,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                             Some(Located::Cast(i)) => Some(i),
                             _ => None,
                         },
+                        f.measure,
                     ),
                     5 => self.about_rows.draw(
                         p,
@@ -1261,6 +1277,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                         top,
                         f.focus.current.map(|k| k.elem),
                         self.tracks_available(),
+                        f.measure,
                     ),
                     _ => {}
                 }
@@ -1401,14 +1418,15 @@ impl DetailScreen {
                 HERO_TEXT_W,
                 band,
             ),
+            cx.measure,
         );
 
         let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_view = crate::ui::hero_synopsis(&synopsis, &lead);
         let chain = self.hero_chain();
         if let Some(d) = d {
-            self.draw_identity_line(p, d, chain.meta_y);
-            self.draw_ratings(p, d, chain.ratings_y);
+            self.draw_identity_line(p, d, chain.meta_y, cx.measure);
+            self.draw_ratings(p, d, chain.ratings_y, cx.measure);
         }
         if !synopsis.is_empty() {
             synopsis_view.draw(
@@ -1417,13 +1435,13 @@ impl DetailScreen {
             );
         }
         if let Some(d) = d {
-            hero::draw_facts(p, d, chain.facts_y);
+            hero::draw_facts(p, d, chain.facts_y, cx.measure);
             hero::draw_people(p, d, chain.btn_y);
         }
         self.draw_buttons(p, cx, chain.btn_y, nav_page_alpha);
     }
 
-    fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32) {
+    fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn crate::ui::machine::Measure) {
         let ordinal = (d.kind == "episode" && d.season > 0 && d.index > 0)
             .then(|| crate::ui::fmt::episode_ordinal(d.season, d.index))
             .unwrap_or_default();
@@ -1465,6 +1483,7 @@ impl DetailScreen {
                 &res,
                 None,
                 crate::ui::widgets::BadgeStyle::Filled,
+                measure,
             ) + theme::space::XS;
         }
         for (present, label) in [
@@ -1473,13 +1492,19 @@ impl DetailScreen {
             (d.audio.iter().any(|s| s.ad), "AD"),
         ] {
             if present {
-                x += crate::ui::widgets::keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY)
+                x += crate::ui::widgets::keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)
                     + theme::space::XS;
             }
         }
     }
 
-    fn draw_ratings(&self, p: Painter, d: &Detail, y: f32) {
+    fn draw_ratings(
+        &self,
+        p: Painter,
+        d: &Detail,
+        y: f32,
+        measure: &dyn crate::ui::machine::Measure,
+    ) {
         let (top, base) = crate::text::text_cap_band(theme::size::LABEL, 1);
         let cy = y + (top + base) * 0.5;
         let mut x = crate::ui::consts::MARGIN_X;
@@ -1500,11 +1525,11 @@ impl DetailScreen {
                     suffix: crate::ui::fmt::rating_suffix(r.art),
                 })
                 .collect();
-            let width = crate::ui::widgets::rating_group_w(provider, &cells);
+            let width = crate::ui::widgets::rating_group_w(provider, &cells, measure);
             if x + width > crate::ui::consts::SCR_W - crate::ui::consts::MARGIN_X {
                 break;
             }
-            x += crate::ui::widgets::rating_group(p, x, cy, provider, &cells) + 32.0;
+            x += crate::ui::widgets::rating_group(p, x, cy, provider, &cells, measure) + 32.0;
             i = end;
         }
     }
@@ -1576,7 +1601,7 @@ impl DetailScreen {
         }
     }
 
-    fn draw_compact_title(&self, p: Painter, d: &Detail, hero_visible: f32) {
+    fn draw_compact_title(&self, p: Painter, d: &Detail, hero_visible: f32, measure: &dyn crate::ui::machine::Measure) {
         if hero_visible >= 0.99 {
             return;
         }
@@ -1603,6 +1628,7 @@ impl DetailScreen {
                     crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
                     band,
                 ),
+                measure,
             );
     }
 
@@ -1943,9 +1969,9 @@ impl DetailScreen {
         }
     }
 
-    fn tick<H: ContentLike>(&mut self, dt: f32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn tick<H: ContentLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let dt = t.dt();
         self.pump_restore();
-        self.spin_ms += dt * 1000.0;
         let d = self.detail();
         let loaded = d.is_some();
         if let Some(d) = d {
@@ -2048,7 +2074,15 @@ impl DetailScreen {
         self.scroll.step(self.scroll_target, K_SCROLL, dt);
 
         if self.pending_season.is_some() {
-            self.season_settle += dt;
+            // Spelled as an assignment, not `+= dt`: bit-for-bit identical arithmetic to the
+            // pre-D4 accumulator, deliberately UNCHANGED — `season_settle` is HASHED
+            // `LogicalState` (`SHAPE`'s `season_settle:f32`), and a `motion::Ramp`'s absolute-
+            // `Tick.ms` math computes the same real quantity through a different float operation
+            // sequence that measurably diverges the hash (verified against the committed replay
+            // fixtures). What WAS a real bug — this dwell timer never reported `Motion` — is
+            // fixed by the explicit `note` below, with no change to the number itself.
+            self.season_settle = self.season_settle + dt;
+            fx.note(PresentEvent::Motion);
             if self.season_settle >= season::SETTLE_S {
                 let index = self.pending_season.take().unwrap_or(0);
                 self.season_settle = 0.0;
@@ -2072,7 +2106,10 @@ impl DetailScreen {
             self.restore_intent = None;
             self.return_pending = false;
         }
-        if moving || !loaded || crate::metadata::season_loading() {
+        if !loaded {
+            self.spin_ms = self.spin_phase.advance(t, &mut fx.present());
+        }
+        if moving || crate::metadata::season_loading() {
             fx.note(PresentEvent::Motion);
         }
     }
@@ -2135,6 +2172,8 @@ impl DetailScreen {
         match self.locate(elem) {
             Some(Located::Hero(ctl)) => self.activate_hero(ctl, cx, fx),
             Some(Located::Season(i)) => {
+                // A direct press skips the dwell entirely — pre-loading `season_settle` past the
+                // threshold fires on the very NEXT `tick` rather than after a full `SETTLE_S`.
                 self.pending_season = Some(i);
                 self.season_settle = season::SETTLE_S;
             }

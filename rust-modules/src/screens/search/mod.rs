@@ -1,5 +1,5 @@
 //! Owned Search page. Input owns focus; this instance owns editing, motion and render caches.
-//! This is the production Search implementation: `Route::Search` mounts it unconditionally, and
+//! This is the production Search implementation: `AppArg::Search` mounts it unconditionally, and
 //! the legacy Search renderer it replaced is deleted entirely.
 mod draft;
 // `pub(crate)`: exposes `layout::{FIELD, CONTENT_TOP}` to `ui::consts`'s overscan-rects audit,
@@ -407,7 +407,7 @@ impl SearchScreen {
         render::tile(self, row, col, true, f, painter);
     }
     /// The focus fingerprint's read of this screen's own space (`app::bridge::content_probe`'s
-    /// `Route::Search` arm) — called only once that caller has already asked the shared bar
+    /// Search arm) — called only once that caller has already asked the shared bar
     /// (`app::chrome::ChromeSnapshot::focus`) and found focus `Away` from the chip/strip, i.e.
     /// actually resting somewhere on this page.
     ///

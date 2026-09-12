@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) const SHAPE: &str = "HubsInitialV1{version:u32,generation:u32,next_request:u32,seen:u64,seen_facts:u32,sections_generation:u32,catalog_generation:u32,sources:[{sid:u16,client:Option<u32>,token_gen:u32,handle:str,state:u32,fetching:bool,seq:u32,retry_bits:u32,retry_n:u32,last:Option<SourceBuild>}],catalog:{items:[PmsMovie],hubs:[{title:str,hub_id:str,key:str,source:str,start:u64,len:u64}],heroes:[{idx:u64,source:str}]}}";
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Initial {
     #[serde(deserialize_with = "initial_version")]
@@ -23,7 +23,7 @@ pub(crate) struct Initial {
     catalog: HomeCatalog,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Source {
     #[serde(with = "super::record::server_id")]
@@ -68,6 +68,33 @@ pub(crate) trait Sink {
 }
 
 impl Initial {
+    pub(crate) fn snapshot(&self) -> HubsSnapshot {
+        HubsSnapshot { data:Arc::new(self.catalog.clone()),generation:self.catalog_generation,state:HubState::Loading }
+    }
+    #[cfg(any(test, feature = "hostsim"))]
+    pub(crate) fn fresh() -> Self {
+        Self { version:1,generation:0,next_request:1,seen:u64::MAX,seen_facts:u32::MAX,
+            sections_generation:0,catalog_generation:0,sources:Vec::new(),catalog:HomeCatalog::default() }
+    }
+    pub(crate) fn validate_boot(&self) -> bool {
+        self.sources.is_empty() && self.catalog.items.is_empty() && self.catalog.hubs.is_empty()
+            && self.catalog.heroes.is_empty()
+    }
+
+    /// Restore the validated pre-work inputs, never a mid-flight checkpoint or live mailbox.
+    pub(crate) fn restore_boot(&self, _mt: &crate::task::MainThread) -> Result<(), &'static str> {
+        if !self.validate_boot() { return Err("Home initial state contains work or content"); }
+        HUB_GEN.store(self.generation, Ordering::SeqCst);
+        NEXT_REQUEST.store(self.next_request, Ordering::Relaxed);
+        SEEN.store(self.seen, Ordering::Relaxed);
+        SEEN_FACTS.store(self.seen_facts, Ordering::Relaxed);
+        LAST_SECTIONS_GEN.store(self.sections_generation, Ordering::SeqCst);
+        CATALOG_GEN.store(self.catalog_generation, Ordering::SeqCst);
+        *lock_srcs() = Vec::new();
+        unsafe { *std::ptr::addr_of_mut!(PUBLISHED_HOME) = Some(Arc::new(self.catalog.clone())); }
+        Ok(())
+    }
+
     pub(crate) fn capture() -> Self {
         let sources = lock_srcs().iter().map(|s| {
             let Src { sid, client, token_gen, handle, state, fetching, seq, retry_s, retry_n, last } = s;

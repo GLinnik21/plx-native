@@ -109,6 +109,8 @@ pub(crate) use servers::{
     register_with_client_id as register_for_test, reset_for_test as reset_servers_for_test,
     write_held_for_test,
 };
+pub(crate) use servers::register_captured_origin;
+pub(crate) use servers::register_pinned_with_client_id;
 // The projected play-queue row + the identity rule that locates one: op-file items rather than
 // wire DTOs, so they are re-exported by name (route.rs names the row in `Plan`/`QueueInfo` — the
 // rest of `timeline` is reached through `Client`'s methods and needs none).

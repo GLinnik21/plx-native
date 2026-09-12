@@ -33,7 +33,11 @@ impl Host for TestHost {
     type Msg = AppMsg;
     type Elem = u32;
     type Views<'a> = ();
-    type Init = crate::screens::family::NoInit;
+    // `super::super::` (detail -> screens -> family) rather than the absolute spelling: `family`
+    // is the Settings family's shared vocabulary (the same module `screens::legal` and
+    // `screens::settings` already reach with `super::family::`), not a sibling screen — see
+    // `screens::family`'s own module doc.
+    type Init = super::super::family::NoInit;
     type Memory = PageMemory;
 }
 
@@ -78,6 +82,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP),
         spin_ms: 0.0,
+        spin_phase: crate::ui::motion::Phase::default(),
     };
     screen.sync_keys();
     screen

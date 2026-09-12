@@ -844,7 +844,7 @@ def offending_strings(text, alphabet):
         vals = []
         synthetic_strings(d, vals)
         for v in vals:
-            if v in literals or any(p.match(v) for p in pats):
+            if v in literals or any(p.fullmatch(v) for p in pats):
                 continue
             bad.append(v)
     return bad

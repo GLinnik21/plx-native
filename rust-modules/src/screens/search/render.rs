@@ -445,12 +445,13 @@ pub(super) fn tile<H: SearchLike>(
             &style,
             resume,
             &TileLabel::titled(item.title(), &fact).revealed(model.motion.band_reveal()),
+            f.measure,
         );
     } else {
         card_row::draw_tile(p, art, rect, scale, &style, resume);
     }
     if let (Kind::Episode, Item::Media(media)) = (model.kind, item) {
-        crate::ui::widgets::still_overlay(p, media, rect, style.tile_radius(rect, scale), false);
+        crate::ui::widgets::still_overlay(p, media, rect, style.tile_radius(rect, scale), false, f.measure);
     }
     stop(
         screen,

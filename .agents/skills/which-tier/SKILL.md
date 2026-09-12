@@ -243,8 +243,10 @@ every `floor` in the suite still passes.
 
 **Anything that animates from a CLOCK rather than a spring** — a millisecond ramp, a phase, a
 countdown — must call `ui::idle::invalidate()` itself. `note_spring` cannot see it, and both
-`Xfade::tick` (every route dip) and `Spinner::draw` (every loading read-out) **shipped FROZEN**
-before they were made to report. No fps scene caught either, because those graded `loop=`. The same
+`Xfade::tick` (every CONTENT cross-fade) and `Spinner::draw` (every loading read-out) **shipped
+FROZEN** before they were made to report. (`Xfade` drove the ROUTE dip too until restructure phase
+12 lifted that onto `ui::containers::transition::PageDip`, which reports from inside its own
+`tick`.) No fps scene caught either, because those graded `loop=`. The same
 applies to a new async landing that repaints: without an `invalidate()` it arrives invisibly until
 the next keypress.
 

@@ -1,6 +1,6 @@
 //! Home's hub catalog, as a machine over `crate::pms` (`docs/stores-as-machines.md`).
 
-use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
+use crate::ui::machine::{Cx, Effects, Handled, Machine};
 
 use super::{StoreEv, StoreId};
 
@@ -25,53 +25,61 @@ pub(crate) fn take_results() -> Vec<HubsResult> {
     crate::pms::take_landings()
 }
 
-pub(crate) fn land(result: &HubsResult) {
-    let before = crate::pms::catalog_gen();
-    crate::pms::apply_landing(result);
-    super::note(StoreId::Hubs, crate::pms::catalog_gen() != before);
+pub(crate) fn land(result: &HubsResult) -> super::StoreOutcome {
+    let outcome = crate::pms::land(result);
+    super::note(StoreId::Hubs, outcome.changed);
+    outcome
 }
 
-fn tick(dt: f32) {
+fn tick(dt: f32) -> super::StoreOutcome {
     let before = crate::pms::catalog_gen();
-    crate::pms::tick(dt);
-    super::note(StoreId::Hubs, crate::pms::catalog_gen() != before);
+    let endpoints = crate::pms::tick(dt);
+    let changed = super::note(StoreId::Hubs, crate::pms::catalog_gen() != before);
+    super::StoreOutcome { changed, endpoints }
+}
+
+/// Same mutation and notice rules as run/tick, with an application-owned resource executor.
+pub(crate) fn controlled(cmd: Option<HubsCmd>, dt: f32,
+    launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
+    #[cfg(test)]
+    crate::testlock::assert_held("controlled hubs store");
+    let command = cmd.is_some();
+    let outcome = crate::pms::controlled_work(cmd,dt,launch);
+    if command { super::bump(StoreId::Hubs); }
+    else { super::note(StoreId::Hubs,outcome.changed); }
+    outcome
 }
 
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
-pub(crate) fn apply(cmd: HubsCmd) -> bool {
+pub(crate) fn apply(cmd: HubsCmd) -> super::StoreOutcome {
     super::apply(super::StoreCmd::Hubs(cmd))
 }
 
-/// The store's own step, reached only through [`super::apply`].
-pub(super) fn run(cmd: HubsCmd) -> bool {
-    let answer = match cmd {
-        HubsCmd::RefetchHubs => {
-            crate::pms::request_refetch_hubs();
-            true
-        }
-        HubsCmd::Retry => {
-            crate::pms::request_retry();
-            true
-        }
-        HubsCmd::Reset => {
-            crate::pms::reset();
-            true
-        }
-        HubsCmd::EditItem { sid, rk, edit } => crate::pms::edit_item(sid, &rk, edit),
-    };
+/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
+/// `pms::run` — its four arms called `pub(crate)` mutators across this module boundary, which is
+/// exactly what a new screen could have done too; the mutators are private to `pms.rs` now and
+/// this is their only door.
+pub(super) fn run(cmd: HubsCmd) -> super::StoreOutcome {
+    // `crate::pms`'s statics are a crate global reached from both `apply` above and
+    // `crate::stores::apply(StoreCmd::Hubs(..))` directly (some fixtures deliver a `StoreCmd`
+    // without going through this module's `apply`) — guard the one point both funnel through, even
+    // though `pms::run`'s own arms each delegate to a `crate::pms` function that asserts on its
+    // own. See `lib.rs::testlock` and D5.
+    #[cfg(test)]
+    crate::testlock::assert_held("the hubs store (apply)");
+    let answer = crate::pms::run(cmd);
     super::bump(StoreId::Hubs);
     answer
 }
 
-impl<H: Host> Machine<H> for HubsStore {
+impl<H: super::StoreEffectHost> Machine<H> for HubsStore {
     type Ev = StoreEv<HubsCmd>;
-    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
-        match ev {
-            StoreEv::Cmd(c) => {
-                run(c.clone());
-            }
+    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        let outcome = match ev {
+            StoreEv::Cmd(c) => run(c.clone()),
             StoreEv::Pump { dt } => tick(*dt),
-        }
+        };
+        outcome.endpoints.emit(fx);
         Handled::Yes
     }
 }

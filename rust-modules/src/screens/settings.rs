@@ -808,7 +808,9 @@ impl<H: AppLike> Screen<H> for RouteSurface {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let a = f.page_alpha;
         let root = Painter::root();
-        crate::screens::family::set_palette(self.ground.palette());
+        // `super::family` here matches this file's own `use super::family::{inner_cx, table_focus,
+        // InnerHost, SettingsPage};` above — `family` is shared vocabulary, not a sibling screen.
+        super::family::set_palette(self.ground.palette());
         match self.kind {
             Family::Settings => {
                 // the scrim over the live host while the modal fades in; invisible under the
@@ -2523,7 +2525,7 @@ mod tests {
             struct ResetSources;
             impl Drop for ResetSources {
                 fn drop(&mut self) {
-                    crate::browse::reset();
+                    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
                     crate::plex::reset_servers_for_test();
                 }
             }

@@ -1,4 +1,1 @@
-# count: 3
-rust-modules/src/ui/nav.rs	phase 8: the nav alphas move onto DrawFrame; the statics die in 12
-rust-modules/src/ui/widgets.rs	phase 12: what is left is the TOP BAR's own state — the strip (TOP_STRIP/PILL_RECTS/TAB_SCROLL/TAB_CACHE/LABELS/CHIP/SOURCE/CHIP_EXPAND), the band's material and its ground solve (TAB_GLASS_STATE/BAR_MATERIAL/TRACK_DENSITY/LAST), plus two draw-time memos (VEIL_TEX, PASS_W). Phase 11 took the pieces that had a reachable owner: the ONE shared glass cadence and the tile band are fields of ui/frame/glass.rs::GlassPlan. These are not, and the reason is the call path, not the type — BAR_MATERIAL is published by draw_tab_row_with and read by profile_chip through Scrim::lifting's bare fn(), and the rest is reached from Rig::draw_chrome or from card(); they move when the chrome takes its pills from Cx (spec §10)
-rust-modules/src/ui/popover.rs	phase 10: HOST_CLOSING/HOST_USERS/OPEN_COUNT — the modal phase's last legacy owners; CACHE/HELD stay, named in statics.txt
+# count: 0

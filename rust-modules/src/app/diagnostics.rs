@@ -102,6 +102,7 @@
 //! Pass state, never its name or address. There is no generic "push a string to diagnostics" path,
 //! so adding a field is a deliberate edit to the file that carries these rules.
 use crate::ui::label::Label;
+use crate::ui::machine::Measure;
 use crate::ui::widgets::{Field, FieldList, FIELD_COL_W};
 use crate::ui::{theme, Env, Painter, Rect, View};
 use std::cell::Cell;
@@ -618,7 +619,7 @@ fn rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64,
 fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
     let mut v = Vec::with_capacity(LEFT_ROWS);
     v.push(Field::new("Connection", connection_line(ps)));
-    v.push(Field::new("Route", route_line(ps, d)));
+    v.push(Field::new("AppArg", route_line(ps, d)));
 
     let mut video = chain(
         crate::route::source_vcodec(ps),
@@ -1191,10 +1192,16 @@ fn chart_key_width(&self) -> f32 {
     if cached > 0.0 {
         return cached;
     }
+    // `draw()` is invoked directly from `app/run.rs`'s frame loop, outside the owned-screen
+    // `Cx`/`DrawFrame` plumbing that carries a `Measure` everywhere else (spec §4.3, D4) — this
+    // panel predates that seam and is not itself an owned screen. Rather than widen `draw`'s own
+    // signature (and so `app/run.rs`'s two call sites, out of scope here), it reaches for the
+    // same `TtfMeasure` a `DrawFrame` would have handed it: the device/simulator `Measure`, which
+    // is what every other render-time site converted to.
+    let measure = crate::text::TtfMeasure;
     let measured = CHART_LABELS
         .iter()
-        .filter_map(|label| CString::new(*label).ok())
-        .map(|label| crate::text::text_width(label.as_ptr(), theme::size::DIAGNOSTIC, 0))
+        .map(|label| measure.width_str(label, theme::size::DIAGNOSTIC, false))
         .fold(0.0f32, f32::max);
     let width = chart_key_width_for(measured);
     // `text_width` is zero before text initialisation. Use the conservative width for this frame,

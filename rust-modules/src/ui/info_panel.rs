@@ -4,8 +4,15 @@
 //! while it's open and hides the normal transport middle behind it. Data from crate::metadata.
 #![allow(dead_code)]
 use crate::metadata;
-use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
+use crate::ui::consts::{SCR_H, SCR_W};
+use crate::ui::frame::Budget;
+use crate::ui::geom::IndexElem;
 use crate::ui::icons::Icon;
+use crate::ui::machine::{Cx, EntryId, FocusKey, GroupId, Host};
+use crate::ui::screen::{
+    Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
+    Hover, Part, Placed, Seat, Step, Stop,
+};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{badge, badge_w, resolve_tex_on, BadgeStyle};
@@ -51,18 +58,12 @@ impl InfoPanelState {
         self.focus >= actions().len() as c_int - 1
     }
 
-    pub(crate) fn move_focus(&mut self, sym: c_int) {
-        let n = actions().len() as c_int;
-        let sym = sym as u32;
-        let f = self.focus;
-        let nf = if sym == SDLK_UP {
-            (f - 1).max(0)
-        } else if sym == SDLK_DOWN {
-            (f + 1).min(n - 1)
-        } else {
-            f
-        };
-        self.focus = nf;
+    /// **Write back the engine's own focus cursor** (restructure phase 12): the Column group
+    /// [`InfoPanelPart`] answers is the source of geometry, but the ENGINE owns the current
+    /// element (§7.3 step 5) — the owner's `step` is the only place that mutates in response to a
+    /// `FocusMoved`, and this is `screens::player::overlay::PlayerOverlayScreen::step`'s write.
+    pub(crate) fn set_focus(&mut self, i: c_int) {
+        self.focus = i;
     }
 
     /// activate the focused action — dismissing the card afterward is the container's job now, not
@@ -85,19 +86,15 @@ impl InfoPanelState {
         }
     }
 
-    /// The focused thing is a pressable CONTROL FACE — one of the card's two action buttons, rather
-    /// than the tab row above them. The card's `focus` walks both, and is the button index only
-    /// while it is inside the column; the same filter [`InfoPanelState::update`] pops on, asked here
-    /// so the button that dips is always the button that popped.
-    pub(crate) fn focus_is_ctl(&self) -> bool {
-        self.ctl_index().is_some()
-    }
-
-    /// **The one filter, asked by both callers.** Which action button `focus` is on, if it is in
-    /// the column at all — [`focus_is_ctl`](Self::focus_is_ctl) asks it to decide whether a press
-    /// may dip, and [`update`](Self::update) asks it to decide which button `ctl_pop` pops. The doc
-    /// above promised those were the same filter; they were the same expression written twice,
-    /// seven lines apart, in two spellings.
+    /// **Which action button `focus` is on, if it is in the column at all** — asked by
+    /// [`update`](Self::update) to decide which button `ctl_pop` pops. Under [`InfoPanelPart`]'s
+    /// Engine groups this is always `Some`: the card's only focus group IS the action column
+    /// (`ElemKind::Control`), so a focus that reaches this screen at all is always on a control
+    /// face — there is no longer a "tabs above" state sharing `focus`'s range to distinguish it
+    /// from (restructure phase 12 retired the `focus_is_ctl` predicate this used to also answer,
+    /// once `screens::player::overlay::PlayerOverlayScreen`'s own `Key::Ok` arm stopped asking it:
+    /// every `ScreenEvent::PressCommit` this card's engine-armed press delivers already IS a
+    /// control-face press).
     fn ctl_index(&self) -> Option<usize> {
         usize::try_from(self.focus)
             .ok()
@@ -111,7 +108,12 @@ impl InfoPanelState {
         self.ctl_pop.step(idx, dt);
     }
 
-    pub(crate) fn draw(&mut self, ps: &crate::route::PlaybackSession, appear: f32) {
+    pub(crate) fn draw(
+        &mut self,
+        ps: &crate::route::PlaybackSession,
+        appear: f32,
+        measure: &dyn crate::ui::machine::Measure,
+    ) {
         let np = metadata::now_playing();
         let d = metadata::current();
         if np.is_none() && d.is_none() {
@@ -173,16 +175,12 @@ impl InfoPanelState {
         };
 
         // card — tall enough that the still gets equal padding on every side (see `pad`/`sh` below)
-        let cx = 80.0f32;
-        let cw = SCR_W - 160.0;
-        let ch = 236.0f32;
-        let cyt = SCR_H - 176.0 - ch; // sit just above the Info/Chapters tabs (tabs at SCR_H-128)
-        let card = Rect::new(cx, cyt, cw, ch);
+        let (card, pad) = card_geometry();
+        let (cx, cyt, _cw, ch) = (card.x, card.y, card.w, card.h);
         // near-opaque dark card keeps the title/synopsis legible over any scene
         let cardbg = theme::PANEL_TOP;
         p.rrect(card, 28.0, 28.0, cardbg);
 
-        let pad = 28.0f32;
         // still (16:9), left — the *episode's* thumbnail (or the movie's landscape art). `ch` is sized
         // so (ch - sh)/2 == pad, giving the still an equal `pad` margin on every side.
         let sw = 320.0f32;
@@ -215,12 +213,7 @@ impl InfoPanelState {
 
         // action buttons (right column)
         let acts = actions();
-        let bw = 352.0f32;
-        let bh = 70.0f32;
-        let bx = cx + cw - pad - bw;
         let focus = self.focus;
-        let total_bh = acts.len() as f32 * bh + (acts.len().saturating_sub(1)) as f32 * 16.0;
-        let mut by = cyt + (ch - total_bh) * 0.5;
         let env = crate::ui::Env::inert();
         for (i, label) in acts.iter().enumerate() {
             let icon = if *label == "From Beginning" {
@@ -229,22 +222,18 @@ impl InfoPanelState {
                 Icon::Info
             };
             if let Ok(cs) = CString::new(*label) {
-                crate::ui::widgets::Button::new(
-                    cs.as_ptr(),
-                    theme::size::BODY,
-                    Rect::new(bx, by, bw, bh),
-                )
-                .icon(icon)
-                .focused(i as c_int == focus)
-                .scale(self.ctl_pop.scale(i))
-                .draw(&env, p);
+                crate::ui::widgets::Button::new(cs.as_ptr(), theme::size::BODY, button_rect(i))
+                    .icon(icon)
+                    .focused(i as c_int == focus)
+                    .scale(self.ctl_pop.scale(i))
+                    .draw(&env, p);
             }
-            by += bh + 16.0;
         }
 
         // text block (between the still and the buttons): title + synopsis + tags, cap-band centred as a
         // group. Title is the playing leaf's own name (episode name / movie title) — the show-title +
         // SxEy treatment lives on the transport HUD under the playbar, not this card.
+        let bx = button_rect(0).x; // the action column's own left edge, every row shares it
         let tx = sx + sw + 34.0;
         let tright = bx - 34.0;
         let tw = tright - tx;
@@ -332,10 +321,7 @@ impl InfoPanelState {
             // pure measurement — no draw — so every candidate's width is known before any of them
             // touches the screen
             let text_w = |s: &str, bold: c_int| -> f32 {
-                CString::new(s)
-                    .ok()
-                    .map(|c| crate::text::text_width(c.as_ptr(), theme::size::CAPTION, bold))
-                    .unwrap_or(0.0)
+                measure.width_str(s, theme::size::CAPTION, bold != 0)
             };
 
             let mut chips: Vec<Chip> = Vec::with_capacity(7);
@@ -344,7 +330,7 @@ impl InfoPanelState {
                 let gap_before = chip_gap(prev_kind, kind);
                 let w = match kind {
                     ChipKind::Text { bold, .. } => text_w(&label, bold),
-                    ChipKind::Badge => badge_w(&label, None),
+                    ChipKind::Badge => badge_w(&label, None, measure),
                 };
                 chips.push(Chip {
                     label,
@@ -475,11 +461,114 @@ impl InfoPanelState {
                         }
                     }
                     ChipKind::Badge => {
-                        meta_badge(p, mx, my, &chip.label);
+                        meta_badge(p, mx, my, &chip.label, measure);
                     }
                 }
                 mx += chip.w;
             }
+        }
+    }
+}
+
+/// **The Engine-shaped view of this card** (restructure phase 12): one `Column` focus group over
+/// the two action buttons, built fresh by `screens::player::overlay::PlayerOverlayScreen` each
+/// frame from a `&InfoPanelState` — the same borrowed-view shape `ui::more_menu::MoreMenuPart`/
+/// `ui::track_menu::TrackMenuPart` use for the other player panels, so the card answers the same
+/// [`Focusable`]/[`Part`] query protocol they do. DOWN off the last button is `EdgeRule::Screen` —
+/// re-delivered to the owning screen's own `step`, which drops focus back onto the HUD tabs; UP
+/// off the first is `Stop`, matching the old ladder's clamp.
+///
+/// **`state` is a SHARED reference** — every [`Focusable`] method here is a pure read (`&self`),
+/// and the owning screen's own `Focusable` impl only ever has `&self` too (§7.1: "the engine never
+/// mutates a screen"), so a mutable field would make this type unconstructable from there. The
+/// actual paint (`InfoPanelState::draw`) stays a direct call on the owned `Panel` from
+/// `PlayerOverlayScreen::draw`'s `&mut self`; [`Part::draw`] below only registers stops.
+pub(crate) struct InfoPanelPart<'a> {
+    pub(crate) state: &'a InfoPanelState,
+    pub(crate) entry: EntryId,
+    pub(crate) group: GroupId,
+}
+
+impl<H: Host> Focusable<H> for InfoPanelPart<'_>
+where
+    H::Elem: IndexElem,
+{
+    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        out.push(GroupSpec {
+            id: self.group,
+            kind: GroupKind::Column,
+            seat: Seat::Remembered,
+            reachable: AxisMask::VERTICAL,
+            edge: [EdgeRule::Stop, EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop],
+            extent: card_geometry().0,
+            len: actions().len(),
+            elem: ElemKind::Control,
+        });
+    }
+    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        ((key.index()? as usize) < actions().len()).then_some(self.group)
+    }
+    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
+        let Some(i) = key.elem.index() else {
+            return Step::Edge;
+        };
+        let n = actions().len() as u32;
+        match dir {
+            Dir::Up if i > 0 => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(i - 1) }),
+            Dir::Down if i + 1 < n => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(i + 1) }),
+            _ => Step::Edge,
+        }
+    }
+    fn place(&self, key: &H::Elem, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+        let i = key.index()? as usize;
+        if i >= actions().len() {
+            return None;
+        }
+        let r = button_rect(i);
+        Some(Placed {
+            rect: r,
+            rest_rect: r,
+            clip: card_geometry().0,
+            index: Some(i as u32),
+        })
+    }
+    fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        let i = (want.elem.index().unwrap_or(0) as usize).min(actions().len().saturating_sub(1));
+        FocusKey { entry: self.entry, elem: H::Elem::of_index(i as u32) }
+    }
+    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        FocusKey {
+            entry: self.entry,
+            elem: H::Elem::of_index(self.state.focus.max(0) as u32),
+        }
+    }
+}
+
+impl<H: Host> Part<H> for InfoPanelPart<'_>
+where
+    H::Elem: IndexElem,
+{
+    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
+    /// Registers each action button's stop (§7.6); the card's own paint happens directly on the
+    /// owned `InfoPanelState` from `PlayerOverlayScreen::draw` (see the struct doc above).
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
+        let p = Painter::root();
+        for i in 0..actions().len() {
+            let r = button_rect(i);
+            f.stop(
+                p,
+                Stop {
+                    key: FocusKey {
+                        entry: self.entry,
+                        elem: H::Elem::of_index(i as u32),
+                    },
+                    rect: r,
+                    rest_rect: r,
+                    clip: card_geometry().0,
+                    hover: Hover::Focus,
+                    activate: Activate::Immediate,
+                },
+            );
         }
     }
 }
@@ -506,6 +595,32 @@ fn actions() -> [&'static str; 2] {
     ]
 }
 
+/// The card's own rect and its side padding — **pure**, since every input is a fixed layout
+/// constant (`SCR_W`/`SCR_H` alone). Shared by [`InfoPanelState::draw`] (the still/title/synopsis
+/// layout) and [`button_rect`] (the action column), so the two formulas can never drift apart —
+/// they used to be two copies of the same five numbers, seven lines apart.
+fn card_geometry() -> (Rect, f32) {
+    let cx = 80.0f32;
+    let cw = SCR_W - 160.0;
+    let ch = 236.0f32;
+    let cyt = SCR_H - 176.0 - ch; // sit just above the Info/Chapters tabs (tabs at SCR_H-128)
+    (Rect::new(cx, cyt, cw, ch), 28.0f32)
+}
+
+/// The `i`-th action button's rect, exactly as [`InfoPanelState::draw`] paints it — the same
+/// formula [`InfoPanelPart::place`] answers the focus engine with, so a stop built from it lands
+/// on the pixel the button was drawn at.
+fn button_rect(i: usize) -> Rect {
+    let (card, pad) = card_geometry();
+    let bw = 352.0f32;
+    let bh = 70.0f32;
+    let bx = card.x + card.w - pad - bw;
+    let n = actions().len();
+    let total_bh = n as f32 * bh + n.saturating_sub(1) as f32 * 16.0;
+    let by0 = card.y + (card.h - total_bh) * 0.5;
+    Rect::new(bx, by0 + i as f32 * (bh + 16.0), bw, bh)
+}
+
 // ---- helpers ----
 
 /// A premium audio format worth badging on the meta line, named by the ONE codec map
@@ -519,7 +634,13 @@ fn audio_badge(codec: &str) -> Option<String> {
 }
 
 /// the shared outlined chip in this panel's colours (TEXT_HEADING border/label over the card)
-fn meta_badge(p: Painter, x: f32, cy: f32, text: &str) -> f32 {
+fn meta_badge(
+    p: Painter,
+    x: f32,
+    cy: f32,
+    text: &str,
+    measure: &dyn crate::ui::machine::Measure,
+) -> f32 {
     badge(
         p,
         x,
@@ -531,6 +652,7 @@ fn meta_badge(p: Painter, x: f32, cy: f32, text: &str) -> f32 {
             border: theme::OVERLAY_BORDER,
             bg: theme::SURFACE_PANEL,
         },
+        measure,
     )
 }
 
@@ -852,5 +974,104 @@ mod tests {
                 "no stream, no fact"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    use crate::screens::registry::{AppFx, AppMsg, PageMemory};
+    use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+
+    struct HostFixture;
+    impl Host for HostFixture {
+        type Arg = crate::ui::fixture::FixtureArg;
+        type Fx = AppFx;
+        type Msg = AppMsg;
+        type Elem = u32;
+        type Views<'a> = ();
+        type Init = crate::ui::fixture::FixtureInit;
+        type Memory = PageMemory;
+    }
+
+    fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
+        let measure = crate::ui::fixture::FixtureMeasure;
+        test(&Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &measure,
+            focus: FocusRead::default(),
+            press: PressRead::default(),
+            owner: InputOwner::Entry(entry),
+        })
+    }
+
+    /// **UP/DOWN step by one button and clamp at both ends** over the fixed two-button column.
+    #[test]
+    fn up_down_step_by_one_and_clamp_at_both_ends() {
+        let e = EntryId(6);
+        let st = InfoPanelState::new();
+        let part = InfoPanelPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            let step = |i: u32, dir: Dir| {
+                match <InfoPanelPart as Focusable<HostFixture>>::neighbour(
+                    &part,
+                    FocusKey { entry: e, elem: i },
+                    dir,
+                    cx,
+                ) {
+                    Step::Move(k) => Some(k.elem),
+                    Step::Edge => None,
+                }
+            };
+            assert_eq!(step(0, Dir::Down), Some(1));
+            assert_eq!(step(1, Dir::Down), None, "the last button is the screen's own edge");
+            assert_eq!(step(0, Dir::Up), None, "the first button does not wrap");
+        });
+    }
+
+    /// `place` reports exactly the rect [`InfoPanelState::draw`] paints the button at.
+    #[test]
+    fn place_matches_the_draw_formula() {
+        let e = EntryId(6);
+        let st = InfoPanelState::new();
+        let part = InfoPanelPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            for i in 0..actions().len() as u32 {
+                let placed = <InfoPanelPart as Focusable<HostFixture>>::place(&part, &i, cx, At::Drawn)
+                    .expect("both buttons are placeable");
+                let want = button_rect(i as usize);
+                assert_eq!(
+                    (placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
+                    (want.x, want.y, want.w, want.h)
+                );
+            }
+        });
+    }
+
+    /// Two buttons stack vertically, sharing an x and a width, in the order `draw` paints them —
+    /// "From Beginning" above "Go to Show"/"Go to Movie".
+    #[test]
+    fn the_two_buttons_share_a_column_and_stack_in_draw_order() {
+        let (a, b) = (button_rect(0), button_rect(1));
+        assert_eq!(a.x, b.x);
+        assert_eq!(a.w, b.w);
+        assert!(a.y < b.y, "From Beginning sits above the second action");
+    }
+
+    /// DOWN off the last button is the SCREEN's edge (`FocusTabs`), never `Stop` — the group's
+    /// declared edges pin the direction each rule below answers.
+    #[test]
+    fn down_off_the_last_button_is_the_screens_edge() {
+        let e = EntryId(6);
+        let st = InfoPanelState::new();
+        let part = InfoPanelPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            let mut groups = Vec::new();
+            <InfoPanelPart as Focusable<HostFixture>>::groups(&part, cx, &mut groups);
+            let g = groups.into_iter().next().expect("one group");
+            assert!(matches!(g.edge[1], EdgeRule::Screen), "down");
+            assert!(matches!(g.edge[0], EdgeRule::Stop), "up");
+        });
     }
 }

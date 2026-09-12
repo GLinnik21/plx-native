@@ -21,7 +21,7 @@ use crate::ui::consts::*;
 use crate::ui::label::{HAlign, Label, VAlign};
 use crate::ui::machine::{
     Canon, Cx, Edge, Effects, EntryId, GroupId, Handled, InputEvent, InputKind, Key, Leave,
-    LogicalState, Machine,
+    LogicalState, Machine, Measure, Tick,
 };
 use crate::ui::present::{PresentEvent, Provenance};
 use crate::ui::screen::{
@@ -190,13 +190,14 @@ fn header_flow(
     roles_c: &std::ffi::CStr,
     life_c: &std::ffi::CStr,
     has_entry: bool,
+    measure: &dyn Measure,
 ) -> HeaderFlow {
     let mut f = HeaderFlow::default();
-    let mut y = crate::text::cap_h(theme::size::DISPLAY, 1);
+    let mut y = measure.cap_h(theme::size::DISPLAY);
     if pending || !roles_c.to_bytes().is_empty() {
         y += META_GAP;
         f.meta_y = Some(y);
-        y += crate::text::cap_h(theme::size::LABEL, 0);
+        y += measure.cap_h(theme::size::LABEL);
     }
     if pending || !life_c.to_bytes().is_empty() {
         y += if f.meta_y.is_some() {
@@ -205,7 +206,7 @@ fn header_flow(
             META_GAP
         };
         f.life_y = Some(y);
-        y += crate::text::cap_h(theme::size::LABEL, 0);
+        y += measure.cap_h(theme::size::LABEL);
     }
     if pending || !bio.is_empty() {
         y += BIO_GAP;
@@ -258,14 +259,18 @@ fn col_x(d: f32) -> f32 {
 }
 
 fn more_w() -> f32 {
-    crate::text::text_width(MORE.as_ptr(), theme::size::BODY, 1)
+    // Called from `bio_view` (below), itself reachable with no `Measure` in scope (a pure
+    // `TextView` builder) — see `header_flow`'s doc for why `TtfMeasure` is the right capability
+    // to reach for directly here rather than threading a parameter through every caller.
+    crate::text::TtfMeasure.width(MORE, theme::size::BODY, true)
 }
 
-fn cstr_elide(s: &str, w: f32, sz: std::os::raw::c_int, bold: std::os::raw::c_int) -> CString {
+fn cstr_elide(s: &str, w: f32, sz: std::os::raw::c_int, bold: std::os::raw::c_int, measure: &dyn Measure) -> CString {
     if s.is_empty() {
         return CString::default();
     }
-    CString::new(crate::text::elide(s, w, sz, bold, false)).unwrap_or_default()
+    let elided = crate::text::elide_by(s, w, false, |t| measure.width_str(t, sz, bold != 0));
+    CString::new(elided).unwrap_or_default()
 }
 
 /// Is there more biography than the header shows? Shared by the truncation mark and the (deferred,
@@ -337,19 +342,19 @@ impl Column for Flow<'_> {
     fn focus_child(&self) -> Option<usize> {
         self.focus_child
     }
-    fn draw_child(&self, i: usize, env: &Env, p: Painter) {
+    fn draw_child(&self, i: usize, env: &Env, p: Painter, measure: &dyn crate::ui::machine::Measure) {
         debug_assert!(
             !self.settled,
             "the settled flow is a measurement, never a draw"
         );
         if i == 0 {
-            self.screen.draw_header(p, self.person, self.focus_elem);
+            self.screen.draw_header(p, self.person, self.focus_elem, measure);
             return;
         }
         let (kinds, n) = present(self.person);
         if let Some(&kind) = kinds[..n].get(i - 1) {
             self.screen
-                .draw_shelf(p, env, self.person, kind, self.focus_child == Some(i));
+                .draw_shelf(p, env, self.person, kind, self.focus_child == Some(i), measure);
         }
     }
 }
@@ -533,7 +538,13 @@ pub(crate) struct PersonScreen {
     shelves: [CardRow; NSHELF],
     scroll: ScrollColumn,
     amb: PageGround,
+    /// Skeleton spinner clock, in ms — cached each tick from [`spin_phase`](Self::spin_phase)'s
+    /// `advance`.
     spin_ms: f32,
+    /// The underlying clock for [`spin_ms`](Self::spin_ms) (`motion::Phase`, phase 12 D4): reports
+    /// `Motion` from inside its own `advance` rather than the raw `+= dt` this used to be, with
+    /// `fx.note(Motion)` a separate line further down `tick`.
+    spin_phase: crate::ui::motion::Phase,
 
     // ---- render cache: baked text runs + measured flow, rebuilt only when the store lands ----
     name_c: CString,
@@ -605,6 +616,7 @@ impl PersonScreen {
             scroll: ScrollColumn::new(HEADER_TOP, TOP_MARGIN),
             amb: PageGround::new(),
             spin_ms: 0.0,
+            spin_phase: crate::ui::motion::Phase::default(),
             name_c: CString::default(),
             roles_c: CString::default(),
             life_c: CString::default(),
@@ -765,10 +777,10 @@ impl PersonScreen {
         }
     }
 
-    fn refresh_runs(&mut self, p: &Person) {
+    fn refresh_runs(&mut self, p: &Person, measure: &dyn Measure) {
         let w = text_w(PORTRAIT_EXP);
-        self.name_c = cstr_elide(&p.name, w, theme::size::DISPLAY, 1);
-        self.roles_c = cstr_elide(&p.roles, w, theme::size::LABEL, 0);
+        self.name_c = cstr_elide(&p.name, w, theme::size::DISPLAY, 1, measure);
+        self.roles_c = cstr_elide(&p.roles, w, theme::size::LABEL, 0, measure);
 
         let mut life: Vec<String> = Vec::new();
         let born = crate::ui::fmt::pretty_date(&p.born, 0);
@@ -782,7 +794,7 @@ impl PersonScreen {
         if !died.is_empty() {
             life.push(format!("Died {died}"));
         }
-        self.life_c = cstr_elide(&life.join(" \u{b7} "), w, theme::size::CAPTION, 0);
+        self.life_c = cstr_elide(&life.join(" \u{b7} "), w, theme::size::CAPTION, 0, measure);
 
         for k in 0..NSHELF {
             self.shelf_count_c[k] = match p.total(k) {
@@ -796,14 +808,15 @@ impl PersonScreen {
         };
     }
 
-    fn remeasure_header(&mut self, p: &Person) {
-        self.refresh_runs(p);
+    fn remeasure_header(&mut self, p: &Person, measure: &dyn Measure) {
+        self.refresh_runs(p, measure);
         self.header = header_flow(
             crate::person::facts_pending(p),
             &p.bio,
             &self.roles_c,
             &self.life_c,
             has_entry(p),
+            measure,
         );
         self.header_dirty = false;
     }
@@ -913,16 +926,18 @@ impl PersonScreen {
         })
     }
 
-    fn tick<H: ContentLike>(&mut self, dt: f32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn tick<H: ContentLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let dt = t.dt();
         let cur = cx.focus.current.map(|k| k.elem);
         let Some(p) = self.person() else {
-            self.spin_ms += dt * 1000.0;
+            // Nothing is drawn while `person()` is `None` (`Screen::draw` returns before touching
+            // the skeleton), so there is nothing on screen for the clock to animate — freeze
+            // rather than advance-and-report for no visible reason.
             return;
         };
         if self.header_dirty {
-            self.remeasure_header(p);
+            self.remeasure_header(p, cx.measure);
         }
-        self.spin_ms += dt * 1000.0;
 
         let focused_movie = self.focused_movie_in(p, cur);
         let k = amb_target(p, focused_movie);
@@ -950,7 +965,10 @@ impl PersonScreen {
 
         let settling =
             (self.scroll.scroll.pos - want).abs() > 0.25 || self.scroll.scroll.vel.abs() > 0.5;
-        if crate::person::facts_pending(p) || crate::person::loading() || settling {
+        if crate::person::facts_pending(p) || crate::person::loading() {
+            self.spin_ms = self.spin_phase.advance(t, &mut fx.present());
+        }
+        if settling {
             fx.note(PresentEvent::Motion);
         }
     }
@@ -1063,12 +1081,13 @@ impl PersonScreen {
             &SHELF_STYLE,
             item.resume_frac(),
             &label,
+            f.measure,
         );
     }
 
     // ---- draw ----
 
-    fn draw_header(&self, p: Painter, person: &Person, focus_elem: Option<u32>) {
+    fn draw_header(&self, p: Painter, person: &Person, focus_elem: Option<u32>, measure: &dyn crate::ui::machine::Measure) {
         let flow = self.header;
         let d = flow.exp_d;
         let portrait = Rect::new(MARGIN_X, flow.portrait_y, d, d);
@@ -1096,7 +1115,7 @@ impl PersonScreen {
                 let bio = bio_view(&person.bio, 1.0);
                 let bh = bio.measure_h(BIO_W);
                 let ink =
-                    bio.last_line_cap_y(by, bh) - by + crate::text::cap_h(theme::size::BODY, 0);
+                    bio.last_line_cap_y(by, bh) - by + measure.cap_h(theme::size::BODY);
                 Rect::new(
                     col_x_ - HL_PAD_X,
                     by - HL_PAD_Y,
@@ -1125,7 +1144,7 @@ impl PersonScreen {
         ] {
             let Some(y) = y else { continue };
             if pending {
-                let h = crate::text::cap_h(sz, 0);
+                let h = measure.cap_h(sz);
                 crate::ui::widgets::skeleton_bar(p, Rect::new(col_x_, y, BIO_W * w, h), phase);
             } else {
                 Label::new(run.as_ptr(), sz, theme::TEXT_SECONDARY)
@@ -1135,7 +1154,7 @@ impl PersonScreen {
         }
         if pending {
             if let Some(by) = flow.bio_y {
-                let h = crate::text::cap_h(theme::size::BODY, 0);
+                let h = measure.cap_h(theme::size::BODY);
                 for (i, w) in [1.0, 1.0, 0.58].into_iter().enumerate() {
                     let ly = by + i as f32 * BIO_LEAD;
                     crate::ui::widgets::skeleton_bar(p, Rect::new(col_x_, ly, BIO_W * w, h), phase);
@@ -1168,7 +1187,7 @@ impl PersonScreen {
         }
     }
 
-    fn draw_shelf(&self, p: Painter, _env: &Env, person: &Person, kind: usize, focused: bool) {
+    fn draw_shelf(&self, p: Painter, _env: &Env, person: &Person, kind: usize, focused: bool, measure: &dyn crate::ui::machine::Measure) {
         let items = person.shelf(kind);
         let row = &self.shelves[kind];
         let cur_col = if focused { row.focus() } else { -1 };
@@ -1182,7 +1201,7 @@ impl PersonScreen {
         .v(VAlign::CapTop)
         .draw(p, Rect::new(MARGIN_X, hy, SCR_W, 0.0));
         if !self.shelf_count_c[kind].as_bytes().is_empty() {
-            let tw = crate::text::text_width(SHELF_TITLE[kind].as_ptr(), theme::size::HEADLINE, 1);
+            let tw = measure.width(SHELF_TITLE[kind], theme::size::HEADLINE, true);
             Label::new(
                 self.shelf_count_c[kind].as_ptr(),
                 theme::size::CAPTION,
@@ -1195,7 +1214,7 @@ impl PersonScreen {
                     MARGIN_X + tw + SHELF_COUNT_GAP,
                     hy,
                     0.0,
-                    crate::text::cap_h(theme::size::HEADLINE, 1),
+                    measure.cap_h(theme::size::HEADLINE),
                 ),
             );
         }
@@ -1217,6 +1236,7 @@ impl PersonScreen {
                 None => card_row::TileLabel::default(),
             },
             |_, _, _, _| {},
+            measure,
         );
     }
 
@@ -1314,14 +1334,19 @@ const SHELF_TITLE: [&std::ffi::CStr; NSHELF] = [c"Movies", c"Shows"];
 
 /// The Filmography entry pill's width, sized to its own runs.
 fn entry_w(_p: &Person, entry_count_c: &std::ffi::CStr) -> f32 {
-    let label = crate::text::text_width(c"Filmography".as_ptr(), theme::size::LABEL, 1);
+    // Reached from both the draw path and focus-placement geometry (`entry_rect`, answered from
+    // `Focusable::place`, which is not always given a fresh `Cx` at every call site) — the same
+    // "pure geometry helper" shape `header_flow`'s doc names, so this goes through `TtfMeasure`
+    // directly rather than inventing a parameter for callers that may not have one to hand.
+    let m = crate::text::TtfMeasure;
+    let label = m.width(c"Filmography", theme::size::LABEL, true);
     let count = if entry_count_c.to_bytes().is_empty() {
         0.0
     } else {
         ENTRY_RUN_GAP
-            + crate::text::text_width(c"\u{b7}".as_ptr(), theme::size::LABEL, 0)
+            + m.width(c"\u{b7}", theme::size::LABEL, false)
             + ENTRY_RUN_GAP
-            + crate::text::text_width(entry_count_c.as_ptr(), theme::size::LABEL, 0)
+            + m.width(entry_count_c, theme::size::LABEL, false)
     };
     2.0 * ENTRY_OUTER_PAD + label + count + ENTRY_CHEVRON_GAP + ENTRY_MARK
         - ENTRY_MARK_BEARING_L
@@ -1558,7 +1583,7 @@ impl<H: ContentLike> Machine<H> for PersonScreen {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                self.tick(t.dt(), cx, fx);
+                self.tick(*t, cx, fx);
                 Handled::Yes
             }
             ScreenEvent::Enter(Enter::Restored) => {
@@ -1682,7 +1707,7 @@ impl<H: ContentLike> Screen<H> for PersonScreen {
         self.amb.draw(p, Rect::FULL);
         let col = self.scroll;
         let live = self.live_flow(person, cur);
-        col.draw(&live, &env, p);
+        col.draw(&live, &env, p, f.measure);
         self.draw_shelf_state(p, &env, person);
 
         self.record_stops(f, person, cur);
@@ -1910,6 +1935,50 @@ mod tests {
         s.shelf_key(s.person().unwrap(), kind, col)
     }
 
+    /// **The frozen-animator regression class, closed for the header skeleton's spinner (phase 12
+    /// D4).** `spin_ms` used to be a raw `+= dt` accumulator with a separate, easy-to-forget
+    /// `fx.note(Motion)` a few lines below it. Now it is `motion::Phase`, which reports from
+    /// inside its own `advance`. A screen fresh off `PersonScreen::new` (no `install_for_test`,
+    /// unlike `seed`) has `person()` answering `Some` with `profiled`/`profile_tried` both false —
+    /// `facts_pending` — which is exactly the header-skeleton state the spinner animates, so this
+    /// drives it through the real `Machine::step` `Tick` path.
+    #[test]
+    fn the_header_skeleton_spinner_reports_motion_while_facts_are_pending() {
+        let _serial = crate::testlock::serial();
+        let mut s = PersonScreen::new(
+            EntryId(0),
+            ServerId::UNSET,
+            "161".to_string(),
+            "5d77682aeb5d26001f1de4b0".to_string(),
+            "Idina Menzel".to_string(),
+            String::new(),
+        );
+        let p = crate::person::current().expect("Open seeds a pending Person synchronously");
+        assert!(
+            crate::person::facts_pending(p),
+            "a fresh mount must start pending, or this test is not exercising the skeleton clock"
+        );
+        let m = FixtureMeasure;
+        let cxv = cx(&m);
+        let mut present = crate::ui::present::Present::new();
+        let _ = present.take(0);
+        let mut buf: Vec<crate::ui::machine::Stamped<PersonHost>> = Vec::new();
+        for ms in [16, 32, 48] {
+            let mut fx = Effects::new(
+                &mut buf,
+                crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(0)),
+                &mut present,
+            );
+            let ev = ScreenEvent::Tick(Tick { ms, dt_us: 16_667 });
+            Machine::<PersonHost>::step(&mut s, &ev, &cxv, &mut fx);
+            assert!(
+                present.take(ms),
+                "a pending header skeleton must present every frame it is on screen (ms={ms})"
+            );
+        }
+        crate::stores::person::apply(PersonCmd::Close);
+    }
+
     /// **The mount-on-entry-pill rule's PENDING half** (module doc, point 2 of `ui/person.rs`'s
     /// own doc): with no filmography answered yet but a guid to ask plex.tv with,
     /// `entry_reachable_of` holds the entry group open even though `has_entry_of` is false — which
@@ -1947,7 +2016,7 @@ mod tests {
             "falls to the first present shelf's own head"
         );
         let _ = &mut s;
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     /// **`focused_item`/`focused_target` split** — mining `ui/person.rs`'s own regression: the
@@ -1980,7 +2049,7 @@ mod tests {
             Some("m1")
         );
         let _ = &mut s;
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     /// A shelf that has vanished under the focus re-seats by IDENTITY first (the merge-redivide
@@ -2013,7 +2082,7 @@ mod tests {
         let got = Focusable::<PersonHost>::reconcile(&s, want, &cx(&m));
         assert_eq!(got, focus_of(&s, 0, 0));
         let _ = &mut s;
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     /// A shelf that disappears ENTIRELY (not merely shrinks) hands focus to the other present
@@ -2032,7 +2101,7 @@ mod tests {
             "movies is the only present shelf left"
         );
         let _ = &mut s;
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     /// **Header pending vs answered-with-nothing vs answered-fully** — `header_flow`'s three
@@ -2040,14 +2109,15 @@ mod tests {
     /// optional… a header line is drawn only when it has content").
     #[test]
     fn header_flow_distinguishes_pending_from_answered_empty_from_answered_full() {
+        let m = FixtureMeasure;
         let empty = std::ffi::CString::default();
         // answered, with nothing: no reserved space for the meta/life/bio lines at all.
-        let flow = header_flow(false, "", &empty, &empty, false);
+        let flow = header_flow(false, "", &empty, &empty, false, &m);
         assert!(flow.meta_y.is_none() && flow.life_y.is_none() && flow.bio_y.is_none());
 
         // pending: not yet asked at all — reserves the full placeholder stack even though every
         // cached run is still empty.
-        let pending_flow = header_flow(true, "", &empty, &empty, false);
+        let pending_flow = header_flow(true, "", &empty, &empty, false, &m);
         assert!(
             pending_flow.meta_y.is_some()
                 && pending_flow.life_y.is_some()
@@ -2060,7 +2130,7 @@ mod tests {
 
         // answered, WITH content: the runs actually drive the reserved space.
         let roles = std::ffi::CString::new("Actor").unwrap();
-        let full_flow = header_flow(false, "", &roles, &empty, false);
+        let full_flow = header_flow(false, "", &roles, &empty, false, &m);
         assert!(full_flow.meta_y.is_some());
         assert!(full_flow.life_y.is_none(), "no life facts were given");
     }
@@ -2109,7 +2179,7 @@ mod tests {
             }))
             .is_none());
         let _ = &s;
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     /// `PressCommit` leaves immediately through the content contract; there is no pending latch.
@@ -2154,7 +2224,7 @@ mod tests {
             crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Detail { sid, rk })))
                 if *sid == ServerId::UNSET && rk == "m0"
         )));
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     /// An explicit D-pad/pointer arrival on the header marks it (the bio truncation mark may show
@@ -2206,7 +2276,7 @@ mod tests {
             s.header_marked,
             "an explicit D-pad press onto the header marks it"
         );
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     fn hash(s: &PersonScreen) -> u64 {
@@ -2250,7 +2320,7 @@ mod tests {
             "return hydration changes future reconciliation even when the page draws identically"
         );
         let _ = &mut a;
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     /// Entry eviction preserves the identity interner in PageMemory. A reordered landing after
@@ -2293,7 +2363,7 @@ mod tests {
                 .map(|m| m.rk.as_str()),
             Some("m1")
         );
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     #[test]
@@ -2316,7 +2386,7 @@ mod tests {
             "request-time memory merges into a live interner instead of replacing it"
         );
         assert_eq!(screen.next_card_elem, live_next);
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     fn pending_share_return(
@@ -2349,7 +2419,7 @@ mod tests {
             panic!("Person must persist its interner through PageMemory::Person");
         };
 
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
         let mut returned = PersonScreen::new(
             EntryId(0),
             origin,
@@ -2436,7 +2506,7 @@ mod tests {
             focus_of(&returned, 0, 0),
             "the same frame's dispatcher reconcile can seat the available card"
         );
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
         crate::plex::reset_servers_for_test();
     }
 
@@ -2472,7 +2542,7 @@ mod tests {
             Handled::No
         );
         assert!(!returned.return_pending);
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
         crate::plex::reset_servers_for_test();
     }
 
@@ -2503,7 +2573,7 @@ mod tests {
             Focusable::<PersonHost>::reconcile(&returned, old_focus, &cx_at(&measure, old_focus)),
             focus_of(&returned, 0, 0)
         );
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
         crate::plex::reset_servers_for_test();
     }
 
@@ -2648,7 +2718,7 @@ mod tests {
             Some("m1"),
             "the reordered landing resolves the preserved identity"
         );
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
         crate::plex::reset_servers_for_test();
     }
 
@@ -2681,7 +2751,7 @@ mod tests {
             panic!("Person must persist its interner through PageMemory::Person");
         };
 
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
         let mut remounted = PersonScreen::new(
             EntryId(0),
             sid,
@@ -2740,7 +2810,7 @@ mod tests {
                 .map(|movie| movie.rk.as_str()),
             Some("m1")
         );
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
         crate::plex::reset_servers_for_test();
     }
 
@@ -2789,7 +2859,7 @@ mod tests {
             before_gen
         );
         assert_eq!(first.scroll.scroll.pos, 173.0);
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     #[test]
@@ -2861,7 +2931,7 @@ mod tests {
             &st.fx,
             crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Back))
         )));
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     #[test]
@@ -2885,7 +2955,7 @@ mod tests {
             (hit.x, hit.y, hit.w, hit.h),
             "place and the recorded stop share the hit geometry"
         );
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     #[test]
@@ -2909,7 +2979,7 @@ mod tests {
         assert!(links.iter().any(|link| {
             link.from == ENTRY_GROUP && link.dir == Dir::Down && link.to == SHELF_GROUP[0]
         }));
-        crate::person::close();
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 
     #[test]

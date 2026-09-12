@@ -157,9 +157,10 @@ mod tests {
     impl Drop for Reset {
         fn drop(&mut self) {
             reset_for_test();
-            crate::browse::reset();
+            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
-            crate::plex::session::set_current(None);
+            crate::plex::session::publish_profile_for_test(None,
+                crate::plex::session::current_gen().wrapping_add(1));
         }
     }
 
@@ -284,7 +285,7 @@ mod tests {
             crate::plex::register_for_test("replacement", "127.0.0.1", 3, "replacement", "scope");
         let other = crate::plex::register_for_test("other", "127.0.0.1", 4, "other", "scope");
         assert_ne!(old_share, replacement);
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         let next = snapshot();
 
         assert_eq!(old.sources().len(), 2);

@@ -30,15 +30,15 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
     crate::browse::seed_items_for_test(120);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+    frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
-    frame(&mut d, &mut rig, Route::Library, tick(1), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(1), vec![]);
     Bridge::library_command(
         &mut d,
         crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 },
     );
     for i in 2..80 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let entry = d.nav.top_page().unwrap().id;
     let id = rig.listing.view().id().unwrap();
@@ -60,8 +60,8 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
             }),
         )),
     );
-    d.request(MachineId::Nav, NavOp::Root(AppArg::Legacy(Route::Home)));
-    frame(&mut d, &mut rig, Route::Home, tick(80), vec![]);
+    d.request(MachineId::Nav, NavOp::Root(AppArg::Home));
+    frame(&mut d, &mut rig, AppArg::Home, tick(80), vec![]);
     assert!(d.nav.entry(entry).is_none());
     let snapshot = crate::stores::browse::listing_snapshot();
     assert_ne!(snapshot.view().id().unwrap().query, id.query);
@@ -70,11 +70,11 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
         "the carried WillLeave save must not overwrite the new query with an old deep bookmark: {:?}", snapshot.view().cursor());
     rig.enter_library(crate::browse::SecKind::Movie);
     for i in 81..86 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     crate::browse::seed_items_for_test(120);
     for i in 86..166 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let new_entry = d.nav.top_page().unwrap().id;
     assert_ne!(entry, new_entry);
@@ -90,11 +90,11 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
             })),
         ),
     );
-    frame(&mut d, &mut rig, Route::Library, tick(166), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(166), vec![]);
     frame(
         &mut d,
         &mut rig,
-        Route::Library,
+        AppArg::Library,
         tick(167),
         script_key(Key::Down, tick(167)),
     );
@@ -131,13 +131,13 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
     crate::browse::seed_items_for_test(120);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    frame(&mut d, &mut rig, Route::Library, tick(0), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     Bridge::library_command(
         &mut d,
         crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 },
     );
     for i in 1..80 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let entry = d.nav.top_page().unwrap().id;
     let instance = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
@@ -162,11 +162,11 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
             })),
         ),
     );
-    frame(&mut d, &mut rig, Route::Library, tick(80), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(80), vec![]);
     frame(
         &mut d,
         &mut rig,
-        Route::Library,
+        AppArg::Library,
         tick(81),
         script_key(Key::Right, tick(81)),
     );
@@ -187,12 +187,12 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
     frame(
         &mut d,
         &mut rig,
-        Route::Library,
+        AppArg::Library,
         tick(82),
         script_key(Key::Ok, tick(82)),
     );
     for i in 83..106 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let requests = rig.take_library_reqs();
     let evidence = format!(
@@ -226,7 +226,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         )),
     );
     for i in 106..140 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let menu_focus = d.focus().unwrap();
     assert_ne!(menu_focus.entry, entry);
@@ -234,13 +234,13 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
     frame(
         &mut d,
         &mut rig,
-        Route::Library,
+        AppArg::Library,
         tick(140),
         script_key(Key::Ok, tick(140)),
     );
     let mut landed_at = None;
     for i in 141..190 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
         if rig.listing.view().id().unwrap().query != query {
             landed_at = Some(i);
             break;
@@ -249,7 +249,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
     let landed_at = landed_at.expect("the actual Filter edit must commit its new query");
     crate::browse::seed_items_for_test(120);
     for i in landed_at + 1..landed_at + 6 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     assert_eq!(
         d.focus(),
@@ -289,18 +289,18 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
     frame(
         &mut d,
         &mut rig,
-        Route::Library,
+        AppArg::Library,
         tick(210),
         script_key(Key::Back, tick(210)),
     );
     for i in 211..290 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     assert_eq!(d.focus(), Some(toolbar));
     frame(
         &mut d,
         &mut rig,
-        Route::Library,
+        AppArg::Library,
         tick(290),
         script_key(Key::Down, tick(290)),
     );

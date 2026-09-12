@@ -85,15 +85,16 @@ use std::borrow::Cow;
 use crate::metadata::AltCopy;
 use crate::plex::ServerId;
 use crate::screens::registry::{AppLike, AppMsg, ContentArg, PageMemory};
-use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
+use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::frame::Budget;
 use crate::ui::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind,
     InstanceId, Key, LogicalState, Machine, MachineId, NavOp,
 };
 use crate::ui::screen::{
-    At, Dir, DrawFrame, FocusSource, Focusable, GroupSpec, HitSource, Placed, RenderStrategy,
-    Screen, ScreenEvent, Scrim, Step,
+    Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, FocusSource, Focusable, GroupKind,
+    GroupSpec, Hover, HitSource, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step,
+    Stop,
 };
 use crate::ui::table::{Badge, Row, Section, TableView};
 use crate::ui::widgets::{Glass, GlassState};
@@ -412,10 +413,15 @@ impl AltSourcesScreen {
         fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
     }
 
-    /// Commit the highlighted row and close. The row you are ALREADY on reports nothing — there is
-    /// nowhere to navigate to, and the tick has already answered the question the press was asking.
-    fn commit<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
-        let action = action_at(&self.rows, self.table.sel, self.arg.sid, &self.arg.rk);
+    /// Commit row `elem` and close. The row you are ALREADY on reports nothing — there is nowhere
+    /// to navigate to, and the tick has already answered the question the press was asking.
+    ///
+    /// Takes the elem directly rather than reading `self.table.sel`: the engine's OK arm reads it
+    /// off the current focus key and a pointer click's `Activate` names the STOP that was clicked,
+    /// which need not be the row the cursor was already resting on — the same distinction
+    /// `AccountMenuScreen::activate` draws.
+    fn commit<H: AppLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
+        let action = action_at(&self.rows, elem as i32, self.arg.sid, &self.arg.rk);
         self.dismiss(fx);
         if let Action::Open { sid, rk } = action {
             // The PAGE navigates. This surface names the destination and nothing else — the
@@ -433,7 +439,7 @@ impl AltSourcesScreen {
 
 impl<H: AppLike<Memory = PageMemory>> Machine<H> for AltSourcesScreen {
     type Ev = ScreenEvent<H>;
-    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+    fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             ScreenEvent::Mount | ScreenEvent::Enter(_) => {
                 self.refresh();
@@ -446,9 +452,44 @@ impl<H: AppLike<Memory = PageMemory>> Machine<H> for AltSourcesScreen {
                 Handled::Yes
             }
             ScreenEvent::Tick(tick) => {
+                // Re-derive the drawn selection from the engine's own tracked focus every tick,
+                // exactly as `AccountMenuScreen::step` does — `FocusMoved` already keeps the two
+                // in step, this is the belt to its suspenders for a focus change this screen was
+                // not told about directly (a remembered-cursor seat on `Enter`, say).
+                self.table.sel = cx
+                    .focus
+                    .current
+                    .filter(|key| key.entry == self.entry)
+                    .map(|key| key.elem as i32)
+                    .unwrap_or(self.table.sel);
                 self.table.update(tick.dt(), self.frame().h);
                 Handled::Yes
             }
+            ScreenEvent::FocusMoved { to, .. } => {
+                self.table.sel = to.elem as i32;
+                fx.invalidate(crate::ui::present::Provenance::Input);
+                Handled::Yes
+            }
+            // The engine's OK arm, for a `Bare` element, delivers `Activate` directly rather than
+            // arming a hold — see `Focusable::groups` below. A pointer click on a registered row
+            // stop reaches the same arm through the hit map's own `Activate::Immediate` policy.
+            ScreenEvent::Activate(elem) => {
+                self.commit(*elem, fx);
+                Handled::Yes
+            }
+            ScreenEvent::PressCommit(_) => {
+                if let Some(key) = cx.focus.current {
+                    self.commit(key.elem, fx);
+                }
+                Handled::Yes
+            }
+            // UP/DOWN, OK and the pointer are no longer read here at all — the engine's own
+            // direction/OK/hit-map machinery drives them through `Focusable` and the arms above,
+            // exactly as it does for every other Engine screen (`AccountMenuScreen` is the
+            // worked example this module follows). A click BESIDE every registered row stop is a
+            // HIT-MAP MISS, and `Style::Compact`'s `on_miss` (`OnMiss::Dismiss`) is what closes
+            // the panel — the same "click outside a popover dismisses it" rule this arm used to
+            // implement by hand against raw pointer coordinates.
             ScreenEvent::Input(input) => match input.kind {
                 InputKind::Key {
                     key: Key::Back,
@@ -458,49 +499,6 @@ impl<H: AppLike<Memory = PageMemory>> Machine<H> for AltSourcesScreen {
                     self.dismiss(fx);
                     Handled::Yes
                 }
-                InputKind::Key {
-                    key: Key::Ok,
-                    edge: Edge::Down,
-                    ..
-                } => {
-                    self.commit(fx);
-                    Handled::Yes
-                }
-                InputKind::Key {
-                    sym,
-                    edge: Edge::Down | Edge::Repeat,
-                    ..
-                } => {
-                    let sym = sym as u32;
-                    if sym == SDLK_UP {
-                        self.table.move_sel(-1);
-                    } else if sym == SDLK_DOWN {
-                        self.table.move_sel(1);
-                    }
-                    fx.invalidate(crate::ui::present::Provenance::Input);
-                    Handled::Yes
-                }
-                // **An open panel owns the pointer.** The dispatcher hands a `Click`/`Pointer` to
-                // the owner whatever its `hit_source()` is, which is what lets a `HitSource::Legacy`
-                // surface answer for its own geometry — and a click BESIDE the list dismisses,
-                // which is what a click outside a popover means everywhere in this app.
-                InputKind::Pointer { x, y, .. } => {
-                    if let Some(gi) = self.table.hit_row(self.frame(), x, y) {
-                        self.table.sel = gi;
-                        fx.invalidate(crate::ui::present::Provenance::Input);
-                    }
-                    Handled::Yes
-                }
-                InputKind::Click { x, y, .. } => {
-                    match self.table.hit_row(self.frame(), x, y) {
-                        Some(gi) => {
-                            self.table.sel = gi;
-                            self.commit(fx);
-                        }
-                        None => self.dismiss(fx),
-                    }
-                    Handled::Yes
-                }
                 _ => Handled::No,
             },
             _ => Handled::No,
@@ -508,27 +506,65 @@ impl<H: AppLike<Memory = PageMemory>> Machine<H> for AltSourcesScreen {
     }
 }
 
-/// This panel keeps its own cursor (a `TableView`'s row), exactly as the player's four overlays do:
-/// phase 10 moves its state onto an instance, not its focus model. `FocusSource::Legacy` /
-/// `HitSource::Legacy` is therefore the honest answer, and this impl is inert.
+/// **A single-column `Focusable` over the table's own cursor** (phase 12, D2) — the same shape
+/// `AccountMenuScreen::groups` uses for its own `TableView`: one `GroupKind::Column` of
+/// `self.rows.len()` `Bare` elements (OK/click activates on the down edge, never arms a hold —
+/// there is nothing here to hold), `EdgeRule::Stop` on every side since this is a standalone
+/// surface with no page to escape onto, and `place`/`neighbour` read straight off `TableView`'s
+/// own row geometry (`row_frame`, `next_selectable`) rather than a second copy of it.
 impl<H: AppLike<Memory = PageMemory>> Focusable<H> for AltSourcesScreen {
-    fn groups(&self, _cx: &Cx<'_, H>, _out: &mut Vec<GroupSpec>) {}
-    fn group_of(&self, _key: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        None
+    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        out.push(GroupSpec {
+            id: GroupId(0),
+            kind: GroupKind::Column,
+            seat: Seat::Remembered,
+            reachable: AxisMask::BOTH,
+            edge: [EdgeRule::Stop; 4],
+            extent: self.frame(),
+            len: self.rows.len(),
+            elem: ElemKind::Bare,
+        });
     }
-    fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
-        Step::Edge
+    fn group_of(&self, elem: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        ((*elem as usize) < self.rows.len()).then_some(GroupId(0))
     }
-    fn place(&self, _key: &u32, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        None
+    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
+        let next = match dir {
+            Dir::Up => self.table.next_selectable(key.elem as i32, -1),
+            Dir::Down => self.table.next_selectable(key.elem as i32, 1),
+            _ => None,
+        };
+        match next {
+            Some(i) => Step::Move(FocusKey {
+                entry: self.entry,
+                elem: i as u32,
+            }),
+            None => Step::Edge,
+        }
     }
-    fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, H>) -> FocusKey<u32> {
-        want
+    fn place(&self, elem: &u32, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+        let rect = self.table.row_frame(self.frame(), *elem as i32)?;
+        Some(Placed {
+            rect,
+            rest_rect: rect,
+            clip: self.frame(),
+            index: Some(*elem),
+        })
+    }
+    fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if self.group_of(&want.elem, cx).is_some() {
+            want
+        } else {
+            FocusKey {
+                entry: self.entry,
+                elem: 0,
+            }
+        }
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<u32> {
         FocusKey {
             entry: self.entry,
-            elem: 0,
+            elem: self.table.sel.max(0) as u32,
         }
     }
 }
@@ -591,21 +627,47 @@ impl<H: AppLike<Memory = PageMemory>> Screen<H> for AltSourcesScreen {
         let appear = f.page_alpha;
         let r = self.frame();
         let p = f.painter.alpha(appear).translate(0.0, RISE * (1.0 - appear));
+        let measure = f.measure;
         // Named for `/tmp/plxnative-cpuprof` beside the page's own phases, so a slow frame while
         // this panel is up can be read as the PANEL or as the host under it.
         crate::ui::profile::phase("dt.alt", || {
             Glass::CACHED.panel(p, r, RISE * (1.0 - appear), PANEL_RAD);
-            self.table.draw(p, r);
+            self.table.draw(p, r, measure);
         });
+        // The hit map's stops are registered against the SETTLED geometry (`self.frame()`, what
+        // `Focusable::place` answers) rather than the transient slide `p` draws with — at rest
+        // (`appear == 1`) the two coincide exactly (`RISE * (1.0 - appear)` is 0), and only during
+        // the open/close fade would they differ; `ui/hit.rs`'s own module doc already carries the
+        // wider version of this gap (no container feeds a fading surface's alpha into the map
+        // yet), so this keeps the one known edge rather than inventing a second.
+        let hit_p = f.painter.alpha(appear);
+        for elem in 0..self.rows.len() as u32 {
+            if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
+                f.stop(
+                    hit_p,
+                    Stop {
+                        key: FocusKey {
+                            entry: self.entry,
+                            elem,
+                        },
+                        rect: placed.rect,
+                        rest_rect: placed.rest_rect,
+                        clip: placed.clip,
+                        hover: Hover::Focus,
+                        activate: Activate::Immediate,
+                    },
+                );
+            }
+        }
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
     }
     fn focus_source(&self) -> FocusSource {
-        FocusSource::Legacy
+        FocusSource::Engine
     }
     fn hit_source(&self) -> HitSource {
-        HitSource::Legacy
+        HitSource::Engine
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)

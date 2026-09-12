@@ -206,7 +206,13 @@ pub trait Rig<H: Host> {
         super::screen::NavPresentation { page_alpha: self.page_alpha(), ..Default::default() }
     }
     /// Shared chrome draws after its page and before surfaces, using a captured vocabulary.
-    fn draw_chrome(&mut self, _arg: &H::Arg, _parts: &CxParts<H::Elem>, _nav: super::screen::NavPresentation) {}
+    fn draw_chrome(&mut self, _arg: &H::Arg, _parts: &CxParts<H::Elem>,
+        _nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>) {}
+    /// The captured shared-chrome publication this frame for a `Scrim::lift` that redraws part of
+    /// that bar over a surface's dim (spec phase 12, PX-WIDGETS; today's one caller is the account
+    /// menu's chip lift). [`scrim_lift_read`] combines this borrow with the material published by
+    /// the application-owned `GlassPlan`. `None` is correct for a rig with no such bar.
+    fn scrim_chrome_read(&self) -> Option<super::widgets::ChromeRead<'_>> { None }
     /// Coexistence adapter for a legacy overlay which freezes an owned host (phase 10 retirement).
     fn page_updates(&self) -> bool { true }
     /// The application lifts its legacy host-cache cull before drawing an owned surface.
@@ -226,6 +232,16 @@ pub trait Rig<H: Host> {
     /// BACK at the root of the root stack (§3.4): the application decides — the platform's Home
     /// on the television (`root_back_tests`); nothing, by default, in a fixture.
     fn back_at_root(&mut self) {}
+}
+
+pub(crate) fn scrim_lift_read<'a, H: Host>(
+    rig: &'a dyn Rig<H>,
+    glass: Option<&crate::ui::frame::glass::GlassPlan>,
+) -> super::screen::ScrimLiftRead<'a> {
+    super::screen::ScrimLiftRead {
+        chrome: rig.scrim_chrome_read(),
+        bar_material: glass.and_then(super::frame::glass::GlassPlan::tab_face),
+    }
 }
 
 pub struct Split<'a, H: Host> {
@@ -514,6 +530,20 @@ where
     /// The top page's instance id, if mounted.
     pub fn top_page(&self) -> Option<InstanceId> {
         self.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id)
+    }
+
+    /// **The top page's ARGUMENT** — "which page is on top", asked of the container rather than of
+    /// a mirror kept beside it (spec §15.2). It answers before the body is mounted, which
+    /// [`Self::top_screen`] cannot: an entry minted this frame has an argument and no instance
+    /// until the commit's `Mount` step has run.
+    pub fn top_arg(&self) -> Option<&H::Arg> {
+        self.nav.top_page().map(|e| &e.arg)
+    }
+
+    /// …and its `ScreenId`, the identity every argument of one screen shares.
+    pub fn top_id(&self) -> Option<super::machine::ScreenId> {
+        use super::screen::ScreenArg;
+        self.top_arg().map(|a| a.id())
     }
 
     /// The top page's screen, for a test to read.
@@ -1082,15 +1112,33 @@ where
             self.prepare_pass(rig, tick);
         }
         let mut report = FrameReport::default();
-        self.draw_with(rig, tick, &mut report, pages);
+        self.draw_with(rig, tick, &mut report, pages, None);
+        report
+    }
+
+    /// Product draw entry: the application-owned frame plan accompanies the rig so shared chrome
+    /// can mutate its tab-band render state without moving that state onto the rig.
+    pub fn draw_with_glass(
+        &mut self,
+        rig: &mut dyn Rig<H>,
+        glass: &mut super::frame::glass::GlassPlan,
+        pages: bool,
+    ) -> FrameReport {
+        let tick = self.last_tick;
+        if !self.prepared {
+            self.prepare_pass(rig, tick);
+        }
+        let mut report = FrameReport::default();
+        self.draw_with(rig, tick, &mut report, pages, Some(glass));
         report
     }
 
     fn draw_pass(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport) {
-        self.draw_with(rig, tick, report, true);
+        self.draw_with(rig, tick, report, true, None);
     }
 
-    fn draw_with(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport, pages: bool) {
+    fn draw_with(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport, pages: bool,
+        mut glass: Option<&mut super::frame::glass::GlassPlan>) {
         let strip_owner = self.owner_entry();
         let navigation = rig.navigation_presentation();
         let (_, host_render) = self.nav.modals.host_policy();
@@ -1137,7 +1185,7 @@ where
                         chrome_parts.owner = InputOwner::Entry(e.id);
                         chrome_parts.focus = input.engine.read(chrome_parts.owner);
                         drop(page_cx);
-                        rig.draw_chrome(&e.arg, &chrome_parts, navigation);
+                        rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut());
                     }
                 }
             }
@@ -1166,7 +1214,8 @@ where
             // page.
             {
                 let _scope = rig.surface_scope();
-                nav.modals.draw_scrims(navigation.page_alpha);
+                let read = scrim_lift_read(rig, glass.as_deref());
+                nav.modals.draw_scrims(navigation.page_alpha, read);
             }
         }
         if host_render == HostRender::Cached {

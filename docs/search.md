@@ -14,19 +14,28 @@ see §6.
 
 ### It is a peer, not a page
 
-`Route::Search` sits beside `Home` and `Library`, not on top of them (`rust-modules/src/app.rs`,
-the `Route` enum's `Search` arm and its doc comment). It is reached from the strip's last pill and
-BACK from it returns to Home, so it needs no `ui::trail` node — **what Search opens stacks; Search
-itself does not.** It wears the shared top tab bar (`route_wears_tab_bar`), which is what makes the
-Home↔Search transition a cross-fade of the *page* with the chrome held still, exactly like
-Home↔Library.
+`AppArg::Search` sits beside `Home` and `Library`, not on top of them
+(`rust-modules/src/screens/registry.rs`, the variant and its doc comment). It is reached from the
+strip's last pill and BACK from it returns to Home — all three navigate with `NavOp::Root`, so
+arriving at one unwinds whatever was above the root and **what Search opens stacks; Search itself
+does not.** It wears the shared top tab bar (`ScreenArg::chrome() == Chrome::TabBar`), which is what
+makes the Home↔Search transition a dip of the *page* with the chrome held still, exactly like
+Home↔Library. (Until restructure phase 12 this was an arm of an `enum Route`, and the app kept its
+own BACK history beside the container's in `ui/trail.rs`; D1 deleted both, and the peer rule above
+is what the trail's own doc had named as the divergence between them.)
 
-Two of the route's match sites are exhaustive and would have failed the build if an arm were
-missing. Thirteen are `_` catch-alls that would not, and three of those are worth knowing about
-because their default is silently wrong rather than loud: the draw dispatch ends
-`} else { home_draw() }`, the BACK arm ends `running = false`, and the heartbeat's route name ends
-`_ => "home"`. That last one is why the FPS scenes in §5 can key on `route=search` at all — without
-its arm every one of them would have graded Home and passed.
+**That an arm can be FORGOTTEN silently is the hazard this section was written around, and D1
+narrowed it rather than removing it.** While there was a `Route` enum, only two of its fifteen
+match sites were exhaustive; thirteen were `_` catch-alls whose default was wrong quietly rather
+than loudly — the draw dispatch ended `} else { home_draw() }`, the BACK arm ended
+`running = false`, and the heartbeat's route name ended `_ => "home"`, which is why the FPS scenes
+in §5 could have graded Home and passed. Those dispatch sites are the container's now: the page on
+top draws itself, takes its own keys and answers its own `Screen::name`, so a missing arm is a page
+that does not exist rather than a page silently answering as Home. What remains to be got right by
+hand is the WORD TABLE — `app::words::route_word` is exhaustive over `AppArg` (a new page variant
+is a compile error there), and `app::words::heartbeat_word_tests` derives the route and overlay
+tables rather than transcribing them, because a word the app cannot print reads on the television
+as "0 post-warmup samples", which is indistinguishable from a real regression.
 
 ### The pill goes LAST
 
@@ -41,7 +50,9 @@ is resolved later.
 that, and the claim was the load-bearing half. Store a `Pill` (`Pill::Section` carries a
 `browse::SecKind`) and resolve it on READ through `widgets::pill_of`, which answers `None` for a
 type that has no pill today. Every positional cursor in the app was converted for this: Search's own
-`STRIP`, `library::TAB_P`, Home's `HERO_PILL`, and `Nav::Home`'s pending focus.
+`STRIP`, `library::TAB_P`, Home's `HERO_PILL`, and the Home destination's pending focus (a
+`HomeCmd::FocusStrip` delivered when Home MOUNTS, since phase 12 folded `Nav`'s four variants into
+`app::bridge::nav_tab`).
 
 It is also the one pill that is a **mark instead of a word**, so it is square (60×60) and skips the
 label padding, inked through the same `TabPill::mixed_ink` the labels use so it travels under the
@@ -171,10 +182,11 @@ The owned path normalizes SDL and FIFO commits at ingress, before later edit key
 original timing/source, and the observed panel capability, and replay reuses that observation
 rather than probing its current platform.
 
-**Live cutover is finished.** `Route::Search` mounts `screens::search::SearchScreen`
+**Live cutover is finished.** `AppArg::Search` mounts `screens::search::SearchScreen`
 unconditionally — there is no `AppMounter::search_owned` flag any more, no legacy ingress/lifecycle
-ladder in `app/{nav,input,run}.rs` for it to coexist with, and no separate "contract reference"
-route: `screens/search` is both the production implementation and the thing its own tests grade.
+ladder in `app/{input,run}.rs` for it to coexist with (`app/nav.rs` itself is gone since D1), and no
+separate "contract reference" route: `screens/search` is both the production implementation and the
+thing its own tests grade.
 It consumes `AppViews.search`, keeps an unacknowledged draft, uses engine-owned focus groups and
 supplies query/profile-guarded entry restoration data. Only Search-store notices acknowledge a
 pending draft; an unrelated store notice cannot treat matching frozen text as confirmation of an

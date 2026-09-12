@@ -202,6 +202,36 @@ pub(crate) fn resolve_direct_server(
         .ok_or_else(|| format!("server slot {raw} is not registered"))
 }
 
+#[cfg(test)]
+mod direct_server_tests {
+    //! The direct-screen server rule, beside the function that decides it. It stood in
+    //! `app/mod.rs`'s `route_tests` — a module named for a concept D1 deleted — with a doc that
+    //! called it a "route-classification rule"; it never was one. Pure, parallel, no global.
+    use super::resolve_direct_server;
+
+    #[test]
+    fn an_explicit_direct_screen_server_never_falls_back_to_current() {
+        let current = crate::plex::ServerId::from_raw(0);
+        let secondary = crate::plex::ServerId::from_raw(1);
+        assert_eq!(
+            resolve_direct_server(None, current, |_| false),
+            Ok(current),
+            "an absent selector preserves the historical current-server contract"
+        );
+        assert_eq!(
+            resolve_direct_server(Some(Ok(1)), current, |sid| sid == secondary),
+            Ok(secondary)
+        );
+        let missing = resolve_direct_server(Some(Ok(2)), current, |sid| sid == secondary)
+            .expect_err("an explicit missing slot must not become current");
+        assert!(missing.contains("slot 2"), "{missing}");
+        assert_eq!(
+            resolve_direct_server(Some(Err("bad selector".into())), current, |_| true),
+            Err("bad selector".into())
+        );
+    }
+}
+
 pub(crate) fn direct_trigger_server() -> Result<crate::plex::ServerId, String> {
     resolve_direct_server(
         crate::dev::server_slot(),
@@ -219,102 +249,125 @@ pub(crate) enum BootTo {
     Profiles,
 }
 
-// Everything that has to happen when the server `plex::client()` answers with CHANGES —
-// whether because a new identity signed in or because the user walked into another source.
-// EVERY store below is keyed to whichever server was current when it was filled, and none
-// of them carries a server in its keys, so leaving one behind means server A's ratingKeys
-// being fetched from server B: the same catalog index opening a different film.
-pub(crate) fn activate_server() {
-    // the browse store must never carry the previous user's (or server's) cached grid,
-    // watched-state angles, or section tabs forward
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-    // …and the search store, for the same reason: a query, its results and the recent
-    // terms are all one person's.
-    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
-    // …and the hub twin: a FAILED fetch now keeps the catalog it already had (so one
-    // wifi hiccup can't blank a populated Home), which makes this the one place that
-    // must still wipe it — otherwise a profile switch whose fetch fails would leave the
-    // previous user's shelves on screen.
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
-    crate::stores::person::apply(crate::stores::person::PersonCmd::Reset); // ditto for an open person page's shelves
-                                                                           // …and any view-state write still queued or owed a refresh. It belongs to the account
-                                                                           // that pressed it, and the refresh it owes would land on shelves this reset just wiped.
-    crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
-    // Catalog activation is request-only. Home and section discovery both use their
-    // existing worker/mailbox pumps, so a remote endpoint cannot park the SDL loop here.
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs);
-    crate::stores::browse::discover_pump();
-    log("pms: catalog activation queued");
+/// Pure capture boundary shared by actual boot and owner bootstrap regression fixtures.
+pub(crate) fn captured_session_for_boot(saved: crate::plex::session::Session,
+    dev_primary: Option<crate::plex::session::ServerRef>,
+    extras: Vec<crate::plex::session::SourceRef>) -> crate::auth::SessionInit {
+    crate::auth::SessionInit::captured_boot(saved, dev_primary, extras)
 }
 
-// Install the PMS client (the read layer AND the playback path) as the CURRENT server,
-// then fetch the catalog. Used by the boot gate and again when a login resolves; a later
-// call for the same address just swaps the token (profile switch).
-// Takes an ORIGIN and not a `(host, port)` pair: the pair cannot say `https`, and the host
-// a certificate is issued for is the `plex.direct` NAME rather than the address behind it
-// (`plex::origin`). Discovery and persisted sessions may supply either scheme; the client
-// routes control and media requests through the matching transport.
+fn captured_dev_sources(servers: &[crate::dev::DevServer]) -> Vec<crate::plex::session::SourceRef> {
+    servers.iter().filter(|s| s.usable()).filter_map(|s| {
+        let origin = s.origin()?;
+        Some(crate::plex::session::SourceRef { machine_id: s.machine_id.clone(), name: s.name.clone(),
+            address: s.resolve_pin().map_or_else(|| s.host.clone(), |pin| pin.addr().to_string()),
+            port: s.port, origin_url: origin.base(), token: s.token.clone(),
+            shared_by: s.handle.clone(), owned: s.handle.is_empty(), tier: s.tier, ..Default::default() })
+    }).collect()
+}
+
+    // Everything that has to happen when the server `plex::client()` answers with CHANGES —
+    // whether because a new identity signed in or because the user walked into another source.
+    // EVERY store below is keyed to whichever server was current when it was filled, and none
+    // of them carries a server in its keys, so leaving one behind means server A's ratingKeys
+    // being fetched from server B: the same catalog index opening a different film.
+pub(crate) fn activate_server() -> crate::stores::EndpointRefreshSet {
+        // the browse store must never carry the previous user's (or server's) cached grid,
+        // watched-state angles, or section tabs forward
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        // …and the search store, for the same reason: a query, its results and the recent
+        // terms are all one person's.
+        crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+        // …and the hub twin: a FAILED fetch now keeps the catalog it already had (so one
+        // wifi hiccup can't blank a populated Home), which makes this the one place that
+        // must still wipe it — otherwise a profile switch whose fetch fails would leave the
+        // previous user's shelves on screen.
+        let _ = crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Reset); // ditto for an open person page's shelves
+                                // …and any view-state write still queued or owed a refresh. It belongs to the account
+                                // that pressed it, and the refresh it owes would land on shelves this reset just wiped.
+        crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
+        // Catalog activation is request-only. Home and section discovery both use their
+        // existing worker/mailbox pumps, so a remote endpoint cannot park the SDL loop here.
+        let mut endpoints = crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints;
+        endpoints.merge(crate::stores::browse::discover_pump());
+        log("pms: catalog activation queued");
+        endpoints
+}
+
+    // Install the PMS client (the read layer AND the playback path) as the CURRENT server,
+    // then fetch the catalog. Used by the boot gate and again when a login resolves; a later
+    // call for the same address just swaps the token (profile switch).
+    // Takes an ORIGIN and not a `(host, port)` pair: the pair cannot say `https`, and the host
+    // a certificate is issued for is the `plex.direct` NAME rather than the address behind it
+    // (`plex::origin`). Discovery and persisted sessions may supply either scheme; the client
+    // routes control and media requests through the matching transport.
 pub(crate) fn install_pms(
     origin: &crate::plex::Origin,
     token: &str,
     tier: Option<crate::plex::probe::Location>,
     pin: Option<&crate::plex::ResolvePin>,
-) {
-    crate::plex::install(origin, token, pin); // a (re)install is a login / profile switch
-                                              // `install` may re-point the slot by publishing a fresh Client, whose link starts
-                                              // unknown. Restore the persisted/raced winner only after that publication.
-    if let Some(link) = tier {
-        crate::plex::client().set_connection(link, crate::plex::IpVersion::of_host(origin.host()));
+    install: &crate::auth::owner::ReadyInstall,
+) -> crate::stores::EndpointRefreshSet {
+    if let crate::auth::owner::ReadyInstall::PrimaryAndExtras(extras) = install {
+        crate::auth::install_captured_registry(origin, token, tier, pin, extras, None);
     }
-    // Every additional server this boot was handed credentials for joins the REGISTRY
-    // beside it — the granted roster `browse` addresses its section table by. Registration
-    // is not activation: `install` above has already made the session's own server current,
-    // and `register` deliberately does not steal that, so a share appears as a source to
-    // browse rather than as a server the app has switched to.
-    //
-    // AFTER `install`, so slot 0 is always the session's own server and the roster reads in
-    // the order the Sources list wants to draw it. Registering here (rather than at the boot
-    // gate) also means a profile switch re-registers them, which is what keeps a share in
-    // the roster across a switch — and it must precede `activate_server`, whose refetch is
-    // what turns a newly registered source into shelves and section tabs.
-    for s in crate::dev::servers()
-        .unwrap_or_default()
-        .iter()
-        .filter(|s| s.usable())
-    {
-        // `usable()` IS `origin().is_some()`, so this `else` cannot be taken; it is a
-        // `continue` rather than an `expect` because an injected server has never been
-        // allowed to cost more than itself.
-        let Some(origin) = s.origin() else { continue };
-        let id = crate::plex::register_origin(
-            &s.machine_id,
-            &origin,
-            &s.token,
-            s.resolve_pin().as_ref(),
-        );
-        if let Some(tier) = s.tier {
-            // The endpoint may be a LAN conditioner in front of a Remote PMS.  Preserve
-            // the discovery fact the harness supplied; the private proxy address itself
-            // cannot prove Local, and an omitted tier deliberately proves nothing.
-            if let Some(client) = crate::plex::client_for(id) {
-                client.set_link(tier);
-            }
-        }
-        // the roster's own answer about this server: a handle means someone else's.
-        crate::plex::describe_server(id, &s.name, &s.handle, s.handle.is_empty());
-    }
-    activate_server();
+    // Dev activation already installed its captured primary/extras under the acknowledged
+    // owner permit. Never reinstall them or reread developer grants after that boundary.
+    activate_server()
 }
-
 /// Everything before the loop: SDL and the window, GL, text, the poster workers, the boot gate
 /// (login / token / session / picker), every dev trigger read once, and the `App` literal —
 /// `plex_run`'s former body up to `while app.running`, moved verbatim in phase 1b-ii. An early
 /// exit is the process exit code `plex_run` returns.
+///
+/// `mt`, THE main-thread token, is minted once by `plex_run` itself (`crate::task::MainThread::
+/// assume()` — that function IS the SDL main thread) and MOVES into `App.adapters.player` here,
+/// from where a `&mut PlayerAdapter` is the proof it is still held: the ACB/Starfish seam takes
+/// `&MainThread` (which is `!Send`, so `task::spawn` rejects any closure that captured one), and
+/// the native session slot takes the adapter itself. See `task::MainThread` and `player::adapter`.
 pub(crate) unsafe fn boot(
     pms_host: *const c_char,
     pms_port: c_int,
     mt: crate::task::MainThread,
+    preflight: super::bootstrap::Preflight,
 ) -> Result<App, c_int> {
+    let initial = match &preflight {
+        super::bootstrap::Preflight::Live => None,
+        super::bootstrap::Preflight::Record => {
+            let host = std::ffi::CStr::from_ptr(pms_host).to_string_lossy();
+            match super::bootstrap::Initial::capture_home(&host, pms_port) {
+                Ok(initial) => Some(initial),
+                Err(reason) => { log(&format!("rec: REFUSED — {reason}")); return Err(1); }
+            }
+        }
+        super::bootstrap::Preflight::Replay { initial, .. } => Some((initial.clone(), None)),
+    };
+    match initial {
+        Some((initial, deferred)) => App::from_init(initial, preflight, pms_host, pms_port, mt, deferred),
+        None => construct(pms_host, pms_port, mt, preflight, None, None),
+    }
+}
+
+pub(super) fn apply_deferred_capture(rec: &mut super::recorder::Recplay,
+    deferred: crate::plex::session::DeferredLoad) -> Result<(), &'static str> {
+    if let Err(reason) = deferred.apply() {
+        rec.abort_startup()?;
+        return Err(reason);
+    }
+    Ok(())
+}
+
+pub(crate) unsafe fn construct(
+    pms_host: *const c_char, pms_port: c_int, mt: crate::task::MainThread,
+    preflight: super::bootstrap::Preflight, initial: Option<super::bootstrap::Initial>,
+    deferred: Option<crate::plex::session::DeferredLoad>,
+) -> Result<App, c_int> {
+    let controlled = preflight.controlled();
+    if let Some(initial) = &initial {
+        initial.home.restore_boot(&mt).map_err(|_| 1)?;
+        crate::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| 1)?;
+    }
     SDL_SetMainReady();
     // DEAD END, measured 2026-07-31 — do not re-try this. The obvious answer to "a parked TV
     // should blank itself" is to stop inhibiting the platform screensaver here (and re-allow it
@@ -407,7 +460,7 @@ pub(crate) unsafe fn boot(
     // vsync on → the frame rate locks to the panel refresh. `/tmp/plxnative-novsync` uncaps it so the
     // FPS counter reports the TRUE GPU render rate (a diagnostic: if fps then jumps well past the
     // vsynced number, we were panel/refresh-bound, not GPU-bound).
-    SDL_GL_SetSwapInterval(if crate::dev::scenarios::novsync_armed() { 0 } else { 1 });
+    SDL_GL_SetSwapInterval(if !controlled && crate::dev::scenarios::novsync_armed() { 0 } else { 1 });
     {
         let r = glGetString(GL_RENDERER);
         let v = glGetString(GL_VERSION);
@@ -477,12 +530,19 @@ pub(crate) unsafe fn boot(
     // process that no longer exists and this is the first moment anything can send it. A record
     // queued during THIS session goes out at the next launch, or sooner if a consent change
     // flushes.
-    crate::telemetry::flush_soon();
+    if !preflight.controlled() { crate::telemetry::flush_soon(); }
 
     // NO token is compiled into this binary. PMS access comes from the signed-in session,
     // or — for automated runs only (the regression harness, headless captures) — from the
     // /tmp/plxnative-token dev trigger. The value is NEVER logged (only that one is in effect).
-    let dev_token = crate::dev::scenarios::dev_token();
+    let dev_token = match &initial {
+        Some(initial) => {
+            let crate::auth::owner::BootstrapAuthority::DevPms { primary, .. } = &initial.session.authority
+                else { unreachable!("preflight validated authority") };
+            primary.token.clone()
+        }
+        _ => crate::dev::scenarios::dev_token(),
+    };
     // dev: /tmp/plxnative-servers — credentials for a SECOND (third, …) server, so an automated
     // run can reach a friend's SHARED server beside the one above. A shared server is its own
     // authority: its own machineIdentifier, its own per-(user,server) access token, and a 401
@@ -501,7 +561,8 @@ pub(crate) unsafe fn boot(
     //
     // Tokens are never logged: `DevServer` has no `Debug`, and `describe()` prints all of it
     // except the token.
-    match crate::dev::servers() {
+    let dev_servers = if controlled { Ok(Vec::new()) } else { crate::dev::servers() };
+    match &dev_servers {
         Err(e) => log(&format!(
             "servers: /tmp/plxnative-servers IGNORED — not valid JSON: {e}"
         )),
@@ -541,8 +602,10 @@ pub(crate) unsafe fn boot(
     // `screens::profiles::TITLE`, the owned screen's own title. Worth remembering when the next
     // family is retired: what kept 1,250 dead lines in the tree was not a hard dependency but one
     // string constant nobody had moved, and it was invisible because the file still compiled.
-    super::adapters::poster::init();
-    crate::capture::init(); // dev live UI capture stream (no-op without /tmp/plxnative-capture)
+    if !preflight.controlled() {
+        super::adapters::poster::init();
+        crate::capture::init(); // dev live UI capture stream
+    }
 
     // Any dev trigger under /tmp marks the boot as automated (the harness token override,
     // autoplay/detail captures, playback-path knobs): those runs need a deterministic Home,
@@ -552,7 +615,7 @@ pub(crate) unsafe fn boot(
     // automation, live in `dev::any_trigger_present` — together with the `plxnative-anim.log`
     // bug that list was rewritten for. It is the one dev-trigger surface that names no file,
     // so it is also the one a release build had to be taught about explicitly.
-    let automated_boot = || crate::dev::any_trigger_present();
+    let automated_boot = || controlled || crate::dev::any_trigger_present();
 
     // Boot gate. Order matters:
     //  1. /tmp/plxnative-login forces the QR login screen (to exercise the flow on demand).
@@ -567,16 +630,47 @@ pub(crate) unsafe fn boot(
     //
     // dev: /tmp/plxnative-pickuser=<index> — force the boot picker even on an automated boot and
     // auto-select that roster tile once it's up (headless exercise of the who's-watching flow).
-    let pick_user: Option<usize> = crate::dev::scenarios::pickuser_index();
-    let session = crate::plex::session::load();
+    let pick_user: Option<usize> = if controlled { None } else { crate::dev::scenarios::pickuser_index() };
+    let session = match &initial {
+        Some(initial) => initial.session.persisted.clone(),
+        None => crate::plex::session::load(),
+    };
+    let forced_login = !controlled && crate::dev::scenarios::login_forced();
+    let dev_primary = (!forced_login && !dev_token.is_empty()).then(|| crate::plex::session::ServerRef {
+        address: host_s.clone(), port: i64::from(pms_port),
+        origin_url: crate::plex::Origin::http(&host_s, pms_port).base(), token: dev_token.clone(),
+        tier: Some(crate::plex::probe::configured_tier(&host_s)), ..Default::default()
+    });
+    let session_init = match &initial {
+        Some(initial) => initial.session.clone(),
+        None => captured_session_for_boot(session.clone(), dev_primary,
+            captured_dev_sources(&dev_servers.unwrap_or_default())),
+    };
+    let mut bridge = if controlled {
+        super::bridge::Bridge::controlled_home(crate::diag::heartbeat::now_us,
+            initial.as_ref().expect("controlled initialization"), &mt, preflight.replay())
+    } else {
+        super::bridge::Bridge::new(crate::diag::heartbeat::now_us, session_init, &mt)
+    };
+    // Construct the one dispatcher before bootstrap commands; move this same queue into App.
+    let mut pages = crate::ui::dispatch::Dispatcher::with_transition(Box::new(
+        crate::ui::containers::transition::PageDip::new(),
+    ));
     // Install-wide playback preference, restored before any route can resolve a stream.
     // A legacy file with no value resolves to Original; a new file can choose Auto only
     // through route's explicit readiness gate (session::load records that decision once).
     crate::route::restore_quality(
-        crate::dev::playback_quality_override().unwrap_or_else(|| session.playback_quality()),
+        if controlled { session.playback_quality() }
+        else { crate::dev::playback_quality_override().unwrap_or_else(|| session.playback_quality()) },
     );
-    let boot_to = if crate::dev::scenarios::login_forced() {
-        crate::auth::start_login();
+    let primary_binding = initial.as_ref().map(|initial| initial.primary_client);
+    let activate_session = |bridge: &mut super::bridge::Bridge,
+        pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+        rec: &mut super::recorder::Recplay| {
+        if forced_login {
+        super::bridge::execute_session_command(pages, crate::auth::SessionCmd::StartLogin);
+        pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+            rec, false);
         log("boot: /tmp/plxnative-login — starting QR login");
         BootTo::Login
     } else if !dev_token.is_empty() {
@@ -592,86 +686,99 @@ pub(crate) unsafe fn boot(
         log(&format!(
             "boot: dev token — link={tier:?} (classified from the configured address)"
         ));
-        install_pms(
-            &crate::plex::Origin::http(&host_s, pms_port),
-            &dev_token,
-            Some(tier),
-            None,
-        );
-        BootTo::Home
+        super::bridge::execute_session_command(pages, crate::auth::SessionCmd::ActivateDevBootstrap);
+        pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+            rec, false);
+        if let Some(ready) = bridge.take_session_ready() {
+            if controlled {
+                if bridge.bind_primary(primary_binding.expect("controlled initial binding")).is_err() {
+                    log("bootstrap: primary resource binding refused");
+                    return BootTo::Login;
+                }
+                use crate::stores::{StoreCmd, StoreWork};
+                use crate::ui::machine::{Fx, MachineId};
+                use crate::screens::registry::AppFx;
+                for cmd in [
+                    StoreCmd::Browse(crate::stores::browse::BrowseCmd::Reset),
+                    StoreCmd::Hubs(crate::stores::hubs::HubsCmd::Reset),
+                    StoreCmd::Hubs(crate::stores::hubs::HubsCmd::RefetchHubs),
+                ] { pages.emit(MachineId::Nav, Fx::App(AppFx::Store(cmd.store(), cmd))); }
+                pages.emit(MachineId::Nav, Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
+                pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(), rec, false);
+            } else {
+                let endpoints = install_pms(&ready.origin, &ready.token, ready.tier, ready.pin.as_ref(), &ready.install);
+                super::bridge::execute_endpoint_outcomes(pages, endpoints);
+            }
+            BootTo::Home
+        } else { BootTo::Login }
     } else if session.can_go_local() {
         if session.boot_shows_picker(automated_boot(), pick_user.is_some()) {
-            // Who's watching first. Only the read client is installed here (the avatars proxy
-            // through the PMS photo transcoder); the catalog fetch + playback config happen in
-            // take_ready once a profile is picked — done now they'd be thrown out on a switch.
-            crate::plex::install(
-                &session.server.origin(),
-                session.pms_token(),
-                session.server.resolve_pin().as_ref(),
-            );
-            crate::plex::session::set_current(Some(session.user.clone()));
-            // seeds the persisted roster + refreshes it online. `Picker::Boot` is what makes
-            // BACK out of this picker refuse to reinstate a PIN-protected profile — nobody has
-            // identified themselves yet, so there is no "carry on as me" to fall back on.
-            crate::auth::start_switch(crate::auth::Picker::Boot);
+            // The Session owner installs the avatar read client and retained grants, publishes
+            // the captured profile, then owns the picker/refresh flows. It does NOT issue the
+            // Ready handoff before a viewer is selected. Boot BACK therefore retains its
+            // protected/unknown-profile refusal policy rather than silently entering Home.
+            super::bridge::execute_session_command(pages,
+                crate::auth::SessionCmd::StartSwitch(crate::auth::Picker::Boot));
+            pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+                rec, false);
             log("boot: stored session — who's watching");
             BootTo::Profiles
         } else {
-            // The persisted roster FIRST, then the primary. This is the one boot path that does
-            // not go through `auth::start_switch` — a stored session with a single Plex Home
-            // user, an automated run, or Automatically Sign In with a seated profile — so without
-            // this line it registered exactly one server and every share was invisible until the
-            // next sign-in: no second source in the Sources panel, no borrowed shelves, nothing
-            // to attribute. `install_roster` leaves `current` alone and sorts owned first, and
-            // `install_pms` below retargets to the session's own server regardless, so ordering
-            // cannot land us on a friend's box.
-            // Before, not after, because `install_pms` ends in the catalog + section fetch that
-            // turns a registered source into something on screen.
-            crate::auth::install_stored_roster(&session);
-            // WHO is watching, before anything reads a per-profile store. It drives the Home
-            // profile chip, and it is also what `browse::resolve_pins` and
-            // `search::recents` key on — `install_pms` below ends in the section fetch
-            // that resolves the Home selection, so set after it that resolve ran against the
-            // OWNER's record whoever was actually signed in. (`auth::take_ready`, the other
-            // way into Home, already sets it before its own `install_pms` for this reason.)
-            crate::plex::session::set_current(Some(session.user.clone()));
-            install_pms(
-                &session.server.origin(),
-                session.pms_token(),
-                session.server.tier,
-                session.server.resolve_pin().as_ref(),
-            );
-            // Re-learn the roster only AFTER the spawn-time primary snapshot was installed.
-            // If a fast refresh re-pointed first, installing that stale snapshot afterwards
-            // put the dead origin back into the live registry for the rest of this run.
-            // Non-destructive on failure; the stored roster above remains available offline.
-            crate::auth::refresh_roster();
-            if session.auto_sign_in()
-                && session.home_users.len() > 1
-                && session.seated_in_roster()
-                && !automated_boot()
-                && pick_user.is_none()
-            {
-                log("boot: stored session — auto sign-in");
+            // The owner restores the granted roster and publishes WHO is watching before
+            // install_pms can read any per-profile stores. Stored boot does not re-save its
+            // credentials. This is the normal bounded dispatcher drain over the same owner
+            // and queue later moved into App, not a recursive bootstrap reducer.
+            super::bridge::execute_session_command(pages, crate::auth::SessionCmd::ResumeStored);
+            pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+                rec, false);
+            if let Some(ready) = bridge.take_session_ready() {
+                let endpoints = install_pms(&ready.origin, &ready.token, ready.tier, ready.pin.as_ref(), &ready.install);
+                super::bridge::execute_endpoint_outcomes(pages, endpoints);
+                // Refresh only AFTER installing the captured primary, so a fast accepted
+                // endpoint observation cannot be overwritten by that older boot snapshot.
+                super::bridge::execute_session_command(pages, crate::auth::SessionCmd::RefreshRoster);
+                pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+                    rec, false);
+                if session.auto_sign_in()
+                    && session.home_users.len() > 1
+                    && session.seated_in_roster()
+                    && !automated_boot()
+                    && pick_user.is_none()
+                {
+                    log("boot: stored session — auto sign-in");
+                } else {
+                    log("boot: stored session — local server (offline-capable)");
+                }
+                BootTo::Home
             } else {
-                log("boot: stored session — local server (offline-capable)");
+                super::bridge::execute_session_command(pages, crate::auth::SessionCmd::StartLogin);
+                log("boot: stored session could not be activated — starting QR sign-in");
+                BootTo::Login
             }
-            BootTo::Home
         }
     } else {
-        crate::auth::start_login();
+        super::bridge::execute_session_command(pages, crate::auth::SessionCmd::StartLogin);
+        pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+            rec, false);
         log("boot: no session — starting QR sign-in");
         BootTo::Login
+    }
     };
-    crate::player::acb_init(&mt);
-    crate::ff::boot(); // FFmpeg version smoke test + optional /tmp/plxnative-ffprobe ABI probe
+    // Controlled Home constructs its App before executing the same bootstrap command path.
+    let boot_to = if controlled { BootTo::Home } else {
+        activate_session(&mut bridge, &mut pages, &mut super::recorder::Recplay::Off)
+    };
+    if !controlled {
+        crate::player::acb_init(&mt);
+        crate::ff::boot(); // Live playback resource boot; controlled Home cannot invoke ABI probes.
+    }
                        // dev: /tmp/plxnative-logintest validates the plex.tv account path end-to-end on the device — a
                        // real typed create_pin() through the libcurl transport + DTO deserialize. Logs only the
                        // public pin id + code length + that authToken is still null (never a token/secret).
-    crate::dev::scenarios::arm_logintest();
+    if !controlled { crate::dev::scenarios::arm_logintest(); }
     // dev: the animation-diagnostic overlay is OFF by default; /tmp/plxnative-anim enables it (its
     // trace goes to /tmp/plxnative-anim.log, a separate stream from the main event log)
-    crate::dev::scenarios::arm_anim();
+    if !controlled { crate::dev::scenarios::arm_anim(); }
     // dev: profile is asynchronous EXT_disjoint_timer_query timing; hwcnt is the serialized
     // direct Mali counter-attribution run. Their content names ONE phase (empty = frame.ui).
     // Combining them would perturb the timer result, so fail closed when both are present.
@@ -683,8 +790,10 @@ pub(crate) unsafe fn boot(
     // point in boot it always was: `configure` logs what it will run, and that line's position in
     // the event log is what a sweep is read against.
     let mut glass = crate::ui::frame::glass::GlassPlan::new();
-    crate::dev::scenarios::arm_glassload(&mut glass);
-    crate::dev::scenarios::arm_navblur(&mut glass);
+    if !controlled {
+        crate::dev::scenarios::arm_glassload(&mut glass);
+        crate::dev::scenarios::arm_navblur(&mut glass);
+    }
     // dev: the two OVERDRAW surfaces (`ui::overdraw`, docs/backdrop-blur-profiling.md Part 5).
     // `plxnative-overdraw` arms the CPU-side per-draw-class ledger — how much screen-visible
     // quad area this app submits, per primitive family, per frame. It is not billed for the
@@ -693,12 +802,14 @@ pub(crate) unsafe fn boot(
     // the named classes, so a whole-frame `frame.ui` A/B against the unmasked control prices
     // that class as the frame sees it; `all` draws nothing and is therefore the compositor
     // floor. A masked leg is a broken picture on purpose.
-    crate::dev::scenarios::arm_overdraw();
-    crate::dev::scenarios::arm_drawmask();
+    if !controlled {
+        crate::dev::scenarios::arm_overdraw();
+        crate::dev::scenarios::arm_drawmask();
+    }
     // dev: /tmp/plxnative-heroground — draw the hero's photograph and BOTH of its scrim fields
     // in one pass instead of the art plus four blended gradient quads over it. Absent, the
     // shipped four-quad path draws, which is what makes this an A/B on one binary.
-    crate::dev::scenarios::arm_heroground();
+    if !controlled { crate::dev::scenarios::arm_heroground(); }
     // dev: /tmp/plxnative-glasshz=<presents-per-refresh> moves the shared dynamic-backdrop
     // cadence for the cost curve in `docs/backdrop-blur-profiling.md` — 1 is a refresh on every
     // present (60 Hz while the UI presents at 60), 3 is ~20 Hz, 4 is 15 Hz.
@@ -708,55 +819,59 @@ pub(crate) unsafe fn boot(
     // The production Account menu no longer arms or consumes this path: its host is frozen and
     // its glass snapshot is cached for the whole open lifetime.  The knob remains for explicit
     // material profiling, not as part of an Account FPS scene.
-    let glass_hz_armed = crate::dev::scenarios::arm_glasshz();
+    let glass_hz_armed = !controlled && crate::dev::scenarios::arm_glasshz();
     // dev: /tmp/plxnative-nobudget — the frame budget's A/B CONTROL leg (spec §8.1). Read here
     // with the other boot triggers; applied to the one `Budget` below, once the tree exists.
-    let nobudget = crate::dev::scenarios::nobudget_armed();
-    crate::dev::scenarios::arm_profile_hwcnt();
+    let nobudget = !controlled && crate::dev::scenarios::nobudget_armed();
+    if !controlled { crate::dev::scenarios::arm_profile_hwcnt(); }
     // dev: /tmp/plxnative-cpuprof — the render thread's OWN time per phase, every phase at
     // once, no glFinish. The one mode that can see a frame the frame-drop detector reports as
     // all `draw=` and no `swap=`; the two GPU modes above are blind to it by construction.
-    crate::dev::scenarios::arm_cpuprof();
+    if !controlled { crate::dev::scenarios::arm_cpuprof(); }
     // dev: /tmp/plxnative-noidle turns the whole-frame present gate (ui::idle) OFF, so a still
     // screen goes back to repainting at panel rate. It is a DIAG trigger (see the list above)
     // precisely so an A/B costs one file and does not also change which screen you boot to —
     // and so that if a frame ever looks wrong on the panel, ruling this feature out is one
     // `rm` rather than a redeploy.
-    crate::ui::testpat::boot();
-    crate::player::seed_dev_track_names();
-    crate::dev::scenarios::arm_noidle();
+    if !controlled {
+        crate::ui::testpat::boot();
+        crate::player::seed_dev_track_names();
+    }
+    if let Some(initial) = &initial {
+        crate::ui::idle::set_enabled(!initial.triggers.iter().any(|t| t == "plxnative-noidle"));
+    } else { crate::dev::scenarios::arm_noidle(); }
     // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
     // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
-    let detail_osc = crate::dev::scenarios::detailosc_armed();
+    let detail_osc = !controlled && crate::dev::scenarios::detailosc_armed();
     // dev: /tmp/plxnative-homeosc — perpetually sweep the home grid focus DOWN to the bottom then
     // UP to the top (~3s each way, one row per 350ms), so a headless run reproduces the top↔bottom
     // vertical-scroll judder for the frame-drop detector / retui profiler.
-    let home_osc = crate::dev::scenarios::homeosc_armed();
+    let home_osc = !controlled && crate::dev::scenarios::homeosc_armed();
     let home_osc_last = 0u32;
     // dev: the two Home transition scenes the old home-hero/home-grid pair could not see.
     // `heroosc` continuously pages the real carousel; `homefoldosc` alternates the real
     // hero↔first-shelf snap. Their intervals overlap the spring lifetime so the FPS heartbeat
     // samples motion rather than the efficient idle gaps at either end.
-    let hero_osc = crate::dev::scenarios::heroosc_armed();
+    let hero_osc = !controlled && crate::dev::scenarios::heroosc_armed();
     let hero_osc_last = 0u32;
-    let home_fold_osc = crate::dev::scenarios::homefoldosc_armed();
+    let home_fold_osc = !controlled && crate::dev::scenarios::homefoldosc_armed();
     let home_fold_osc_last = 0u32;
     let home_fold_down = true;
     // dev: /tmp/plxnative-libosc — the Library twin of homeosc: sweep the browse grid focus
     // down↔up perpetually for the library_scroll FPS scene.
-    let lib_osc = crate::dev::scenarios::libosc_armed();
+    let lib_osc = !controlled && crate::dev::scenarios::libosc_armed();
     let lib_osc_last = 0u32;
     // dev: /tmp/plxnative-libswitch — exercise EVERY Library switch on a timer (tab switch,
     // sort menu open/move/close, unwatched on/off, filter open/close) for the library_switch
     // FPS scene, so the re-query + popover paths are perf-gated, not just the scroll.
-    let lib_switch = crate::dev::scenarios::libswitch_armed();
+    let lib_switch = !controlled && crate::dev::scenarios::libswitch_armed();
     let lib_switch_last = 0u32;
     let lib_switch_step = 0u32;
     // dev: /tmp/plxnative-searchosc — the Search twin of homeosc/libosc: sweep the result
     // shelves' focus down↔up perpetually for the `fps:search-type` scene. It does NOT reach the
     // screen on its own — pair it with `/tmp/plxnative-search=<query>`, and with a query the
     // library actually matches, or there are no shelves to sweep and the scene grades nothing.
-    let search_osc = crate::dev::scenarios::searchosc_armed();
+    let search_osc = !controlled && crate::dev::scenarios::searchosc_armed();
     let search_osc_last = 0u32;
     // dev: /tmp/plxnative-settings=<root|home|privacy|legal> opens the Settings modal (and,
     // optionally, one of its real child panels) once Home is available. `settingsosc` turns
@@ -765,8 +880,8 @@ pub(crate) unsafe fn boot(
     // completely healthy modal intentionally reports ~0 fps after its springs settle, which
     // cannot grade the screen's fill cost. The paired settings-idle scene omits the oscillator
     // and guards the inverse contract.
-    let settings_boot = crate::dev::scenarios::settings_boot_value();
-    let settings_osc = crate::dev::scenarios::settingsosc_armed();
+    let settings_boot = if controlled { None } else { crate::dev::scenarios::settings_boot_value() };
+    let settings_osc = !controlled && crate::dev::scenarios::settingsosc_armed();
     let settings_osc_last = 0u32;
     let settings_osc_down = true;
     // dev: /tmp/plxnative-modalosc — with `plxnative-settings=root`, OPEN and DISMISS the
@@ -774,18 +889,18 @@ pub(crate) unsafe fn boot(
     // `fps:modal-ramp` grades the appear/disappear RAMP (host snapshot, scrim, ground) under
     // `worst_ceiling_ms` rather than a settled modal. It reverses on a clock because the ramp
     // itself has no end the app reports.
-    let modal_osc = crate::dev::scenarios::modalosc_armed();
+    let modal_osc = !controlled && crate::dev::scenarios::modalosc_armed();
     let modal_osc_last = 0u32;
     // dev: /tmp/plxnative-legaldoc — with `plxnative-settings=legal`, press OK on the Legal
     // index ONCE so the boot lands on a pushed DOCUMENT (the reader over the frozen ground),
     // which no boot trigger reached before: `fps:legal-document`.
-    let legal_doc = crate::dev::scenarios::legaldoc_armed();
+    let legal_doc = !controlled && crate::dev::scenarios::legaldoc_armed();
     let legal_doc_tried = false;
     // dev: /tmp/plxnative-alert — with `plxnative-settings=privacy`, open the "Delete all local
     // data?" DECISION ALERT once the privacy panel is up. It is the one shared yes/no alert in
     // the app and nothing headless could reach it: `fps:decision-alert`. Opening it is all this
     // does — nothing is deleted, and Cancel is what a BACK would press.
-    let alert_boot = crate::dev::scenarios::alert_armed();
+    let alert_boot = !controlled && crate::dev::scenarios::alert_armed();
     let alert_tried = false;
     // …and the DOWN presses that walk to the delete row before the OK that opens it. A count
     // rather than an index: the row is the LAST of the privacy table, whose length is that
@@ -798,15 +913,15 @@ pub(crate) unsafe fn boot(
     // The profile menu freezes its host and uses one cached backdrop. Drive the menu's own
     // TableView for a strict FPS scene; reusing `homeosc` would now correctly move nothing and
     // would grade the idle keepalive rather than the popover.
-    let account_osc = crate::dev::scenarios::acctosc_armed();
+    let account_osc = !controlled && crate::dev::scenarios::acctosc_armed();
     let account_osc_last = 0u32;
     let account_osc_down = true;
     // First-run route oscillators keep their real focus models moving so the device FPS suite
     // grades the composition rather than a settled screen that correctly stops presenting.
-    let consent_osc = crate::dev::scenarios::consentosc_armed();
+    let consent_osc = !controlled && crate::dev::scenarios::consentosc_armed();
     let consent_osc_last = 0u32;
     let consent_osc_down = true;
-    let onboard_osc = crate::dev::scenarios::onboardosc_armed();
+    let onboard_osc = !controlled && crate::dev::scenarios::onboardosc_armed();
     let onboard_osc_last = 0u32;
     let onboard_osc_right = true;
     // dev: /tmp/plxnative-navosc — bounce the ROUTE on a timer, so the page cross-fade
@@ -821,7 +936,7 @@ pub(crate) unsafe fn boot(
     // chrome, a hero backdrop and an ambient wash on the far side, and a real teardown at the
     // floor. Both bounce through the SAME `nav_open`/`nav_back` the interactive presses use, so
     // the scene measures the transition rather than an imitation of it.
-    let nav_osc_rk = crate::dev::scenarios::navosc_value();
+    let nav_osc_rk = if controlled { None } else { crate::dev::scenarios::navosc_value() };
     let nav_osc = nav_osc_rk.is_some();
     let nav_osc_rk = nav_osc_rk.unwrap_or_default();
     let nav_osc_last = 0u32;
@@ -831,7 +946,7 @@ pub(crate) unsafe fn boot(
     // and any frame whose total exceeds a threshold (ms; file content overrides the 22ms default) is
     // logged with its phase breakdown + GL texture-upload count — so a scroll judder shows *what* stalled
     // (high `pump`+`up` ⇒ synchronous poster uploads; high `swap` with low pump/draw ⇒ GPU fill).
-    let framedrop = crate::dev::scenarios::framedrop_value();
+    let framedrop = if controlled { None } else { crate::dev::scenarios::framedrop_value() };
     let framedrop_on = framedrop.is_some();
     let framedrop_thresh: f64 = framedrop
         .and_then(|s| s.parse().ok())
@@ -839,7 +954,7 @@ pub(crate) unsafe fn boot(
         .unwrap_or(22.0);
     let instr = crate::diag::heartbeat::Instruments::new(framedrop_on, framedrop_thresh);
 
-    let last_input = clock::now();
+    let last_input = initial.as_ref().map_or_else(clock::now, |initial| initial.clock_start);
     let t0 = last_input;
     let loop_t = t0;
     let iters_ct = 0i32;
@@ -868,7 +983,8 @@ pub(crate) unsafe fn boot(
     // Item 13: rate-limits a hardware auto-repeat forwarded into the Settings family, which is
     // owned by the dispatcher since phase 5b — so the gate is applied at the loop's hand-over,
     // to the DIRECTIONS only. See `run`'s auto-repeat arm for why the OK edges go through
-    // ungated, and `on_auto_repeat`'s doc for what is left on the legacy side.
+    // ungated, and `on_auto_repeat`'s doc for the one thing left on the legacy side (the
+    // deferred press's liveness beat, and nothing else since phase 12).
     let modal_repeat = RepeatGate::IDLE;
     let marker_tried = false; // dev: the /tmp/plxnative-marker jump has been resolved
     let player = crate::player::machine::Player::new();
@@ -910,7 +1026,7 @@ pub(crate) unsafe fn boot(
     // needs comes from `/tmp/plxnative-servers`, which marks the boot automated. Both halves
     // are why looking at this screen headlessly requires a trigger of its own.
     let ask_first_run =
-        || crate::dev::scenarios::firstrun_armed() || (!automated_boot() && crate::screens::onboard::asks());
+        || !controlled && (crate::dev::scenarios::firstrun_armed() || (!automated_boot() && crate::screens::onboard::asks()));
     // The sign-in's telemetry question is PRESENTED on the container tree, and the tree lives on
     // the `App` this function is still assembling — so this boot arm records that it owes the
     // question and `maybe_ask_consent` is called once the struct exists, a few dozen lines down.
@@ -931,15 +1047,15 @@ pub(crate) unsafe fn boot(
                 // No `enter()`: the first-run editor is an OWNED screen, and naming the route is
                 // the whole of mounting it — `bridge`'s mounter builds `OnboardScreen::first_run`
                 // when the tree follows this route on the loop's first NAV COMMIT.
-                Route::Onboard
+                AppArg::Onboard
             } else {
-                Route::Home
+                AppArg::Home
             }
         }
         // Both of these enter the `Route::Login | Route::Profiles` block below, which asks as
         // soon as the account is authorized — earlier than here, and before the picker.
-        BootTo::Login => Route::Login,
-        BootTo::Profiles => Route::Profiles,
+        BootTo::Login => AppArg::Login,
+        BootTo::Profiles => AppArg::Profiles,
     };
     // (dev: /tmp/plxnative-acct used to open the profile menu HERE, beside a
     // `route = Route::Account { over: BarHost::Home }`. The menu is a `ModalStack` surface since
@@ -949,31 +1065,11 @@ pub(crate) unsafe fn boot(
     // rows own resume. Never override this route from an old last-page bookmark. The cleanup is
     // intentionally unconditional so automated and ordinary upgrades retire the same state.
     crate::coldstart::retire();
-    // The page the live playback session was LAUNCHED FROM — where Stop/BACK/EOS returns to.
-    // Kept OUTSIDE Route (like `foreground` keeps the suspended session): it is navigation
-    // history, not the current node, and Route makes every page and Player exclusive so it
-    // could not be encoded there. Captured per `start_playback` through `Origin` — see that
-    // type for why this is a `Node` and not the `from_detail: bool` it replaced.
-    let play_from = Node::Home;
-    // The BACK trail (`ui::trail`): the pages behind the one on screen, top = current. It
-    // replaces the `opened_from_library` / `opened_from_person` pair, which were a precedence
-    // ladder with one slot per screen KIND and so could not describe a detail page standing on
-    // another detail page — the episode filmstrip's text row and the Related shelf both do that,
-    // and BACK from such a page fell through to Home. A run-loop LOCAL, exactly like the
-    // booleans it replaces and like `play_from` beside it: navigation history belongs
-    // to the loop that navigates.
-    //
-    // `play_from` deliberately does NOT fold into it. It answers a different question — where
-    // does THIS SESSION return to — and is written per `start_playback` call from the route on
-    // screen at the press, which is why `home_activate` opening a detail page under the hood
-    // just to fire its Play still returns to Home: the user never left it. The app-switch path
-    // depends on that independence (the background arm drops to Home without touching either).
-    let trail = crate::ui::trail::Trail::new();
-    // The route change the page cross-fade is carrying, applied at its floor. `None` whenever
-    // no transition is in flight — which is every path that deliberately keeps today's hard cut
-    // (a boot trigger, a player exit, the app-switch lifecycle, a login landing), so the
-    // default really is "nothing changes".
-    let nav_pending: Option<NavReq> = None;
+    // (`play_from`, the BACK trail and `nav_pending` were three run-loop locals here — the page
+    // the live session returns to, the pages behind the one on screen, and the route change a fade
+    // is carrying. All three are the container's since restructure phase 12: `PlayerScreen::origin`
+    // is an `EntryId`, the `NavStack` IS the history, and a pending op lives on it under a
+    // `PageDip`.)
 
     let auto_tried = false;
     // dev: `/tmp/plxnative-replay[=N]` — how many times a finished `plxnative-playurl`
@@ -991,7 +1087,7 @@ pub(crate) unsafe fn boot(
     // player. Everything else was already in place — `teardown` clears the URL and `ended` on a
     // real stop, and `engine::start_bufferfeed` re-reads `dev::playurl()` whenever
     // `route::url()` is empty — so a replay is a second trip through the entry below.
-    let replay_left: u32 = replay_budget(crate::dev::scenarios::replay_trigger_value().as_deref());
+    let replay_left: u32 = if controlled { 0 } else { replay_budget(crate::dev::scenarios::replay_trigger_value().as_deref()) };
     let grid_tried = false;
     let settings_tried = settings_boot.is_none();
     let seek_tried = false;
@@ -1035,7 +1131,7 @@ pub(crate) unsafe fn boot(
     // A LAB package may opt into the outbound long-poll command channel. Start only now: curl
     // has been initialised and, unlike the earlier boot/discovery work, the SDL loop below is
     // ready to dispatch a delivered command within one frame. Compile-time no-op otherwise.
-    crate::lab::start_control();
+    if !controlled { crate::lab::start_control(); }
     let mut app = App {
         last_input,
         loop_t,
@@ -1057,10 +1153,7 @@ pub(crate) unsafe fn boot(
         ok_armed,
         last_route_reported,
         ptr,
-        route,
-        play_from,
-        trail,
-        nav_pending,
+        menu_play_await: None,
         prev,
         refresh_hubs_at,
         ev,
@@ -1071,11 +1164,16 @@ pub(crate) unsafe fn boot(
         measure_fault_logged: false,
         input: crate::ui::input::Input::new(),
         rec: super::recorder::Recplay::Off,
+        boot_initial: initial,
+        telemetry_guard: None,
         present: crate::ui::present::Present::new(),
         glass,
-        pages: crate::ui::dispatch::Dispatcher::new(),
+        // **The application's page stack runs the route DIP** (§6.2). It ran `Immediate` until
+        // phase 12 while `ui::nav` held a second fader and the loop applied its own route change
+        // at THAT floor; `PageDip` is the same schedule in the container that owns the op.
+        pages,
         inputs: Vec::new(),
-        bridge: super::bridge::Bridge::new(crate::diag::heartbeat::now_us),
+        bridge,
         // Every dev-trigger arm's own state (spec: `dev/scenarios.rs`'s module doc).
         scenarios: crate::dev::scenarios::Scenarios {
             pick_user,
@@ -1159,33 +1257,69 @@ pub(crate) unsafe fn boot(
         app.pages.budget = crate::ui::frame::Budget::pre_phase_11();
         crate::log("budget: pre-phase-11 admission (quota only) by /tmp/plxnative-nobudget");
     }
-    // …the deferred half of the `BootTo::Home` arm above: the tree exists now, so the question can
-    // be presented. Idempotent and cheap (`should_show` is false once a decision is recorded and
-    // on any automated boot), so the flag is the only thing carrying the decision forward.
-    if owes_consent_question {
-        maybe_ask_consent(&mut app.pages);
-    }
-    // The recorder / replay driver, armed ONCE, here, at the end of boot (spec §5.3): the
-    // Coarse boot facts go to the recorder; an armed recording also captures Home's complete
-    // initial backing state before the first frame. Boot restoration and adapter suppression
-    // are not wired yet: replay still runs LIVE and compares its observed result stream.
-    {
-        let consent = crate::telemetry::consent::current();
-        let init = super::recorder::AppInit {
-            route: route_word(app.route),
-            session: !crate::plex::session::peek().account_token.is_empty(),
-            servers: crate::plex::server_count() as u32,
-            consent_asked: consent.as_ref().map(|c| c.asked_version).unwrap_or(0),
-            consent_errors: consent.as_ref().map(|c| c.errors).unwrap_or(false),
-            consent_usage: consent.as_ref().map(|c| c.usage).unwrap_or(false),
-            seed: 0,
-        };
-        app.rec = super::recorder::Recplay::arm(&init, crate::dev::armed_triggers());
+    if controlled {
+        let initial = app.snapshot_init().expect("controlled constructor retains initial inputs");
+        initial.validate().map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;
+        let replay = preflight.replay();
+        app.rec = super::recorder::Recplay::controlled(preflight, &initial)
+            .map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;
+        log("bootstrap: captured pre-effect initial state");
+        if let Some(deferred) = deferred {
+            apply_deferred_capture(&mut app.rec, deferred)
+                .map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;
+            log("bootstrap: captured session persistence applied");
+        }
+        if !replay {
+            app.telemetry_guard = Some(crate::telemetry::activate_initial(initial.consent.clone()));
+        }
+        if !replay { super::adapters::poster::init(); }
+        app.rec.tick(initial.clock_start, 0.0);
+        app.rec.prepare_resources(&mut app.bridge);
+        if !matches!(activate_session(&mut app.bridge, &mut app.pages, &mut app.rec), BootTo::Home) {
+            log("bootstrap: controlled Home activation refused");
+            return Err(1);
+        }
+        let tree = app.pages.state_hash();
+        app.rec.resource_requests(app.bridge.take_resource_requests());
+        if let Some(reason) = app.rec.failure().or_else(|| app.bridge.controlled_failure()) {
+            log(&format!("bootstrap: REFUSED — {reason}"));
+            return Err(1);
+        }
+        super::run::recorder_end_frame(&mut app.rec, &app.bridge, &app.input.press,
+            "home", "", "bootstrap", tree);
         if let Some(ms) = app.rec.clock_start() {
             super::clock::set_replay(ms);
             app.t0 = ms;
             app.loop_t = ms;
             app.last_input = ms;
+        }
+    }
+    // **ROOT THE TREE AT THE BOOT PAGE.** The `route` chosen above used to be a field of `App`
+    // that `bridge::sync_page` mirrored onto the container on the loop's first frame; there is no
+    // mirror, so the boot says what it wants once, here, the moment the tree exists. A `Root` on
+    // an empty stack mints the first entry, which is what makes this a hard CUT — there is no
+    // outgoing screen to dip.
+    if controlled {
+        app.pages.emit(crate::ui::machine::MachineId::Nav,
+            crate::ui::machine::Fx::Nav(crate::ui::machine::NavOp::Root(route)));
+    } else {
+        super::bridge::nav_root(&mut app.pages, route);
+    }
+    if controlled { log(&format!("bootstrap: root-request tree={:016x}", app.pages.state_hash())); }
+    // …the deferred half of the `BootTo::Home` arm above: the tree exists now, so the question can
+    // be presented. Idempotent and cheap (`should_show` is false once a decision is recorded and
+    // on any automated boot), so the flag is the only thing carrying the decision forward.
+    if owes_consent_question {
+        if let Some(initial) = &app.boot_initial {
+            // The same policy, evaluated over captured consent and automation inputs. A
+            // recplay trigger alone intentionally does not grant live automation authority.
+            // Preflight refuses the still-unsupported first-run surface before resource boot.
+            if crate::screens::consent::should_show(&initial.consent, initial.automated) {
+                log("bootstrap: REFUSED — unsupported initial consent route");
+                return Err(1);
+            }
+        } else {
+            maybe_ask_consent(&mut app.pages);
         }
     }
     Ok(app)

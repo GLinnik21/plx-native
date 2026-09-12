@@ -32,7 +32,11 @@ use consent::Consent;
 /// decision — everything off, unanswered — which is the only safe reading: a file we cannot
 /// understand is not consent.
 pub(crate) fn boot() -> native::Guard {
-    let c = load();
+    activate_initial(load())
+}
+
+/// Resource activation after controlled initial capture. Same live policy/order as boot.
+pub(crate) fn activate_initial(c: Consent) -> native::Guard {
     // Logged because the alternative is a silent behavioural difference between two televisions.
     // No identifier in the line: it is the one field here worth not putting in a log that gets
     // pasted into issue threads, and its PRESENCE is the only fact worth stating anyway.
@@ -78,9 +82,11 @@ pub(crate) fn boot() -> native::Guard {
 /// The first candidate that exists and parses. Same search-order shape as the session file, and
 /// for the same reason: which of the two `/media` directories is writable depends on the jail
 /// profile, so the answer cannot be a literal.
-fn load() -> Consent {
+pub(crate) fn capture_initial() -> Consent {
     load_from(&candidates())
 }
+
+fn load() -> Consent { capture_initial() }
 
 /// Where the decision lives: `paths::telemetry_candidates()`, until a test redirects it to a file
 /// of its own. Same shape and same reason as `session::redirect_for_test`: every real candidate is

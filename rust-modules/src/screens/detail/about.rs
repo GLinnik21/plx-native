@@ -163,7 +163,15 @@ impl Rows {
     /// (`DetailScreen::tracks_available`), passed in rather than asked of the sheet: it decides
     /// whether the Languages column carries a MORE affordance, and it has to be the same bit
     /// `about::locate` gates the element on or the column reads as pressable and is not.
-    pub(crate) fn draw(&self, p: Painter, d: &Detail, top: f32, focused: Option<u32>, tracks: bool) {
+    pub(crate) fn draw(
+        &self,
+        p: Painter,
+        d: &Detail,
+        top: f32,
+        focused: Option<u32>,
+        tracks: bool,
+        measure: &dyn crate::ui::machine::Measure,
+    ) {
         let x = crate::ui::consts::MARGIN_X;
         p.text(
             c"About".as_ptr(),
@@ -186,13 +194,9 @@ impl Rows {
             theme::size::HEADLINE,
             theme::TEXT_PRIMARY,
             1,
-            &crate::text::elide(
-                &d.title,
-                card.w - 2.0 * CARD_PAD,
-                theme::size::HEADLINE,
-                1,
-                false,
-            ),
+            &crate::text::elide_by(&d.title, card.w - 2.0 * CARD_PAD, false, |t| {
+                measure.width_str(t, theme::size::HEADLINE, true)
+            }),
         );
         if !d.genres.is_empty() {
             text_at(
@@ -202,13 +206,9 @@ impl Rows {
                 theme::size::CAPTION,
                 theme::TEXT_TERTIARY,
                 0,
-                &crate::text::elide(
-                    &d.genres.join(", "),
-                    card.w - 2.0 * CARD_PAD,
-                    theme::size::CAPTION,
-                    0,
-                    false,
-                ),
+                &crate::text::elide_by(&d.genres.join(", "), card.w - 2.0 * CARD_PAD, false, |t| {
+                    measure.width_str(t, theme::size::CAPTION, false)
+                }),
             );
         }
         TextView::new(&d.summary, theme::size::CAPTION, theme::TEXT_HEADING)
@@ -231,7 +231,7 @@ impl Rows {
 
         self.draw_information(p, x, top + COL_Y);
         self.draw_languages(p, top + COL_Y, focused == Some(LANGUAGES_ELEM), tracks);
-        self.draw_accessibility(p, 1360.0, top + COL_Y);
+        self.draw_accessibility(p, 1360.0, top + COL_Y, measure);
     }
 
     fn draw_information(&self, p: Painter, x: f32, y: f32) {
@@ -296,7 +296,13 @@ impl Rows {
         }
     }
 
-    fn draw_accessibility(&self, p: Painter, x: f32, y: f32) {
+    fn draw_accessibility(
+        &self,
+        p: Painter,
+        x: f32,
+        y: f32,
+        measure: &dyn crate::ui::machine::Measure,
+    ) {
         text_at(
             p,
             x,
@@ -327,6 +333,7 @@ impl Rows {
                 label,
                 None,
                 crate::ui::widgets::BadgeStyle::Filled,
+                measure,
             );
             let h = TextView::new(desc, theme::size::CAPTION, theme::TEXT_HEADING)
                 .leading(30.0)

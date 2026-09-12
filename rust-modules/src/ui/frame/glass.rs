@@ -25,7 +25,7 @@
 //! phase record with the step and has no `&App` to ask.
 
 use crate::ui::glassload::Dial;
-use crate::ui::widgets::{DynamicClock, Glass, GlassState};
+use crate::ui::widgets::{DynamicClock, Glass, GlassState, TabBand, TabLabels};
 
 /// The frame's glass schedule: one shared cadence clock, the surfaces whose lifetime belongs to no
 /// screen, and the dev load dial.
@@ -34,6 +34,9 @@ pub(crate) struct GlassPlan {
     /// presents with separate phases would refresh 2/3 or even every frame between them — the
     /// clock is global because the snapshot chain under it is.
     dynamic: DynamicClock,
+    /// Persistent state for the shared top tab track: visible lifetime, adaptive density and this
+    /// frame's material. The strip borrows it during paint; the Bridge never owns a second copy.
+    tab: TabBand,
     /// The tile bands' visible lifetime (`/tmp/plxnative-tileglass`). ONE for every band in a
     /// frame: there is one blur cache and every glass surface converges on one grab, so per-tile
     /// state would buy nothing and would let two tiles disagree about whether this present's
@@ -48,6 +51,7 @@ impl GlassPlan {
     pub(crate) fn new() -> Self {
         let plan = Self {
             dynamic: DynamicClock::new(),
+            tab: TabBand::new(),
             tile: GlassState::new(),
             dial: Dial::new(),
         };
@@ -66,6 +70,37 @@ impl GlassPlan {
     /// Resolve one REFRESHING backdrop's cadence before its host page draws.
     pub(crate) fn prepare_dynamic(&mut self, state: &mut GlassState, underlay_changed: bool) {
         Glass::DYNAMIC_BACKDROP.prepare_on(&mut self.dynamic, state, underlay_changed);
+    }
+
+    pub(crate) fn prepare_tab_band(&mut self, labels: TabLabels<'_>) {
+        self.tab.prepare(labels, &mut self.dynamic);
+    }
+
+    pub(crate) fn step_tab_band(&mut self, dt: f32) {
+        self.tab.step(dt);
+    }
+
+    pub(crate) fn tab_band_mut(&mut self) -> &mut TabBand {
+        &mut self.tab
+    }
+
+    pub(crate) fn tab_face(&self) -> Option<crate::gfx::GlassFace> {
+        self.tab.face()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_tab_density_for_test(&mut self, value: f32) {
+        self.tab.seed_density(value);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tab_density_for_test(&self) -> f32 {
+        self.tab.density()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_tab_face_for_test(&mut self, face: crate::gfx::GlassFace) {
+        self.tab.set_face(face);
     }
 
     /// Resolve the tile bands' glass cadence BEFORE the page they sit on draws — `Glass::prepare`'s
@@ -165,5 +200,24 @@ mod tests {
             1,
             "DEFAULT_DYNAMIC_PERIOD is 1 and the plan reads it rather than holding its own"
         );
+    }
+
+    /// The tab band is frame-plan state. Mutating one plan's solve/material must leave another
+    /// plan at its fresh values; a process static or Bridge-owned field cannot satisfy this.
+    #[test]
+    fn two_glass_plans_own_independent_tab_bands() {
+        let _guard = crate::testlock::serial();
+        let mut a = GlassPlan::new();
+        let b = GlassPlan::new();
+        a.seed_tab_density_for_test(0.73);
+        a.set_tab_face_for_test(crate::gfx::GlassFace {
+            scrim_top: [0.1, 0.2, 0.3, 0.4],
+            scrim_bot: [0.5, 0.6, 0.7, 0.8],
+            rim: [0.0; 4], rim_lit: [0.0; 4], rim_w: 1.0,
+        });
+        assert!((a.tab_density_for_test() - 0.73).abs() < 1e-6);
+        assert_eq!(a.tab_face().unwrap().scrim_top, [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(b.tab_density_for_test(), 0.0);
+        assert!(b.tab_face().is_none());
     }
 }

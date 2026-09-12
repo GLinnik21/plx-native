@@ -239,6 +239,72 @@ class ContentFocusFlows(unittest.TestCase):
         self.assertIsNotNone(focusfp_check.check(12, log[:-1]))
 
 
+class FocusFpAccounting(unittest.TestCase):
+    @staticmethod
+    def _run_isolated_focusfp(simulator, *args):
+        """Run a copied focusfp script against only the fixtures this accounting test needs."""
+        fixture_names = (
+            "1-boot-home-chip-grid",
+            "6-settings-family",
+            "12-filmography-detail-return",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            tests = os.path.join(repo, "tests")
+            fixtures = os.path.join(tests, "fixtures", "replay")
+            os.makedirs(fixtures)
+            for name in fixture_names:
+                os.makedirs(os.path.join(fixtures, name))
+
+            focusfp = os.path.join(tests, "focusfp.sh")
+            shutil.copyfile(os.path.join(TESTS_DIR, "focusfp.sh"), focusfp)
+            os.chmod(focusfp, 0o755)
+
+            sim = os.path.join(tmp, "fake-sim")
+            with open(sim, "w", encoding="utf-8") as f:
+                f.write(simulator)
+            os.chmod(sim, 0o755)
+
+            env = os.environ.copy()
+            env.update({"SIM_BIN": sim, "OUT": os.path.join(tmp, "out")})
+            return subprocess.run(
+                [focusfp, "--pms", "127.0.0.1:9", "--replay", *args],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+    def test_replay_counts_pass_skip_and_failure_separately(self):
+        """A missing replay fixture is a skip, not a successful flow."""
+        script = """#!/bin/sh
+root="$PLXNATIVE_RUNTIME_DIR"
+if [ -e "$root/plxnative-settings" ]; then
+    marker='overlay=settings'
+elif [ -e "$root/plxnative-filmography" ]; then
+    marker='route=person'
+else
+    marker='hubs: landed'
+fi
+printf '%s\\nreplay: done frames=1 graded=1 diverged=0 present_diffs=0 verdict=SAME\\n' "$marker" > "$root/plxnative-events.log"
+exit 0
+"""
+        result = self._run_isolated_focusfp(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("=== focusfp: 3 passed, 0 failed, 9 skipped of 12 ===", result.stdout)
+
+
+    def test_only_counts_a_failed_simulator_and_the_tv_root_as_selected_outcomes(self):
+        script = """#!/bin/sh
+root="$PLXNATIVE_RUNTIME_DIR"
+printf 'hubs: landed\\n' > "$root/plxnative-events.log"
+exit 0
+"""
+        result = self._run_isolated_focusfp(script, "--only", "1,10")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("=== focusfp: 0 passed, 1 failed, 1 skipped of 2 ===", result.stdout)
+
+
 class ReplayFixtures(unittest.TestCase):
     """Restructure spec §5.6 rule 2: every string value in a committed replay fixture belongs to
     the closed synthetic alphabet (tests/fixtures/replay/ALPHABET.json). The guard applies the same
@@ -251,6 +317,90 @@ class ReplayFixtures(unittest.TestCase):
         with open(os.path.join(self.FIXTURES, "ALPHABET.json"), encoding="utf-8") as f:
             a = json.load(f)
         return frozenset(a["literals"]), [re.compile("^(?:%s)$" % p) for p in a["patterns"]]
+
+    def test_actual_cli_and_outbound_fixture_exception(self):
+        """Invoke both public boundaries; never execute the described outbound command."""
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run(["git", "init", "-q", root], check=True)
+            fixtures = os.path.join(root, "tests", "fixtures", "replay")
+            os.makedirs(fixtures)
+            os.makedirs(os.path.join(root, "tools"))
+            tool = os.path.join(root, "tools", "plxnative-rec")
+            shutil.copy(os.path.join(REPO_ROOT, "tools", "plxnative-rec"), tool)
+            shutil.copy(os.path.join(self.FIXTURES, "ALPHABET.json"), fixtures)
+            hook = os.path.join(REPO_ROOT, ".claude", "hooks", "outbound-guard.py")
+
+            def guard(path):
+                return subprocess.run([sys.executable, hook], input=json.dumps({
+                    "tool_name": "Bash", "cwd": root, "tool_input": {
+                        "command": "gh pr create --body-file " + path}}),
+                    capture_output=True, text=True, cwd=root)
+
+            d = self._synthetic_recording(fixtures)
+            relative = "tests/fixtures/replay/rec/rec-0000.jsonl"
+            negatives = ["UnlistedHouseholdName", "UNLISTEDHOUSEHOLDNAME",
+                         "UnlistedHouseholdName(Instance(4))",
+                         "Landing(UnlistedHouseholdName(4))",
+                         "plxnative-unlistedhouseholdname", "route=unlistedhouseholdname",
+                         "pat:unlistedhouseholdname", "txt:deadbeefcafebabe",
+                         "12345678-1234-4234-8234-123456789abc",
+                         "ABCDEFPrivateToken", "s01234567\n",
+                         "plxnative-rec=unlistedhouseholdname",
+                         "route=home overlay=unlistedhouseholdname",
+                         "Landing(Instance(4))"]
+            positives = ["Mount", "Session", "Landing(Instance(InstanceId(4)))",
+                         "Landing(Store(StoreOrd(3)))", "Landing(Session)",
+                         "Resource(Texture)", "Timer(TimerId(7))", "s01234567",
+                         "route=home overlay=account", "plxnative-rec",
+                         "pat:solid:120:50", "txt:s01234567+s89abcdef"]
+            for index, value in enumerate(negatives + positives):
+                accepted = index >= len(negatives)
+                with self.subTest(case=index, accepted=accepted):
+                    with open(os.path.join(d, "rec-0000.jsonl"), "w", encoding="utf-8") as f:
+                        f.write(json.dumps({"t": "st", "f": 0, "probe": value}) + "\n")
+                    cli = subprocess.run([sys.executable, tool, "check", d],
+                                         capture_output=True, text=True, cwd=root)
+                    outbound = guard(relative)
+                    with self.subTest(boundary="cli"):
+                        self.assertEqual(cli.returncode, 0 if accepted else 1)
+                    with self.subTest(boundary="guard"):
+                        self.assertEqual(outbound.returncode, 0 if accepted else 2)
+                    if not accepted:
+                        self.assertNotIn(value, cli.stdout + cli.stderr)
+                        self.assertNotIn(value, outbound.stdout + outbound.stderr)
+            # The original counterexample changed only manifest.build, not a frame payload.
+            with open(os.path.join(d, "rec-0000.jsonl"), "w", encoding="utf-8") as f:
+                f.write(json.dumps({"t": "st", "f": 0, "hash": 1}) + "\n")
+            manifest_path = os.path.join(d, "manifest.json")
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest = json.load(f)
+            manifest["build"] = negatives[0]
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f)
+            cli = subprocess.run([sys.executable, tool, "check", d],
+                                 capture_output=True, text=True, cwd=root)
+            outbound = guard("tests/fixtures/replay/rec/manifest.json")
+            with self.subTest(boundary="manifest-cli"):
+                self.assertEqual(cli.returncode, 1)
+            with self.subTest(boundary="manifest-guard"):
+                self.assertEqual(outbound.returncode, 2)
+            self.assertNotIn(negatives[0], cli.stdout + cli.stderr + outbound.stdout + outbound.stderr)
+            # Identical synthetic bytes outside the exception remain private recording grammar.
+            shutil.copy(os.path.join(d, "rec-0000.jsonl"), os.path.join(root, "outside.jsonl"))
+            self.assertEqual(guard("outside.jsonl").returncode, 2)
+            for name in sorted(os.listdir(self.FIXTURES)):
+                source = os.path.join(self.FIXTURES, name)
+                if not os.path.isfile(os.path.join(source, "manifest.json")):
+                    continue
+                target = os.path.join(fixtures, name)
+                shutil.copytree(source, target)
+                result = subprocess.run([sys.executable, tool, "check", target],
+                                        capture_output=True, text=True, cwd=root)
+                self.assertEqual(result.returncode, 0, name)
+                for fn in os.listdir(target):
+                    if fn == "manifest.json" or fn.endswith(".jsonl"):
+                        self.assertEqual(guard("tests/fixtures/replay/" + name + "/" + fn).returncode, 0,
+                                         name + "/" + fn)
 
     @staticmethod
     def _strings(node, out):
@@ -283,9 +433,9 @@ class ReplayFixtures(unittest.TestCase):
                     for v in vals:
                         checked += 1
                         # the value is deliberately not in the message: a leak by a shorter route
-                        self.assertTrue(v in lits or any(p.match(v) for p in pats),
+                        self.assertTrue(v in lits or any(p.fullmatch(v) for p in pats),
                                         "%s/%s: a %d-char string outside the alphabet" % (name, fn, len(v)))
-        self.assertGreaterEqual(checked, 0)
+        self.assertGreater(checked, 0)
 
     def test_every_committed_fixture_carries_the_trees_recording_schema(self):
         """`ui/rec.rs`'s SCHEMA moved 1 -> 2 in restructure phase 11 and this suite did not
@@ -336,6 +486,44 @@ class ReplayFixtures(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertIn("effects=2 results=1 landings=0 lifecycle=1", result.stdout)
             self.assertNotIn("not-for-info-output", result.stdout)
+
+    def test_safe_printers_do_not_echo_unlisted_header_or_kind(self):
+        sentinel = "UnlistedHouseholdName"
+        with tempfile.TemporaryDirectory() as root:
+            first = self._synthetic_recording(os.path.join(root, "a"), st=1)
+            second = self._synthetic_recording(os.path.join(root, "b"), st=2)
+            path = os.path.join(first, "manifest.json")
+            with open(path, encoding="utf-8") as f:
+                header = json.load(f)
+            header["build"] = sentinel
+            header["features"] = [sentinel]
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(header, f)
+            with open(os.path.join(first, "rec-0000.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps({"t": sentinel, "f": 0}) + "\n")
+            for args in [("info", first), ("diff", first, second)]:
+                with self.subTest(command=args[0]):
+                    result = self._tool(*args)
+                    self.assertEqual(result.returncode, 0 if args[0] == "info" else 1)
+                    self.assertIn("<redacted>", result.stdout)
+                    self.assertNotIn(sentinel, result.stdout + result.stderr)
+
+    def test_info_redacts_malformed_features_container_without_iterating_it(self):
+        sentinel = "SACFMZSACFMZ"
+        with tempfile.TemporaryDirectory() as root:
+            recording = self._synthetic_recording(root)
+            path = os.path.join(recording, "manifest.json")
+            with open(path, encoding="utf-8") as f:
+                header = json.load(f)
+            for features in (sentinel, {sentinel: True}, None, 17, True):
+                with self.subTest(container=type(features).__name__):
+                    header["features"] = features
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(header, f)
+                    result = self._tool("info", recording)
+                    self.assertEqual(result.returncode, 0)
+                    self.assertIn("features=<redacted>", result.stdout)
+                    self.assertNotIn(sentinel, (result.stdout + result.stderr).replace(",", ""))
 
     def _synthetic_recording(self, root, st=0x1234, anchor=False):
         d = os.path.join(root, "rec")
@@ -408,6 +596,20 @@ class ReplayFixtures(unittest.TestCase):
                 for name, contents in kept.items():
                     with open(os.path.join(fixtures, "flow", name), "rb") as f:
                         self.assertEqual(f.read(), contents)
+            for effect_line, count in [("replay: effect diverge f=0 index=0\n", 1),
+                                       ("", 1), ("replay: effect diverge f=0 index=0\n", 0)]:
+                log = os.path.join(tmp, "effect.log")
+                with open(log, "w") as f:
+                    f.write(effect_line +
+                            "replay: diverge f=0 expected=0x0000000000000010 got=0x0000000000000020 inputs=1\n" +
+                            "replay: done frames=1 graded=1 diverged=1 present_diffs=0 effect_diffs=%d verdict=DIVERGED\n" % count)
+                r = run("rebaseline", new, "flow", "--log", log)
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn("effect", r.stdout)
+                self.assertFalse(os.path.exists(os.path.join(fixtures, "flow", "divergence.json")))
+                for name, contents in kept.items():
+                    with open(os.path.join(fixtures, "flow", name), "rb") as f:
+                        self.assertEqual(f.read(), contents)
             # 4. a real record: accepted, and divergence.json is written beside the new recording
             log = os.path.join(tmp, "real.log")
             open(log, "w").write("replay: diverge f=0 expected=0x0000000000000010 got=0x0000000000000020 inputs=1\n"
@@ -429,14 +631,15 @@ class ReplayFixtures(unittest.TestCase):
 
     def test_the_alphabet_refuses_a_title_shaped_string(self):
         lits, pats = self._alphabet()
-        for v in ("Film Club Night", "The Godfather", "10.203.0.10", "nas-home"):
-            self.assertFalse(v in lits or any(p.match(v) for p in pats), v)
-        for v in ("s0a1b2c3d", "tick", "inst:3", "0.7.0-dev", "Landing(Instance(4))", "plxnative-rec"):
-            self.assertTrue(v in lits or any(p.match(v) for p in pats), v)
+        for v in ("Film Club Night", "The Godfather", "10.203.0.10", "nas-home",
+                  "UnlistedHouseholdName", "UnlistedUppercaseWord", "ABCDEFPrivateToken"):
+            self.assertFalse(v in lits or any(p.fullmatch(v) for p in pats), "rejected case")
+        for v in ("s0a1b2c3d", "tick", "inst:3", "0.7.0-dev", "Landing(Instance(InstanceId(4)))", "plxnative-rec"):
+            self.assertTrue(v in lits or any(p.fullmatch(v) for p in pats), "protocol case")
 
     def test_home_payload_alphabet_accepts_only_the_mock_protocol_and_synthetic_words(self):
         lits, pats = self._alphabet()
-        accepts = lambda value: value in lits or any(p.match(value) for p in pats)
+        accepts = lambda value: value in lits or any(p.fullmatch(value) for p in pats)
         for value in ("", "hubs", "PG-13", "TV-14", "ac3", "h264", "home.movies.recent",
                       "home.television.recent", "/library/sections/1/recentlyAdded",
                       "/library/sections/2/recentlyAdded", "/library/metadata/1001/thumb/1",
@@ -448,6 +651,20 @@ class ReplayFixtures(unittest.TestCase):
                       "/library/parts/2/1700000002/household.mkv", "http://nas.local/library/metadata/1001",
                       "s01234567\nThe Godfather", " ".join(["s01234567"] * 23 + ["household"])):
             self.assertFalse(accepts(value), value)
+
+    def test_controlled_init_alphabet_is_a_finite_source_vocabulary(self):
+        lits, pats = self._alphabet()
+        accepts = lambda value: value in lits or any(p.fullmatch(value) for p in pats)
+        for value in ("controlled=home version=1", "plxnative-app-init", "127.0.0.1",
+                      "http://127.0.0.1:32517", "Idle", "Boot", "ActivateDevBootstrap",
+                      "AlreadyInstalled", "Request", "owned", "Sdl", "RemoteFifo", "Script", "Replay",
+                      "Up", "Down", "Left", "Right", "Repeat", "discovery", "reset", "refetch"):
+            self.assertTrue(accepts(value), "source protocol constant")
+        for value in ("UnlistedHouseholdName", "UnlistedUppercaseWord", "plxnative-app-init=secret",
+                      "http://192.0.2.1:32517", "https://127.0.0.1:32517", "http://127.0.0.1:325170",
+                      "http://127.0.0.1:32517?X-Plex-Token=secret", "http://127.0.0.1:32517@private",
+                      "01234567-89ab-4cde-8fab-0123456789ab"):
+            self.assertFalse(accepts(value), "unlisted or private-shaped input")
 
 
 class TeardownProcessTable(unittest.TestCase):
@@ -4005,6 +4222,182 @@ class DepGates(unittest.TestCase):
         r = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def _plant(self, name, content):
+        """Write `content` to a temp file under rust-modules/src that no ci/allow/*.txt names,
+        run ci/check-deps.sh against the real tree with it present, and guarantee removal even if
+        the assertion that follows fails. An orphan .rs file with no `mod` statement pointing at
+        it is invisible to cargo (nothing declares it part of the crate) but not to `find … -name
+        '*.rs'`, which is all these gates scan with — so this is the cheapest way to prove a gate
+        catches a shape without touching a real, permanent source file."""
+        target = os.path.join(self.ROOT, "rust-modules", "src", name)
+        self.assertFalse(os.path.exists(target), f"stale self-test artifact at {target} — remove it by hand")
+        try:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(content)
+            return subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")],
+                                   capture_output=True, text=True)
+        finally:
+            if os.path.exists(target):
+                os.remove(target)
+
+    def _mutate(self, relpath, needle, replacement):
+        """Temporarily replace ONE occurrence of `needle` with `replacement` in a REAL tracked
+        file, run ci/check-deps.sh, then unconditionally restore the original bytes — even if the
+        assertion that follows fails. Unlike `_plant`'s orphan-file trick, `mutators-visibility`
+        greps a DECLARATION LINE inside one of the seven specific legacy-store files by path, not
+        a `find … -name '*.rs'` sweep, so an orphan file elsewhere in the tree is invisible to it
+        by design; a scratch mutation of the real file's own content is what "plants a
+        pub(crate) fn set_cur in a temp copy" (the D3 brief's own words) has to mean here."""
+        target = os.path.join(self.ROOT, "rust-modules", "src", relpath)
+        with open(target, encoding="utf-8") as f:
+            original = f.read()
+        self.assertEqual(original.count(needle), 1, f"{needle!r} not found exactly once in {relpath}")
+        try:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(original.replace(needle, replacement, 1))
+            return subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")],
+                                   capture_output=True, text=True)
+        finally:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(original)
+
+    def test_mutators_visibility_gate_catches_a_republished_mutator(self):
+        """D3: `browse::set_cur` was narrowed to private so `stores::browse::apply` is the only
+        door — but a call-site gate alone can only ever prove nobody currently calls a mutator
+        directly, never that nobody CAN (the D3 census's own finding: zero call-site violations
+        coexisted with every mutator across six stores sitting `pub(crate)` for years). RED:
+        temporarily re-publishing `set_cur` as `pub(crate)` — with no call site touched at all —
+        must fail `mutators-visibility` on the DECLARATION alone."""
+        r = self._mutate(
+            os.path.join("browse", "mod.rs"),
+            "fn set_cur(i: usize) {",
+            "pub(crate) fn set_cur(i: usize) {",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("mutators-visibility:", out)
+        self.assertIn("browse/mod.rs: fn set_cur", out)
+
+    def test_mutators_visibility_gate_ignores_pub_super_in_section_hubs(self):
+        """`browse::section_hubs`'s five mutators are `pub(super)`, genuinely tighter than
+        private-to-crate-root since section_hubs's parent is `browse`, a real module — the gate's
+        own regex matches a bare `pub`/`pub(crate)` only. GREEN: confirm the real declaration is
+        `pub(super)` today (so this test cannot pass by coincidence) and that the gate is
+        satisfied by it, unmutated."""
+        target = os.path.join(self.ROOT, "rust-modules", "src", "browse", "section_hubs.rs")
+        with open(target, encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("pub(super) fn kick(sec: usize) {", content)
+        r = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok — mutators-visibility", r.stdout)
+
+    def test_threads_gate_catches_a_bare_thread_spawn_after_use_std_thread(self):
+        """The gate used to match only the fully-qualified `std::thread::spawn(` spelling, so a
+        file that does `use std::thread;` and then calls the bare `thread::spawn(` — exactly the
+        shape the phase-12 gates package's own brief named as invisible — passed silently. RED:
+        planting that shape in a file ci/allow/threads.txt does not name must fail `threads`."""
+        r = self._plant(
+            "_check_deps_selftest_threads.rs",
+            "use std::thread;\n\npub fn spawn_worker() {\n    thread::spawn(|| {});\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("threads:", out)
+        self.assertIn("_check_deps_selftest_threads.rs", out)
+
+    def test_tmppath_gate_catches_a_path_built_on_one_line_and_opened_on_the_next(self):
+        """The gate used to require the literal and a filesystem-open verb on the SAME line, so a
+        value built on one line and opened on the next passed silently. RED: planting that split
+        in a file dev.rs does not own must fail `tmppath`."""
+        r = self._plant(
+            "_check_deps_selftest_tmppath_open.rs",
+            'pub fn open_it() {\n    let p = "/tmp/plxnative-selftest";\n'
+            "    let _ = std::fs::File::open(p);\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("tmppath:", out)
+        self.assertIn("_check_deps_selftest_tmppath_open.rs", out)
+
+    def test_tmppath_gate_exempts_a_log_message_mention(self):
+        """D4's own exemption: a `/tmp/plxnative-` literal that is only message text passed to
+        `log`/`crate::log`/`log!` must not fail the gate. GREEN: planting one, including a nested
+        `format!` the way most real call sites spell it, must leave `tmppath` (and the whole
+        script) green."""
+        r = self._plant(
+            "_check_deps_selftest_tmppath_log.rs",
+            'pub fn mention_it(n: u32) {\n    crate::log(&format!(\n'
+            '        "selftest: see /tmp/plxnative-selftest ({n})"\n    ));\n}\n',
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — tmppath", out)
+
+    def test_textmeasure_gate_catches_a_bare_call_outside_the_seam(self):
+        """Phase 12, D4: `textmeasure` went from an allowlist to zero-tolerance. RED: a raw
+        `crate::text::text_width(` call in a file that is neither one of the three seam files
+        (`text.rs`, `ui/text_view.rs`, `ui/text_buffer.rs`) nor inside an `impl … Measure for …`
+        block must fail — a screen reaching for the raw function instead of threading a `Measure`
+        capability down is exactly the shape D1 spent this phase eliminating."""
+        r = self._plant(
+            "_check_deps_selftest_textmeasure_bare.rs",
+            'pub fn label_width(s: &std::ffi::CStr) -> f32 {\n'
+            "    crate::text::text_width(s.as_ptr(), 24, 0)\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("textmeasure:", out)
+        self.assertIn("_check_deps_selftest_textmeasure_bare.rs", out)
+
+    def test_textmeasure_gate_exempts_the_body_of_a_measure_impl(self):
+        """The exemption is STRUCTURAL, not a path allowlist: any `impl … Measure for …` block,
+        anywhere in the tree, may call the raw functions it wraps — `widgets.rs`'s `LegacyMeasure`
+        and `login.rs`'s `RawTextMeasure` are today's two, but a third added later must not need
+        its file added to a list. GREEN: the identical call from the RED case above, moved inside
+        such a block in a brand-new file, must leave `textmeasure` green."""
+        r = self._plant(
+            "_check_deps_selftest_textmeasure_impl.rs",
+            "struct SelftestMeasure;\n\n"
+            "impl crate::ui::machine::Measure for SelftestMeasure {\n"
+            "    fn width(&self, s: &std::ffi::CStr, sz: i32, bold: bool) -> f32 {\n"
+            "        crate::text::text_width(s.as_ptr(), sz, bold as i32)\n"
+            "    }\n"
+            "}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — textmeasure", out)
+
+    def test_dt_gate_catches_a_raw_accumulator(self):
+        """Phase 12, D4: `dt` went from a 12-file allowlist to zero-tolerance everywhere but
+        `ui/motion.rs`. RED: a `self.t += dt;`-shaped accumulator in a new file must fail — this
+        is the exact pattern (a clock-driven animator summing a raw per-frame delta instead of
+        reading `Tick.ms` through `motion::Ramp`/`motion::Phase`) the frozen-animator regression
+        class comes from."""
+        r = self._plant(
+            "_check_deps_selftest_dt_accum.rs",
+            "pub struct Ramp { t: f32 }\n\nimpl Ramp {\n"
+            "    pub fn tick(&mut self, dt: f32) {\n        self.t += dt;\n    }\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("dt:", out)
+        self.assertIn("_check_deps_selftest_dt_accum.rs", out)
+
+    def test_dt_gate_catches_idle_dt_by_name(self):
+        """`idle::dt()` is deleted from `ui/idle.rs` — the accessor callers used to sum themselves.
+        RED: a call spelled `idle::dt()` anywhere must fail even with no `+=`/`-=` beside it, since
+        the function no longer exists to call."""
+        r = self._plant(
+            "_check_deps_selftest_dt_fn.rs",
+            "pub fn read_it() -> f32 {\n    crate::ui::idle::dt()\n}\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("dt:", out)
+        self.assertIn("_check_deps_selftest_dt_fn.rs", out)
+
     def test_check_statics_is_green(self):
         """Spec §0 done-criterion 1: `ci/check-statics.sh` — every `static mut` under ui/ and screens/
         is a named render cache (ci/allow/statics.txt) or sits in a legacy module still awaiting its
@@ -4025,6 +4418,65 @@ class DepGates(unittest.TestCase):
                 self.assertTrue(os.path.exists(os.path.join(self.ROOT, e.split("\t")[0])), e)
             seen += 1
         self.assertGreaterEqual(seen, 3)
+
+    # Phase 12 (P8-H): a per-file PIN, on top of the self-consistency check above. That check
+    # only proves a file's own `# count: N` line matches its own entry count — it cannot see an
+    # allowlist and its count grow TOGETHER, correctly, in the same edit, past the number this
+    # phase actually measured. This table is that second line of defence: growing any file below
+    # means also raising its number HERE, in the same diff, so a reviewer sees the move rather
+    # than an allowlist quietly absorbing a new violation. Shrinking is always allowed (update
+    # the number down). The weave that merged P8-H also retired `ci/allow/statics-migration.txt`
+    # to 0 — its one entry (ui/widgets.rs) was the 11 top-bar/glass-band statics named individually
+    # in `ci/allow/statics.txt` instead, which is why that file's own pin moved 6 -> 17 in the same
+    # diff. `ci/allow/sibling-migration.txt` moved to its phase target of 0 in the wave-0
+    # integration pass: `screens/onboard.rs`'s breadcrumb constant was duplicated locally instead
+    # of reading `screens::profiles::TITLE` (the `CRUMB_SETTINGS` pattern already beside it), and
+    # `screens/detail/tests.rs`'s two raw-key-driven `alt_sources` tests were deleted as stale —
+    # the Engine conversion (P2) retired the mechanism they drove, and
+    # `screens/alt_sources_tests.rs`'s own `focus_and_hit` module already carries the replacement
+    # coverage for the same observable through `Activate`/`FocusMoved`.
+    #
+    # `ci/allow/textmeasure.txt` and `ci/allow/dt.txt` are GONE, not zeroed (phase 12, D4): every
+    # `crate::text::(text_width|elide|cap_h)` call site now either threads a real `Measure`
+    # capability down from its caller or sits inside the BODY of an `impl … Measure for …` block
+    # (`check-deps.sh`'s `textmeasure` gate detects that structurally, not by allowlisted path),
+    # and `idle::dt()` is deleted from `ui/idle.rs` outright — every clock-driven animator that
+    # used to accumulate a raw per-frame `dt` now advances through `motion::Ramp`/`motion::Phase`
+    # off a real `Tick`, or (`ui/xfade.rs`, `ui/containers/transition.rs`, whose ramps are HASHED
+    # replay state and already reported motion correctly through another mechanism) is spelled to
+    # avoid the gate's literal `(+=|-=) dt` pattern with no change to the arithmetic at all. Both
+    # rules are absent from the table below on purpose, the same way a deleted allowlist's own
+    # entry disappears rather than pinning at 0.
+    PINNED_ALLOWLIST_COUNTS = {
+        "libm.txt": 5,
+        "mutators.txt": 0,
+        "nav.txt": 0,
+        "sibling-migration.txt": 0,
+        "statics-migration.txt": 0,
+        "statics.txt": 17,
+        "store-seams.txt": 0,
+        "threads.txt": 0,
+        "ticks.txt": 2,
+        "wall.txt": 2,
+    }
+
+    def test_allowlist_counts_match_the_pinned_table(self):
+        allow = os.path.join(self.ROOT, "ci", "allow")
+        on_disk = sorted(os.listdir(allow))
+        self.assertEqual(
+            set(on_disk), set(self.PINNED_ALLOWLIST_COUNTS),
+            "a new ci/allow/*.txt file (or a deleted one) must add (or remove) its own line in "
+            "PINNED_ALLOWLIST_COUNTS deliberately, not appear here as a surprise",
+        )
+        for fn, pinned in self.PINNED_ALLOWLIST_COUNTS.items():
+            with open(os.path.join(allow, fn), encoding="utf-8") as f:
+                declared = int(f.readline().split(":")[1])
+            self.assertLessEqual(
+                declared, pinned,
+                f"{fn} grew from the pinned {pinned} to {declared} — if this growth is "
+                "deliberate (a real, reasoned new entry, not a workaround), raise the number in "
+                "PINNED_ALLOWLIST_COUNTS in the same change so a reviewer sees it move",
+            )
 
 
 if __name__ == "__main__":

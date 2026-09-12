@@ -2130,9 +2130,10 @@ impl Transport {
     /// **`scrub_ns` is NOT among them any more** (restructure §2.3, phase 9). The scrub preview is
     /// the `PlayerScreen`'s own `scrub.ns` and this atomic is the PUBLISHED copy of it, so a store
     /// here was a second owner writing over the first — and it was redundant besides: every seek
-    /// that can cause a reload goes through `app::playback::commit_seek`, which retires the
-    /// preview in the owner before requesting the seek. The one reload that does not (the OS
-    /// taking the screen) delivers `PlayerScreen::transport_reset(true)` from the loop's
+    /// that can cause a reload is asked for by that screen, which retires its own preview in the
+    /// same step (`commit_scrub`; through phase 12 `app::playback::commit_seek` did it instead,
+    /// which was the same cross-owner write one level down). The one reload nobody asks for (the
+    /// OS taking the screen) delivers `PlayerScreen::transport_reset(true)` from the loop's
     /// background arm.
     pub(crate) fn reset_for_reload(&self) {
         self.started.store(false, Ordering::Relaxed);

@@ -15,6 +15,9 @@
 //! (64 MB: the runtime root is a RAM-backed tmpfs on the set) after which the recording STOPS and
 //! says so; directory 0700, files 0600. No `scrub_local` on this path: the directory is private
 //! (`.gitignore`, `outbound-guard.py`'s `PRIVATE_DIRS`).
+//! Replay additionally accounts for source plus decoded structures within that reservation,
+//! charging JSON nodes/strings and frame capacity while parsing, before collecting more data.
+//! Every storage error terminally latches; finish returns final-flush failure to the app.
 //!
 //! **Arming.** A recording starts ONLY at a controlled boot: `Writer::open` takes the frame index
 //! and refuses anything but 0, so the header is a complete initial condition by construction —
@@ -26,12 +29,13 @@
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
 use super::machine::{Canon, LogicalState, Measure, Tick};
+mod strict_json;
 
 /// The record format's version. A recording from another schema is REFUSED, both printed.
 ///
@@ -46,17 +50,36 @@ pub const SCHEMA: u32 = 2;
 pub const SEGMENT_BYTES: usize = 2 * 1024 * 1024;
 /// The hard cap on one recording (spec §5.3, settled on the tmpfs measurement).
 pub const CAP_BYTES: usize = 64 * 1024 * 1024;
+
+/// Only this application's runtime namespace, never the target named by recplay or a header.
+/// Caller must first consume the active Writer. remove_dir_all does not follow directory
+/// symlinks; the explicit symlink branch also handles dangling links as owned entries.
+pub(crate) fn erase_owned_artifacts(root: &Path) -> Vec<String> {
+    let mut failures = Vec::new();
+    for name in ["plxnative-rec", "plxnative-recplay", "plxnative-app-init", "plxnative-recordings"] {
+        let path = root.join(name);
+        let result = match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+            Ok(metadata) if name == "plxnative-recordings" && metadata.is_dir() => fs::remove_dir_all(&path),
+            Ok(_) => fs::remove_file(&path),
+        };
+        if result.is_err() { failures.push(format!("{name}: could not remove owned recording artifact")); }
+    }
+    failures
+}
 // Enough for the final cap record with full-width frame/byte counters. The manifest and normal
 // segments share the remaining budget; stopping must not itself exceed the hard cap.
 const CAP_NOTE_RESERVE: usize = 128;
 const DATA_CAP_BYTES: usize = CAP_BYTES - CAP_NOTE_RESERVE;
 
 /// What a recording is refused for.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecError {
     /// `Writer::open` was asked to start anywhere but frame 0.
     MidSession { at_frame: u64 },
     InitialTooLarge { limit: usize },
+    RecordingTooLarge { limit: usize },
     Io(String),
     /// The loader met another schema: `(theirs, ours)`.
     Schema { theirs: u32, ours: u32 },
@@ -141,31 +164,38 @@ impl Header {
             clock: ClockWire { start: *clock_start_ms }, blobs: *blobs }
     }
 
-    fn to_json(&self) -> Value {
+    #[cfg(test)]
+    pub(crate) fn to_json(&self) -> Value {
         serde_json::to_value(self.wire()).expect("header wire contains only JSON values")
     }
 
     fn from_json(v: &Value) -> Result<Self, RecError> {
+        if !v.is_object() || v.get("init").is_some_and(|init| !init.is_object()) {
+            return Err(malformed(0,"header object"));
+        }
         let get_u64 = |k: &str| v.get(k).and_then(Value::as_u64);
+        let text = |value: Option<&Value>| -> Result<String,RecError> {
+            value.map_or(Ok(String::new()),|value| value.as_str().map(String::from).ok_or_else(|| malformed(0,"header text")))
+        };
         Ok(Self {
-            schema: get_u64("schema").ok_or_else(|| malformed(0, "schema"))? as u32,
+            schema: checked_u32(v,"schema",0)?,
             state_fp: get_u64("state_fp").ok_or_else(|| malformed(0, "state_fp"))?,
-            build: v["build"].as_str().unwrap_or("").to_string(),
-            features: strings(&v["features"]),
-            triggers: strings(&v["triggers"]),
-            init_probe: v["init"]["probe"].as_str().unwrap_or("").to_string(),
-            init_hash: v["init"]["hash"].as_u64().unwrap_or(0),
+            build: text(v.get("build"))?,
+            features: strings(v.get("features"))?,
+            triggers: strings(v.get("triggers"))?,
+            init_probe: text(v["init"].get("probe"))?,
+            init_hash: v["init"].get("hash").map_or(Ok(0),|value| value.as_u64().ok_or_else(|| malformed(0,"initial hash")))?,
             init_data: v["init"].get("data").cloned().unwrap_or(Value::Null),
-            clock_start_ms: v["clock"]["start"].as_u64().unwrap_or(0) as u32,
-            blobs: v["blobs"].as_bool().unwrap_or(false),
+            clock_start_ms: if v.get("clock").is_some() { checked_u32(&v["clock"],"start",0)? } else { 0 },
+            blobs: v.get("blobs").map_or(Ok(false),|value| value.as_bool().ok_or_else(|| malformed(0,"blob policy")))?,
         })
     }
 }
 
-fn strings(v: &Value) -> Vec<String> {
-    v.as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-        .unwrap_or_default()
+fn strings(v: Option<&Value>) -> Result<Vec<String>, RecError> {
+    let Some(v) = v else { return Ok(Vec::new()) };
+    v.as_array().ok_or_else(|| malformed(0,"string array"))?.iter()
+        .map(|x| x.as_str().map(String::from).ok_or_else(|| malformed(0,"string array element"))).collect()
 }
 
 fn malformed(line: usize, what: &str) -> RecError {
@@ -175,24 +205,112 @@ fn malformed(line: usize, what: &str) -> RecError {
     }
 }
 
+fn checked_u32(v: &Value, field: &str, line: usize) -> Result<u32, RecError> {
+    v[field].as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| malformed(line,field))
+}
+
+fn input_budget(manifest: usize, segments: impl IntoIterator<Item = usize>) -> Result<(), RecError> {
+    let mut total = manifest;
+    for size in segments {
+        total = total.checked_add(size).ok_or(RecError::RecordingTooLarge { limit:CAP_BYTES })?;
+    }
+    if total > CAP_BYTES { return Err(RecError::RecordingTooLarge { limit:CAP_BYTES }); }
+    Ok(())
+}
+
+fn bounded_read(path: &Path, remaining: usize) -> Result<Vec<u8>, RecError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path).map_err(|_| RecError::Io("cannot open recording file".into()))?;
+    let metadata = file.metadata().map_err(|_| RecError::Io("cannot inspect recording file".into()))?;
+    if !metadata.is_file() { return Err(RecError::Io("recording input is not a regular file".into())); }
+    if metadata.len() > remaining as u64 { return Err(RecError::RecordingTooLarge { limit:CAP_BYTES }); }
+    // Exact allocation avoids read_to_end's geometric spare capacity and a limit+1 growth
+    // doubling. A changing file is refused, never allowed to grow this preflight allocation.
+    let mut bytes = vec![0; metadata.len() as usize];
+    file.read_exact(&mut bytes).map_err(|_| RecError::Io("cannot read recording file".into()))?;
+    let mut extra = [0];
+    if file.read(&mut extra).map_err(|_| RecError::Io("cannot finish recording read".into()))? != 0 {
+        return Err(RecError::Io("recording changed during read".into()));
+    }
+    Ok(bytes)
+}
+
+/// Generic typed-initial input transport, with exactly the recording reader's bounds and JSON
+/// integrity checks. Application decoding happens afterwards and never reads a fallback file.
+pub(crate) fn initial_value(path: &Path) -> Result<Value, RecError> {
+    strict_json::decode(&bounded_read(path,DATA_CAP_BYTES)?).map_err(|_| malformed(0,"initial JSON"))
+}
+
+pub(crate) fn mode_value(path: &Path) -> Result<Option<String>, RecError> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(RecError::Io("cannot inspect recorder trigger".into())),
+        Ok(_) => {}
+    }
+    let bytes = bounded_read(path,libc::PATH_MAX as usize)?;
+    let value = String::from_utf8(bytes).map_err(|_| malformed(0,"recorder trigger UTF-8"))?;
+    Ok(Some(value.trim().to_owned()))
+}
+
 /// Where the bytes go: a directory of segments (the product), or memory (tests).
 pub trait Sink {
     fn segment(&mut self, index: u32) -> std::io::Result<Box<dyn Write>>;
     fn manifest(&mut self, text: &str) -> std::io::Result<()>;
+    /// Abort an unattached/failed-start capture. Unsupported sinks fail closed, never claim
+    /// that persistent data was removed. No pathname from a recording authorizes rollback.
+    fn rollback(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::other("sink cannot roll back a capture"))
+    }
 }
 
 /// The product sink: `dir/manifest.json`, `dir/rec-NNNN.jsonl`, private modes.
 pub struct DirSink {
     dir: PathBuf,
+    directory_identity: (u64,u64),
+    created: Vec<(PathBuf,CreatedIdentity)>,
+    #[cfg(test)]
+    fail_initial_metadata: bool,
+}
+
+enum CreatedIdentity {
+    /// Registered immediately after create_new, before the first fallible metadata query.
+    Open(fs::File),
+    Known((u64,u64)),
+}
+
+fn file_identity(metadata: &fs::Metadata) -> (u64,u64) {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.dev(),metadata.ino())
 }
 
 impl DirSink {
     pub fn create(dir: &Path) -> std::io::Result<Self> {
-        fs::create_dir_all(dir)?;
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        if !fs::symlink_metadata(dir)?.is_dir() {
+            return Err(std::io::Error::other("recording directory must not be a symlink"));
+        }
         private_mode(dir, 0o700)?;
         Ok(Self {
             dir: dir.to_path_buf(),
+            directory_identity: file_identity(&fs::symlink_metadata(dir)?),
+            created: Vec::new(),
+            #[cfg(test)] fail_initial_metadata: false,
         })
+    }
+    fn create_owned_file(&mut self, path: &Path) -> std::io::Result<fs::File> {
+        let file = private_new_file(path)?;
+        self.created.push((path.to_path_buf(),CreatedIdentity::Open(file)));
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_initial_metadata) {
+            return Err(std::io::Error::other("injected initial metadata failure"));
+        }
+        let claim = &mut self.created.last_mut().expect("just registered file").1;
+        let CreatedIdentity::Open(file) = claim else { unreachable!() };
+        let identity = file_identity(&file.metadata()?);
+        let CreatedIdentity::Open(file) = std::mem::replace(claim,CreatedIdentity::Known(identity)) else { unreachable!() };
+        Ok(file)
     }
 }
 
@@ -210,16 +328,48 @@ fn private_mode(_p: &Path, _mode: u32) -> std::io::Result<()> {
 impl Sink for DirSink {
     fn segment(&mut self, index: u32) -> std::io::Result<Box<dyn Write>> {
         let p = self.dir.join(format!("rec-{index:04}.jsonl"));
-        let f = fs::File::create(&p)?;
-        private_mode(&p, 0o600)?;
+        let f = self.create_owned_file(&p)?;
         Ok(Box::new(std::io::BufWriter::new(f)))
     }
 
     fn manifest(&mut self, text: &str) -> std::io::Result<()> {
         let p = self.dir.join("manifest.json");
-        fs::write(&p, text)?;
-        private_mode(&p, 0o600)
+        self.create_owned_file(&p)?.write_all(text.as_bytes())
     }
+
+    fn rollback(&mut self) -> std::io::Result<()> {
+        let directory = fs::symlink_metadata(&self.dir)?;
+        if !directory.is_dir() || file_identity(&directory) != self.directory_identity {
+            return Err(std::io::Error::other("capture directory identity changed"));
+        }
+        let mut failed = false;
+        for (path, identity) in std::mem::take(&mut self.created) {
+            let identity = match identity {
+                CreatedIdentity::Known(identity) => identity,
+                CreatedIdentity::Open(file) => {
+                    // Initial fstat failed, but ownership was already registered. Recover the
+                    // identity through that exact handle, then close it before unlinking.
+                    let identity = file.metadata().map(|metadata| file_identity(&metadata));
+                    drop(file);
+                    match identity { Ok(identity) => identity, Err(_) => { failed = true; continue; } }
+                }
+            };
+            match fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Ok(metadata) if metadata.is_file() && file_identity(&metadata) == identity => {
+                    if fs::remove_file(path).is_err() { failed = true; }
+                }
+                _ => failed = true, // a replacement/symlink is not this attempt's artifact
+            }
+        }
+        if failed { Err(std::io::Error::other("capture rollback incomplete")) } else { Ok(()) }
+    }
+}
+
+fn private_new_file(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new().write(true).create_new(true).mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(path)
 }
 
 /// An in-memory sink: every segment is a `Vec<u8>` the test reads back.
@@ -259,6 +409,11 @@ impl Sink for MemSink {
         self.manifest = text.to_string();
         Ok(())
     }
+    fn rollback(&mut self) -> std::io::Result<()> {
+        self.manifest.clear();
+        self.segments.borrow_mut().clear();
+        Ok(())
+    }
 }
 
 /// The writer: buffers one frame, writes once per frame, rotates and caps.
@@ -270,6 +425,7 @@ pub struct Writer {
     total_bytes: usize,
     buf: Vec<u8>,
     stopped: bool,
+    failure: Option<RecError>,
     frames: u64,
     /// Microseconds spent in the writer this second — the heartbeat's `rec=`.
     pub spent_us: u64,
@@ -287,8 +443,15 @@ impl Writer {
                 else { RecError::Io(e.to_string()) });
         }
         let text = String::from_utf8(encoded.bytes).map_err(|e| RecError::Io(e.to_string()))?;
-        sink.manifest(&text).map_err(|e| RecError::Io(e.to_string()))?;
-        let seg = sink.segment(0).map_err(|e| RecError::Io(e.to_string()))?;
+        let opened = sink.manifest(&text).and_then(|()| sink.segment(0));
+        let seg = match opened {
+            Ok(seg) => seg,
+            Err(error) => {
+                let rollback = sink.rollback();
+                return Err(RecError::Io(if rollback.is_err() { "recording open failed; rollback incomplete".into() }
+                    else { error.to_string() }));
+            }
+        };
         Ok(Self {
             sink,
             seg: Some(seg),
@@ -297,6 +460,7 @@ impl Writer {
             total_bytes: text.len(),
             buf: Vec::with_capacity(4096),
             stopped: false,
+            failure: None,
             frames: 0,
             spent_us: 0,
         })
@@ -304,6 +468,11 @@ impl Writer {
 
     pub fn stopped(&self) -> bool {
         self.stopped
+    }
+    pub fn invalidate(&mut self, frame: u64) {
+        self.line(json!({"f":frame,"t":"stopped","why":"unsupported"}));
+        let _ = self.flush_frame();
+        self.stopped = true;
     }
 
     fn line(&mut self, v: Value) {
@@ -338,6 +507,9 @@ impl Writer {
 
     pub fn effect(&mut self, f: u64, from: &str, e: &str, addr: Option<(String, u32)>) {
         self.line(json!({"f": f, "t": "eff", "from": from, "e": e, "addr": addr.map(|(m, r)| json!({"to": m, "req": r}))}));
+    }
+    pub fn effect_payload(&mut self, f: u64, from: &str, e: &str, payload: Value) {
+        self.line(json!({"f":f,"t":"eff","from":from,"e":e,"payload":payload}));
     }
 
     pub fn result(&mut self, f: u64, to: &str, req: u32, payload: Value) {
@@ -379,6 +551,18 @@ impl Writer {
 
     /// One write per frame. Rotates at `SEGMENT_BYTES`, stops at `CAP_BYTES` with a final note.
     pub fn flush_frame(&mut self) -> Result<(), RecError> {
+        if let Some(error) = &self.failure { return Err(error.clone()); }
+        let result = self.flush_frame_inner();
+        if let Err(error) = &result {
+            self.stopped = true;
+            self.failure = Some(error.clone());
+            self.buf.clear();
+            self.seg = None;
+        }
+        result
+    }
+
+    fn flush_frame_inner(&mut self) -> Result<(), RecError> {
         self.frames += 1;
         if self.stopped || self.buf.is_empty() {
             return Ok(());
@@ -402,7 +586,7 @@ impl Writer {
         }
         if self.seg_bytes + self.buf.len() > SEGMENT_BYTES {
             if let Some(mut old) = self.seg.take() {
-                let _ = old.flush();
+                old.flush().map_err(|e| RecError::Io(e.to_string()))?;
             }
             self.seg_index += 1;
             self.seg_bytes = 0;
@@ -412,7 +596,7 @@ impl Writer {
                     .map_err(|e| RecError::Io(e.to_string()))?,
             );
         }
-        let seg = self.seg.as_mut().expect("a segment is open");
+        let seg = self.seg.as_mut().ok_or_else(|| RecError::Io("segment unavailable".into()))?;
         seg.write_all(&self.buf)
             .map_err(|e| RecError::Io(e.to_string()))?;
         self.seg_bytes += self.buf.len();
@@ -421,11 +605,19 @@ impl Writer {
         Ok(())
     }
 
-    pub fn finish(mut self) {
-        let _ = self.flush_frame();
+    pub(crate) fn abort(mut self) -> Result<(), RecError> {
+        self.stopped = true;
+        self.buf.clear();
+        drop(self.seg.take()); // retire BufWriter/File before unlink; no later drop can flush
+        self.sink.rollback().map_err(|_| RecError::Io("capture rollback incomplete".into()))
+    }
+
+    pub fn finish(mut self) -> Result<(), RecError> {
+        self.flush_frame()?;
         if let Some(mut seg) = self.seg.take() {
-            let _ = seg.flush();
+            seg.flush().map_err(|e| RecError::Io(e.to_string()))?;
         }
+        Ok(())
     }
 }
 
@@ -459,7 +651,15 @@ pub struct Recording {
 impl Recording {
     /// Parse a manifest and its segments' bytes (in order). Refuses another schema or shape.
     pub fn parse(manifest: &str, segments: &[&[u8]], state_fp: u64) -> Result<Self, RecError> {
-        let mv: Value = serde_json::from_str(manifest).map_err(|e| RecError::Io(e.to_string()))?;
+        Self::parse_budget(manifest, segments, state_fp, CAP_BYTES)
+    }
+    fn parse_budget(manifest: &str, segments: &[&[u8]], state_fp: u64, decoded_limit: usize) -> Result<Self, RecError> {
+        input_budget(manifest.len(),segments.iter().map(|bytes| bytes.len()))?;
+        let budget = strict_json::Budget::new(decoded_limit);
+        for size in std::iter::once(manifest.len()).chain(segments.iter().map(|bytes| bytes.len())) {
+            budget.charge(size.saturating_mul(3)).map_err(|what| malformed(0,what))?;
+        }
+        let mv = strict_json::decode_with(manifest.as_bytes(), &budget).map_err(|_| malformed(0,"manifest JSON/budget"))?;
         let header = Header::from_json(&mv)?;
         if header.schema != SCHEMA {
             return Err(RecError::Schema {
@@ -483,13 +683,13 @@ impl Recording {
                     continue;
                 }
                 n += 1;
-                let v: Value = serde_json::from_slice(line).map_err(|e| RecError::Malformed {
-                    line: n,
-                    what: e.to_string(),
-                })?;
+                let v = strict_json::decode_with(line, &budget).map_err(|_| malformed(n,"record JSON/budget"))?;
                 let f = v["f"].as_u64().ok_or_else(|| malformed(n, "f"))?;
                 let kind = v["t"].as_str().ok_or_else(|| malformed(n, "t"))?;
                 if frames.last().map(|x| x.f) != Some(f) {
+                    if frames.last().is_some_and(|frame| frame.f >= f) { return Err(malformed(n,"frame order")); }
+                    if frames.last().is_some_and(|frame| frame.tick.is_none()) { return Err(malformed(n,"completed frame lacks tick")); }
+                    budget.charge(4 * std::mem::size_of::<Frame>()).map_err(|what| malformed(n,what))?;
                     frames.push(Frame {
                         f,
                         ..Default::default()
@@ -498,49 +698,69 @@ impl Recording {
                 let fr = frames.last_mut().expect("just pushed");
                 match kind {
                     "tick" => {
+                        if fr.tick.is_some() { return Err(malformed(n,"duplicate tick")); }
                         fr.tick = Some(Tick {
-                            ms: v["ms"].as_u64().unwrap_or(0) as u32,
-                            dt_us: v["dt_us"].as_u64().unwrap_or(0) as u32,
+                            ms: checked_u32(&v,"ms",n)?,
+                            dt_us: checked_u32(&v,"dt_us",n)?,
                         })
                     }
                     "present" => {
-                        fr.present = v["bit"].as_bool();
+                        if fr.present.is_some() { return Err(malformed(n,"duplicate present")); }
+                        fr.present = Some(v["bit"].as_bool().ok_or_else(|| malformed(n,"bit"))?);
                         fr.present_why = v["why"].as_str().map(String::from);
                     }
                     "in" => fr.inputs.push(v.clone()),
                     "eff" => fr.effects.push(v.clone()),
                     "async" => fr.results.push(v.clone()),
-                    "land" => fr.lands.push((
-                        v["ord"].as_u64().ok_or_else(|| malformed(n, "ord"))? as u32,
-                        v["gen"].as_u64().unwrap_or(0) as u32,
-                        v["n"].as_u64().unwrap_or(1).max(1) as u32,
-                    )),
-                    "life" | "timer" => fr.life.push(v.clone()),
+                    "land" => {
+                        let ord = checked_u32(&v,"ord",n)?;
+                        let generation = checked_u32(&v,"gen",n)?;
+                        let count = checked_u32(&v,"n",n)?;
+                        if count == 0 || fr.lands.iter().any(|(old,_,_)| *old == ord) {
+                            return Err(malformed(n,"landing identity/count"));
+                        }
+                        fr.lands.push((ord,generation,count));
+                    }
+                    "life" => {
+                        checked_u32(&v,"inst",n)?;
+                        v["ev"].as_str().ok_or_else(|| malformed(n,"life event"))?;
+                        fr.life.push(v.clone());
+                    }
+                    "timer" => { checked_u32(&v,"id",n)?; fr.life.push(v.clone()); }
                     "metrics" => {
-                        metrics.insert(
-                            (
-                                v["s"].as_str().unwrap_or("").to_string(),
-                                v["sz"].as_i64().unwrap_or(0) as i32,
-                                v["b"].as_bool().unwrap_or(false),
-                            ),
-                            (
-                                v["w"].as_f64().unwrap_or(0.0) as f32,
-                                v["h"].as_f64().unwrap_or(0.0) as f32,
-                            ),
-                        );
+                        let key = (v["s"].as_str().ok_or_else(|| malformed(n,"metric text"))?.to_owned(),
+                            v["sz"].as_i64().and_then(|n| i32::try_from(n).ok()).ok_or_else(|| malformed(n,"metric size"))?,
+                            v["b"].as_bool().ok_or_else(|| malformed(n,"metric bold"))?);
+                        let metric = |field| -> Result<f32, RecError> {
+                            let value = v[field].as_f64().ok_or_else(|| malformed(n,field))? as f32;
+                            if !value.is_finite() { return Err(malformed(n,field)); }
+                            Ok(value)
+                        };
+                        let value = (metric("w")?,metric("h")?);
+                        if let Some((w,h)) = metrics.insert(key,value) {
+                            if w.to_bits() != value.0.to_bits() || h.to_bits() != value.1.to_bits() {
+                                return Err(malformed(n,"conflicting metrics"));
+                            }
+                        }
                     }
-                    "st" => fr.st = v["hash"].as_u64(),
+                    "st" => {
+                        if fr.st.is_some() { return Err(malformed(n,"duplicate state")); }
+                        fr.st = Some(v["hash"].as_u64().ok_or_else(|| malformed(n,"hash"))?);
+                    }
                     "fo" => {
-                        fr.focus = Some(match (v["entry"].as_u64(), v["elem"].as_u64()) {
-                            (Some(e), Some(k)) => Some((e as u32, k as u32, v["group"].as_u64().map(|g| g as u32))),
-                            _ => None,
-                        })
+                        if fr.focus.is_some() { return Err(malformed(n,"duplicate focus")); }
+                        fr.focus = Some(if v["entry"].is_null() && v["elem"].is_null() && v["group"].is_null() { None }
+                            else { Some((checked_u32(&v,"entry",n)?,checked_u32(&v,"elem",n)?,
+                                if v["group"].is_null() { None } else { Some(checked_u32(&v,"group",n)?) })) });
                     }
-                    "stopped" => stopped_at = Some(f),
-                    other => return Err(malformed(n, other)),
+                    "stopped" => {
+                        if stopped_at.replace(f).is_some() { return Err(malformed(n,"duplicate stopped")); }
+                    }
+                    _ => return Err(malformed(n, "record kind")),
                 }
             }
         }
+        if frames.last().is_some_and(|frame| frame.tick.is_none()) { return Err(malformed(n,"completed frame lacks tick")); }
         Ok(Self {
             header,
             frames,
@@ -551,17 +771,33 @@ impl Recording {
 
     /// Load from a directory written by `DirSink`.
     pub fn load(dir: &Path, state_fp: u64) -> Result<Self, RecError> {
-        let manifest = fs::read_to_string(dir.join("manifest.json")).map_err(|e| RecError::Io(e.to_string()))?;
-        let mut segs: Vec<(String, Vec<u8>)> = Vec::new();
+        let manifest = bounded_read(&dir.join("manifest.json"),CAP_BYTES)?;
+        let manifest = String::from_utf8(manifest).map_err(|_| malformed(0,"manifest UTF-8"))?;
+        let mut paths = Vec::new();
+        let mut declared_size = manifest.len();
         for entry in fs::read_dir(dir).map_err(|e| RecError::Io(e.to_string()))? {
             let entry = entry.map_err(|e| RecError::Io(e.to_string()))?;
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with("rec-") && name.ends_with(".jsonl") {
-                segs.push((name, fs::read(entry.path()).map_err(|e| RecError::Io(e.to_string()))?));
+                if paths.len() >= CAP_BYTES / SEGMENT_BYTES + 1 { return Err(RecError::RecordingTooLarge {limit:CAP_BYTES}); }
+                let metadata = fs::symlink_metadata(entry.path()).map_err(|_| RecError::Io("cannot inspect segment".into()))?;
+                if !metadata.is_file() { return Err(RecError::Io("segment is not a regular file".into())); }
+                let size = usize::try_from(metadata.len()).map_err(|_| RecError::RecordingTooLarge {limit:CAP_BYTES})?;
+                input_budget(declared_size,[size])?;
+                declared_size += size;
+                paths.push((name,entry.path()));
             }
         }
-        segs.sort_by(|a, b| a.0.cmp(&b.0));
-        let refs: Vec<&[u8]> = segs.iter().map(|(_, b)| b.as_slice()).collect();
+        paths.sort_by(|a,b| a.0.cmp(&b.0));
+        let mut remaining = CAP_BYTES - manifest.len();
+        let mut segs = Vec::new();
+        for (index,(name,path)) in paths.into_iter().enumerate() {
+            if name != format!("rec-{index:04}.jsonl") { return Err(malformed(0,"segment sequence")); }
+            let bytes = bounded_read(&path,remaining)?;
+            remaining -= bytes.len();
+            segs.push(bytes);
+        }
+        let refs: Vec<&[u8]> = segs.iter().map(Vec::as_slice).collect();
         Self::parse(&manifest, &refs, state_fp)
     }
 
@@ -569,15 +805,11 @@ impl Recording {
     /// was recorded consuming landings on, oldest first. This is what `ui::landgate::arm_replay`
     /// holds a replay's live landings to; an empty inner list means "this store never landed",
     /// which the gate reads as "deliver at once and grade it `extra`", never as "hold forever".
-    pub fn land_schedule(&self) -> Vec<Vec<(u64, u32)>> {
-        let mut out: Vec<Vec<(u64, u32)>> = Vec::new();
+    pub fn land_schedule(&self) -> std::collections::BTreeMap<u32,Vec<(u64, u32)>> {
+        let mut out = std::collections::BTreeMap::<u32,Vec<(u64,u32)>>::new();
         for frame in &self.frames {
             for (ord, _, n) in &frame.lands {
-                let i = *ord as usize;
-                if out.len() <= i {
-                    out.resize(i + 1, Vec::new());
-                }
-                out[i].push((frame.f, *n));
+                out.entry(*ord).or_default().push((frame.f,*n));
             }
         }
         out
@@ -649,6 +881,272 @@ pub fn state_fp(shapes: &[&str]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoded_budget_rejects_large_initial_collection() {
+        let mut header = Header::new(17, &Init);
+        header.init_data = json!({"collection": []});
+        assert!(Recording::parse_budget(&header.to_json().to_string(), &[], 17, 64 * 1024).is_ok());
+        header.init_data = json!({"collection": vec![0; 2048]});
+        let manifest = serde_json::to_string(&header.to_json()).unwrap();
+        assert!(Recording::parse_budget(&manifest, &[], 17, 64 * 1024).is_err());
+    }
+    #[test]
+    fn decoded_budget_rejects_large_single_frame_collection() {
+        let manifest = serde_json::to_string(&Header::new(17, &Init).to_json()).unwrap();
+        let small = b"{\"f\":0,\"t\":\"tick\",\"ms\":0,\"dt_us\":0}\n{\"f\":0,\"t\":\"in\",\"payload\":[]}";
+        assert!(Recording::parse_budget(&manifest, &[small], 17, 64 * 1024).is_ok());
+        let rows = format!("{{\"f\":0,\"t\":\"tick\",\"ms\":0,\"dt_us\":0}}\n{}\n",
+            json!({"f":0,"t":"in","payload":vec![0;2048]}));
+        assert!(Recording::parse_budget(&manifest, &[rows.as_bytes()], 17, 64 * 1024).is_err());
+    }
+    #[test]
+    fn decoded_budget_rejects_tiny_many_frame_rows() {
+        let manifest = serde_json::to_string(&Header::new(17, &Init).to_json()).unwrap();
+        assert!(Recording::parse_budget(&manifest, &[b"{\"f\":0,\"t\":\"tick\",\"ms\":0,\"dt_us\":0}"],17,128 * 1024).is_ok());
+        let rows = (0..1024).map(|f| format!("{{\"f\":{f},\"t\":\"tick\",\"ms\":0,\"dt_us\":0}}\n")).collect::<String>();
+        assert!(Recording::parse_budget(&manifest, &[rows.as_bytes()], 17, 128 * 1024).is_err());
+    }
+    #[test]
+    fn completed_malformed_frame_is_rejected_before_next_rows() {
+        let root = LoadRoot::new("missing-tick-early");
+        root.rows(&[json!({"f":0,"t":"timer","id":1}),json!({"f":1,"t":"timer","id":1})]);
+        assert!(Recording::load(&root.0, 17).is_err(), "completed frame without tick must be refused");
+    }
+
+    #[derive(Clone, Copy)]
+    enum Fault { Write, Flush, Open }
+    struct FaultSink(Fault);
+    struct FaultSegment(Fault);
+    impl Write for FaultSegment {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if matches!(self.0, Fault::Write) { return Err(std::io::Error::other("injected write failure")); }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            if matches!(self.0, Fault::Flush) { return Err(std::io::Error::other("injected flush failure")); }
+            Ok(())
+        }
+    }
+    impl Sink for FaultSink {
+        fn manifest(&mut self, _: &str) -> std::io::Result<()> { Ok(()) }
+        fn segment(&mut self, index: u32) -> std::io::Result<Box<dyn Write>> {
+            if index > 0 && matches!(self.0, Fault::Open) { return Err(std::io::Error::other("injected open failure")); }
+            Ok(Box::new(FaultSegment(self.0)))
+        }
+    }
+    fn fault_writer(fault: Fault) -> Writer {
+        Writer::open(Box::new(FaultSink(fault)), &Header::new(17, &Init), 0).unwrap()
+    }
+    fn assert_terminal(mut writer: Writer) {
+        assert!(writer.flush_frame().is_err(), "storage failure must be surfaced");
+        assert!(writer.stopped(), "storage failure must terminally latch");
+        writer.tick(1, Tick { ms: 16, dt_us: 16000 });
+        assert!(writer.flush_frame().is_err(), "later flush must retain failure without panic");
+    }
+    #[test]
+    fn storage_midwrite_failure_is_terminal() {
+        let mut writer = fault_writer(Fault::Write);
+        writer.tick(0, Tick { ms: 0, dt_us: 0 });
+        assert_terminal(writer);
+    }
+    #[test]
+    fn storage_rotation_flush_failure_is_terminal() {
+        let mut writer = fault_writer(Fault::Flush);
+        writer.seg_bytes = SEGMENT_BYTES;
+        writer.tick(0, Tick { ms: 0, dt_us: 0 });
+        assert_terminal(writer);
+    }
+    #[test]
+    fn storage_rotation_open_failure_is_terminal() {
+        let mut writer = fault_writer(Fault::Open);
+        writer.seg_bytes = SEGMENT_BYTES;
+        writer.tick(0, Tick { ms: 0, dt_us: 0 });
+        assert_terminal(writer);
+    }
+
+    struct LoadRoot(PathBuf);
+    impl LoadRoot {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("plxnative-record-load-{}-{tag}",std::process::id()));
+            fs::create_dir(&path).expect("unique recording test directory");
+            let root = Self(path);
+            fs::write(root.0.join("manifest.json"),serde_json::to_vec(&Header::new(17,&Init).to_json()).unwrap()).unwrap();
+            root
+        }
+        fn rows(&self, rows: &[Value]) {
+            let text = rows.iter().map(|row| serde_json::to_string(row).unwrap()).collect::<Vec<_>>().join("\n");
+            fs::write(self.0.join("rec-0000.jsonl"),text).unwrap();
+        }
+    }
+    impl Drop for LoadRoot { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+
+    #[test]
+    fn production_load_rejects_truncated_tick_and_duplicate_tick() {
+        let root = LoadRoot::new("checked-tick");
+        let tick = json!({"f":0,"t":"tick","ms":37,"dt_us":16000});
+        root.rows(&[tick.clone()]);
+        assert_eq!(Recording::load(&root.0,17).unwrap().frames[0].tick.unwrap().ms,37);
+        for field in ["ms","dt_us"] {
+            let mut changed = tick.clone(); changed[field] = json!(tick[field].as_u64().unwrap() + (1u64<<32));
+            root.rows(&[changed]);
+            assert!(Recording::load(&root.0,17).is_err(),"overflow must not decode as the original tick");
+            let mut changed = tick.clone(); changed.as_object_mut().unwrap().remove(field);
+            root.rows(&[changed]);
+            assert!(Recording::load(&root.0,17).is_err(),"missing time is not zero");
+        }
+        root.rows(&[tick.clone(),tick]);
+        assert!(Recording::load(&root.0,17).is_err(),"duplicate tick cannot overwrite evidence");
+    }
+
+    #[test]
+    fn production_load_rejects_truncated_landing_and_invalid_count() {
+        let root = LoadRoot::new("checked-land");
+        let tick = json!({"f":0,"t":"tick","ms":0,"dt_us":0});
+        let landing = json!({"f":0,"t":"land","ord":1,"gen":9,"n":1});
+        root.rows(&[tick.clone(),landing.clone()]);
+        assert_eq!(Recording::load(&root.0,17).unwrap().frames[0].lands,vec![(1,9,1)]);
+        for field in ["ord","gen","n"] {
+            let mut changed = landing.clone(); changed[field] = json!(landing[field].as_u64().unwrap() + (1u64<<32));
+            root.rows(&[tick.clone(),changed]);
+            assert!(Recording::load(&root.0,17).is_err(),"overflow is not an equivalent landing");
+        }
+        let mut changed = landing; changed["n"] = json!(0);
+        root.rows(&[tick,changed]);
+        assert!(Recording::load(&root.0,17).is_err(),"zero is not an observed batch");
+    }
+
+    #[test]
+    fn production_load_caps_manifest_and_aggregate_segments_before_json_parse() {
+        let root = LoadRoot::new("aggregate-cap");
+        let manifest = root.0.join("manifest.json");
+        let saved = fs::read(&manifest).unwrap();
+        fs::OpenOptions::new().write(true).open(&manifest).unwrap().set_len(CAP_BYTES as u64 + 1).unwrap();
+        assert_eq!(Recording::load(&root.0,17).err(),Some(RecError::RecordingTooLarge {limit:CAP_BYTES}));
+        fs::write(&manifest,saved).unwrap();
+        for index in 0..2 {
+            let file = fs::File::create(root.0.join(format!("rec-{index:04}.jsonl"))).unwrap();
+            file.set_len((CAP_BYTES/2) as u64).unwrap(); // sparse; no 64 MiB fixture allocation
+        }
+        assert_eq!(Recording::load(&root.0,17).err(),Some(RecError::RecordingTooLarge {limit:CAP_BYTES}),
+            "metadata rejects the aggregate before the sparse non-JSON bodies are read");
+    }
+
+    #[test]
+    fn production_load_rejects_duplicate_json_keys_and_segment_symlinks() {
+        let root = LoadRoot::new("duplicate-key");
+        let segment = root.0.join("rec-0000.jsonl");
+        fs::write(&segment,b"{\"f\":0,\"t\":\"tick\",\"ms\":4294967296,\"ms\":0,\"dt_us\":0}").unwrap();
+        assert!(Recording::load(&root.0,17).is_err(),"duplicate key cannot erase overflowing evidence");
+        fs::rename(&segment,root.0.join("retained.jsonl")).unwrap();
+        fs::write(root.0.join("retained.jsonl"),b"{\"f\":0,\"t\":\"tick\",\"ms\":0,\"dt_us\":0}").unwrap();
+        std::os::unix::fs::symlink(root.0.join("retained.jsonl"),&segment).unwrap();
+        assert!(Recording::load(&root.0,17).is_err(),"a recording cannot redirect segment reads");
+    }
+
+    #[test]
+    fn production_load_refuses_fifo_manifest_without_waiting_for_a_writer() {
+        use std::os::unix::{ffi::OsStrExt,fs::OpenOptionsExt};
+        let root = LoadRoot::new("fifo-manifest");
+        let path = root.0.join("manifest.json");
+        fs::rename(&path,root.0.join("retained-manifest.json")).unwrap();
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(),0o600) },0);
+        let (tx,rx) = std::sync::mpsc::sync_channel(1);
+        let directory = root.0.clone();
+        let worker = std::thread::spawn(move || { tx.send(Recording::load(&directory,17).map(|_| ())).unwrap(); });
+        let first = rx.recv_timeout(std::time::Duration::from_secs(2));
+        let prompt = first.is_ok();
+        let result = match first {
+            Ok(result) => result,
+            Err(_) => {
+                // Regression cleanup: release a reader blocked in open, then join it before
+                // failing. O_RDWR|O_NONBLOCK cannot itself wait for the missing peer.
+                let _wake = fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_NONBLOCK).open(&path).unwrap();
+                rx.recv_timeout(std::time::Duration::from_secs(2)).expect("FIFO reader released")
+            }
+        };
+        worker.join().unwrap();
+        assert!(prompt,"nonregular input must be refused without opening a blocking FIFO");
+        assert!(matches!(result,Err(RecError::Io(_))));
+    }
+
+    #[test]
+    fn full_width_store_ordinal_uses_sparse_schedule_storage() {
+        let header = Header::new(17,&Init).to_json().to_string();
+        let row = format!("{{\"f\":0,\"t\":\"tick\",\"ms\":0,\"dt_us\":0}}\n{{\"f\":0,\"t\":\"land\",\"ord\":{},\"gen\":{},\"n\":{}}}",u32::MAX,u32::MAX,u32::MAX);
+        let record = Recording::parse(&header,&[row.as_bytes()],17).unwrap();
+        let schedule = record.land_schedule();
+        assert_eq!(schedule.len(),1);
+        assert_eq!(schedule[&u32::MAX],vec![(0,u32::MAX)]);
+        let _serial = crate::testlock::serial();
+        let _gate = crate::ui::landgate::Armed;
+        crate::ui::landgate::arm_sparse_replay(schedule);
+        assert_eq!(crate::ui::landgate::unmatched_counts(),vec![(u32::MAX,0,u32::MAX)]);
+    }
+
+    #[test]
+    fn disk_writer_is_private_from_creation_and_never_overwrites_a_capture() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = LoadRoot::new("private-writer");
+        let path = root.0.join("capture");
+        let sink = DirSink::create(&path).unwrap();
+        let writer = Writer::open(Box::new(sink),&Header::new(17,&Init),0).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777,0o700);
+        for name in ["manifest.json","rec-0000.jsonl"] {
+            assert_eq!(fs::metadata(path.join(name)).unwrap().permissions().mode() & 0o777,0o600);
+        }
+        let before = fs::read(path.join("manifest.json")).unwrap();
+        let sink = DirSink::create(&path).unwrap();
+        assert!(Writer::open(Box::new(sink),&Header::new(19,&Init),0).is_err());
+        assert_eq!(fs::read(path.join("manifest.json")).unwrap(),before);
+    }
+
+    #[test]
+    fn failed_open_rolls_back_new_manifest_but_preserves_preexisting_segment() {
+        let root = LoadRoot::new("open-rollback");
+        let path = root.0.join("capture");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("rec-0000.jsonl"),b"preexisting segment sentinel").unwrap();
+        let sink = DirSink::create(&path).unwrap();
+        assert!(Writer::open(Box::new(sink),&Header::new(17,&Init),0).is_err());
+        assert!(!path.join("manifest.json").exists(), "partial open must not leave its new private header");
+        assert_eq!(fs::read(path.join("rec-0000.jsonl")).unwrap(),b"preexisting segment sentinel");
+    }
+
+    #[test]
+    fn initial_metadata_failure_keeps_an_owned_handle_for_open_rollback() {
+        let root = LoadRoot::new("metadata-rollback");
+        let path = root.0.join("capture");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("preexisting-sentinel"),b"preserve existing").unwrap();
+        let mut sink = DirSink::create(&path).unwrap();
+        sink.fail_initial_metadata = true;
+        assert!(Writer::open(Box::new(sink),&Header::new(17,&Init),0).is_err());
+        assert!(!path.join("manifest.json").exists(), "the just-created file must not escape ownership on fstat failure");
+        assert_eq!(fs::read(path.join("preexisting-sentinel")).unwrap(),b"preserve existing");
+        let writer = Writer::open(Box::new(DirSink::create(&path).unwrap()),&Header::new(17,&Init),0)
+            .expect("failed metadata lookup must not wedge immediate retry");
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn rollback_refuses_replaced_artifacts_and_never_follows_symlink_targets() {
+        let root = LoadRoot::new("rollback-identity");
+        let path = root.0.join("capture");
+        let target = root.0.join("external-sentinel");
+        fs::write(&target,b"preserve external target").unwrap();
+        let sink = DirSink::create(&path).unwrap();
+        let mut writer = Writer::open(Box::new(sink),&Header::new(17,&Init),0).unwrap();
+        writer.tick(0,Tick::default());
+        fs::rename(path.join("manifest.json"),root.0.join("retained-own-header")).unwrap();
+        std::os::unix::fs::symlink(&target,path.join("manifest.json")).unwrap();
+        assert!(writer.abort().is_err(), "replacement is not an artifact this attempt owns");
+        assert!(fs::symlink_metadata(path.join("manifest.json")).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(target).unwrap(),b"preserve external target");
+        assert!(!path.join("rec-0000.jsonl").exists(), "other still-owned artifacts are removed");
+    }
 
     struct Init;
     impl LogicalState for Init {
@@ -747,6 +1245,7 @@ mod tests {
         // pad past one segment
         let big = "x".repeat(4000);
         for f in 1..600u64 {
+            w.tick(f, Tick { ms: f as u32, dt_us: 16 });
             w.input(f, json!({"pad": big}));
             w.flush_frame().unwrap();
         }

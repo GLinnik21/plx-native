@@ -64,7 +64,14 @@ pub(crate) fn block_h() -> f32 {
     LABEL_H + RowStyle::HOME.h + UNDER_H
 }
 
-pub(crate) fn draw(p: Painter, d: &Detail, row: &CardRow, top: f32, focused: Option<usize>) {
+pub(crate) fn draw(
+    p: Painter,
+    d: &Detail,
+    row: &CardRow,
+    top: f32,
+    focused: Option<usize>,
+    measure: &dyn crate::ui::machine::Measure,
+) {
     let lift = row.lift();
     p.text(
         c"Related".as_ptr(),
@@ -89,6 +96,7 @@ pub(crate) fn draw(p: Painter, d: &Detail, row: &CardRow, top: f32, focused: Opt
         |i| d.related.get(i).and_then(|m| m.resume_frac()),
         |i| card_row::TileLabel::title(&d.related[i].title),
         |_, _, _, _| {},
+        measure,
     );
 }
 
@@ -99,6 +107,7 @@ pub(crate) fn draw_focused(
     index: usize,
     top: f32,
     press: f32,
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     let Some(item) = d.related.get(index) else {
         return;
@@ -120,6 +129,7 @@ pub(crate) fn draw_focused(
         &RowStyle::HOME,
         item.resume_frac(),
         &card_row::TileLabel::title(&item.title),
+        measure,
     );
 }
 

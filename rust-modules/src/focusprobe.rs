@@ -50,9 +50,9 @@
 //! costs **~7.3 µs**. That one number is worth knowing before adding a field: **~6.4 µs of it is a
 //! single filesystem `stat`**, inside [`crate::ui::player_hud::transport_hidden`] →
 //! `player_hud::busy` → `dev::flag("failtest")`. The rest of the player's seventeen fields together
-//! cost ~0.9 µs. It is paid deliberately: `transport_hidden` is the exact predicate the key
-//! ladder's player arms test, and the alternative is a second derivation of a rule that module
-//! keeps in one place. The player route is also the one route the idle gate excludes, so it draws
+//! cost ~0.9 µs. It is paid deliberately: `transport_hidden` is the exact predicate
+//! `PlayerScreen::handle_key` tests before any transport arm, and the alternative is a second
+//! derivation of a rule that module keeps in one place. The player route is also the one route the idle gate excludes, so it draws
 //! at full rate and 7 µs is ~0.04% of a 16.7 ms frame.
 //!
 //! # Arming it
@@ -97,6 +97,7 @@ pub(crate) enum Screen {
     /// with no further grammar to decode — the same one-element shortcut `Screen::Login`'s
     /// sibling used to take before phase 6 gave it several.
     Login {
+        phase: crate::auth::Phase,
         has_control: bool,
     },
     /// The who's-watching picker (`screens::profiles`), an OWNED screen since phase 6 — so, like
@@ -236,13 +237,13 @@ fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: 
 /// that without five copies of the host arms.
 fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
     match screen {
-        Screen::Login { has_control } => {
+        Screen::Login { phase, has_control } => {
             // The phase is still most of this screen's state — it is a projection of the auth
             // phase, and its `key` handler mostly drives `auth`, not a cursor — but it is not
             // ALL of it: see [`Screen::Login`]'s own doc for the one focusable control this used
             // to leave unreported, invisible to a (route × key) harness reading `phase=` alone
             // for the ~60/~12 seconds a stalled sign-in leaves it on screen with no phase change.
-            let _ = write!(s, " phase={:?} ctl={}", crate::auth::phase(), b(has_control));
+            let _ = write!(s, " phase={phase:?} ctl={}", b(has_control));
         }
         Screen::Profiles { elem } => {
             // See the variant's own doc for the grammar change this replaced (`avatar=<bool>` →
@@ -287,10 +288,12 @@ fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str
         ControlSlot::Skip(_) => "skip",
         ControlSlot::UpNext(_) => "upnext",
     };
-    // `hidden` is `player_hud::transport_hidden()`, read here for the reason `app.rs` reads it:
-    // its arm `continue`s unconditionally, so while it is true the four overlay arms below it are
-    // unreachable and every key but BACK is swallowed. A characterization run that could not see
-    // this field would record those arms as dead code rather than as shadowed ones.
+    // `hidden` is `player_hud::transport_hidden()`, read here for the reason
+    // `PlayerScreen::handle_key` reads it: it is that page's FIRST test, so while it is true every
+    // transport arm beneath it is unreachable and only the read-out's two DRAWN escapes — OK to
+    // the quality ladder, BACK out — plus EXIT do anything. A characterization run that could not
+    // see this field would record those arms as dead code rather than as shadowed ones.
+    // (Phase 12, PX-PLAYER: the loop does not read this predicate at all any more.)
     let _ = write!(
         s,
         " ov={} hud={} f={} btn={} tab={} slot={} items={} hidden={}",
@@ -398,8 +401,8 @@ mod tests {
             // both "no control on screen" and "the control has focus", because the two print
             // different values through one grammar — same reason `Screen::Profiles`'s two
             // entries exist, and the exact gap `Screen::Login`'s own doc says this used to leave
-            ("login", Screen::Login { has_control: false }),
-            ("login", Screen::Login { has_control: true }),
+            ("login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: false }),
+            ("login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: true }),
             // both a real cursor and "nothing focused yet", because the two print different
             // values through one grammar — same reason `Screen::Onboard`'s two entries exist
             ("profiles", Screen::Profiles { elem: 2 }),
@@ -590,8 +593,8 @@ mod tests {
     fn the_login_screens_stalled_control_appearing_is_observable() {
         let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
-        let without = fingerprint(&ps, "login", Screen::Login { has_control: false }, hud(), ControlSlot::Discs);
-        let with = fingerprint(&ps, "login", Screen::Login { has_control: true }, hud(), ControlSlot::Discs);
+        let without = fingerprint(&ps, "login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: false }, hud(), ControlSlot::Discs);
+        let with = fingerprint(&ps, "login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: true }, hud(), ControlSlot::Discs);
         assert_ne!(
             without, with,
             "the login screen's escape/retry/restart control appearing is not observable"

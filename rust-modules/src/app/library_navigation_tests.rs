@@ -25,7 +25,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     for i in 0..80 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let entry = d.nav.top_page().unwrap().id;
     let instance = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
@@ -51,12 +51,12 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
         );
     };
     seat(&mut d, base);
-    frame(&mut d, &mut rig, Route::Library, tick(80), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(80), vec![]);
     for i in 81..86 {
         frame(
             &mut d,
             &mut rig,
-            Route::Library,
+            AppArg::Library,
             tick(i),
             script_key(Key::Left, tick(i)),
         );
@@ -76,7 +76,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
     frame(
         &mut d,
         &mut rig,
-        Route::Library,
+        AppArg::Library,
         tick(86),
         script_key(Key::Right, tick(86)),
     );
@@ -84,7 +84,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
     frame(
         &mut d,
         &mut rig,
-        Route::Library,
+        AppArg::Library,
         tick(87),
         script_key(Key::Down, tick(87)),
     );
@@ -94,11 +94,11 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
         "DOWN genuinely left the strip"
     );
     seat(&mut d, base + 4);
-    frame(&mut d, &mut rig, Route::Library, tick(88), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(88), vec![]);
     frame(
         &mut d,
         &mut rig,
-        Route::Library,
+        AppArg::Library,
         tick(89),
         script_key(Key::Down, tick(89)),
     );
@@ -114,7 +114,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
         elem: base + 3,
     };
     seat(&mut d, search.elem);
-    frame(&mut d, &mut rig, Route::Library, tick(90), vec![]);
+    frame(&mut d, &mut rig, AppArg::Library, tick(90), vec![]);
     assert_eq!(d.focus(), Some(search));
     assert_eq!(
         d.nav
@@ -142,14 +142,14 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
     frame(
         &mut d,
         &mut rig,
-        Route::Library,
+        AppArg::Library,
         tick(91),
         key(Edge::Down, 91),
     );
     assert!(d.input.press.is_live());
     assert_eq!(d.input.arm.as_ref().map(|arm| arm.key), Some(search));
     for i in 92..95 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     assert!(!rig
         .take_library_reqs()
@@ -158,12 +158,12 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
     frame(
         &mut d,
         &mut rig,
-        Route::Library,
+        AppArg::Library,
         tick(95),
         key(Edge::Up, 95),
     );
     for i in 96..130 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let requests = rig.take_library_reqs();
     let tabs: Vec<_> = requests
@@ -197,7 +197,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
         )),
     );
     for i in 130..160 {
-        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     assert_ne!(d.focus().unwrap().entry, entry);
     assert_eq!(

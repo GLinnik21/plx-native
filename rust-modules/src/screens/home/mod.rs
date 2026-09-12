@@ -25,7 +25,7 @@ use crate::ui::landing_hero::{
 };
 use crate::ui::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent,
-    InputKind, InstanceId, Key, LogicalState, Machine, MachineId, Measure,
+    InputKind, InstanceId, Key, LogicalState, Machine, MachineId, Measure, Tick,
 };
 use crate::ui::present::{PresentEvent, Provenance};
 use crate::ui::screen::{
@@ -274,6 +274,12 @@ pub(crate) struct HomeScreen {
     hero_flip_cd: f32,
     hero_slide: Spring,
     hero_dir: f32,
+    /// Seconds until the carousel auto-advances, hashed as logical state (`SHAPE`'s
+    /// `hero_auto:f32`). Deliberately still a raw per-frame decrement (phase 12 D4 did NOT move
+    /// this onto `motion::Ramp`): it is hashed across three committed replay fixtures, and a
+    /// `Ramp`'s absolute-`Tick.ms` math computes the same real quantity through a different float
+    /// operation sequence that measurably diverges the hash. `tick`'s own doc explains the fix
+    /// that DID land — the countdown now reports `Motion`, which it never did before.
     hero_auto: f32,
 
     snap_target: f32,
@@ -646,7 +652,8 @@ impl HomeScreen {
         self.layout_grid();
     }
 
-    fn tick<H: HomeLike>(&mut self, dt: f32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn tick<H: HomeLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let dt = t.dt();
         self.sync_catalog(cx);
         let view = H::hubs(cx);
         let cta_available = hero_group_len(view) > 0;
@@ -676,7 +683,19 @@ impl HomeScreen {
             }
         }
         if self.snap.pos < 0.05 && view.hero_count() > 1 {
-            self.hero_auto -= dt;
+            // Spelled as an assignment, not `-= dt`: bit-for-bit identical arithmetic to the
+            // pre-D4 accumulator, deliberately UNCHANGED — `hero_auto` is HASHED `LogicalState`
+            // (`SHAPE`'s `hero_auto:f32`) across three committed replay fixtures, and a
+            // `motion::Ramp`'s absolute-`Tick.ms` math computes the same real quantity through a
+            // different float operation sequence that measurably diverges the hash (verified:
+            // `tests/focusfp.sh --replay` on flow 1 disagreed from frame 7 on, once the arithmetic
+            // changed). What WAS a real bug — this countdown never reported `Motion`, so a hero
+            // left mid-count-down on an otherwise-settled screen could silently freeze under
+            // `ui::idle`'s present gate, exactly the regression class this whole conversion
+            // exists to catch — is fixed by the explicit `note` just below, with no change to the
+            // number itself.
+            self.hero_auto = self.hero_auto - dt;
+            fx.present().note(PresentEvent::Motion);
             if self.hero_auto <= 0.0 {
                 self.hero_flip_cd = 0.0;
                 self.flip(view, 1);
@@ -971,7 +990,7 @@ impl HomeScreen {
             });
         }
         crate::ui::profile::phase("hm.grid", || {
-            self.draw_grid(view, &env, p, f.press.scale, grid_focus)
+            self.draw_grid(view, &env, p, f.press.scale, grid_focus, f.measure)
         });
         crate::ui::profile::phase("hm.status", || self.draw_status(view, &env, p, focus));
         crate::ui::testpat::underlay(p);
@@ -995,14 +1014,14 @@ impl HomeScreen {
         if let Some((out_x, in_x)) = self.slide_offsets() {
             if let Some(old) = self.outgoing_hero(view) {
                 let po = p.translate(out_x, 0.0);
-                hero_content(old.item, display_source(old.source), po, out_x);
+                hero_content(old.item, display_source(old.source), po, out_x, measure);
                 self.draw_hero_actions(old.item, env, po, out_x, false, page_alpha, focus, measure, press_scale);
             }
             let pi = p.translate(in_x, 0.0);
-            hero_content(hero.item, display_source(hero.source), pi, in_x);
+            hero_content(hero.item, display_source(hero.source), pi, in_x, measure);
             self.draw_hero_actions(hero.item, env, pi, in_x, true, page_alpha, focus, measure, press_scale);
         } else {
-            hero_content(hero.item, display_source(hero.source), p, 0.0);
+            hero_content(hero.item, display_source(hero.source), p, 0.0, measure);
             self.draw_hero_actions(hero.item, env, p, 0.0, true, page_alpha, focus, measure, press_scale);
         }
         if view.hero_count() > 1 {
@@ -1085,6 +1104,7 @@ impl HomeScreen {
         p: Painter,
         press_scale: f32,
         focused: Option<(usize, usize)>,
+        measure: &dyn Measure,
     ) {
         for row in 0..self.rows.len() {
             let Some(hub) = self.hub(view, row) else {
@@ -1102,6 +1122,7 @@ impl HomeScreen {
                     MARGIN_X,
                     heading_y(row_y, self.grid.shelves[row].lift()),
                     f32::INFINITY,
+                    measure,
                 );
             }
             for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate() {
@@ -1123,7 +1144,7 @@ impl HomeScreen {
                 );
             }
         }
-        self.draw_focused_cell(view, env, p, press_scale, focused);
+        self.draw_focused_cell(view, env, p, press_scale, focused, measure);
     }
 
     fn draw_focused_cell(
@@ -1133,6 +1154,7 @@ impl HomeScreen {
         p: Painter,
         press_scale: f32,
         focused: Option<(usize, usize)>,
+        measure: &dyn Measure,
     ) {
         let Some((row, col)) = focused.filter(|_| env.sp > 0.5) else {
             return;
@@ -1160,6 +1182,7 @@ impl HomeScreen {
             &RowStyle::HOME,
             item.resume_frac(),
             &label,
+            measure,
         );
     }
 
@@ -1317,7 +1340,7 @@ impl HomeScreen {
         let p = f.painter.alpha(f.page_alpha);
         let cut = crate::ui::widgets::TOP_BAR_BOTTOM;
         let _clip = f.clip(p, Rect::new(0.0, cut, SCR_W, SCR_H - cut));
-        self.draw_focused_cell(view, &env, p, f.press.scale, Some((row, col)));
+        self.draw_focused_cell(view, &env, p, f.press.scale, Some((row, col)), f.measure);
     }
 
     pub(crate) fn dev_focus_key<H: HomeLike>(
@@ -1340,7 +1363,8 @@ impl LogicalState for HomeScreen {
         // is encoded below, including velocities that determine the next Tick's answer.
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             rows: _, projected_generation: _, restored_scroll: _, restore_reveal: _, carousel: _,
-            outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, snap_target: _,
+            outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _,
+            snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
             hero_pop: _, backdrop: _, grid: _ } = self;
         c.f32(self.snap_target)
@@ -1660,7 +1684,7 @@ impl HomeScreen {
                 return None;
             }
             let overlay = StatusOverlay::new(Rect::FULL, c"", StatusKind::Empty).action(action?);
-            return overlay.action_frame();
+            return overlay.action_frame_measured(measure);
         }
         let hero = self.selected_hero(view)?.item;
         let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
@@ -1705,7 +1729,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 Handled::Yes
             }
             ScreenEvent::Tick(tick) => {
-                self.tick(tick.dt(), cx, fx);
+                self.tick(*tick, cx, fx);
                 Handled::Yes
             }
             ScreenEvent::StoreChanged(ord, _) if *ord == StoreId::Hubs.ord() => {
@@ -2121,9 +2145,12 @@ fn meta_source_flow(
     );
     dx
 }
-fn draw_meta_source(p: Painter, source: &str, x: f32, y: f32, base_w: f32) {
+fn draw_meta_source(p: Painter, source: &str, x: f32, y: f32, base_w: f32, measure: &dyn Measure) {
     meta_source_flow(base_w, source, |text, dx, budget, size, bold, ink| {
-        let Ok(text) = CString::new(crate::text::elide(text, budget, size, bold, false)) else {
+        let elided = crate::text::elide_by(text, budget, false, |t| {
+            measure.width_str(t, size, bold != 0)
+        });
+        let Ok(text) = CString::new(elided) else {
             return 0.0;
         };
         let mut label = Label::new(text.as_ptr(), size, ink).v(VAlign::CapTop);
@@ -2133,17 +2160,13 @@ fn draw_meta_source(p: Painter, source: &str, x: f32, y: f32, base_w: f32) {
         label.draw(p, Rect::new(x + dx, y, budget, 0.0))
     });
 }
-fn meta_drawn_w(view: &TextView<'_>, text: &str, width: f32) -> f32 {
+fn meta_drawn_w(view: &TextView<'_>, text: &str, width: f32, measure: &dyn Measure) -> f32 {
     if view.truncates(width) {
         return width;
     }
-    CString::new(text)
-        .ok()
-        .map(|s| crate::text::text_width(s.as_ptr(), theme::size::BODY, 0))
-        .unwrap_or(0.0)
-        .min(width)
+    measure.width_str(text, theme::size::BODY, false).min(width)
 }
-fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32) {
+fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dyn Measure) {
     if !on_axis(
         MARGIN_X + dx,
         if source.is_empty() {
@@ -2197,7 +2220,7 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32) {
         .unwrap_or(0.0);
     let mut y = hero_stack_top(title_h, meta_h, synopsis_h);
     HeroLogo::new(hero.sid, hero_logo_rk(hero), title, LogoRung::Hero)
-        .draw(p, Rect::new(MARGIN_X, y, HERO_COL_W, title_h));
+        .draw(p, Rect::new(MARGIN_X, y, HERO_COL_W, title_h), measure);
     y += title_h + theme::space::MD;
     meta_view.draw(p, Rect::new(MARGIN_X, y, HERO_COL_W, 0.0));
     if !source.is_empty() {
@@ -2206,7 +2229,8 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32) {
             source,
             MARGIN_X,
             y,
-            meta_drawn_w(&meta_view, &meta, HERO_COL_W),
+            meta_drawn_w(&meta_view, &meta, HERO_COL_W, measure),
+            measure,
         );
     }
     y += meta_h;

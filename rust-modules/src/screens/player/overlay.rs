@@ -21,21 +21,39 @@
 //! and the ladder never sees it — so it FORWARDS instead: `PlayerReq::Transport`, which the loop
 //! spends on the same toggle, leaving this panel untouched. `More` keeps the old
 //! swallow-everything answer for the same reason it always did.
+//!
+//! **The `Focusable` half is real now (restructure phase 12, D2).** Each panel's own
+//! `*Part` wrapper (`ui::track_menu::TrackMenuPart`, `ui::chapters_panel::ChaptersPart`,
+//! `ui::info_panel::InfoPanelPart`, `ui::more_menu::MoreMenuPart`) answers the Engine's query
+//! protocol (§7.1) over that panel's real row geometry, and [`PlayerOverlayScreen::step`] no
+//! longer moves focus BY HAND: a direction falls through (`Handled::No`) to the engine's own
+//! `neighbour`/`EdgeRule` unless this panel's own cadence gate is still waiting
+//! ([`PANEL_REPEAT_MS`]) or the engine has just reached this panel's group EDGE and re-delivered
+//! the key (`edge_key`, the one place a panel still decides something outside its own scope — a
+//! tab switch, or dropping focus onto the HUD tabs below). OK is answered the same way: the
+//! engine's own `Activate`/press machinery (§7.4) fires `ScreenEvent::Activate`/`PressCommit`,
+//! which [`PlayerOverlayScreen::activate`] spends. A click resolves against the real per-row hit
+//! map [`PlayerOverlayScreen::draw`] registers, not a hand-rolled pixel scan.
 
 use std::borrow::Cow;
 use std::os::raw::c_int;
 
-use crate::screens::registry::{AppFx, AppLike, PageMemory, PlayerReq};
-use crate::ui::consts::{self, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
+use crate::screens::registry::{AppFx, AppLike, PlayerReq};
+use crate::ui::chapters_panel::ChaptersPart;
+use crate::ui::consts;
 use crate::ui::frame::Budget;
+use crate::ui::info_panel::InfoPanelPart;
 use crate::ui::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, LogicalState,
     Machine, NavOp,
 };
+use crate::ui::more_menu::MoreMenuPart;
 use crate::ui::screen::{
-    At, Dir, DrawFrame, FocusSource, Focusable, GroupSpec, HitSource, Placed, RenderStrategy,
+    At, Dir, DrawFrame, FocusSource, Focusable, GroupSpec, HitSource, Part, Placed, RenderStrategy,
     Screen, ScreenEvent, Step,
 };
+use crate::ui::track_menu::TrackMenuPart;
+use crate::ui::Rect;
 
 use super::input::{HUD_LINGER_MS, HUD_MENU_MS};
 use crate::screens::registry::{RepeatGate, PANEL_REPEAT_MS};
@@ -167,6 +185,11 @@ pub(crate) struct PlayerOverlayScreen {
 }
 
 impl PlayerOverlayScreen {
+    /// Every panel here answers on exactly one focus group — see each `*Part`'s own `groups()`
+    /// (restructure phase 12); this screen never holds more than one panel at a time, so there is
+    /// no second id to reserve.
+    const GROUP: GroupId = GroupId(0);
+
     pub(crate) fn new(ps: &crate::route::PlaybackSession, entry: EntryId, kind: OverlayKind) -> Self {
         let panel = match kind {
             OverlayKind::Tracks { tab } => {
@@ -278,15 +301,87 @@ impl PlayerOverlayScreen {
         Self::ask(fx, PlayerReq::ExtendHud(HUD_LINGER_MS));
     }
 
-    /// The one key ladder these four share. Returns `Handled::Yes` for everything except a
-    /// transport key on a panel that lets it through — those are FORWARDED, which is the surface's
-    /// version of the old fall-through (module doc).
+    /// **Apply whatever the focused element decided, at once** (§7.4). Reached from a `Bare` row's
+    /// (`Tracks`/`More`) key-down/pointer-click `Activate`, from `Chapters`'s (`Card`) `PressCommit`
+    /// on release, and — for `Info` (`Control`) only — from a POINTER click's `Activate` rather
+    /// than its `PressCommit` (see [`Self::key`]'s caller: a mouse click is already a precise,
+    /// instantaneous gesture with nothing to animate, unlike a keyboard OK's deferred dip). Either
+    /// way the panel's own cursor is already correct — every `FocusMoved` this screen sees writes
+    /// it back (`step`'s own arm below) — so this reads the panel's OWN `on_ok`, exactly as the
+    /// old ladder's `Key::Ok` arms did.
+    fn activate<H: AppLike>(&mut self, ps: &crate::route::PlaybackSession, fx: &mut Effects<'_, H>) {
+        match &mut self.panel {
+            Panel::Tracks(p) => {
+                if let Some(commit) = p.on_ok(ps) {
+                    fx.push(Fx::App(AppFx::Player(PlayerReq::CommitTrack(commit))));
+                }
+                self.dismiss(fx);
+                self.closing(fx);
+            }
+            Panel::More(p) => {
+                let action = p.on_ok();
+                self.dismiss(fx);
+                Self::ask(fx, PlayerReq::More(action));
+                self.closing(fx);
+            }
+            Panel::Info(p) => {
+                let action = p.on_ok();
+                self.dismiss(fx);
+                Self::ask(fx, PlayerReq::Info(action));
+                self.closing(fx);
+            }
+            Panel::Chapters(p) => {
+                let ns = p.on_ok();
+                self.dismiss(fx);
+                if ns >= 0 {
+                    Self::ask(fx, PlayerReq::SeekTo(ns));
+                }
+                self.closing(fx);
+            }
+        }
+    }
+
+    /// **The engine reached this panel's group EDGE and re-delivered the direction**
+    /// (`EdgeRule::Screen`, §7.3 step 3) — the one thing left that a panel decides outside its own
+    /// scope, because it moves focus OFF this screen (Chapters'/Info's DOWN) or re-addresses the
+    /// panel entirely (Tracks' LEFT/RIGHT tab switch, `TrackMenuState::focus_tab`). More declares
+    /// no `Screen` edge at all (its four sides are `Stop`), so it never reaches here.
+    fn edge_key<H: AppLike>(
+        &mut self,
+        ps: &crate::route::PlaybackSession,
+        key: consts::Key,
+        fx: &mut Effects<'_, H>,
+    ) -> Handled {
+        use consts::Key;
+        match (&mut self.panel, key) {
+            (Panel::Tracks(p), Key::Left { .. } | Key::Right { .. }) => {
+                p.focus_tab(ps, if matches!(key, Key::Left { .. }) { 0 } else { 1 });
+                self.moved(fx);
+            }
+            (Panel::Chapters(_), Key::Down) | (Panel::Info(_), Key::Down) => {
+                self.dismiss(fx);
+                Self::ask(fx, PlayerReq::FocusTabs);
+                self.closing(fx);
+            }
+            _ => {} // no other panel declares any other edge escape
+        }
+        Handled::Yes
+    }
+
+    /// The one key ladder these four share, for everything the ENGINE does not already resolve
+    /// (§7.3 step 1). Transport keys always fall through here first (module doc) — the only keys
+    /// this ladder still fully owns. A direction is paced by [`PANEL_REPEAT_MS`] and then handed
+    /// to the engine's own `neighbour`/`EdgeRule` (`Handled::No`) unless the engine has already
+    /// reached this panel's group edge and re-delivered it (`edge_key`, above). OK is likewise
+    /// left to the engine's own `Activate`/press machinery (§7.4; see [`Self::activate`]). BACK
+    /// dismisses — Tracks and More close silently, exactly as the old ladder did; Info and
+    /// Chapters also hand the transport the ordinary linger.
     fn key<H: AppLike>(
         &mut self,
         ps: &crate::route::PlaybackSession,
         key: consts::Key,
-        sym: u32,
         edge: Edge,
+        at_edge: bool,
         now: u32,
         fx: &mut Effects<'_, H>,
     ) -> Handled {
@@ -308,7 +403,7 @@ impl PlayerOverlayScreen {
             }
             return Handled::Yes;
         }
-        // A held direction is paced; a FRESH press is never swallowed by the press before it.
+        // A held direction is paced; a FRESH press is never swallowed by the cadence before it.
         let directional = matches!(key, Key::Up | Key::Down | Key::Left { .. } | Key::Right { .. });
         if directional {
             match edge {
@@ -319,102 +414,30 @@ impl PlayerOverlayScreen {
                 Edge::Up => return Handled::Yes,
                 _ => {}
             }
-        } else if edge != Edge::Down {
+            if at_edge {
+                return self.edge_key(ps, key, fx);
+            }
+            // an interior move: let the engine's own `neighbour`/`EdgeRule` answer it (§7.3 steps
+            // 2-3) rather than moving the panel's cursor by hand.
+            return Handled::No;
+        }
+        if edge != Edge::Down {
             return Handled::Yes;
         }
-        let dir_sym = match key {
-            Key::Up => SDLK_UP,
-            Key::Down => SDLK_DOWN,
-            Key::Left { .. } => SDLK_LEFT,
-            Key::Right { .. } => SDLK_RIGHT,
-            _ => sym,
-        } as c_int;
-        match &mut self.panel {
-            Panel::Tracks(p) => match key {
-                Key::Up | Key::Down | Key::Left { .. } | Key::Right { .. } => {
-                    p.move_focus(ps, dir_sym);
-                    self.moved(fx);
-                }
-                Key::Ok => {
-                    if let Some(commit) = p.on_ok(ps) {
-                        fx.push(Fx::App(AppFx::Player(PlayerReq::CommitTrack(commit))));
-                    }
-                    self.dismiss(fx);
+        match key {
+            Key::Back => {
+                self.dismiss(fx);
+                if matches!(self.panel, Panel::Info(_) | Panel::Chapters(_)) {
                     self.closing(fx);
                 }
-                Key::Back => self.dismiss(fx),
-                _ => {}
-            },
-            Panel::More(p) => match key {
-                Key::Up | Key::Down => {
-                    p.move_focus(dir_sym);
-                    self.moved(fx);
-                }
-                Key::Ok => {
-                    let action = p.on_ok();
-                    self.dismiss(fx);
-                    Self::ask(fx, PlayerReq::More(action));
-                    self.closing(fx);
-                }
-                Key::Back => self.dismiss(fx),
-                // ONE column, so LEFT/RIGHT are swallowed without moving anything rather than
-                // falling through to the scrubber.
-                _ => {}
-            },
-            Panel::Info(p) => match key {
-                // past the bottom of the card → drop focus back onto the tabs
-                Key::Down if p.at_last() => {
-                    self.dismiss(fx);
-                    Self::ask(fx, PlayerReq::FocusTabs);
-                    self.closing(fx);
-                }
-                Key::Up | Key::Down => {
-                    p.move_focus(dir_sym);
-                    self.moved(fx);
-                }
-                // The card's two actions are control faces with a pop of their own, so OK takes
-                // the tvOS press and the loop spends it on the spring-back. The card stays up
-                // through the dip, so the whole animation is on screen.
-                Key::Ok if p.focus_is_ctl() => Self::ask(fx, PlayerReq::ArmInfoPress),
-                Key::Ok => {
-                    let action = p.on_ok();
-                    self.dismiss(fx);
-                    Self::ask(fx, PlayerReq::Info(action));
-                    self.closing(fx);
-                }
-                Key::Back => {
-                    self.dismiss(fx);
-                    self.closing(fx);
-                }
-                _ => {}
-            },
-            Panel::Chapters(p) => match key {
-                Key::Left { .. } | Key::Right { .. } => {
-                    p.move_focus(dir_sym);
-                    self.moved(fx);
-                }
-                Key::Ok => {
-                    let ns = p.on_ok();
-                    self.dismiss(fx);
-                    if ns >= 0 {
-                        Self::ask(fx, PlayerReq::SeekTo(ns));
-                    }
-                    self.closing(fx);
-                }
-                // drop focus back onto the tabs below the strip
-                Key::Down => {
-                    self.dismiss(fx);
-                    Self::ask(fx, PlayerReq::FocusTabs);
-                    self.closing(fx);
-                }
-                Key::Back => {
-                    self.dismiss(fx);
-                    self.closing(fx);
-                }
-                _ => {}
-            },
+                Handled::Yes
+            }
+            // Not consumed here: the engine's own `Activate`/`PressArm` machinery answers OK by
+            // the focused element's `ElemKind` (§7.4), and `Machine::step`'s `Activate`/
+            // `PressCommit` arms below spend what it decided (`Self::activate`).
+            Key::Ok => Handled::No,
+            _ => Handled::Yes,
         }
-        Handled::Yes
     }
 }
 
@@ -430,10 +453,10 @@ impl<H: crate::screens::registry::PlayerLike> Machine<H> for PlayerOverlayScreen
                 // transport alphabet this ladder turns on lives in `consts::Key`, so the raw
                 // pair is classified here exactly as `app/input.rs` classifies it.
                 if let InputKind::Key {
-                    sym, wcode, edge, ..
+                    sym, wcode, edge, at_edge, ..
                 } = input.kind
                 {
-                    return self.key(ps, consts::classify(sym, wcode), sym, edge, input.at.ms, fx);
+                    return self.key(ps, consts::classify(sym, wcode), edge, at_edge, input.at.ms, fx);
                 }
                 // **An open panel owns the click and closes on it.** Four `modal_of` arms of
                 // the loop's pointer path said this — "the transport is partly hidden while a
@@ -442,27 +465,48 @@ impl<H: crate::screens::registry::PlayerLike> Machine<H> for PlayerOverlayScreen
                 // click outside reports `None`; the other three simply dismiss.
                 //
                 // The dispatcher hands a `Click`/`Pointer` to the owner whatever its
-                // `hit_source()` is, which is what lets a `HitSource::Legacy` surface answer for
-                // its own geometry (`Dispatcher::hit_page`).
-                if let InputKind::Click { x, y, .. } = input.kind {
-                    let action = match &mut self.panel {
-                        Panel::More(p) => Some(p.click(x, y)),
-                        _ => None,
-                    };
-                    self.dismiss(fx);
-                    if let Some(action) = action {
-                        Self::ask(fx, PlayerReq::More(action));
-                    }
-                    self.closing(fx);
-                    return Handled::Yes;
+                // `hit_source()` is. (This comment said `HitSource::Legacy`; this surface has
+                // answered `HitSource::Engine` since phase 12's contract freeze, and the property
+                // it relies on was never the Legacy answer but the delivery.)
+                if let InputKind::Click { .. } | InputKind::Pointer { .. } = input.kind {
+                    // The Engine's own hit map now resolves every row (`Focusable::place` below,
+                    // `DrawFrame::stop` registered in `draw`): a hit delivers `Activate` directly
+                    // (§7.5-7.6, spent by `Self::activate` the same as a key OK), a hover parks
+                    // focus through the engine, and a miss reaches `Style::PlayerPanel`'s own
+                    // `OnMiss::Dismiss` (`ui/containers/modal.rs`) — this arm no longer scans
+                    // pixels or a panel's own cursor by hand.
+                    return Handled::No;
                 }
-                // Hover: focus follows the cursor over the `…` popover's rows, which is the only
-                // one of the four with a hover model at all.
-                if let InputKind::Pointer { x, y, .. } = input.kind {
-                    if let Panel::More(p) = &mut self.panel {
-                        p.pointer_focus(x, y);
-                    }
-                    return Handled::Yes;
+                Handled::No
+            }
+            ScreenEvent::FocusMoved { to, .. } => {
+                // §7.3 step 5: the owner's `step` is the only place that mutates in response to a
+                // move the engine made — write the new cursor back into whichever panel is open,
+                // and extend the transport's read time exactly as a hand-moved cursor used to.
+                let i = to.elem as i32;
+                match &mut self.panel {
+                    Panel::Tracks(p) => p.set_sel(i),
+                    Panel::Info(p) => p.set_focus(i),
+                    Panel::Chapters(p) => p.set_sel(i),
+                    Panel::More(p) => p.set_sel(i),
+                }
+                self.moved(fx);
+                Handled::No
+            }
+            // A pointer click on ANY row (`Activate::Immediate`/`Direct`, every `*Part::draw`
+            // above) always applies at once. A keyboard OK on a `Control`/`Card` row
+            // (`Info`/`Chapters`) arms an engine press first and only reaches here as
+            // `PressCommit`, on release — except `Info`, whose `PressCommit` defers instead to
+            // the loop's own tvOS dip (`Self::activate`'s doc explains the split).
+            ScreenEvent::Activate(_) => {
+                self.activate(ps, fx);
+                Handled::No
+            }
+            ScreenEvent::PressCommit(_) => {
+                if let Panel::Info(_) = &self.panel {
+                    Self::ask(fx, PlayerReq::ArmInfoPress);
+                } else {
+                    self.activate(ps, fx);
                 }
                 Handled::No
             }
@@ -477,7 +521,6 @@ impl<H: crate::screens::registry::PlayerLike> Machine<H> for PlayerOverlayScreen
                 // The transport must not auto-hide out from under a panel a viewer is reading —
                 // the rule `app/run.rs` kept as "keep the HUD alive while the track menu / Info
                 // card / Chapters strip is open", stated once here by the surface that IS open.
-                let _ = cx;
                 Self::ask(fx, PlayerReq::ExtendHud(HUD_LINGER_MS));
                 Handled::Yes
             }
@@ -486,28 +529,63 @@ impl<H: crate::screens::registry::PlayerLike> Machine<H> for PlayerOverlayScreen
     }
 }
 
-/// These panels keep their own cursors (a `TableView`'s row, the card's button column, the strip's
-/// slot), exactly as the player page keeps `HudNav`: phase 9 moves their state, not their focus
-/// model. `FocusSource::Legacy`/`HitSource::Legacy` is therefore the honest answer, and this impl
-/// is inert.
-impl<H: AppLike<Memory = PageMemory>> Focusable<H> for PlayerOverlayScreen {
-    fn groups(&self, _cx: &Cx<'_, H>, _out: &mut Vec<GroupSpec>) {}
-    fn group_of(&self, _key: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        None
+/// **Real per-row groups, delegated to whichever panel is ACTIVE** (restructure phase 12, D2 —
+/// see `screens/player/mod.rs`'s own `Focusable` impl for the sibling case). Each panel exposes
+/// its own row geometry through a `*Part` wrapper (`ui::track_menu::TrackMenuPart`,
+/// `ui::chapters_panel::ChaptersPart`, `ui::info_panel::InfoPanelPart`,
+/// `ui::more_menu::MoreMenuPart`), built fresh per query over a SHARED reference to the panel's
+/// own state — every method here is `&self`, and so is every method on this screen's own
+/// `Focusable` impl (§7.1: "the engine never mutates a screen"), which is why each wrapper's
+/// `state` field is `&'a StateType` rather than `&'a mut` (see each wrapper's own doc). This
+/// screen holds exactly one panel at a time, so there is no `Composed`/`layout()` here — that
+/// trait concatenates SEVERAL simultaneous parts, and these four never coexist.
+impl<H: crate::screens::registry::PlayerLike> Focusable<H> for PlayerOverlayScreen {
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.groups(cx, out),
+            Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.groups(cx, out),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.groups(cx, out),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.groups(cx, out),
+        }
     }
-    fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
-        Step::Edge
+    fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
+            Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
+        }
     }
-    fn place(&self, _key: &u32, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        None
+    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
+            Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
+        }
     }
-    fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, H>) -> FocusKey<u32> {
-        want
+    fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
+            Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
+        }
     }
-    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<u32> {
-        FocusKey {
-            entry: self.entry,
-            elem: 0,
+    fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
+            Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
+        }
+    }
+    fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
+            Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
         }
     }
 }
@@ -544,21 +622,33 @@ impl<H: crate::screens::registry::PlayerLike> Screen<H> for PlayerOverlayScreen 
         // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`
         // for a surface, which is what the panels' own `Popover` used to hold.
         let appear = f.page_alpha;
+        let measure = f.measure;
         match &mut self.panel {
-            Panel::Tracks(p) => p.draw(appear),
-            Panel::Info(p) => p.draw(ps, appear),
-            Panel::Chapters(p) => p.draw(ps, appear),
-            Panel::More(p) => p.draw(appear),
+            Panel::Tracks(p) => p.draw(appear, measure),
+            Panel::Info(p) => p.draw(ps, appear, measure),
+            Panel::Chapters(p) => p.draw(ps, appear, measure),
+            Panel::More(p) => p.draw(appear, measure),
+        }
+        // Every visible row registers its own stop now (§7.6) — the same per-row geometry
+        // `Focusable::place` (above) answers for focus movement, so the hit map and the focus
+        // engine agree on every rect. Each panel's own `*Part::draw` does the registration (it
+        // needs the module-private row geometry this screen cannot reach directly); the actual
+        // paint already happened above, on the owned, mutable `Panel`.
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
+            Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
         }
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::VideoPlane
     }
     fn focus_source(&self) -> FocusSource {
-        FocusSource::Legacy
+        FocusSource::Engine
     }
     fn hit_source(&self) -> HitSource {
-        HitSource::Legacy
+        HitSource::Engine
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)

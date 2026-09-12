@@ -1,26 +1,36 @@
 //! Playback orchestration from the app core's side: the scrub/seek/position accessors, the
-//! start/exit/finish of a playback and the player-route key handlers. Moved out of `app.rs`
-//! verbatim in phase 1a (a pure move; `pub(crate)` widening only).
+//! start/exit/finish of a playback, and the performers behind the requests the player page raises
+//! ([`player_requests`]). Moved out of `app.rs` verbatim in phase 1a (a pure move; `pub(crate)`
+//! widening only).
 //!
 //! **The HUD's timer, its cursor, the scrub gesture and the repeat gates are no longer here.**
 //! Restructure phase 9 moved them into the player's own `Screen` instance
 //! (`crate::screens::player`), with the types and the pure predicates in
-//! `crate::screens::player::input`; this module re-exports the names the loop still spells
+//! `crate::screens::player::input`; this module re-exports the few names the loop still spells
 //! unqualified. What that changed for a reader of the code below: `hud_until()`/`set_hud`/
 //! `extend_hud`/`scrub()`/`set_scrub` are gone as free functions, because the values they read and
 //! wrote are fields of a screen now (§2.3), and every arm that touches them takes that screen.
+//!
+//! **And the player's KEY HANDLERS are no longer here either** (phase 12, PX-PLAYER).
+//! `key_player_failed`, `key_player_updown`, `key_scrub` and `seed_scrub` are deleted, not moved:
+//! `PlayerScreen::step` had been answering the same keys through the dispatcher since the page
+//! began reporting `FocusSource::Engine`, and these four went on writing that page's `hud`/`scrub`
+//! from the loop beside it. What is left of the player here is the half a screen may not do —
+//! [`commit_seek`], [`exit_player`], [`activate_player_row`], the transport toggle — each reached
+//! through a `PlayerReq`.
 
 use super::*;
+// The list is what the LOOP still spells, and phase 12 (PX-PLAYER) is why it is short: the scrub
+// gesture's constants and its two pure policies (`scrub_press`, `failed_key_action`) are read by
+// `screens::player` alone now, so re-exporting them here would be this module claiming a
+// vocabulary it no longer uses.
 pub(crate) use crate::screens::player::input::{
-    failed_key_action, scrub_press, FailedKeyAction, HudNav, HudState,
-    Scrub, ScrubPress, HUD_HEADLESS_MS, HUD_LINGER_MS, SCRUB_ACCEL,
-    SCRUB_BASE, SCRUB_LOST_MS, SCRUB_MAX, SCRUB_STEP_NS, TAP_COMMIT_MS,
+    HudNav, HudState, Scrub, HUD_HEADLESS_MS, HUD_LINGER_MS,
 };
 // The modal repeat cadence is `screens::registry`'s (phase 10 merge): the item context menu is a
 // surface of its own family and needs the same gate, so it is shared vocabulary rather than the
 // player's. `App::modal_repeat` still reaches it through this re-export.
 pub(crate) use crate::screens::registry::RepeatGate;
-pub(crate) use crate::screens::player::PlayerScreen;
 
 
 #[inline]
@@ -70,12 +80,11 @@ pub(crate) fn request_seek(x: i64) {
 /// dedicated seek-preroll feed override lets the synchronized native clock decode one landed frame
 /// without publishing a false viewer Resume. `resume_pend` asks the per-frame loop to close that
 /// bounded override. `repause_at` is the landed-frame wait target.
-pub(crate) fn commit_seek(scrubber: &mut Scrub, target: i64, repause_at: &mut i64) {
+pub(crate) fn commit_seek(target: i64, repause_at: &mut i64) {
     crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
         feature: crate::diag::schema::Feature::Seek,
     });
     request_seek(target);
-    scrubber.ns = -1;
     if paused() {
         *repause_at = target;
         set_resume_pend(true);
@@ -154,6 +163,71 @@ pub(crate) fn retry_failed_playback(ps: &mut crate::route::PlaybackSession, pa: 
     }
 }
 
+/// **Where a session that is STARTING returns to** — the whole of what `app::nav::Origin` was,
+/// once the origin became an `EntryId` rather than a described page.
+///
+/// It carried an `Origin::From(Node)` — a whole history entry, re-derived from the live stores at
+/// every launch site by `origin_here` — because a `Route` names a KIND of page and BACK has to
+/// land on the RIGHT one. The container already holds the right one: it is the entry on top when
+/// Play was pressed, which is why this is a two-value CHOICE now rather than a payload.
+///
+/// [`Self::Unchanged`] is the auto-advance rule and the reason this is not a bool at a call site:
+/// `play_up_next` starts a new item while the player is already up (so "the page on screen" is the
+/// player, and the user chose nothing), and a PLAY key that resumes a session the app-switch
+/// lifecycle suspended is resuming the same session from a page it was never launched from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Origin {
+    /// A fresh launch: Stop/BACK/EOS lands on the page that is on top right now.
+    Here,
+    /// Keep whatever the live session already returns to.
+    Unchanged,
+}
+
+/// **Put the player on the page stack, and record where BACK, Stop and EOS land** (§5.1).
+///
+/// The origin is the entry that is on top RIGHT NOW — the page the user pressed Play on — seeded
+/// for the mount the push performs and read back off the mounted screen at the exit. It replaces
+/// `App.play_from: Node` plus `enter_node` plus `Trail::ensure`, which between them said "re-derive
+/// a page from a remembered description, then make the history agree".
+///
+/// **An auto-advance is not a navigation, and this is where that is decided.** `NavOp::Push`
+/// always MINTS an entry — it has no reuse rule (`NavStack::apply`) — so re-entering with the
+/// player already on top would stack a SECOND player over the first, mount a fresh screen that
+/// consumed no seed, and land the exit on Home from the second episode of every chain. The page
+/// the user is standing on has not changed; only the media has. `Origin::Unchanged` says the same
+/// thing about the SEED, and the two agree at every call site; both are stated because they are
+/// answers to different questions (which page is on top, and whose choice this was).
+///
+/// Its own function so that the page-level half of the ritual is reachable without an engine —
+/// `player_return_tests` drives exactly this, over a real container.
+pub(crate) fn enter_player(
+    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
+    from: Origin,
+    ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+) {
+    let already_up = pages
+        .nav
+        .top_page()
+        .map(|e| matches!(e.arg, AppArg::Player))
+        .unwrap_or(false);
+    if already_up {
+        return;
+    }
+    if matches!(from, Origin::Here) {
+        if let Some(entry) = pages.nav.top_page() {
+            bridge.seed_player_origin(crate::screens::player::Origin {
+                entry: entry.id,
+                instance: entry.inst.as_ref().map(|i| i.id),
+            });
+        }
+    }
+    match ret {
+        Some(ret) => super::bridge::nav_push_with_return(pages, AppArg::Player, ret),
+        None => super::bridge::nav_push(pages, AppArg::Player),
+    }
+}
+
 /// The ONE start-playback ritual (detail OK, home episode OK, and the plxnative-autoplay/
 /// -detailplay/-play dev triggers all share it): arm the resume point BEFORE the first
 /// Load (direct-play av_seek / transcode &offset restart), start the engine, record the
@@ -165,44 +239,87 @@ pub(crate) fn start_playback(
     resume_ns: i64,
     from: Origin,
     hud_ms: u32,
-    route: &mut Route,
-    play_from: &mut Node,
+    ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
-) {
-    // A resolve in flight means the route statics are NOT installed yet. Applying the
-    // resume now would read a stale/empty TSESSION, so `resume_at` would take its
-    // DIRECT-PLAY branch and arm_seek() a transcode — and pump.rs's feed gate requires
-    // `seek_to_ns < 0`, so that stray armed seek blocks feeding forever: no frames, no
-    // ACB bind, timeline frozen at the resume point. (Exactly what broke
-    // transcode_av1_no_dp_audio. Direct-play never noticed because arm_seek is what the
-    // correct branch does anyway.) Defer it to `pump_play`, after apply_plan.
-    let pending = crate::route::play_pending();
-    let resume_prepared = pending
-        || resume_ns <= 0
-        || matches!(
-            crate::player::resume_at(ps, resume_ns),
-            crate::player::ResumeOutcome::Prepared
-        );
-    if !resume_prepared {
-        if let Some(transaction) = crate::route::pending_route_start() {
-            let _ = crate::route::reject_route_start_preparation(transaction);
+) -> bool {
+    start_playback_with(ps, pa, resume_ns, from, hud_ms, ret, pages, bridge, &mut LivePlaybackResources)
+}
+
+/// Resource effects below launch policy. Implementations receive no navigation, origin, or
+/// return state: acceptance cannot invent where a session returns to.
+pub(super) trait PlaybackResources {
+    fn request_movie(&mut self, ps: &mut crate::route::PlaybackSession, item: &crate::pms::PmsMovie) -> bool;
+    fn request_episode(&mut self, ps: &mut crate::route::PlaybackSession, rk: &str) -> bool;
+    fn describe_movie(&mut self, sid: crate::plex::ServerId, rk: &str);
+    fn prepare_start(&mut self, ps: &mut crate::route::PlaybackSession,
+        pa: &mut crate::player::adapter::PlayerAdapter, resume_ns: i64) -> bool;
+}
+
+pub(super) struct LivePlaybackResources;
+
+impl PlaybackResources for LivePlaybackResources {
+    fn request_movie(&mut self, ps: &mut crate::route::PlaybackSession, item: &crate::pms::PmsMovie) -> bool {
+        crate::route::request_play_movie(ps, item)
+    }
+    fn request_episode(&mut self, ps: &mut crate::route::PlaybackSession, rk: &str) -> bool {
+        request_loaded_episode(ps, rk)
+    }
+    fn describe_movie(&mut self, sid: crate::plex::ServerId, rk: &str) {
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
+    }
+    fn prepare_start(&mut self, ps: &mut crate::route::PlaybackSession,
+        pa: &mut crate::player::adapter::PlayerAdapter, resume_ns: i64) -> bool {
+        // A resolve in flight means the route statics are NOT installed yet. Applying the
+        // resume now would read a stale/empty TSESSION, so `resume_at` would take its
+        // DIRECT-PLAY branch and arm_seek() a transcode — and pump.rs's feed gate requires
+        // `seek_to_ns < 0`, so that stray armed seek blocks feeding forever: no frames, no
+        // ACB bind, timeline frozen at the resume point. (Exactly what broke
+        // transcode_av1_no_dp_audio. Direct-play never noticed because arm_seek is what the
+        // correct branch does anyway.) Defer it to `pump_play`, after apply_plan.
+        let pending = crate::route::play_pending();
+        let resume_prepared = pending
+            || resume_ns <= 0
+            || matches!(
+                crate::player::resume_at(ps, resume_ns),
+                crate::player::ResumeOutcome::Prepared
+            );
+        if !resume_prepared {
+            if let Some(transaction) = crate::route::pending_route_start() {
+                let _ = crate::route::reject_route_start_preparation(transaction);
+            }
+        }
+        // Flip to the player NOW so the HUD draws its Resolving state this frame; `pump_play`
+        // below starts the engine when the plan lands. With nothing pending this is the old
+        // synchronous behaviour, byte for byte.
+        if pending {
+            crate::route::arm_play_resume(ps, resume_ns);
+            true
+        } else if resume_prepared {
+            crate::player::start_bufferfeed(ps, pa)
+        } else {
+            false
         }
     }
-    // Flip to the player NOW so the HUD draws its Resolving state this frame; `pump_play`
-    // below starts the engine when the plan lands. With nothing pending this is the old
-    // synchronous behaviour, byte for byte.
-    let entering = if pending {
-        crate::route::arm_play_resume(ps, resume_ns);
-        true
-    } else if resume_prepared {
-        crate::player::start_bufferfeed(ps, pa)
-    } else {
-        false
-    };
+}
+
+/// Shared start policy after resource preparation: gate the page push, forward the caller's
+/// origin and return state, and reset/seed the HUD. Used by both ordinary and menu starts.
+pub(super) fn start_playback_with<R: PlaybackResources>(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
+    resume_ns: i64,
+    from: Origin,
+    hud_ms: u32,
+    ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
+    resources: &mut R,
+) -> bool {
+    let entering = resources.prepare_start(ps, pa, resume_ns);
     if entering {
-        set_origin(play_from, from);
-        *route = Route::Player;
+        enter_player(pages, bridge, from, ret);
     }
     // A NEW session starts on the scrubber. The cursor is per-session state that nothing
     // else clears: the auto-hide re-park later in the loop only runs while the route is
@@ -232,6 +349,7 @@ pub(crate) fn start_playback(
         player.publish();
     }
     set_paused(false);
+    entering
 }
 
 /// Resume if a seek landed while paused — the twin of `commit_seek`, which is the
@@ -299,10 +417,7 @@ pub(crate) fn close_player_overlays(pages: &mut crate::ui::dispatch::Dispatcher<
 pub(crate) unsafe fn commit_info_press(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    route: &mut Route,
-    play_from: &mut Node,
     refresh_hubs_at: &mut u32,
-    trail: &mut Trail,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     let Some(action) = super::bridge::player_overlay_mut(pages).and_then(|o| o.info_press_action())
@@ -310,7 +425,7 @@ pub(crate) unsafe fn commit_info_press(
         return;
     };
     close_player_overlays(pages);
-    apply_info_action(ps, pa, action, route, play_from, refresh_hubs_at, trail, pages);
+    apply_info_action(ps, pa, action, refresh_hubs_at, pages);
 }
 
 /// **Perform what a player overlay decided** (§14): the panel owns its own state and its own
@@ -342,13 +457,12 @@ pub(crate) fn player_requests(
     pa: &mut crate::player::adapter::PlayerAdapter,
     reqs: Vec<crate::screens::registry::PlayerReq>,
     now: u32,
-    route: &mut Route,
-    play_from: &Node,
     refresh_hubs_at: &mut u32,
-    trail: &mut Trail,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    _bridge: &mut super::bridge::Bridge,
     ok_armed: &mut bool,
     press: &mut crate::ui::press::Press,
+    repause_at: &mut i64,
 ) {
     use crate::screens::registry::PlayerReq;
     for req in reqs {
@@ -382,6 +496,9 @@ pub(crate) fn player_requests(
                 request_seek(ns);
                 resume_if_paused(pa);
             }
+            // …and its twin, which does NOT resume: the scrub bar is how a paused film is moved.
+            // `repause_at` is an `App` field, which is exactly why this is a request.
+            PlayerReq::CommitSeek(ns) => commit_seek(ns, repause_at),
             PlayerReq::More(action) => apply_more_action(ps, pa, action),
             PlayerReq::CommitTrack(commit) => commit_track(ps, commit),
             PlayerReq::ArmInfoPress => {
@@ -389,45 +506,61 @@ pub(crate) fn player_requests(
                 *ok_armed = true;
             }
             PlayerReq::Info(action) => {
-                apply_info_action(ps, pa, action, route, play_from, refresh_hubs_at, trail, pages)
+                apply_info_action(ps, pa, action, refresh_hubs_at, pages)
+            }
+            // The old `key_ok`'s tabs-row (`focus == 2`) and failure-read-out (`ChooseQuality`)
+            // arms, both of which presented a panel immediately rather than through the deferred
+            // press `ArmControlRow`/`ArmInfoPress` use.
+            PlayerReq::OpenOverlay(kind) => {
+                super::bridge::open_player_overlay(ps, pages, kind);
+            }
+            // The old `key_ok`'s `focus == 1` arm: dip the same tvOS press `ArmInfoPress` does,
+            // for the transport's OWN control row rather than a panel's action column. The loop's
+            // existing commit-frame dispatch (`Route::Player => activate_player_row(...)`, below
+            // in this same call chain) is unchanged and performs whatever the row decides.
+            PlayerReq::ArmControlRow => {
+                press.begin_ctl(now);
+                *ok_armed = true;
+            }
+            // The STOP key, a BACK with nothing else open and the failure read-out's own BACK
+            // escape all reach the same ritual.
+            PlayerReq::Exit => {
+                exit_player(ps, pa, refresh_hubs_at, pages);
             }
         }
     }
 }
 
-/// Returning to a detail page after an EPISODE lands on its SHOW at the episode that played, not
-/// on the episode's own page. Reports whether it mounted anything.
-///
-/// The play paths load the played LEAF's detail (that is where the HUD caption and Info card come
-/// from), so an exit that only flipped the route stranded the user on an episode hero page — even
-/// when they had started from the show page, and even after an auto-advance chain had moved them
-/// several episodes along. `detail_rk` is already the "Go to Show" target.
-///
-/// **Gated on the page actually BEING that show**, which the `played_from_detail` bool could not
-/// express: a *Play from Start* on a Related tile is an item the page says nothing about, and if
-/// it happens to be an episode then revealing its show here would navigate the user to a page they
-/// never asked for instead of back to the one they were standing on.
-pub(crate) fn reveal_played_episode(from: &Node) -> bool {
-    let Node::Detail { sid, rk, .. } = from else {
-        return false;
-    };
-    // The played leaf's own server — `metadata::playing()` is the store the playback was resolved
-    // from, so it names the machine the show is on. `plex::current_server()` would be the wrong
-    // answer for anything played off a share.
-    let psid = crate::metadata::playing()
-        .map(|p| p.sid)
-        .unwrap_or_else(crate::plex::current_server);
-    let Some((show_rk, season)) = crate::metadata::now_playing()
-        .filter(|n| n.is_episode && !n.detail_rk.is_empty())
-        .map(|n| (n.detail_rk.clone(), n.season))
-    else {
-        return false;
-    };
-    if !crate::plex::same_item((psid, &show_rk), (*sid, rk)) {
-        return false;
+// (`reveal_played_episode` stood here. It answered one question — "is the page this session was
+// launched from the SHOW the played episode belongs to?" — and its only use was choosing between
+// two ways of writing the same route: `*route = Route::Detail` or `enter_node(play_from)`. Both
+// spellings are retired with D1;
+// are `NavOp::PopTo(origin.entry)` now, so the question has no consumer: the REVEAL itself was
+// always `content::restore_played_entry`'s, which addresses the uncovered entry and delivers
+// `AppMsg::DetailRestore`.)
+
+/// Shared return decision after playback ends; resource teardown belongs to `exit_player`.
+pub(super) fn return_from_player(
+    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+) {
+    let origin = super::bridge::player(pages).and_then(|p| p.origin);
+    // A typed ContentArg can still be manufactured with empty strings by a malformed replay or
+    // bootstrap argument. That is a LIVE-but-identityless origin, distinct from nav_pop_to's stale
+    // EntryId floor, and returning to it would recreate the old empty-content strand.
+    let identityless = origin.and_then(|o| pages.nav.entry(o.entry)).is_some_and(|entry| {
+        match &entry.arg {
+            AppArg::Content(crate::screens::registry::ContentArg::Detail { rk, .. }) => rk.is_empty(),
+            AppArg::Content(crate::screens::registry::ContentArg::Person { key, guid, .. }) =>
+                key.is_empty() && guid.is_empty(),
+            AppArg::Content(crate::screens::registry::ContentArg::Filmography { key, .. }) =>
+                key.is_empty(),
+            _ => false,
+        }
+    });
+    match origin {
+        Some(origin) if !identityless => super::bridge::nav_pop_to(pages, origin.entry),
+        _ => super::bridge::nav_root(pages, AppArg::Home),
     }
-    let _ = season; // The addressed reveal is applied after the origin entry is uncovered.
-    true
 }
 
 /// The ONE leave-playback ritual (Stop key, BACK, EOS): close the overlays, stop the
@@ -435,16 +568,16 @@ pub(crate) fn reveal_played_episode(from: &Node) -> bool {
 /// hub refresh so Continue Watching reflects the session that just ended. A new exit path
 /// that skips this quietly re-introduces the stale-CW bug.
 ///
-/// `from` is [`Origin`]'s payload — the page that was mounted when playback started. Re-entry is
-/// [`enter_node`], the same ritual every BACK pop and every forward `Nav::Open` uses, so a player
-/// exit cannot mount a page in a way nothing else does.
+/// The return target is [`crate::screens::player::Origin`]'s `entry` — the container entry that was on top when Play was
+/// pressed, seeded at the player's own mount by [`enter_player`] and read back off the mounted
+/// screen here. Re-entry is `NavOp::PopTo(entry)` (`bridge::nav_pop_to`), the same container op a
+/// BACK off a stacking page performs, so a player exit cannot reach a page in a way nothing else
+/// does. There is no re-derivation and no second history to reconcile: `App.play_from: Node` plus
+/// `enter_node` plus `Trail::ensure` are all deleted (D1).
 pub(crate) fn exit_player(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    route: &mut Route,
-    play_from: &Node,
     refresh_hubs_at: &mut u32,
-    trail: &mut Trail,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     crate::route::cancel_play(ps); // BACK during a load: supersede, drop the landing
@@ -454,18 +587,14 @@ pub(crate) fn exit_player(
     // BACK during resolve has no engine for teardown to take. The exit ritual still ends that
     // attempt, so retire its in-memory trace here as the common backstop.
     crate::player::report::clear_error_trace();
-    if reveal_played_episode(play_from) {
-        // …the reveal IS the mount, so `enter_node`'s would be a second, competing one.
-        *route = Route::Detail;
-    } else {
-        enter_node(play_from, route);
-    }
-    // The player is NOT a trail node — it returns to the page it was started from, and that page
-    // may be one nothing ever pushed (a dev trigger, or `home_activate` opening a detail page
-    // under the hood purely to fire its Play). `ensure` makes the trail agree with where we
-    // landed: a no-op in the ordinary case (the page IS still the top, because playing never
-    // moved the trail), the root for a return to Home, a push otherwise.
-    trail.ensure(play_from);
+    // **The return is a `PopTo` of the ORIGIN ENTRY** (§5.1) — the page that was on top when the
+    // push was asked for, captured at the player's own mount and read back off the instance. It
+    // replaces `App.play_from: Node` plus `enter_node` plus `Trail::ensure`, which between them
+    // said "re-derive a page from a remembered description, then make the history agree". An
+    // entry needs no re-deriving and there is no second history to reconcile. A stale entry falls
+    // through `nav_pop_to`'s Home floor; a live Content entry with no identity takes the explicit
+    // Home floor in `return_from_player`, preserving `return_page`'s old anti-strand contract.
+    return_from_player(pages);
     *refresh_hubs_at = clock::now().wrapping_add(800).max(1);
 }
 
@@ -475,17 +604,14 @@ pub(crate) fn exit_player(
 pub(crate) fn finish_playback(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    route: &mut Route,
-    play_from: &mut Node,
     refresh_hubs_at: &mut u32,
-    trail: &mut Trail,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
-    if play_up_next(ps, pa, HUD_LINGER_MS, route, play_from, pages, bridge) {
+    if play_up_next(ps, pa, HUD_LINGER_MS, pages, bridge) {
         return;
     }
-    exit_player(ps, pa, route, play_from, refresh_hubs_at, trail, pages);
+    exit_player(ps, pa, refresh_hubs_at, pages);
     // The ring goes back to the scrubber for the NEXT session, and the next session is a fresh
     // instance — so there is nothing to park here any more (`start_playback`'s note).
 }
@@ -499,11 +625,8 @@ pub(crate) fn activate_ctrl_row(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     slot: crate::ui::player_hud::ControlSlot,
-    route: &mut Route,
-    play_from: &mut Node,
     refresh_hubs_at: &mut u32,
     btn: c_int,
-    trail: &mut Trail,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
@@ -518,7 +641,7 @@ pub(crate) fn activate_ctrl_row(
         // being caught out.
         ControlSlot::UpNext(_) => {
             if btn == crate::ui::up_next::BTN_NEXT {
-                play_up_next(ps, pa, HUD_LINGER_MS, route, play_from, pages, bridge)
+                play_up_next(ps, pa, HUD_LINGER_MS, pages, bridge)
             } else {
                 if let Some(player) = super::bridge::player_mut(pages) {
                     player.up_next.cancel();
@@ -547,7 +670,7 @@ pub(crate) fn activate_ctrl_row(
                 }
                 // a `final` credits segment: skipping it IS finishing the item
                 SkipAction::Finish => {
-                    finish_playback(ps, pa, route, play_from, refresh_hubs_at, trail, pages, bridge);
+                    finish_playback(ps, pa, refresh_hubs_at, pages, bridge);
                     true
                 }
             }
@@ -570,8 +693,6 @@ pub(crate) fn play_up_next(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     hud_ms: u32,
-    route: &mut Route,
-    play_from: &mut Node,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
@@ -609,8 +730,7 @@ pub(crate) fn play_up_next(
         resume,
         Origin::Unchanged,
         hud_ms,
-        route,
-        play_from,
+        None,
         pages,
         bridge,
     );
@@ -630,15 +750,31 @@ pub(crate) unsafe fn play_item_now(
     from_start: bool,
     from: Origin,
     hud_ms: u32,
-    route: &mut Route,
-    play_from: &mut Node,
+    ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
+) {
+    play_item_now_with(ps, pa, mm, from_start, from, hud_ms, ret, pages, bridge, &mut LivePlaybackResources);
+}
+
+/// Shared captured-row launch, including the empty/request guards, metadata scheduling,
+/// restart-versus-resume choice, and origin forwarding to the start policy.
+pub(super) fn play_item_now_with<R: PlaybackResources>(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
+    mm: &crate::pms::PmsMovie,
+    from_start: bool,
+    from: Origin,
+    hud_ms: u32,
+    ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
+    resources: &mut R,
 ) {
     if mm.rk.is_empty() {
         return;
     }
-    if !crate::route::request_play_movie(ps, mm) {
+    if !resources.request_movie(ps, mm) {
         return;
     }
     // resolve OFF the SDL loop — pump_play starts it
@@ -652,9 +788,8 @@ pub(crate) unsafe fn play_item_now(
     // playback with the last one's title for the whole pre-roll. None is honest (the
     // route's own TITLE/CTXLINE, set synchronously by request_play_movie, still carry
     // this item), and the landing refills it via sync_now_playing.
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid: mm.sid, rk: mm.rk.to_string() });
-    start_playback(
+    resources.describe_movie(mm.sid, &mm.rk);
+    start_playback_with(
         ps,
         pa,
         if from_start {
@@ -664,54 +799,21 @@ pub(crate) unsafe fn play_item_now(
         },
         from,
         hud_ms,
-        route,
-        play_from,
+        ret,
         pages,
         bridge,
+        resources,
     );
 }
 
-/// A playback FAILURE owns the whole frame (`player_hud::transport_hidden`): `draw_hud` returns
-/// before painting anything and the overlay panels below are gated the same way, so the scrubber,
-/// the control row, the bottom tabs and any panel that happened to be open are all absent from the
-/// picture. Nothing that is not drawn may be driven — the rule `ControlSlot::UpNext` states and
-/// `up_next::card_active` already keeps for the post-play card.
-///
-/// Two exceptions are painted on the read-out: BACK returns, while OK opens the shared quality
-/// ladder on its current rung.  Selecting that rung is a plain retry; selecting another starts the
-/// same item under the new policy.  A failure is therefore terminal for the Engine, not a trap for
-/// the viewer.
-///
-/// This arm's guard still swallows Menu / Info / Chapters while the transport is absent.  It
-/// explicitly exempts the More route it opened, so only that visible recovery panel reaches the
-/// ordinary modal key arm beneath it.
-pub(crate) fn key_player_failed(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
-    sym: c_uint,
-    wcode: c_uint,
-    route: &mut Route,
-    play_from: &Node,
-    refresh_hubs_at: &mut u32,
-    trail: &mut Trail,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
-) {
-    match failed_key_action(is_ok(sym), is_back(sym, wcode)) {
-        FailedKeyAction::ChooseQuality => {
-            super::bridge::open_player_overlay(ps, pages, crate::screens::player::overlay::OverlayKind::More { quality: true });
-        }
-        // A panel over the read-out (only the `…` popover can be there —
-        // `OverlayKind::survives_failure`) takes the BACK first; with nothing up, BACK leaves.
-        FailedKeyAction::Return => {
-            if super::bridge::player_overlay_up(pages) {
-                close_player_overlays(pages);
-            } else {
-                exit_player(ps, pa, route, play_from, refresh_hubs_at, trail, pages);
-            }
-        }
-        FailedKeyAction::Ignore => {}
-    }
-}
+// (`key_player_failed` stood here — the arm `app/run.rs` reached for a key arriving while a
+// terminal read-out owned the frame: OK opened the quality ladder, BACK closed the `…` popover if
+// one was up and otherwise left the playback, everything else was swallowed. Restructure phase 12
+// (PX-PLAYER) retired it with the rest of the loop's player input path: `PlayerScreen::handle_key`
+// asks `player_hud::transport_hidden` first and dispatches the SAME pure policy
+// (`screens::player::input::failed_key_action`) into `PlayerReq::OpenOverlay`/`PlayerReq::Exit`.
+// The popover-first half of its BACK is the container's by construction — an open `…` is a surface
+// and answers the key before the page beneath it ever sees one.)
 
 /// (`overlay_swallows_key`, `key_track_menu`, `key_more_menu`, `key_info_panel`,
 /// `commit_info_panel` and `key_chapters` stood here. Restructure phase 9 made the four panels
@@ -730,10 +832,7 @@ fn apply_info_action(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     action: crate::ui::info_panel::InfoAction,
-    route: &mut Route,
-    play_from: &Node,
     refresh_hubs_at: &mut u32,
-    trail: &mut Trail,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     match action {
@@ -758,59 +857,25 @@ fn apply_info_action(
                 let sid = crate::metadata::playing()
                     .map(|p| p.sid)
                     .unwrap_or_else(crate::plex::current_server);
-                exit_player(ps, pa, route, play_from, refresh_hubs_at, trail, pages);
-                // A LANDING, not a navigation, so the trail is made to agree rather than pushed
-                // blindly: the exit above has usually already put this very page on top (the show
-                // playback started from), and `ensure_detail` is a no-op there. It is also
-                // strictly better than the flag it replaces — a Library -> detail -> play -> "Go to
-                // Show" now returns to the Library instead of to Home.
-                trail.ensure(&to_detail(sid, &rk));
-                *route = Route::Detail;
+                exit_player(ps, pa, refresh_hubs_at, pages);
+                // A LANDING, not a navigation, so the page is SHOWN rather than pushed blindly:
+                // the exit above has usually already put this very page on top (the show playback
+                // started from), and `show_page` is a no-op there. It is also strictly better than
+                // the flag it replaces — a Library -> detail -> play -> "Go to Show" returns to
+                // the Library instead of to Home.
+                super::bridge::show_page(pages, AppArg::Content(
+                    crate::screens::registry::ContentArg::Detail { sid, rk: rk.clone() },
+                ));
             }
         }
         crate::ui::info_panel::InfoAction::None => {}
     }
 }
 
-/// Playing: UP/DOWN move the HUD focus (scrubber ↔ buttons ↔ tabs). The first press on a hidden HUD
-/// just reveals it (focused on the scrubber); pressing UP with nothing focusable above (the buttons
-/// row) hides the HUD again.
-pub(crate) fn key_player_updown(key: Key, now: u32, hud: &mut HudState, scrubber: &mut Scrub) {
-    // the pre-press sample, not a fresh one: `begin_fresh_press` has already cleared `dismissed`,
-    // so re-asking would call a hand-hidden transport visible (`HudState::visible_at_press`)
-    let vis = hud.visible_at_press;
-    let mut hide = false;
-    if !vis {
-        hud.nav.focus = 0; // reveal, on the scrubber
-    } else if matches!(key, Key::Up) {
-        // vertical stack, top → bottom: control row, scrubber, tabs. Both
-        // marker stand-ins live IN the control row, so the ring is unchanged.
-        match hud.nav.focus {
-            0 => hud.nav.focus = 1, // scrubber → control row
-            2 => hud.nav.focus = 0, // tabs → scrubber
-            _ => {
-                hide = true; // control row: nothing above → hide the HUD
-                hud.nav.focus = 0;
-            }
-        }
-    } else {
-        match hud.nav.focus {
-            0 => hud.nav.focus = 2, // scrubber → tabs
-            1 => hud.nav.focus = 0, // buttons → scrubber
-            _ => {}                 // tabs: nothing below → stay
-        }
-    }
-    if hud.nav.focus != 0 || hide {
-        // leaving the bar cancels any in-progress scrub preview
-        scrubber.ns = -1;
-        scrubber.disengage();
-    }
-    if hide {
-        hud.dismissed = true; // stays hidden even while paused, until the next key
-    } else {
-        hud.extend(now, HUD_LINGER_MS);
-    }
-}
+// (`key_player_updown` stood here — UP/DOWN walking the HUD's ring, or spending the press on
+// REVEALING a hidden transport. Ported to `PlayerScreen::key_updown` in phase 9 and DELETED with
+// its caller in phase 12 (PX-PLAYER): the loop kept calling this on the screen's own `hud`/`scrub`
+// while the screen answered the same key through the dispatcher.)
 
 /// OK, on every screen that has not already `continue`d above.
 /// Activate the player transport's focused CONTROL ROW item — the deferred half of [`key_ok`]'s
@@ -828,9 +893,6 @@ pub(crate) unsafe fn activate_player_row(
     pa: &mut crate::player::adapter::PlayerAdapter,
     ctrl: crate::ui::player_hud::ControlSlot,
     now: u32,
-    route: &mut Route,
-    trail: &mut Trail,
-    play_from: &mut Node,
     refresh_hubs_at: &mut u32,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
@@ -848,11 +910,8 @@ pub(crate) unsafe fn activate_player_row(
             ps,
             pa,
             ctrl,
-            route,
-            play_from,
             refresh_hubs_at,
             btn,
-            trail,
             pages,
             bridge,
         );
@@ -876,11 +935,10 @@ pub(crate) unsafe fn activate_player_row(
 /// PAUSE — the dedicated transport key, which only ever pauses (PLAY is its other half).
 pub(crate) fn key_pause(
     pa: &mut crate::player::adapter::PlayerAdapter,
-    route: Route,
     now: u32,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
-    if matches!(route, Route::Player) && !paused() {
+    if super::bridge::player(pages).is_some() && !paused() {
         if set_transport_paused(pa, true) {
             crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
                 feature: crate::diag::schema::Feature::Pause,
@@ -900,13 +958,11 @@ pub(crate) unsafe fn key_play(
     now: u32,
     foreground: &mut ForegroundLifecycle,
     repause_at: &mut i64,
-    route: &mut Route,
-    play_from: &mut Node,
     ptr: &mut Pointer,
-    trail: &Trail,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
 ) {
-    let was_off_player = !matches!(*route, Route::Player);
+    let was_off_player = super::bridge::player(pages).is_none();
     if was_off_player {
         foreground.discard_started_state();
     }
@@ -917,16 +973,17 @@ pub(crate) unsafe fn key_play(
         &mut PlayerForegroundActuator { pa, repause_at },
     );
     if matches!(activation, ForegroundActivation::Launched) {
-        // A suspended session KEEPS its origin. The lifecycle arm forced its route to Home, but
-        // that temporary screen is not where Stop/BACK should return.
-        *route = Route::Player;
+        // **A suspended session keeps its ORIGIN, and now it keeps its ENTRY too.** The lifecycle
+        // arm used to force the route to Home, which retired the player entry and the page under
+        // it; a park moves no page at all, so the only thing left to do here is put the player
+        // back on top if something else took it — which, while the tree is parked, nothing does.
+        super::bridge::show_page(pages, AppArg::Player);
     } else if matches!(activation, ForegroundActivation::Ordinary) {
-        if !matches!(*route, Route::Player) {
+        if was_off_player {
             if crate::player::start_bufferfeed(ps, pa) {
-                if let Origin::From(n) = origin_here(*route, trail) {
-                    *play_from = n;
-                }
-                *route = Route::Player;
+                // The origin is the page the PLAY key was pressed on — through the same one door
+                // `start_playback` uses, so the seed and the push cannot drift apart here.
+                enter_player(pages, bridge, Origin::Here, None);
                 // Keep the ordinary off-route start's existing stale-Pause defense. A foreground
                 // transition applies its explicit clock intent through the lifecycle actuator.
                 if paused() {
@@ -948,114 +1005,21 @@ pub(crate) unsafe fn key_play(
     }
 }
 
-/// LEFT/RIGHT while playing: move the focused HUD row's cursor, or — on the scrubber — jump the
-/// scrub preview. A fresh press (0x001) is the fixed 10s jump; a held key's 0x101 repeats
-/// ([`on_auto_repeat`]) then engage the continuous scrub and the keyup commits.
-///
-/// **A press that finds the HUD hidden is spent RAISING it, and moves nothing.** The transport is
-/// on a 4.5 s timer over full-screen video, so "where am I" and "take me back ten seconds" are two
-/// different intentions and the remote has no way to tell them apart — the old ladder read every
-/// LEFT as the second, and a viewer glancing at the clock lost their place to it. It is the rule
-/// UP/DOWN has always had one arm over ([`key_player_updown`]) and the rule the CLICK path already
-/// enforced on this very band (`hud_vis` there is sampled before the click re-arms the timer,
-/// after "a click in the invisible timed-out scrub band committed a blind seek"); the key path was
-/// the last way in that still acted on geometry nobody could see.
-///
-/// **A HOLD is not a tap and keeps working.** The reveal still arms `dir` and seeds the preview, so
-/// a user who holds LEFT to rewind gets the HUD on screen and then the ordinary continuous scrub as
-/// the 0x101 repeats arrive — by which point the band they are dragging IS on screen. Only the
-/// discrete 10 s hop waits for a second press, which is what `Scrub::reveal` marks: without it the
-/// tap release would commit a seek to the seed, i.e. a full reopen+prime to the spot we are
-/// already sitting on.
-pub(crate) unsafe fn key_scrub(
-    ps: &crate::route::PlaybackSession,
-    key: Key,
-    now: u32,
-    ctrl: crate::ui::player_hud::ControlSlot,
-    player: &mut PlayerScreen,
-    ptr: &mut Pointer,
-) {
-    let PlayerScreen { hud, scrub: scrubber, .. } = player;
-    if !ptr.cur_hidden {
-        hide_cursor();
-        ptr.cur_hidden = true;
-    }
-    if ptr.drag {
-        ptr.drag = false;
-        scrubber.ns = -1;
-    }
-    let fwd = matches!(key, Key::Right { .. });
-    // the pre-press sample — see `key_player_updown`'s note and `HudState::visible_at_press`
-    let act = scrub_press(hud.visible_at_press, hud.nav.focus, dur() > 0);
-    hud.extend(now, HUD_LINGER_MS);
-    match act {
-        ScrubPress::Reveal => {
-            hud.nav.focus = 0; // the HUD comes up on the scrubber, ready for the press after this one
-                               // …and the gesture is armed but not spent, so a user who keeps HOLDING gets the
-                               // ordinary continuous scrub the moment the repeats arrive. Only on something with a
-                               // duration: arming a scrub over an item there is nothing to move through would put a
-                               // preview on a band that cannot answer for it.
-            if dur() > 0 {
-                scrubber.begin(now, fwd);
-                scrubber.reveal = true; // …but this press hops nothing; only a HOLD grows out of it
-                seed_scrub(ps, scrubber);
-            }
-        }
-        ScrubPress::Row => {
-            // the row's occupant says how many items it has — no magic pin
-            hud.nav.btn = (hud.nav.btn + if fwd { 1 } else { -1 }).clamp(0, ctrl.items() - 1);
-        }
-        ScrubPress::Tabs => {
-            let max_tab = if crate::ui::chapters_panel::has_chapters() {
-                1
-            } else {
-                0
-            };
-            hud.nav.tab = (hud.nav.tab + if fwd { 1 } else { -1 }).clamp(0, max_tab);
-        }
-        ScrubPress::Jump => {
-            // scrubber focus, FRESH press (0x001): the fixed 10s jump. A held key's
-            // 0x101 repeats (handled above) then engage the continuous scrub; the
-            // keyup commits. Quick re-taps before scrubber.commit_at accumulate.
-            let cap = dur() - 3 * 1_000_000_000;
-            scrubber.commit_at = 0; // more input → cancel a pending tap commit
-            scrubber.alive = now;
-            scrubber.reveal = false; // a visible press is a real gesture whatever raised the HUD
-            if scrubber.dir == 0 && scrubber.ns < 0 {
-                seed_scrub(ps, scrubber);
-            }
-            if !scrubber.hold {
-                let mut s = scrubber.ns.max(0) + if fwd { SCRUB_STEP_NS } else { -SCRUB_STEP_NS };
-                if s < 0 {
-                    s = 0;
-                }
-                if cap > 0 && s > cap {
-                    s = cap;
-                }
-                scrubber.ns = s;
-            }
-            scrubber.dir = if fwd { 1 } else { -1 };
-        }
-        ScrubPress::Nothing => {}
-    }
-}
-
-/// Seed a new scrub at the INTENDED playhead ([`intended_pos`]). If a prior commit's seek is still
-/// landing, `playpos()` is stale (it still reports the pre-seek spot), so a quick re-press would
-/// jump back to where we started and resume there — interrupting the scrub. The divergence IS "a
-/// seek is in flight", so log it when the two disagree rather than re-deriving the condition here.
-pub(crate) unsafe fn seed_scrub(ps: &crate::route::PlaybackSession, scrubber: &mut Scrub) {
-    let seed = intended_pos(ps);
-    let live = playpos();
-    if seed != live {
-        log(&format!(
-            "scrub: seed at in-flight target {}s (playpos {}s stale)",
-            seed / 1_000_000_000,
-            live / 1_000_000_000
-        ));
-    }
-    scrubber.ns = seed;
-}
+// (`key_scrub` and `seed_scrub` stood here — the LEFT/RIGHT ladder for the player route and the
+// in-flight-target seed a fresh gesture starts from. Both are `PlayerScreen`'s since phase 12
+// (PX-PLAYER): `key_scrub_fresh` runs the same `ScrubPress` dispatch, and the seed is
+// `player::intended_pos_ns` read at the same moment for the same reason — while a prior commit's
+// seek is still landing, `playpos()` reports the PRE-seek spot, so a quick re-press seeded off it
+// would jump back to where the last one started.
+//
+// The rules those two docs carried are not lost, and they are worth restating where the behaviour
+// now lives: a press that finds the HUD HIDDEN is spent RAISING it and moves nothing (the
+// transport sits on a 4.5 s timer over full-screen video, so "where am I" and "take me back ten
+// seconds" are two intentions the remote cannot tell apart, and reading every LEFT as the second
+// cost a viewer their place); and a HOLD is not a tap, so the reveal still arms the gesture and
+// the ordinary continuous scrub grows out of it as the repeats arrive. `ScrubPress` and
+// `screens::player::input`'s own `a_hidden_hud_spends_the_press_on_itself` are where both are
+// pinned.)
 
 /// Run a play-plan landing and then observe the derived player state in the same frame. This tiny
 /// seam is explicit because a refused `/decision` publishes `Error` inside the landing, after the
@@ -1067,6 +1031,61 @@ pub(crate) fn land_play_then_observe<S: ?Sized>(
 ) {
     land(state);
     observe(state);
+}
+
+/// **The loop's half of the scrub commit: a paused film stays paused across the seek.**
+///
+/// `PlayerReq::CommitSeek` promises this and `screens::player`'s own
+/// `a_scrub_seek_taken_while_paused_holds_the_pause` grades that the screen ASKS for it; this
+/// grades what the arm then does, which is the half no screen test can reach — `repause_at` is an
+/// `App` field, `resume_pend` and the seek-preroll override are the pipeline's, and none of the
+/// three is nameable from `screens/` (`ci/check-deps.sh`'s `layer` gate).
+#[cfg(test)]
+mod paused_seek_tests {
+    use super::*;
+
+    /// Every state this touches is a crate global, so the body holds `testlock::serial()`.
+    #[test]
+    fn a_scrub_commit_taken_while_paused_arms_the_repause_instead_of_resuming() {
+        let _g = crate::testlock::serial();
+        let was_paused = crate::player::TX.paused.load(Relaxed);
+        crate::player::TX.paused.store(true, Relaxed);
+        let mut repause_at = 0i64;
+
+        commit_seek(42_000_000_000, &mut repause_at);
+
+        assert_eq!(seek_pending(), 42_000_000_000, "the seek really was requested");
+        assert_eq!(repause_at, 42_000_000_000, "…and the landed-frame wait target is its own");
+        assert!(resume_pend(), "the per-frame loop is asked to close the bounded override");
+        assert!(
+            crate::player::seek_preroll_active(),
+            "…which is what lets the pipeline decode the landed frame with the transport still \
+             saying Paused — the whole difference from PlayerReq::SeekTo",
+        );
+
+        crate::player::TX.finish_seek_preroll();
+        crate::player::TX.paused.store(was_paused, Relaxed);
+    }
+
+    /// …and the complement: while PLAYING there is nothing to hold, so the commit is a bare seek
+    /// and arms no re-pause at all. Without this the case above passes for a `commit_seek` that
+    /// armed the override unconditionally, which would re-pause a film nobody had paused.
+    #[test]
+    fn a_scrub_commit_taken_while_playing_arms_no_repause() {
+        let _g = crate::testlock::serial();
+        let was_paused = crate::player::TX.paused.load(Relaxed);
+        crate::player::TX.paused.store(false, Relaxed);
+        set_resume_pend(false);
+        let mut repause_at = 7i64;
+
+        commit_seek(11_000_000_000, &mut repause_at);
+
+        assert_eq!(seek_pending(), 11_000_000_000);
+        assert_eq!(repause_at, 7, "untouched: there is no pause to hold");
+        assert!(!resume_pend());
+        assert!(!crate::player::seek_preroll_active());
+        crate::player::TX.paused.store(was_paused, Relaxed);
+    }
 }
 
 #[cfg(test)]
@@ -1085,5 +1104,388 @@ mod play_landing_order_tests {
             |_| order.borrow_mut().push("observation"),
         );
         assert_eq!(*order.borrow(), ["landing", "observation"]);
+    }
+}
+
+// D8 (UI restructure phase 12): relocated verbatim from `app/mod.rs`'s `delete_local_data_tests`.
+// `delete_outcome` (the function under test) stays in `app/input.rs`, beside
+// `delete_all_local_data_and_sign_out` — its own caller — which is `input.rs`'s one Settings
+// operation that outlives the screen that asked for it; this module is where D8 asks the TEST to
+// land, matching that the operation ends a live session exactly as every other exit-of-playback
+// path this file owns does.
+#[cfg(test)]
+mod delete_local_data_tests {
+    //! **Where the app lands after Delete all local data.** The branch itself is inside the SDL
+    //! key loop, so the decision is lifted into [`delete_outcome`] and graded here.
+    use super::*;
+
+    /// **Reported 2026-09-02: deleting everything left the user in Settings, and BACK out of it
+    /// landed on an empty Home.** Both halves are this one branch. `delete_all_local_data` erases
+    /// the session unconditionally and only then reports what it could not unlink, so gating the
+    /// navigation on that report meant a single leftover file stranded a signed-out app on a
+    /// browsing screen — with no route back to sign-in short of relaunching.
+    ///
+    /// A leftover is not exotic: the candidate lists span BOTH webOS install prefixes, and the two
+    /// jail profiles disagree about which of those are writable, so `EACCES`/`EROFS` on a path
+    /// this profile was never going to own is an ordinary outcome on a healthy television.
+    #[test]
+    fn a_file_that_could_not_be_removed_still_returns_the_user_to_sign_in() {
+        assert!(
+            delete_outcome(0).to_sign_in,
+            "a clean delete goes to sign-in"
+        );
+        assert!(
+            delete_outcome(3).to_sign_in,
+            "and so does one that left files behind — the session is gone either way"
+        );
+    }
+
+    /// The leftovers are still worth saying out loud; they are just not a reason to stay put.
+    #[test]
+    fn leftovers_are_reported_but_a_clean_sweep_says_nothing() {
+        assert!(delete_outcome(1).report_leftovers);
+        assert!(!delete_outcome(0).report_leftovers);
+    }
+}
+
+/// **Where playback returns to.**
+///
+/// `app/mod.rs`'s `player_return_tests` stood here until D1, over an `Origin::From(Node)` — a whole
+/// described history entry, re-derived from the live stores at every launch site by `origin_here`,
+/// because a `Route` names a KIND of page and BACK has to land on the RIGHT one. The origin is an
+/// [`Origin`] now: the `EntryId` (plus instance) of the page that was on top when Play was pressed,
+/// seeded at the player's own mount and read back off the mounted screen. There is nothing to
+/// re-derive and no second history to reconcile, so these tests grade the production page push and
+/// shared return decision over retained entries. They do not execute native teardown. The menu activation chain through
+/// production launch policy is exercised in `app/input.rs`'s subordinate tests.
+///
+/// The two halves the old module could not reach are here for the same reason: the entry that
+/// comes back is the entry that left, so its MEMORY comes back with it (the `Spot`), and an origin
+/// that is no longer on the stack is a real container state rather than an `unwrap_or`.
+#[cfg(test)]
+mod player_return_tests {
+    use super::super::bridge::{self, AppHost, Bridge};
+    use super::{enter_player, return_from_player, Origin};
+    use crate::plex::ServerId;
+    use crate::screens::registry::{AppArg, ContentArg, PageMemory};
+    use crate::ui::dispatch::Dispatcher;
+    use crate::ui::fixture::tick;
+    use crate::ui::screen::ScreenArg;
+
+    const A: ServerId = ServerId::from_raw(0);
+    const B: ServerId = ServerId::from_raw(1);
+
+    fn detail(sid: ServerId, rk: &str) -> AppArg {
+        AppArg::Content(ContentArg::Detail { sid, rk: rk.into() })
+    }
+    fn person(key: &str) -> AppArg {
+        AppArg::Content(ContentArg::Person {
+            sid: A,
+            key: key.into(),
+            guid: String::new(),
+            name: String::new(),
+            thumb: String::new(),
+        })
+    }
+
+    /// The container, driven by the app's own frame — no `App`, no SDL, no engine.
+    struct Pages {
+        d: Dispatcher<AppHost>,
+        rig: Bridge,
+        t: u32,
+    }
+
+    impl Pages {
+        fn new() -> Self {
+            crate::plex::reset_servers_for_test();
+            Self {
+                d: Dispatcher::<AppHost>::new(),
+                rig: Bridge::for_test(|| 0),
+                t: 0,
+            }
+        }
+
+        /// Enough frames for a `PageDip` to reach its floor, apply the op and ramp back up.
+        fn settle(&mut self) {
+            for _ in 0..24 {
+                self.t += 16;
+                bridge::frame(&mut self.d, &mut self.rig, tick(self.t), vec![]);
+            }
+        }
+
+        fn stand_on(&mut self, arg: AppArg) -> &mut Self {
+            bridge::show_page(&mut self.d, arg);
+            self.settle();
+            self
+        }
+
+        fn top(&self) -> AppArg {
+            self.d.top_arg().cloned().expect("a page is on top")
+        }
+
+        fn top_entry(&self) -> crate::ui::machine::EntryId {
+            self.d.nav.top_page().expect("a page is on top").id
+        }
+
+        /// **Press Play** — production's own page-level ritual, called directly:
+        /// `start_playback`'s `if entering { … }` block and the PLAY key's foreground start are
+        /// both exactly this call. Nothing is re-typed here, which is what lets the auto-advance
+        /// case below grade the real reuse rule rather than a copy of it.
+        fn play(&mut self, from: Origin) {
+            enter_player(&mut self.d, &mut self.rig, from, None);
+            self.settle();
+        }
+
+        /// One real key press, through the app's own frame.
+        fn press(&mut self, key: crate::ui::machine::Key) {
+            self.t += 16;
+            let at = tick(self.t);
+            bridge::frame(&mut self.d, &mut self.rig, at, vec![crate::ui::fixture::key(key, at)]);
+            self.settle();
+        }
+
+        /// The `Spot` an entry's return memory is holding.
+        fn spot_of(&self, entry: crate::ui::machine::EntryId) -> crate::metadata::Spot {
+            match &self.d.nav.entry(entry).expect("the entry is on the stack").ret.memory {
+                PageMemory::Detail(memory) => memory.spot.clone(),
+                other => panic!("a detail entry remembers a detail page, not {other:?}"),
+            }
+        }
+
+        /// **Stop / BACK / EOS** at the shared production return boundary. `exit_player` calls
+        /// this same decision after its native teardown; there is no test-side origin match.
+        fn back_out(&mut self) {
+            return_from_player(&mut self.d);
+            self.settle();
+        }
+    }
+
+    /// The rule, over every screen playback can be started from: **you come back to the page you
+    /// were standing on.** Home was the one that was already right before the fix this module was
+    /// written for; the other four were all landing on Home.
+    ///
+    /// It is one assertion per launch page and it no longer needs a `Node` alphabet to say so:
+    /// the page that comes back is compared to the page that was left, as an argument.
+    #[test]
+    fn a_session_returns_to_the_screen_it_was_launched_from() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("player-return-launch");
+        for launched_from in [
+            AppArg::Home,
+            AppArg::Library,
+            AppArg::Search,
+            person("9"),
+            detail(A, "7"),
+        ] {
+            let mut p = Pages::new();
+            p.stand_on(launched_from.clone());
+            let before = p.top_entry();
+            p.play(Origin::Here);
+            assert!(
+                matches!(p.top(), AppArg::Player),
+                "the player is the page that was pushed",
+            );
+            p.back_out();
+            assert!(
+                p.top().same_instance(&launched_from),
+                "a session launched from {:?} came back to {:?}",
+                launched_from.id(),
+                p.top().id(),
+            );
+            assert_eq!(
+                p.top_entry(),
+                before,
+                "…and to the SAME entry, not a second copy of that kind of page",
+            );
+        }
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// A detail return names the SAME ITEM that was mounted — the whole reason the origin was a
+    /// `Node` and not a `Route`, and the whole reason it is an `EntryId` now. `Route::Detail`
+    /// could not say which page, and by the time BACK is pressed the PLAYED leaf's own detail is
+    /// what is loaded, so re-deriving the target at the exit read the wrong item by construction.
+    ///
+    /// The server is part of that identity for the same reason it was part of `Node`'s: with a
+    /// share registered, item 7 exists on both machines and is two different films. Here that is
+    /// no longer a claim about a comparison — both pages are really on the stack, and the exit
+    /// picks one of them.
+    #[test]
+    fn a_detail_return_names_the_item_that_was_mounted() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("player-return-detail");
+        let mut p = Pages::new();
+        p.stand_on(AppArg::Home);
+        p.stand_on(detail(B, "7"));
+        let shares_copy = p.top_entry();
+        p.stand_on(detail(A, "7"));
+        let ours = p.top_entry();
+        assert_ne!(ours, shares_copy, "two servers' item 7 are two entries");
+        p.play(Origin::Here);
+        p.back_out();
+        assert_eq!(p.top_entry(), ours, "the exit named the entry that was mounted");
+        assert!(p.top().same_instance(&detail(A, "7")));
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// **The page comes back at the spot it was left at** — the half the old module could not
+    /// reach at all, because `Node::Detail`'s `spot` was a payload the exit re-derived rather than
+    /// a page it kept. The entry the player is pushed over is the entry the `PopTo` lands on, so
+    /// the `ReturnState` it wrote on the way out (`Dispatcher::return_state` → the screen's own
+    /// `memory_at`) is the one it is handed back.
+    ///
+    /// The cursor is moved off the hero's first control FIRST, so that both the captured `Spot`
+    /// and the restored focus are things a default page would not have — an assertion that a page
+    /// comes back at `col = 0` grades nothing.
+    #[test]
+    fn the_page_underneath_keeps_the_spot_it_was_left_at() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("player-return-spot");
+        let mut p = Pages::new();
+        p.stand_on(AppArg::Home);
+        p.stand_on(detail(A, "7"));
+        let page = p.top_entry();
+        p.press(crate::ui::machine::Key::Right);
+        let left_on = p.d.focus().expect("the detail page holds the cursor");
+        p.play(Origin::Here);
+        let spot = p.spot_of(page);
+        assert_ne!(
+            spot,
+            crate::metadata::Spot::default(),
+            "the cursor really was moved before the session started: {spot:?}",
+        );
+        p.back_out();
+        assert_eq!(p.top_entry(), page);
+        assert_eq!(
+            p.spot_of(page),
+            spot,
+            "the spot rode the entry through the session",
+        );
+        assert_eq!(
+            p.d.focus(),
+            Some(left_on),
+            "…and so did the cursor, which is what the spot is a description of",
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// **Up Next must not rewrite the return page.** An auto-advance starts a NEW item while the
+    /// player is already up: the user chose nothing, and the page on screen is the player itself.
+    ///
+    /// `Origin::Unchanged` is what keeps the chain pointing at the page they actually came from,
+    /// however many episodes it runs for — and since D1 the mechanism is the container's: a second
+    /// `NavOp::Push` would MINT a second player entry (push has no reuse rule), mount a screen
+    /// with no seed, and land the exit on Home from the second episode onward.
+    #[test]
+    fn auto_advance_keeps_the_page_the_user_came_from() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("player-return-upnext");
+        let mut p = Pages::new();
+        p.stand_on(AppArg::Home);
+        p.stand_on(detail(A, "7"));
+        let show = p.top_entry();
+        p.play(Origin::Here);
+        let player = p.top_entry();
+        for _ in 0..4 {
+            p.play(Origin::Unchanged); // episode → episode → …
+            assert_eq!(
+                p.top_entry(),
+                player,
+                "an auto-advance changes the media, not the page",
+            );
+        }
+        p.back_out();
+        assert_eq!(
+            p.top_entry(),
+            show,
+            "four auto-advances later, still the show page",
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// **An origin that is no longer on the stack falls back to Home** — the anti-strand floor
+    /// that `return_page`'s `unwrap_or(Node::Home)` was, restated over a real container by
+    /// `bridge::nav_pop_to`. It is reachable rather than hypothetical: a profile switch
+    /// (`Dispatcher::reset_for_profile`) retires every entry there is, so a session that outlives
+    /// one holds an `EntryId` that names nothing.
+    #[test]
+    fn an_origin_that_is_gone_falls_back_to_home() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("player-return-strand");
+        let mut p = Pages::new();
+        p.stand_on(AppArg::Home);
+        p.stand_on(detail(A, "7"));
+        p.play(Origin::Here);
+        let stale = bridge::player(&p.d)
+            .and_then(|player| player.origin)
+            .expect("the mount consumed the seed");
+        assert!(
+            p.d.nav.entry(stale.entry).is_some(),
+            "…and it named a real entry while the page was there",
+        );
+
+        // The switch every profile pick performs: the tree keeps nothing of the outgoing profile.
+        bridge::switch_profile(&mut p.d);
+        p.settle();
+        assert!(p.d.nav.entry(stale.entry).is_none(), "the origin entry is gone");
+
+        // A session that survived it re-enters the player still holding that id.
+        p.rig.seed_player_origin(stale);
+        bridge::nav_push(&mut p.d, AppArg::Player);
+        p.settle();
+        assert_eq!(
+            bridge::player(&p.d).and_then(|player| player.origin).map(|o| o.entry),
+            Some(stale.entry),
+            "the stale origin really is what the exit will be asked about",
+        );
+
+        p.back_out();
+        assert!(
+            matches!(p.top(), AppArg::Home),
+            "a stranded return lands on Home rather than on nothing: {:?}",
+            p.top().id(),
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn a_guid_only_person_returns_to_its_retained_entry() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("player-return-guid-only");
+        let mut p = Pages::new();
+        let arg = AppArg::Content(ContentArg::Person { sid: A, key: String::new(),
+            guid: "plex://person/synthetic-person".into(), name: String::new(), thumb: String::new() });
+        p.stand_on(AppArg::Home).stand_on(arg.clone());
+        let before = p.top_entry();
+        p.play(Origin::Here);
+        assert_eq!(bridge::player(&p.d).unwrap().origin.unwrap().entry, before);
+        p.back_out();
+        assert_eq!(p.top_entry(), before, "a GUID is sufficient identity for the retained Person");
+        assert!(p.top().same_instance(&arg));
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// A live content entry carrying no item/person identity is not the stale-entry case. The
+    /// production return boundary rejects each ContentArg shape explicitly and chooses Home.
+    #[test]
+    fn an_identityless_content_origin_falls_back_to_home() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("player-return-identityless");
+        for origin in [
+            AppArg::Content(ContentArg::Detail { sid: A, rk: String::new() }),
+            AppArg::Content(ContentArg::Person { sid: A, key: String::new(), guid: String::new(),
+                name: String::new(), thumb: String::new() }),
+            AppArg::Content(ContentArg::Filmography { sid: A, key: String::new() }),
+        ] {
+            let mut p = Pages::new();
+            p.stand_on(AppArg::Home).stand_on(origin);
+            let live_origin = p.top_entry();
+            p.play(Origin::Here);
+            assert!(p.d.nav.entry(live_origin).is_some(),
+                "the rejected origin is a live entry, not the stale-entry case");
+            p.back_out();
+            assert!(matches!(p.top(), AppArg::Home));
+        }
+        crate::plex::reset_servers_for_test();
     }
 }

@@ -158,12 +158,12 @@ pub(crate) fn encode_key(sym: c_uint, wcode: c_uint, down: bool) -> [u8; 128] {
 }
 
 /// The bytes a synthetic HARDWARE AUTO-REPEAT edge carries — `encode_key`'s down edge with the
-/// 0x101 shape (`state & 0x100 != 0`) `on_auto_repeat` requires, in whichever layout `decode_key`
-/// reads. `encode_key` itself must never produce this (`key_bytes_round_trip` pins that a synthetic
-/// EDGE "must never look like auto-repeat"), so it is a second, deliberately separate function
-/// rather than a third argument threaded through the first — item 13's `holdrep:<name>` FIFO token
-/// is the only caller, and it exists so a script can exercise `on_auto_repeat`'s
-/// Settings/Consent/Legal forwarding without a real remote's own repeat cadence.
+/// 0x101 shape (`state & 0x100 != 0`) the loop's repeat arm requires, in whichever layout
+/// `decode_key` reads. `encode_key` itself must never produce this (`key_bytes_round_trip` pins
+/// that a synthetic EDGE "must never look like auto-repeat"), so it is a second, deliberately
+/// separate function rather than a third argument threaded through the first — item 13's
+/// `holdrep:<name>` FIFO token is the only caller, and it exists so a script can exercise the
+/// `Edge::Repeat` a screen receives without a real remote's own repeat cadence.
 pub(crate) fn encode_key_repeat(sym: c_uint, wcode: c_uint) -> [u8; 128] {
     let mut ev = encode_key(sym, wcode, true);
     if cfg!(feature = "hostsim") {
@@ -333,9 +333,9 @@ pub(crate) fn remote_synth_key_edge(sym: c_uint, wcode: c_uint, down: bool) {
 }
 
 /// ONE hardware auto-repeat edge — item 13's `holdrep:<name>` FIFO token, which lets a script
-/// exercise `on_auto_repeat`'s Settings/Consent/Legal forwarding (and the player scrubber's
-/// existing continuous-scrub path) without a real remote's own repeat cadence. Only recognised as a
-/// repeat by `on_auto_repeat`'s caller when `App::down_sym` already equals `sym` — i.e. after a
+/// exercise a held key's `Edge::Repeat` (the Settings family's paced focus walk, the player
+/// scrubber's continuous scrub) without a real remote's own repeat cadence. Only recognised as a
+/// repeat by the loop's key arm when `App::down_sym` already equals `sym` — i.e. after a
 /// `holddown:<name>` and before its matching `holdup:<name>`, the same split `okdown`/`okup`
 /// already uses for a press-and-hold.
 pub(crate) fn remote_synth_key_repeat(sym: c_uint, wcode: c_uint) {
@@ -509,5 +509,123 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &crate::route::PlaybackSessio
     } else {
         log(&format!("remote: unknown token {tok:?}"));
         false
+    }
+}
+
+#[cfg(test)]
+mod key_layout_tests {
+    use super::{decode_key, encode_key, encode_key_repeat};
+    use crate::ui::consts::{SDLK_DOWN, SDLK_RETURN, WCODE_BACK, WCODE_PAUSE};
+
+    /// `encode_key` and `decode_key` must agree, in whichever layout this build compiled.
+    ///
+    /// This is the regression test for a bug that shipped: the two ends disagreed about
+    /// `SDL_KeyboardEvent`'s field offsets, so every remote-FIFO token was accepted, decoded into
+    /// nonsense, and silently dropped — no error on either side. Nothing in the compiler couples a
+    /// reader and a writer of raw byte offsets, so this does.
+    ///
+    /// `make check` builds the television layout, so that is the one graded by default; a
+    /// `--features hostsim` test run grades the stock-SDL2 one. Both arms are compiled either way
+    /// (they are `cfg!`, not `#[cfg]`), so neither can rot.
+    #[test]
+    fn key_bytes_round_trip() {
+        // The wcode-only case is the one that breaks a sym-derived mapping, and the one a naive
+        // host layout loses: `pause` carries no sym at all.
+        //
+        // **`(8, 42)` is the case that MATTERS and it was missing.** It is the `backspace` token,
+        // and 8 is one of the four syms `host_wcode` maps a desktop key onto — to `WCODE_BACK`.
+        // The only sym-plus-wcode case here used to be `(8, WCODE_BACK)`, the single pair where
+        // the stand-in and the carrier agree, so a decode that consulted the stand-in FIRST passed
+        // this test while turning the panel's delete key into a navigation. Every one of those
+        // four syms belongs here for the same reason.
+        for (sym, wcode) in [
+            (SDLK_DOWN, 0),
+            (SDLK_RETURN, 0),
+            (0, WCODE_PAUSE),
+            (8, WCODE_BACK),
+            (8, 42),   // backspace: sym 8, SDL_SCANCODE_BACKSPACE — NOT BACK
+            (32, 44),  // space, 'p', 's': the other three syms the stand-in claims, each
+            (112, 19), // beside its own real scancode, which must survive unchanged
+            (115, 22),
+        ] {
+            for down in [true, false] {
+                let ev = encode_key(sym, wcode, down);
+                let (state, got_wcode, got_sym) = decode_key(&ev);
+                assert_eq!(got_sym, sym, "sym lost (wcode={wcode}, down={down})");
+                assert_eq!(got_wcode, wcode, "wcode lost (sym={sym}, down={down})");
+                assert_eq!(
+                    state & 0xff,
+                    u32::from(down),
+                    "press/release lost — the low byte is what every handler tests (sym={sym})"
+                );
+                assert_eq!(
+                    state & 0x100,
+                    0,
+                    "a synthetic edge must never look like auto-repeat"
+                );
+            }
+        }
+    }
+
+    /// `encode_key_repeat`'s twin of the round trip above: a `holdrep:<name>` token must decode as
+    /// a genuine hardware auto-repeat (`state & 0x100 != 0`), the exact shape `on_auto_repeat`'s
+    /// caller gates on (`state & 0x100 != 0 && sym == held_key.down_sym`) — the one case
+    /// `key_bytes_round_trip` just pinned an ordinary edge must NEVER produce.
+    #[test]
+    fn encode_key_repeat_round_trips_as_a_hardware_repeat() {
+        for (sym, wcode) in [(SDLK_DOWN, 0), (0, WCODE_PAUSE), (8, 42)] {
+            let ev = encode_key_repeat(sym, wcode);
+            let (state, got_wcode, got_sym) = decode_key(&ev);
+            assert_eq!(got_sym, sym, "sym lost (wcode={wcode})");
+            assert_eq!(got_wcode, wcode, "wcode lost (sym={sym})");
+            assert_eq!(state & 0xff, 1, "a repeat is a DOWN edge, not a release");
+            assert_eq!(
+                state & 0x100,
+                0x100,
+                "must decode as auto-repeat, or `on_auto_repeat` never sees it (sym={sym})"
+            );
+        }
+    }
+
+    /// **`k:<sym>,<wcode>` — the only token that can press a key the map does NOT name**, which is
+    /// what LG checklist item 40 needs: a named-token map can by construction never send an
+    /// unsupported key. Both fields are required and decimal; a half-parsed pair must be REFUSED
+    /// rather than silently become a press of something else, because the drain's `else` logs an
+    /// unknown token and a wrong pair would log nothing at all.
+    #[test]
+    fn the_raw_key_token_carries_both_fields_or_none() {
+        use super::remote_token_key;
+        assert_eq!(
+            remote_token_key("k:0,269"),
+            Some((0, 269)),
+            "HOME, which nothing else can send"
+        );
+        assert_eq!(
+            remote_token_key("k:53,34"),
+            Some((53, 34)),
+            "the digit 5 as the TV spells it"
+        );
+        for bad in [
+            "k:", "k:1", "k:1,", "k:,1", "k:a,1", "k:1,b", "k:1,2,3", "k:-1,2", "k: 1,2",
+        ] {
+            assert_eq!(
+                remote_token_key(bad),
+                None,
+                "{bad:?} must not become a keypress"
+            );
+        }
+        // …and it must not shadow the named tokens or the other prefixed ones.
+        assert!(
+            remote_token_key("ck:10,20").is_none(),
+            "a click token is not a key token"
+        );
+        assert_eq!(
+            remote_token_key("chup"),
+            Some((0, crate::ui::consts::WCODE_CH_UP_KEY))
+        );
+        assert_eq!(
+            remote_token_key("pageup"),
+            Some((crate::ui::consts::SDLK_PAGEUP, 0))
+        );
     }
 }

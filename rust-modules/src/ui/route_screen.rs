@@ -79,6 +79,7 @@
 
 use crate::ui::consts::SAFE;
 use crate::ui::icons::{self, Icon};
+use crate::ui::machine::Measure;
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::{AmbientWash, ControlPalette};
 use crate::ui::{theme, Painter, Rect, Spring};
@@ -796,7 +797,7 @@ impl RouteLayout {
         }
     }
 
-    fn draw_crumb(self, p: Painter, top: f32, back_to: &str) {
+    fn draw_crumb(self, p: Painter, top: f32, back_to: &str, measure: &dyn Measure) {
         let h = CRUMB_BAND;
         let cy = top + h * 0.5;
         icons::draw(
@@ -812,7 +813,7 @@ impl RouteLayout {
         );
         let (_, ink_r) = icons::ink_x(Icon::ChevronLeft);
         let x = self.narrative.x + CRUMB_MARK * ink_r + theme::space::XS;
-        let ty = crumb_label_top(cy, crate::text::cap_h(theme::size::CAPTION, 0));
+        let ty = crumb_label_top(cy, measure.cap_h(theme::size::CAPTION));
         TextView::new(back_to, theme::size::CAPTION, theme::TEXT_TERTIARY)
             .max_lines(1)
             .draw(p, Rect::new(x, ty, self.narrative.x + self.narrative.w - x, h));
@@ -848,10 +849,11 @@ impl RouteLayout {
         title: &str,
         copy: &str,
         copy_size: std::os::raw::c_int,
+        measure: &dyn Measure,
     ) {
         let top = self.narrative_top(back_to.is_some());
         if let Some(back_to) = back_to {
-            self.draw_crumb(p, self.narrative.y, back_to);
+            self.draw_crumb(p, self.narrative.y, back_to, measure);
         }
 
         let title = Self::narrative_title(title);

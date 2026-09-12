@@ -33,7 +33,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
         for i in 0..80 {
-            frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+            frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
         }
         let position = |d: &Dispatcher<AppHost>| {
             d.top_screen()
@@ -55,7 +55,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
             frame(
                 &mut d,
                 &mut rig,
-                Route::Library,
+                AppArg::Library,
                 tick(i),
                 script_key(Key::Down, tick(i)),
             );
@@ -64,13 +64,13 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         frame(
             &mut d,
             &mut rig,
-            Route::Library,
+            AppArg::Library,
             tick(i),
             script_key(Key::Right, tick(i)),
         );
         i += 1;
         for n in i..i + 80 {
-            frame(&mut d, &mut rig, Route::Library, tick(n), vec![]);
+            frame(&mut d, &mut rig, AppArg::Library, tick(n), vec![]);
         }
         i += 80;
         assert_eq!(
@@ -98,7 +98,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         frame(
             &mut d,
             &mut rig,
-            Route::Library,
+            AppArg::Library,
             tick(i),
             key_input(Edge::Down, i),
         );
@@ -108,7 +108,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         let mut saw_scaled_press = false;
         let rect = |r: crate::ui::Rect| [r.x, r.y, r.w, r.h];
         for n in i + 1..i + 80 {
-            frame(&mut d, &mut rig, Route::Library, tick(n), vec![]);
+            frame(&mut d, &mut rig, AppArg::Library, tick(n), vec![]);
             assert_eq!(d.focus(), Some(key));
             let page = d
                 .nav
@@ -133,6 +133,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
             };
             let cx = parts.cx::<AppHost>(
                 AppViews {
+                    auth: rig.session.read(),
                     hubs: rig.hubs.view(),
                     listing: rig.listing.view(),
                     directory: rig.directory.view(),
@@ -190,12 +191,12 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         frame(
             &mut d,
             &mut rig,
-            Route::Library,
+            AppArg::Library,
             tick(i + 80),
             key_input(Edge::Up, i + 80),
         );
         for n in i + 81..i + 120 {
-            frame(&mut d, &mut rig, Route::Library, tick(n), vec![]);
+            frame(&mut d, &mut rig, AppArg::Library, tick(n), vec![]);
         }
         assert!(
             !rig.take_library_reqs().iter().any(|(_, req, _)| matches!(

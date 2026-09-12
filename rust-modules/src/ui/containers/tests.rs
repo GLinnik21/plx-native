@@ -142,6 +142,45 @@ fn the_scrim_ladder_scales_by_appear_and_the_route_dip() {
     assert!((d.nav.modals.scrims(1.0)[0].1 - 0.5).abs() < 1e-6);
 }
 
+/// The production dispatcher supplies one borrowed chrome projection to the bare lift callback;
+/// it must include the profile, labels and the material the normal chrome draw just published.
+#[test]
+fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static SEEN: AtomicBool = AtomicBool::new(false);
+    fn lift(read: crate::ui::screen::ScrimLiftRead<'_>) {
+        let chrome = read.chrome.expect("the fixture rig supplied chrome");
+        assert_eq!(chrome.profile.name.to_bytes(), b"Captured A");
+        assert_eq!(chrome.profile.initial.to_bytes(), b"A");
+        assert_eq!(chrome.labels.labels, ["Home", "Movies", ""]);
+        assert!((chrome.chip_expand - 0.625).abs() < 1e-6);
+        let face = read.bar_material.expect("the frame plan supplied the tab face");
+        assert_eq!(face.scrim_top, [0.1, 0.2, 0.3, 0.4]);
+        SEEN.store(true, Ordering::Relaxed);
+    }
+
+    let _guard = crate::testlock::serial();
+    SEEN.store(false, Ordering::Relaxed);
+    let (mut d, mut rig, _) = booted();
+    rig.seed_scrim_chrome_for_test("Captured A", "A", &["Home", "Movies", ""], 0.625);
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    let modal = modal_mut(&mut d, id);
+    modal.scrim_alpha = 0.5;
+    modal.scrim_lift = Some(lift);
+    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    let mut glass = crate::ui::frame::glass::GlassPlan::new();
+    glass.set_tab_face_for_test(crate::gfx::GlassFace {
+        scrim_top: [0.1, 0.2, 0.3, 0.4],
+        scrim_bot: [0.5, 0.6, 0.7, 0.8],
+        rim: [0.0; 4], rim_lit: [0.0; 4], rim_w: 1.0,
+    });
+    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, Some(&glass));
+    let lifts = d.nav.modals.scrims(1.0);
+    assert_eq!(lifts.len(), 1, "the live surface contributes exactly one lift");
+    (lifts[0].2)(read);
+    assert!(SEEN.load(Ordering::Relaxed), "the dispatcher never invoked the lift callback");
+}
+
 fn modal_of(d: &Dispatcher<FixtureHost>, id: EntryId) -> &crate::ui::fixture::FixtureModal {
     d.nav.entry(id).unwrap().inst.as_ref().unwrap().screen.as_any().unwrap()
         .downcast_ref::<crate::ui::fixture::FixtureModal>().unwrap()

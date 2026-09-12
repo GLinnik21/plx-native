@@ -6,8 +6,15 @@
 //! from the previous procedural version — only the presentation moved onto the table.
 #![allow(dead_code)]
 use crate::metadata;
-use crate::ui::consts::{SCR_H, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_UP};
+use crate::ui::consts::SCR_H;
+use crate::ui::frame::Budget;
+use crate::ui::geom::IndexElem;
+use crate::ui::machine::{Cx, EntryId, FocusKey, GroupId, Host};
 use crate::ui::popover::Popover;
+use crate::ui::screen::{
+    Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
+    Hover, Part, Placed, Seat, Step, Stop,
+};
 use crate::ui::table::{Badge, Row, Section, TableView};
 use crate::ui::theme;
 use crate::ui::{Painter, Rect};
@@ -57,6 +64,14 @@ impl TrackMenuState {
     /// nothing between.
     pub(crate) fn sel(&self) -> i32 {
         self.table.sel
+    }
+
+    /// **Write back the engine's own focus cursor** (restructure phase 12): the Column group
+    /// [`TrackMenuPart`] answers is the source of geometry, but the ENGINE owns the current
+    /// element (§7.3 step 5) — the owner's `step` is the only place that mutates in response to a
+    /// `FocusMoved`, and this is `screens::player::overlay::PlayerOverlayScreen::step`'s write.
+    pub(crate) fn set_sel(&mut self, i: i32) {
+        self.table.sel = i;
     }
 
     /// index into the playing item's audio list of the chosen audio track
@@ -162,17 +177,6 @@ impl TrackMenuState {
         if tab != self.tab {
             self.tab = tab;
             self.rebuild(ps, tab, false); // swap the whole list → snap the pill, no long glide
-        }
-    }
-
-    pub(crate) fn move_focus(&mut self, ps: &crate::route::PlaybackSession, sym: c_int) {
-        let sym = sym as u32;
-        if sym == SDLK_UP {
-            self.table.move_sel(-1);
-        } else if sym == SDLK_DOWN {
-            self.table.move_sel(1);
-        } else if sym == SDLK_LEFT || sym == SDLK_RIGHT {
-            self.focus_tab(ps, if sym == SDLK_LEFT { 0 } else { 1 });
         }
     }
 
@@ -348,7 +352,7 @@ impl TrackMenuState {
         self.table.update(dt, h);
     }
 
-    pub(crate) fn draw(&mut self, appear: f32) {
+    pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
         // modal scrim (dims the video plane showing through) + the appear fade/rise — the container
         // now drives the phase and the appear spring; this reproduces exactly what
         // `Popover::scrim(0.58)` and `Popover::content_painter(20.0)` used to draw.
@@ -363,7 +367,122 @@ impl TrackMenuState {
         // dark card approximates it); only a hint of video shows through
         p.rect(r, 28.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
 
-        self.table.draw(p, r);
+        self.table.draw(p, r, measure);
+    }
+}
+
+/// **The Engine-shaped view of this popover** (restructure phase 12): one `Column` focus group
+/// over the ACTIVE tab's rows, built fresh by `screens::player::overlay::PlayerOverlayScreen`
+/// each frame from a `&TrackMenuState` — the same borrowed-view shape `ui::more_menu::MoreMenuPart`
+/// and `ui::table_screen::TablePart` use for the other bare-`TableView` panels, so this popover
+/// answers the same [`Focusable`]/[`Part`] query protocol they do. LEFT/RIGHT are NOT a move
+/// within the group — they switch the whole row set to the other tab, which only the owning
+/// screen can do (mirroring [`TrackMenuState::focus_tab`]), so both edges answer
+/// [`EdgeRule::Screen`], the same idiom `TablePart` uses for a RIGHT edge the screen itself must
+/// interpret.
+///
+/// **`state` is a SHARED reference, not `&mut`** — every [`Focusable`] method here is a pure read
+/// (`&self`), and the screen's own `Focusable` impl only ever has `&self` too (the engine holds
+/// screens behind `&dyn Screen`, §7.1's "the engine never mutates a screen"), so a mutable field
+/// would make this type unconstructable from there. The actual PAINT (`TrackMenuState::draw`,
+/// which needs `&mut` for its own lazy layout work) stays a direct call on the owned `Panel` from
+/// `PlayerOverlayScreen::draw`'s `&mut self`; [`Part::draw`] below only registers stops, which is
+/// read-only geometry like everything else in this impl.
+pub(crate) struct TrackMenuPart<'a> {
+    pub(crate) state: &'a TrackMenuState,
+    pub(crate) entry: EntryId,
+    pub(crate) group: GroupId,
+}
+
+impl<H: Host> Focusable<H> for TrackMenuPart<'_>
+where
+    H::Elem: IndexElem,
+{
+    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        out.push(GroupSpec {
+            id: self.group,
+            kind: GroupKind::Column,
+            seat: Seat::Remembered,
+            reachable: AxisMask::VERTICAL,
+            edge: [EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Screen, EdgeRule::Screen],
+            extent: self.state.panel_rect(),
+            len: self.state.table.n_rows().max(0) as usize,
+            elem: ElemKind::Bare,
+        });
+    }
+    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        ((key.index()? as i32) < self.state.table.n_rows()).then_some(self.group)
+    }
+    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
+        let Some(i) = key.elem.index() else {
+            return Step::Edge;
+        };
+        let delta = match dir {
+            Dir::Up => -1,
+            Dir::Down => 1,
+            _ => return Step::Edge, // Left/Right: the screen's own tab switch, via `EdgeRule::Screen`
+        };
+        match self.state.table.next_selectable(i as i32, delta) {
+            Some(j) => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(j as u32) }),
+            None => Step::Edge,
+        }
+    }
+    fn place(&self, key: &H::Elem, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+        let i = key.index()?;
+        let r = self.state.table.row_frame(self.state.panel_rect(), i as i32)?;
+        Some(Placed {
+            rect: r,
+            rest_rect: r,
+            clip: self.state.panel_rect(),
+            index: Some(i),
+        })
+    }
+    fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        let i = want.elem.index().unwrap_or(0) as i32;
+        FocusKey {
+            entry: self.entry,
+            elem: H::Elem::of_index(self.state.table.settle(i).max(0) as u32),
+        }
+    }
+    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        FocusKey {
+            entry: self.entry,
+            elem: H::Elem::of_index(self.state.table.sel.max(0) as u32),
+        }
+    }
+}
+
+impl<H: Host> Part<H> for TrackMenuPart<'_>
+where
+    H::Elem: IndexElem,
+{
+    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
+    /// Registers every visible row's stop (§7.6); the panel's own paint happens directly on the
+    /// owned `TrackMenuState` from `PlayerOverlayScreen::draw` (see the struct doc above).
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
+        let p = Painter::root();
+        let r = self.state.panel_rect();
+        for i in 0..self.state.table.n_rows() {
+            if self.state.table.next_selectable(i, 0) != Some(i) {
+                continue;
+            }
+            if let Some(row) = self.state.table.row_frame(r, i) {
+                f.stop(
+                    p,
+                    Stop {
+                        key: FocusKey {
+                            entry: self.entry,
+                            elem: H::Elem::of_index(i as u32),
+                        },
+                        rect: row,
+                        rest_rect: row,
+                        clip: r,
+                        hover: Hover::Focus,
+                        activate: Activate::Direct,
+                    },
+                );
+            }
+        }
     }
 }
 
@@ -596,5 +715,122 @@ mod tests {
         assert_eq!(n.sub(9), "", "past the end is empty, not a panic");
         // the empty store — every read before a demuxer has opened, and every read on the host
         assert_eq!(TrackNames::new().sub(0), "");
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    use crate::screens::registry::{AppFx, AppMsg, PageMemory};
+    use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+
+    struct HostFixture;
+    impl Host for HostFixture {
+        type Arg = crate::ui::fixture::FixtureArg;
+        type Fx = AppFx;
+        type Msg = AppMsg;
+        type Elem = u32;
+        type Views<'a> = ();
+        type Init = crate::ui::fixture::FixtureInit;
+        type Memory = PageMemory;
+    }
+
+    fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
+        let measure = crate::ui::fixture::FixtureMeasure;
+        test(&Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &measure,
+            focus: FocusRead::default(),
+            press: PressRead::default(),
+            owner: InputOwner::Entry(entry),
+        })
+    }
+
+    /// A three-row Audio tab, built without a `PlaybackSession` or a playing item — nothing here
+    /// reads either.
+    fn three_row_menu() -> TrackMenuState {
+        let mut sec = Section::new("Audio");
+        for label in ["English", "Русский", "Français"] {
+            sec = sec.row(Row::new(label));
+        }
+        let mut table = TableView::new();
+        table.set_sections(vec![sec], 0, false);
+        TrackMenuState {
+            tab: 0,
+            active_audio: 0,
+            active_sub: -1,
+            table,
+        }
+    }
+
+    /// **UP/DOWN step by one row and clamp at both ends**, matching
+    /// [`TrackMenuState::move_focus`]'s own clamp.
+    #[test]
+    fn up_down_step_by_one_and_clamp_at_both_ends() {
+        let e = EntryId(5);
+        let st = three_row_menu();
+        let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            let step = |i: u32, dir: Dir| {
+                match <TrackMenuPart as Focusable<HostFixture>>::neighbour(
+                    &part,
+                    FocusKey { entry: e, elem: i },
+                    dir,
+                    cx,
+                ) {
+                    Step::Move(k) => Some(k.elem),
+                    Step::Edge => None,
+                }
+            };
+            assert_eq!(step(0, Dir::Down), Some(1));
+            assert_eq!(step(2, Dir::Down), None, "the last row does not wrap");
+            assert_eq!(step(0, Dir::Up), None, "the first row does not wrap");
+            assert_eq!(step(1, Dir::Up), Some(0));
+        });
+    }
+
+    /// **LEFT/RIGHT never move within the group** — they are the screen's own tab switch
+    /// (`TrackMenuState::focus_tab`), which is why `neighbour` always answers `Step::Edge` for
+    /// them and [`groups`] hands both edges to [`EdgeRule::Screen`].
+    #[test]
+    fn left_right_are_edges_the_screen_interprets_as_a_tab_switch() {
+        let e = EntryId(5);
+        let st = three_row_menu();
+        let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            assert!(matches!(
+                <TrackMenuPart as Focusable<HostFixture>>::neighbour(
+                    &part,
+                    FocusKey { entry: e, elem: 1 },
+                    Dir::Left,
+                    cx,
+                ),
+                Step::Edge
+            ));
+            let mut groups = Vec::new();
+            <TrackMenuPart as Focusable<HostFixture>>::groups(&part, cx, &mut groups);
+            let g = groups.into_iter().next().expect("one group");
+            assert!(matches!(g.edge[2], EdgeRule::Screen));
+            assert!(matches!(g.edge[3], EdgeRule::Screen));
+        });
+    }
+
+    /// `place` reports exactly the row rect `TableView::row_frame` — and so the old `draw` —
+    /// paints at.
+    #[test]
+    fn place_matches_the_tables_own_row_frame() {
+        let e = EntryId(5);
+        let st = three_row_menu();
+        let r = st.panel_rect();
+        let want = st.table.row_frame(r, 2);
+        let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            let placed = <TrackMenuPart as Focusable<HostFixture>>::place(&part, &2u32, cx, At::Drawn);
+            assert_eq!(
+                placed.map(|p| (p.rect.x, p.rect.y, p.rect.w, p.rect.h)),
+                want.map(|r| (r.x, r.y, r.w, r.h))
+            );
+        });
     }
 }

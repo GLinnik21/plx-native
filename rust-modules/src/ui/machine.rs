@@ -174,6 +174,18 @@ pub trait Measure {
     fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32;
     fn cap_h(&self, sz: i32) -> f32;
     fn line_h(&self, sz: i32) -> f32;
+
+    /// `width` for a borrowed `&str` (spec §4.3, phase 12 D4): builds the transient `CString` so
+    /// a draw-time call site measures a `String`/`&str` slice without hand-rolling one — the exact
+    /// conversion every `crate::text::text_width(c.as_ptr(), …)` call site already did, moved
+    /// behind the capability so the raw free function stops being reachable outside `ui/text*.rs`
+    /// and the three `Measure` impls. An embedded NUL (never produced by real UI strings) answers
+    /// `0.0`, the same fallback `CString::new(..).ok()` gave every caller before.
+    fn width_str(&self, s: &str, sz: i32, bold: bool) -> f32 {
+        std::ffi::CString::new(s)
+            .map(|c| self.width(&c, sz, bold))
+            .unwrap_or(0.0)
+    }
 }
 
 /// What a machine may read about the press machine (§7.4): the renderer's two numbers.

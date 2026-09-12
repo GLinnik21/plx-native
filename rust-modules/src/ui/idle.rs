@@ -37,9 +37,12 @@
 //! **Springs are not the only clock, and that is the standing hazard.** Anything that animates
 //! from raw time — a millisecond ramp, a phase accumulator, a countdown — is invisible to (1) by
 //! construction and must report through (2) itself. Two did not, and both froze in the product:
-//! [`Xfade`](crate::ui::xfade) (every route dip) and [`Spinner`](crate::ui::widgets::Spinner)
+//! [`Xfade`](crate::ui::xfade) (every CONTENT cross-fade — the Library's grid and page, Search's
+//! results, Filmography's preview) and [`Spinner`](crate::ui::widgets::Spinner)
 //! (every loading read-out). They report from their own advance and draw respectively; the reasons
-//! those two sides differ are on each call. `docs/retui-invalidation-design.md` is the accepted
+//! those two sides differ are on each call. `Xfade` was the ROUTE dip too until restructure phase
+//! 12 (D1) lifted that onto [`PageDip`](crate::ui::containers::transition::PageDip), which is
+//! inside the container and reports `Motion` from its own `tick` by construction. `docs/retui-invalidation-design.md` is the accepted
 //! plan for closing the class properly, by making `dt` a capability rather than an `f32`.
 //!
 //! The asymmetry is deliberate: a false "something moved" costs one wasted frame, a false
@@ -145,6 +148,17 @@ thread_local! {
     /// velocity into "distance this frame", which is the only form in which a velocity can be
     /// judged visible. Same thread-local rationale as `MOVING`.
     static DT: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0 / 60.0) };
+
+    /// A monotonic microsecond clock, advanced once per frame by [`frame_begin`] — for a
+    /// clock-driven leaf that has no `Tick` of its own to hand it (`card_row`'s focused-title
+    /// marquee is the one caller: it advances from inside `draw`, reached through a generic
+    /// `Column::draw_child` trait method and several call sites across three lanes' files, none
+    /// of which carries a `Tick`). Unlike the retired `dt()` accessor this is never SUMMED by a
+    /// caller — a reader takes two readings and subtracts them ([`now_ms`]'s own doc), so no
+    /// caller can accumulate drift the way a per-frame `f32 dt` invited. `u64` microseconds
+    /// rather than `f32` seconds for the same reason `search.rs`'s debounce and `anim.rs`'s probe
+    /// clock convert once rather than sum: exact, with no realistic overflow horizon.
+    static MS_CLOCK_US: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 
     /// Last discrete-damage generation reported through [`should_present`] on this thread. Unlike
     /// `DIRTY`, this is observational: it lets noidle report one-shot damage without consuming the
@@ -389,14 +403,18 @@ pub(crate) fn wake() {
     WAKE.store(true, Relaxed);
 }
 
-/// Start of an iteration: forget last frame's motion (the update phase is about to re-derive it)
-/// and stamp this frame's `dt` for [`note_spring`].
+/// Start of an iteration: forget last frame's motion (the update phase is about to re-derive it),
+/// stamp this frame's `dt` for [`note_spring`], and advance [`MS_CLOCK_US`] for [`now_ms`] — by
+/// the exact whole-microsecond conversion of `dt`, not a summed `f32`, for the same reason
+/// `search.rs`'s debounce and `anim.rs`'s probe clock do it that way.
 #[inline]
 pub(crate) fn frame_begin(dt: f32) {
     MOVING.with(|m| m.set(false));
     PAGE_MOVING.with(|m| m.set(false));
     UNDERLAY_MOVING.with(|m| m.set(false));
     DT.with(|d| d.set(dt));
+    let dt_us = (dt * 1_000_000.0).round().max(0.0) as u64;
+    MS_CLOCK_US.with(|c| c.set(c.get() + dt_us));
 }
 /// Publish this frame's page-under-everything motion verdict (`app.rs`'s `underlay_moving`) for
 /// [`underlay_moving`]. Once per drawn frame, by `popover::host::begin_frame`.
@@ -411,15 +429,21 @@ pub(crate) fn underlay_moving() -> bool {
     UNDERLAY_MOVING.with(|m| m.get())
 }
 
-/// This frame's `dt`, for a clock-driven animator that has no `dt` of its own to hand it — the
-/// same hazard the module doc calls out for [`Xfade`](crate::ui::xfade::Xfade) and
+/// A monotonic millisecond reading, for a clock-driven animator that has no `Tick` of its own to
+/// hand it — the same hazard the module doc calls out for [`Xfade`](crate::ui::xfade::Xfade) and
 /// [`Spinner`](crate::ui::widgets::Spinner): a millisecond ramp is invisible to [`note_spring`] and
 /// must report through [`invalidate`] itself. `card_row`'s focused-title marquee is the third —
-/// it advances from inside `draw`, which gets no `dt` parameter at all, so it reads this instead of
-/// a fourth screen threading one through five call sites across three lanes' files.
+/// it advances from inside `draw`, reached through a generic `Column::draw_child` trait method
+/// and several call sites across three lanes' files, none of which carries a `Tick` — so it reads
+/// this instead of widening that trait's fixed parameter list.
+///
+/// **Take two readings and subtract them (`u32::wrapping_sub`)**, exactly as `motion::Phase`
+/// does with a real `Tick.ms` — never accumulate a per-frame delta into a running total, which is
+/// the `check-deps.sh` `dt` gate's whole complaint and the reason this replaced a `dt()` accessor
+/// callers used to sum themselves.
 #[inline]
-pub(crate) fn dt() -> f32 {
-    DT.with(|d| d.get())
+pub(crate) fn now_ms() -> u32 {
+    MS_CLOCK_US.with(|c| (c.get() / 1000) as u32)
 }
 
 /// Run one host page's update with an isolated view of spring motion, then merge its result back
@@ -689,20 +713,28 @@ mod tests {
             !src.contains("crate::system::opaque_route(fr.player)"),
             "the opaque region must not be keyed on the ROUTE — the plane's bit is the question",
         );
-        // **UNCONDITIONAL, at the loop body's own depth.** The claim this pins is not where the
-        // call sits relative to the present decision — spec §3.3 step 9 puts it AFTER, and since
-        // phase 11 so does the loop, because the render cache's upload step now runs on the
-        // PRESENTING side of that decision and this call has to follow it. The claim is that the
-        // call is never nested inside an `if fr.present` block: the false edge after an unbind
-        // may land on a frame the gate does not present, and nothing else in the loop would
-        // carry it. This assertion used to be `call < gate`, which was a proxy for that and
-        // stopped being one when the upload moved.
-        const CALL: &str = "        crate::system::opaque_route(app.player.video_plane_bound);";
+        // **UNCONDITIONAL.** The claim this pins is not where the call sits relative to the
+        // present decision — spec §3.3 step 9 puts it AFTER, and since phase 11 so does the loop,
+        // because the render cache's upload step now runs on the PRESENTING side of that decision
+        // and this call has to follow it. The claim is that the call is never nested inside an
+        // `if fr.present` block: the false edge after an unbind may land on a frame the gate does
+        // not present, and nothing else in the loop would carry it. This assertion used to be
+        // `call < gate`, which was a proxy for that and stopped being one when the upload moved.
+        //
+        // D1 extracted the prepare window into `prepare_window(app, fr)` to get `run` under its
+        // 200-line budget, so "the loop body's own depth" is now two claims: the call is at
+        // `prepare_window`'s own body depth (four spaces, never inside that function's one
+        // `if fr.present`), and `prepare_window` itself is called at the loop body's (eight).
+        const CALL: &str = "    crate::system::opaque_route(app.player.video_plane_bound);";
         assert_eq!(
             src.lines().filter(|l| *l == CALL).count(),
             1,
-            "`opaque_route` must be called exactly once, at the loop body's own indentation — \
-             nested inside `if fr.present` it is lost on exactly the frames it matters on",
+            "`opaque_route` must be called exactly once, unnested — inside `if fr.present` it is \
+             lost on exactly the frames it matters on",
+        );
+        assert!(
+            src.lines().any(|l| l == "        prepare_window(app, fr);"),
+            "…and the window that holds it runs on every iteration, at the loop body's own depth",
         );
         let call = src.find(CALL.trim_start()).expect("the call");
         let draw = src

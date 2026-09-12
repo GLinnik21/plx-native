@@ -240,10 +240,10 @@ pub(crate) fn layout_of(next_w: f32, credits_w: f32) -> Layout {
 /// deliberately NOT a second `ctrl_slot`, because that floor exists to hold the row's right edge
 /// steady, which is the primary's job, and two equal capsules would say the two choices are
 /// equivalent.
-pub(crate) fn layout(row: &mut crate::ui::player_hud::TransportRow) -> Layout {
+pub(crate) fn layout(row: &mut crate::ui::player_hud::TransportRow, measure: &dyn crate::ui::machine::Measure) -> Layout {
     layout_of(
-        crate::ui::player_hud::ctrl_slot(row, NEXT_LABEL).w,
-        Button::pill_w(CREDITS_LABEL.as_ptr(), theme::size::BODY, false),
+        crate::ui::player_hud::ctrl_slot(row, NEXT_LABEL, measure).w,
+        crate::ui::widgets::Button::pill_w_measured(CREDITS_LABEL, theme::size::BODY, false, false, measure),
     )
 }
 
@@ -251,8 +251,8 @@ pub(crate) fn layout(row: &mut crate::ui::player_hud::TransportRow) -> Layout {
 /// [`BTN_NEXT`], or None. The still and its caption are NOT targets: with two actions in the row a
 /// click on the artwork has no single obvious meaning, and guessing one is how a stray click starts
 /// an episode the user did not ask for. The caller has already established that this owns the row.
-pub(crate) fn hit(row: &mut crate::ui::player_hud::TransportRow, cx: f32, cy: f32) -> Option<c_int> {
-    let l = layout(row);
+pub(crate) fn hit(row: &mut crate::ui::player_hud::TransportRow, cx: f32, cy: f32, measure: &dyn crate::ui::machine::Measure) -> Option<c_int> {
+    let l = layout(row, measure);
     if l.credits.contains(cx, cy) {
         Some(BTN_CREDITS)
     } else if l.next.contains(cx, cy) {
@@ -285,11 +285,12 @@ pub(crate) fn draw(
     focused: bool,
     btn: c_int,
     now: u32,
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     let Some(u) = crate::route::up_next(ps) else {
         return;
     };
-    let l = layout(row);
+    let l = layout(row, measure);
     let (pop_credits, pop_next) = (row.scale(BTN_CREDITS), row.scale(BTN_NEXT));
     // NOT scaled: `CARD_FOCUS_SCALE` is the terminal value of a focus spring the shelves drive, and
     // passing it as a constant drew the still permanently 7% oversized — overhanging the column on
@@ -306,13 +307,10 @@ pub(crate) fn draw(
         1.0,
     );
 
-    if let Ok(cs) = CString::new(crate::text::elide(
-        &caption(u),
-        l.caption.w,
-        theme::size::CAPTION,
-        1,
-        false,
-    )) {
+    let elided = crate::text::elide_by(&caption(u), l.caption.w, false, |t| {
+        measure.width_str(t, theme::size::CAPTION, true)
+    });
+    if let Ok(cs) = CString::new(elided) {
         Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_PRIMARY)
             .bold()
             .h(HAlign::Right)

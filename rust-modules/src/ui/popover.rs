@@ -40,7 +40,7 @@
 //!   [`glass_refresh`] as the dynamic backdrop's.
 use crate::ui::widgets::{Glass, GlassState};
 use crate::ui::{theme, Painter, Rect, Spring};
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 
 /// Stiffness of the appear spring — the panels' shared open-motion constant, and the stiffness every
 /// other fade-into-place in the UI matches (the tab capsules' alpha, [`crate::ui::widgets::TabStrip`]).
@@ -49,7 +49,18 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 pub(crate) const K_APPEAR: f32 = 300.0;
 
 /// How many panels are open right now, across the whole app — see [`any_open`].
-static mut OPEN_COUNT: u32 = 0;
+///
+/// A safe atomic rather than the `static mut` + raw-pointer form this counter used until phase 12
+/// (`ci/allow/statics-migration.txt`'s "the modal phase's last legacy owner"): every writer here is
+/// already a narrow, audited door — [`surface_held`]/[`surface_closing`]/[`surface_released`] (fed
+/// by `app/bridge.rs`, which is itself reading every `ModalStack`'s own phase — there is no SINGLE
+/// `ModalStack` instance this could become a field of, since the container tree holds one per
+/// screen) and [`Popover`]'s own `open_inner`/`release`/`hold_host`/`release_host`/`enter_closing`/
+/// `leave_closing`, the last direct caller being `ui::decision_alert`'s embedded panel. `Relaxed` is
+/// exact: every access is from the main render thread (or, in a host test, serialized behind
+/// `testlock::serial()`), so this buys memory safety over the old unsafe pointer arithmetic with no
+/// behaviour change — same counter, same call sites, same values.
+static OPEN_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Is ANY modal panel up? The one question a screen's CHROME has to ask, and the reason it is a
 /// counter here rather than a bool threaded through three `draw_tab_row` call sites: the panels
@@ -63,7 +74,7 @@ static mut OPEN_COUNT: u32 = 0;
 /// would union into most of the frame; the popover's own material is the only glass worth drawing
 /// while it is up. This remains true for both cached and dynamic popovers.
 pub(crate) fn any_open() -> bool {
-    unsafe { *std::ptr::addr_of!(OPEN_COUNT) > 0 }
+    OPEN_COUNT.load(Relaxed) > 0
 }
 
 /// **A dispatcher-owned surface's share of the counters** (restructure phase 5b). A surface on
@@ -80,41 +91,35 @@ pub(crate) fn any_open() -> bool {
 /// disagreed with `surface_policy`, whose `(Style::Compact, _) => (U::Live, R::Cached)` had been
 /// there all along. What that cost is in `style_caches_host`'s doc.
 pub(crate) fn surface_held(cached: bool) {
-    unsafe {
-        *std::ptr::addr_of_mut!(OPEN_COUNT) += 1;
-        if cached {
-            *std::ptr::addr_of_mut!(HOST_USERS) += 1;
-        }
+    OPEN_COUNT.fetch_add(1, Relaxed);
+    if cached {
+        HOST_USERS.fetch_add(1, Relaxed);
     }
     host::invalidate();
 }
 
 /// The surface's fade-out began (`Phase::Closing`): the page under it is live to input again.
 pub(crate) fn surface_closing(cached: bool) {
-    unsafe {
-        if *std::ptr::addr_of!(OPEN_COUNT) > 0 {
-            *std::ptr::addr_of_mut!(OPEN_COUNT) -= 1;
-        }
-        if cached {
-            *std::ptr::addr_of_mut!(HOST_CLOSING) += 1;
-        }
+    if OPEN_COUNT.load(Relaxed) > 0 {
+        OPEN_COUNT.fetch_sub(1, Relaxed);
+    }
+    if cached {
+        HOST_CLOSING.fetch_add(1, Relaxed);
     }
     crate::ui::idle::invalidate();
 }
 
 /// The surface left for good: release its host user (and its closing mark, if it was fading).
 pub(crate) fn surface_released(cached: bool, was_closing: bool) {
-    unsafe {
-        if !was_closing && *std::ptr::addr_of!(OPEN_COUNT) > 0 {
-            *std::ptr::addr_of_mut!(OPEN_COUNT) -= 1;
+    if !was_closing && OPEN_COUNT.load(Relaxed) > 0 {
+        OPEN_COUNT.fetch_sub(1, Relaxed);
+    }
+    if cached {
+        if was_closing && HOST_CLOSING.load(Relaxed) > 0 {
+            HOST_CLOSING.fetch_sub(1, Relaxed);
         }
-        if cached {
-            if was_closing && *std::ptr::addr_of!(HOST_CLOSING) > 0 {
-                *std::ptr::addr_of_mut!(HOST_CLOSING) -= 1;
-            }
-            if *std::ptr::addr_of!(HOST_USERS) > 0 {
-                *std::ptr::addr_of_mut!(HOST_USERS) -= 1;
-            }
+        if HOST_USERS.load(Relaxed) > 0 {
+            HOST_USERS.fetch_sub(1, Relaxed);
         }
     }
     host::invalidate();
@@ -126,7 +131,7 @@ pub(crate) fn surface_released(cached: bool, was_closing: bool) {
 /// interleaving, not what a previous test in the same process left behind.
 #[cfg(test)]
 pub(crate) fn host_users_for_test() -> u32 {
-    unsafe { *std::ptr::addr_of!(HOST_USERS) }
+    HOST_USERS.load(Relaxed)
 }
 
 /// How many OPEN popovers have asked for a cached host — see [`Popover::caching_host`].
@@ -134,12 +139,12 @@ pub(crate) fn host_users_for_test() -> u32 {
 /// A separate counter from [`OPEN_COUNT`] and not a filter over it, for the same reason that one is
 /// a counter: the popovers live in seven modules and two of them are routes, so nothing can
 /// enumerate them. Reaching zero is what puts the page back on the live path.
-static mut HOST_USERS: u32 = 0;
+static HOST_USERS: AtomicU32 = AtomicU32::new(0);
 /// How many of [`HOST_USERS`] are panels on their way OUT — dismissed, fading, still holding the
 /// freeze (see `Popover::release_host`). When every user is one of these the page under the
 /// snapshot is live to input again, and its MOTION becomes a reason to redraw it
 /// ([`host_refresh`]) — under an open panel only its damage is.
-static mut HOST_CLOSING: u32 = 0;
+static HOST_CLOSING: AtomicU32 = AtomicU32::new(0);
 
 /// Damage this frame that a POPOVER caused, rather than the page underneath it.
 ///
@@ -400,7 +405,7 @@ impl Popover {
         // count in both directions, and a leaked count silently freezes the tab bar's backdrop for
         // the rest of the session.
         if !self.open {
-            unsafe { *std::ptr::addr_of_mut!(OPEN_COUNT) += 1 };
+            OPEN_COUNT.fetch_add(1, Relaxed);
             self.hold_host();
         }
         self.open = true;
@@ -430,7 +435,7 @@ impl Popover {
     /// [`release_host`](Self::release_host) for why it outlives a dismiss.
     fn release(&mut self) {
         if self.open {
-            unsafe { *std::ptr::addr_of_mut!(OPEN_COUNT) -= 1 };
+            OPEN_COUNT.fetch_sub(1, Relaxed);
         }
         self.open = false;
         self.glass_state.deactivate();
@@ -441,7 +446,7 @@ impl Popover {
     /// and must not count it twice.
     fn hold_host(&mut self) {
         if self.host == HostPolicy::Cached && !self.host_held {
-            unsafe { *std::ptr::addr_of_mut!(HOST_USERS) += 1 };
+            HOST_USERS.fetch_add(1, Relaxed);
             self.host_held = true;
         }
     }
@@ -458,7 +463,7 @@ impl Popover {
     fn release_host(&mut self) {
         self.leave_closing();
         if self.host_held {
-            unsafe { *std::ptr::addr_of_mut!(HOST_USERS) -= 1 };
+            HOST_USERS.fetch_sub(1, Relaxed);
             self.host_held = false;
             host::invalidate();
         }
@@ -467,13 +472,13 @@ impl Popover {
     /// holds no user, or is already counted.
     fn enter_closing(&mut self) {
         if self.host_held && !self.host_closing {
-            unsafe { *std::ptr::addr_of_mut!(HOST_CLOSING) += 1 };
+            HOST_CLOSING.fetch_add(1, Relaxed);
             self.host_closing = true;
         }
     }
     fn leave_closing(&mut self) {
         if self.host_closing {
-            unsafe { *std::ptr::addr_of_mut!(HOST_CLOSING) -= 1 };
+            HOST_CLOSING.fetch_sub(1, Relaxed);
             self.host_closing = false;
         }
     }
@@ -898,7 +903,7 @@ pub(crate) mod host {
 
     /// How many open popovers want a frozen host.
     fn users() -> u32 {
-        unsafe { *std::ptr::addr_of!(HOST_USERS) }
+        HOST_USERS.load(Relaxed)
     }
     /// **Input while a panel holds the page frozen belongs to the panel.** Opened by `app.rs`
     /// around every INPUT event (key, text, pointer, wheel — `app::is_input_event`) and every
@@ -914,7 +919,7 @@ pub(crate) mod host {
     /// Is every one of them a dismissed panel still fading out? See [`super::host_refresh`].
     fn fading_only() -> bool {
         let n = users();
-        n > 0 && unsafe { *std::ptr::addr_of!(super::HOST_CLOSING) } == n
+        n > 0 && super::HOST_CLOSING.load(Relaxed) == n
     }
 
     /// Throw the snapshot away; the next page pass will draw the real page and take a new one.
@@ -1313,8 +1318,8 @@ mod tests {
     #[test]
     fn only_a_caching_popover_registers_a_frozen_host_and_the_count_round_trips() {
         let _g = crate::testlock::serial();
-        let base = unsafe { *std::ptr::addr_of!(HOST_USERS) };
-        let users = || unsafe { *std::ptr::addr_of!(HOST_USERS) } - base;
+        let base = HOST_USERS.load(Relaxed);
+        let users = || HOST_USERS.load(Relaxed) - base;
 
         let mut live = Popover::new();
         let mut cached = Popover::new().caching_host();
@@ -1361,8 +1366,8 @@ mod tests {
         let _g = crate::testlock::serial();
         // Whatever the process arrived with (a static, and other tests may have moved it), the
         // assertions below are all RELATIVE to it — the invariant is the round trip, not zero.
-        let base = unsafe { *std::ptr::addr_of!(OPEN_COUNT) };
-        let count = || unsafe { *std::ptr::addr_of!(OPEN_COUNT) } - base;
+        let base = OPEN_COUNT.load(Relaxed);
+        let count = || OPEN_COUNT.load(Relaxed) - base;
 
         let mut a = Popover::new();
         let mut b = Popover::new();
@@ -1400,9 +1405,9 @@ mod tests {
     #[test]
     fn a_cached_popover_holds_its_frozen_host_through_the_fade_and_releases_at_the_end() {
         let _g = crate::testlock::serial();
-        let base = unsafe { *std::ptr::addr_of!(HOST_USERS) };
-        let closing_base = unsafe { *std::ptr::addr_of!(HOST_CLOSING) };
-        let users = || unsafe { *std::ptr::addr_of!(HOST_USERS) } - base;
+        let base = HOST_USERS.load(Relaxed);
+        let closing_base = HOST_CLOSING.load(Relaxed);
+        let users = || HOST_USERS.load(Relaxed) - base;
         let mut pop = Popover::new().caching_host();
         pop.open();
         for _ in 0..240 {
@@ -1428,7 +1433,7 @@ mod tests {
                 pop.update(1.0 / 60.0);
             }
         };
-        let closing = || unsafe { *std::ptr::addr_of!(HOST_CLOSING) } - closing_base;
+        let closing = || HOST_CLOSING.load(Relaxed) - closing_base;
         pop.open();
         settle(&mut pop);
         assert_eq!((users(), closing()), (1, 0));

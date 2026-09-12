@@ -700,7 +700,7 @@ fn resettle(p: &mut Person) {
 /// undone by the next landing.
 ///
 /// Returns whether anything matched. **MAIN THREAD.**
-pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
+fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
     let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
         return false;
     };
@@ -732,7 +732,7 @@ pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
 /// `sid` is the server whose credit row this is, captured by the caller. It is where `key` means
 /// something and where the headshot comes from — but it is NOT the only server read: [`sources`]
 /// takes the whole roster, and every other entry resolves its own id from `guid` first.
-pub(crate) fn open(sid: ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
+fn open(sid: ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
     supersede();
     let srcs = sources(sid, key, name);
     unsafe {
@@ -844,7 +844,7 @@ const DEV_BIO: &str = "";
 /// Drop the open person and supersede any fetch for it — on leaving the page. Without the
 /// supersede, a landing arriving after the page closed would repopulate `CURRENT` behind whatever
 /// screen is now mounted (the bug `metadata::clear` carries the same guard for).
-pub(crate) fn close() {
+fn close() {
     supersede();
     unsafe { *addr_of_mut!(CURRENT) = None };
 }
@@ -853,8 +853,31 @@ pub(crate) fn close() {
 /// new user must never inherit the previous one's page, and the flags must move with the mailbox.
 /// It is also what makes [`sources`]' read-once safe: the roster only changes on the paths that
 /// call this.
-pub(crate) fn reset() {
+fn reset() {
     close();
+}
+
+/// `stores::person`'s one door onto every [`PersonCmd`](crate::stores::person::PersonCmd) (D3):
+/// the match used to live in `stores/person.rs::run`, calling `open`/`close`/`reset` across the
+/// module boundary. Relocating it here is what lets those three go private — `set_watched_local`
+/// was already `pub(crate)` for the same reason and joins them.
+pub(crate) fn run(cmd: crate::stores::person::PersonCmd) -> bool {
+    use crate::stores::person::PersonCmd;
+    match cmd {
+        PersonCmd::Open { sid, key, guid, name, thumb } => {
+            open(sid, &key, &guid, &name, &thumb);
+            true
+        }
+        PersonCmd::Close => {
+            close();
+            true
+        }
+        PersonCmd::Reset => {
+            reset();
+            true
+        }
+        PersonCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(sid, &rk, on),
+    }
 }
 
 /// True while the open person has nothing to show yet — the page's spinner state. A failed fetch
@@ -1697,6 +1720,7 @@ fn match_local(p: &Person, id: &str) -> Option<(ServerId, String)> {
 /// `Src::matches` instead.
 #[cfg(test)]
 pub(crate) fn install_credits_for_test(groups: &[(&str, usize)]) {
+    crate::testlock::assert_held("the person store (install_credits_for_test)");
     use crate::plex::discover::{Credit, CreditGroup, CreditItem};
     let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
         return;
@@ -1739,6 +1763,7 @@ pub(crate) fn install_credits_for_test(groups: &[(&str, usize)]) {
 /// than call it and expect `credited` to stay false.
 #[cfg(test)]
 pub(crate) fn install_for_test(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
+    crate::testlock::assert_held("the person store (install_for_test)");
     let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
         return;
     };
@@ -1769,6 +1794,7 @@ pub(crate) fn install_for_test(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
 /// settle unrelated credits state and therefore supports multi-source pending-return tests.
 #[cfg(test)]
 pub(crate) fn install_source_for_test(sid: ServerId, movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
+    crate::testlock::assert_held("the person store (install_source_for_test)");
     let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
         return;
     };

@@ -11,6 +11,26 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
+/// A small set of leaves in this file have no `Measure` in their draw call chain: generic retui
+/// `View::draw(&self, env: &Env, p: Painter)` leaves (`TabPill`, `Button`) take no capability, and
+/// tab paint receives captured labels but no measurement capability. These leaves can also be
+/// exercised by host tests before a font loads, where `TtfMeasure`'s boot-order assertion would be
+/// a false alarm. This wraps the same free functions without that assertion. Application
+/// vocabulary and profile data are always supplied explicitly by their owner.
+struct LegacyMeasure;
+
+impl crate::ui::machine::Measure for LegacyMeasure {
+    fn width(&self, s: &CStr, sz: c_int, bold: bool) -> f32 {
+        crate::text::text_width(s.as_ptr(), sz, bold as c_int)
+    }
+    fn cap_h(&self, sz: c_int) -> f32 {
+        crate::text::cap_h(sz, 0)
+    }
+    fn line_h(&self, sz: c_int) -> f32 {
+        crate::text::text_height(sz, 0)
+    }
+}
+
 // ---- backdrop glass -------------------------------------------------------------------------
 
 /// How a glass surface keeps its shared backdrop snapshot fresh.
@@ -679,6 +699,7 @@ pub(crate) fn still_line(
     sub: &str,
     press_plays: bool,
     has_bar: bool,
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     // The pair is authored from the BOTTOM up, because that is what the two insets are about: the
     // sub line's baseline sits at the tile's own bottom inset and the label stacks above it.
@@ -700,7 +721,7 @@ pub(crate) fn still_line(
         // measured through the cap bands rather than a literal, so a font swap cannot silently
         // close the pair up.
         let ly = sy - sct - STILL_PAIR_GAP - lcb;
-        let run = crate::text::elide(label, right - x0, lsz, 1, false);
+        let run = crate::text::elide_by(label, right - x0, false, |t| measure.width_str(t, lsz, true));
         if let Ok(lc) = std::ffi::CString::new(run) {
             p.text(lc.as_ptr(), x0, ly, lsz, theme::TEXT_PRIMARY, 0, 1);
         }
@@ -721,7 +742,7 @@ pub(crate) fn still_line(
     if sub.is_empty() {
         return;
     }
-    let run = crate::text::elide(sub, right - lx, ssz, 0, false);
+    let run = crate::text::elide_by(sub, right - lx, false, |t| measure.width_str(t, ssz, false));
     if let Ok(sc) = std::ffi::CString::new(run) {
         p.text(sc.as_ptr(), lx, sy, ssz, theme::TEXT_SECONDARY, 0, 0);
     }
@@ -757,6 +778,7 @@ pub(crate) fn still_overlay(
     card: Rect,
     rad: f32,
     press_plays: bool,
+    measure: &dyn crate::ui::machine::Measure,
 ) {
     let show = if m.show_title.is_empty() {
         m.title.as_str()
@@ -783,6 +805,7 @@ pub(crate) fn still_overlay(
         &crate::ui::fmt::episode_address(m.season_index as i64, m.ep_index as i64),
         press_plays,
         bar.is_some(),
+        measure,
     );
     if let Some(frac) = bar {
         crate::ui::card_row::resume_bar(p, card, frac, rad);
@@ -1063,7 +1086,10 @@ const VEIL_EXTENT: f32 = 0.72 * 0.70;
 /// The veil texture's resolution. A power of two (NPOT sampling is a documented Mali trap) and far
 /// finer than the ~52px of falloff it is stretched across, so the ramp is smooth under GL_LINEAR.
 const VEIL_TEX_PX: usize = 64;
-static mut VEIL_TEX: std::os::raw::c_uint = 0;
+/// A safe atomic rather than `static mut`: the texture NAME is a plain `u32` (GL's `c_uint`,
+/// identical on every platform this targets), written once on the 0→nonzero transition below and
+/// read everywhere else — the same shape `GLASS_PRESENT_SERIAL` above already uses in this file.
+static VEIL_TEX: AtomicU32 = AtomicU32::new(0);
 
 /// The corner **veil** texture: white RGB with a radial alpha falloff peaking at the TOP-RIGHT
 /// corner, generated once and reused at every size. It is a texture rather than geometry because the
@@ -1075,35 +1101,28 @@ static mut VEIL_TEX: std::os::raw::c_uint = 0;
 /// gets the tile's own silhouette for free — the veil's other three corners live in fully
 /// transparent territory, so rounding them changes nothing.
 fn veil_tex() -> std::os::raw::c_uint {
-    unsafe {
-        let cached = *std::ptr::addr_of!(VEIL_TEX);
-        if cached != 0 {
-            return cached;
-        }
-        let n = VEIL_TEX_PX;
-        let mut px = vec![0u8; n * n * 4];
-        for y in 0..n {
-            for x in 0..n {
-                // distance from the top-right corner, in units of the box's width
-                let dx = (n - 1 - x) as f32 / (n - 1) as f32;
-                let dy = y as f32 / (n - 1) as f32;
-                let a = (1.0 - (dx * dx + dy * dy).sqrt() / VEIL_EXTENT).clamp(0.0, 1.0);
-                let i = (y * n + x) * 4;
-                px[i] = 255;
-                px[i + 1] = 255;
-                px[i + 2] = 255;
-                px[i + 3] = (a * 255.0).round() as u8;
-            }
-        }
-        let tex = crate::gfx::upload_rgba(
-            0,
-            n as std::os::raw::c_int,
-            n as std::os::raw::c_int,
-            px.as_ptr(),
-        );
-        *std::ptr::addr_of_mut!(VEIL_TEX) = tex;
-        tex
+    let cached = VEIL_TEX.load(Relaxed);
+    if cached != 0 {
+        return cached;
     }
+    let n = VEIL_TEX_PX;
+    let mut px = vec![0u8; n * n * 4];
+    for y in 0..n {
+        for x in 0..n {
+            // distance from the top-right corner, in units of the box's width
+            let dx = (n - 1 - x) as f32 / (n - 1) as f32;
+            let dy = y as f32 / (n - 1) as f32;
+            let a = (1.0 - (dx * dx + dy * dy).sqrt() / VEIL_EXTENT).clamp(0.0, 1.0);
+            let i = (y * n + x) * 4;
+            px[i] = 255;
+            px[i + 1] = 255;
+            px[i + 2] = 255;
+            px[i + 3] = (a * 255.0).round() as u8;
+        }
+    }
+    let tex = crate::gfx::upload_rgba(0, n as std::os::raw::c_int, n as std::os::raw::c_int, px.as_ptr());
+    VEIL_TEX.store(tex, Relaxed);
+    tex
 }
 
 /// The **watched** mark on a poster: a corner veil, then a bare tick over it. `card` is the rect
@@ -1432,14 +1451,8 @@ const KEYLINE_W: f32 = 1.5;
 const KEYLINE_BOLD: std::os::raw::c_int = 1;
 
 /// The width [`keyline_chip`] will occupy for `text` — the measure-first companion.
-pub(crate) fn keyline_chip_w(text: &str) -> f32 {
-    std::ffi::CString::new(text)
-        .ok()
-        .map(|c| {
-            crate::text::text_width(c.as_ptr(), theme::size::CAPTION, KEYLINE_BOLD)
-                + 2.0 * KEYLINE_PAD_X
-        })
-        .unwrap_or(0.0)
+pub(crate) fn keyline_chip_w(text: &str, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    measure.width_str(text, theme::size::CAPTION, KEYLINE_BOLD != 0) + 2.0 * KEYLINE_PAD_X
 }
 
 /// Draw a fine-print keyline chip with its LEFT edge at `x`, centred on `cy`; returns its width.
@@ -1463,13 +1476,13 @@ pub(crate) fn keyline_chip_w(text: &str) -> f32 {
 /// The label is BOLD for the same reason the mock sets `font-weight:600` on it: two or three caps
 /// at `CAPTION` inside a ring have to hold their own against it, and regular weight is what made
 /// this chip read as an empty frame in the first device photograph of the identity line.
-pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4]) -> f32 {
+pub(crate) fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], measure: &dyn crate::ui::machine::Measure) -> f32 {
     let lc = match std::ffi::CString::new(text) {
         Ok(c) => c,
         Err(_) => return 0.0,
     };
-    let w = keyline_chip_w(text);
-    let h = crate::text::cap_h(theme::size::CAPTION, KEYLINE_BOLD) + 2.0 * KEYLINE_PAD_Y; // hugs the label's cap band, not a fixed band
+    let w = keyline_chip_w(text, measure);
+    let h = measure.cap_h(theme::size::CAPTION) + 2.0 * KEYLINE_PAD_Y; // hugs the label's cap band, not a fixed band
     p.rring(
         Rect::new(x, cy - h * 0.5, w, h),
         KEYLINE_RAD,
@@ -1547,21 +1560,28 @@ const KEYCAP_GAP: f32 = 12.0;
 
 /// The width [`key_cap`] will occupy for `label` — the measure-first companion, so a caller can
 /// right-align or centre the whole line before drawing any of it.
-pub(crate) fn key_cap_w(label: &std::ffi::CStr) -> f32 {
-    (crate::text::text_width(label.as_ptr(), theme::size::MICRO, KEYCAP_BOLD) + 2.0 * KEYCAP_PAD_X)
+pub(crate) fn key_cap_w(label: &std::ffi::CStr, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    (measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0) + 2.0 * KEYCAP_PAD_X)
         .max(KEYCAP_MIN_W)
 }
 
 /// Draw one key cap with its LEFT edge at `x`, centred on `cy`; returns its width.
-pub(crate) fn key_cap(p: Painter, x: f32, cy: f32, label: &std::ffi::CStr, ink: [f32; 4]) -> f32 {
-    let w = key_cap_w(label);
+pub(crate) fn key_cap(
+    p: Painter,
+    x: f32,
+    cy: f32,
+    label: &std::ffi::CStr,
+    ink: [f32; 4],
+    measure: &dyn crate::ui::machine::Measure,
+) -> f32 {
+    let w = key_cap_w(label, measure);
     p.rring(
         Rect::new(x, cy - KEYCAP_H * 0.5, w, KEYCAP_H),
         KEYCAP_RAD,
         KEYCAP_W,
         ink,
     );
-    let tw = crate::text::text_width(label.as_ptr(), theme::size::MICRO, KEYCAP_BOLD);
+    let tw = measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0);
     p.text(
         label.as_ptr(),
         x + (w - tw) * 0.5,
@@ -1600,13 +1620,13 @@ impl<'a> KeyHint<'a> {
     }
 
     /// Total width of the assembled line.
-    pub(crate) fn width(&self) -> f32 {
+    pub(crate) fn width(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
         let sz = theme::size::CAPTION;
-        crate::text::text_width(self.pre.as_ptr(), sz, 0)
+        measure.width(self.pre, sz, false)
             + KEYCAP_GAP
-            + key_cap_w(self.key)
+            + key_cap_w(self.key, measure)
             + KEYCAP_GAP
-            + crate::text::text_width(self.post.as_ptr(), sz, 0)
+            + measure.width(self.post, sz, false)
     }
 
     /// The band the line occupies — the cap is taller than the prose's cap band, so a caller
@@ -1637,13 +1657,19 @@ impl<'a> KeyHint<'a> {
 
     /// Draw with the line's LEFT edge at `x`, its cap band vertically centred on `cy`. The prose
     /// sits on its own cap band (rule 3 — never a magic y), the cap on the same centre line.
-    pub(crate) fn draw(&self, p: Painter, x: f32, cy: f32) {
+    pub(crate) fn draw(
+        &self,
+        p: Painter,
+        x: f32,
+        cy: f32,
+        measure: &dyn crate::ui::machine::Measure,
+    ) {
         let sz = theme::size::CAPTION;
         let ty = crate::text::text_vcenter_y(sz, 0, cy);
-        let pw = crate::text::text_width(self.pre.as_ptr(), sz, 0);
+        let pw = measure.width(self.pre, sz, false);
         p.text(self.pre.as_ptr(), x, ty, sz, theme::TEXT_TERTIARY, 0, 0);
         let kx = x + pw + KEYCAP_GAP;
-        let kw = key_cap(p, kx, cy, self.key, theme::TEXT_SECONDARY);
+        let kw = key_cap(p, kx, cy, self.key, theme::TEXT_SECONDARY, measure);
         p.text(
             self.post.as_ptr(),
             kx + kw + KEYCAP_GAP,
@@ -2331,7 +2357,7 @@ pub(crate) const CHIP_FRAME: Rect = Rect::new(
 
 /// **The focused capsule's rect — the ONE expression, drawn and priced from the same place.**
 ///
-/// [`profile_chip`] draws this and [`CHIP_CAP_MAX_R`] prices it, and until 2026-08-21 they were two
+/// [`profile_chip_with`] draws this and [`CHIP_CAP_MAX_R`] prices it, and until 2026-08-21 they were two
 /// arithmetics that happened to agree: the draw built the rect inline and the constant restated the
 /// same seven terms by hand, in a different file position, so a pad added to one would have left the
 /// other quietly describing a capsule nobody draws. That constant is what [`GLASS_TRACK_MAX`] is
@@ -2355,17 +2381,12 @@ const fn chip_cap(e: f32, name_w: f32) -> Rect {
 
 /// The chip unfurl's stiffness — brisk, a touch stiffer than the hero slide.
 const K_CHIP: f32 = 300.0;
-/// How far the chip is into its focused face, 0..1. A static beside [`TAB_SCROLL`] and
-/// [`TOP_STRIP`] for the same reason those are: ONE bar is drawn by three screens, and the unfurl
-/// has to carry ACROSS a Home↔Library↔Search route flip rather than restart on the far side. It
-/// lived in `home.rs` while Home was the only screen the chip could be focused on.
-static mut CHIP_EXPAND: crate::ui::Spring = crate::ui::Spring::at(0.0);
 
 /// **What in the shared top bar holds the remote.** The bar is ONE control across Home, the Library
 /// and Search, and it has exactly two kinds of stop — the chip at the margin and a pill of the
 /// centred strip — so a screen answers with one value instead of with two booleans that could both
-/// say yes. [`tab_row_update`] takes it, which is what makes every screen animate both stops by
-/// construction (the same argument that put the strip's scroll and its capsules in that function).
+/// say yes. [`StripRender::update`] takes it, which is what makes every screen animate both stops
+/// by construction (the same argument that put the strip's scroll and its capsules there).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TopFocus {
     /// focus is somewhere else on the page — or on no page at all
@@ -2436,9 +2457,11 @@ fn chip_face(face: crate::gfx::GlassFace, e: f32) -> crate::gfx::GlassFace {
 /// **The focused chip's capsule, in the BAR's material** — the band's second glass surface.
 ///
 /// Returns whether it drew. `false` is the flat capsule's cue, and it is the answer in every case
-/// the track is also flat: [`BAR_MATERIAL`] says so, or the chain refuses (no render target, or a
-/// blur SOURCE pass, where `draw_blur_backdrop` declines before it records anything). The two
-/// halves of the band therefore change material together, always, because only one of them decides.
+/// the track is also flat: `bar_material` (this frame's
+/// [`GlassPlan::tab_face`](crate::ui::frame::glass::GlassPlan::tab_face)) says so,
+/// or the chain refuses (no render target, or a blur SOURCE pass, where `draw_blur_backdrop`
+/// declines before it records anything). The two halves of the band therefore change material
+/// together, always, because only one of them decides.
 ///
 /// **The unfurl fades the whole FACE, not the tint alone**, and that is the one thing this could
 /// not borrow from the flat capsule. `fs_glass.frag` emits
@@ -2451,18 +2474,25 @@ fn chip_face(face: crate::gfx::GlassFace, e: f32) -> crate::gfx::GlassFace {
 /// The tint's alpha carries the same `e`, which cross-fades the blurred backdrop against the sharp
 /// page under it — the material arriving rather than the shape appearing.
 ///
-/// **No second `Glass::prepare`.** The cadence belongs to the band ([`TAB_GLASS_STATE`]), was
-/// resolved by [`tab_glass_prepare`] before the page drew, and preparing again here would consume
-/// this present's refresh slot a second time.
+/// **No second `Glass::prepare`.** The cadence and state belong to the `GlassPlan`'s
+/// [`TabBand`](crate::ui::frame::glass::TabBand), were resolved by
+/// [`GlassPlan::prepare_tab_band`](crate::ui::frame::glass::GlassPlan::prepare_tab_band) before the
+/// page drew, and preparing again here would consume this present's refresh slot a second time.
 ///
 /// **And no second snapshot, by geometry.** The chip is drawn after the track, so a re-grab taken
 /// here would hold the track's own face — but [`GLASS_TRACK_MAX`] keeps [`BAND_AIR`] between them
 /// while both wear the material, and `gfx::blur_region_union` has the track's first call already
 /// grabbing the region both need on every frame after the first of an unfurl.
-fn chip_capsule(p: Painter, cap: Rect, e: f32) -> bool {
-    let face = match unsafe { *std::ptr::addr_of!(BAR_MATERIAL) } {
-        BarMaterial::Flat => return false,
-        BarMaterial::Glass(f) => chip_face(f, e),
+///
+/// `bar_material` is this frame's bar face (`None` = flat), handed in rather than read off a
+/// static: the strip's own draw ([`StripRender::draw`]) publishes it on the frame's `GlassPlan`,
+/// and the account menu's scrim lift receives that same face in its typed
+/// [`ScrimLiftRead`](crate::ui::screen::ScrimLiftRead) beside the borrowed captured chrome (see
+/// [`redraw_profile_chip`]).
+fn chip_capsule(p: Painter, cap: Rect, e: f32, bar_material: Option<crate::gfx::GlassFace>) -> bool {
+    let face = match bar_material {
+        None => return false,
+        Some(f) => chip_face(f, e),
     };
     Glass::DYNAMIC_BACKDROP.backdrop(
         p,
@@ -2480,7 +2510,7 @@ fn chip_capsule(p: Painter, cap: Rect, e: f32) -> bool {
 
 /// **The top-left profile chip** — the whole control, not just its picture: the avatar texture (or
 /// an initial / person-glyph fallback) with the shared tile shadow + sheen, at [`CHIP_FRAME`], with
-/// [`CHIP_EXPAND`]'s focus unfurl. Drawn verbatim by Home, the Library and Search, which is what a
+/// `StripRender`'s `chip_expand` focus unfurl. Drawn verbatim by Home, the Library and Search, which is what a
 /// piece of SHARED chrome should mean. The session lookup (mutex + UserRef clone) is snapshotted
 /// per profile GENERATION, not per frame.
 ///
@@ -2498,12 +2528,12 @@ fn chip_capsule(p: Painter, cap: Rect, e: f32) -> bool {
 ///
 /// **That capsule is the bar's MATERIAL, not a copy of its weights** ([`chip_capsule`]). The track
 /// became solved glass on 2026-08-19 and the chip went on wearing the flat stops it used to share
-/// with it, which is one band drawn in two materials — so it takes the face [`draw_tab_row`]
+/// with it, which is one band drawn in two materials — so it takes the face [`StripRender::draw`]
 /// published this frame ([`BarMaterial`]) and is glass exactly when the track is. Neither surface
 /// solves its own ground: `gfx::sample_ground` has one latch and one rate counter, and two solves
 /// over a non-uniform hero land on two densities with a seam between them.
 ///
-/// **Draw it AFTER [`draw_tab_row`], never before**, and there are two reasons now. The unfurled
+/// **Draw it AFTER [`StripRender::draw`], never before**, and there are two reasons now. The unfurled
 /// name reaches right, toward the CENTRED strip; drawn first it is painted over by the track's own
 /// scrim. And the material has to be published before it can be read — drawn first, the chip would
 /// wear the PREVIOUS frame's face, which on the frame a popover opens or a route settles is the
@@ -2519,40 +2549,45 @@ fn chip_capsule(p: Painter, cap: Rect, e: f32) -> bool {
 /// session file or asks which profile is current.
 #[derive(Clone, Copy)]
 pub(crate) struct ProfileChipRead<'a> {
-    pub(crate) generation: u32,
     pub(crate) thumb: &'a str,
-    pub(crate) label: &'a str,
-    pub(crate) initial: &'a str,
+    pub(crate) initial: &'a CStr,
+    pub(crate) name: &'a CStr,
+    pub(crate) name_w: f32,
 }
 
-pub(crate) fn profile_chip(p: Painter) {
-    // NOT a migration-pending compatibility path — the owned Home/Library/Search paths all
-    // supply their own published profile DTO straight to `profile_chip_with`, bypassing this
-    // entirely. This standalone re-derivation stays live for the profile menu's SCRIM LIFT
-    // (`screens::account_menu`'s `Screen::scrim`, whose `Scrim::lift` is a bare `fn()` with
-    // nothing to borrow a `&Bridge` through): see `with_legacy_tab_labels`'s doc for the matching
-    // reason on the label side.
-    static mut SOURCE: Option<(u32, String, String, String)> = None;
-    let generation = crate::plex::session::current_gen();
-    let source = unsafe { &mut *std::ptr::addr_of_mut!(SOURCE) };
-    if source.as_ref().is_none_or(|s| s.0 != generation) {
-        let current = crate::plex::session::current();
-        let account = crate::plex::session::peek().account(current.as_ref());
-        let label = crate::screens::account_menu::chip_label(&account);
-        let initial = account.name.as_deref().and_then(|s| s.chars().next())
-            .map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-        *source = Some((generation, current.map(|u| u.thumb).unwrap_or_default(), label, initial));
-    }
-    let (generation, thumb, label, initial) = source.as_ref().unwrap();
-    profile_chip_with(p, ProfileChipRead { generation: *generation, thumb, label, initial }, bar_glass_wanted());
+/// The borrowed shared-chrome publication used by both its normal paint and a scrim lift.
+#[derive(Clone, Copy)]
+pub(crate) struct ChromeRead<'a> {
+    pub(crate) profile: ProfileChipRead<'a>,
+    pub(crate) labels: TabLabels<'a>,
+    pub(crate) chip_expand: f32,
+}
+
+/// Measure and own the chip's two glyph runs when the application's captured profile changes.
+/// The result belongs to that captured chrome owner; drawing performs no session read, elision or
+/// global cache lookup.
+pub(crate) fn profile_chip_text(
+    label: &str,
+    initial: &str,
+    measure: &dyn crate::ui::machine::Measure,
+) -> (CString, CString, f32) {
+    let name = CString::new(crate::text::elide_by(label, CHIP_NAME_MAX, false, |t| {
+        measure.width_str(t, theme::size::BODY, true)
+    }))
+    .unwrap_or_default();
+    let name_w = measure.width(&name, theme::size::BODY, true);
+    (CString::new(initial).unwrap_or_default(), name, name_w)
 }
 
 /// Draw a profile chip from captured data and the bar's material decision for this frame.
-pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, glass_wanted: bool) {
-    use std::ffi::CString;
-    use std::ptr::addr_of_mut;
+///
+/// `chip_expand` comes from this frame's borrowed [`ChromeRead`] (`StripRender` motion owned by the
+/// `Bridge`), while `bar_material` comes from the application-owned `GlassPlan`. Normal chrome and
+/// its bare-`fn` lift receive those same owner publications rather than recovering either through
+/// a static.
+pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, glass_wanted: bool, chip_expand: f32, bar_material: Option<crate::gfx::GlassFace>) {
     // **A SURFACE MAY NOT APPEAR IN ITS OWN BACKDROP**, and this control is the second one in the
-    // app that could — [`draw_tab_row`]'s note is the first, and it says the whole argument. The
+    // app that could — [`StripRender::draw`]'s note is the first, and it says the whole argument. The
     // direct source path renders the page again into a small FBO and the page includes this chip,
     // so left in, the capsule blurred its own near-opaque FLAT fallback (`scrim_black(.72..82)`,
     // which is what `chip_capsule` returns to inside a source pass) and then darkened that again
@@ -2573,33 +2608,13 @@ pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, glass_wan
     if crate::gfx::blur_source_pass() && glass_wanted {
         return;
     }
-    static mut CHIP: Option<(u32, String, CString, CString, f32, String)> = None; // gen, thumb, initial, name, width, full label
     let r = CHIP_FRAME;
-    let expand = unsafe { std::ptr::addr_of!(CHIP_EXPAND).read() }.pos;
+    let expand = chip_expand;
     let d = r.w;
-    let gen = data.generation;
-    let chip = unsafe { &mut *addr_of_mut!(CHIP) };
-    if chip.as_ref().is_none_or(|c| c.0 != gen || c.1 != data.thumb
-        || c.2.to_bytes() != data.initial.as_bytes() || c.5 != data.label) {
-        let name = CString::new(crate::text::elide(
-            data.label,
-            CHIP_NAME_MAX,
-            theme::size::BODY,
-            1,
-            false,
-        ))
-        .unwrap_or_default();
-        let nw = crate::text::text_width(name.as_ptr(), theme::size::BODY, 1);
-        *chip = Some((
-            gen,
-            data.thumb.to_owned(),
-            CString::new(data.initial).unwrap_or_default(),
-            name,
-            nw,
-            data.label.to_owned(),
-        ));
-    }
-    let (_, thumb_s, initial_c, name_c, name_w, _) = chip.as_ref().unwrap();
+    let thumb_s = data.thumb;
+    let initial_c = data.initial;
+    let name_c = data.name;
+    let name_w = data.name_w;
     // ---- the capsule UNDER the avatar, ALWAYS: the tab track's material, inset and radius — a
     // round surround at rest (the control is contained before it is focused, as the track's pills
     // are), widening rightward with the unfurl to hold the name. The face is at full strength at
@@ -2612,10 +2627,10 @@ pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, glass_wan
     {
         // The rect comes from [`chip_cap`] rather than being built here, because it is also what
         // [`GLASS_TRACK_MAX`] is solved against — see there.
-        let cap = chip_cap(e, *name_w);
+        let cap = chip_cap(e, name_w);
         // the tab track's own material — literally the same material: glass when the track
         // resolved glass this frame, the flat capsule when it did not.
-        if !chip_capsule(p, cap, 1.0) {
+        if !chip_capsule(p, cap, 1.0, bar_material) {
             p.rect_sheened(
                 cap,
                 cap.h * 0.5,
@@ -2656,7 +2671,7 @@ pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, glass_wan
             theme::CONTROL_IDLE_FILL,
             theme::CONTROL_IDLE_FILL,
         );
-        if initial_c.as_bytes().is_empty() {
+        if initial_c.to_bytes().is_empty() {
             // nobody to name — signed out, or signed in with no roster landed yet. A generic
             // person glyph either way; the unfurled label above is what tells the two apart.
             crate::ui::icons::draw(
@@ -2680,7 +2695,7 @@ pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, glass_wan
     }
 }
 
-/// [`profile_chip`], re-drawn over the account menu's scrim — the `Scrim::lift` contract
+/// [`profile_chip_with`], re-drawn over the account menu's scrim — the `Scrim::lift` contract
 /// (`ui::screen::Scrim`, drawn by `ModalStack::draw_scrims`), for the one surface in the app that
 /// hangs off a piece of shared CHROME rather than off a card.
 ///
@@ -2694,9 +2709,22 @@ pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, glass_wan
 /// top band holds still while pages swap under it. A lift on the wrong alpha would make the chip
 /// flicker through a route change that nothing else on the bar reacts to.
 ///
+/// [`crate::ui::screen::ScrimLiftRead`] is `Scrim::lift`'s own argument (spec phase 12,
+/// PX-WIDGETS). Its `ChromeRead` borrows the captured profile, labels and unfurl from
+/// `Rig::scrim_chrome_read`; its material is the face the same frame's `GlassPlan` received from
+/// normal strip paint. This bare `fn` therefore redraws the exact owner publication without a
+/// static or a draw-time session/vocabulary read.
+///
 /// [`Opener`]: crate::ui::popover::Opener
-pub(crate) fn redraw_profile_chip() {
-    crate::ui::guard(|| profile_chip(Painter::root().alpha(crate::ui::nav::chrome_alpha())));
+pub(crate) fn redraw_profile_chip(read: crate::ui::screen::ScrimLiftRead<'_>) {
+    let Some(chrome) = read.chrome else { return };
+    crate::ui::guard(|| profile_chip_with(
+        Painter::root().alpha(crate::ui::nav::chrome_alpha()),
+        chrome.profile,
+        bar_glass_wanted_with(chrome.labels),
+        chrome.chip_expand,
+        read.bar_material,
+    ));
 }
 
 // ---- CircleButton: circular disc + centered glyph, same keyed/unkeyed ControlStyle family as
@@ -3915,11 +3943,16 @@ pub fn value_lines(value: &str, width: f32) -> Vec<String> {
     // Once SDL_ttf is live, use the exact same glyph metrics the draw path advances by.  Host
     // tests have no text runtime (`text_width` returns 0), so they fall back to a deliberately
     // conservative character budget.  Both paths preserve every character; neither elides.
+    // `value_lines` is called from `Field::new`, which the diagnostics module runs while building
+    // its 2 Hz snapshot — off the draw path entirely, so there is no `Cx`/`DrawFrame` in scope to
+    // thread a real `Measure` from. `TtfMeasure` wraps the identical `text_width` this closure
+    // called directly before, so the measured widths are unchanged.
     #[cfg(not(test))]
     let measure = |s: &str| {
+        use crate::ui::machine::Measure;
         CString::new(s)
             .ok()
-            .map(|c| crate::text::text_width(c.as_ptr(), FIELD_VAL_SZ, 0))
+            .map(|c| crate::text::TtfMeasure.width(&c, FIELD_VAL_SZ, false))
             .filter(|w| *w > 0.0)
     };
     // The library unit-test target deliberately does not link SDL_ttf.  Its conservative fallback
@@ -4333,7 +4366,18 @@ impl View for TabPill {
         } else {
             run(p.alpha(1.0 - bold_mix), false);
             run(p.alpha(bold_mix), true);
-            crate::text::text_width(self.label, self.sz, 1)
+            // `TabPill` draws through the generic retui `View::draw(&self, env: &Env, p: Painter)`
+            // — no `Measure` parameter, and that trait is the whole retained-leaf contract, not
+            // something this lane's scope covers reshaping. `TtfMeasure` wraps the identical
+            // `text_width` this line called directly.
+            {
+                use crate::ui::machine::Measure as _;
+                LegacyMeasure.width(
+                    unsafe { std::ffi::CStr::from_ptr(self.label) },
+                    self.sz,
+                    true,
+                )
+            }
         };
         let nx = r.x + (r.w - nw) * 0.5 + lw * 0.5 + NOTE_GAP;
         let note_ink = theme::with_a(ink, NOTE_INK_A);
@@ -4518,8 +4562,7 @@ pub(crate) fn strip_span(lays: &[StripLay], i: usize, h: f32) -> Option<(f32, f3
     })
 }
 
-/// Lay a strip out from its labels: content x from `x0`, advancing by each pill's measured width
-/// plus twice [`STRIP_PAD`] and `gap`. Bold, because every strip in this app draws its pills bold.
+/// The same strip geometry using an owned screen's measurement capability.
 ///
 /// **`gap` is a parameter and [`STRIP_GAP`] is its default**, not its only value. The padding is a
 /// property of the PILL and is shared unconditionally; the air between two of them is a property of
@@ -4530,18 +4573,10 @@ pub(crate) fn strip_span(lays: &[StripLay], i: usize, h: f32) -> Option<(f32, f3
 /// A label that cannot be a `CString` (an interior NUL — never in practice) is skipped entirely:
 /// not drawn, and no advance, so the gap it would have left cannot desynchronise the span function
 /// from the draw.
-pub(crate) fn strip_layout(
-    labels: impl Iterator<Item = String>,
-    x0: f32,
-    sz: c_int,
-    gap: f32,
-) -> Vec<StripLay> {
-    strip_layout_by(labels, x0, gap, |label| {
-        crate::text::text_width(label.as_ptr(), sz, 1)
-    })
-}
-
-/// The same strip geometry using an owned screen's measurement capability.
+///
+/// This is the ONLY strip-layout entry point (phase 12, P8-H): a raw-`text_width` twin,
+/// `strip_layout`, used to sit beside it and had acquired zero callers of its own — every caller
+/// had already migrated to a threaded `Measure` — so it was deleted rather than converted.
 pub(crate) fn strip_layout_measured(
     labels: impl Iterator<Item = String>,
     x0: f32,
@@ -4786,116 +4821,6 @@ impl TabStrip {
 /// (`browse::tab_has_favorite`). This doc said "never remove or reorder"; half of it is still the
 /// deliverable and half of it is now the opposite, which is why [`Pill::Section`] carries a
 /// `SecKind` — a bare index means something different once a pill can vanish.
-pub(crate) fn tab_count() -> usize {
-    1 + crate::browse::tab_count() + 1 // Home, the favourited type pills, then Search
-}
-/// The index of the Search pill: always the LAST one, in a strip whose length now varies with the
-/// favourite set (two destinations to four).
-pub(crate) fn search_pill() -> usize {
-    tab_count() - 1
-}
-/// What a strip index MEANS — the tab row's vocabulary, so a reader gets a destination rather than
-/// an integer to do arithmetic on.
-///
-/// Six sites (four in `app.rs`, two in `library.rs`) used to spell the same three-way ladder out
-/// by hand — `if is_search_pill(i) { … } else if let Some(sec) = i.checked_sub(1) { … } else { Home }`
-/// — two of them byte-identical. That shape has one bad property that a name cannot fix: a pill
-/// this ladder has never heard of falls into the `checked_sub(1)` arm and opens a LIBRARY as a
-/// type pill. With the decision typed, adding a variant here is a
-/// non-exhaustive `match` at every one of those sites — a compile error, which is the only kind of
-/// reminder that reaches all six.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Pill {
-    /// pill 0 — always present, the strip's one fixed member
-    Home,
-    /// A TYPE — never a section index and, since 2026-09-05, never a strip POSITION either.
-    ///
-    /// It carried the tab index for as long as the strip was invariant, and that was safe only
-    /// because it was: two pills, always, for the life of the process. The favourite switch
-    /// governs the strip now, so a type whose last favourite library is switched off draws no
-    /// pill — and the moment a pill can appear or vanish, an integer stops naming a destination.
-    /// The same `1` means *Movies* before the change and *TV Shows* after it, so any cursor
-    /// stored across that frame silently points somewhere else. Carrying the KIND is what makes a
-    /// stored `Pill` survive the strip reshaping under it; `browse::tab_of_kind` resolves it back
-    /// to wherever it is drawn today, or to nothing when it is no longer drawn at all.
-    Section(crate::browse::SecKind),
-    /// the last pill (see [`search_pill`])
-    Search,
-}
-
-// The three below are each a one-line wrapper over a PURE half taking the Search pill's index. The
-// pure halves grade the index ladder directly and keep those tests independent of the UI statics.
-
-/// Resolve a strip index. The ladder, written ONCE — [`Pill`]'s doc has the argument for why it is
-/// written once here rather than six times at the call sites.
-pub(crate) fn pill_at(i: usize) -> Pill {
-    pill_in(i, search_pill(), crate::browse::tab_kind)
-}
-/// [`pill_at`] on a strip whose Search pill is at `search` and whose section pills resolve through
-/// `kind_at`.
-///
-/// The resolver is a parameter rather than a direct `browse::tab_kind` call so this half stays
-/// PURE and host-gradeable: the ladder is where the "a pill this has never heard of opens a
-/// library" bug lived, and it is worth testing without a section table in the process.
-///
-/// Total for the indices the strip's CURRENT shape can produce — which moves, since the favourite
-/// set decides how many type pills there are. Callers clamp focus/hit-testing to [`tab_count`], so
-/// an out-of-range value is not a user-reachable destination — and a section slot the strip no
-/// longer draws answers `Home`, which is the one pill that is always there.
-fn pill_in(
-    i: usize,
-    search: usize,
-    kind_at: impl Fn(usize) -> Option<crate::browse::SecKind>,
-) -> Pill {
-    if i == search {
-        Pill::Search
-    } else if let Some(sec) = i.checked_sub(1) {
-        kind_at(sec).map(Pill::Section).unwrap_or(Pill::Home)
-    } else {
-        Pill::Home
-    }
-}
-
-/// The index a [`Pill`] is drawn at — the inverse of [`pill_at`], for the places that name a
-/// destination and need the strip position it selects (`app.rs`'s `Nav::select_pill`).
-///
-/// **`None` means "that type has no pill today"**, which a stored cursor can genuinely name for a
-/// frame: switching off a type's last favourite library removes its pill, and whoever was standing
-/// on it is holding a `Pill::Section` that no longer resolves. Returning an index anyway would put
-/// focus on whatever moved into that slot — the exact substitution `Pill::Section` was given a
-/// kind to prevent.
-pub(crate) fn pill_of(p: Pill) -> Option<usize> {
-    pill_index(p, search_pill(), crate::browse::tab_of_kind)
-}
-/// [`pill_of`] on a strip whose Search pill is at `search` and whose types resolve through
-/// `tab_of`. Pure, for the same reason [`pill_in`] is.
-fn pill_index(
-    p: Pill,
-    search: usize,
-    tab_of: impl Fn(crate::browse::SecKind) -> Option<usize>,
-) -> Option<usize> {
-    match p {
-        Pill::Home => Some(0),
-        Pill::Section(kind) => tab_of(kind).map(|t| t + 1),
-        Pill::Search => Some(search),
-    }
-}
-
-/// The highest index a SECTION pill can have — the ceiling for a pill index DERIVED from a section
-/// (`library::own_pill`, which walks focus up into the row onto the pill representing the library
-/// being browsed).
-///
-/// It reads "the pill before Search", and that is only correct because Search sits last — a fact
-/// about the strip, not about the caller, so it is written here and not there. The call site used
-/// to spell it `search_pill().saturating_sub(1)`, a positional pun that would silently become "the
-/// pill before whatever ends up last" the day a second non-library pill was added.
-pub(crate) fn last_section_pill() -> usize {
-    last_section_in(search_pill())
-}
-/// [`last_section_pill`] on a strip whose Search pill is at `search`.
-fn last_section_in(search: usize) -> usize {
-    search.saturating_sub(1)
-}
 /// The Search pill is SQUARE: 60×60, the icon's own air rather than a word's, so a mark does not
 /// wear the padding a label needs (`ui_kits/tv-app/SearchScreen.jsx`). Every other pill keeps
 /// [`TAB_PILL_PAD`].
@@ -4919,7 +4844,7 @@ const TAB_PILL_PAD: f32 = 18.0;
 /// UNIFORM inset from the tab-bar track to the pills inside it, on every side: the pill (r=30) and
 /// the track (r=38) stay CONCENTRIC (outer radius = inner radius + gap), so an end pill's corner
 /// gap reads even all the way around — 16px ends against 8px verticals looked lopsided on the
-/// selected Home pill. The focused [`profile_chip`] wraps itself in the same inset, which is what
+/// selected Home pill. The focused [`profile_chip_with`] wraps itself in the same inset, which is what
 /// makes its capsule and this track one band.
 pub(crate) const TAB_TRACK_PAD: f32 = 8.0;
 /// The y below which a screen's content is clear of the shared top chrome — the tab track's bottom
@@ -4973,36 +4898,65 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 /// control, same overflow problem, so the two rows must move alike (the user directive that keeps
 /// the tab pills and the season tabs in step covers their motion, not just their geometry).
 const K_TAB_SCROLL: f32 = 240.0;
-/// The VISIBLE part of each pill as drawn this frame (scroll folded in, then intersected with the
-/// strip's viewport), one entry per pill — never a fixed array's worth, or the hit test would stop
-/// where the old cap did. Storing the *clipped* rect is what keeps the hit test and the scissor
-/// telling the same story: a pill scrolled out of the track has zero width here, so it is neither
-/// drawn nor clickable, and a half-visible one is clickable exactly across the half you can see.
-static mut PILL_RECTS: Vec<Rect> = Vec::new();
-
-/// The strip's pill rects as last DRAWN, in screen space — what `ui::geom::TabRow` places by
-/// until the pills come from `Cx` (spec §10). Main thread; a copy, so no borrow outlives a draw.
-pub(crate) fn tab_pill_rects() -> Vec<Rect> {
-    unsafe { (*std::ptr::addr_of!(PILL_RECTS)).clone() }
-}
-/// Horizontal scroll of the strip inside its track; 0 whenever the whole row fits.
-static mut TAB_SCROLL: crate::ui::Spring = crate::ui::Spring::at(0.0);
-/// The top row's travelling capsules ([`TabStrip`]). A static for the same reason [`TAB_SCROLL`] is
-/// one: ONE tab bar is drawn by two screens, and the capsule must carry ACROSS the Home→Library
-/// route flip — that carry IS the transition. Stepped from [`tab_row_update`], so it moves on the
-/// PRESS frame: Library hands its *pending* section down here (`library::view_section`), which is
-/// what puts the capsule on the new pill while the grid is still dissolving under it.
-static mut TOP_STRIP: TabStrip = TabStrip::new();
-/// Live-trigger lifetime for the tab track's glass experiment. It uses the same reusable cadence
-/// machinery as a dynamic popover, without a modal's page-drawn scrim.
+/// **The shared top bar's motion state — owned by the application bridge, never a static**
+/// (restructure phase 12, PX-WIDGETS). The one `Bridge` that implements `Rig::draw_chrome` owns
+/// this scroll, capsule motion and chip unfurl across Home/Library/Search route changes. Captured
+/// profile/label resources live beside it in `ChromeSnapshot`; tab glass cadence, density and the
+/// material published by paint live in the application's per-frame `GlassPlan::tab` owner.
 ///
-/// ONE state for the band's one CADENCE owner: the centred track. [`profile_chip`]'s capsule is a
-/// second glass surface on the same solve — it needs no lifetime of its own, and no snapshot,
-/// because the union grab the track already takes spans both.
-static mut TAB_GLASS_STATE: GlassState = GlassState::new();
+/// Paint and input geometry both call [`tab_geometry`], so there is no retained pill-rect model.
+/// The account-menu lift borrows [`ChromeRead`] from the same bridge snapshot and receives the
+/// published tab face through [`crate::ui::screen::ScrimLiftRead`]; it does not reach back into
+/// this renderer or a process-global ownership path. None of these render fields is logical/hashed
+/// state (§5.3).
+pub(crate) struct StripRender {
+    /// Horizontal scroll of the strip inside its track; 0 whenever the whole row fits.
+    tab_scroll: crate::ui::Spring,
+    /// The top row's travelling capsules ([`TabStrip`]). Owned here for the same reason
+    /// `tab_scroll` is: ONE tab bar is drawn by three screens, and the capsule must carry ACROSS a
+    /// Home/Library/Search route flip — that carry IS the transition. Stepped from
+    /// [`StripRender::update`], so it moves on the PRESS frame: Library hands its *pending* section
+    /// down here (`library::view_section`), which is what puts the capsule on the new pill while
+    /// the grid is still dissolving under it.
+    top_strip: TabStrip,
+    /// How far the chip is into its focused face, 0..1. Owned here for the same reason `tab_scroll`
+    /// is: ONE bar is drawn by three screens, and the unfurl has to carry ACROSS a
+    /// Home↔Library↔Search route flip rather than restart on the far side. It lived in `home.rs`
+    /// while Home was the only screen the chip could be focused on.
+    chip_expand: crate::ui::Spring,
+}
 
-/// **What the shared top bar is made of, THIS frame** — published by [`draw_tab_row`] and consumed
-/// by [`profile_chip`], the band's other surface.
+impl StripRender {
+    pub(crate) fn new() -> Self {
+        Self {
+            tab_scroll: crate::ui::Spring::at(0.0),
+            top_strip: TabStrip::new(),
+            chip_expand: crate::ui::Spring::at(0.0),
+        }
+    }
+
+    /// The strip's current scroll offset — what [`tab_members`] needs to place `StripMember`s in
+    /// the same content space the draw uses (`app::chrome::ChromeSnapshot::members`).
+    pub(crate) fn scroll_pos(&self) -> f32 {
+        self.tab_scroll.pos
+    }
+
+    /// This frame's chip unfurl amount. `Bridge::scrim_chrome_read` includes it in the borrowed
+    /// [`ChromeRead`] passed to the bare-`fn` lift — see [`redraw_profile_chip`].
+    pub(crate) fn chip_expand_pos(&self) -> f32 {
+        self.chip_expand.pos
+    }
+
+}
+
+impl Default for StripRender {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// **What the shared top bar is made of, THIS frame** — published by [`StripRender::draw`] and
+/// consumed by [`profile_chip_with`], the band's other surface.
 ///
 /// The selected policy is one solve, one backdrop owner, and a local face for the remote capsule.
 /// The rejected alternatives are worth recording because each is the obvious answer from one angle:
@@ -5059,7 +5013,7 @@ static mut TAB_GLASS_STATE: GlassState = GlassState::new();
 /// pattern this was verified on (`flat:*`, `hbars`, `rainbow:70`) is uniform across x or uniform in
 /// L\*, and so is structurally unable to show it.
 ///
-/// Reset to `Flat` at the top of every [`draw_tab_row`], so a frame that returns early leaves the
+/// Reset to `Flat` at the top of every [`StripRender::draw`], so a frame that returns early leaves the
 /// chip on the flat material rather than on the previous frame's stops. In a blur source pass the
 /// row is absent and the chip draws that flat page face; because the chip never samples the source,
 /// this is ordinary backdrop content rather than a self-reference.
@@ -5071,7 +5025,6 @@ enum BarMaterial {
     /// the glass track's solved face; the chip reproduces it locally without sampling the backdrop
     Glass(crate::gfx::GlassFace),
 }
-static mut BAR_MATERIAL: BarMaterial = BarMaterial::Flat;
 
 /// **How fast the drawn weight follows the solve, and why the two rates are not the same number.**
 ///
@@ -5105,7 +5058,7 @@ fn density_k(drawn: f32, want: f32) -> f32 {
 /// The weight being drawn, and the one the ground last asked for.
 ///
 /// `want` is published by the DRAW because the ground is framebuffer 0 and only the draw can read
-/// it; [`tab_row_update`] consumes it on the next frame. That one frame of lag is nothing against a
+/// it; [`TabBand::step`] consumes it on the next frame. That one frame of lag is nothing against a
 /// value that eases over hundreds of milliseconds, and it is the only ordering that does not put a
 /// readback in the update phase.
 ///
@@ -5117,45 +5070,98 @@ struct TrackDensity {
     want: f32,
     seeded: bool,
 }
-static mut TRACK_DENSITY: TrackDensity = TrackDensity {
-    drawn: crate::ui::Spring::at(0.0),
-    want: 0.0,
-    seeded: false,
-};
 
-/// The weight to draw for `ground` this frame, publishing the weight it asked for.
-fn track_density(ground: [f32; 3]) -> f32 {
-    let want = track_alpha_for(ground);
-    unsafe {
-        let d = &mut *std::ptr::addr_of_mut!(TRACK_DENSITY);
-        d.want = want;
-        if !d.seeded {
-            d.seeded = true;
-            // `Spring::at`, not `jump`: there is no motion to report on a value that has never been
-            // drawn, and `jump`'s invalidate would repaint a screen that has nothing new on it.
-            d.drawn = crate::ui::Spring::at(want);
-        }
-        d.drawn.pos
+impl TrackDensity {
+    const fn new() -> Self {
+        Self { drawn: crate::ui::Spring::at(0.0), want: 0.0, seeded: false }
     }
+}
+
+/// The tab track's persistent glass state. `GlassPlan` owns one; the strip borrows it only for
+/// update/prepare/draw, keeping the renderer and the frame scheduler on one state instance.
+pub(crate) struct TabBand {
+    glass: GlassState,
+    material: BarMaterial,
+    density: TrackDensity,
+}
+
+impl TabBand {
+    pub(crate) const fn new() -> Self {
+        Self {
+            glass: GlassState::new(),
+            material: BarMaterial::Flat,
+            density: TrackDensity::new(),
+        }
+    }
+
+    pub(crate) fn prepare(&mut self, data: TabLabels<'_>, clock: &mut DynamicClock) {
+        if !with_tab_metrics_for(data, |_, widths| tab_glass_on(tab_track_w(widths))) {
+            return;
+        }
+        Glass::DYNAMIC_BACKDROP.prepare_on(
+            clock,
+            &mut self.glass,
+            crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
+        );
+    }
+
+    pub(crate) fn step(&mut self, dt: f32) {
+        track_density_step(dt, &mut self.density);
+    }
+
+    pub(crate) fn face(&self) -> Option<crate::gfx::GlassFace> {
+        match self.material {
+            BarMaterial::Flat => None,
+            BarMaterial::Glass(face) => Some(face),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_density(&mut self, value: f32) {
+        self.density = TrackDensity { drawn: crate::ui::Spring::at(value), want: value, seeded: true };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn density(&self) -> f32 {
+        self.density.drawn.pos
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_face(&mut self, face: crate::gfx::GlassFace) {
+        self.material = BarMaterial::Glass(face);
+    }
+}
+
+/// The weight to draw for `ground` this frame, publishing the weight it asked for into `d` — the
+/// caller's own `TabBand::density` field (or, in a test, a value with no wider scope at all — `d`
+/// used to be a process-wide static and is a plain `&mut` argument now, which is what let the two
+/// tests below stop restoring a global they no longer share).
+fn track_density(ground: [f32; 3], d: &mut TrackDensity) -> f32 {
+    let want = track_alpha_for(ground);
+    d.want = want;
+    if !d.seeded {
+        d.seeded = true;
+        // `Spring::at`, not `jump`: there is no motion to report on a value that has never been
+        // drawn, and `jump`'s invalidate would repaint a screen that has nothing new on it.
+        d.drawn = crate::ui::Spring::at(want);
+    }
+    d.drawn.pos
 }
 
 /// Step the drawn weight toward the last solve.
 ///
-/// Called from [`tab_row_update`] — the one function all three screens wearing this bar go through,
-/// and the same reason the strip's scroll and its capsules are stepped there rather than in each
-/// screen. On a still screen the readback returns the same bytes, so the solve is bit-identical, the
-/// spring is already on it, and `ui::idle` hears nothing: the present gate is not defeated by a bar
-/// that adapts.
-fn track_density_step(dt: f32) {
-    unsafe {
-        let d = &mut *std::ptr::addr_of_mut!(TRACK_DENSITY);
-        if d.seeded {
-            let k = density_k(d.drawn.pos, d.want);
-            d.drawn.step(d.want, k, dt);
-            // The whole point of this spring is that the weight is CONTINUOUS where the solve is
-            // not, and that is a per-frame claim — a twice-a-second `groundlog` line cannot show it.
-            crate::ui::anim::probe("tabtrack.density", d.drawn.pos, d.drawn.vel, d.want, dt);
-        }
+/// Called from [`StripRender::update`] — the one function all three screens wearing this bar go
+/// through, and the same reason the strip's scroll and its capsules are stepped there rather than
+/// in each screen. On a still screen the readback returns the same bytes, so the solve is
+/// bit-identical, the spring is already on it, and `ui::idle` hears nothing: the present gate is
+/// not defeated by a bar that adapts.
+fn track_density_step(dt: f32, d: &mut TrackDensity) {
+    if d.seeded {
+        let k = density_k(d.drawn.pos, d.want);
+        d.drawn.step(d.want, k, dt);
+        // The whole point of this spring is that the weight is CONTINUOUS where the solve is
+        // not, and that is a per-frame claim — a twice-a-second `groundlog` line cannot show it.
+        crate::ui::anim::probe("tabtrack.density", d.drawn.pos, d.drawn.vel, d.want, dt);
     }
 }
 
@@ -5263,13 +5269,13 @@ fn lift_floor() -> f32 {
     theme::TAB_GLASS_LIFT_FLOOR
 }
 
-fn tab_glass_stops(ground: [f32; 3]) -> ([f32; 4], [f32; 4]) {
+fn tab_glass_stops(ground: [f32; 3], density: &mut TrackDensity) -> ([f32; 4], [f32; 4]) {
     let lo = theme::TAB_GLASS_TOP[3];
     let hi = density_max_sweep().unwrap_or(theme::TAB_TRACK_A_TOP);
     let spread = theme::TAB_GLASS_BOT[3] - lo;
     let a = match tab_glass_dim_sweep() {
         Some(a) => a,
-        None => track_density(ground),
+        None => track_density(ground, density),
     };
     // **THE SPREAD TAPERS AS THE SOLVE RISES, and it did not until a judging panel checked the
     // arithmetic.** The bottom stop is `a + spread` and nothing bounded it: the solve is sized so the
@@ -5522,7 +5528,7 @@ const BAND_AIR: f32 = theme::space::SM;
 /// and graded from the same place.
 pub(crate) const CHIP_CAP_MAX: Rect = chip_cap(1.0, CHIP_NAME_MAX);
 
-/// **Where the unfurled [`profile_chip`] capsule's right edge can reach, at its widest** — the one
+/// **Where the unfurled [`profile_chip_with`] capsule's right edge can reach, at its widest** — the one
 /// edge of [`CHIP_CAP_MAX`] the band's own arithmetic asks for, named because the reader there
 /// wants a position rather than a projection.
 const CHIP_CAP_MAX_R: f32 = CHIP_CAP_MAX.x + CHIP_CAP_MAX.w;
@@ -5537,7 +5543,7 @@ const CHIP_CAP_MAX_R: f32 = CHIP_CAP_MAX.x + CHIP_CAP_MAX.w;
 /// rather than by anyone remembering.
 ///
 /// **It is no longer the track's own arithmetic, because the track is no longer the only surface in
-/// the band.** [`profile_chip`] wears the same material now, and the two are priced and placed
+/// the band.** [`profile_chip_with`] wears the same material now, and the two are priced and placed
 /// together:
 ///
 /// * **The BUDGET is the UNION.** Two glass surfaces in a frame converge on one grab
@@ -5629,7 +5635,7 @@ const GLASS_TRACK_BUDGET_MAX: f32 = 2.0
 ///   `/tmp/plxnative-glassboth` lifts this one for measurement only.
 /// - **The track is wider than [`GLASS_TRACK_MAX`]** — see there.
 ///
-/// Split in two because the SOURCE pass needs the first half on its own: [`draw_tab_row`] has to
+/// Split in two because the SOURCE pass needs the first half on its own: [`StripRender::draw`] has to
 /// know whether the track will wear glass in order to decide whether to draw itself into that
 /// track's own backdrop at all. See there.
 fn tab_glass_wanted(track_w: f32) -> bool {
@@ -5642,9 +5648,9 @@ fn tab_glass_wanted(track_w: f32) -> bool {
 /// [`crate::dev::latched_flag`].
 ///
 /// **`dev::flag` is `Path::exists()`, i.e. a `stat`.** These sat raw on the draw path, and
-/// [`tab_glass_wanted`] alone is called three times per frame — from `tab_glass_prepare`, from the
-/// source-pass guard, and from [`tab_glass_on`] — so a bar-wearing screen paid up to five `stat`
-/// calls a frame at 60 fps, in every dev and harness build. The fps scenes measure exactly that.
+/// [`tab_glass_wanted`] is called from frame-plan prepare, the source-pass guard and paint, so the
+/// former raw probes made a bar-wearing screen pay several `stat` calls a frame at 60 fps in every
+/// dev and harness build. The fps scenes measure exactly that.
 use crate::dev::latched_flag;
 
 latched_flag!(
@@ -5670,21 +5676,12 @@ fn tab_glass_on(track_w: f32) -> bool {
 }
 
 /// **Will the shared bar wear glass this frame?** — [`tab_glass_wanted`], asked from OUTSIDE
-/// [`draw_tab_row_with`], which is where the track's own rect is not in hand.
+/// [`StripRender::draw`], which is where the track's own rect is not in hand.
 ///
 /// It measures the strip through the same cached metrics the draw walks, so the row and its second
 /// surface cannot answer the width rule differently. Deliberately the SOURCE-PASS-blind half:
-/// [`profile_chip`] asks it in order to decide whether it is about to be drawn into a backdrop, and
-/// `tab_glass_on`'s extra clause is false during exactly that pass.
-///
-/// Goes through [`with_legacy_tab_labels`] rather than a captured `Bridge` vocabulary because
-/// [`profile_chip`]'s own caller (the account menu's [`Opener::redraw`](crate::ui::popover::Opener),
-/// re-drawing the chip ABOVE the popover's scrim) is a bare `fn()` with nothing to borrow — see
-/// that cache's own doc for why it survives every other legacy label source's retirement.
-fn bar_glass_wanted() -> bool {
-    with_legacy_tab_labels(bar_glass_wanted_with)
-}
-
+/// normal chrome and the lifted chip both ask it with the same captured [`TabLabels`].
+/// [`tab_glass_on`] adds the source-pass exclusion only where the track itself is painted.
 pub(crate) fn bar_glass_wanted_with(data: TabLabels<'_>) -> bool {
     with_tab_metrics_for(data, |_, widths| tab_glass_wanted(tab_track_w(widths)))
 }
@@ -5703,27 +5700,16 @@ pub(crate) fn bar_glass_wanted_with(data: TabLabels<'_>) -> bool {
 /// Home/Library) is retired: Home, Library and Search all publish their own chrome through
 /// `Bridge::capture_chrome` now, so every bar-wearing route resolves this from
 /// `Bridge::prepare_home_chrome` with that captured vocabulary instead — which is also what fixed
-/// the divergence the legacy fallback had with the paint side (`Bridge::draw`'s own
-/// `draw_tab_row_with(self.chrome.labels(), …)`): the two used to read two different label
+/// the divergence the legacy fallback had with the paint side (`Bridge::draw_chrome`'s own
+/// `self.strip.draw(self.chrome.labels(), …)`): the two used to read two different label
 /// sources on Search.
-pub(crate) fn tab_glass_prepare_with(data: TabLabels<'_>, clock: &mut DynamicClock) {
-    // The width rule is part of the answer, so the cadence has to measure the strip too — the same
-    // cached metrics the draw walks, one frame's worth, keyed on `browse::tabs_gen()`.
-    if !with_tab_metrics_for(data, |_, widths| tab_glass_on(tab_track_w(widths))) {
-        return;
-    }
-    let state = unsafe { &mut *std::ptr::addr_of_mut!(TAB_GLASS_STATE) };
-    Glass::DYNAMIC_BACKDROP.prepare_on(
-        clock,
-        state,
-        crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
-    );
-}
-// Label + width cache keyed on browse::tabs_gen(). The labels are fixed today; retaining the
-// generation key keeps the cache contract explicit if the vocabulary is ever localized.
+// Pure glyph-metric memo keyed by the full captured vocabulary: generation, label count and every
+// label byte. A PERMANENT entry in `ci/allow/statics.txt`, not an ownership path: every caller
+// supplies Bridge-owned `TabLabels`, and a key mismatch deterministically replaces the memo. Like
+// `text_view.rs`'s `WRAP_CACHE`, it is never read as logical state.
 static mut TAB_CACHE: Option<(u32, Vec<std::ffi::CString>, Vec<f32>)> = None;
 
-/// The global strip's captured labels, including Home first and an empty Search icon label last.
+/// The shared strip's captured labels, including Home first and an empty Search icon label last.
 /// Supplied by the application; no Browse/Plex type is part of the renderer's vocabulary.
 #[derive(Clone, Copy)]
 pub(crate) struct TabLabels<'a> {
@@ -5731,28 +5717,9 @@ pub(crate) struct TabLabels<'a> {
     pub(crate) labels: &'a [String],
 }
 
-/// The one surviving reader of this cache is [`bar_glass_wanted`], via [`profile_chip`] — not a
-/// migration-pending screen. Home, Library and Search all supply their own captured `TabLabels`
-/// now (`Bridge::chrome`), and every OTHER caller of the bar's `_with` functions goes through
-/// that captured data directly. This one cannot: the account menu's popover lifts the chip back
-/// out of its own scrim through [`crate::ui::popover::Opener::redraw`], a bare `fn()` with no
-/// borrow to carry a `&Bridge` through, so [`profile_chip`] (and the width this function feeds
-/// it) has to re-derive the vocabulary standalone, exactly as it re-derives the rest of the
-/// profile chip's own data in its own cache beside it.
-fn with_legacy_tab_labels<R>(f: impl FnOnce(TabLabels<'_>) -> R) -> R {
-    static mut LABELS: Option<(u32, Vec<String>)> = None;
-    let generation = crate::browse::tabs_gen();
-    let labels = unsafe { &mut *std::ptr::addr_of_mut!(LABELS) };
-    if labels.as_ref().is_none_or(|c| c.0 != generation) {
-        let mut words = vec!["Home".to_owned()];
-        words.extend((0..crate::browse::tab_count()).map(|i| crate::browse::tab_title(i).to_owned()));
-        words.push(String::new());
-        *labels = Some((generation, words));
-    }
-    let (generation, labels) = labels.as_ref().unwrap();
-    f(TabLabels { generation: *generation, labels })
-}
-
+/// Build glyph runs and widths from an explicitly supplied vocabulary. The application's
+/// `ChromeSnapshot` owns those labels; both normal chrome and its scrim lift borrow the same
+/// snapshot, so this renderer never reconstructs vocabulary from app globals.
 fn tab_metrics_from(labels: &[String], measure: impl Fn(&std::ffi::CStr) -> f32) -> (Vec<CString>, Vec<f32>) {
     let words: Vec<CString> = labels.iter().map(|label| CString::new(label.as_str()).unwrap_or_default()).collect();
     let widths = words.iter().enumerate().map(|(i, word)| {
@@ -5770,9 +5737,13 @@ pub(crate) fn tab_widths(labels: &[String], measure: &dyn crate::ui::machine::Me
 
 /// Publish control geometry from the strip's actual scroll and its current destination. Keys
 /// come from the container's vocabulary, never from their positions in the width array.
+///
+/// `scroll` is the strip's current offset (`StripRender::scroll_pos`) — a parameter rather than a
+/// static read, since the caller (`app::chrome::ChromeSnapshot::members`) has no `StripRender` of
+/// its own to reach into; `app::bridge::Bridge` is the one place both live, and it threads the
+/// value through.
 pub(crate) fn tab_members(widths: &[f32], keys: &[u32], selected: c_int, focus: TopFocus,
-    out: &mut Vec<crate::ui::containers::tabs::StripMember<u32>>) {
-    let scroll = unsafe { std::ptr::addr_of!(TAB_SCROLL).read() }.pos;
+    scroll: f32, out: &mut Vec<crate::ui::containers::tabs::StripMember<u32>>) {
     let index = if focus.pill() >= 0 { focus.pill() } else { selected.max(0) } as usize;
     let target = tab_scroll_target(widths, index, scroll);
     tab_members_at(widths, keys, scroll, target, out);
@@ -5781,14 +5752,14 @@ pub(crate) fn tab_members(widths: &[f32], keys: &[u32], selected: c_int, focus: 
 fn tab_members_at(widths: &[f32], keys: &[u32], scroll: f32, target: f32,
     out: &mut Vec<crate::ui::containers::tabs::StripMember<u32>>) {
     debug_assert_eq!(widths.len(), keys.len());
-    let view_w = tab_view_w(widths);
-    let x0 = (crate::ui::consts::SCR_W - view_w) * 0.5;
-    let clip = Rect::new(x0, TOP_BAR_Y, view_w, TAB_PILL_H);
-    for (i, (&width, &elem)) in widths.iter().zip(keys).enumerate() {
-        let x = x0 + tab_pill_x(widths, i);
+    let drawn = tab_geometry(widths, scroll);
+    let resting = tab_geometry(widths, target);
+    for (i, (_, &elem)) in widths.iter().zip(keys).enumerate() {
         out.push(crate::ui::containers::tabs::StripMember {
-            elem, drawn: Rect::new(x - scroll, TOP_BAR_Y, width, TAB_PILL_H),
-            target: Rect::new(x - target, TOP_BAR_Y, width, TAB_PILL_H), clip,
+            elem,
+            drawn: drawn.pill(i),
+            target: resting.pill(i),
+            clip: drawn.clip,
         });
     }
 }
@@ -5798,22 +5769,9 @@ fn tab_cache_matches(cache: &(u32, Vec<CString>, Vec<f32>), data: TabLabels<'_>)
         && cache.1.iter().zip(data.labels).all(|(a, b)| a.to_bytes() == b.as_bytes())
 }
 
-/// The tab pill under the pointer (Home, Movies, TV Shows, Search), or None. Matches against the
-/// CLIPPED rects, so only the pill area you can actually see is clickable.
-///
-/// One consequence worth knowing: these rects are the last DRAWN frame's, so a click that lands
-/// while the strip is mid-reveal is graded against where the pills were when the user last saw
-/// them — which is the right frame to grade against, but does mean a click aimed at a pill the
-/// spring is still carrying can land on its neighbour. The strip only moves in response to the
-/// user's own focus move, so the two gestures do not overlap in practice.
-pub(crate) fn tab_pill_at(mx: f32, my: f32) -> Option<usize> {
-    let rects = unsafe { &*std::ptr::addr_of!(PILL_RECTS) };
-    rects.iter().position(|r| r.w > 0.5 && r.contains(mx, my))
-}
-
-/// Run `f` with the tab row's labels + pill widths, rebuilding them only when the tab vocabulary
-/// generation moves. Shared by the per-frame scroll step and the draw, so the two cannot measure
-/// the strip differently.
+/// Run `f` with the tab row's labels + pill widths, rebuilding them when the full vocabulary key
+/// changes. Shared by the per-frame scroll step and the draw, so the two cannot measure the strip
+/// differently.
 ///
 /// Deliberately a closure and not a `&'static` getter: the borrow points into `TAB_CACHE`, and a
 /// nested rebuild would free the `CString`s a caller is still handing to `TabPill` as a raw
@@ -5825,8 +5783,15 @@ fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[CString], &[f32
     if cache.as_ref().is_none_or(|c| !tab_cache_matches(c, data)) {
         // measure bold (the widest state) so pill widths don't change with focus; pill =
         // label + the season tabs' ±18 padding
+        //
+        // The `Measure`-threaded twin is `tab_widths`, used while `ChromeSnapshot` publishes input
+        // geometry. Paint receives the same captured labels but no `Measure` capability, so these
+        // renderer entry points use `LegacyMeasure`; it wraps the same `text_width`, preserving
+        // identical glyph widths on both paths.
+        use crate::ui::machine::Measure as _;
+        let measure = LegacyMeasure;
         let (labels, widths) = tab_metrics_from(data.labels,
-            |l| crate::text::text_width(l.as_ptr(), theme::size::BODY, 1));
+            |l| measure.width(l, theme::size::BODY, true));
         // The Search pill, last. It carries an EMPTY label so nothing here has to special-case a
         // missing entry — `labels.len()` stays the pill count, which is what the draw and the hit
         // test both walk — and a fixed square width, because a mark is not measured like a word.
@@ -5848,6 +5813,43 @@ fn tab_view_w(widths: &[f32]) -> f32 {
 /// budget is charged against ([`GLASS_TRACK_MAX`]), and what `draw_tab_row` builds its rect from.
 fn tab_track_w(widths: &[f32]) -> f32 {
     tab_view_w(widths) + 2.0 * TAB_TRACK_PAD
+}
+
+#[derive(Clone, Copy)]
+struct TabGeometry<'a> {
+    widths: &'a [f32],
+    scroll: f32,
+    clip: Rect,
+    track: Rect,
+}
+
+impl TabGeometry<'_> {
+    fn pill(&self, i: usize) -> Rect {
+        Rect::new(
+            self.clip.x + tab_pill_x(self.widths, i) - self.scroll,
+            TOP_BAR_Y,
+            self.widths.get(i).copied().unwrap_or(0.0),
+            TAB_PILL_H,
+        )
+    }
+}
+
+/// The one geometry expression consumed by both paint and the container's keyed members.
+fn tab_geometry(widths: &[f32], scroll: f32) -> TabGeometry<'_> {
+    let view_w = tab_view_w(widths);
+    let x0 = (crate::ui::consts::SCR_W - view_w) * 0.5;
+    let clip = Rect::new(x0, TOP_BAR_Y, view_w, TAB_PILL_H);
+    TabGeometry {
+        widths,
+        scroll,
+        clip,
+        track: Rect::new(
+            x0 - TAB_TRACK_PAD,
+            TOP_BAR_Y - TAB_TRACK_PAD,
+            view_w + 2.0 * TAB_TRACK_PAD,
+            TAB_PILL_H + 2.0 * TAB_TRACK_PAD,
+        ),
+    }
 }
 /// Content-space x of pill `i`'s left edge (0 = the strip's start).
 fn tab_pill_x(widths: &[f32], i: usize) -> f32 {
@@ -5882,60 +5884,47 @@ fn tab_scroll_target(widths: &[f32], idx: usize, cur: f32) -> f32 {
 /// is minimal-scroll, so this is a no-op whenever the selected pill is already on screen, which is
 /// the whole of the Library screen's life after [`tab_row_reveal_with`] placed it.
 ///
-/// It also steps the row's travelling capsules ([`TOP_STRIP`]) and the profile chip's unfurl
-/// ([`CHIP_EXPAND`]), off the very same `focus` the scroll reads — so every caller of the shared
+/// It also steps the row's travelling capsules (`top_strip`) and the profile chip's unfurl
+/// (`chip_expand`), off the very same `focus` the scroll reads — so every caller of the shared
 /// row gets the motion by construction rather than by remembering to call a second thing.
 ///
 /// The caller resolves the pending destination from its navigation snapshot, not live nav state
 /// (no bare `tab_row_update(selected, …)` any more — it used to apply `nav::view_tab` itself
 /// before falling to `with_legacy_tab_labels`; `Bridge::update_home_chrome` already reads the
 /// pending tab off its own `navigation_presentation()` before calling this).
-pub(crate) fn tab_row_update_with(data: TabLabels<'_>, selected: c_int, focus: TopFocus, dt: f32) {
-    use std::ptr::{addr_of, addr_of_mut};
-    let focused = focus.pill();
-    // The chip is the bar's other stop, so its unfurl is stepped here rather than by whichever
-    // screen happens to own the focus this frame — the same reason the capsules and the track's
-    // weight are. It is also why [`TopFocus`] is one value: with a separate `chip: bool` beside
-    // `focused`, a screen could hand down a lit chip AND a lit pill.
-    unsafe {
-        (*addr_of_mut!(CHIP_EXPAND)).step(
-            if matches!(focus, TopFocus::Chip) {
-                1.0
-            } else {
-                0.0
-            },
+impl StripRender {
+    pub(crate) fn update(&mut self, data: TabLabels<'_>, selected: c_int, focus: TopFocus, dt: f32) {
+        let focused = focus.pill();
+        // The chip is the bar's other stop, so its unfurl is stepped here rather than by whichever
+        // screen happens to own the focus this frame — the same reason the capsules and the track's
+        // weight are. It is also why [`TopFocus`] is one value: with a separate `chip: bool` beside
+        // `focused`, a screen could hand down a lit chip AND a lit pill.
+        self.chip_expand.step(
+            if matches!(focus, TopFocus::Chip) { 1.0 } else { 0.0 },
             K_CHIP,
             dt,
-        )
-    };
-    // The bar is CONTINUOUS chrome across the Home↔Library route change and the capsule has to start
-    // travelling on the PRESS frame, before the route flips — so the selection is the NAV's pending
-    // one whenever there is one, exactly as `library::view_section` is the pending one for that
-    // screen's own chips. Resolved HERE, in the one function both screens call, so neither can
-    // forget it and the two can never disagree about which pill is lit. (It also carries into `idx`
-    // below, so a strip that must SCROLL to reach the destination starts scrolling on the press
-    // frame too.)
-    let idx = if focused >= 0 {
-        focused
-    } else {
-        selected.max(0)
-    } as usize;
-    let cur = unsafe { addr_of!(TAB_SCROLL).read() };
-    // Both reads happen inside the ONE `with_tab_metrics` closure — its doc forbids nesting, and the
-    // capsules must be placed from the SAME widths the pills are laid out with, so a capsule can
-    // never come to rest somewhere no pill is.
-    let t = with_tab_metrics_for(data, |_, w| {
-        let target = tab_scroll_target(w, idx, cur.pos);
-        let span = |i: usize| (i < w.len()).then(|| (tab_pill_x(w, i), w[i]));
-        unsafe { (*addr_of_mut!(TOP_STRIP)).update(selected, focused, span, SelMark::Travels, dt) };
-        target
-    });
-    unsafe { (*addr_of_mut!(TAB_SCROLL)).step(t, K_TAB_SCROLL, dt) };
-    let s = unsafe { addr_of!(TAB_SCROLL).read() };
-    crate::ui::anim::probe("tabrow.scroll", s.pos, s.vel, t, dt);
-    // The track's own weight follows its ground here for the same reason the capsules move here:
-    // three screens draw this bar and none of them should have to remember to animate it.
-    track_density_step(dt);
+        );
+        // The bar is CONTINUOUS chrome across the Home↔Library route change and the capsule has to
+        // start travelling on the PRESS frame, before the route flips — so the selection is the
+        // NAV's pending one whenever there is one, exactly as `library::view_section` is the
+        // pending one for that screen's own chips. Resolved HERE, in the one function both screens
+        // call, so neither can forget it and the two can never disagree about which pill is lit.
+        // (It also carries into `idx` below, so a strip that must SCROLL to reach the destination
+        // starts scrolling on the press frame too.)
+        let idx = if focused >= 0 { focused } else { selected.max(0) } as usize;
+        let cur = self.tab_scroll;
+        // Both reads happen inside the ONE `with_tab_metrics` closure — its doc forbids nesting, and
+        // the capsules must be placed from the SAME widths the pills are laid out with, so a capsule
+        // can never come to rest somewhere no pill is.
+        let t = with_tab_metrics_for(data, |_, w| {
+            let target = tab_scroll_target(w, idx, cur.pos);
+            let span = |i: usize| (i < w.len()).then(|| (tab_pill_x(w, i), w[i]));
+            self.top_strip.update(selected, focused, span, SelMark::Travels, dt);
+            target
+        });
+        self.tab_scroll.step(t, K_TAB_SCROLL, dt);
+        crate::ui::anim::probe("tabrow.scroll", self.tab_scroll.pos, self.tab_scroll.vel, t, dt);
+    }
 }
 
 /// Put pill `idx` on screen at once (no glide). For a cut directly into a permanent destination,
@@ -5950,52 +5939,47 @@ pub(crate) fn tab_row_update_with(data: TabLabels<'_>, selected: c_int, focus: T
 /// No bare `tab_row_reveal(idx)` any more (it used to jump the legacy Library screen's strip
 /// through `with_legacy_tab_labels`): every caller is an owned screen with its own captured
 /// `TabLabels`, so every call site already has `data` in hand and goes straight to `_with`.
-pub(crate) fn tab_row_reveal_with(data: TabLabels<'_>, idx: usize) {
-    use std::ptr::{addr_of, addr_of_mut};
-    let cur = unsafe { addr_of!(TAB_SCROLL).read() };
-    let t = with_tab_metrics_for(data, |_, w| tab_scroll_target(w, idx, cur.pos));
-    unsafe { (*addr_of_mut!(TAB_SCROLL)).jump(t) };
+impl StripRender {
+    pub(crate) fn reveal(&mut self, data: TabLabels<'_>, idx: usize) {
+        let cur = self.tab_scroll;
+        let t = with_tab_metrics_for(data, |_, w| tab_scroll_target(w, idx, cur.pos));
+        self.tab_scroll.jump(t);
+    }
 }
 
-/// Draw the centered pill row. Records the rects for [`tab_pill_at`].
+/// Draw the centered pill row. Its [`tab_geometry`] expression is also used by [`tab_members`], so
+/// paint, hit clipping and resting pill geometry cannot drift into parallel rect models.
 ///
-/// It takes no `selected`/`focused`: both states are now the strip's travelling capsules, placed once
-/// per frame by [`tab_row_update_with`] from exactly those two values. Passing them here as well would
-/// let a screen's draw and its update disagree about which tab is lit — which is precisely the class
-/// of bug a single source of the row's state removes.
+/// It takes no `selected`/`focused`: both states are now the strip's travelling capsules, placed
+/// once per frame by [`StripRender::update`] from exactly those two values. Passing them here as
+/// well would let a screen's draw and its update disagree about which tab is lit — which is
+/// precisely the class of bug a single source of the row's state removes.
 ///
 /// No bare `draw_tab_row(p)` any more (it used to draw off `with_legacy_tab_labels`'s cache for
 /// the legacy Library screen); every caller now owns its captured `TabLabels` and draws through
-/// `Bridge::draw` -> `draw_tab_row_with(self.chrome.labels(), …)` directly.
-
-pub(crate) fn draw_tab_row_with(data: TabLabels<'_>, p: Painter) {
-    use std::ptr::{addr_of, addr_of_mut};
-    let rects = unsafe { &mut *addr_of_mut!(PILL_RECTS) };
-    rects.clear(); // nothing drawn = nothing hittable, including on the early return below
-                   // …and the band's material with them, for the same reason and in the same place: every early
-                   // return below must leave [`profile_chip`] on the flat capsule rather than on the stops some
+/// `Bridge::draw` -> `self.strip.draw(self.chrome.labels(), …)` directly.
+impl StripRender {
+    pub(crate) fn draw(&mut self, data: TabLabels<'_>, p: Painter, band: &mut TabBand) {
+                   // The band's material resets first: every early
+                   // return below must leave [`profile_chip_with`] on the flat capsule rather than on the stops some
                    // previous frame solved. See [`BarMaterial`].
-    unsafe { BAR_MATERIAL = BarMaterial::Flat };
+    band.material = BarMaterial::Flat;
     with_tab_metrics_for(data, |labels, widths| {
         let n = labels.len();
         if n == 0 {
             return;
         }
         let content_w = tab_content_w(widths);
-        let view_w = tab_view_w(widths);
+        let geometry = tab_geometry(widths, self.tab_scroll.pos);
+        let view_w = geometry.clip.w;
         // ONE translucent dark capsule contains the whole row — the tvOS tab-bar track. It (not the
         // segments) owns legibility over bright hero art: inside it the segments keep their clean
         // season-tab looks (plain = bare dim text). Sheened for the 1px glass rim. The uniform inset
         // (and so the concentric radii) is [`TAB_TRACK_PAD`], shared with the focused profile chip.
         // The track is the strip's width until the strip outgrows the screen, then it caps and the
         // pills scroll inside it — the track itself never moves.
-        let x0 = (crate::ui::consts::SCR_W - view_w) * 0.5;
-        let track = Rect::new(
-            x0 - TAB_TRACK_PAD,
-            TOP_BAR_Y - TAB_TRACK_PAD,
-            view_w + 2.0 * TAB_TRACK_PAD,
-            TAB_PILL_H + 2.0 * TAB_TRACK_PAD,
-        );
+        let x0 = geometry.clip.x;
+        let track = geometry.track;
         // **A SURFACE MAY NOT APPEAR IN ITS OWN BACKDROP**, and this row is the one place in the app
         // where it could: the direct source path renders the whole page again into a small FBO, and
         // the page includes this bar. Left in, the glass track blurred the FLAT track — its own
@@ -6075,17 +6059,19 @@ pub(crate) fn draw_tab_row_with(data: TabLabels<'_>, p: Painter) {
         // version of this was caught reading Plex's `UltraBlurColors`, which gave (0.30,0.23,0.18)
         // for a hero whose top edge is (0.00,0.68,0.91) and left the bar at its floor.
         if groundlog {
-            static mut LAST: u32 = 0;
-            let n = unsafe { LAST };
+            // A safe atomic rather than `static mut`: a plain sample counter, same shape as
+            // `GLASS_PRESENT_SERIAL` above.
+            static LAST: AtomicU32 = AtomicU32::new(0);
+            let n = LAST.load(Relaxed);
             if n % 20 == 0 {
                 // BOTH weights: the solve is a step twice a second and the drawn one eases to
                 // it, so a single number could not tell "the ground moved" from "the bar is still
                 // travelling" — which is the whole question this instrument now has to answer.
-                // through `track_density` rather than off the static: it is idempotent within a
-                // frame, and reading the static raw printed the seed value 0.000 on the one frame
+                // through `track_density` rather than off a static: it is idempotent within a
+                // frame, and reading the raw field printed the seed value 0.000 on the one frame
                 // the bar had never been drawn — an instrument's first line reading as a bug in the
                 // thing it was armed to watch.
-                let drawn = track_density(ground);
+                let drawn = track_density(ground, &mut band.density);
                 crate::log(&format!(
                     "track_ground rgb={:.3},{:.3},{:.3} L*={:.1} span={:.1} want={:.3} drawn={:.3} rect={:.0},{:.0},{:.0},{:.0}",
                     ground[0], ground[1], ground[2],
@@ -6095,18 +6081,18 @@ pub(crate) fn draw_tab_row_with(data: TabLabels<'_>, p: Painter) {
                     track.x, track.y, track.w, track.h,
                 ));
             }
-            unsafe { LAST = n.wrapping_add(1) };
+            LAST.store(n.wrapping_add(1), Relaxed);
         }
         if glass_on {
-            // PREPARE is deliberately not here — see `tab_glass_prepare`. Resolving cadence during
+            // PREPARE is deliberately not here — see `GlassPlan::prepare_tab_band`. Resolving cadence during
             // the page draw invalidates the backdrop after any earlier owner has already captured
             // one, which on the direct path means the snapshot is taken and then thrown away.
             // The track never moves, so its drawn rect IS its rest rect — no slide to correct for.
             // Hoisted out of the call, because it is now the BAND's face and not just this
-            // surface's: [`profile_chip`] draws the other half of it from [`BAR_MATERIAL`], at the
-            // same stops and the same rim weight, off this one solve. See [`BarMaterial`].
+            // surface's: [`profile_chip_with`] draws the other half of it from this same `bar_material`
+            // field, at the same stops and the same rim weight, off this one solve. See [`BarMaterial`].
             let face = {
-                let (gt, gb) = tab_glass_stops(ground);
+                let (gt, gb) = tab_glass_stops(ground, &mut band.density);
                 let (rim, rim_lit) = track_rim(gt[3]);
                 crate::gfx::GlassFace {
                     scrim_top: gt,
@@ -6137,7 +6123,7 @@ pub(crate) fn draw_tab_row_with(data: TabLabels<'_>, p: Painter) {
                 // below, and the chip has to fall back with it — a glass chip beside a flat track
                 // is the seam this whole arrangement exists to prevent, arrived at from the one
                 // direction the geometry cannot.
-                unsafe { BAR_MATERIAL = BarMaterial::Glass(face) };
+                band.material = BarMaterial::Glass(face);
                 // NOTHING IS DRAWN HERE ANY MORE, and that is the fix. The darkening and the edge —
                 // `inset 0 0 0 1px var(--glass-rim), inset 0 1px 0 var(--glass-rim-light)`, the whole
                 // of what the design system puts on this container — used to be a SECOND rounded rect
@@ -6177,7 +6163,7 @@ pub(crate) fn draw_tab_row_with(data: TabLabels<'_>, p: Painter) {
             // now every changed present, but this guard is still what makes the configured policy
             // authoritative rather than an accidental reactivation loop.
             if !crate::gfx::blur_source_pass() {
-                unsafe { (*std::ptr::addr_of_mut!(TAB_GLASS_STATE)).deactivate() };
+                band.glass.deactivate();
             }
             // The flat capsule, which is the same material at its ceiling — there is nothing for
             // this path to say about ink any more. It once wrote the row's POLARITY here, and that
@@ -6197,43 +6183,41 @@ pub(crate) fn draw_tab_row_with(data: TabLabels<'_>, p: Painter) {
         // A non-zero scroll clips too even when the strip fits: the viewport can shrink
         // (sign-out, server switch) and the spring takes a few frames to unwind, and those frames
         // must not paint pills outside the track.
-        let view = Rect::new(x0, TOP_BAR_Y, view_w, TAB_PILL_H);
-        let sx = unsafe { addr_of!(TAB_SCROLL).read() }.pos;
+        let view = geometry.clip;
+        let sx = self.tab_scroll.pos;
         let scrolls = content_w > view_w + 0.5 || sx.abs() > 0.5;
         if scrolls {
             p.clip(view);
         }
         let env = Env::inert();
-        // The selection/focus fills, as ONE travelling capsule each ([`TOP_STRIP`]) rather than a
+        // The selection/focus fills, as ONE travelling capsule each (`top_strip`) rather than a
         // boolean fill per pill. They were placed in content space with `tab_pill_x`, so a single
         // translate puts them and the pills on the same ruler; drawn first, because they are the
         // pills' ground. This strip is NOT plated — it sits inside the tab-bar track above, which
         // already is the ground, so the pills paint no fill of their own at all here.
         let cp = p.translate(x0 - sx, 0.0);
-        unsafe { &*addr_of!(TOP_STRIP) }.draw(
+        self.top_strip.draw(
             cp,
             TOP_BAR_Y,
             TAB_PILL_H,
             TabGround::Tracked { glass: glass_on },
         );
-        rects.reserve(n);
         for i in 0..n {
             // ONE prefix sum per pill: `tab_pill_x` is O(i), and it was walked twice here — once for
             // the rect and again for the capsule coverage — so the row re-summed its own width every
             // frame for nothing.
             let px = tab_pill_x(widths, i);
-            let r = Rect::new(x0 + px - sx, TOP_BAR_Y, widths[i], TAB_PILL_H);
+            let r = geometry.pill(i);
             // ONE rule for "is this pill on screen": its rect clipped to the viewport. The clipped
             // rect is what gets recorded for the hit test AND what decides whether to draw at all
             // (a 12-library server would otherwise lay out three rows' worth of text the scissor
             // throws away), so the two can never disagree about a sliver at the edge.
             let vis = r.intersect(view);
-            rects.push(vis);
             if vis.w > 0.5 {
                 // ink comes from how covered this pill is by the capsules above — never from its own
                 // booleans, or a mid-travel label could darken toward ACCENT_INK with nothing bright
                 // under it (`cap_cover` is the one rule both sides read).
-                let (fm, sm) = unsafe { &*addr_of!(TOP_STRIP) }.mixes((px, widths[i]));
+                let (fm, sm) = self.top_strip.mixes((px, widths[i]));
                 if i + 1 == n {
                     // The Search pill is a MARK, and it takes its ink from exactly the same
                     // `mixed_ink` the labels do — so it darkens toward ACCENT_INK under the focus
@@ -6257,6 +6241,7 @@ pub(crate) fn draw_tab_row_with(data: TabLabels<'_>, p: Painter) {
             p.clip_clear();
         }
     })
+    }
 }
 
 /// Which colour treatment a control (Button / CircleButton) wears. One control widget, four looks —
@@ -6825,7 +6810,19 @@ impl Button {
     /// An accessory occupies one more icon box and one more gap, which is what [`Button::draw`]
     /// lays out below.
     pub fn pill_w_full(label: *const c_char, sz: c_int, icon: bool, trailing: bool) -> f32 {
-        Self::pill_w_from_advance(crate::text::text_width(label, sz, 1), sz, icon, trailing)
+        // The `Measure`-threaded twin is `pill_w_measured`, just below. This raw form has to stay
+        // measure-less: its own caller `StatusOverlay::action_frame` is reached from
+        // `impl View for StatusOverlay` (`View::draw` takes no `Measure`, and reshaping that shared
+        // retained-leaf trait is out of this lane's scope) as well as from a host test that
+        // deliberately compares this exact formula against `RawTextMeasure`. `TtfMeasure` wraps the
+        // identical `text_width` this line called directly.
+        use crate::ui::machine::Measure as _;
+        let advance = LegacyMeasure.width(
+            unsafe { std::ffi::CStr::from_ptr(label) },
+            sz,
+            true,
+        );
+        Self::pill_w_from_advance(advance, sz, icon, trailing)
     }
 
     pub(crate) fn pill_w_measured(label: &core::ffi::CStr, sz: c_int, icon: bool, trailing: bool,
@@ -6965,7 +6962,16 @@ impl View for Button {
         // center the [icon + gap + label] group in the pill; the label sits on the pill centre by
         // its cap band, so descenders (the g's in "From Beginning") don't drag the caps upward
         let ty = crate::text::text_vcenter_y(self.sz, 1, r.y + r.h * 0.5);
-        let tw = crate::text::text_width(self.label, self.sz, 1);
+        // `Button` draws through the generic retui `View::draw` (no `Measure` parameter; see the
+        // identical note on `TabPill::draw` above). `TtfMeasure` wraps the same `text_width`.
+        let tw = {
+            use crate::ui::machine::Measure as _;
+            LegacyMeasure.width(
+                unsafe { std::ffi::CStr::from_ptr(self.label) },
+                self.sz,
+                true,
+            )
+        };
         let (isz, gap) = if self.icon.is_some() {
             (self.sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP)
         } else {
@@ -7093,30 +7099,36 @@ const PASS_CHARS: [&std::ffi::CStr; 9] = [c"P", c"L", c"E", c"X", c" ", c"P", c"
 
 /// The label's own drawn width, **memoised** — the pens below re-measure per character anyway, so
 /// only the total is worth holding. Main-thread only, like every other layout memo here.
-static mut PASS_W: f32 = 0.0;
+///
+/// A safe atomic (bits of the `f32` held in a `u32`) rather than `static mut` — the same
+/// `AtomicU32` this file already uses for `GLASS_PRESENT_SERIAL`, `DYNAMIC_PERIOD` and
+/// [`VEIL_TEX`], applied to a float memo the way `note_own_damage`'s neighbours apply it to a bool.
+static PASS_W: AtomicU32 = AtomicU32::new(0);
 
-fn pass_label_w() -> f32 {
-    // `text_width` reads 0 until `init_text` has run — never cache a pre-init measurement (the
-    // same guard `ctrl_slot`'s width memo keeps, and for the same reason).
-    let memo = unsafe { PASS_W };
+fn pass_label_w(measure: &dyn crate::ui::machine::Measure) -> f32 {
+    // The width reads 0 until `init_text` has run (a live `TtfMeasure`) — never cache a pre-init
+    // measurement (the same guard `ctrl_slot`'s width memo keeps, and for the same reason). Under
+    // replay the threaded `Measure` is a `TableMeasure`, which answers from the recorded table
+    // rather than 0, so the memo is populated on its first call there too.
+    let memo = f32::from_bits(PASS_W.load(Relaxed));
     if memo > 0.0 {
         return memo;
     }
     let mut w = 0.0;
     for c in PASS_CHARS {
-        w += crate::text::text_width(c.as_ptr(), theme::size::CAPTION, 1);
+        w += measure.width(c, theme::size::CAPTION, true);
     }
     if w <= 0.0 {
         return 0.0;
     }
     w += PASS_TRACK * (PASS_CHARS.len() - 1) as f32;
-    unsafe { PASS_W = w };
+    PASS_W.store(w.to_bits(), Relaxed);
     w
 }
 
 /// Layout width of the capsule — for right-anchoring and row flow.
-pub(crate) fn pass_capsule_w() -> f32 {
-    pass_label_w() + 2.0 * PASS_PAD_X
+pub(crate) fn pass_capsule_w(measure: &dyn crate::ui::machine::Measure) -> f32 {
+    pass_label_w(measure) + 2.0 * PASS_PAD_X
 }
 
 /// Draw the capsule with its LEFT edge at `x`, centred on `cy`; returns its width.
@@ -7131,8 +7143,14 @@ pub(crate) fn pass_capsule_w() -> f32 {
 /// `filled: true` is the FILLED form — pass-gold fill, near-black label — used in exactly one
 /// place, the playback-failed read-out, where the ground is pure black and an outline would read
 /// as a hole.
-pub(crate) fn pass_capsule(p: Painter, x: f32, cy: f32, filled: bool) -> f32 {
-    let w = pass_capsule_w();
+pub(crate) fn pass_capsule(
+    p: Painter,
+    x: f32,
+    cy: f32,
+    filled: bool,
+    measure: &dyn crate::ui::machine::Measure,
+) -> f32 {
+    let w = pass_capsule_w(measure);
     let r = Rect::new(x, cy - BADGE_H * 0.5, w, BADGE_H);
     let ink = if filled {
         p.rrect(r, PASS_RAD, PASS_RAD, theme::PASS_GOLD);
@@ -7145,12 +7163,16 @@ pub(crate) fn pass_capsule(p: Painter, x: f32, cy: f32, filled: bool) -> f32 {
     let mut cx = x + PASS_PAD_X;
     for c in PASS_CHARS {
         p.text(c.as_ptr(), cx, ty, theme::size::CAPTION, ink, 0, 1);
-        cx += crate::text::text_width(c.as_ptr(), theme::size::CAPTION, 1) + PASS_TRACK;
+        cx += measure.width(c, theme::size::CAPTION, true) + PASS_TRACK;
     }
     w
 }
 
-pub(crate) fn badge_w(text: &str, icon: Option<crate::ui::icons::Icon>) -> f32 {
+pub(crate) fn badge_w(
+    text: &str,
+    icon: Option<crate::ui::icons::Icon>,
+    measure: &dyn crate::ui::machine::Measure,
+) -> f32 {
     const PAD: f32 = 12.0;
     const MIN_W: f32 = 56.0;
     let lead = if icon.is_some() {
@@ -7158,13 +7180,7 @@ pub(crate) fn badge_w(text: &str, icon: Option<crate::ui::icons::Icon>) -> f32 {
     } else {
         0.0
     };
-    std::ffi::CString::new(text)
-        .ok()
-        .map(|c| {
-            (crate::text::text_width(c.as_ptr(), theme::size::CAPTION, 1) + 2.0 * PAD).max(MIN_W)
-                + lead
-        })
-        .unwrap_or(0.0)
+    (measure.width_str(text, theme::size::CAPTION, true) + 2.0 * PAD).max(MIN_W) + lead
 }
 /// Draw one chip with its LEFT edge at `x`, vertically centred on `cy`; returns its width.
 pub(crate) fn badge(
@@ -7174,13 +7190,14 @@ pub(crate) fn badge(
     text: &str,
     icon: Option<crate::ui::icons::Icon>,
     style: BadgeStyle,
+    measure: &dyn crate::ui::machine::Measure,
 ) -> f32 {
     let lc = match std::ffi::CString::new(text) {
         Ok(c) => c,
         Err(_) => return 0.0,
     };
     let sz = theme::size::CAPTION;
-    let w = badge_w(text, icon);
+    let w = badge_w(text, icon, measure);
     let r = Rect::new(x, cy - BADGE_H * 0.5, w, BADGE_H);
     let ink = match style {
         BadgeStyle::Outlined { col, border, bg } => {
@@ -7213,7 +7230,7 @@ pub(crate) fn badge(
     } else {
         0.0
     };
-    let tw = crate::text::text_width(lc.as_ptr(), sz, 1);
+    let tw = measure.width(&lc, sz, true);
     let gl = r.cx() - (lead + tw) * 0.5;
     if let Some(i) = icon {
         crate::ui::icons::draw(
@@ -7279,12 +7296,15 @@ pub(crate) struct RatingCell<'a> {
 
 /// Width [`rating_group`] will occupy. Measure before drawing so a row can stop at a margin
 /// instead of running a group off the panel (same contract as `badge`/`badge_w`).
-pub(crate) fn rating_group_w(caption: &str, cells: &[RatingCell]) -> f32 {
-    let cap = std::ffi::CString::new(caption).ok();
-    let mut w = match cap {
-        Some(c) => crate::text::text_width(c.as_ptr(), theme::size::MICRO, 1) + RATING_CAPTION_GAP,
-        None => return 0.0,
-    };
+pub(crate) fn rating_group_w(
+    caption: &str,
+    cells: &[RatingCell],
+    measure: &dyn crate::ui::machine::Measure,
+) -> f32 {
+    if caption.contains('\0') {
+        return 0.0;
+    }
+    let mut w = measure.width_str(caption, theme::size::MICRO, true) + RATING_CAPTION_GAP;
     for (i, cell) in cells.iter().enumerate() {
         if i > 0 {
             w += RATING_PAIR_GAP;
@@ -7292,11 +7312,11 @@ pub(crate) fn rating_group_w(caption: &str, cells: &[RatingCell]) -> f32 {
         if !cell.mark.is_empty() {
             w += RATING_MARK_D + RATING_GAP;
         }
-        if let Ok(v) = std::ffi::CString::new(cell.value) {
-            w += crate::text::text_width(v.as_ptr(), theme::size::LABEL, 1);
+        if !cell.value.contains('\0') {
+            w += measure.width_str(cell.value, theme::size::LABEL, true);
         }
-        if let Ok(s) = std::ffi::CString::new(cell.suffix) {
-            w += crate::text::text_width(s.as_ptr(), theme::size::MICRO, 1);
+        if !cell.suffix.contains('\0') {
+            w += measure.width_str(cell.suffix, theme::size::MICRO, true);
         }
     }
     w
@@ -7309,6 +7329,7 @@ pub(crate) fn rating_group(
     cy: f32,
     caption: &str,
     cells: &[RatingCell],
+    measure: &dyn crate::ui::machine::Measure,
 ) -> f32 {
     let Ok(cap) = std::ffi::CString::new(caption) else {
         return 0.0;
@@ -7333,7 +7354,7 @@ pub(crate) fn rating_group(
         0,
         1,
     );
-    bx += crate::text::text_width(cap.as_ptr(), theme::size::MICRO, 1) + RATING_CAPTION_GAP;
+    bx += measure.width(&cap, theme::size::MICRO, true) + RATING_CAPTION_GAP;
 
     for (i, cell) in cells.iter().enumerate() {
         if i > 0 {
@@ -7359,7 +7380,7 @@ pub(crate) fn rating_group(
                 0,
                 1,
             );
-            bx += crate::text::text_width(v.as_ptr(), theme::size::LABEL, 1);
+            bx += measure.width(&v, theme::size::LABEL, true);
         }
         if let Ok(s) = std::ffi::CString::new(cell.suffix) {
             p.text(
@@ -7371,12 +7392,12 @@ pub(crate) fn rating_group(
                 0,
                 1,
             );
-            bx += crate::text::text_width(s.as_ptr(), theme::size::MICRO, 1);
+            bx += measure.width(&s, theme::size::MICRO, true);
         }
     }
     // the MEASURED width, not what the draws accumulated — a draw and its measurer that can
     // disagree will eventually be caught disagreeing
-    rating_group_w(caption, cells)
+    rating_group_w(caption, cells, measure)
 }
 
 #[cfg(test)]
@@ -7401,6 +7422,27 @@ mod tests {
             assert_eq!(member.drawn.x - member.target.x, 26.0);
         }
         assert_eq!(members[1].drawn.x - members[0].drawn.x, widths[0] + TAB_GAP);
+    }
+
+    /// Paint and container input consume the SAME geometry object. The clipped visible rect is
+    /// derived from the member's drawn rect and clip, never recorded into a parallel pill model.
+    #[test]
+    fn tab_geometry_is_shared_by_paint_members_and_clipping() {
+        let widths = [900.0, 700.0, TAB_ICON_PILL_W];
+        let keys = [7, 2, 9];
+        let scroll = 411.0;
+        let geometry = tab_geometry(&widths, scroll);
+        let mut members = Vec::new();
+        tab_members_at(&widths, &keys, scroll, scroll, &mut members);
+        assert_eq!(widths.len(), members.len());
+        let same = |a: Rect, b: Rect| (a.x, a.y, a.w, a.h) == (b.x, b.y, b.w, b.h);
+        for (i, member) in members.iter().enumerate() {
+            let pill = geometry.pill(i);
+            assert!(same(pill, member.drawn));
+            assert!(same(geometry.clip, member.clip));
+            assert!(same(pill.intersect(geometry.clip), member.drawn.intersect(member.clip)));
+        }
+        assert_eq!(geometry.track.w, geometry.clip.w + 2.0 * TAB_TRACK_PAD);
     }
 
     #[test]
@@ -8135,7 +8177,7 @@ mod tests {
     ///
     /// **It is priced as the PAIR now**, and that is the change worth reading twice. This asserted
     /// the track alone against the budget, which was the whole story while the track was the only
-    /// glass in the band; [`profile_chip`]'s capsule is a second surface of the same material, and
+    /// glass in the band; [`profile_chip_with`]'s capsule is a second surface of the same material, and
     /// two glass surfaces in one frame converge on ONE grab (`gfx::blur_region_union`) that has to
     /// span both. A track that passes on its own and fails as a pair is exactly the regression this
     /// exists to catch, so the counterexample moved with it: the old one was a 1050-wide track,
@@ -8189,7 +8231,7 @@ mod tests {
     /// pixel of [`BAND_AIR`] and not an arbitrary gulf, so nobody buys safety here by quietly
     /// spending the strip.
     ///
-    /// The capsule side is the rect [`profile_chip`] actually draws ([`chip_cap`]), which is the
+    /// The capsule side is the rect [`profile_chip_with`] actually draws ([`chip_cap`]), which is the
     /// half that could have gone wrong on its own: [`CHIP_CAP_MAX_R`] hand-restated those seven
     /// terms until it was made to ask for them.
     #[test]
@@ -8612,113 +8654,6 @@ mod tests {
             std::mem::size_of::<Glass>(),
             std::mem::size_of::<GlassRefresh>(),
             "a second axis on Glass would show up here first"
-        );
-    }
-
-    // ── The strip's vocabulary: an index MEANS something ──────────────────────────────────────
-    //
-    // Driven through the pure halves (`pill_in`/`pill_index`/`last_section_in`), so no `browse`
-    // table is seeded and no crate global is read — see the note above them. That is also what
-    // lets these grade strips this host cannot build: one library, and none at all.
-
-    /// The ladder is a BIJECTION over the strip — every drawn index resolves to exactly one
-    /// destination and back — which is what lets [`pill_of`] PLACE the capsule for a destination
-    /// that [`pill_at`] will later resolve a click on. Swept over every strip size the app can
-    /// have, because the arm that matters is the one BETWEEN the ends and a two-pill strip has
-    /// no `Section` in it at all.
-    #[test]
-    fn every_strip_index_round_trips_through_the_typed_pill() {
-        // A stub strip of `n` types, so the ladder is graded with no section table in the
-        // process — `kinds[t]` is what `browse::tab_kind` would answer, and `pos` its inverse.
-        fn kinds(n: usize) -> Vec<crate::browse::SecKind> {
-            [crate::browse::SecKind::Movie, crate::browse::SecKind::Show]
-                .into_iter()
-                .cycle()
-                .take(n)
-                .collect()
-        }
-        for search in 1..8usize {
-            let ks = kinds(search.saturating_sub(1));
-            let at = |t: usize| ks.get(t).copied();
-            let pos = |k: crate::browse::SecKind| ks.iter().position(|&x| x == k);
-            assert_eq!(
-                pill_in(0, search, at),
-                Pill::Home,
-                "pill 0 is Home on every strip"
-            );
-            assert_eq!(
-                pill_in(search, search, at),
-                Pill::Search,
-                "the last pill is never a library"
-            );
-            for sec in 0..search.saturating_sub(1) {
-                assert_eq!(
-                    pill_in(sec + 1, search, at),
-                    Pill::Section(ks[sec]),
-                    "a TYPE, Home already subtracted"
-                );
-            }
-            for i in 0..=search {
-                // Only the FIRST occurrence of a kind round trips, because `cycle()` repeats them
-                // past two — the real strip never does, so the round trip is asserted over the
-                // vocabulary's own length.
-                if i == 0 || i == search || i <= 2 {
-                    assert_eq!(
-                        pill_index(pill_in(i, search, at), search, pos),
-                        Some(i),
-                        "pill {i} of {search} did not round trip"
-                    );
-                }
-            }
-        }
-        // A type the strip no longer draws resolves to NOTHING rather than to whatever moved into
-        // its slot — the whole reason `Pill::Section` carries a kind (see its doc).
-        assert_eq!(
-            pill_index(
-                Pill::Section(crate::browse::SecKind::Show),
-                2,
-                |_| None
-            ),
-            None,
-            "a switched-off type has no pill, and must not borrow another's index"
-        );
-        // …and a strip slot with no type behind it answers Home, never a library.
-        assert_eq!(
-            pill_in(1, 3, |_| None),
-            Pill::Home,
-            "an unfilled section slot is Home, not a library"
-        );
-    }
-
-    /// [`last_section_pill`]'s two answers. The interesting one is the SECOND: a strip with no
-    /// libraries at all (discovery failed, and the user stays on the screen) has no library pill
-    /// for a section-derived index to land on, and the fallback must be a pill that exists.
-    #[test]
-    fn the_section_ceiling_is_the_pill_before_search_and_falls_back_to_home() {
-        for search in 2..8usize {
-            let last = last_section_in(search);
-            let ks = [crate::browse::SecKind::Movie, crate::browse::SecKind::Show]
-                .into_iter()
-                .cycle()
-                .take(search.saturating_sub(1))
-                .collect::<Vec<_>>();
-            assert_eq!(
-                pill_in(last, search, |t| ks.get(t).copied()),
-                Pill::Section(ks[search - 2]),
-                "the last pill that IS a library"
-            );
-            assert!(last < search, "…and never Search itself");
-        }
-        // the failed-discovery strip: `Home | Search`, and nothing for a section to clamp onto
-        assert_eq!(
-            last_section_in(1),
-            0,
-            "with no sections the ceiling is HOME…"
-        );
-        assert_eq!(
-            pill_in(last_section_in(1), 1, |_| None),
-            Pill::Home,
-            "…so the clamp can never land on nothing"
         );
     }
 
@@ -9945,8 +9880,8 @@ mod tests {
 
     /// One frame at the app's own cadence, the value `card_row.rs`'s tests step with.
     const DT: f32 = 1.0 / 60.0;
-    /// Pill `i`'s content-space `(x, w)` in the fixture strip — the same pair `tab_row_update` hands
-    /// the strip, built from the same two functions.
+    /// Pill `i`'s content-space `(x, w)` in the fixture strip — the same pair
+    /// [`StripRender::update`] hands the strip, built from the same two functions.
     fn span_of(w: &[f32], i: usize) -> (f32, f32) {
         (tab_pill_x(w, i), w[i])
     }
@@ -10311,19 +10246,15 @@ mod tests {
     #[test]
     fn the_pair_never_draws_past_the_weight_where_glass_stops_being_glass() {
         let _g = serial_for_motion();
-        let restore = unsafe { std::ptr::addr_of!(TRACK_DENSITY).read() };
         let mut prev = 0.0f32;
         for i in 0..=40 {
             // a neutral ground swept the whole way up, so the solve sweeps its whole range
             let v = i as f32 / 40.0;
-            unsafe {
-                *std::ptr::addr_of_mut!(TRACK_DENSITY) = TrackDensity {
-                    drawn: crate::ui::Spring::at(0.0),
-                    want: 0.0,
-                    seeded: false,
-                }
-            };
-            let (top, bot) = tab_glass_stops([v, v, v]);
+            // A fresh `TrackDensity` per iteration, on the stack — `track_density` used to be a
+            // process-wide static a test had to save and restore; it is a plain `&mut` argument
+            // now (spec phase 12, PX-WIDGETS), so there is nothing left to leak into the next test.
+            let mut density = TrackDensity::new();
+            let (top, bot) = tab_glass_stops([v, v, v], &mut density);
             assert!(
                 bot[3] <= theme::TAB_TRACK_A_TOP + 1e-6,
                 "ground {v:.2}: bottom stop {:.3} is past the ceiling {:.3}",
@@ -10337,7 +10268,6 @@ mod tests {
             );
             prev = top[3];
         }
-        unsafe { *std::ptr::addr_of_mut!(TRACK_DENSITY) = restore };
     }
 
     /// A dark ground keeps the authored pair to the bit — that is the case the tokens were drawn
@@ -10345,16 +10275,8 @@ mod tests {
     #[test]
     fn a_dark_ground_draws_the_authored_pair_exactly() {
         let _g = serial_for_motion();
-        let restore = unsafe { std::ptr::addr_of!(TRACK_DENSITY).read() };
-        unsafe {
-            *std::ptr::addr_of_mut!(TRACK_DENSITY) = TrackDensity {
-                drawn: crate::ui::Spring::at(0.0),
-                want: 0.0,
-                seeded: false,
-            }
-        };
-        let (top, bot) = tab_glass_stops([0.0, 0.0, 0.0]);
-        unsafe { *std::ptr::addr_of_mut!(TRACK_DENSITY) = restore };
+        let mut density = TrackDensity::new();
+        let (top, bot) = tab_glass_stops([0.0, 0.0, 0.0], &mut density);
         assert!(
             (top[3] - theme::TAB_GLASS_TOP[3]).abs() < 1e-6,
             "top {:.4}",
@@ -10486,7 +10408,7 @@ mod tests {
     /// has no equivalent.** A PINNED EXPOSURE, not a bug assertion: [`BarMaterial`]'s note is where
     /// the decision and the three candidate fixes live.
     ///
-    /// [`profile_chip`]'s capsule wears the face [`track_alpha_for`] solved against pixels ~800px
+    /// [`profile_chip_with`]'s capsule wears the face [`track_alpha_for`] solved against pixels ~800px
     /// away, and the unfurled capsule's whole content is a name in [`theme::TEXT_PRIMARY`]. Where
     /// the two grounds agree the shared face is exactly right, which is the arrangement's whole
     /// argument; where they do not, the chip carries a promise nobody made about it. Nothing

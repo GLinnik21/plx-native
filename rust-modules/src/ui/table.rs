@@ -654,7 +654,7 @@ impl TableView {
         self.scroll.pos
     }
 
-    pub fn draw(&self, p: Painter, frame: Rect) {
+    pub fn draw(&self, p: Painter, frame: Rect, measure: &dyn crate::ui::machine::Measure) {
         if self.n_rows() == 0 {
             Label::new(
                 c"No tracks".as_ptr(),
@@ -756,7 +756,9 @@ impl TableView {
                         // (`TableView.prompt.md`). At CAPTION the two were the same size and a
                         // plex.tv handle read as loud as the machine it hangs off.
                         let asz = theme::size::MICRO;
-                        let a = crate::text::elide(&sec.accessory, ACCESSORY_W, asz, 0, false);
+                        let a = crate::text::elide_by(&sec.accessory, ACCESSORY_W, false, |t| {
+                            measure.width_str(t, asz, false)
+                        });
                         if let Ok(ac) = CString::new(a) {
                             Label::new(ac.as_ptr(), asz, self.header_ink)
                                 .h(HAlign::Right)
@@ -843,7 +845,7 @@ impl TableView {
                 let run: f32 = row
                     .badges
                     .iter()
-                    .map(|b| crate::ui::widgets::badge_w(b.text(), None))
+                    .map(|b| crate::ui::widgets::badge_w(b.text(), None, measure))
                     .sum::<f32>()
                     + BADGE_GAP * (row.badges.len() - 1) as f32;
                 let mut bx = text_right - trailing - run;
@@ -857,7 +859,7 @@ impl TableView {
                         border: if focused { base } else { theme::OVERLAY_BORDER },
                         bg: row_bg,
                     };
-                    bx += crate::ui::widgets::badge(p, bx, cyc, b.text(), None, sty) + BADGE_GAP;
+                    bx += crate::ui::widgets::badge(p, bx, cyc, b.text(), None, sty, measure) + BADGE_GAP;
                 }
                 trailing += run + 14.0;
             }
@@ -877,7 +879,7 @@ impl TableView {
                 if let Ok(vc) = std::ffi::CString::new(v) {
                     let vsz = theme::size::LABEL;
                     let vy = crate::text::text_vcenter_y(vsz, VALUE_BOLD, cyc);
-                    let vw = crate::text::text_width(vc.as_ptr(), vsz, VALUE_BOLD);
+                    let vw = measure.width(&vc, vsz, VALUE_BOLD != 0);
                     p.text(
                         vc.as_ptr(),
                         text_right - trailing,
@@ -919,7 +921,9 @@ impl TableView {
                 (theme::size::HEADLINE, 1)
             };
             let text_w = text_right - label_x - trailing;
-            let lbl = crate::text::elide(&row.label, text_w, lsz, lbold, false);
+            let lbl = crate::text::elide_by(&row.label, text_w, false, |t| {
+                measure.width_str(t, lsz, lbold != 0)
+            });
             if let Ok(cs) = CString::new(lbl) {
                 if two_line {
                     p.text(cs.as_ptr(), label_x, title_y, tsz, base, 0, tbold);
@@ -942,8 +946,9 @@ impl TableView {
                 } else {
                     dimc
                 };
-                let detail =
-                    crate::text::elide(&row.detail, text_w, theme::size::CAPTION, 0, false);
+                let detail = crate::text::elide_by(&row.detail, text_w, false, |t| {
+                    measure.width_str(t, theme::size::CAPTION, false)
+                });
                 if let Ok(cd) = CString::new(detail) {
                     p.text(
                         cd.as_ptr(),

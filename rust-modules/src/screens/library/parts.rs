@@ -398,7 +398,7 @@ impl GridPart {
         // ONE scale for the rect and the treatment: the shadow and sheen ramp in with the pop and
         // let go under the press, as a shelf's do (`RowMotion::scale` × `f.press.scale`)
         card_row::draw_focused(p, Art::Poster(Some(item)), rect, self.treatment_scale(index, f.press.scale),
-            &GRID_STYLE, item.resume_frac(), &label);
+            &GRID_STYLE, item.resume_frac(), &label, f.measure);
     }
 }
 

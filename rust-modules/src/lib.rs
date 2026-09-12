@@ -95,6 +95,43 @@ pub(crate) mod testlock {
     //! every crate-global mutator a test can reach — turns "somebody wrote this without the lock"
     //! from an intermittent failure in a bystander into a deterministic panic in the culprit,
     //! naming the culprit. Add the call to any new global store; do not add a retry anywhere.
+    //!
+    //! **This SUPERSEDES the static allowlist approach spec §14/§15.2 used earlier in the
+    //! restructure (`ci/allow/statics-migration.txt` and friends) for the stores specifically.**
+    //! That DoD criterion scopes a bare `static mut` OUT of `screens`/`ui` engine code — it asks
+    //! "does a SCREEN still own process-wide state a second instance would corrupt", and an
+    //! allowlisted exception there is a debt with a name and a phase number. A store's data module
+    //! (`browse`, `pms`, `metadata`, `search`, `person`, `viewstate`) is a different question
+    //! entirely: it keeps process-wide statics **by design** — `docs/stores-as-machines.md` §1 is
+    //! explicit that this is "the same shape" on purpose, one Home catalog and one Library table
+    //! for the whole process, not a per-screen instance — so an allowlist entry for a store's
+    //! `static` would be a permanent fixture wearing a temporary label. What a store genuinely
+    //! owes is not "stop being global" but "a test that mutates you holds the one lock every other
+    //! test mutating you also holds", which is exactly what [`assert_held`] enforces at every
+    //! mutator a test can reach, rather than at the `static` declaration site. Put differently: the
+    //! allowlist answers "is this global allowed to exist", the assertion answers "was this write to
+    //! it safe" — a store answers yes to the first question unconditionally, so only the second one
+    //! applies to it.
+    //!
+    //! **Phase 12 / D5 closed the coverage this claim depends on** (2026-09-10): every store's own
+    //! `apply`/`run` funnel now asserts (`stores::browse::run`, `stores::hubs::run`,
+    //! `stores::metadata::run`, `stores::person::run`, `stores::search::run`,
+    //! `stores::viewstate::run`), as does every `_for_test` seed/installer reachable from a test —
+    //! `browse/mod.rs` (`seed_sources_for_test`, `set_pinned_for_test`, `land_pin_for_test`,
+    //! `seed_pins_for_test`, `seed_two_source_table_for_test`, `seed_registered_table_for_test`,
+    //! `seed_items_for_test`, `seed_letter_counts_for_test`, `seed_query_choices_for_test`,
+    //! `append_section_for_test`, plus `reset`/`append_sections` themselves), `metadata.rs`
+    //! (`install_for_test`, `set_current_for_test`, `begin_detail_for_test`,
+    //! `land_detail_for_test`), `search.rs` (`publish_shelves_for_test`,
+    //! `debounce_elapsed_for_test`), `person.rs` (`install_credits_for_test`, `install_for_test`,
+    //! `install_source_for_test`) and `pms.rs`'s own eleven sites — and so does every entry point of
+    //! the server registry a test can reach: `plex::servers::register_with_client_id` (and the
+    //! `register_lazy` seam it and its sibling test constructors share), `revoke_all`,
+    //! `set_current` and `reset_for_test`. A three-run `make check` plus a ten-run
+    //! `--test-threads 16` stress at this coverage level turned up no test that had been writing a
+    //! store without the lock — which says the existing call sites were already disciplined, not
+    //! that the assertion was unnecessary: it is what keeps that true as the suite grows, instead of
+    //! relying on every future PR remembering the convention on its own.
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static GLOBALS: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -130,9 +167,35 @@ pub(crate) mod testlock {
         Serial(guard)
     }
 
-    /// Does THIS thread hold the lock? Not "is it held" — a foreign holder is the failure.
+    thread_local! {
+        /// Set by [`adopt_current_thread`]; see its doc.
+        static ADOPTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Treat the CALLING thread as if it too held the [`serial`] guard — for a test that
+    /// deliberately spawns a WORKER thread to race a real *production* lock (not this one)
+    /// against the thread that took `serial()`, e.g. proving that `plex::servers`' own `WRITE`
+    /// mutex serializes a repoint against an in-flight commit. That worker still touches the same
+    /// crate globals `serial()` exists to protect, so [`assert_held`] must not wave it through for
+    /// free — but it is not a bystander test either, so the ordinary per-thread [`held`] check
+    /// (correctly) refuses it.
+    ///
+    /// Call this as the FIRST statement inside the spawned closure, and only while the spawning
+    /// thread's [`Serial`] guard is still alive for the rest of the adopted thread's work — nothing
+    /// here clears the flag early or checks that the spawner is still holding it, so an adopted
+    /// thread that outlives the guard's `Drop` (e.g. a leaked worker still running after the test
+    /// function has returned) would silently keep reporting `held() == true` with nobody actually
+    /// holding [`GLOBALS`], which is a quieter failure than the one this whole module exists to
+    /// catch. A thread that calls this NEVER needs to call [`serial`] itself — doing so would
+    /// deadlock against the spawning thread's still-held [`GLOBALS`] lock.
+    pub(crate) fn adopt_current_thread() {
+        ADOPTED.with(|a| a.set(true));
+    }
+
+    /// Does THIS thread hold the lock (or was it explicitly [`adopt`](adopt_current_thread)ed by
+    /// one that does)? Not "is it held" — an UNADOPTED foreign holder is the failure.
     pub(crate) fn held() -> bool {
-        OWNER.load(Ordering::SeqCst) == ticket()
+        OWNER.load(Ordering::SeqCst) == ticket() || ADOPTED.with(|a| a.get())
     }
 
     /// Refuse a write to a crate global from a thread that does not hold the lock.
@@ -295,6 +358,8 @@ pub fn sim_events_log() -> std::path::PathBuf {
 /// compile error.
 #[cfg(feature = "hostsim")]
 pub use app::plex_run;
+#[cfg(feature = "hostsim")]
+pub use app::synthetic_home_initial;
 
 /// The log's credential backstop. These run on the pure function, so they need no filesystem.
 #[cfg(test)]

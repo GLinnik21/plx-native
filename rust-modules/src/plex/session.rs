@@ -26,25 +26,70 @@ use std::sync::Mutex;
 
 /// The signed-in profile, in-memory for the UI (the Home profile chip reads this). Set by the boot
 /// gate (from the stored session) and on every profile switch, so it survives an offline boot.
-static CURRENT: Mutex<Option<UserRef>> = Mutex::new(None);
-/// Bumped on every [`set_current`]; per-frame readers (the Home profile chip) snapshot by
-/// generation instead of re-cloning the UserRef every frame.
-static CURRENT_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static CURRENT: Mutex<Option<std::sync::Arc<CurrentProfile>>> = Mutex::new(None);
 
-/// Install the active profile for the UI (or clear it on sign-out with `None`).
-pub fn set_current(u: Option<UserRef>) {
-    if let Ok(mut g) = CURRENT.lock() {
-        *g = u;
+/// Immutable worker publication. Identity and its explicit owner-assigned generation are one
+/// record, so a reader that needs both can retain one snapshot across subsequent publications.
+pub(crate) struct CurrentProfile {
+    pub user: Option<UserRef>,
+    pub generation: u32,
+}
+
+pub(crate) fn current_snapshot() -> std::sync::Arc<CurrentProfile> {
+    CURRENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().cloned()
+        .unwrap_or_else(|| std::sync::Arc::new(CurrentProfile { user: None, generation: 0 }))
+}
+
+/// Resource-side capability; constructing it borrows, but does not duplicate or retain, the
+/// engine's MainThread token. The Session adapter holds it and supplies the owner's generation.
+pub(crate) struct ProfilePublisher {
+    scoped: Option<std::sync::Arc<CurrentProfile>>,
+    _main_thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl ProfilePublisher {
+    pub(crate) fn new(_mt: &crate::task::MainThread) -> Self {
+        Self { scoped: None, _main_thread: std::marker::PhantomData }
     }
-    CURRENT_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    pub(crate) fn scoped(_mt: &crate::task::MainThread) -> Self {
+        Self { scoped: Some(std::sync::Arc::new(CurrentProfile { user: None, generation: 0 })),
+            _main_thread: std::marker::PhantomData }
+    }
+    pub(crate) fn snapshot(&self) -> std::sync::Arc<CurrentProfile> {
+        self.scoped.clone().unwrap_or_else(current_snapshot)
+    }
+    /// A user-confirmed exit from recording resumes ordinary live publication, preserving
+    /// the last owner-supplied scope. Replay never receives this transition capability.
+    pub(crate) fn resume_live(&mut self) {
+        if let Some(scoped) = self.scoped.take() {
+            self.publish(scoped.user.clone(), scoped.generation);
+        }
+    }
+    pub(crate) fn publish(&mut self, user: Option<UserRef>, generation: u32) {
+        if let Some(scoped) = &mut self.scoped {
+            *scoped = std::sync::Arc::new(CurrentProfile { user, generation });
+            return;
+        }
+        *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(std::sync::Arc::new(CurrentProfile { user, generation }));
+    }
+}
+
+/// Resource fixtures supply their generation explicitly and use the real publication writer.
+/// This is not a controller or a process-global scope allocator. Caller owns teardown/serial guard.
+#[cfg(test)]
+pub(crate) fn publish_profile_for_test(user: Option<UserRef>, generation: u32) {
+    crate::testlock::assert_held("profile publication fixture");
+    let mt = unsafe { crate::task::MainThread::assume() };
+    ProfilePublisher::new(&mt).publish(user, generation);
 }
 /// The active profile (name + avatar), if any. Empty title = the owner with no Plex Home selection.
 pub fn current() -> Option<UserRef> {
-    CURRENT.lock().ok().and_then(|g| g.clone())
+    current_snapshot().user.clone()
 }
-/// The profile generation (see [`set_current`]).
+/// The generation assigned by the Session owner and published with this profile.
 pub fn current_gen() -> u32 {
-    CURRENT_GEN.load(std::sync::atomic::Ordering::Relaxed)
+    current_snapshot().generation
 }
 
 /// Session file locations, best first — see [`crate::paths::session_candidates`] for why this is a
@@ -205,20 +250,28 @@ impl TempSession {
         self.dir.join("auth.json")
     }
 
-    /// Become `uuid` — the same call the profile switch makes, and what every read and write of a
-    /// per-profile decision keys on ([`current_profile_key`]).
+    /// Resource tests assert the actual read/write/clear candidate list before touching it.
+    pub(crate) fn assert_only_target(&self) {
+        crate::testlock::assert_held("Session scratch resource target");
+        assert_eq!(auth_paths(), vec![self.path()]);
+    }
+
+    /// Publish a fixture profile through the resource writer; the test supplies the next scope.
+    /// Every per-profile decision keys on this publication ([`current_profile_key`]).
     pub(crate) fn watching(&self, uuid: &str) {
-        set_current(Some(UserRef {
+        publish_profile_for_test(Some(UserRef {
             uuid: uuid.into(),
             ..Default::default()
-        }));
+        }), current_gen().wrapping_add(1));
     }
 }
 
 #[cfg(test)]
 impl Drop for TempSession {
     fn drop(&mut self) {
-        set_current(None);
+        // A new fixture must not reuse the scope that recents/directory resources cached.
+        // This test-owned generation is supplied explicitly; production only uses Session's.
+        publish_profile_for_test(None, current_gen().wrapping_add(1));
         redirect_for_test(None);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
@@ -1474,8 +1527,59 @@ fn publish_identities(s: &Session) {
 /// boot). Never returns an error — a missing/corrupt file degrades to a fresh, logged-out session.
 /// Falls back to the pre-relocation path once and re-saves at the new one (migration).
 pub fn load() -> Session {
+    load_with_id(new_client_id)
+}
+
+/// A captured loader resource action, not serialized initialization. Dropping it has no effect.
+pub(crate) struct DeferredLoad {
+    session: Session,
+    expected: Vec<u8>,
+    save: bool,
+}
+fn read_identity(read: &ReadState) -> Vec<u8> {
+    match read {
+        ReadState::Missing => vec![0],
+        ReadState::Locked => vec![1],
+        ReadState::Ready { session, .. } => serde_json::to_vec(session).expect("Session serialization"),
+    }
+}
+impl DeferredLoad {
+    /// Only after validation and recorder attachment. Recheck under the normal file lock so
+    /// a writer between capture and attachment is not overwritten by an obsolete snapshot.
+    pub(crate) fn apply(self) -> Result<(), &'static str> {
+        let _io = io();
+        if read_identity(&read_locked()) != self.expected { return Err("session changed during capture"); }
+        if self.save { save_locked(&self.session); }
+        publish_identities(&self.session);
+        Ok(())
+    }
+}
+
+/// Read/mint inputs only: no save, plaintext migration or identity publication before capture.
+pub(crate) fn load_capturing_entropy() -> (Session, Option<[u8; 16]>, DeferredLoad) {
     let _io = io();
     let read = read_locked();
+    let expected = read_identity(&read);
+    let mut captured = None;
+    let (session, save) = prepare_load(read, || {
+        let bytes = random_bytes();
+        captured = Some(bytes);
+        client_id_from_entropy(bytes)
+    });
+    let deferred = DeferredLoad { session: session.clone(), expected, save };
+    (session, captured, deferred)
+}
+
+fn load_with_id(mint: impl FnOnce() -> String) -> Session {
+    let _io = io();
+    let read = read_locked();
+    let (s, save) = prepare_load(read, mint);
+    if save { save_locked(&s); }
+    publish_identities(&s);
+    s
+}
+
+fn prepare_load(read: ReadState, mint: impl FnOnce() -> String) -> (Session, bool) {
     let persisted = !matches!(read, ReadState::Missing);
     let locked = matches!(read, ReadState::Locked);
     let plaintext = matches!(
@@ -1490,19 +1594,12 @@ pub fn load() -> Session {
         ReadState::Missing | ReadState::Locked => Session::default(),
     };
     seed_fresh_quality(&mut s, persisted, crate::route::auto_quality_ready());
-    if s.client_id.is_empty() {
-        s.client_id = new_client_id();
-        if !locked {
-            save_locked(&s);
-        }
-    } else if plaintext {
-        // Offer every plaintext session to the Key Manager immediately. This also moves a
-        // parsable legacy-path file to the preferred location; without a usable service it stays
-        // an atomic mode-0600 plaintext fallback.
-        save_locked(&s);
+    let fresh = s.client_id.is_empty();
+    if fresh {
+        s.client_id = mint();
     }
-    publish_identities(&s);
-    s
+    // Preserve ordinary fresh/locked/plaintext policy; only its execution boundary is deferred.
+    (s, (fresh && !locked) || (!fresh && plaintext))
 }
 
 /// **One read-modify-write of the session file, under [`IO`], as a single atomic step.** This is
@@ -1785,12 +1882,10 @@ pub fn clear() {
 /// A v4-ish UUID from `/dev/urandom` (no `uuid` crate). Only uniqueness/stability matter — plex.tv
 /// just needs a value it can key the device on.
 fn new_client_id() -> String {
-    use std::io::Read;
-    let mut b = [0u8; 16];
-    // bounded read — /dev/urandom is a char device with no EOF, so read_exact (not fs::read).
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        let _ = f.read_exact(&mut b);
-    }
+    client_id_from_entropy(random_bytes())
+}
+
+pub(crate) fn client_id_from_entropy(mut b: [u8; 16]) -> String {
     b[6] = (b[6] & 0x0f) | 0x40; // version 4
     b[8] = (b[8] & 0x3f) | 0x80; // variant
     format!(
@@ -1869,6 +1964,37 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn profile_publication_has_one_writer_and_no_resource_scope_allocator() {
+        let source = include_str!("session.rs");
+        let publication = source.split("/// Session file locations").next().unwrap();
+        assert!(!publication.contains("pub fn set_current("));
+        assert!(!publication.contains("wrapping_add("));
+        assert!(!publication.contains("fetch_add("));
+        assert_eq!(publication.matches("*CURRENT.lock()").count(), 1);
+        let writer = publication.split("impl ProfilePublisher {").nth(1).unwrap()
+            .split("/// Resource fixtures").next().unwrap();
+        assert!(writer.contains("*CURRENT.lock()"));
+        assert!(writer.contains("CurrentProfile { user, generation }"));
+    }
+
+    #[test]
+    fn profile_publication_retains_owner_assigned_generation_with_old_read() {
+        let _guard = crate::testlock::serial();
+        let old = super::current_snapshot();
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut publisher = super::ProfilePublisher::new(&mt);
+        publisher.publish(Some(super::UserRef { uuid: "owner-a".into(), ..Default::default() }), 17);
+        let a = super::current_snapshot();
+        publisher.publish(Some(super::UserRef { uuid: "owner-b".into(), ..Default::default() }), 3);
+        let b = super::current_snapshot();
+        publisher.publish(old.user.clone(), old.generation);
+        assert_eq!(a.generation, 17);
+        assert_eq!(a.user.as_ref().unwrap().uuid, "owner-a");
+        assert_eq!(b.generation, 3, "resource publishes the supplied scope; it never increments one");
+        assert_eq!(b.user.as_ref().unwrap().uuid, "owner-b");
+    }
+
     use super::*;
 
     /// The file a signed-in device holds today, once discovery has reached two servers. Written
@@ -2775,6 +2901,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn recording_capture_fresh_identity_has_no_persistence_before_attachment() {
+        let _serial = crate::testlock::serial();
+        let root = TempSession::new("capture-fresh");
+        let (saved, entropy, deferred) = load_capturing_entropy();
+        assert!(!saved.client_id.is_empty());
+        assert!(entropy.is_some());
+        assert!(!root.file().exists(), "capturing inputs must not persist before recorder attachment");
+        deferred.apply().unwrap();
+        assert!(root.file().exists(), "normal fresh persistence executes after attachment");
+    }
+
+    #[test]
+    fn recording_capture_plaintext_does_not_migrate_before_attachment() {
+        use std::os::unix::fs::MetadataExt;
+        let _serial = crate::testlock::serial();
+        let root = TempSession::new("capture-plaintext");
+        let before = serde_json::to_vec(&signed_in()).unwrap();
+        std::fs::write(root.file(), &before).unwrap();
+        let inode = std::fs::metadata(root.file()).unwrap().ino();
+        let (saved, entropy, deferred) = load_capturing_entropy();
+        assert!(!saved.client_id.is_empty());
+        assert!(entropy.is_none());
+        assert!(std::fs::read(root.file()).unwrap() == before, "capture must leave plaintext bytes unchanged");
+        assert_eq!(std::fs::metadata(root.file()).unwrap().ino(), inode);
+        deferred.apply().unwrap();
+        assert_ne!(std::fs::metadata(root.file()).unwrap().ino(), inode, "normal atomic migration runs afterwards");
+    }
+
+    #[test]
+    fn deferred_capture_never_overwrites_a_newer_session() {
+        let _serial = crate::testlock::serial();
+        let root = TempSession::new("capture-superseded");
+        let (_, _, deferred) = load_capturing_entropy();
+        save(&signed_in());
+        let before = std::fs::read(root.file()).unwrap();
+        assert!(deferred.apply().is_err());
+        assert!(std::fs::read(root.file()).unwrap() == before);
+    }
+
     /// A save lands as a WHOLE file — written to a sibling tmp and renamed over — leaving nothing
     /// behind, and the credentials are never on disk in a mode another uid can read (this box is
     /// rooted and `/media/developer` is world-readable). The tmp is where the secret exists first,
@@ -2848,6 +3014,11 @@ mod tests {
         let original = serde_json::to_vec_pretty(&envelope).unwrap();
         std::fs::write(t.file(), &original).unwrap();
 
+        let (captured, entropy, deferred) = load_capturing_entropy();
+        assert!(!captured.client_id.is_empty() && entropy.is_some());
+        assert!(std::fs::read(t.file()).unwrap() == original);
+        deferred.apply().unwrap();
+        assert!(std::fs::read(t.file()).unwrap() == original, "deferred load preserves locked ciphertext too");
         let loaded = load();
         assert!(
             !loaded.client_id.is_empty(),

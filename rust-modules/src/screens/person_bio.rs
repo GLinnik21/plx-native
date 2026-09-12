@@ -230,14 +230,14 @@ impl PersonBioScreen {
     }
 
     /// The whole panel, at this frame's appear fraction.
-    fn paint(&mut self, person: &Person, appear: f32) {
+    fn paint(&mut self, person: &Person, appear: f32, measure: &dyn crate::ui::machine::Measure) {
         let slide = RISE * (1.0 - appear);
         let p = Painter::root().alpha(appear).translate(0.0, slide);
         let panel = panel_rect();
         crate::ui::widgets::Glass::DYNAMIC_BACKDROP.panel(p, panel, slide, theme::ALERT_PANEL_RAD);
 
         let c = content_rect();
-        draw_head(p, person, c);
+        draw_head(p, person, c, measure);
 
         let view = viewport();
         let (max_scroll, pages) = paging(content_h(person), view.h, STEP);
@@ -256,7 +256,7 @@ impl PersonBioScreen {
             pages,
         );
 
-        draw_foot(p, person, c);
+        draw_foot(p, person, c, measure);
     }
 }
 
@@ -302,9 +302,18 @@ impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for Pe
     }
 }
 
-/// No focusable element at all — the panel's one cursor is a PAGE — so the engine and the hit map
-/// are inert for it and `FocusSource::Legacy`/`HitSource::Legacy` is the honest answer, exactly as
-/// it is for `tracks_panel`, `about_panel` and the player's four overlays.
+/// **No focusable element at all — the panel's one cursor is a PAGE, not a `GroupSpec`.** That
+/// used to be the reason this screen answered `FocusSource::Legacy`/`HitSource::Legacy`
+/// (restructure phase 12's D2 converts every remaining Legacy answerer to the uniform `Engine`
+/// contract, `tracks_panel`/`about_panel`/the player among them). It is still the honest
+/// description of what this `Focusable` impl declares — zero groups — and an empty declaration is
+/// a legitimate one: the engine and the hit map ask exactly what a populated screen's `Focusable`
+/// would be asked, get nothing back, and fall through to `Outcome::Nothing` at every step
+/// (`enter`, `reconcile`) rather than doing anything — see
+/// `engine_paths_are_inert_on_a_panel_with_no_focusable_element` below, which proves it against
+/// the same `FocusEngine` entry points `ui/dispatch.rs` calls. The page cursor stays exactly what
+/// it always was: `Self::page`, moved by `step_page` from the screen's own `step`, sprung to by
+/// `tick` — the engine has no opinion about it, under either source.
 impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for PersonBioScreen {
     fn groups(&self, _cx: &crate::ui::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
     fn group_of(&self, _key: &u32, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<crate::ui::machine::GroupId> {
@@ -400,16 +409,17 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for Pers
         }
         let Some(person) = crate::person::current() else { return };
         let appear = f.page_alpha;
-        crate::ui::profile::phase("dt.bio", || self.paint(person, appear));
+        let measure = f.measure;
+        crate::ui::profile::phase("dt.bio", || self.paint(person, appear, measure));
     }
     fn render(&self) -> crate::ui::screen::RenderStrategy {
         crate::ui::screen::RenderStrategy::Page
     }
     fn focus_source(&self) -> crate::ui::screen::FocusSource {
-        crate::ui::screen::FocusSource::Legacy
+        crate::ui::screen::FocusSource::Engine
     }
     fn hit_source(&self) -> crate::ui::screen::HitSource {
-        crate::ui::screen::HitSource::Legacy
+        crate::ui::screen::HitSource::Engine
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -500,11 +510,17 @@ fn viewport() -> Rect {
 /// The last run keeps its measured cap: the identity line is the block's last, so nothing below
 /// depends on its band — only on where its ink ends.
 fn head_h() -> f32 {
+    // `viewport()`/`page_state()` call this from BOTH the draw path and pagination arithmetic
+    // reached from key handling, so no single `&dyn Measure` from a `DrawFrame` covers every call
+    // site — going through `TtfMeasure` (spec §4.3's device/simulator impl) directly is exactly
+    // the capability a draw-time caller would have handed in, and `cap_h` is a pure `f(sz)` font
+    // metric no string or replay state can move.
+    use crate::ui::machine::Measure;
     theme::alert::EYEBROW_LEAD
         + theme::alert::GAP_EYEBROW_TITLE
         + theme::alert::TITLE_LEAD
         + theme::alert::GAP_TITLE_SUB
-        + crate::text::cap_h(theme::size::CAPTION, 0)
+        + crate::text::TtfMeasure.cap_h(theme::size::CAPTION)
 }
 
 /// The footer band's height — the keycap is the tallest thing in it, so the band is the cap.
@@ -630,7 +646,7 @@ pub(crate) fn library_line(films: usize, shows: usize) -> Option<String> {
 
 /// Eyebrow, name, identity line — stacked from the content box's top edge on the alert family's
 /// head ladder ([`theme::alert`]), the same flow [`head_h`] measures.
-fn draw_head(p: Painter, person: &Person, c: Rect) {
+fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn crate::ui::machine::Measure) {
     let mut y = c.y;
     // **Every y in this block is a CAP TOP**, which is what makes the ladder comparable to §1A's and
     // §1B's — both of those place through `TextView`/`Label`, i.e. `VAlign::CapTop`. `tracked_run`
@@ -653,13 +669,9 @@ fn draw_head(p: Painter, person: &Person, c: Rect) {
     // The name is ELIDED to the content box, not wrapped: this is an identity, and a two-line name
     // would push the reading window down by a whole rung of the flow. `person::refresh_runs` budgets
     // the same name to the header's own column for the same reason.
-    if let Ok(cs) = CString::new(crate::text::elide(
-        &person.name,
-        c.w,
-        theme::size::TITLE,
-        1,
-        false,
-    )) {
+    if let Ok(cs) = CString::new(crate::text::elide_by(&person.name, c.w, false, |t| {
+        measure.width_str(t, theme::size::TITLE, true)
+    })) {
         Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
             .bold()
             .v(VAlign::CapTop)
@@ -728,11 +740,13 @@ fn draw_bio(p: Painter, person: &Person, view: Rect, scroll: f32, max_scroll: f3
 
 /// The footer: what the library holds on the left, how to leave on the right, both on one centre
 /// line so the keycap and the prose share a band.
-fn draw_foot(p: Painter, person: &Person, c: Rect) {
+fn draw_foot(p: Painter, person: &Person, c: Rect, measure: &dyn crate::ui::machine::Measure) {
     let cy = c.y + c.h - foot_h() * 0.5;
     let sz = theme::size::CAPTION;
     if let Some(line) = library_line(person.total(0), person.total(1)) {
-        if let Ok(cs) = CString::new(crate::text::elide(&line, c.w * 0.5, sz, 0, false)) {
+        if let Ok(cs) = CString::new(crate::text::elide_by(&line, c.w * 0.5, false, |t| {
+            measure.width_str(t, sz, false)
+        })) {
             p.text(
                 cs.as_ptr(),
                 c.x,
@@ -747,7 +761,7 @@ fn draw_foot(p: Painter, person: &Person, c: Rect) {
     // …and the hint, right-anchored: the widget measures itself, so the whole run ends on the
     // content box's right edge — the same edge the rail and the hairlines end on.
     let hint = widgets::KeyHint::new(HINT_PRE, HINT_KEY, HINT_POST);
-    hint.draw(p, c.x + c.w - hint.width(), cy);
+    hint.draw(p, c.x + c.w - hint.width(measure), cy, measure);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1092,6 +1106,56 @@ mod tests {
         let (out, handled) = press(InputKind::Click { x: 10.0, y: 10.0, hit: None });
         assert_eq!(handled, Handled::Yes);
         assert!(out.is_empty(), "a click on a read-only sheet does nothing at all");
+    }
+
+    /// **The `FocusSource::Engine`/`HitSource::Engine` conversion (restructure phase 12, D2)
+    /// changes nothing observable — this is the proof.** Before the conversion, `ui/dispatch.rs`
+    /// never asked the engine about this screen at all (`engine_page()`/`hit_page()` read
+    /// `Legacy` and short-circuited). After it, the dispatcher calls exactly the entry points
+    /// exercised here — `FocusEngine::enter` on mount (`Enter::Fresh`, `restored: None`, the
+    /// container's actual call shape in `ui/dispatch.rs`'s `after_step`) and
+    /// `FocusEngine::reconcile` before every draw — and both must still do nothing, because the
+    /// `Focusable` impl above declares zero groups. The page cursor (`Self::page`) is untouched by
+    /// either: it is moved only from `step`/`tick`, never by the focus engine. Graded directly
+    /// against `FocusEngine`, the same type the dispatcher holds, rather than against the
+    /// dispatcher itself (a sibling dependency the layer gate forbids this module from taking).
+    #[test]
+    fn engine_paths_are_inert_on_a_panel_with_no_focusable_element() {
+        use crate::ui::focus::{FocusEngine, Outcome};
+        use crate::ui::machine::GroupId;
+        use crate::ui::screen::FocusTarget;
+
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let cx = cx(&measure);
+        let panel = PersonBioScreen::new(ENTRY);
+        let owner = InputOwner::Entry(ENTRY);
+        let mut engine: FocusEngine<u32> = FocusEngine::new();
+
+        // The dispatcher's mount-time call: a fresh Enter, target the container group, nothing
+        // restored (`ScreenEvent::Enter(Enter::Fresh { .. })` never carries a restore).
+        let outcome = engine.enter(owner, &panel, FocusTarget::ContainerGroup(GroupId(0)), None, &cx);
+        assert!(
+            matches!(outcome, Outcome::Nothing),
+            "no groups means nothing to enter, exactly as under Legacy nothing was ever asked"
+        );
+
+        // With nothing entered, the dispatcher's own pre-draw reconcile step also has nothing to
+        // do — `FocusEngine::current` answers `None` for this owner.
+        let outcome = engine.reconcile(owner, &panel, &cx);
+        assert!(matches!(outcome, Outcome::Nothing));
+
+        // The page cursor itself is unaffected — it only ever moves from `step_page`/`tick`.
+        assert_eq!(panel.page, 1);
+
+        use crate::ui::screen::Screen;
+        assert_eq!(
+            (
+                Screen::<TestHost>::focus_source(&panel),
+                Screen::<TestHost>::hit_source(&panel),
+            ),
+            (crate::ui::screen::FocusSource::Engine, crate::ui::screen::HitSource::Engine),
+            "the conversion this test guards"
+        );
     }
 
 }
