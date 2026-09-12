@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     env:
-      RUST_NIGHTLY: nightly
+      RUST_NIGHTLY: nightly-2026-07-02
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     needs: [validate, host-checks]
     env:
-      RUST_NIGHTLY: ${{ vars.RUST_NIGHTLY || 'nightly-2026-07-02' }}
+      RUST_NIGHTLY: nightly-2026-07-02
       RELEASE: '1'
       FLAVOR: debug
       SYMBOLS: '1'
