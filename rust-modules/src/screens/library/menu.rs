@@ -237,10 +237,10 @@ fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDr
 
 fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>) -> MenuDraft {
     let section = Section::new(crate::i18n::t("Filter"))
-        .row(Row::new("Unwatched only").toggle(unwatched))
+        .row(Row::new(crate::i18n::t("Unwatched only")).toggle(unwatched))
         .row(
-            Row::new("Genre")
-                .value(genre.map(|g| g.title.as_str()).unwrap_or("All"))
+            Row::new(crate::i18n::t("Genre"))
+                .value(genre.map(|g| g.title.as_str()).unwrap_or(crate::i18n::t("All")))
                 .chevron(true),
         );
     let mut stamp = Stamp::default();
@@ -267,7 +267,7 @@ fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>) -> MenuDraft {
 }
 
 fn genre_draft(genres: &[GenreEntry], current: Option<&GenreEntry>) -> MenuDraft {
-    let mut section = Section::new("Genre").row(Row::new("All Genres").checked(current.is_none()));
+    let mut section = Section::new(crate::i18n::t("Genre")).row(Row::new(crate::i18n::t("All Genres")).checked(current.is_none()));
     let mut rows = vec![("genre:all".into(), Action::Edit(QueryEdit::Genre(None)), 0)];
     let mut stamp = Stamp::default();
     stamp.tag(10);
@@ -394,8 +394,8 @@ impl LibraryMenu {
         let title = match self.kind {
             LibraryMenuKind::Sort => crate::i18n::t("Sort by"),
             LibraryMenuKind::Filter => crate::i18n::t("Filter"),
-            LibraryMenuKind::Genre => "Genre",
-            LibraryMenuKind::Sources => "Libraries",
+            LibraryMenuKind::Genre => crate::i18n::t("Genre"),
+            LibraryMenuKind::Sources => crate::i18n::t("Libraries"),
         };
         let mut section = Section::new(title);
         match self.kind {

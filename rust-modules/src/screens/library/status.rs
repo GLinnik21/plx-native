@@ -37,10 +37,10 @@ impl LibraryScreen {
                 // Your own server is "your Plex server", the words Home uses for the same fault;
                 // a borrowed one is named, since "your" would be untrue of it.
                 let caption = match owner {
-                    None => "Can\u{2019}t reach your Plex server".to_string(),
-                    Some(_) => format!("Can\u{2019}t reach {name}"),
+                    None => crate::i18n::t("Can\u{2019}t reach your Plex server").to_string(),
+                    Some(_) => crate::i18n::t("Can\u{2019}t reach {name}").replacen("{name}", name, 1),
                 };
-                (caption, owner.map(|owner| format!("Shared by {owner} · your own server is fine.")))
+                (caption, owner.map(|owner| crate::i18n::t("Shared by {o} · your own server is fine.").replacen("{o}", owner, 1)))
             }
             Readout::Empty => {
                 let caption = if self.wanted_kind.is_some() { "Nothing here matches".into() }
@@ -51,7 +51,7 @@ impl LibraryScreen {
                     } else { "Nothing here matches".into() };
                 (caption, None)
             }
-            Readout::Loading => ("Loading…".into(), None),
+            Readout::Loading => (crate::i18n::t("Loading…").into(), None),
             Readout::Grid => (String::new(), None),
         };
         (CString::new(caption).unwrap_or_default(), reason.map(|reason| CString::new(reason).unwrap_or_default()))

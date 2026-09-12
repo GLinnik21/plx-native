@@ -561,9 +561,9 @@ fn hero_facts(d: &Detail) -> (String, Option<String>) {
             return (date, None);
         }
         let episodes: i64 = d.seasons.iter().map(|season| season.leaf_count).sum();
-        let season_word = if seasons == 1 { "season" } else { "seasons" };
+        let season_word = if seasons == 1 { crate::i18n::t("season") } else { crate::i18n::t("seasons") };
         let extent = if episodes > 0 {
-            let episode_word = if episodes == 1 { "episode" } else { "episodes" };
+            let episode_word = if episodes == 1 { crate::i18n::t("episode") } else { crate::i18n::t("episodes") };
             format!("{seasons} {season_word}, {episodes} {episode_word}")
         } else {
             format!("{seasons} {season_word}")
@@ -646,7 +646,7 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
             push(Bit::Word(converts_on_server_c(), crate::ui::detail_layout::FACTS_INK, 0));
             push(Bit::Sep(theme::space::SM));
             push(Bit::Word(
-                c"hardware conversion needs",
+                tr_c(c"hardware conversion needs", c"necesita conversión por hardware"),
                 theme::TEXT_SECONDARY,
                 0,
             ));
@@ -658,7 +658,7 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
             push(Bit::Air(theme::space::SM));
             push(Bit::Word(c"HDR \u{2192} SDR", theme::TEXT_SECONDARY, 1));
             push(Bit::Sep(theme::space::SM));
-            push(Bit::Word(c"tone-mapping needs", theme::TEXT_SECONDARY, 0));
+            push(Bit::Word(tr_c(c"tone-mapping needs", c"necesita mapeo de tono"), theme::TEXT_SECONDARY, 0));
             push(Bit::Air(theme::space::SM));
             push(Bit::Capsule);
         }

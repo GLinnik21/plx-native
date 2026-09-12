@@ -115,7 +115,7 @@ impl Row {
     fn readout(&self) -> Option<&str> {
         match (&self.value, self.toggle) {
             (Some(v), _) => Some(v.as_str()),
-            (None, Some(on)) => Some(if on { "On" } else { "Off" }),
+            (None, Some(on)) => Some(if on { crate::i18n::t("On") } else { crate::i18n::t("Off") }),
             (None, None) => None,
         }
     }
@@ -656,8 +656,10 @@ impl TableView {
 
     pub fn draw(&self, p: Painter, frame: Rect, measure: &dyn crate::ui::machine::Measure) {
         if self.n_rows() == 0 {
+            let mut nb = [0u8; crate::i18n::TC_MAX];
+            let nt = crate::i18n::tc("No tracks", &mut nb);
             Label::new(
-                c"No tracks".as_ptr(),
+                nt.as_ptr().cast(),
                 theme::size::BODY,
                 theme::TEXT_TERTIARY,
             )

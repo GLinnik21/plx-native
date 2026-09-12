@@ -70,7 +70,7 @@ impl Rows {
         self.info.clear();
         let released = crate::ui::fmt::pretty_date(&d.aired, d.year);
         if !released.is_empty() {
-            self.info.push(("Released", released));
+            self.info.push((crate::i18n::t("Released"), released));
         }
         let dur = if d.dur_ms > 0 {
             d.dur_ms
@@ -78,10 +78,10 @@ impl Rows {
             d.episodes.first().map(|e| e.dur_ms).unwrap_or(0)
         };
         if dur > 0 {
-            self.info.push(("Run Time", crate::ui::fmt::dur_long(dur)));
+            self.info.push((crate::i18n::t("Run Time"), crate::ui::fmt::dur_long(dur)));
         }
         self.info.push((
-            "Rated",
+            crate::i18n::t("Rated"),
             if d.rating.is_empty() {
                 "NR".into()
             } else {
@@ -90,11 +90,11 @@ impl Rows {
         ));
         if !d.countries.is_empty() {
             self.info
-                .push(("Regions of Origin", d.countries.join(", ")));
+                .push((crate::i18n::t("Regions of Origin"), d.countries.join(", ")));
         }
         self.orig_audio = d.audio.first().map(|a| {
             if a.lang.is_empty() {
-                "Unknown".into()
+                crate::i18n::t("Unknown").to_string()
             } else {
                 a.lang.clone()
             }
@@ -105,9 +105,9 @@ impl Rows {
             .take(8)
             .map(|a| {
                 let lang = if a.lang.is_empty() {
-                    "Unknown"
+                    crate::i18n::t("Unknown")
                 } else {
-                    &a.lang
+                    a.lang.as_str()
                 };
                 format!("{} ({})", lang, a.codec.to_uppercase())
             })
@@ -117,16 +117,16 @@ impl Rows {
         if !d.subs.is_empty() {
             self.access.push((
                 "CC",
-                "Closed captions refer to subtitles in available languages with the addition of relevant non-dialogue information.",
+                crate::i18n::t("Closed captions refer to subtitles in available languages with the addition of relevant non-dialogue information."),
             ));
         }
         if d.subs.iter().any(|s| s.sdh) {
-            self.access.push(("SDH", "Subtitles for the deaf and hard of hearing (SDH) refer to subtitles in the original language with the addition of relevant non-dialogue information."));
+            self.access.push(("SDH", crate::i18n::t("Subtitles for the deaf and hard of hearing (SDH) refer to subtitles in the original language with the addition of relevant non-dialogue information.")));
         }
         if d.audio.iter().any(|a| a.ad) {
             self.access.push((
                 "AD",
-                "Audio descriptions (AD) refer to a narration track describing what is happening on screen, to provide context for those who are blind or have low vision.",
+                crate::i18n::t("Audio descriptions (AD) refer to a narration track describing what is happening on screen, to provide context for those who are blind or have low vision."),
             ));
         }
     }
@@ -262,7 +262,7 @@ impl Rows {
             theme::size::HEADLINE,
             theme::TEXT_PRIMARY,
             1,
-            "Information",
+            crate::i18n::t("Information"),
         );
         let mut yy = y + 68.0;
         for (label, value) in &self.info {
@@ -281,11 +281,11 @@ impl Rows {
             theme::size::HEADLINE,
             theme::TEXT_PRIMARY,
             1,
-            "Languages",
+            crate::i18n::t("Languages"),
         );
         let mut yy = y + 68.0;
         if let Some(orig) = &self.orig_audio {
-            yy += draw_pair(p, LANG_X, yy, "Original Audio", orig, measure);
+            yy += draw_pair(p, LANG_X, yy, crate::i18n::t("Original Audio"), orig, measure);
         }
         if !self.audio_list.is_empty() {
             text_at(
@@ -332,7 +332,7 @@ impl Rows {
             theme::size::HEADLINE,
             theme::TEXT_PRIMARY,
             1,
-            "Accessibility",
+            crate::i18n::t("Accessibility"),
         );
         if self.access.is_empty() {
             text_at(

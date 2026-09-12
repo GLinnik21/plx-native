@@ -2032,7 +2032,7 @@ fn status_read(
     }
     Some(match view.state {
         crate::pms::HubState::Loading => {
-            (c"Loading your library\u{2026}", StatusKind::Working, None)
+            (tr_c(c"Loading your library\u{2026}", c"Cargando tu biblioteca\u{2026}"), StatusKind::Working, None)
         }
         crate::pms::HubState::Failed => (
             tr_c(c"Can\u{2019}t reach your Plex server", c"No se puede conectar con el servidor"),
@@ -2243,7 +2243,7 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
     let meta = if episode {
         let mut text = String::new();
         if hero.season_index > 0 {
-            text.push_str(&format!("S{} ", hero.season_index));
+            text.push_str(&crate::i18n::t("S{} ").replacen("{}", &hero.season_index.to_string(), 1));
         }
         if hero.ep_index > 0 {
             text.push_str(&format!("E{}", hero.ep_index));
@@ -2256,7 +2256,7 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
     } else {
         format!(
             "{} \u{b7} {} \u{b7} {}",
-            if hero.kind == 1 { "Show" } else { "Movie" },
+            if hero.kind == 1 { crate::i18n::t("Show") } else { crate::i18n::t("Movie") },
             hero.year,
             if hero.rating.is_empty() {
                 "NR"

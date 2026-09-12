@@ -2292,15 +2292,15 @@ impl SecKind {
     /// falls back to when no count has landed is [`SecKind::plural`].
     pub(crate) fn noun(self) -> &'static str {
         match self {
-            SecKind::Movie => "films",
-            SecKind::Show => "shows",
+            SecKind::Movie => crate::i18n::t("films"),
+            SecKind::Show => crate::i18n::t("shows"),
         }
     }
     /// The same thing as a standalone label ("Films"), for a row whose count has not landed yet.
     pub(crate) fn plural(self) -> &'static str {
         match self {
-            SecKind::Movie => "Films",
-            SecKind::Show => "TV shows",
+            SecKind::Movie => crate::i18n::t("Films"),
+            SecKind::Show => crate::i18n::t("TV shows"),
         }
     }
 }

@@ -832,7 +832,9 @@ pub(crate) fn focused_caption(m: &crate::pms::PmsMovie, is_continue: bool) -> Op
     }
     let s = if m.kind == 3 && m.ep_index > 0 {
         if m.season_index > 0 {
-            format!("S{} \u{2022} E{}", m.season_index, m.ep_index)
+            crate::i18n::t("S{} \u{2022} E{}")
+                .replacen("{}", &m.season_index.to_string(), 1)
+                .replacen("{}", &m.ep_index.to_string(), 1)
         } else {
             format!("E{}", m.ep_index)
         }
@@ -868,9 +870,9 @@ fn cw_caption(m: &crate::pms::PmsMovie) -> Option<std::ffi::CString> {
     } else if m.kind == 3 {
         // next-up episode: no resume point, so no bar and no time — just the "New episode" cue
         if show.is_empty() {
-            "New episode".to_string()
+            crate::i18n::t("New episode").to_string()
         } else {
-            format!("{show} \u{00b7} New episode")
+            format!("{show} \u{00b7} {}", crate::i18n::t("New episode"))
         }
     } else {
         return None;

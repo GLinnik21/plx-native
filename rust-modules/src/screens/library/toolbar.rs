@@ -72,7 +72,7 @@ impl LibraryScreen {
                 Some(GridAction::Sort { key, .. }) => listing.sorts().iter().find(|sort| &sort.key == key),
                 _ => listing.sorts().get(listing.sort_index()),
             };
-            (Self::sort_chip_name(), sort.map_or("Title", |sort| sort.title.as_str()).to_owned())
+            (Self::sort_chip_name(), sort.map_or(crate::i18n::t("Title"), |sort| sort.title.as_str()).to_owned())
         } else {
             let genre = match queued {
                 Some(GridAction::Genre { id }) => id.as_ref().and_then(|id| listing.genres().iter().find(|genre| &genre.id == id)),

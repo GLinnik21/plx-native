@@ -111,7 +111,7 @@ impl Metrics {
         self.lays = widgets::strip_layout_measured(
             d.seasons.iter().map(|season| {
                 if season.title.is_empty() {
-                    format!("Season {}", season.index)
+                    crate::i18n::t("Season {}").replacen("{}", &season.index.to_string(), 1)
                 } else {
                     season.title.clone()
                 }

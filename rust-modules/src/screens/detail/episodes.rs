@@ -296,7 +296,7 @@ fn draw_cell(
     if row == Some(Row::Text) {
         widgets::text_block_highlight(p, meta_rect(ep, i, 0.0, 0.0, measure));
     }
-    if let Ok(kicker) = CString::new(format!("EPISODE {}", ep.index)) {
+    if let Ok(kicker) = CString::new(crate::i18n::t("EPISODE {}").replacen("{}", &ep.index.to_string(), 1)) {
         p.text(
             kicker.as_ptr(),
             x,

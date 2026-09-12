@@ -2247,7 +2247,7 @@ impl DetailScreen {
                 parts.push(&ordinal);
             }
         } else {
-            parts.push(if d.is_show { "TV Show" } else { "Movie" });
+            parts.push(if d.is_show { crate::i18n::t("TV Show") } else { crate::i18n::t("Movie") });
             parts.extend(d.genres.iter().take(2).map(String::as_str));
         }
         if !d.rating.is_empty() {

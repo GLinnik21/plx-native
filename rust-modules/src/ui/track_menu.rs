@@ -277,7 +277,7 @@ impl TrackMenuState {
         let names = crate::player::SHARED.track_names.lock().unwrap();
         for (i, s) in d.audio.iter().enumerate() {
             let lang = if s.lang.is_empty() {
-                "Unknown"
+                crate::i18n::t("Unknown")
             } else {
                 s.lang.as_str()
             };
@@ -322,7 +322,7 @@ impl TrackMenuState {
                     None => continue,
                 };
                 let lang = if s.lang.is_empty() {
-                    "Unknown"
+                    crate::i18n::t("Unknown")
                 } else {
                     s.lang.as_str()
                 };
