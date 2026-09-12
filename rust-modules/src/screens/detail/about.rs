@@ -190,9 +190,10 @@ impl Rows {
         tracks: bool,
         measure: &dyn crate::ui::machine::Measure,
     ) {
+        let mut about_buf = [0u8; crate::i18n::TC_MAX];
         let x = crate::ui::consts::MARGIN_X;
         p.text(
-            c"About".as_ptr(),
+            crate::i18n::tc("About", &mut about_buf).as_ptr().cast(),
             x,
             top,
             theme::size::HEADLINE,
@@ -239,7 +240,7 @@ impl Rows {
                 Rect::new(ix, card.y + CARD_PAD + 100.0, card.w - 2.0 * CARD_PAD, 0.0),
             );
         p.text(
-            crate::ui::text_view::MORE_MARK.as_ptr(),
+            crate::ui::text_view::more_mark().as_ptr(),
             card.x + card.w - CARD_PAD,
             card.y + card.h - CARD_PAD - theme::size::CAPTION as f32,
             theme::size::CAPTION,
@@ -306,7 +307,7 @@ impl Rows {
         if tracks {
             let plate = self.languages_rect(y - COL_Y, measure);
             p.text(
-                crate::ui::text_view::MORE_MARK.as_ptr(),
+                crate::ui::text_view::more_mark().as_ptr(),
                 plate.x + plate.w - CARD_PAD,
                 plate.y + plate.h - CARD_PAD - theme::size::CAPTION as f32,
                 theme::size::CAPTION,

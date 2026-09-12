@@ -274,7 +274,7 @@ fn bio_view<'a>(bio: &'a str, a: f32, measure: &'a dyn Measure) -> TextView<'a> 
     .with_measure(measure)
     .leading(BIO_LEAD)
     .max_lines(BIO_LINES)
-    .fade_last(measure.width(crate::ui::text_view::MORE_MARK, theme::size::BODY, true) + BIO_MORE_GAP)
+    .fade_last(measure.width(crate::ui::text_view::more_mark(), theme::size::BODY, true) + BIO_MORE_GAP)
 }
 
 fn text_w(d: f32) -> f32 {
@@ -1259,7 +1259,7 @@ impl PersonScreen {
             bio.draw(p, Rect::new(col_x_, by, BIO_W, 0.0));
             if truncated {
                 Label::new(
-                    crate::ui::text_view::MORE_MARK.as_ptr(),
+                    crate::ui::text_view::more_mark().as_ptr(),
                     theme::size::BODY,
                     match mark.is_some() {
                         true => theme::TEXT_SECONDARY,

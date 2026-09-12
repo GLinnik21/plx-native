@@ -142,6 +142,12 @@ impl LogicalState for ConsentState {
     }
 }
 
+/// The translated pick of a fixed label: static C strings in, one pointer out, nothing
+/// allocates on the draw path.
+fn tr_c(en: &'static std::ffi::CStr, es: &'static std::ffi::CStr) -> &'static std::ffi::CStr {
+    if crate::i18n::is_es() { es } else { en }
+}
+
 impl ConsentPage {
     /// Privacy & data, seeded from the published decision.
     pub(crate) fn settings(entry: EntryId, _cx: &Cx<'_, InnerHost>, _fx: &mut Effects<'_, InnerHost>) -> Self {
@@ -293,21 +299,21 @@ impl ConsentPage {
     }
 
     /// The band's labels this frame: Settings' Done only once the draft differs; first run's two
-    /// equal answers.
+    /// equal answers. All four translate (i18n): static C-string pairs, one pointer pick each.
     fn band_labels(&self) -> Vec<&'static std::ffi::CStr> {
         match self.mode {
             Mode::Settings => {
                 if self.draft != self.base {
-                    vec![c"Done"]
+                    vec![tr_c(c"Done", c"Hecho")]
                 } else {
                     Vec::new()
                 }
             }
             Mode::FirstRun { product, .. } => {
                 if product {
-                    vec![c"Share analytics", c"Don’t share"]
+                    vec![tr_c(c"Share analytics", c"Compartir analítica"), tr_c(c"Don’t share", c"No compartir")]
                 } else {
-                    vec![c"Share reports", c"Don’t share"]
+                    vec![tr_c(c"Share reports", c"Compartir informes"), tr_c(c"Don’t share", c"No compartir")]
                 }
             }
         }
@@ -416,7 +422,7 @@ impl ConsentPage {
             RowId::ErrorsId => self.open_preview(PreviewKind::ErrorsId, fx),
             RowId::AnalyticsId => self.open_preview(PreviewKind::AnalyticsId, fx),
             RowId::Delete => {
-                self.alert.open_with_body(c"Delete all local data?", DELETE_SCOPE);
+                self.alert.open_with_body(tr_c(c"Delete all local data?", c"¿Borrar todos los datos locales?"), DELETE_SCOPE);
                 self.state.alert = true;
                 // the alert traps focus: seat the engine on its answers
                 fx.push(Fx::Deliver(
@@ -826,7 +832,7 @@ impl Screen<InnerHost> for ConsentPage {
         // engine seats on while it is open
         if self.alert.visible() {
             self.alert.draw_scrim();
-            self.alert.draw(c"Cancel", c"Delete");
+            self.alert.draw(tr_c(c"Cancel", c"Cancelar"), tr_c(c"Delete", c"Borrar"));
             let frames = self.alert.frames();
             self.alert_frames.set(Some(frames));
             // **Register the two hit stops only once the entrance spring has actually arrived.**

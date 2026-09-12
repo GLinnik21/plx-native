@@ -214,13 +214,13 @@ fn build_with(
     match m.kind {
         3 => {
             nav.push((
-                "Go to Episode",
+                crate::i18n::t("Go to Episode"),
                 Icon::Episode,
                 Action::GoToItem(m.rk.clone()),
             ));
             if !m.show_rk.is_empty() {
                 nav.push((
-                    "Go to Show",
+                    crate::i18n::t("Go to Show"),
                     Icon::Show,
                     Action::GoToShow(m.show_rk.clone(), m.season_index),
                 ));
@@ -230,14 +230,14 @@ fn build_with(
         // row covers it; a show's own page is likewise the only navigation it has
         2 if !m.show_rk.is_empty() => {
             nav.push((
-                "Go to Season",
+                crate::i18n::t("Go to Season"),
                 Icon::Show,
                 Action::GoToShow(m.show_rk.clone(), m.season_index),
             ));
         }
         2 => {}
-        1 => nav.push(("Go to Show", Icon::Show, Action::GoToShow(m.rk.clone(), 0))),
-        _ => nav.push(("Go to Movie", Icon::Episode, Action::GoToItem(m.rk.clone()))),
+        1 => nav.push((crate::i18n::t("Go to Show"), Icon::Show, Action::GoToShow(m.rk.clone(), 0))),
+        _ => nav.push((crate::i18n::t("Go to Movie"), Icon::Episode, Action::GoToItem(m.rk.clone()))),
     }
     let had_nav = !nav.is_empty();
     for (label, icon, act) in nav {
@@ -280,7 +280,7 @@ fn build_with(
         // the neighbouring card it is anchored beside. It is also the more accurate of the two —
         // the server action hides the item from the DECK and leaves its resume point intact, so
         // "remove from continue watching" over-promises a reset it does not perform.
-        sec = sec.row(Row::new("Remove from Deck").licon(Icon::Close));
+        sec = sec.row(Row::new(crate::i18n::t("Remove from Deck")).licon(Icon::Close));
         acts.push(Some(Action::RemoveFromDeck(m.rk.clone())));
     }
     debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
@@ -320,16 +320,16 @@ fn state_rows(
 ) -> Section {
     let mut sec = sec;
     if mark != PosterMark::Watched {
-        sec = sec.row(Row::new(crate::ui::widgets::MARK_WATCHED_VERB).licon(Icon::CheckCircleFill));
+        sec = sec.row(Row::new(crate::i18n::t(crate::ui::widgets::MARK_WATCHED_VERB)).licon(Icon::CheckCircleFill));
         acts.push(Some(Action::MarkWatched(rk.to_string())));
     }
     if mark != PosterMark::None {
         sec =
-            sec.row(Row::new(crate::ui::widgets::MARK_UNWATCHED_VERB).licon(Icon::MinusCircleFill));
+            sec.row(Row::new(crate::i18n::t(crate::ui::widgets::MARK_UNWATCHED_VERB)).licon(Icon::MinusCircleFill));
         acts.push(Some(Action::MarkUnwatched(rk.to_string())));
     }
     if leaf {
-        sec = sec.row(Row::new(crate::ui::widgets::PLAY_FROM_START_VERB).licon(Icon::PlayStart));
+        sec = sec.row(Row::new(crate::i18n::t(crate::ui::widgets::PLAY_FROM_START_VERB)).licon(Icon::PlayStart));
         acts.push(Some(Action::PlayFromStart(rk.to_string())));
     }
     if let Some(extra) = trailer.filter(|e| e.playable()) {

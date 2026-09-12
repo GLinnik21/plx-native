@@ -75,13 +75,29 @@ const FACTS_R: f32 = crate::ui::consts::SCR_W
 const HERO_ICON_RATIO: f32 = 1.15;
 const HERO_ICON_GAP: f32 = 12.0;
 
-pub(crate) const ALT_LABEL: &CStr = c"Also available";
-
-const MARK_WATCHED_LABEL: &CStr = c"Mark as Watched";
-const MARK_UNWATCHED_LABEL: &CStr = c"Mark as Unwatched";
-const MARK_SHOW_WATCHED_LABEL: &CStr = c"Mark Show as Watched";
-const MARK_SHOW_UNWATCHED_LABEL: &CStr = c"Mark Show as Unwatched";
-const PLAY_FROM_START_LABEL: &CStr = c"Play from Start";
+/// The translated pick of a fixed label: static C strings in, one pointer out, nothing
+/// allocates on the draw path.
+fn tr_c(en: &'static CStr, es: &'static CStr) -> &'static CStr {
+    if crate::i18n::is_es() { es } else { en }
+}
+pub(crate) fn alt_label() -> &'static CStr {
+    tr_c(c"Also available", c"Tambien disponible")
+}
+fn mark_watched_label() -> &'static CStr {
+    tr_c(c"Mark as Watched", c"Marcar como vista")
+}
+fn mark_unwatched_label() -> &'static CStr {
+    tr_c(c"Mark as Unwatched", c"Marcar como no vista")
+}
+fn mark_show_watched_label() -> &'static CStr {
+    tr_c(c"Mark Show as Watched", c"Marcar la serie como vista")
+}
+fn mark_show_unwatched_label() -> &'static CStr {
+    tr_c(c"Mark Show as Unwatched", c"Marcar la serie como no vista")
+}
+fn play_from_start_label() -> &'static CStr {
+    tr_c(c"Play from Start", c"Desde el principio")
+}
 const TRAILER_LABEL: &CStr = c"Trailer";
 
 /// A control in the hero action row, named rather than numbered — ported verbatim from
@@ -304,12 +320,12 @@ pub(crate) fn watch_names_show(d: &Detail) -> bool {
 /// A disc's slot (`[restart, trailer, watch]`) and the verb it unfurls to — `None` for the two PILLS.
 pub(crate) fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'static CStr)> {
     match (ctl, name_show) {
-        (HeroCtl::Restart, _) => Some((0, PLAY_FROM_START_LABEL)),
+        (HeroCtl::Restart, _) => Some((0, play_from_start_label())),
         (HeroCtl::Trailer, _) => Some((1, TRAILER_LABEL)),
-        (HeroCtl::MarkWatched, false) => Some((2, MARK_WATCHED_LABEL)),
-        (HeroCtl::MarkWatched, true) => Some((2, MARK_SHOW_WATCHED_LABEL)),
-        (HeroCtl::MarkUnwatched, false) => Some((2, MARK_UNWATCHED_LABEL)),
-        (HeroCtl::MarkUnwatched, true) => Some((2, MARK_SHOW_UNWATCHED_LABEL)),
+        (HeroCtl::MarkWatched, false) => Some((2, mark_watched_label())),
+        (HeroCtl::MarkWatched, true) => Some((2, mark_show_watched_label())),
+        (HeroCtl::MarkUnwatched, false) => Some((2, mark_unwatched_label())),
+        (HeroCtl::MarkUnwatched, true) => Some((2, mark_show_unwatched_label())),
         _ => None,
     }
 }
@@ -324,9 +340,9 @@ pub(crate) fn trailer_play(d: &Detail) -> Option<(&Extra, &str)> {
 /// The Play pill's label — the word the press will actually perform.
 pub(crate) fn hero_pill_label(has_restart: bool) -> &'static CStr {
     if has_restart {
-        c"Resume"
+        tr_c(c"Resume", c"Continuar")
     } else {
-        c"Play"
+        tr_c(c"Play", c"Reproducir")
     }
 }
 
@@ -360,7 +376,7 @@ pub(crate) fn hero_pill_w(measure: &dyn Measure, has_restart: bool) -> f32 {
 }
 
 pub(crate) fn alt_pill_w(measure: &dyn Measure) -> f32 {
-    pill_w(measure, ALT_LABEL, theme::size::BODY, false, true)
+    pill_w(measure, alt_label(), theme::size::BODY, false, true)
 }
 
 /// Every measured width the row's accumulation needs, as one value — ported verbatim from
@@ -588,7 +604,9 @@ fn item_subscription(d: &Detail) -> crate::plex::serverinfo::Subscription {
 }
 
 const FACTS_GLYPH_D: f32 = theme::size::CAPTION as f32;
-const CONVERTS_ON_SERVER_C: &CStr = c"Converts on server";
+fn converts_on_server_c() -> &'static CStr {
+    tr_c(c"Converts on server", c"Convierte en el servidor")
+}
 
 #[derive(Clone, Copy)]
 enum Bit {
@@ -619,13 +637,13 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
             match preview {
                 crate::route::Preview::DirectPlay => c"Direct Play",
                 crate::route::Preview::Remux => c"Direct Stream",
-                crate::route::Preview::Converts => CONVERTS_ON_SERVER_C,
+                crate::route::Preview::Converts => converts_on_server_c(),
             },
             crate::ui::detail_layout::FACTS_INK,
             0,
         )),
         PlayNote::Soft => {
-            push(Bit::Word(CONVERTS_ON_SERVER_C, crate::ui::detail_layout::FACTS_INK, 0));
+            push(Bit::Word(converts_on_server_c(), crate::ui::detail_layout::FACTS_INK, 0));
             push(Bit::Sep(theme::space::SM));
             push(Bit::Word(
                 c"hardware conversion needs",
@@ -921,27 +939,27 @@ mod tests {
     fn each_watch_disc_writes_its_own_verb() {
         assert_eq!(
             disc_verb(HeroCtl::Restart, false),
-            Some((0, PLAY_FROM_START_LABEL))
+            Some((0, play_from_start_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::Restart, true),
-            Some((0, PLAY_FROM_START_LABEL))
+            Some((0, play_from_start_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::MarkWatched, false),
-            Some((2, MARK_WATCHED_LABEL))
+            Some((2, mark_watched_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::MarkWatched, true),
-            Some((2, MARK_SHOW_WATCHED_LABEL))
+            Some((2, mark_show_watched_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::MarkUnwatched, false),
-            Some((2, MARK_UNWATCHED_LABEL))
+            Some((2, mark_unwatched_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::MarkUnwatched, true),
-            Some((2, MARK_SHOW_UNWATCHED_LABEL))
+            Some((2, mark_show_unwatched_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::Trailer, false),
@@ -1080,8 +1098,8 @@ mod tests {
     #[test]
     fn the_two_spellings_of_the_conversion_notice_are_the_same_bytes() {
         assert_eq!(
-            CONVERTS_ON_SERVER_C.to_str().unwrap(),
-            crate::ui::fmt::CONVERTS_ON_SERVER
+            converts_on_server_c().to_str().unwrap(),
+            crate::ui::fmt::converts_on_server()
         );
     }
 

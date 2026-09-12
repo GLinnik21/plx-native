@@ -2382,7 +2382,7 @@ impl DetailScreen {
                 .scale(scale)
                 .draw(&Env::inert(), p),
                 hero::HeroCtl::Alt => {
-                    Button::new(hero::ALT_LABEL.as_ptr(), theme::size::BODY, rect)
+                    Button::new(hero::alt_label().as_ptr(), theme::size::BODY, rect)
                         .trailing_icon(crate::ui::icons::Icon::ChevronDown)
                         .focused(focused)
                         .palette(palette)

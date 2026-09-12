@@ -27,6 +27,7 @@ pub(crate) mod library;
 pub(crate) mod search;
 pub(crate) mod family;
 pub(crate) mod legal;
+mod legal_es;
 pub(crate) mod login;
 pub(crate) mod onboard;
 pub(crate) mod player;

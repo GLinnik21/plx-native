@@ -389,7 +389,7 @@ fn is_on(a: Action) -> bool {
 /// global state.
 fn quality_detail(q: crate::route::Quality, source_decodable: bool) -> &'static str {
     if q == crate::route::Quality::Original && !source_decodable {
-        "Converts on server"
+        crate::ui::fmt::converts_on_server()
     } else {
         ""
     }
@@ -489,7 +489,7 @@ mod tests {
     fn the_conversion_notice_is_the_words_the_detail_page_already_uses() {
         assert_eq!(
             quality_detail(crate::route::Quality::Original, false),
-            crate::ui::fmt::CONVERTS_ON_SERVER,
+            crate::ui::fmt::converts_on_server(),
         );
     }
 

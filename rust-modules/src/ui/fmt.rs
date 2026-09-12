@@ -2,7 +2,11 @@
 //! can't render differently across screens (the "2 hr 15 min" vs "2h 15m" vs "0 hr 45 min"
 //! drift this replaces).
 
-pub(crate) const CONVERTS_ON_SERVER: &str = "Converts on server";
+/// The quality menu's conversion notice as a `&str` (the `&str` twin of the hero's C-string
+/// pick, mirroring `legal.rs`/`legal_es.rs`): the table keys on the English literal.
+pub(crate) fn converts_on_server() -> &'static str {
+    crate::i18n::t("Converts on server")
+}
 
 /// Compact duration for meta lines — "2h 15m" / "45m" (Info card tags, player HUD context).
 pub(crate) fn dur_short(ms: i64) -> String {

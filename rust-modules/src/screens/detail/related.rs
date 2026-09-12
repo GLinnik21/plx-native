@@ -79,8 +79,9 @@ pub(crate) fn draw(
     measure: &dyn crate::ui::machine::Measure,
 ) {
     let lift = row.lift();
+    let mut related_head = [0u8; crate::i18n::TC_MAX];
     p.text(
-        c"Related".as_ptr(),
+        crate::i18n::tc("Related", &mut related_head).as_ptr().cast(),
         crate::ui::consts::MARGIN_X,
         top - lift,
         theme::size::HEADLINE,

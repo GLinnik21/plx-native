@@ -72,7 +72,11 @@ fn wrap_memo(key: u64, compute: impl FnOnce() -> Wrapped) -> Rc<Wrapped> {
 /// choice, so every screen reads this constant rather than spelling its own literal. An earlier
 /// commit (`fc63c0c1`) drew the person page's mark as sentence-case `"More"`; that was wrong and is
 /// the reason this exists as one definition instead of two that can drift apart.
-pub(crate) const MORE_MARK: &std::ffi::CStr = c"MORE";
+/// The translated pick of the truncation/expand mark: both spellings are static, so the draw
+/// path picks a pointer and allocates nothing (the i18n pattern the busy captions use).
+pub(crate) fn more_mark() -> &'static std::ffi::CStr {
+    if crate::i18n::is_es() { c"MÁS" } else { c"MORE" }
+}
 
 pub struct TextView<'a> {
     measure: Option<&'a dyn crate::ui::machine::Measure>,
@@ -607,7 +611,7 @@ mod tests {
     /// silently drifting one screen away from every other.
     #[test]
     fn the_more_mark_is_ascii_uppercase() {
-        let s = MORE_MARK.to_str().expect("MORE_MARK must be valid UTF-8");
+        let s = more_mark().to_str().expect("MORE_MARK must be valid UTF-8");
         assert_eq!(
             s,
             s.to_ascii_uppercase(),
