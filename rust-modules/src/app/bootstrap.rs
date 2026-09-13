@@ -41,12 +41,12 @@ impl HomeIo {
         self.requests.push(recorded);
         admitted
     }
-    #[allow(dead_code)] // Compatibility path until every controlled caller passes its directory.
+    #[cfg(test)]
     pub fn hubs(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32)
         -> crate::stores::StoreOutcome {
         self.hubs_with(cmd, dt, &mut crate::pms::spawn_fetch)
     }
-    #[allow(dead_code)] // Compatibility test seam for the executor-only contract.
+    #[cfg(test)]
     fn hubs_with(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> crate::stores::StoreOutcome {
         crate::stores::hubs::controlled(cmd, dt, &mut |request| {
@@ -68,11 +68,11 @@ impl HomeIo {
                 "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
         })
     }
-    #[allow(dead_code)] // Compatibility path until controlled fixtures take an explicit owner.
+    #[cfg(test)]
     pub fn discovery(&mut self) {
         self.discovery_with(&mut crate::browse::execute_discovery);
     }
-    #[allow(dead_code)] // Compatibility test seam for the executor-only contract.
+    #[cfg(test)]
     pub(crate) fn discovery_with(&mut self, launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool) {
         crate::browse::controlled_discover(&mut |request| {
             self.admit(request.descriptor(), || launch(request))

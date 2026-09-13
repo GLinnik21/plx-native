@@ -91,6 +91,34 @@ fn read_key() -> Key {
     }
 }
 
+fn read_key_with_directory(directory: crate::stores::browse::DirectoryView<'_>) -> Key {
+    let mut key = read_registry_key();
+    key.sections_gen = directory.sections_gen();
+    key.source_list_gen = directory.source_list_gen();
+    key
+}
+
+fn read_registry_key() -> Key {
+    let mut roster = [ServerId::UNSET; MAX_SERVERS];
+    let mut facts = [0; MAX_SERVERS];
+    let mut roster_len = 0;
+    for (i, sid) in crate::plex::server_ids().enumerate().take(MAX_SERVERS) {
+        roster[i] = sid;
+        facts[i] = crate::plex::server_facts(sid).map_or(0, |f| std::ptr::from_ref(f) as usize);
+        roster_len += 1;
+    }
+    Key {
+        roster_gen: crate::plex::server_roster_gen(),
+        roster_len,
+        roster,
+        facts_gen: crate::plex::server_facts_gen(),
+        facts,
+        sections_gen: 0,
+        source_list_gen: 0,
+        profile_gen: crate::plex::session::current_gen(),
+    }
+}
+
 /// Capture the current source facts, rebuilding only when a cheap semantic input moves.
 pub(crate) fn snapshot() -> SourceScopeSnapshot {
     let key = read_key();
@@ -108,6 +136,20 @@ pub(crate) fn snapshot() -> SourceScopeSnapshot {
         .expect("source scope cache was just built")
         .publication
         .clone()
+}
+
+pub(crate) fn snapshot_with_directory(
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> SourceScopeSnapshot {
+    let key = read_key_with_directory(directory);
+    let cache = unsafe { &mut *addr_of_mut!(CACHE) };
+    if cache.as_ref().map(|c| c.key != key).unwrap_or(true) {
+        *cache = Some(Cache {
+            key,
+            publication: build_with_directory(directory),
+        });
+    }
+    cache.as_ref().expect("source scope cache was just built").publication.clone()
 }
 
 fn build() -> SourceScopeSnapshot {
@@ -141,6 +183,25 @@ fn build() -> SourceScopeSnapshot {
     }
 }
 
+fn build_with_directory(
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> SourceScopeSnapshot {
+    let first = crate::plex::server_ids().next();
+    let sources = crate::plex::server_ids().map(|sid| {
+        let facts = crate::plex::server_facts(sid);
+        ScopeSource {
+            sid,
+            name: facts.map(|f| f.name.clone()).unwrap_or_default(),
+            libraries: directory.library_titles(sid).map(str::to_owned).collect(),
+            handle: facts.map(|f| f.handle.clone()).unwrap_or_default(),
+            owned: facts.map(|f| f.owned).unwrap_or(Some(sid) == first),
+            live: directory.sources().iter().find(|source| source.0 == sid)
+                .map(|source| source.1.reachable()).unwrap_or(true),
+        }
+    }).collect();
+    SourceScopeSnapshot { sources: Arc::new(sources) }
+}
+
 #[cfg(test)]
 fn reset_for_test() {
     unsafe {
@@ -151,6 +212,35 @@ fn reset_for_test() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_scope_uses_the_supplied_directory_instead_of_browse_globals() {
+        let _serial = crate::testlock::serial();
+        let _reset = Reset;
+        crate::plex::reset_servers_for_test();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        let sid = crate::plex::register_for_test(
+            "retained-machine", "127.0.0.1", 9, "retained", "scope");
+        let directory = crate::stores::browse::DirectorySnapshot::fixture(3, 0, vec![
+            crate::stores::browse::SectionView {
+                borrowed: false,
+                sid: Some(sid),
+                key: 12,
+                kind: crate::stores::browse::SecKind::Movie,
+                row: crate::stores::browse::SrcRow {
+                    section: 0,
+                    title: "Retained Library".into(),
+                    pinned: true,
+                    current: true,
+                    ..Default::default()
+                },
+            },
+        ]);
+
+        let scope = snapshot_with_directory(directory.view());
+
+        assert_eq!(scope.sources()[0].libraries, ["Retained Library"]);
+    }
 
     struct Reset;
 
