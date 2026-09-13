@@ -1352,8 +1352,8 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                 ).endpoints,
             );
             // …and every library's OWN shelves, for the same reason and at the same moment:
-            // a finished playback moves Continue Watching and watch state, and a section deck
-            // is as stale as the global one (`browse::section_hubs::invalidate_all`).
+            // a finished playback moves Continue Watching and watch state, so invalidate each
+            // Bridge-owned Browse store through `Bridge::browse_run`.
             app.bridge.browse_run(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
             log("home: hubs refresh queued after playback");
         }
