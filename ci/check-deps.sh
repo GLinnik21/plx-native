@@ -247,9 +247,29 @@ browse_declarations() {
         return substr(s, i, 1) == "\047" ? i : 0
       }
 
+      function retired_fn(s, re) {
+        re="(^|[^[:alnum:]_])fn[[:space:]]+(" names ")([^[:alnum:]_]|$)"
+        return s ~ re
+      }
+
+      function selector_static(s, prefix) {
+        prefix="(^|[^[:alnum:]_])static[[:space:]]+(mut[[:space:]]+)?"
+        return s ~ (prefix "(ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE)([^[:alnum:]_]|$)")
+      }
+
+      function retired_module_decl(s, prefix) {
+        prefix="(^|[^[:alnum:]_])static[[:space:]]+(mut[[:space:]]+)?"
+        return retired_fn(s) || selector_static(s) ||
+          s ~ (prefix "[A-Z][A-Z_0-9]*[[:space:]]*:.*(BrowseState|BrowseAdapter|BrowseStore)")
+      }
+
+      function opens_thread_local(s) {
+        return s ~ /(^|[^[:alnum:]_])thread_local[[:space:]]*![[:space:]]*\{[[:space:]]*$/
+      }
+
       BEGIN { raw=-1 }
       {
-        original=$0; code=""; delta=0; before=depth; i=1; n=length(original)
+        original=$0; code=""; before=depth; i=1; n=length(original)
         while (i <= n) {
           c=substr(original, i, 1); two=substr(original, i, 2)
           if (block > 0) {
@@ -295,20 +315,53 @@ browse_declarations() {
           }
 
           code=code c
-          if (c == "{") delta++
-          else if (c == "}") delta--
           i++
         }
 
-        # Declarations in this retired surface have single-line signatures. Leading whitespace
-        # is formatting, not nesting; only token brace depth distinguishes a free fn from a method.
-        fn_re="^[[:space:]]*((pub([[:space:]]*\\([^)]*\\))?|const|async|unsafe|extern)[[:space:]]+)*fn[[:space:]]+(" names ")([<[:space:](])"
-        static_prefix="^[[:space:]]*(pub([[:space:]]*\\([^)]*\\))?[[:space:]]+)?static[[:space:]]+(mut[[:space:]]+)?"
-        if (before == 0 && (code ~ fn_re ||
-            code ~ (static_prefix "[A-Z][A-Z_0-9]*[[:space:]]*:.*(BrowseState|BrowseAdapter|BrowseStore)") ||
-            code ~ (static_prefix "(ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE)([[:space:]]|:)")))
-          print FILENAME ":" NR ":" $0
-        depth += delta
+        # Assemble declarations from code tokens, not physical lines. `module_decl` sees only
+        # depth-zero text, so attributes/modifiers may span lines while methods inside impls stay
+        # invisible. The sole nested exception is a module-level thread_local! body, where only
+        # the retired selector spellings are inspected at the macro body direct depth.
+        hit=0; level=before
+        for (j=1; j <= length(code); j++) {
+          c=substr(code, j, 1)
+          if (level == 0) {
+            module_decl=module_decl c
+            if (c == "{" || c == ";") {
+              if (retired_module_decl(module_decl)) hit=1
+              if (c == "{" && opens_thread_local(module_decl)) thread_local_depth=level+1
+              module_decl=""
+            }
+          } else if (thread_local_depth > 0 && level == thread_local_depth) {
+            thread_decl=thread_decl c
+            if (c == ";") {
+              if (selector_static(thread_decl)) hit=1
+              thread_decl=""
+            }
+          }
+
+          if (c == "{") level++
+          else if (c == "}") {
+            level--
+            if (thread_local_depth > 0 && level < thread_local_depth) {
+              thread_local_depth=0
+              thread_decl=""
+            }
+          }
+        }
+
+        if (level == 0 && retired_module_decl(module_decl)) {
+          hit=1
+          module_decl=""
+        }
+        if (thread_local_depth > 0 && selector_static(thread_decl)) {
+          hit=1
+          thread_decl=""
+        }
+        if (hit) print FILENAME ":" NR ":" $0
+        if (level == 0) module_decl=module_decl " "
+        if (thread_local_depth > 0) thread_decl=thread_decl " "
+        depth=level
         if (depth < 0) depth = 0
       }
     ' "$file" || echo "$file:0:browse declaration scanner failed"
