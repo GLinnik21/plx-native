@@ -4412,36 +4412,31 @@ class DepGates(unittest.TestCase):
             with open(target, "w", encoding="utf-8") as f:
                 f.write(original)
 
-    def test_mutators_visibility_gate_catches_a_republished_mutator(self):
-        """D3: `browse::set_cur` was narrowed to private so `stores::browse::apply` is the only
-        door — but a call-site gate alone can only ever prove nobody currently calls a mutator
-        directly, never that nobody CAN (the D3 census's own finding: zero call-site violations
-        coexisted with every mutator across six stores sitting `pub(crate)` for years). RED:
-        temporarily re-publishing `set_cur` as `pub(crate)` — with no call site touched at all —
-        must fail `mutators-visibility` on the DECLARATION alone."""
+    def test_browse_owner_gate_rejects_a_republished_free_mutator(self):
+        """The retired Browse surface must not come back as a free/global mutator. RED:
+        temporarily turn the owned `set_cur` implementation into a top-level `pub(crate)`
+        declaration; `browse-owner` must catch the declaration even though no call site exists."""
         r = self._mutate(
             os.path.join("browse", "mod.rs"),
-            "fn set_cur(i: usize) {",
+            "    fn set_cur(&mut self, i: usize) {",
             "pub(crate) fn set_cur(i: usize) {",
         )
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
-        self.assertIn("mutators-visibility:", out)
-        self.assertIn("browse/mod.rs: fn set_cur", out)
+        self.assertIn("browse-owner:", out)
+        self.assertIn("fn set_cur", out)
 
-    def test_mutators_visibility_gate_ignores_pub_super_in_section_hubs(self):
-        """`browse::section_hubs`'s five mutators are `pub(super)`, genuinely tighter than
-        private-to-crate-root since section_hubs's parent is `browse`, a real module — the gate's
-        own regex matches a bare `pub`/`pub(crate)` only. GREEN: confirm the real declaration is
-        `pub(super)` today (so this test cannot pass by coincidence) and that the gate is
-        satisfied by it, unmutated."""
-        target = os.path.join(self.ROOT, "rust-modules", "src", "browse", "section_hubs.rs")
-        with open(target, encoding="utf-8") as f:
-            content = f.read()
-        self.assertIn("pub(super) fn kick(sec: usize) {", content)
-        r = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
+    def test_browse_owner_gate_accepts_receiver_bound_owned_methods(self):
+        """A BrowseState selector is safe when it requires an explicit receiver. GREEN:
+        temporarily widen the owned `cur(&self)` method to `pub`; the gate must still pass,
+        proving it rejects free/global facades rather than all methods with those names."""
+        r = self._mutate(
+            os.path.join("browse", "mod.rs"),
+            "    pub(crate) fn cur(&self) -> usize {",
+            "    pub fn cur(&self) -> usize {",
+        )
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("ok — mutators-visibility", r.stdout)
+        self.assertIn("ok — browse-owner", r.stdout)
 
     def test_threads_gate_catches_a_bare_thread_spawn_after_use_std_thread(self):
         """The gate used to match only the fully-qualified `std::thread::spawn(` spelling, so a
@@ -4599,9 +4594,6 @@ class DepGates(unittest.TestCase):
     # rules are absent from the table below on purpose, the same way a deleted allowlist's own
     # entry disappears rather than pinning at 0.
     PINNED_ALLOWLIST_COUNTS = {
-        # Browse ownership Wave 0 pins the compile-scaffolding surface exactly. Consumer waves
-        # lower this with the corresponding symbol deletion; full retirement lands at zero.
-        "browse-ownership-migration.txt": 22,
         "libm.txt": 5,
         "mutators.txt": 0,
         "nav.txt": 0,
