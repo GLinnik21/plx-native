@@ -97,7 +97,10 @@ ok()   { echo "  ok — $*"; }
 # grep_code <pattern> <paths...>: matching lines, minus comment-only lines, as `path:line:text`.
 grep_code() {
   local pat="$1"; shift
-  grep -rnE --include='*.rs' "$pat" "$@" 2>/dev/null | grep -vE '^[^:]+:[0-9]+:\s*//' || true
+  # `[[:space:]]` is POSIX ERE. Do not use `\s` here: BSD grep accepts it, but GNU grep in the
+  # Ubuntu CI image treats it differently, causing comment-only examples to become gate hits.
+  grep -rnE --include='*.rs' "$pat" "$@" 2>/dev/null \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true
 }
 
 # strip_strings_and_comments <file>: prints the file, one line per input line (so line numbers of
@@ -671,7 +674,7 @@ fi
 # every allowlist's declared count equals its entries
 for f in ci/allow/*.txt; do
   declared=$(sed -n 's/^# count: *//p' "$f" | head -1)
-  entries=$(grep -cvE '^\s*(#|$)' "$f")
+  entries=$(grep -cvE '^[[:space:]]*(#|$)' "$f")
   [ "$declared" = "$entries" ] || fail "$f declares count $declared but has $entries entries"
 done
 
