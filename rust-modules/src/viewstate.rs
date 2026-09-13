@@ -90,7 +90,8 @@
 //! **What the other copies look like on the press frame: unchanged, and that is deliberate.**
 //! [`request`]'s optimistic edit can only reach the `(sid, rk)` the user pressed, because no other
 //! key is KNOWN yet — the resolve is what discovers them, and it is off-thread by construction.
-//! The copies are flipped locally when the fan-out reports ([`pump`] applies [`edit_local`] to each
+//! The copies are flipped locally when the fan-out reports ([`ViewStateState::pump`] applies
+//! [`edit_local_with_owners`] to each
 //! one the server took), and the hub refetch that already follows every write reconciles whatever
 //! that missed. So the copy in hand changes at once and the others change a round trip later,
 //! which is the same contract the press already has with its own server.
@@ -383,7 +384,8 @@ fn edit_local_with_owners(
 }
 
 /// Drop any QUEUED write for the same item and toggle — see [`Write::family`]. The write already in
-/// flight ([`SENT`]) is deliberately untouched: it is on the wire, the client cannot recall it, and
+/// flight (`ViewStateState::sent`) is deliberately untouched: it is on the wire, the client cannot
+/// recall it, and
 /// the one that supersedes it is queued behind it in the order pressed.
 impl ViewStateState {
     fn coalesce(&mut self, sid: ServerId, rk: &str, w: Write) {
@@ -1261,8 +1263,8 @@ mod tests {
         crate::metadata::install_for_test(None);
     }
 
-    /// **The landing itself, driven through [`pump`].** The test above grades what `edit_local`
-    /// does; this one grades that `pump` actually CALLS it — for every copy the worker reported,
+    /// **The landing itself, driven through [`ViewStateState::pump`].** The test above grades what
+    /// `edit_local_with_owners` does; this one grades that the pump actually CALLS it — for every copy the worker reported,
     /// with the write that was SENT rather than whatever was pressed since — and then clears the
     /// in-flight slot. Without this the fan-out could report copies nobody ever applied, and every
     /// pure test above would still be green.

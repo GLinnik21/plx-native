@@ -4996,8 +4996,8 @@ mod tests {
     }
 
     /// Detail owns the press decision, but the Bridge owns the retained Browse directory needed
-    /// by ViewState's optimistic Hubs edit. Keep both halves on the production dispatcher path:
-    /// a direct screen-side `viewstate::apply` passes under `cfg(test)` and panics in production.
+    /// by ViewState's optimistic Hubs edit. Keep both halves on the production dispatcher path;
+    /// the screen must not regain a free ViewState facade that can bypass this owner.
     #[test]
     fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_frame() {
         use crate::ui::dispatch::Tap;
