@@ -791,7 +791,6 @@ fn the_shelf_flow_is_frozen_unless_the_shelves_hold_focus_with_the_keyboard_down
 /// Three sources on one shelf: the household's own, and two shares with different handles.
 fn shared_shelf(fixture: &mut Fixture) -> [crate::plex::ServerId; 3] {
     crate::plex::reset_servers_for_test();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     let own = crate::plex::register_for_test("own-machine", "127.0.0.1", 1, "own", "annotation");
     let a = crate::plex::register_for_test("share-a", "127.0.0.1", 2, "a", "annotation");
     let b = crate::plex::register_for_test("share-b", "127.0.0.1", 3, "b", "annotation");
@@ -869,7 +868,6 @@ fn the_owner_annotation_swaps_its_words_only_while_it_is_invisible() {
     assert_eq!(screen.owner_row, Some(1), "the annotation belongs to the row the cursor is in");
     assert_eq!(screen.owner, "", "…and that row's item is the household's own");
     crate::plex::reset_servers_for_test();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     crate::stores::search::apply(SearchCmd::Reset);
 }
 
@@ -903,6 +901,5 @@ fn a_settled_annotation_goes_quiet_and_a_moving_one_does_not() {
             "frame {i}: a settled annotation asked for a repaint");
     }
     crate::plex::reset_servers_for_test();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     crate::stores::search::apply(SearchCmd::Reset);
 }

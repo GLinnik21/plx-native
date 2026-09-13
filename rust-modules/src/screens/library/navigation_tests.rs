@@ -5,6 +5,11 @@ use crate::ui::focus::{FocusEngine, Outcome};
 use crate::ui::machine::{Host, InputOwner, Tick};
 
 struct TestHost;
+fn run_browse(cmd: crate::stores::browse::BrowseCmd) {
+    let stores = crate::stores::Stores::default();
+    stores.browse_run(cmd);
+}
+
 #[derive(Clone, Copy)]
 struct Views<'a> {
     listing: crate::stores::browse::ListingView<'a>,
@@ -37,14 +42,14 @@ struct Fixture {
     listing: crate::stores::browse::ListingSnapshot,
     directory: crate::stores::browse::DirectorySnapshot,
     hubs: crate::stores::browse::HubsSnapshot,
-    sections: Vec<crate::browse::view::SectionView>,
+    sections: Vec<crate::stores::browse::SectionView>,
     epoch: u32,
 }
 impl Fixture {
     fn new(libraries: usize, items: usize, shelves: usize) -> Self {
-        crate::stores::browse::apply(BrowseCmd::Reset);
+        run_browse(BrowseCmd::Reset);
         crate::browse::seed_two_source_table_for_test();
-        crate::stores::browse::apply(BrowseCmd::SetCur(0));
+        run_browse(BrowseCmd::SetCur(0));
         let titles: Vec<_> = (0..shelves)
             .map(|i| format!("Synthetic shelf {i}"))
             .collect();
@@ -55,12 +60,12 @@ impl Fixture {
         let epoch = crate::browse::table_epoch();
         let sid = crate::plex::ServerId::UNSET;
         let sections = (0..libraries)
-            .map(|i| crate::browse::view::SectionView {
+            .map(|i| crate::stores::browse::SectionView {
                 borrowed: libraries == 1,
                 sid: Some(sid),
                 key: i as i64 + 1,
                 kind: SecKind::Movie,
-                row: crate::browse::SrcRow {
+                row: crate::stores::browse::SrcRow {
                     section: i,
                     title: format!("Library {i}"),
                     pinned: true,
@@ -90,12 +95,12 @@ impl Fixture {
         } else {
             0
         };
-        self.directory = crate::browse::view::DirectorySnapshot::fixture(
+        self.directory = crate::stores::browse::DirectorySnapshot::fixture(
             self.epoch,
             current,
             self.sections.clone(),
         );
-        self.listing = crate::browse::view::ListingSnapshot::fixture(
+        self.listing = crate::stores::browse::ListingSnapshot::fixture(
             sid,
             (0..items)
                 .map(|i| {
@@ -179,7 +184,7 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        crate::stores::browse::apply(BrowseCmd::Reset);
+        run_browse(BrowseCmd::Reset);
     }
 }
 
@@ -210,24 +215,24 @@ fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_
     }
     let sid = crate::plex::ServerId::UNSET;
     fixture.sections = vec![
-        crate::browse::view::SectionView {
+        crate::stores::browse::SectionView {
             borrowed: false,
             sid: Some(sid),
             key: 1,
             kind: SecKind::Movie,
-            row: crate::browse::SrcRow {
+            row: crate::stores::browse::SrcRow {
                 section: 0,
                 title: "Movies".into(),
                 pinned: true,
                 ..Default::default()
             },
         },
-        crate::browse::view::SectionView {
+        crate::stores::browse::SectionView {
             borrowed: false,
             sid: Some(sid),
             key: 2,
             kind: SecKind::Show,
-            row: crate::browse::SrcRow {
+            row: crate::stores::browse::SrcRow {
                 section: 1,
                 title: "Shows".into(),
                 pinned: true,

@@ -5,6 +5,11 @@ use crate::ui::fixture::{FixtureArg, FixtureMeasure};
 use crate::ui::machine::{Host, InputOwner, Stamped, Tick};
 
 struct TestHost;
+fn run_browse(cmd: crate::stores::browse::BrowseCmd) {
+    let stores = crate::stores::Stores::default();
+    stores.browse_run(cmd);
+}
+
 #[derive(Clone, Copy)]
 struct Views<'a> {
     listing: crate::stores::browse::ListingView<'a>,
@@ -42,7 +47,7 @@ impl Fixture {
     fn new() -> Self {
         let session = crate::plex::session::TempSession::new("library-deferred-ports");
         session.watching("u-library-deferred-ports");
-        crate::stores::browse::apply(BrowseCmd::Reset);
+        run_browse(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let own =
             crate::plex::register_for_test("deferred-own", "127.0.0.1", 9, "synthetic", "fixture");
@@ -64,10 +69,10 @@ impl Fixture {
         fixture
     }
     fn rebuild(&mut self) {
-        crate::stores::browse::apply(BrowseCmd::Reset);
+        run_browse(BrowseCmd::Reset);
         crate::browse::seed_registered_table_for_test(self.sids);
         self.directory.capture();
-        crate::stores::browse::apply(BrowseCmd::SetCur(0));
+        run_browse(BrowseCmd::SetCur(0));
         crate::browse::seed_items_for_test(12);
         self.capture();
         assert_eq!(self.directory.view().current(), Some(0));
@@ -135,7 +140,7 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        crate::stores::browse::apply(BrowseCmd::Reset);
+        run_browse(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 }
@@ -245,7 +250,7 @@ fn a_target_that_moves_after_the_press_is_refused_at_the_store_drain() {
             edit: QueryEdit::Unwatched(true),
         }),
     );
-    crate::stores::browse::apply(BrowseCmd::SetCur(2));
+    run_browse(BrowseCmd::SetCur(2));
     crate::browse::seed_items_for_test(12);
     fixture.capture();
     assert_eq!(fixture.directory.view().current(), Some(2));
