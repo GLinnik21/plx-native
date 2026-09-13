@@ -433,6 +433,7 @@ mod library_publication_tests {
         sid: crate::plex::ServerId,
         generation: u32,
         detail: Option<crate::metadata::Detail>,
+        expected_fresh: bool,
         landed: bool,
     }
 
@@ -442,12 +443,14 @@ mod library_publication_tests {
                 Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(
                     crate::ui::screen::Enter::Restored)))) { return; }
             self.landed = true;
-            assert!(crate::metadata::land_detail_for_test(
+            let fresh = crate::metadata::land_detail_for_test(
                 self.sid,
                 "detail-a",
                 self.generation,
                 self.detail.take(),
-            ));
+            );
+            assert_eq!(fresh, self.expected_fresh);
+            assert_eq!(crate::metadata::detail_request_status(self.sid, "detail-a"), Some(false));
         }
     }
 
@@ -893,6 +896,7 @@ mod library_publication_tests {
             sid,
             generation: reconciliation,
             detail: Some(detail_with_episode(sid, "detail-a", "Refreshed A", true)),
+            expected_fresh: true,
             landed: false,
         };
         let ret = pages.return_state();
@@ -913,6 +917,105 @@ mod library_publication_tests {
             "the terminal reconciliation consumes the episode restore intent");
         assert_eq!(detail_return_waiting(&pages, a_entry), Some(false),
             "the return cannot remain waiting after the terminal reconciliation");
+
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(None);
+        drain_detail_workers();
+    }
+
+    #[test]
+    fn a_failed_requested_refresh_with_no_cached_detail_is_not_retried_on_restore() {
+        let _guard = crate::testlock::serial();
+        let sid = crate::plex::ServerId::UNSET;
+        let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
+        let person = AppArg::Content(ContentArg::Person {
+            sid,
+            key: "person".into(),
+            guid: "person-guid".into(),
+            name: "Person".into(),
+            thumb: String::new(),
+        });
+        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+
+        bridge::show_page(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let a_entry = pages.nav.top_page().expect("Detail A mounted").id;
+
+        drain_detail_workers();
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(Some(detail_with_episode(
+            sid, "detail-a", "Old A", true,
+        )));
+        pages.store_changed(crate::stores::StoreId::Metadata.ord(), 1);
+        frame(&mut pages, &mut rig, &mut frame_no);
+
+        let PageMemory::Detail(memory) = pages.return_state().memory else {
+            panic!("Detail A publishes Detail memory");
+        };
+        let focus = crate::ui::machine::FocusKey {
+            entry: a_entry,
+            elem: memory.keys.iter().find_map(|key| matches!(&key.identity,
+                crate::screens::registry::DetailIdentity::Episode { rk, text: true, .. }
+                if rk == "episode-a").then_some(key.elem))
+                .expect("the loaded episode text row has a stable key"),
+        };
+        pages.set_focus(Some(focus));
+        let PageMemory::Detail(memory) = pages.return_state().memory else { unreachable!() };
+        let spot = memory.spot;
+
+        let pre_refresh = crate::metadata::begin_detail_for_test(sid, "detail-a");
+        refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
+            sid,
+            rk: "detail-a".into(),
+            keep: Some("episode-a".into()),
+        });
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert!(!crate::metadata::land_detail_for_test(sid, "detail-a", pre_refresh, None));
+        let reconciliation = crate::metadata::begin_detail_for_test(sid, "detail-a");
+        assert_eq!(detail_restore_target(&pages, a_entry),
+            Some((spot, Some("episode-a".into()),
+                crate::screens::registry::DetailRefreshPhase::Requested)));
+
+        bridge::nav_push(&mut pages, person.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == person));
+        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(true));
+        crate::metadata::set_current_for_test(None);
+        assert!(crate::metadata::current().is_none(),
+            "the unsuccessful reconciliation has no cached Detail to fall back to");
+
+        pages.nav.tabs.stack.transition =
+            Box::new(crate::ui::containers::transition::Immediate);
+        let mut settle = SettleDetailBeforeRestoredEnter {
+            sid,
+            generation: reconciliation,
+            detail: None,
+            expected_fresh: false,
+            landed: false,
+        };
+        let ret = pages.return_state();
+        bridge::nav_pop_with_return(&mut pages, ret);
+        let (_, report) = bridge::frame_with_tap(&mut pages, &mut rig,
+            crate::ui::machine::Tick { ms: frame_no * 16, dt_us: 16_000 }, Vec::new(), &mut settle);
+        frame_no += 1;
+        pages.prune(&report.unmounted);
+
+        assert!(settle.landed, "the failed reconciliation settles at restored Enter");
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
+        assert_eq!(crate::metadata::detail_generation_for_test(), reconciliation,
+            "terminal failure must not be retried through the ordinary cold-body branch");
+        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(false));
+
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert_eq!(detail_restore_target(&pages, a_entry), None,
+            "terminal failure retires the restore intent without a cached Detail");
+        assert_eq!(detail_return_waiting(&pages, a_entry), Some(false),
+            "failed restoration cannot remain permanently waiting");
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert_eq!(crate::metadata::detail_generation_for_test(), reconciliation,
+            "settled failure cannot start a delayed duplicate request");
 
         crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
         crate::metadata::set_current_for_test(None);

@@ -1054,7 +1054,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 // Ordinary enters still reuse an in-flight request instead of duplicating it.
                 let request = refresh == DetailRefreshPhase::Deferred
                     || refresh == DetailRefreshPhase::Requested && request_status.is_none()
-                    || self.detail().is_none()
+                    || refresh == DetailRefreshPhase::None && self.detail().is_none()
                         && request_status != Some(true);
                 if request {
                     apply_metadata(MetadataCmd::RequestDetail {
