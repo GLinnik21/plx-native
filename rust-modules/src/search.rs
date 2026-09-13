@@ -778,6 +778,20 @@ fn supersede_with_directory(directory: Option<crate::stores::browse::DirectoryVi
 /// Advance the debounce and land whatever arrived. Called once a frame from the screen's update.
 /// Returns whether anything changed, so the caller can re-clamp focus.
 pub(crate) fn pump(dt: f32) -> bool {
+    pump_with_optional_directory(dt, None)
+}
+
+pub(crate) fn pump_with_directory(
+    dt: f32,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> bool {
+    pump_with_optional_directory(dt, Some(directory))
+}
+
+fn pump_with_optional_directory(
+    dt: f32,
+    directory: Option<crate::stores::browse::DirectoryView<'_>>,
+) -> bool {
     let live = slots();
     let visible = crate::plex::server_roster_gen();
     let roster_changed = VISIBLE.swap(visible, Ordering::SeqCst) != visible;
@@ -797,16 +811,24 @@ pub(crate) fn pump(dt: f32) -> bool {
     // bit cannot be re-derived locally (see [`FAV_GEN`]). With nothing resident there is nothing to
     // invalidate and the snapshot is simply brought up to date, so the next query does not open by
     // re-arming itself.
-    if FAV_GEN.load(Ordering::SeqCst) != crate::browse::sections_gen() {
+    let sections_gen = directory.map_or_else(crate::browse::sections_gen,
+        |directory| directory.sections_gen());
+    if FAV_GEN.load(Ordering::SeqCst) != sections_gen {
         if terms(query()).is_some() {
-            supersede();
+            match directory {
+                Some(directory) => supersede_from_directory(directory),
+                None => supersede(),
+            }
             unsafe {
                 *addr_of_mut!(SHELVES) = None;
                 *addr_of_mut!(SETTLE_US) = 0;
                 *addr_of_mut!(ARMED) = true;
             }
         } else {
-            snapshot_favs();
+            match directory {
+                Some(directory) => snapshot_favs_from_directory(directory),
+                None => snapshot_favs(),
+            }
         }
     }
     unsafe {
@@ -1265,6 +1287,7 @@ pub(crate) fn run_with_directory(
     cmd: crate::stores::search::SearchCmd,
     directory: crate::stores::browse::DirectoryView<'_>,
 ) -> bool {
+    scope::snapshot_with_directory(directory);
     run_with_optional_directory(cmd, Some(directory))
 }
 

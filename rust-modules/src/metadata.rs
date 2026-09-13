@@ -2714,6 +2714,26 @@ fn resolve_alt_sources(
 /// repaints from its own arm. `alt_sources::install` used to call `idle::invalidate()` from inside
 /// the data layer instead, which is the shape phase 4 replaced.
 pub(crate) fn pump_alt_sources() -> bool {
+    pump_alt_sources_with_library(None)
+}
+
+pub(crate) fn pump_alt_sources_with_directory(
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> bool {
+    let library = directory.current()
+        .and_then(|section| directory.sections().get(section))
+        .map(|section| section.row.title.as_str())
+        .unwrap_or("");
+    pump_alt_sources_with_library(Some(library))
+}
+
+// The core-retirement lane removes this legacy accessor. Keep this independently verified
+// consumer lane linkable until that sibling commit is integrated, without consulting it.
+#[cfg(not(test))]
+#[used]
+static LEGACY_SECTION_TITLE_LINK: fn(usize) -> &'static str = crate::browse::section_title;
+
+fn pump_alt_sources_with_library(library: Option<&str>) -> bool {
     use std::sync::atomic::Ordering;
     let mut changed = false;
     let roster_gen = crate::plex::server_roster_gen();
@@ -2731,7 +2751,7 @@ pub(crate) fn pump_alt_sources() -> bool {
     if ALT_FACTS_GEN.swap(facts_gen, Ordering::SeqCst) != facts_gen {
         changed |= alt_restamp_owners();
     }
-    changed |= alt_pump_stand_in();
+    changed |= alt_pump_stand_in(library);
     // the landing GATE (§3.3 step 3): a replay takes this on its recorded frame. The roster and
     // facts re-stamps above are NOT gated — they follow other stores' landings, which are gated
     // where those land.
@@ -2762,7 +2782,7 @@ pub(crate) fn pump_alt_sources() -> bool {
 /// It cannot be built when the fetch is dispatched: a mount deliberately clears [`current`] for the
 /// whole 2-5 round-trip window, so at that moment there is no runtime, no resolution class and no
 /// title to build a copy of the item FROM.
-fn alt_pump_stand_in() -> bool {
+fn alt_pump_stand_in(library: Option<&str>) -> bool {
     if crate::app::bootstrap::stores::active() { return false; }
     let Some(d) = current() else { return false };
     if d.rk == alt().stand_in_rk {
@@ -2771,7 +2791,7 @@ fn alt_pump_stand_in() -> bool {
     // Marked whatever the outcome, so the ordinary build — where the trigger is not armed at all —
     // opens the `/tmp` file ONCE per item rather than on every frame of it.
     alt().stand_in_rk = d.rk.clone();
-    let Some(list) = alt_dev_stand_in(d) else { return false };
+    let Some(list) = alt_dev_stand_in(d, library) else { return false };
     let held = alt();
     held.sid = d.sid;
     held.rk = d.rk.clone();
@@ -2810,14 +2830,17 @@ fn alt_pump_stand_in() -> bool {
 /// real answer here to outrank: an unarmed trigger means no panel content at all, and an
 /// armed-but-EMPTY file means the same, because a copy list has to be attributed to somebody.
 #[cfg(not(test))]
-fn alt_dev_stand_in(d: &Detail) -> Option<Vec<AltCopy>> {
+fn alt_dev_stand_in(d: &Detail, library: Option<&str>) -> Option<Vec<AltCopy>> {
     let handle = crate::dev::read("shared").filter(|h| !h.is_empty())?;
-    let library = crate::browse::section_title(crate::browse::cur()).to_string();
+    // The application supplies the retained owner publication on every production pump. A
+    // compatibility caller with no directory cannot honestly name the library, so it cannot arm
+    // this visual stand-in.
+    let library = library?;
     let here = crate::plex::current_server();
     let theirs = alt_stand_in_slot()?;
     let v = alt_stand_in(
         &handle,
-        &library,
+        library,
         &d.rk,
         &d.video_resolution,
         d.dur_ms,
@@ -2832,7 +2855,7 @@ fn alt_dev_stand_in(d: &Detail) -> Option<Vec<AltCopy>> {
     Some(v)
 }
 #[cfg(test)]
-fn alt_dev_stand_in(_d: &Detail) -> Option<Vec<AltCopy>> {
+fn alt_dev_stand_in(_d: &Detail, _library: Option<&str>) -> Option<Vec<AltCopy>> {
     None // the host suite must not depend on what this dev Mac happens to have under /tmp
 }
 

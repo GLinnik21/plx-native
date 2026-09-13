@@ -497,14 +497,6 @@ pub(crate) fn hub_item(hub: usize, col: usize) -> Option<&'static PmsMovie> {
 ///
 /// No reconcile call here, and none is owed anywhere: [`commit`] performs the re-selection and the
 /// repaint itself, at the only moment the catalog those surfaces index into actually moves.
-fn request_refetch_hubs() -> crate::stores::EndpointRefreshSet {
-    request_refetch_hubs_with(&mut spawn_fetch)
-}
-
-fn request_refetch_hubs_with(launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
-    request_refetch_hubs_with_scope(&BrowseScope::compatibility(), launch)
-}
-
 fn request_refetch_hubs_with_scope(scope: &BrowseScope,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
     // The source table and HUB_GEN are crate globals; a test reaching this outside
@@ -1590,6 +1582,17 @@ pub(crate) fn tick(dt: f32) -> crate::stores::EndpointRefreshSet {
     pump_with_landings(dt, Vec::new)
 }
 
+#[allow(dead_code)] // Owner contract consumed when the core dispatcher lane is integrated.
+pub(crate) fn tick_with_directory(
+    dt: f32,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> crate::stores::EndpointRefreshSet {
+    #[cfg(test)]
+    crate::testlock::assert_held("the pms hub catalog (owned tick)");
+    step_landings_with_scope(Some(dt), Vec::new, &BrowseScope::retained(directory),
+        &mut spawn_fetch)
+}
+
 /// An addressed arrival may update the catalog behind another page, but must not advance retry
 /// timers or start a new hubs fetch there. The visible Home alone owes the store's tick.
 fn apply_landing(landing: &Landing) -> crate::stores::EndpointRefreshSet {
@@ -1608,6 +1611,17 @@ pub(crate) fn land(landing: &Landing) -> crate::stores::StoreOutcome {
     crate::stores::StoreOutcome { changed: catalog_gen() != before, endpoints }
 }
 
+#[allow(dead_code)] // Owner contract consumed when the core dispatcher lane is integrated.
+pub(crate) fn land_with_directory(
+    landing: &Landing,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> crate::stores::StoreOutcome {
+    let before = catalog_gen();
+    let endpoints = step_landings_with_scope(None, || vec![landing.clone()],
+        &BrowseScope::retained(directory), &mut spawn_fetch);
+    crate::stores::StoreOutcome { changed: catalog_gen() != before, endpoints }
+}
+
 /// `stores::hubs`'s one door onto every [`HubsCmd`](crate::stores::hubs::HubsCmd) (D3): the
 /// match used to live in `stores/hubs.rs::run`, calling four `pub(crate)` mutators across the
 /// module boundary. Relocating the match here is what lets those four go private — `stores::
@@ -1615,17 +1629,53 @@ pub(crate) fn land(landing: &Landing) -> crate::stores::StoreOutcome {
 pub(crate) fn run(cmd: crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome {
     use crate::stores::hubs::HubsCmd;
     match cmd {
+        HubsCmd::RefetchHubs | HubsCmd::Reset =>
+            run_with_scope(cmd, &BrowseScope::compatibility()),
+        other => run_without_browse(other),
+    }
+}
+
+pub(crate) fn run_with_directory(
+    cmd: crate::stores::hubs::HubsCmd,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> crate::stores::StoreOutcome {
+    use crate::stores::hubs::HubsCmd;
+    match cmd {
+        HubsCmd::RefetchHubs | HubsCmd::Reset =>
+            run_with_scope(cmd, &BrowseScope::retained(directory)),
+        other => run_without_browse(other),
+    }
+}
+
+fn run_with_scope(
+    cmd: crate::stores::hubs::HubsCmd,
+    scope: &BrowseScope,
+) -> crate::stores::StoreOutcome {
+    use crate::stores::hubs::HubsCmd;
+    match cmd {
         HubsCmd::RefetchHubs => {
-            crate::stores::StoreOutcome { changed: true, endpoints: request_refetch_hubs() }
+            crate::stores::StoreOutcome {
+                changed: true,
+                endpoints: request_refetch_hubs_with_scope(scope, &mut spawn_fetch),
+            }
         }
-        HubsCmd::Retry => {
-            crate::stores::StoreOutcome { changed: true, endpoints: request_retry() }
-        }
+        HubsCmd::Retry | HubsCmd::EditItem { .. } => run_without_browse(cmd),
         HubsCmd::Reset => {
-            reset();
+            reset_with_sections_gen(scope.sections_gen);
             crate::stores::StoreOutcome::changed(true)
         }
-        HubsCmd::EditItem { sid, rk, edit } => crate::stores::StoreOutcome::changed(edit_item(sid, &rk, edit)),
+    }
+}
+
+fn run_without_browse(cmd: crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome {
+    use crate::stores::hubs::HubsCmd;
+    match cmd {
+        HubsCmd::Retry =>
+            crate::stores::StoreOutcome { changed: true, endpoints: request_retry() },
+        HubsCmd::EditItem { sid, rk, edit } =>
+            crate::stores::StoreOutcome::changed(edit_item(sid, &rk, edit)),
+        HubsCmd::RefetchHubs | HubsCmd::Reset =>
+            unreachable!("Browse-scoped Hubs command reached the independent runner"),
     }
 }
 
@@ -1817,6 +1867,7 @@ pub(crate) fn seed_for_test(items: usize, state: HubState) {
 /// tests` call sites between them) were the last two direct callers, both now routed through
 /// `stores::hubs::apply(HubsCmd::Reset)` — `HubsCmd` already had the variant and `pms::run`
 /// already matched it, so closing this was a caller-site swap alone, no new enum surface.
+#[cfg(test)]
 fn reset() {
     reset_with_sections_gen(crate::browse::sections_gen());
 }
