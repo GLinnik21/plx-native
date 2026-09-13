@@ -24,6 +24,7 @@ pub(crate) enum ViewStateCmd {
 pub(crate) struct ViewStateStore;
 
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
+#[cfg_attr(not(test), allow(dead_code))] // Compatibility facade retained for the next ownership stage.
 pub(crate) fn apply(cmd: ViewStateCmd) -> bool {
     super::apply(super::StoreCmd::ViewState(cmd)).changed
 }
