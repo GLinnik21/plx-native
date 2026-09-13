@@ -501,6 +501,11 @@ impl<'a> DirectoryView<'a> {
         [super::SecKind::Movie, super::SecKind::Show].into_iter()
             .filter(|kind| self.preferred(*kind).is_some()).nth(tab)
     }
+    #[allow(dead_code)] // Consumed by the UI lane's explicit Chrome refresh signature.
+    pub(crate) fn tab_title(self, tab: usize) -> Option<&'a str> {
+        let section = self.preferred(self.tab_kind(tab)?)?;
+        self.sections().get(section).map(|section| section.row.title.as_str())
+    }
     #[allow(dead_code)]
     pub(crate) fn tab_count(self) -> usize {
         [super::SecKind::Movie, super::SecKind::Show].into_iter()

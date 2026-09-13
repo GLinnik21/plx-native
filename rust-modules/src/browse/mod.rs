@@ -2818,6 +2818,7 @@ fn record_pins(asked: bool) {
 
 /// **Has the first-run question been put to the profile now watching?** — the route's own gate,
 /// answered from the granted roster and this profile's record. See `plex::pins::asks`.
+#[allow(dead_code)] // Compatibility wrapper retained for the UI consumer wave.
 pub(crate) fn first_run_asks() -> bool {
     let sess = crate::plex::session::peek();
     let granted = crate::plex::server_ids().count();
@@ -4074,6 +4075,7 @@ pub(crate) fn discover_pump() -> crate::stores::EndpointRefreshSet {
 }
 
 /// Scheduling only; controlled ingress is supplied separately through the dispatcher.
+#[allow(dead_code)] // Compatibility wrapper retained for controlled fixtures during migration.
 pub(crate) fn controlled_discover(launch: &mut dyn FnMut(DiscoveryRequest) -> bool) {
     if crate::stores::browse::controlled_discover_active(launch) {
         return;
