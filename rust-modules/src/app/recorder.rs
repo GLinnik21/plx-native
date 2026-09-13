@@ -1823,9 +1823,26 @@ mod tests {
     #[test]
     fn the_application_bridge_records_its_real_drain_and_lifecycle() {
         let _guard = crate::testlock::serial();
+        struct Cleanup;
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+                crate::plex::reset_servers_for_test();
+            }
+        }
+        crate::plex::reset_servers_for_test();
+        let own = crate::plex::register_for_test(
+            "recorder-owned", "127.0.0.1", 9, "synthetic", "fixture");
+        let shared = crate::plex::register_for_test(
+            "recorder-shared", "127.0.0.1", 10, "synthetic", "fixture");
+        crate::plex::set_current(own);
+        let _cleanup = Cleanup;
         let mut rig = super::super::bridge::Bridge::for_test(|| 0);
-        rig.browse_run(crate::stores::browse::BrowseCmd::Reset);
-        crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
+        rig.seed_registered_browse_for_test([own, shared]);
+        assert!(!rig.browse_directory().sections().is_empty(),
+            "a Bridge Hubs landing fixture requires its retained Browse bootstrap");
+        crate::pms::seed_for_directory_test(
+            own, 1, crate::pms::HubState::Ready, rig.browse_directory());
         let init = AppInit { route: "home", session: false, servers: 1, consent_asked: 0,
             consent_errors: false, consent_usage: false, seed: 0 };
         let sink = crate::ui::rec::MemSink::default();
@@ -1878,7 +1895,6 @@ mod tests {
         let Recplay::Replaying(r) = replay else { unreachable!() };
         assert_eq!(r.result_at, 1);
         assert_eq!(r.result_diffs, 0);
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]

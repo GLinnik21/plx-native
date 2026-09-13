@@ -520,8 +520,9 @@ mod contract_tests {
         let endpoints = stores.browse.borrow_mut().discover_pump();
         assert_eq!(endpoints.endpoints.iter().map(|request| request.sid).collect::<Vec<_>>(), [sid]);
         assert_eq!(stores.browse.borrow().gen(), before_landing + 1);
-        assert_eq!(stores.take_notices(), [(StoreId::Browse, before_landing + 1)]);
-        assert!(stores.take_notices().is_empty(), "one discovery landing owes one notice");
+        assert_eq!(stores.browse.borrow().take_notice(), Some(before_landing + 1));
+        assert_eq!(stores.browse.borrow().take_notice(), None,
+            "one discovery landing owes one notice on the addressed Browse owner");
         assert_eq!(stores.browse.borrow_mut().discover_pump().endpoints.iter().count(), 0,
             "the transferred adapter result is consumed exactly once");
         crate::plex::reset_servers_for_test();
