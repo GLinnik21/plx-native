@@ -213,7 +213,7 @@ pub(crate) enum LibraryReq {
     ItemMenu { sid: crate::plex::ServerId, rk: String, from_deck: bool },
     Account,
     Tab(HomeTab),
-    BackToHome { kind: crate::browse::SecKind },
+    BackToHome { kind: crate::stores::browse::SecKind },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -343,7 +343,7 @@ impl crate::ui::machine::LogicalState for ItemMenuArg {
 /// Addressed simulator/harness intentions. They are resolved by the mounted instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LibraryCmd {
-    Enter(crate::browse::SecKind),
+    Enter(crate::stores::browse::SecKind),
     #[cfg(test)]
     FocusGrid { row: usize, col: usize },
     Page(i32),
@@ -835,6 +835,19 @@ pub(crate) trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
     fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a>;
     fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a>;
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a>;
+}
+
+/// A host carrying the retained Browse directory needed by Chrome and the Settings family.
+/// Full Library hosts implement this automatically; the nested Settings host carries only this
+/// one publication so its Onboard child never falls back to the compatibility selector.
+pub(crate) trait DirectoryLike: AppLike + Sized {
+    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a>;
+}
+
+impl<H: LibraryLike> DirectoryLike for H {
+    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> {
+        LibraryLike::directory(cx)
+    }
 }
 
 /// Session's immutable frame publication; playback retains its separate `session` view.
@@ -1446,7 +1459,7 @@ pub(crate) struct AppMounter {
     /// many episodes the chain runs for. That was `Origin::Unchanged` and a `set_origin` call;
     /// it is now the absence of a write.
     pub(crate) player_origin: Option<crate::screens::player::Origin>,
-    pub(crate) library_kind: Option<crate::browse::SecKind>,
+    pub(crate) library_kind: Option<crate::stores::browse::SecKind>,
     /// How long the NEXT player instance pins its transport for, in ms — `HUD_LINGER_MS` for an
     /// ordinary start and `HUD_HEADLESS_MS` for a capture run. It is a seed rather than a constant
     /// because `start_playback` is what knows which, and because the deadline must be stamped from
@@ -1520,7 +1533,8 @@ where
             }
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
             // word stays the loop's while the loop still names the page
-            AppArg::Onboard => Box::new(crate::screens::onboard::OnboardScreen::first_run(entry)),
+            AppArg::Onboard => Box::new(crate::screens::onboard::OnboardScreen::first_run(
+                entry, H::directory(cx))),
             // Phase 6: the QR sign-in and the who's-watching picker are OWNED screens too, mounted
             // exactly the same way — the route word is still the loop's (`route_word`), and
             // naming the route is the whole of (re)mounting either: a fresh instance is built
@@ -1543,7 +1557,7 @@ where
             }
             AppArg::Library => {
                 let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
-                    .unwrap_or(crate::browse::SecKind::Movie);
+                    .unwrap_or(crate::stores::browse::SecKind::Movie);
                 let mut page = crate::screens::library::LibraryScreen::new(entry, id, kind);
                 if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
