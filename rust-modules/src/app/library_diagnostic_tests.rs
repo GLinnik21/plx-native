@@ -4,14 +4,14 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+            run_browse_for_test(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
     let session = crate::plex::session::TempSession::new("library-rail-key-return");
     session.watching("u-library-rail-key-return");
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    run_browse_for_test(crate::stores::browse::BrowseCmd::Reset);
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_for_test("rail-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared =
@@ -20,7 +20,7 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
     crate::browse::seed_registered_table_for_test([sid, shared]);
     let mut directory = crate::stores::browse::DirectorySnapshot::default();
     directory.capture();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
+    run_browse_for_test(crate::stores::browse::BrowseCmd::SetCur(0));
     crate::browse::seed_items_for_test(120);
     crate::browse::seed_letter_counts_for_test(&[("A", 60), ("Z", 60)]);
     let mut d = Dispatcher::<AppHost>::new();
@@ -101,7 +101,7 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
 fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
     use crate::screens::registry::{LibraryCmd, LibraryMenuArg, LibraryMenuKind};
     let _guard = crate::testlock::serial();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    run_browse_for_test(crate::stores::browse::BrowseCmd::Reset);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
@@ -181,14 +181,14 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+            run_browse_for_test(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
     let session = crate::plex::session::TempSession::new("library-diagnostic-sweep");
     session.watching("u-library-diagnostic-sweep");
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    run_browse_for_test(crate::stores::browse::BrowseCmd::Reset);
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_for_test("sweep-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared =
@@ -197,12 +197,12 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
     crate::browse::seed_registered_table_for_test([sid, shared]);
     let mut directory = crate::stores::browse::DirectorySnapshot::default();
     directory.capture();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::ApplyPins(vec![
+    run_browse_for_test(crate::stores::browse::BrowseCmd::ApplyPins(vec![
         (0, true),
         (2, true),
     ]));
     directory.capture();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
+    run_browse_for_test(crate::stores::browse::BrowseCmd::SetCur(0));
     crate::browse::seed_items_for_test(120);
     crate::browse::section_hubs::seed_shelves_for_test(
         0,
