@@ -1823,7 +1823,8 @@ mod tests {
     #[test]
     fn the_application_bridge_records_its_real_drain_and_lifecycle() {
         let _guard = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        let mut rig = super::super::bridge::Bridge::for_test(|| 0);
+        rig.browse_run(crate::stores::browse::BrowseCmd::Reset);
         crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
         let init = AppInit { route: "home", session: false, servers: 1, consent_asked: 0,
             consent_errors: false, consent_usage: false, seed: 0 };
@@ -1832,7 +1833,6 @@ mod tests {
         let writer = Writer::open(Box::new(sink), &Header::new(state_fp(), &init), 0).unwrap();
         let mut rec = Recplay::Recording(Rec { w: writer, f: 0, focus: None, events: false, spent_ns: 0, failure: None });
         let mut d = crate::ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
-        let mut rig = super::super::bridge::Bridge::for_test(|| 0);
         rec.tick(0, 0.016);
         let request = crate::pms::queue_test_landing(Some(3));
         super::super::bridge::show_page(&mut d, super::super::AppArg::Home);

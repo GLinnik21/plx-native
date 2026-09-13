@@ -65,6 +65,16 @@ impl<'a> SearchView<'a> {
 /// Main-thread store boundary, called once for a dispatcher frame. Borrowed access thereafter
 /// is scoped to the retained snapshot; it never reads the mutable Search globals again.
 pub(crate) fn snapshot() -> SearchSnapshot {
+    snapshot_with_scope(super::scope::snapshot())
+}
+
+pub(crate) fn snapshot_with_directory(
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> SearchSnapshot {
+    snapshot_with_scope(super::scope::snapshot_with_directory(directory))
+}
+
+fn snapshot_with_scope(scope: super::scope::SourceScopeSnapshot) -> SearchSnapshot {
     unsafe {
         SearchSnapshot {
             query: (&*addr_of!(super::QUERY)).clone(),
@@ -72,7 +82,7 @@ pub(crate) fn snapshot() -> SearchSnapshot {
             state: super::state(),
             query_gen: super::query_gen(),
             recents: super::recents::snapshot(),
-            scope: super::scope::snapshot(),
+            scope,
         }
     }
 }

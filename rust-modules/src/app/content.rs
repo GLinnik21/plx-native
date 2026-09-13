@@ -157,9 +157,7 @@ fn home_requests(app: &mut App, now: u32) {
             HomeReq::Tab(tab) => {
                 // A pointer may name the last presented map after favourites changed. The
                 // stable key must not resurrect a destination the current strip withdrew.
-                let kind = match tab { HomeTab::Movies => Some(crate::browse::SecKind::Movie),
-                    HomeTab::Shows => Some(crate::browse::SecKind::Show), _ => None };
-                if kind.is_some_and(|kind| crate::browse::tab_of_kind(kind).is_none()) { continue; }
+                if !home_tab_available(app.bridge.browse_directory(), tab) { continue; }
                 match tab {
                     // The Home pill ON Home: nothing to navigate to, but a transition queued a
                     // moment ago is still withdrawable, and that is what this press means.
@@ -293,7 +291,8 @@ fn library_requests(app: &mut App, now: u32) {
             if app.pages.nav.top_page().is_some_and(|page| page.id == entry) && app.route() == AppArg::Library {
                 // Apply through the store vocabulary at this boundary. The press check and commit
                 // are adjacent; no queued boolean can outlive an input arm created later.
-                crate::stores::browse::apply(library_publication_command(&app.pages, target, hidden_page, at_head));
+                app.bridge.browse_run(library_publication_command(
+                    &app.pages, target, hidden_page, at_head));
             }
             continue;
         }
@@ -333,6 +332,18 @@ fn library_requests(app: &mut App, now: u32) {
     }
 }
 
+fn home_tab_available(
+    directory: crate::stores::browse::DirectoryView<'_>,
+    tab: HomeTab,
+) -> bool {
+    let kind = match tab {
+        HomeTab::Movies => Some(crate::stores::browse::SecKind::Movie),
+        HomeTab::Shows => Some(crate::stores::browse::SecKind::Show),
+        _ => None,
+    };
+    kind.is_none_or(|kind| directory.tab_of_kind(kind).is_some())
+}
+
 fn library_publication_command(
     dispatcher: &crate::ui::dispatch::Dispatcher<bridge::AppHost>,
     target: crate::stores::browse::SectionAddress,
@@ -349,6 +360,31 @@ fn library_publication_command(
 #[cfg(test)]
 mod library_publication_tests {
     use super::*;
+
+    #[test]
+    fn home_tab_validation_reads_the_supplied_directory() {
+        let sid = crate::plex::ServerId::from_raw(3);
+        let directory = crate::stores::browse::DirectorySnapshot::fixture(7, 0, vec![
+            crate::stores::browse::SectionView {
+                borrowed: false,
+                sid: Some(sid),
+                key: 11,
+                kind: crate::stores::browse::SecKind::Movie,
+                row: crate::stores::browse::SrcRow {
+                    section: 0,
+                    title: "Movies".into(),
+                    pinned: true,
+                    current: true,
+                    ..Default::default()
+                },
+            },
+        ]);
+
+        assert!(home_tab_available(directory.view(), HomeTab::Movies));
+        assert!(!home_tab_available(directory.view(), HomeTab::Shows));
+        assert!(home_tab_available(directory.view(), HomeTab::Home));
+    }
+
     #[test]
     fn a_fresh_arm_at_rest_scale_still_blocks_visible_shelf_publication() {
         let mut dispatcher = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
