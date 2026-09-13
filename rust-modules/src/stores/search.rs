@@ -54,8 +54,7 @@ pub(super) fn run(cmd: SearchCmd) -> bool {
 }
 
 /// Synchronous command path with the Browse owner publication captured by the application.
-/// Query admission snapshots its favourite-library ranking from this directory, not from the
-/// temporary active-owner selector.
+/// Query admission snapshots its favourite-library ranking from this directory.
 pub(crate) fn run_with_directory(
     cmd: SearchCmd,
     directory: crate::stores::browse::DirectoryView<'_>,

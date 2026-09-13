@@ -335,23 +335,24 @@ mod heartbeat_word_tests {
     /// Search in the strip, about one full-suite run in six. Here the same chain is on one
     /// thread, under the guard, and is therefore deterministic.
     #[test]
-    fn deriving_the_surface_alphabet_empties_a_seeded_browse_table() {
+    fn deriving_the_surface_alphabet_cannot_mutate_an_unrelated_browse_owner() {
         let _guard = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-        crate::browse::seed_two_source_table_for_test();
+        let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_two_source_table_for_test();
+        let mut directory = crate::stores::browse::DirectorySnapshot::default();
+        stores.capture_browse(&mut directory);
         assert_eq!(
-            crate::browse::section_count(),
+            directory.view().section_count(),
             4,
             "the fixture the browse-backed tests across the suite seed"
         );
         let _ = overlay_alphabet();
+        stores.capture_browse(&mut directory);
         assert_eq!(
-            crate::browse::section_count(),
-            0,
-            "deriving the alphabet runs real frames and empties the section table — so it must \
-             never run on a thread that does not hold testlock::serial()"
+            directory.view().section_count(),
+            4,
+            "real frames own their BrowseStore and cannot wipe an unrelated fixture"
         );
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// **Pins the focusprobe's player-overlay word to THIS module's `overlay_word`, not a second

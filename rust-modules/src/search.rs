@@ -566,8 +566,8 @@ static VISIBLE: AtomicU32 = AtomicU32::new(0);
 /// site (`plex/CLAUDE.md` rule 5) and read by [`rebuild`]'s merge. It ranks; it never filters.
 static FAVS: Mutex<Vec<(ServerId, i64, bool)>> = Mutex::new(Vec::new());
 
-/// `browse::sections_gen()` as of that snapshot — the second generation this store watches, beside
-/// [`VISIBLE`].
+/// The retained Browse directory's section generation as of that snapshot — the second generation
+/// this store watches, beside [`VISIBLE`].
 ///
 /// It is genuinely needed. Search watched the ROSTER generation alone, and the favourite answer
 /// moves without the roster moving at all: discovery appends a library and `apply_pins` records an
@@ -580,12 +580,11 @@ static FAVS: Mutex<Vec<(ServerId, i64, bool)>> = Mutex::new(Vec::new());
 /// retaining full contributing-section provenance through both folds; re-arming is cheaper.
 static FAV_GEN: AtomicU32 = AtomicU32::new(0);
 
-/// Take the favourite snapshot and publish the generation it belongs to. Main thread only — it
-/// reads Browse's compatibility publication; `app/bridge.rs` activates the current Bridge-owned
-/// BrowseStore before this store pumps.
+/// Standalone fixture scope. Production always supplies the owning Bridge's retained directory;
+/// tests that exercise Search in isolation have no Browse favourites by construction.
 fn snapshot_favs() {
-    FAV_GEN.store(crate::browse::sections_gen(), Ordering::SeqCst);
-    *FAVS.lock().unwrap_or_else(|e| e.into_inner()) = crate::browse::favorite_sections();
+    FAV_GEN.store(0, Ordering::SeqCst);
+    FAVS.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 fn snapshot_favs_from_directory(directory: crate::stores::browse::DirectoryView<'_>) {
@@ -813,8 +812,7 @@ fn pump_with_optional_directory(
     // bit cannot be re-derived locally (see [`FAV_GEN`]). With nothing resident there is nothing to
     // invalidate and the snapshot is simply brought up to date, so the next query does not open by
     // re-arming itself.
-    let sections_gen = directory.map_or_else(crate::browse::sections_gen,
-        |directory| directory.sections_gen());
+    let sections_gen = directory.map_or(0, |directory| directory.sections_gen());
     if FAV_GEN.load(Ordering::SeqCst) != sections_gen {
         if terms(query()).is_some() {
             match directory {
@@ -1342,7 +1340,6 @@ mod tests {
     fn initial_query_scope_comes_from_the_retained_directory() {
         let _guard = crate::testlock::serial();
         reset();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         let sid = ServerId::from_raw(3);
         let directory = crate::stores::browse::DirectorySnapshot::fixture(9, 0, vec![
             crate::stores::browse::SectionView {
@@ -1365,7 +1362,6 @@ mod tests {
         assert_eq!(FAV_GEN.load(Ordering::SeqCst), directory.view().sections_gen());
         assert_eq!(favs(), directory.view().favorite_sections());
         reset();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// [`merge`] with no favourite table, for the tests whose subject is the merge itself.
@@ -1663,16 +1659,20 @@ mod tests {
         let _t = crate::plex::session::TempSession::new("search-favgen");
         _t.watching("u-search-favgen");
         register(1);
-        set_query("wallace");
+        let stores = crate::stores::Stores::default();
+        let mut directory = crate::stores::browse::DirectorySnapshot::default();
+        stores.capture_browse(&mut directory);
+        set_query_from_directory("wallace", directory.view());
         hold_off();
-        pump(SETTLE_S + 0.1); // settles and takes the snapshot's generation
+        pump_with_directory(SETTLE_S + 0.1, directory.view()); // settles and takes the snapshot's generation
         let gen0 = GEN.load(Ordering::SeqCst);
         unsafe { *addr_of_mut!(ARMED) = false };
 
         // …a library lands, which is what `apply_pins` and discovery both look like from here
-        crate::browse::seed_two_source_table_for_test();
+        stores.browse.borrow_mut().seed_two_source_table_for_test();
+        stores.capture_browse(&mut directory);
         hold_off();
-        pump(0.016);
+        pump_with_directory(0.016, directory.view());
         assert_ne!(
             GEN.load(Ordering::SeqCst),
             gen0,
@@ -1684,7 +1684,7 @@ mod tests {
         );
         assert_eq!(
             FAV_GEN.load(Ordering::SeqCst),
-            crate::browse::sections_gen(),
+            directory.view().sections_gen(),
             "the snapshot moved with it"
         );
 
@@ -1692,9 +1692,8 @@ mod tests {
         // after any edit would supersede the query it just started
         hold_off();
         let gen1 = GEN.load(Ordering::SeqCst);
-        pump(0.016);
+        pump_with_directory(0.016, directory.view());
         assert_eq!(GEN.load(Ordering::SeqCst), gen1, "it settles");
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// The other half, and the one that costs nothing to get wrong until a user types: with NO
@@ -1707,13 +1706,17 @@ mod tests {
         let _t = crate::plex::session::TempSession::new("search-favgen-idle");
         _t.watching("u-search-favgen-idle");
         register(1);
+        let stores = crate::stores::Stores::default();
+        let mut directory = crate::stores::browse::DirectorySnapshot::default();
+        stores.capture_browse(&mut directory);
         hold_off();
-        pump(0.016);
+        pump_with_directory(0.016, directory.view());
         let gen0 = GEN.load(Ordering::SeqCst);
 
-        crate::browse::seed_two_source_table_for_test();
+        stores.browse.borrow_mut().seed_two_source_table_for_test();
+        stores.capture_browse(&mut directory);
         hold_off();
-        pump(0.016);
+        pump_with_directory(0.016, directory.view());
         assert_eq!(
             GEN.load(Ordering::SeqCst),
             gen0,
@@ -1721,10 +1724,9 @@ mod tests {
         );
         assert_eq!(
             FAV_GEN.load(Ordering::SeqCst),
-            crate::browse::sections_gen(),
+            directory.view().sections_gen(),
             "…but the snapshot is current, so the next query does not open by re-arming"
         );
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     // ---- favourites RANK, and never filter (§6) --------------------------------------------

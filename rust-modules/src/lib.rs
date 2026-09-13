@@ -113,14 +113,14 @@ pub(crate) mod testlock {
     //! it safe" — a store answers yes to the first question unconditionally, so only the second one
     //! applies to it.
     //!
-    //! **Phase 12 / D5 closed the coverage this claim depends on** (2026-09-10): every store's own
-    //! `apply`/`run` funnel now asserts (`stores::browse::run`, `stores::hubs::run`,
-    //! `stores::metadata::run`, `stores::person::run`, `stores::search::run`,
-    //! `stores::viewstate::run`), as does every `_for_test` seed/installer reachable from a test —
-    //! `browse/mod.rs` (`seed_sources_for_test`, `set_pinned_for_test`, `land_pin_for_test`,
-    //! `seed_pins_for_test`, `seed_two_source_table_for_test`, `seed_registered_table_for_test`,
-    //! `seed_items_for_test`, `seed_letter_counts_for_test`, `seed_query_choices_for_test`,
-    //! `append_section_for_test`, plus `reset`/`append_sections` themselves), `metadata.rs`
+    //! **Phase 12 / D5 closed the coverage this claim depends on** (2026-09-10): each remaining
+    //! process-global store's `apply`/`run` funnel asserts (`stores::hubs::run`,
+    //! `stores::metadata::run`, `stores::person::run`, `stores::search::run`, and
+    //! `stores::viewstate::run`), as does every `_for_test` installer that touches shared state.
+    //! Browse fixtures instead own a `BrowseStore`; its explicit helpers cover source, pin,
+    //! table, item, letter and query seeds without selecting process Browse state. Helpers that
+    //! also touch the shared session or server registry assert the same lock. The remaining global
+    //! installers include `metadata.rs`
     //! (`install_for_test`, `set_current_for_test`, `begin_detail_for_test`,
     //! `land_detail_for_test`), `search.rs` (`publish_shelves_for_test`,
     //! `debounce_elapsed_for_test`), `person.rs` (`install_credits_for_test`, `install_for_test`,

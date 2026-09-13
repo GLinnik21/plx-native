@@ -2727,12 +2727,6 @@ pub(crate) fn pump_alt_sources_with_directory(
     pump_alt_sources_with_library(Some(library))
 }
 
-// The core-retirement lane removes this legacy accessor. Keep this independently verified
-// consumer lane linkable until that sibling commit is integrated, without consulting it.
-#[cfg(not(test))]
-#[used]
-static LEGACY_SECTION_TITLE_LINK: fn(usize) -> &'static str = crate::browse::section_title;
-
 fn pump_alt_sources_with_library(library: Option<&str>) -> bool {
     use std::sync::atomic::Ordering;
     let mut changed = false;

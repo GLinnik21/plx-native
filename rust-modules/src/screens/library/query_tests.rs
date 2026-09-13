@@ -1,8 +1,3 @@
-fn run_browse(cmd: crate::stores::browse::BrowseCmd) {
-    let stores = crate::stores::Stores::default();
-    stores.browse_run(cmd);
-}
-
 #[test]
 fn query_reset_intent_and_observed_query_are_canonical_in_return_memory() {
     let _guard = crate::testlock::serial();
@@ -43,12 +38,14 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
     ] {
         for evict in [false, true] {
             let mut fixture = Fixture::new();
-            crate::browse::seed_two_source_table_for_test();
-            fixture.directory.capture();
-            run_browse(BrowseCmd::SetCur(0));
-            crate::browse::seed_items_for_test(120);
-            crate::browse::seed_query_choices_for_test(
-                vec![
+            let stores = crate::stores::Stores::default();
+            stores.browse.borrow_mut().seed_two_source_table_for_test();
+            stores.capture_browse(&mut fixture.directory);
+            stores.browse_run(BrowseCmd::SetCur(0));
+            {
+                let mut browse = stores.browse.borrow_mut();
+                browse.seed_items_for_test(120);
+                browse.seed_query_choices_for_test(vec![
                     crate::stores::browse::SortEntry {
                         key: "titleSort".into(),
                         title: "Title".into(),
@@ -59,15 +56,14 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
                         title: "Year".into(),
                         default_desc: false,
                     },
-                ],
-                vec![crate::stores::browse::GenreEntry {
+                ], vec![crate::stores::browse::GenreEntry {
                     id: "g1".into(),
                     title: "Drama".into(),
-                }],
-            );
-            fixture.directory.capture();
-            fixture.listing = crate::stores::browse::listing_snapshot();
-            fixture.hubs = crate::stores::browse::hubs_snapshot();
+                }]);
+            }
+            let publication = stores.capture_browse(&mut fixture.directory);
+            fixture.listing = publication.listing;
+            fixture.hubs = publication.section_hubs;
             let id = fixture.listing.view().id().unwrap();
             let mut page = fixture.screen();
             page.initial = false; // The fixture premise is an already-entered, settled page.
@@ -123,18 +119,20 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
                 );
                 for effect in output.drain(..) {
                     if let Fx::App(AppFx::Store(_, command)) = effect.fx {
-                        if matches!(
+                        if let crate::stores::StoreCmd::Browse(command) = command {
+                            if matches!(
                             &command,
-                            crate::stores::StoreCmd::Browse(BrowseCmd::Addressed {
+                            BrowseCmd::Addressed {
                                 work: LibraryWork::Commit { query: Some(_), .. },
                                 ..
-                            })
+                            }
                         ) {
                             assert!(
-                                crate::stores::apply(command).changed,
+                                stores.browse_run(command),
                                 "{edit:?} must be accepted by the real store"
                             );
                             committed = true;
+                        }
                         }
                     }
                 }
@@ -143,8 +141,7 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
                 }
             }
             assert!(committed);
-            fixture.directory.capture();
-            fixture.listing = crate::stores::browse::listing_snapshot();
+            fixture.listing = stores.capture_browse(&mut fixture.directory).listing;
             assert_ne!(fixture.listing.view().id().unwrap().query, id.query);
             assert_eq!(fixture.listing.view().fetch(), SecFetch::Loading);
             let mut cx = fixture.cx(Some(toolbar));
@@ -212,8 +209,8 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
                     "toolbar must survive a slow query: {edit:?}"
                 );
             }
-            crate::browse::seed_items_for_test(120);
-            fixture.listing = crate::stores::browse::listing_snapshot();
+            stores.browse.borrow_mut().seed_items_for_test(120);
+            fixture.listing = stores.browse.borrow_mut().listing_snapshot();
             output.clear();
             let mut cx = fixture.cx(Some(toolbar));
             cx.focus = engine.read(OWNER);
@@ -246,5 +243,4 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
             assert!((page.scroll_target - page.target_layout.row_reveal(0)).abs() < 0.01);
         }
     }
-    run_browse(BrowseCmd::Reset);
 }

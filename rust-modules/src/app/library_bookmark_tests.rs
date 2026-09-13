@@ -1,14 +1,9 @@
-fn run_browse_for_test(cmd: crate::stores::browse::BrowseCmd) {
-    let stores = crate::stores::Stores::default();
-    stores.browse_run(cmd);
-}
-
 #[test]
 fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
     use crate::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
     let _guard = crate::testlock::serial();
-    crate::browse::seed_two_source_table_for_test();
     let stores = crate::stores::Stores::default();
+    stores.browse.borrow_mut().seed_two_source_table_for_test();
     let mut directory = crate::stores::browse::DirectorySnapshot::default();
     stores.capture_browse(&mut directory);
     let section = &directory.view().sections()[0];
@@ -28,10 +23,11 @@ fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
         },
     ] {
         let cursor = crate::stores::browse::Cursor { at, scroll: 1200.0 };
+        let query = stores.browse.borrow_mut().listing_snapshot().view().id().unwrap().query;
         let command = BrowseCmd::Addressed {
             target,
             work: LibraryWork::SaveCursor {
-                query: stores.browse.borrow_mut().listing_snapshot().view().id().unwrap().query,
+                query,
                 cursor: cursor.clone(),
             },
         };
@@ -61,7 +57,7 @@ fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
                 ..target
             },
             work: LibraryWork::SaveCursor {
-                query: stores.browse.borrow_mut().listing_snapshot().view().id().unwrap().query,
+                query,
                 cursor: cursor.clone()
             },
         }));
@@ -73,7 +69,7 @@ fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
         assert!(!stores.browse_run(BrowseCmd::Addressed {
             target,
             work: LibraryWork::SaveCursor {
-                query: stores.browse.borrow_mut().listing_snapshot().view().id().unwrap().query.wrapping_add(1),
+                query: query.wrapping_add(1),
                 cursor
             },
         }));
@@ -130,13 +126,12 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     let shared =
         crate::plex::register_for_test("bookmark-shared", "127.0.0.1", 10, "synthetic", "fixture");
     crate::plex::set_current(sid);
-    crate::browse::seed_registered_table_for_test([sid, shared]);
-    let mut directory = crate::stores::browse::DirectorySnapshot::default();
-    directory.capture();
-    run_browse_for_test(crate::stores::browse::BrowseCmd::SetCur(0));
-    crate::browse::seed_items_for_test(120);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
+    rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
+    rig.refresh_browse_directory();
+    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
     frame(&mut d, &mut rig, AppArg::Library, tick(1), vec![]);
@@ -212,7 +207,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
         "the actual deferred transaction enters section B"
     );
     d.request(MachineId::Nav, NavOp::Dismiss(menu_entry));
-    crate::browse::seed_items_for_test(120);
+    rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Library, tick(120), vec![]);
     Bridge::library_command(
         &mut d,

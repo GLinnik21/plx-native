@@ -603,12 +603,11 @@ mod tests {
         assert!(buf.is_empty(), "a row past the list must not open a document");
     }
 
-    /// A `Cx<InnerHost>` with no views to speak of (the family's pages read the stores' published
-    /// functions directly, never through `Cx::views` — see `family::inner_cx`'s own doc), for
-    /// asking a `Focusable` query or stepping a `Machine` outside the real dispatcher.
+    /// A `Cx<InnerHost>` with an explicit empty directory fixture for asking a `Focusable` query
+    /// or stepping a `Machine` outside the real dispatcher.
     fn fixture_cx(m: &FixtureMeasure, focus: Option<FocusKey<u32>>) -> Cx<'_, InnerHost> {
         Cx {
-            views: (),
+            views: crate::stores::browse::DirectoryView::empty_for_test(),
             tick: Tick::default(),
             measure: m,
             press: PressRead::default(),

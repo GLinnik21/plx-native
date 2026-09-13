@@ -1274,11 +1274,11 @@ mod tests {
     use crate::screens::registry::BAND;
 
     /// A bare `Cx<InnerHost>` for constructing or stepping a page with no SDL, no GL and no
-    /// television — `InnerHost::Views<'a>` is `()`, so there is nothing to project, unlike
-    /// `table_screen.rs`'s own `FixtureHost` version of this helper.
+    /// television. Consent does not inspect the retained Browse directory, so the explicit empty
+    /// fixture is sufficient; the nested host still carries the same view type as production.
     fn test_cx(m: &FixtureMeasure) -> Cx<'_, InnerHost> {
         Cx {
-            views: (),
+            views: crate::stores::browse::DirectoryView::empty_for_test(),
             tick: Tick::default(),
             measure: m,
             press: PressRead::default(),

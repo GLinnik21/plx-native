@@ -286,7 +286,7 @@ fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason(
     let _guard = crate::testlock::serial();
     for owner in ["", "friend"] {
         let mut fixture = Fixture::new();
-        fixture.listing = crate::stores::browse::listing_snapshot();
+        fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
         fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, crate::plex::ServerId::from_raw(7),
             crate::browse::SrcGroup { name: "Cinema server".into(), handle: owner.into(),
                 state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
@@ -499,6 +499,7 @@ fn pending_semantic_commits_change_the_library_state_hash() {
 }
 
 struct Fixture {
+    stores: Option<crate::stores::Stores>,
     listing: crate::stores::browse::ListingSnapshot,
     directory: crate::stores::browse::DirectorySnapshot,
     hubs: crate::stores::browse::HubsSnapshot,
@@ -510,7 +511,7 @@ fn discovery_failure_retry_targets_the_source_without_a_section() {
     let _guard = crate::testlock::serial();
     let mut fixture = Fixture::new();
     let sid = crate::plex::ServerId::from_raw(7);
-    fixture.listing = crate::stores::browse::listing_snapshot();
+    fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
         crate::browse::SrcGroup { name: "Cinema server".into(), handle: "friend".into(),
             state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
@@ -644,14 +645,19 @@ fn section_viewport_bookmarks_survive_switch_and_evicted_body() {
 impl Fixture {
     fn shelves(titles: &[&str], count: usize) -> Self {
         let mut fixture = Self::new();
-        crate::browse::seed_two_source_table_for_test();
-        fixture.directory.capture();
-        crate::stores::browse::apply(BrowseCmd::SetCur(0));
-        crate::browse::seed_items_for_test(120);
-        crate::browse::section_hubs::seed_shelves_for_test(0, titles, count);
-        fixture.directory.capture();
-        fixture.listing = crate::stores::browse::listing_snapshot();
-        fixture.hubs = crate::stores::browse::hubs_snapshot();
+        let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_two_source_table_for_test();
+        stores.capture_browse(&mut fixture.directory);
+        stores.browse_run(BrowseCmd::SetCur(0));
+        {
+            let mut browse = stores.browse.borrow_mut();
+            browse.seed_items_for_test(120);
+            browse.seed_shelves_for_test(0, titles, count);
+        }
+        let publication = stores.capture_browse(&mut fixture.directory);
+        fixture.listing = publication.listing;
+        fixture.hubs = publication.section_hubs;
+        fixture.stores = Some(stores);
         let listing = fixture.listing.view().id().unwrap();
         let hubs = fixture.hubs.view().id().unwrap();
         assert_eq!((listing.epoch, listing.sid, listing.section), (hubs.epoch, hubs.sid, hubs.section));
@@ -660,7 +666,6 @@ impl Fixture {
     }
 
     fn new() -> Self {
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         let sid = crate::plex::ServerId::from_raw(0);
         let listing = crate::browse::view::ListingSnapshot::fixture(sid, (0..36).map(|i|
             Some(crate::pms::PmsMovie { sid, rk: format!("{}", i + 1), title: format!("s{i:04x}"), ..Default::default() })).collect(),
@@ -668,7 +673,13 @@ impl Fixture {
         let directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
             crate::browse::view::SectionView { borrowed: false, sid: Some(sid), key: 1, kind: SecKind::Movie,
                 row: crate::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } }]);
-        Self { listing, directory, hubs: crate::stores::browse::hubs_snapshot(), measure: FixtureMeasure }
+        Self {
+            stores: None,
+            listing,
+            directory,
+            hubs: crate::stores::browse::HubsSnapshot::empty_for_test(),
+            measure: FixtureMeasure,
+        }
     }
     fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
         Cx { views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
@@ -726,7 +737,6 @@ fn shelf_horizontal_viewport_and_engine_item_survive_body_eviction() {
     let after = restored.place(&key.elem, &fixture.cx(Some(key)), At::Drawn).unwrap().rest_rect;
     assert_eq!([before.x, before.y, before.w, before.h], [after.x, after.y, after.w, after.h]);
     assert_eq!(restored.focused_item(engine.current(OWNER), &fixture.cx(Some(key))).unwrap().rk, "movie.inprogress.1-3");
-    crate::stores::browse::apply(BrowseCmd::Reset);
 }
 
 #[test]
@@ -741,8 +751,10 @@ fn shelf_return_follows_the_film_then_its_last_published_slot() {
             let key = page.key(page.shelves[0].elems[3]);
             let memory = page.page_memory();
             let item = fixture.hubs.view().shelves()[0].items[if remove_focused { 3 } else { 0 }].clone();
-            assert!(crate::stores::browse::apply(BrowseCmd::LeftTheDeck { sid: item.sid, rk: item.rk }));
-            fixture.hubs = crate::stores::browse::hubs_snapshot();
+            let stores = fixture.stores.as_ref().unwrap();
+            assert!(stores.browse_run(BrowseCmd::LeftTheDeck { sid: item.sid, rk: item.rk }));
+            let publication = stores.capture_browse(&mut fixture.directory);
+            fixture.hubs = publication.section_hubs;
             if evict {
                 page = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
                 page.restore(&memory);
@@ -758,7 +770,6 @@ fn shelf_return_follows_the_film_then_its_last_published_slot() {
             if !remove_focused { assert_eq!(focus, key); }
         }
     }
-    crate::stores::browse::apply(BrowseCmd::Reset);
 }
 
 #[test]
@@ -914,15 +925,7 @@ fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
     let _guard = crate::testlock::serial();
     let session = crate::plex::session::TempSession::new("library-shelf-geometry");
     session.watching("u-library-shelf-geometry");
-    let mut fixture = Fixture::new();
-    crate::browse::seed_two_source_table_for_test();
-    fixture.directory.capture(); // Resolve this isolated profile's pins before choosing the subject.
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
-    crate::browse::seed_items_for_test(120);
-    crate::browse::section_hubs::seed_shelves_for_test(0, &["s0", "s1", "s2"], 12);
-    fixture.directory.capture();
-    fixture.listing = crate::stores::browse::listing_snapshot();
-    fixture.hubs = crate::stores::browse::hubs_snapshot();
+    let fixture = Fixture::shelves(&["s0", "s1", "s2"], 12);
     let listing_id = fixture.listing.view().id().unwrap();
     let hubs_id = fixture.hubs.view().id().unwrap();
     assert_eq!((listing_id.epoch, listing_id.sid, listing_id.section), (hubs_id.epoch, hubs_id.sid, hubs_id.section));
@@ -947,7 +950,6 @@ fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
     direction(&mut page, &mut engine, &fixture, Dir::Down);
     assert_eq!(engine.current_group(OWNER), Some(page.shelves[2].group));
     assert_eq!(page.shelves[2].elems.iter().position(|elem| *elem == engine.current(OWNER).unwrap().elem), Some(3));
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
 }
 
 #[test]
