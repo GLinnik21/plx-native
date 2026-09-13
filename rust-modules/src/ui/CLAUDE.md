@@ -369,7 +369,10 @@ so no screen-global pending-open latch or `open_rk_at` bridge owns the return po
 Detail's server reconciliation obligation is separate from that return position: directional
 input cancels focus/episode restoration but leaves the refresh phase on `DetailScreen`. A covered
 page retries a superseded reconciliation on Enter; a terminal response consumes the obligation
-even after restoration was cancelled. Navigation memory cannot overwrite a newer obligation.
+even after restoration was cancelled. Navigation memory cannot overwrite a newer obligation. On
+a visible ViewState completion, Detail synchronously starts the Metadata request and only then
+publishes `Requested`; its recorder-visible resource admission is the acknowledgment, so a queued
+Tick or stale StoreChanged can never observe `Requested` against the previous settled status.
 DOWN/UP pair the two exactly, LEFT/RIGHT hold the row, and the text row is deliberately NOT a
 `focus_is_card` — it is a link, so it commits at once and can never be held open into the still's
 menu. Its focus mark is About's idiom — literally the same call, `widgets::text_block_highlight`,

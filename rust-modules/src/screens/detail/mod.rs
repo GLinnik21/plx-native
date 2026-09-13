@@ -1049,14 +1049,14 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                     || refresh == DetailRefreshPhase::Requested && request_status.is_none()
                     || refresh == DetailRefreshPhase::None && self.detail().is_none()
                         && request_status != Some(true);
-                if request {
+                if request && refresh == DetailRefreshPhase::None {
                     apply_metadata(MetadataCmd::RequestDetail {
                         sid: self.sid,
                         rk: self.rk.clone(),
                     });
                 }
-                if refresh == DetailRefreshPhase::Deferred {
-                    self.refresh = DetailRefreshPhase::Requested;
+                if request && refresh != DetailRefreshPhase::None {
+                    self.start_reconciliation();
                 }
                 self.reveal_focus(cx.focus.current, cx.measure);
                 fx.invalidate(Provenance::Input);
@@ -1178,9 +1178,13 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
             ScreenEvent::App(AppMsg::DetailRestore { spot, episode, refresh }) => {
                 self.restore_episode(spot, episode.as_deref());
                 // A focus-only restore (including navigation memory) cannot discharge a newer
-                // write's server obligation. Non-None is a newly addressed refresh completion.
-                if *refresh != DetailRefreshPhase::None {
-                    self.refresh = *refresh;
+                // write's server obligation. A visible completion starts through the Metadata
+                // compatibility boundary before Requested becomes observable; a covered page
+                // keeps Deferred until Enter gives it ownership of the shared Metadata slot.
+                match refresh {
+                    DetailRefreshPhase::None => {}
+                    DetailRefreshPhase::Deferred => self.refresh = DetailRefreshPhase::Deferred,
+                    DetailRefreshPhase::Requested => self.start_reconciliation(),
                 }
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
@@ -1208,6 +1212,18 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
 }
 
 impl DetailScreen {
+    fn start_reconciliation(&mut self) {
+        // One synchronous transition: the command allocates/supersedes the addressed Metadata
+        // request before the screen publishes Requested. Its resource admission and spawn answer
+        // remain recorder-visible through `bootstrap::stores::admit`; queuing an AppFx copy here
+        // would start the non-idempotent command twice when that effect eventually drained.
+        apply_metadata(MetadataCmd::RequestDetail {
+            sid: self.sid,
+            rk: self.rk.clone(),
+        });
+        self.refresh = DetailRefreshPhase::Requested;
+    }
+
     fn restore_target_matches(&self, located: Located) -> bool {
         self.restore_focus().and_then(|elem| self.locate(elem)) == Some(located)
     }

@@ -881,7 +881,8 @@ pub(crate) enum AppMsg {
     DetailRestore {
         spot: crate::metadata::Spot,
         episode: Option<String>,
-        /// Whether an addressed ViewState reconciliation is deferred or already requested.
+        /// Deferred retains the obligation while covered; Requested tells the visible Detail to
+        /// synchronously start the request before publishing that phase as logical state.
         refresh: DetailRefreshPhase,
     },
     /// The *Also available* surface committed a row: open that copy's own page. The SURFACE names

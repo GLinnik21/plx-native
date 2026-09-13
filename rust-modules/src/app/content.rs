@@ -735,15 +735,20 @@ mod library_publication_tests {
 
     #[test]
     fn a_requested_detail_refresh_retries_after_a_child_supersedes_its_request() {
-        requested_refresh_after_child(false);
+        requested_refresh_after_child(false, false);
     }
 
     #[test]
     fn directional_related_navigation_preserves_the_refresh_obligation_after_back() {
-        requested_refresh_after_child(true);
+        requested_refresh_after_child(true, false);
     }
 
-    fn requested_refresh_after_child(navigate: bool) {
+    #[test]
+    fn visible_refresh_starts_before_queued_tick_or_store_change_can_consume_it() {
+        requested_refresh_after_child(true, true);
+    }
+
+    fn requested_refresh_after_child(navigate: bool, settled_before_refresh: bool) {
         let _guard = crate::testlock::serial();
         let sid = crate::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
@@ -785,12 +790,77 @@ mod library_publication_tests {
         assert_eq!((spot.section, spot.col, spot.ep_text, spot.season), (2, 0, true, Some(2)));
 
         let pre_refresh = crate::metadata::begin_detail_for_test(sid, "detail-a");
+        if settled_before_refresh {
+            let mut settled = detail_with_episode(sid, "detail-a", "Old A", true);
+            settled.related.push(crate::pms::PmsMovie {
+                sid, rk: "detail-b".into(), title: "Related B".into(), ..Default::default()
+            });
+            settled.related.push(crate::pms::PmsMovie {
+                sid, rk: "detail-c".into(), title: "Related C".into(), ..Default::default()
+            });
+            assert!(crate::metadata::land_detail_for_test(
+                sid, "detail-a", pre_refresh, Some(settled)));
+            assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(false),
+                "the reviewer race begins from a normally settled page");
+            let initial = crate::app::bootstrap::Initial::synthetic_home(1, 32498, None).unwrap();
+            crate::app::bootstrap::stores::init(&initial, true);
+            crate::app::bootstrap::stores::begin([
+                serde_json::json!({
+                    "content_resource": true,
+                    "request": {
+                        "store": "metadata", "sid": sid.raw(), "rk": "detail-a",
+                        "gen": pre_refresh + 1, "client": null,
+                    },
+                    "admitted": true,
+                }),
+            ].into(), Default::default());
+        }
         refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
         });
-        frame(&mut pages, &mut rig, &mut frame_no);
+        if settled_before_refresh {
+            struct AtomicStart {
+                sid: crate::plex::ServerId,
+                saw_restore: bool,
+                checked_after_restore: bool,
+            }
+            impl crate::ui::dispatch::Tap<bridge::AppHost> for AtomicStart {
+                fn effect(&mut self, _: u64, stamped: &crate::ui::machine::Stamped<bridge::AppHost>) {
+                    if self.saw_restore && !self.checked_after_restore {
+                        self.checked_after_restore = true;
+                        assert_eq!(crate::metadata::detail_request_status(self.sid, "detail-a"), Some(true),
+                            "Requested must not be visible before its reconciliation request exists");
+                    }
+                    if matches!(&stamped.fx, Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(
+                        AppMsg::DetailRestore { refresh: crate::screens::registry::DetailRefreshPhase::Requested, .. })))) {
+                        self.saw_restore = true;
+                    }
+                }
+            }
+            // These deliveries are already queued when DetailRestore executes. The assertion at
+            // the next effect boundary observes the state before either can consume a stale status.
+            pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(
+                pages.nav.top_page().unwrap().inst.as_ref().unwrap().id),
+                Delivery::Screen(ScreenEvent::Tick(crate::ui::machine::Tick {
+                    ms: frame_no * 16, dt_us: 16_000,
+                }))));
+            pages.store_changed(crate::stores::StoreId::Metadata.ord(), pre_refresh);
+            let mut tap = AtomicStart { sid, saw_restore: false, checked_after_restore: false };
+            let (_, report) = bridge::frame_with_tap(&mut pages, &mut rig,
+                crate::ui::machine::Tick { ms: frame_no * 16, dt_us: 16_000 }, Vec::new(), &mut tap);
+            frame_no += 1;
+            pages.prune(&report.unmounted);
+            assert!(tap.saw_restore && tap.checked_after_restore);
+            let (requests, failure) = crate::app::bootstrap::stores::finish();
+            assert_eq!(failure, None);
+            assert_eq!(requests.len(), 1,
+                "the synchronous start remains one recorder-visible resource admission");
+            crate::app::bootstrap::stores::reset_for_test();
+        } else {
+            frame(&mut pages, &mut rig, &mut frame_no);
+        }
         let stale_a = crate::metadata::detail_generation_for_test();
         assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(true));
         assert_eq!(detail_restore_target(&pages, a_entry),
@@ -1186,11 +1256,13 @@ pub(crate) fn refresh_content(
 ) {
     // A write may finish after another Detail has covered its origin. The covered instance must
     // retain the addressed restore intent, but the ONE Metadata slot belongs to the top page: an
-    // eager fetch here would supersede that visible Detail's load. When Back uncovers this entry,
-    // Detail's ordinary Enter(Restored) path starts its request after it owns the slot again.
+    // eager fetch here would supersede that visible Detail's load. The message tells a visible
+    // Detail to start synchronously before arming Requested; when Back uncovers a covered entry,
+    // its ordinary Enter(Restored) path performs that same atomic transition after it owns the
+    // slot again.
     let Some(entry) = pages.nav.tabs.stack.entries.iter().rev()
         .find(|e| detail_refresh_matches(&e.arg, &target)) else { return };
-    let AppArg::Content(ContentArg::Detail { sid, rk }) = &entry.arg else { return };
+    let AppArg::Content(ContentArg::Detail { .. }) = &entry.arg else { return };
     let Some(instance) = entry.inst.as_ref().map(|i| i.id) else { return };
     let owns_metadata = pages.nav.top_page().is_some_and(|top| top.id == entry.id);
     let memory = if owns_metadata {
@@ -1198,10 +1270,6 @@ pub(crate) fn refresh_content(
     } else { entry.ret.memory.clone() };
     let PageMemory::Detail(spot) = memory else { return };
     let spot = spot.spot;
-    let request = owns_metadata.then(|| crate::stores::metadata::MetadataCmd::RequestDetail {
-        sid: *sid,
-        rk: rk.clone(),
-    });
     pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
         Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore {
             spot,
@@ -1212,10 +1280,6 @@ pub(crate) fn refresh_content(
                 crate::screens::registry::DetailRefreshPhase::Deferred
             },
         }))));
-    if let Some(cmd) = request {
-        pages.emit(MachineId::Nav, Fx::App(crate::screens::registry::AppFx::Store(
-            crate::stores::StoreId::Metadata, crate::stores::StoreCmd::Metadata(cmd))));
-    }
 }
 
 fn detail_refresh_matches(arg: &AppArg, target: &crate::stores::viewstate::DetailRefresh) -> bool {

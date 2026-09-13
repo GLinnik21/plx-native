@@ -60,3 +60,40 @@ The first shipping check overlapped the harness's temporary negative source fixt
 on the injected Browse declaration. After the full harness restored the source and passed,
 the shipping check passed sequentially. The RED above predates implementation and is unrelated
 to that verification overlap.
+
+## Atomic visible start follow-up (2026-09-13)
+
+Review found a second ordering hole in the first fix: `refresh_content` queued
+`DetailRestore(Requested)` before the `AppFx::Store(RequestDetail)` that started its request. The
+dispatcher could therefore expose Requested while the addressed metadata status still described
+the previous settled request. A queued Tick or StoreChanged could consume the obligation before
+the replacement existed.
+
+`visible_refresh_starts_before_queued_tick_or_store_change_can_consume_it` starts with cached A and
+an addressed `Some(false)` status, queues the production DetailRestore with Tick and StoreChanged
+already waiting, and checks the next dispatcher effect boundary. Against `c86acb9e` it failed:
+
+```text
+assertion `left == right` failed: Requested must not be visible before its reconciliation request exists
+  left: Some(false)
+ right: Some(true)
+test result: FAILED. 0 passed; 1 failed; 0 ignored
+```
+
+The visible DetailRestore handler now calls the existing synchronous Metadata compatibility
+command first and stores Requested second. Covered pages still store Deferred; Enter uses the same
+start-and-arm operation. The queued AppFx copy was removed because RequestDetail is
+non-idempotent. Recording/replay observability remains at the actual resource boundary:
+`bootstrap::stores::admit` records and replays the one request identity and spawn answer. The new
+dispatcher regression runs that controlled admission path and asserts exactly one resource request.
+It then performs the prior Related-B supersession sequence, rejects stale A/B landings, retries A,
+terminates the obligation, and proves no duplicate request. The logical state shape and screen pin
+do not change in this follow-up.
+
+Follow-up verification completed:
+
+- Focused content dispatcher tests: 10 passed; Detail-related tests: 156 passed.
+- Full `make check`: 3,225 default-feature and 3,257 hostsim tests passed, with one existing
+  ignored test in each configuration; the 305-case harness and all other host gates passed.
+- Shipping `--no-default-features` check and `make FLAVOR=debug` ARM cross-build passed.
+- No device, stable install, release, or push.
