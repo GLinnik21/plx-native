@@ -5,6 +5,11 @@ use crate::ui::focus::{FocusEngine, Outcome};
 use crate::ui::machine::{Host, InputOwner, Tick};
 
 struct TestHost;
+fn run_browse(cmd: crate::stores::browse::BrowseCmd) {
+    let stores = crate::stores::Stores::default();
+    stores.browse_run(cmd);
+}
+
 #[derive(Clone, Copy)]
 struct Views<'a> {
     listing: crate::stores::browse::ListingView<'a>,
@@ -42,12 +47,12 @@ struct Publication {
 }
 impl Publication {
     fn replace(sids: [crate::plex::ServerId; 2], current: usize) -> Self {
-        crate::stores::browse::apply(BrowseCmd::Reset);
+        run_browse(BrowseCmd::Reset);
         crate::browse::seed_registered_table_for_test(sids);
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
         directory.capture(); // Resolve profile pins before choosing the intended section.
-        crate::stores::browse::apply(BrowseCmd::ApplyPins(vec![(0, true), (2, true)]));
-        crate::stores::browse::apply(BrowseCmd::SetCur(current));
+        run_browse(BrowseCmd::ApplyPins(vec![(0, true), (2, true)]));
+        run_browse(BrowseCmd::SetCur(current));
         crate::browse::seed_items_for_test(120);
         directory.capture();
         let listing = crate::stores::browse::listing_snapshot();
@@ -150,12 +155,12 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::stores::browse::apply(BrowseCmd::Reset);
+            run_browse(BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
-    crate::stores::browse::apply(BrowseCmd::Reset);
+    run_browse(BrowseCmd::Reset);
     crate::plex::reset_servers_for_test();
     let own = crate::plex::register_for_test("foreign-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared =
