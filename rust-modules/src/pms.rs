@@ -521,7 +521,7 @@ fn request_refetch_hubs_with_scope(scope: &BrowseScope,
 
 /// A local, **optimistic** edit to what the shelves say about one item — applied before the write
 /// that justifies it has left the machine, so a press lands on the panel at once however far away
-/// the item's server is. See [`edit_item`].
+/// the item's server is. See [`edit_item_with_scope`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum LocalEdit {
     /// The item is now watched (`true`) or unwatched (`false`), everywhere it appears.
@@ -531,7 +531,8 @@ pub(crate) enum LocalEdit {
     LeftTheDeck,
 }
 
-/// Apply `edit` to every shelf row naming `(sid, rk)` and re-commit Home. Returns whether anything
+/// Apply `edit` to every shelf row naming `(sid, rk)` and re-commit Home under the retained Browse
+/// scope. Returns whether anything
 /// matched. **MAIN THREAD** — it rebuilds the catalog the UI holds `&'static` rows out of.
 ///
 /// It edits each source's own last PROJECTION and re-runs the pure [`merge`], rather than splicing
@@ -543,7 +544,17 @@ pub(crate) enum LocalEdit {
 ///
 /// This is one half of a pair and is useless alone: it is what the user SEES, and the refetch the
 /// write's landing kicks is what the server SAYS. Where they disagree the refetch wins, silently.
+#[cfg(test)]
 fn edit_item(sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
+    edit_item_with_scope(sid, rk, edit, &BrowseScope::standalone())
+}
+
+fn edit_item_with_scope(
+    sid: ServerId,
+    rk: &str,
+    edit: LocalEdit,
+    scope: &BrowseScope,
+) -> bool {
     // Same crate-global catalog guard as `request_refetch_hubs` — see `lib.rs::testlock`.
     #[cfg(test)]
     crate::testlock::assert_held("the pms hub catalog (edit_item)");
@@ -557,14 +568,15 @@ fn edit_item(sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
     if !hit {
         return false; // the item is on no shelf (a Library-grid or Related item): nothing to redraw
     }
-    let build = merge(&srcs);
+    let build = merge_with_scope(&srcs, scope);
     drop(srcs); // before calling out — `detail::reselect` walks the catalog this replaces
+    adopt_browse_scope(scope);
     commit(build);
     true
 }
 
-/// [`edit_item`] on ONE source's projection. Pure — no statics, no I/O — so the rule is graded on
-/// the host rather than inferred from a screenshot.
+/// [`edit_item_with_scope`] on ONE source's projection. Pure — no statics, no I/O — so the rule is
+/// graded on the host rather than inferred from a screenshot.
 fn apply_edit(b: &mut SourceBuild, sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
     let mine = |m: &PmsMovie| crate::plex::same_item((m.sid, &m.rk), (sid, rk));
     match edit {
@@ -785,6 +797,7 @@ pub(crate) fn allot(budget: usize, want: &[usize]) -> Vec<usize> {
 /// placeholder row. One that answered and has since failed keeps the shelves it last had, which is
 /// the other half of the same rule — a transient failure must not blank a populated Home, and a
 /// source that is really gone leaves the ROSTER, which is what drops its shelves.
+#[cfg(test)]
 fn merge(srcs: &[Src]) -> HubBuild {
     merge_with_scope(srcs, &BrowseScope::standalone())
 }
@@ -1118,10 +1131,9 @@ impl Landing {
 /// in flight across a profile switch could commit the previous account's hubs on top of the new
 /// one's — the same late-landing hazard `browse.rs` keys its `GEN` on.
 static HUB_GEN: AtomicU32 = AtomicU32::new(0);
-/// The retained Browse directory's section generation as of the last merge. Its favourite table
-/// decides which sources Home is built from, so it can change the answer without any hub landing.
-/// Starts at 0, which is also a fresh directory's generation, so a
-/// boot that discovers nothing does not merge twice for nothing.
+/// The retained Browse directory's semantic pin fingerprint as of the last merge. The field keeps
+/// its historical name because `pms::initial` records and restores it, but an owner-local section
+/// generation alone aliases independent Browse stores. Zero remains the empty standalone scope.
 static LAST_SECTIONS_GEN: AtomicU32 = AtomicU32::new(0);
 /// Moves every time the PUBLISHED catalog is replaced — a merge committed, or a reset — and
 /// nothing else. What `stores::hubs` raises its notice on (restructure phase 4): `pump` reports
@@ -1217,6 +1229,30 @@ impl BrowseScope {
     fn retained(directory: crate::stores::browse::DirectoryView<'_>) -> Self {
         Self { sections_gen: directory.sections_gen(), pins: directory.favorite_sections().to_vec() }
     }
+
+    /// Semantic pin-table identity. Browse generations are owner-local, so two independent stores
+    /// may both report generation zero while naming different libraries. The replayed cache fields
+    /// are fixed-width atomics; fold the actual `(server, section, pin)` input into that existing
+    /// shape instead of adding a global owner selector.
+    fn cache_key(&self) -> u32 {
+        if self.pins.is_empty() {
+            return 0;
+        }
+        let mut hash = 0x811c_9dc5u32;
+        let mut fold = |bytes: &[u8]| {
+            for byte in bytes {
+                hash = (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193);
+            }
+        };
+        fold(&self.sections_gen.to_le_bytes());
+        fold(&(self.pins.len() as u64).to_le_bytes());
+        for (sid, section, pinned) in &self.pins {
+            fold(&sid.raw().to_le_bytes());
+            fold(&section.to_le_bytes());
+            fold(&[*pinned as u8]);
+        }
+        hash
+    }
 }
 
 /// May this row appear on Home? **Per LIBRARY, which is the grain the switch offers.**
@@ -1290,20 +1326,37 @@ fn roster_with_scope(scope: &BrowseScope) -> Vec<(ServerId, String)> {
 /// A cheap fingerprint of what [`roster`] would return, so [`sync_roster`] can skip the rebuild on
 /// the frames — almost all of them — where nothing has changed.
 ///
-/// **Two atomic loads and no allocation.** The inputs are the registry's exact roster generation
-/// and the section table. Count was insufficient: replacing active slot 1 with slot 2 leaves the
-/// same number and otherwise aliases the old roster forever. The pinned set is a projection of the second — `apply_pins`, `append_sections` and
-/// `reset` all bump `SECTIONS_GEN`, so that counter already moves whenever the pinned set can.
-/// Folding the pinned SERVERS in by hand meant walking `browse`'s table and building two `Vec`s
-/// here, on a path `pump` runs every loop iteration — ~60×/s including on a settled Home, which is
-/// the screen `ui::idle` was tuned down to ~1% of a core on.
+/// **Two atomic loads and no allocation here.** The inputs are the registry's exact roster
+/// generation and a semantic fingerprint of the retained pin table. Count was insufficient:
+/// replacing active slot 1 with slot 2 leaves the same number and otherwise aliases the old roster
+/// forever. A Browse generation was insufficient too: two independent owners legitimately start
+/// at the same local generation while naming different libraries. `BrowseScope` already owns the
+/// small pin snapshot this function folds, so the per-frame cache gate adds no table walk.
 #[allow(dead_code)] // Standalone Home fixtures have no retained Browse directory.
 fn roster_key() -> u64 {
     roster_key_with_scope(&BrowseScope::standalone())
 }
 
 fn roster_key_with_scope(scope: &BrowseScope) -> u64 {
-    ((crate::plex::server_roster_gen() as u64) << 32) | scope.sections_gen as u64
+    ((crate::plex::server_roster_gen() as u64) << 32) | u64::from(scope.cache_key())
+}
+
+#[cfg(test)]
+fn remember_roster(scope: &BrowseScope) {
+    SEEN.store(roster_key_with_scope(scope), Ordering::Relaxed);
+}
+
+fn forget_roster() {
+    SEEN.store(u64::MAX, Ordering::Relaxed);
+}
+
+fn browse_scope_moved(scope: &BrowseScope) -> bool {
+    let key = scope.cache_key();
+    LAST_SECTIONS_GEN.swap(key, Ordering::SeqCst) != key
+}
+
+fn adopt_browse_scope(scope: &BrowseScope) {
+    LAST_SECTIONS_GEN.store(scope.cache_key(), Ordering::SeqCst);
 }
 
 /// The other half of the fingerprint, kept as its OWN counter rather than folded into the 64 bits
@@ -1328,13 +1381,12 @@ fn sync_roster() {
 
 fn sync_roster_with_scope(scope: &BrowseScope) {
     let (k, fk) = (roster_key_with_scope(scope), facts_key());
+    let scope_moved = browse_scope_moved(scope);
     // Both, and both swapped every time: a frame on which only one moved must still record the
     // other, or the next change to it reads as "unchanged" against a value from two epochs ago.
-    let (was_k, was_fk) = (
-        SEEN.swap(k, Ordering::Relaxed),
-        SEEN_FACTS.swap(fk, Ordering::Relaxed),
-    );
-    if was_k == k && was_fk == fk {
+    let was_k = SEEN.swap(k, Ordering::Relaxed);
+    let was_fk = SEEN_FACTS.swap(fk, Ordering::Relaxed);
+    if was_k == k && was_fk == fk && !scope_moved {
         return;
     }
     let want = roster_with_scope(scope);
@@ -1374,7 +1426,7 @@ fn sync_roster_with_scope(scope: &BrowseScope) {
     // holds, which `pump` drops.
     let dropped = srcs.iter().any(|x| x.last.is_some());
     *srcs = out;
-    if dropped || restamped {
+    if dropped || restamped || scope_moved {
         let build = merge_with_scope(&srcs, scope);
         drop(srcs); // before calling out — `detail::reselect` walks the catalog this replaces
         commit(build);
@@ -1627,12 +1679,7 @@ pub(crate) fn run_with_directory(
     cmd: crate::stores::hubs::HubsCmd,
     directory: crate::stores::browse::DirectoryView<'_>,
 ) -> crate::stores::StoreOutcome {
-    use crate::stores::hubs::HubsCmd;
-    match cmd {
-        HubsCmd::RefetchHubs | HubsCmd::Reset =>
-            run_with_scope(cmd, &BrowseScope::retained(directory)),
-        other => run_without_browse(other),
-    }
+    run_with_scope(cmd, &BrowseScope::retained(directory))
 }
 
 fn run_with_scope(
@@ -1647,9 +1694,11 @@ fn run_with_scope(
                 endpoints: request_refetch_hubs_with_scope(scope, &mut spawn_fetch),
             }
         }
-        HubsCmd::Retry | HubsCmd::EditItem { .. } => run_without_browse(cmd),
+        HubsCmd::Retry => run_without_browse(cmd),
+        HubsCmd::EditItem { sid, rk, edit } => crate::stores::StoreOutcome::changed(
+            edit_item_with_scope(sid, &rk, edit, scope)),
         HubsCmd::Reset => {
-            reset_with_sections_gen(scope.sections_gen);
+            reset_with_scope(scope);
             crate::stores::StoreOutcome::changed(true)
         }
     }
@@ -1660,8 +1709,12 @@ fn run_without_browse(cmd: crate::stores::hubs::HubsCmd) -> crate::stores::Store
     match cmd {
         HubsCmd::Retry =>
             crate::stores::StoreOutcome { changed: true, endpoints: request_retry() },
+        #[cfg(test)]
         HubsCmd::EditItem { sid, rk, edit } =>
             crate::stores::StoreOutcome::changed(edit_item(sid, &rk, edit)),
+        #[cfg(not(test))]
+        HubsCmd::EditItem { .. } =>
+            unreachable!("Hubs EditItem requires a retained Browse directory"),
         HubsCmd::RefetchHubs | HubsCmd::Reset =>
             unreachable!("Browse-scoped Hubs command reached the independent runner"),
     }
@@ -1696,10 +1749,10 @@ fn controlled_work_with_scope(cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32
             endpoints
         }
         Some(HubsCmd::Reset) => {
-            reset_with_sections_gen(scope.sections_gen);
+            reset_with_scope(scope);
             crate::stores::EndpointRefreshSet::default()
         }
-        Some(other) => return run(other),
+        Some(other) => return run_with_scope(other, scope),
         None => step_landings_with_scope(Some(dt), Vec::new, scope, launch),
     };
     crate::stores::StoreOutcome { changed: command || before != catalog_gen(), endpoints }
@@ -1776,9 +1829,8 @@ fn step_landings_with_scope(dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>
     // `merge` is pure over the builds each source already answered with: no request, no allocation
     // beyond the rebuilt catalog. Cheap enough to run on a generation change rather than to try to
     // predict which changes matter.
-    let sgen = scope.sections_gen;
-    let sections_moved = LAST_SECTIONS_GEN.swap(sgen, Ordering::SeqCst) != sgen;
-    let build = (dirty || sections_moved).then(|| merge_with_scope(&srcs, scope));
+    let scope_moved = browse_scope_moved(scope);
+    let build = (dirty || scope_moved).then(|| merge_with_scope(&srcs, scope));
     drop(srcs); // before calling out: `detail::reselect` walks the catalog this is about to replace
     if any_landed {
         // A landing that COMMITS repaints from inside `commit`; this is the one that does not —
@@ -1849,9 +1901,52 @@ pub(crate) fn seed_for_directory_test(
     seed_with_scope_for_test(sid, items, state, &BrowseScope::retained(directory));
 }
 
+/// Two-library Home fixture for the application-boundary watch-state regression. Both rows remain
+/// in the source projection; the retained directory alone decides which one is published.
+#[cfg(test)]
+pub(crate) fn seed_two_library_home_for_test(
+    sid: ServerId,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) {
+    crate::testlock::assert_held("the two-library pms home fixture");
+    let sections = directory.sections();
+    assert!(
+        sections.len() >= 2 && sections[..2].iter().all(|section| section.sid == Some(sid)),
+        "the two-library Home fixture requires two sections on its server"
+    );
+    let item = |section: &crate::stores::browse::SectionView, rk: &str| PmsMovie {
+        sid,
+        sec: section.key,
+        rk: rk.into(),
+        title: rk.into(),
+        thumb: "/t.jpg".into(),
+        art: "/a.jpg".into(),
+        ..Default::default()
+    };
+    let mut source = Src::new(sid, String::new());
+    source.state = HubState::Ready;
+    source.last = Some(SourceBuild {
+        cw: Vec::new(),
+        shelves: vec![Shelf {
+            title: "Recent".into(),
+            hub_id: "home.movies.recent".into(),
+            key: String::new(),
+            items: vec![item(&sections[0], "alpha"), item(&sections[1], "beta")],
+        }],
+    });
+    let scope = BrowseScope::retained(directory);
+    let sources = vec![source];
+    let build = merge_with_scope(&sources, &scope);
+    *lock_srcs() = sources;
+    remember_roster(&scope);
+    SEEN_FACTS.store(facts_key(), Ordering::Relaxed);
+    adopt_browse_scope(&scope);
+    commit(build);
+}
+
 #[cfg(test)]
 fn seed_with_scope_for_test(sid: ServerId, items: usize, state: HubState, scope: &BrowseScope) {
-    reset_with_sections_gen(scope.sections_gen);
+    reset_with_scope(scope);
     let handle = crate::plex::server_facts(sid)
         .map(|facts| facts.handle.clone())
         .unwrap_or_default();
@@ -1873,7 +1968,7 @@ fn seed_with_scope_for_test(sid: ServerId, items: usize, state: HubState, scope:
     // preserves the synthetic source against an empty registry; for an owner-bound fixture it
     // preserves the source whose sid and retained directory were supplied together. BOTH halves
     // of the fingerprint matter, or the facts epoch alone reads as a change and rebuilds anyway.
-    SEEN.store(roster_key_with_scope(scope), Ordering::Relaxed);
+    remember_roster(scope);
     SEEN_FACTS.store(facts_key(), Ordering::Relaxed);
     commit(build);
 }
@@ -1889,24 +1984,24 @@ fn seed_with_scope_for_test(sid: ServerId, items: usize, state: HubState, scope:
 /// already matched it, so closing this was a caller-site swap alone, no new enum surface.
 #[cfg(test)]
 fn reset() {
-    reset_with_sections_gen(0);
+    reset_with_scope(&BrowseScope::standalone());
 }
 
-fn reset_with_sections_gen(sections_gen: u32) {
+fn reset_with_scope(scope: &BrowseScope) {
     // Same crate-global catalog guard as `request_refetch_hubs` — see `lib.rs::testlock`.
     #[cfg(test)]
     crate::testlock::assert_held("the pms hub catalog (reset)");
     HUB_GEN.fetch_add(1, Ordering::SeqCst); // a worker still running belongs to the old identity
     *RESULTS.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
     *lock_srcs() = Vec::new();
-    SEEN.store(u64::MAX, Ordering::Relaxed);
+    forget_roster();
     SEEN_FACTS.store(u32::MAX, Ordering::Relaxed);
-    // Adopt the section table's generation with the empty commit below: a bump from BEFORE this
-    // reset is already reflected in "nothing", so it is not owed a re-merge. Left unadopted, the
-    // next `pump` "caught up" on a generation some other era had moved and re-committed — freeing
-    // the HUBS strings out from under a `hub_title` borrow held across that pump, which is how the
-    // test suite read freed memory whenever another module's `browse::reset` ran in between.
-    LAST_SECTIONS_GEN.store(sections_gen, Ordering::SeqCst);
+    // Adopt the retained pin semantics with the empty commit below: a change from BEFORE this reset
+    // is already reflected in "nothing", so it is not owed a re-merge. Left unadopted, the next
+    // `pump` "caught up" on a scope some other era had moved and re-committed — freeing the HUBS
+    // strings out from under a `hub_title` borrow held across that pump, which is how the test suite
+    // read freed memory whenever another module's `browse::reset` ran in between.
+    adopt_browse_scope(scope);
     commit((Vec::new(), Vec::new(), Vec::new()));
 }
 // ---------------------------------------------------------------------------------------
@@ -2183,7 +2278,7 @@ mod tests {
         let build = merge(&srcs);
         *lock_srcs() = srcs;
         // leave `sync_roster` idle — both halves, see `seed_for_test`
-        SEEN.store(roster_key(), Ordering::Relaxed);
+        remember_roster(&BrowseScope::standalone());
         SEEN_FACTS.store(facts_key(), Ordering::Relaxed);
         commit(build);
     }
@@ -3315,7 +3410,7 @@ mod tests {
         assert_eq!(hub_count(), 2);
 
         // the registry a host test has is empty, so the roster this recomputes to is empty too
-        SEEN.store(u64::MAX, Ordering::Relaxed);
+        forget_roster();
         sync_roster();
 
         assert_eq!(hub_count(), 0, "both un-rostered sources' shelves are gone");
@@ -3406,6 +3501,80 @@ mod tests {
             "a library the section table has not enumerated"
         );
         assert!(item_pinned(&[], &row(a, 1)), "nothing discovered yet");
+    }
+
+    fn two_library_directory(
+        sid: ServerId,
+        alpha_pinned: bool,
+    ) -> crate::stores::browse::DirectorySnapshot {
+        let section = |key, section, title: &str, pinned| {
+            crate::stores::browse::SectionView {
+                borrowed: false,
+                sid: Some(sid),
+                key,
+                kind: crate::stores::browse::SecKind::Movie,
+                row: crate::stores::browse::SrcRow {
+                    section,
+                    title: title.into(),
+                    pinned,
+                    current: section == 0,
+                    ..Default::default()
+                },
+            }
+        };
+        crate::stores::browse::DirectorySnapshot::fixture(23, 0, vec![
+            section(1, 0, "Alpha", alpha_pinned),
+            section(2, 1, "Beta", !alpha_pinned),
+        ])
+    }
+
+    #[test]
+    fn scoped_optimistic_edit_cannot_restore_an_unpinned_sibling_library() {
+        let _guard = crate::testlock::serial();
+        reset();
+        let sid = sid(0);
+        let directory = two_library_directory(sid, true);
+        seed_two_library_home_for_test(sid, directory.view());
+        assert_eq!(rks(0), ["alpha"]);
+
+        let outcome = run_with_directory(
+            crate::stores::hubs::HubsCmd::EditItem {
+                sid,
+                rk: "alpha".into(),
+                edit: LocalEdit::Watched(true),
+            },
+            directory.view(),
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(rks(0), ["alpha"],
+            "EditItem must re-merge through the retained one-pinned directory");
+        assert!(hub_item(0, 0).unwrap().watched);
+        reset();
+    }
+
+    #[test]
+    fn equal_generation_browse_owners_rebuild_the_pms_home_projection() {
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        reset();
+        let sid = crate::plex::register_for_test(
+            "equal-generation-home", "127.0.0.1", 9, "synthetic", "fixture");
+        let alpha = two_library_directory(sid, true);
+        let beta = two_library_directory(sid, false);
+        let alpha_scope = BrowseScope::retained(alpha.view());
+        let beta_scope = BrowseScope::retained(beta.view());
+        assert_eq!(alpha_scope.sections_gen, beta_scope.sections_gen,
+            "the regression requires equal owner-local generations");
+        seed_two_library_home_for_test(sid, alpha.view());
+        assert_eq!(rks(0), ["alpha"]);
+
+        sync_roster_with_scope(&beta_scope);
+
+        assert_eq!(rks(0), ["beta"],
+            "the PMS cache must not alias an independent equal-generation owner");
+        reset();
+        crate::plex::reset_servers_for_test();
     }
 
     /// **The pin store is the seam, and "no pinned library" only means something for a server whose
