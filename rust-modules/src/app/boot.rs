@@ -1031,8 +1031,10 @@ pub(crate) unsafe fn construct(
     // otherwise unreachable the moment you have answered it, and the two-source roster it
     // needs comes from `/tmp/plxnative-servers`, which marks the boot automated. Both halves
     // are why looking at this screen headlessly requires a trigger of its own.
-    let ask_first_run =
-        || !controlled && (crate::dev::scenarios::firstrun_armed() || (!automated_boot() && crate::screens::onboard::asks()));
+    bridge.refresh_browse_directory();
+    let ask_first_run = || !controlled && (crate::dev::scenarios::firstrun_armed()
+        || (!automated_boot()
+            && crate::stores::browse::onboard::asks(bridge.browse_directory())));
     // The sign-in's telemetry question is PRESENTED on the container tree, and the tree lives on
     // the `App` this function is still assembling — so this boot arm records that it owes the
     // question and `maybe_ask_consent` is called once the struct exists, a few dozen lines down.

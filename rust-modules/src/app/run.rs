@@ -1646,7 +1646,8 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                 // account it was already asked at the picker below and this is a no-op; on a
                 // single-user account this is the earliest authorized moment there is.
                 maybe_ask_consent(&mut app.pages);
-                if crate::screens::onboard::asks() {
+                app.bridge.refresh_browse_directory();
+                if crate::stores::browse::onboard::asks(app.bridge.browse_directory()) {
                     log("login: server installed — asking which sources feed Home");
                     // no `enter()`: rooting the stack at the page is what mounts the owned
                     // screen (`boot.rs`), and a ROOT is right because the sweep above has just
@@ -2036,7 +2037,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // unconditional for the same reason as the two pumps around it — the user can walk off
         // Home or off the detail page between pressing and the server answering, and the refresh
         // is owed either way. Invalidates from inside, per landing.
-        let endpoints = crate::stores::viewstate::pump();
+        let endpoints = app.bridge.viewstate_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
         crate::stores::person::pump();
         if let Some(keep) = crate::stores::viewstate::take_detail_refresh() {
