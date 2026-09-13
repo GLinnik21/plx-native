@@ -1569,12 +1569,13 @@ pub(crate) fn take_landings() -> Vec<Landing> {
 /// reconciliation, exactly where the live mailbox used to be drained. Keeping it separate lets an
 /// adapter observe or substitute arrivals without a second state-application path. This is NOT an
 /// offline replay mode: retry scheduling and worker spawning remain live.
+#[cfg(test)]
 fn pump_with_landings(dt: f32, take: impl FnOnce() -> Vec<Landing>) -> crate::stores::EndpointRefreshSet {
     step_landings(Some(dt), take)
 }
 
-/// The owned store's tick never consumes the worker mailbox. Arrivals are delivered separately
-/// by the dispatcher; a worker finishing during its drain belongs to the next frame's ingest.
+/// Test-only compatibility tick for fixtures without a retained directory.
+#[cfg(test)]
 pub(crate) fn tick(dt: f32) -> crate::stores::EndpointRefreshSet {
     // Same crate-global catalog guard as `request_refetch_hubs` — see `lib.rs::testlock`.
     #[cfg(test)]
@@ -1582,7 +1583,8 @@ pub(crate) fn tick(dt: f32) -> crate::stores::EndpointRefreshSet {
     pump_with_landings(dt, Vec::new)
 }
 
-#[allow(dead_code)] // Owner contract consumed when the core dispatcher lane is integrated.
+/// The owned store's tick never consumes the worker mailbox. Arrivals are delivered separately
+/// by the dispatcher; a worker finishing during its drain belongs to the next frame's ingest.
 pub(crate) fn tick_with_directory(
     dt: f32,
     directory: crate::stores::browse::DirectoryView<'_>,
@@ -1595,23 +1597,22 @@ pub(crate) fn tick_with_directory(
 
 /// An addressed arrival may update the catalog behind another page, but must not advance retry
 /// timers or start a new hubs fetch there. The visible Home alone owes the store's tick.
+#[cfg(test)]
 fn apply_landing(landing: &Landing) -> crate::stores::EndpointRefreshSet {
     #[cfg(test)]
     crate::testlock::assert_held("the pms hub catalog (apply_landing)");
     step_landings(None, || vec![landing.clone()])
 }
 
-/// `stores::hubs`'s landing door (D3): `apply_landing` is private to this file, so the one
-/// out-of-module caller (the dispatcher's `AppMsg::HubsResult` delivery, main thread) comes
-/// through here instead of naming the mutator directly. Returns the catalog-generation verdict
-/// for the store notice, plus endpoint requests produced by failed arrivals.
+/// Test-only compatibility landing for fixtures without a retained directory.
+#[cfg(test)]
 pub(crate) fn land(landing: &Landing) -> crate::stores::StoreOutcome {
     let before = catalog_gen();
     let endpoints = apply_landing(landing);
     crate::stores::StoreOutcome { changed: catalog_gen() != before, endpoints }
 }
 
-#[allow(dead_code)] // Owner contract consumed when the core dispatcher lane is integrated.
+/// Apply one addressed landing under the same retained directory policy the frame publishes.
 pub(crate) fn land_with_directory(
     landing: &Landing,
     directory: crate::stores::browse::DirectoryView<'_>,
@@ -1679,8 +1680,8 @@ fn run_without_browse(cmd: crate::stores::hubs::HubsCmd) -> crate::stores::Store
     }
 }
 
-/// The same Home decision path with an explicit application-owned request executor.
-#[allow(dead_code)] // Compatibility controlled path without an explicit retained directory.
+/// Test-only compatibility shape for bootstrap fixtures that do not retain a directory.
+#[cfg(test)]
 pub(crate) fn controlled_work(cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
     controlled_work_with_scope(cmd, dt, &BrowseScope::compatibility(), launch)
@@ -1717,10 +1718,12 @@ fn controlled_work_with_scope(cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32
     crate::stores::StoreOutcome { changed: command || before != catalog_gen(), endpoints }
 }
 
+#[cfg(test)]
 fn step_landings(dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>) -> crate::stores::EndpointRefreshSet {
     step_landings_with(dt, take, &mut spawn_fetch)
 }
 
+#[cfg(test)]
 fn step_landings_with(dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
     step_landings_with_scope(dt, take, &BrowseScope::compatibility(), launch)
