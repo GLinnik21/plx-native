@@ -14,7 +14,7 @@ use crate::ui::screen::ScreenArg;
 use crate::ui::table::TableView;
 use crate::ui::widgets::ControlPalette;
 
-use super::registry::{AppFx, AppMsg};
+use super::registry::{AppFx, AppMsg, DirectoryLike};
 
 /// Only first-run pages use this seed: no Home instance is behind them yet, so its first hero
 /// is the future Home's initial selection. Settings over a live Home samples the rendered host.
@@ -118,8 +118,9 @@ impl LogicalState for SettingsPage {
     }
 }
 
-/// The inner host: the same bundle, the family's own argument, no views and no initial
-/// conditions of its own (the surface's `LogicalState` covers its pages).
+/// The inner host: the same bundle, the family's own argument, and the retained Browse directory
+/// its Onboard child reads. It has no initial conditions of its own (the surface's `LogicalState`
+/// covers its pages).
 pub(crate) struct InnerHost;
 
 #[derive(Default)]
@@ -135,7 +136,7 @@ impl Host for InnerHost {
     type Fx = AppFx;
     type Msg = AppMsg;
     type Elem = u32;
-    type Views<'a> = ();
+    type Views<'a> = crate::stores::browse::DirectoryView<'a>;
     type Init = NoInit;
     // No family page remembers anything on its own `ReturnState` today (`ui/machine.rs`'s
     // `Host::Memory` doc) — the surface's own `NavStack<InnerHost>` restores its child pages by
@@ -143,14 +144,20 @@ impl Host for InnerHost {
     type Memory = ();
 }
 
-/// The outer context as the inner pages see it: everything but the views, which the family's
-/// pages never read through `Cx` (they read the stores' published functions directly).
+impl DirectoryLike for InnerHost {
+    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> {
+        cx.views
+    }
+}
+
+/// The outer context as the inner pages see it, carrying the same retained Browse directory the
+/// outer host published for this frame.
 /// The output lifetime is FREE (`'o`, bounded by the measure's): `Cx` is invariant in its
 /// lifetime through the `Views` projection, so a caller must be able to shape one to a local
 /// borrow to hand it to a `DrawFrame`.
-pub(crate) fn inner_cx<'o, 'a: 'o, H: Host<Elem = u32>>(cx: &Cx<'a, H>) -> Cx<'o, InnerHost> {
+pub(crate) fn inner_cx<'o, 'a: 'o, H: DirectoryLike>(cx: &Cx<'a, H>) -> Cx<'o, InnerHost> {
     Cx {
-        views: (),
+        views: H::directory(cx),
         tick: cx.tick,
         measure: cx.measure,
         press: cx.press,

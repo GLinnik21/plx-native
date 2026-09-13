@@ -11,8 +11,8 @@
 use std::borrow::Cow;
 use std::ffi::CStr;
 
-use crate::stores::browse::BrowseCmd;
-use crate::stores::{StoreCmd, StoreId};
+use crate::stores::browse::{BrowseCmd, DirectoryView, SecFetch, SrcRow};
+use crate::stores::{StoreCmd, StoreId, StoreWork};
 use crate::ui::frame::Budget;
 use crate::ui::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key, LogicalState, Machine, NavOp,
@@ -26,7 +26,7 @@ use crate::ui::widgets::{CtlPop, Spinner, StatusKind, StatusOverlay};
 use crate::ui::{theme, Env, Painter, View};
 
 use super::family::{palette, table_focus, BAND_GROUP, TABLE_GROUP};
-use super::registry::{band_index, word, AppFx, AppLike, LoopReq};
+use super::registry::{band_index, word, AppFx, DirectoryLike, LoopReq};
 
 pub(crate) const TITLE: &str = "Which libraries do you want?";
 const SETTINGS_TITLE: &str = "Favorite libraries";
@@ -40,11 +40,6 @@ const CRUMB_SETTINGS: &str = "Settings";
 // the sibling gate (ci/check-deps.sh, §2.1) treats `crate::screens::<sibling>` as exactly that
 // naming regardless of which item is read off it.
 const CRUMB_PROFILES: &str = "Who's watching?";
-
-/// Does first run ask this at all?
-pub(crate) fn asks() -> bool {
-    crate::browse::first_run_asks()
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ActionKind {
@@ -138,32 +133,32 @@ impl LogicalState for OnboardState {
     }
 }
 
-fn snapshot_pins() -> Vec<(usize, bool)> {
-    crate::browse::all_source_rows()
-        .into_iter()
-        .map(|r| (r.section, r.pinned))
+fn snapshot_pins(directory: DirectoryView<'_>) -> Vec<(usize, bool)> {
+    directory.sections()
+        .iter()
+        .map(|section| (section.row.section, section.row.pinned))
         .collect()
 }
 
 impl OnboardScreen {
     /// First run's page.
-    pub(crate) fn first_run(entry: EntryId) -> Self {
-        Self::new(entry, false)
+    pub(crate) fn first_run(entry: EntryId, directory: DirectoryView<'_>) -> Self {
+        Self::new(entry, false, directory)
     }
     /// The Settings editor.
-    pub(crate) fn settings(entry: EntryId) -> Self {
-        Self::new(entry, true)
+    pub(crate) fn settings(entry: EntryId, directory: DirectoryView<'_>) -> Self {
+        Self::new(entry, true, directory)
     }
 
-    fn new(entry: EntryId, settings: bool) -> Self {
-        let base = snapshot_pins();
+    fn new(entry: EntryId, settings: bool, directory: DirectoryView<'_>) -> Self {
+        let base = snapshot_pins(directory);
         let mut s = Self {
             entry,
             settings,
             table: TableView::new(),
             acts: Vec::new(),
             table_gen: u32::MAX,
-            table_epoch: crate::browse::table_epoch(),
+            table_epoch: directory.epoch().unwrap_or(0),
             entry_pins: if settings { base.clone() } else { Vec::new() },
             draft: base,
             phase_ms: 0.0,
@@ -178,13 +173,13 @@ impl OnboardScreen {
             armed_kind: None,
             band: false, // ditto
         };
-        s.rebuild(false);
+        s.rebuild(false, directory);
         s.table.list_focused = settings;
         s
     }
 
-    fn action_kind(&self) -> ActionKind {
-        if crate::browse::section_count() == 0 {
+    fn action_kind(&self, directory: DirectoryView<'_>) -> ActionKind {
+        if directory.section_count() == 0 {
             ActionKind::Retry
         } else if self.settings {
             ActionKind::Done
@@ -213,11 +208,11 @@ impl OnboardScreen {
         self.band
     }
 
-    fn rebuild(&mut self, keep: bool) {
-        self.reseed_if_table_identity_changed();
-        let gen = crate::browse::source_list_gen();
-        let groups = crate::browse::source_groups();
-        let rows = self.draft_rows();
+    fn rebuild(&mut self, keep: bool, directory: DirectoryView<'_>) {
+        self.reseed_if_table_identity_changed(directory);
+        let gen = directory.source_list_gen();
+        let groups: Vec<_> = directory.sources().iter().map(|(_, group)| group.clone()).collect();
+        let rows = self.draft_rows(directory);
         let (secs, acts) = source_list::sections(Level::OnHome, &groups, &rows, Tail::None);
         let sel = if keep { self.table.sel } else { 0 };
         self.table_gen = gen;
@@ -229,25 +224,25 @@ impl OnboardScreen {
         // looks like now, so `dirty()` below reads the SAME state `has_band()` would have read
         // live — recomputing it here, once, is what lets `has_band()` become a field read instead
         // of three global/derived reads on every focus query the engine makes (`band`'s own doc).
-        self.band = !self.settings || crate::browse::section_count() == 0 || self.dirty();
+        self.band = !self.settings || directory.section_count() == 0 || self.dirty();
         self.state.band = self.band;
     }
 
-    fn reseed_if_table_identity_changed(&mut self) {
-        let epoch = crate::browse::table_epoch();
+    fn reseed_if_table_identity_changed(&mut self, directory: DirectoryView<'_>) {
+        let epoch = directory.epoch().unwrap_or(0);
         if self.table_epoch == epoch {
             return;
         }
         self.table_epoch = epoch;
-        let fresh = snapshot_pins();
+        let fresh = snapshot_pins(directory);
         self.draft = fresh.clone();
         if self.settings {
             self.entry_pins = fresh;
         }
     }
 
-    fn draft_rows(&mut self) -> Vec<crate::browse::SrcRow> {
-        let mut rows = crate::browse::all_source_rows();
+    fn draft_rows(&mut self, directory: DirectoryView<'_>) -> Vec<SrcRow> {
+        let mut rows: Vec<_> = directory.sections().iter().map(|section| section.row.clone()).collect();
         for r in &rows {
             match self.draft.iter().position(|(s, _)| *s == r.section) {
                 None => {
@@ -277,16 +272,17 @@ impl OnboardScreen {
         rows
     }
 
-    fn body_copy(&self) -> String {
-        let who: Vec<String> = crate::browse::source_groups()
+    fn body_copy(&self, directory: DirectoryView<'_>) -> String {
+        let who: Vec<String> = directory.sources()
             .iter()
-            .filter(|g| !g.handle.is_empty())
-            .map(|g| g.handle.clone())
+            .map(|(_, group)| group)
+            .filter(|group| !group.handle.is_empty())
+            .map(|group| group.handle.clone())
             .collect();
         body_copy_for(&who)
     }
 
-    fn toggle_row(&mut self, row: i32) {
+    fn toggle_row(&mut self, row: i32, directory: DirectoryView<'_>) {
         let act = usize::try_from(row).ok().and_then(|i| self.acts.get(i)).copied();
         if let Some(SrcAction::Library(section)) = act {
             let Some(idx) = self.draft.iter().position(|(s, _)| *s == section) else {
@@ -298,7 +294,7 @@ impl OnboardScreen {
                 return;
             }
             self.draft[idx].1 = !on;
-            self.rebuild(true);
+            self.rebuild(true, directory);
         }
     }
 
@@ -312,8 +308,8 @@ impl OnboardScreen {
     /// `AppFx::Store(id, cmd)` into `Fx::Deliver(MachineId::Store(id.ord()), …)` in the SAME
     /// drain the push happens in, so from outside this screen the command still lands before the
     /// frame presents — the difference is only who is allowed to call the mutator.
-    fn commit<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
-        if crate::browse::section_count() == 0 {
+    fn commit<H: DirectoryLike>(&mut self, directory: DirectoryView<'_>, fx: &mut Effects<'_, H>) {
+        if directory.section_count() == 0 {
             fx.push(Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::RetryDiscovery))));
             crate::log("onboard: no discovered libraries yet — retry queued");
             return;
@@ -325,7 +321,7 @@ impl OnboardScreen {
         // says the true thing regardless of when the queued command is actually drained.
         // `section_count()` is fine to read live for the total: pinning never changes how many
         // libraries exist, so that half of the sentence cannot go stale under a queued command.
-        let total = crate::browse::section_count();
+        let total = directory.section_count();
         let on = self.draft.iter().filter(|(_, pinned)| *pinned).count();
         fx.push(Fx::App(AppFx::Store(
             StoreId::Browse,
@@ -337,7 +333,7 @@ impl OnboardScreen {
 
     /// Done/Start or Cancel/BACK: the Settings editor pops off the surface's stack, first run
     /// asks the loop to enter Home.
-    fn leave<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
+    fn leave<H: DirectoryLike>(&mut self, fx: &mut Effects<'_, H>) {
         if self.settings {
             fx.push(Fx::Nav(NavOp::Pop));
         } else {
@@ -345,18 +341,18 @@ impl OnboardScreen {
         }
     }
 
-    fn labels(&self) -> Vec<&'static CStr> {
+    fn labels(&self, directory: DirectoryView<'_>) -> Vec<&'static CStr> {
         if self.has_band() {
-            vec![self.action_kind().label()]
+            vec![self.action_kind(directory).label()]
         } else {
             Vec::new()
         }
     }
 
-    fn view(&self) -> OnboardView<'_> {
+    fn view(&self, directory: DirectoryView<'_>) -> OnboardView<'_> {
         OnboardView {
             screen: self,
-            labels: self.labels(),
+            labels: self.labels(directory),
         }
     }
 }
@@ -407,7 +403,7 @@ impl<'a> OnboardView<'a> {
     }
 }
 
-impl<H: AppLike> crate::ui::screen::Focusable<H> for OnboardView<'_> {
+impl<H: DirectoryLike> crate::ui::screen::Focusable<H> for OnboardView<'_> {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<crate::ui::screen::GroupSpec>) {
         crate::ui::screen::Focusable::<H>::groups(&self.screen(), cx, out)
     }
@@ -428,47 +424,37 @@ impl<H: AppLike> crate::ui::screen::Focusable<H> for OnboardView<'_> {
     }
 }
 
-impl<H: AppLike> crate::ui::screen::Focusable<H> for OnboardScreen {
+impl<H: DirectoryLike> crate::ui::screen::Focusable<H> for OnboardScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<crate::ui::screen::GroupSpec>) {
-        crate::ui::screen::Focusable::<H>::groups(&self.view(), cx, out)
+        crate::ui::screen::Focusable::<H>::groups(&self.view(H::directory(cx)), cx, out)
     }
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
-        crate::ui::screen::Focusable::<H>::group_of(&self.view(), key, cx)
+        crate::ui::screen::Focusable::<H>::group_of(&self.view(H::directory(cx)), key, cx)
     }
     fn neighbour(&self, key: crate::ui::machine::FocusKey<u32>, dir: crate::ui::screen::Dir, cx: &Cx<'_, H>) -> crate::ui::screen::Step<u32> {
-        crate::ui::screen::Focusable::<H>::neighbour(&self.view(), key, dir, cx)
+        crate::ui::screen::Focusable::<H>::neighbour(&self.view(H::directory(cx)), key, dir, cx)
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: crate::ui::screen::At) -> Option<crate::ui::screen::Placed> {
-        crate::ui::screen::Focusable::<H>::place(&self.view(), key, cx, at)
+        crate::ui::screen::Focusable::<H>::place(&self.view(H::directory(cx)), key, cx, at)
     }
     fn reconcile(&self, want: crate::ui::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
-        crate::ui::screen::Focusable::<H>::reconcile(&self.view(), want, cx)
+        crate::ui::screen::Focusable::<H>::reconcile(&self.view(H::directory(cx)), want, cx)
     }
     fn seat(&self, g: GroupId, from: crate::ui::screen::Placed, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
-        crate::ui::screen::Focusable::<H>::seat(&self.view(), g, from, cx)
+        crate::ui::screen::Focusable::<H>::seat(&self.view(H::directory(cx)), g, from, cx)
     }
 }
 
-impl<H: AppLike> Machine<H> for OnboardScreen {
+impl<H: DirectoryLike> Machine<H> for OnboardScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             ScreenEvent::Tick(t) => {
                 let dt = t.dt();
-                // The roster half of the pump: sources and their sections land on workers that
-                // only the Library screen otherwise schedules. This roster-only work remains a
-                // direct helper rather than a BrowseCmd; `stores::browse::discover_pump()`
-                // resolves through the active Bridge-owned store. The mutating actions below do
-                // emit BrowseCmd effects, so an owned screen never calls the synchronous apply
-                // shim itself.
-                let endpoints = crate::stores::browse::discover_pump();
-                for request in endpoints.iter() {
-                    fx.push(crate::ui::machine::Fx::App(crate::screens::registry::AppFx::Session(
-                        crate::auth::SessionCmd::RequestEndpoint { sid: request.sid },
-                    )));
-                }
-                if self.table_gen != crate::browse::source_list_gen() {
-                    self.rebuild(true);
+                fx.push(Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
+                let directory = H::directory(cx);
+                if self.table_gen != directory.source_list_gen() {
+                    self.rebuild(true, directory);
                     fx.invalidate(crate::ui::present::Provenance::Landing(fx.from()));
                 }
                 let band = cx.focus.current.and_then(|k| band_index(k.elem));
@@ -480,8 +466,9 @@ impl<H: AppLike> Machine<H> for OnboardScreen {
                 Handled::Yes
             }
             ScreenEvent::StoreChanged(..) => {
-                if self.table_gen != crate::browse::source_list_gen() {
-                    self.rebuild(true);
+                let directory = H::directory(cx);
+                if self.table_gen != directory.source_list_gen() {
+                    self.rebuild(true, directory);
                 }
                 Handled::Yes
             }
@@ -491,7 +478,7 @@ impl<H: AppLike> Machine<H> for OnboardScreen {
             }
             ScreenEvent::Activate(e) => {
                 if band_index(*e).is_none() {
-                    self.toggle_row(*e as i32);
+                    self.toggle_row(*e as i32, H::directory(cx));
                     fx.invalidate(crate::ui::present::Provenance::Input);
                 }
                 Handled::Yes
@@ -503,7 +490,9 @@ impl<H: AppLike> Machine<H> for OnboardScreen {
                     // Down, but a `.take()` costs nothing and means a bug here reads as "refuses
                     // to commit" rather than "commits the stale verb a second time").
                     match self.armed_kind.take() {
-                        Some(k) if k == self.action_kind() => self.commit(fx),
+                        Some(k) if k == self.action_kind(H::directory(cx)) => {
+                            self.commit(H::directory(cx), fx)
+                        }
                         Some(_) => crate::log(
                             "onboard: the action changed under an armed press — refusing to commit it",
                         ),
@@ -526,7 +515,7 @@ impl<H: AppLike> Machine<H> for OnboardScreen {
                 ..
             }) => {
                 if cx.focus.current.and_then(|k| band_index(k.elem)).is_some() {
-                    self.armed_kind = Some(self.action_kind());
+                    self.armed_kind = Some(self.action_kind(H::directory(cx)));
                 }
                 Handled::No
             }
@@ -541,7 +530,7 @@ impl<H: AppLike> Machine<H> for OnboardScreen {
                 ..
             }) => {
                 if cx.focus.current.and_then(|k| band_index(k.elem)).is_some() {
-                    self.armed_kind = Some(self.action_kind());
+                    self.armed_kind = Some(self.action_kind(H::directory(cx)));
                 }
                 Handled::No
             }
@@ -621,7 +610,7 @@ impl<H: AppLike> Machine<H> for OnboardScreen {
     }
 }
 
-impl<H: AppLike> Screen<H> for OnboardScreen {
+impl<H: DirectoryLike> Screen<H> for OnboardScreen {
     fn name(&self) -> &'static str {
         // **ONE word for both mountings, and the settings one is the reason it matters.** This is
         // "Onboard x2" (the module doc above): the SAME `Screen` impl is mounted once as a page of
@@ -654,7 +643,8 @@ impl<H: AppLike> Screen<H> for OnboardScreen {
             self.ground.draw_home(Painter::root());
         }
         let layout = RouteLayout::screen();
-        let body = self.body_copy();
+        let directory = H::directory(f.cx);
+        let body = self.body_copy(directory);
         Header::new(
             layout,
             Some(if self.settings { CRUMB_SETTINGS } else { CRUMB_PROFILES }),
@@ -662,7 +652,7 @@ impl<H: AppLike> Screen<H> for OnboardScreen {
             &body,
         )
         .paint(p, f.measure);
-        let labels = self.labels();
+        let labels = self.labels(directory);
         let pal = if self.settings { palette() } else { self.ground.palette() };
         let mut band = BandPart {
             layout,
@@ -678,7 +668,7 @@ impl<H: AppLike> Screen<H> for OnboardScreen {
         let lf = layout.sectioned_table();
         if self.table.n_rows() == 0 {
             let env = Env::inert();
-            if crate::browse::discovery_state() == crate::browse::SecFetch::Failed {
+            if directory.discovery() == SecFetch::Failed {
                 StatusOverlay::new(lf, c"Couldn't load libraries", StatusKind::Failed)
                     .reason(c"Check the connection, then try again.")
                     .draw(&env, p);
