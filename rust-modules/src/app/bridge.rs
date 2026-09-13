@@ -979,7 +979,15 @@ impl Bridge {
     }
 
     pub(crate) fn viewstate_run(&self, cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
-        self.stores.viewstate_run(cmd)
+        if matches!(&cmd, crate::stores::viewstate::ViewStateCmd::Reset) {
+            return self.stores.viewstate_run(cmd);
+        }
+        let directory = self.directory.view();
+        crate::stores::viewstate::run_with_owners(
+            cmd,
+            &mut |browse| self.stores.browse_run(browse),
+            &mut |hubs| crate::stores::hubs::apply_with_directory(hubs, directory),
+        )
     }
 
     pub(crate) fn viewstate_pump(&self) -> crate::stores::EndpointRefreshSet {
@@ -4903,10 +4911,44 @@ mod tests {
 
     impl Drop for DirectoryPolicyCleanup {
         fn drop(&mut self) {
+            crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
             crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
             crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
             crate::plex::reset_servers_for_test();
             let _ = crate::stores::take_notices();
+        }
+    }
+
+    #[test]
+    fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test(
+            "bridge-viewstate-directory", "127.0.0.1", 9, "synthetic", "fixture");
+        let _cleanup = DirectoryPolicyCleanup;
+        let mut rig = Bridge::for_test(|| 0);
+        rig.directory = directory_policy_fixture(sid, sid);
+        crate::pms::seed_two_library_home_for_test(sid, rig.directory.view());
+        crate::viewstate::hold_inflight_for_test(sid, "held");
+        let _ = rig.stores.take_notices();
+
+        assert!(rig.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+            sid,
+            rk: "alpha".into(),
+            write: crate::viewstate::Write::Watched,
+            detail: None,
+            guid: String::new(),
+        }));
+
+        let snapshot = crate::pms::hubs_snapshot();
+        let hub = snapshot.view().hub(0).expect("the pinned library's shelf");
+        assert_eq!(hub.items.iter().map(|item| item.rk.as_str()).collect::<Vec<_>>(), ["alpha"],
+            "the optimistic callback cannot restore the unpinned sibling library");
+        assert!(hub.items[0].watched);
+        let notices = rig.stores.take_notices();
+        for store in [StoreId::Browse, StoreId::Hubs, StoreId::ViewState] {
+            assert_eq!(notices.iter().filter(|(id, _)| *id == store).count(), 1,
+                "the synchronous edit preserves one notice for {}", store.name());
         }
     }
 
