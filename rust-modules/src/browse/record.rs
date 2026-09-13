@@ -96,16 +96,6 @@ pub(crate) fn validate_binding(value: serde_json::Value, instance: u32) -> std::
     Ok(wire.source)
 }
 
-pub(crate) fn apply(result: &Result, preferences: Option<&crate::plex::session::Session>)
-    -> Option<crate::stores::EndpointRefresh> {
-    if result.adapter.as_ref().is_some_and(|origin| {
-        !Arc::ptr_eq(origin, &legacy_adapter())
-    }) {
-        return None;
-    }
-    apply_discovery(result.epoch, result.source, result.landing.clone(), preferences)
-}
-
 pub(crate) fn apply_to(state: &mut BrowseState, adapter: &Arc<BrowseAdapter>, result: &Result,
     preferences: Option<&crate::plex::session::Session>)
     -> crate::stores::StoreOutcome {

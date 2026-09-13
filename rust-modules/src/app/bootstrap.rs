@@ -68,17 +68,6 @@ impl HomeIo {
                 "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
         })
     }
-    #[cfg(test)]
-    pub fn discovery(&mut self) {
-        self.discovery_with(&mut crate::browse::execute_discovery);
-    }
-    #[cfg(test)]
-    pub(crate) fn discovery_with(&mut self, launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool) {
-        crate::browse::controlled_discover(&mut |request| {
-            self.admit(request.descriptor(), || launch(request))
-        });
-    }
-
     pub(crate) fn discovery_owned(&mut self, stores: &crate::stores::Stores) {
         self.discovery_owned_with(stores, &mut crate::browse::execute_discovery);
     }

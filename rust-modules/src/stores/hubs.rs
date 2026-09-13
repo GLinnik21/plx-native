@@ -40,7 +40,7 @@ pub(crate) fn tick_with_directory(
     super::StoreOutcome { changed, endpoints }
 }
 
-/// Test-only compatibility shape for bootstrap fixtures that predate retained directories.
+/// Test-only standalone shape for bootstrap fixtures with no Browse directory.
 #[cfg(test)]
 pub(crate) fn controlled(cmd: Option<HubsCmd>, dt: f32,
     launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
@@ -53,7 +53,7 @@ pub(crate) fn controlled(cmd: Option<HubsCmd>, dt: f32,
 }
 
 /// Controlled Home work scoped by the Bridge's retained Browse directory. The retained view is
-/// the decision input for this frame; no active-owner selector is consulted.
+/// the decision input for this frame.
 pub(crate) fn controlled_with_directory(cmd: Option<HubsCmd>, dt: f32,
     directory: crate::stores::browse::DirectoryView<'_>,
     launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
@@ -121,10 +121,9 @@ mod contract_tests {
     }
 
     #[test]
-    fn controlled_hubs_uses_the_supplied_directory_instead_of_active_browse() {
+    fn controlled_hubs_uses_the_supplied_directory() {
         let _guard = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         let own = crate::plex::register_for_test(
             "hubs-owned", "127.0.0.1", 9, "synthetic", "fixture");
         let hidden = crate::plex::register_for_test(
@@ -142,9 +141,8 @@ mod contract_tests {
             });
 
         assert_eq!(launched, [own.raw()],
-            "the retained pin table excludes the unpinned source even when compatibility Browse is empty");
+            "the retained pin table excludes the unpinned source");
         let _ = controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &mut ignored);
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 }

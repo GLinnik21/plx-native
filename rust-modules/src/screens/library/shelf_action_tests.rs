@@ -5,10 +5,6 @@ use crate::ui::focus::FocusEngine;
 use crate::ui::machine::{Host, InputOwner, PressId, PressRead, Tick};
 
 struct TestHost;
-fn run_browse(cmd: crate::stores::browse::BrowseCmd) {
-    let stores = crate::stores::Stores::default();
-    stores.browse_run(cmd);
-}
 
 #[derive(Clone, Copy)]
 struct Views<'a> {
@@ -42,28 +38,24 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
     let _guard = crate::testlock::serial();
     let session = crate::plex::session::TempSession::new("library-shelf-actions");
     session.watching("u-library-shelf-actions");
-    struct Cleanup;
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            run_browse(BrowseCmd::Reset);
-        }
-    }
-    let _cleanup = Cleanup;
-    run_browse(BrowseCmd::Reset);
-    crate::browse::seed_two_source_table_for_test();
+    let stores = crate::stores::Stores::default();
+    stores.browse.borrow_mut().seed_two_source_table_for_test();
     let mut directory = crate::stores::browse::DirectorySnapshot::default();
-    directory.capture();
-    run_browse(BrowseCmd::SetCur(0));
-    crate::browse::seed_items_for_test(12);
-    crate::browse::section_hubs::seed_shelves_for_test(
-        0,
-        &["movie.inprogress.1", "tv.recentlyreleased.1"],
-        3,
-    );
-    crate::browse::section_hubs::seed_landscape_for_test(0, "Synthetic show");
-    directory.capture();
-    let listing = crate::stores::browse::listing_snapshot();
-    let hubs = crate::stores::browse::hubs_snapshot();
+    stores.capture_browse(&mut directory);
+    stores.browse_run(BrowseCmd::SetCur(0));
+    {
+        let mut browse = stores.browse.borrow_mut();
+        browse.seed_items_for_test(12);
+        browse.seed_shelves_for_test(
+            0,
+            &["movie.inprogress.1", "tv.recentlyreleased.1"],
+            3,
+        );
+        browse.seed_landscape_for_test(0, "Synthetic show");
+    }
+    let publication = stores.capture_browse(&mut directory);
+    let listing = publication.listing;
+    let hubs = publication.section_hubs;
     let listing_id = listing.view().id().unwrap();
     let hubs_id = hubs.view().id().unwrap();
     assert_eq!(

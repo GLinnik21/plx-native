@@ -69,7 +69,8 @@ struct Cache {
 
 static mut CACHE: Option<Cache> = None;
 
-/// Read every input used by the legacy Search source projection without allocating.
+/// Read every registry input used by a standalone Search fixture. Production adds the retained
+/// Browse directory generations through [`read_key_with_directory`].
 fn read_key() -> Key {
     let mut roster = [ServerId::UNSET; MAX_SERVERS];
     let mut facts = [0; MAX_SERVERS];
@@ -85,8 +86,8 @@ fn read_key() -> Key {
         roster,
         facts_gen: crate::plex::server_facts_gen(),
         facts,
-        sections_gen: crate::browse::sections_gen(),
-        source_list_gen: crate::browse::source_list_gen(),
+        sections_gen: 0,
+        source_list_gen: 0,
         profile_gen: crate::plex::session::current_gen(),
     }
 }
@@ -154,27 +155,19 @@ pub(crate) fn snapshot_with_directory(
 
 fn build() -> SourceScopeSnapshot {
     let first = crate::plex::server_ids().next();
-    let browse_sources = crate::browse::sources();
     let sources = crate::plex::server_ids()
         .map(|sid| {
             let facts = crate::plex::server_facts(sid);
             ScopeSource {
                 sid,
                 name: facts.map(|f| f.name.clone()).unwrap_or_default(),
-                libraries: crate::browse::library_titles(sid)
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect(),
+                libraries: Vec::new(),
                 handle: facts.map(|f| f.handle.clone()).unwrap_or_default(),
                 // Registration order is the only honest ownership answer before the roster has
                 // described a slot; the session server is registered first.
                 owned: facts.map(|f| f.owned).unwrap_or(Some(sid) == first),
                 // A browse source that has not been adopted has not failed yet.
-                live: browse_sources
-                    .iter()
-                    .find(|source| source.sid == sid)
-                    .map(|source| source.reachable())
-                    .unwrap_or(true),
+                live: true,
             }
         })
         .collect();
@@ -218,7 +211,6 @@ mod tests {
         let _serial = crate::testlock::serial();
         let _reset = Reset;
         crate::plex::reset_servers_for_test();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         let sid = crate::plex::register_for_test(
             "retained-machine", "127.0.0.1", 9, "retained", "scope");
         let directory = crate::stores::browse::DirectorySnapshot::fixture(3, 0, vec![
@@ -247,29 +239,36 @@ mod tests {
     impl Drop for Reset {
         fn drop(&mut self) {
             reset_for_test();
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
             crate::plex::session::publish_profile_for_test(None,
                 crate::plex::session::current_gen().wrapping_add(1));
         }
     }
 
-    fn fixture() -> (ServerId, ServerId) {
+    fn fixture() -> (
+        crate::stores::Stores,
+        crate::stores::browse::DirectorySnapshot,
+        ServerId,
+        ServerId,
+    ) {
         crate::plex::reset_servers_for_test();
         let own = crate::plex::register_for_test("own-machine", "127.0.0.1", 1, "own", "scope");
         let share =
             crate::plex::register_for_test("share-machine", "127.0.0.1", 2, "share", "scope");
-        crate::browse::seed_registered_table_for_test([own, share]);
-        (own, share)
+        let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_registered_table_for_test([own, share]);
+        let mut directory = crate::stores::browse::DirectorySnapshot::default();
+        stores.capture_browse(&mut directory);
+        (stores, directory, own, share)
     }
 
     #[test]
     fn retained_publication_survives_facts_and_browse_changes() {
         let _serial = crate::testlock::serial();
         let _reset = Reset;
-        let (own, share) = fixture();
-        let old = snapshot();
-        let same = snapshot();
+        let (stores, mut directory, own, share) = fixture();
+        let old = snapshot_with_directory(directory.view());
+        let same = snapshot_with_directory(directory.view());
         assert!(old.same_publication(&same));
         assert!(Arc::ptr_eq(&old.sources, &same.sources));
         assert_eq!(old.sources()[0].sid, own);
@@ -280,8 +279,10 @@ mod tests {
         assert!(old.sources()[0].live && old.sources()[1].live);
 
         crate::plex::describe_server(share, "renamed-share", "new-friend", false);
-        crate::browse::append_section_for_test(1, 9, "Archive", crate::browse::SecKind::Movie);
-        let changed = snapshot();
+        stores.browse.borrow_mut().append_section_for_test(
+            1, 9, "Archive", crate::browse::SecKind::Movie);
+        stores.capture_browse(&mut directory);
+        let changed = snapshot_with_directory(directory.view());
         assert!(!old.same_publication(&changed));
         assert_eq!(old.sources()[1].name, "nas-home");
         assert_eq!(old.sources()[1].handle, "friend");
@@ -294,8 +295,9 @@ mod tests {
         );
         assert!(!Arc::ptr_eq(&old.sources, &changed.sources));
 
-        crate::browse::seed_sources_for_test(2, false);
-        let unreachable = snapshot();
+        stores.browse.borrow_mut().seed_sources_for_test(2, false);
+        stores.capture_browse(&mut directory);
+        let unreachable = snapshot_with_directory(directory.view());
         assert!(old.sources()[0].live && old.sources()[1].live);
         assert!(!unreachable.sources()[0].live && !unreachable.sources()[1].live);
     }
@@ -306,12 +308,15 @@ mod tests {
         let _reset = Reset;
         crate::plex::reset_servers_for_test();
         let own = crate::plex::register_for_test("own-machine", "127.0.0.1", 1, "own", "scope");
-        crate::browse::seed_sources_for_test(1, true);
-        let old = snapshot();
+        let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_sources_for_test(1, true);
+        let mut directory = crate::stores::browse::DirectorySnapshot::default();
+        stores.capture_browse(&mut directory);
+        let old = snapshot_with_directory(directory.view());
 
         let share =
             crate::plex::register_for_test("share-machine", "127.0.0.1", 2, "share", "scope");
-        let next = snapshot();
+        let next = snapshot_with_directory(directory.view());
 
         assert_eq!(old.sources().len(), 1);
         assert_eq!(old.sources()[0].sid, own);
@@ -336,15 +341,16 @@ mod tests {
     fn the_memo_key_moves_when_a_source_goes_quiet_or_is_described() {
         let _serial = crate::testlock::serial();
         let _reset = Reset;
-        let (_, share) = fixture();
-        crate::browse::seed_sources_for_test(2, true);
-        let old = snapshot();
-        let before = read_key();
+        let (stores, mut directory, _, share) = fixture();
+        stores.browse.borrow_mut().seed_sources_for_test(2, true);
+        stores.capture_browse(&mut directory);
+        let old = snapshot_with_directory(directory.view());
+        let before = read_key_with_directory(directory.view());
         assert!(old.sources().iter().all(|source| source.live));
 
         crate::plex::describe_server(share, "renamed-share", "new-friend", false);
-        let described = snapshot();
-        let after = read_key();
+        let described = snapshot_with_directory(directory.view());
+        let after = read_key_with_directory(directory.view());
         assert!(!old.same_publication(&described), "a described source is a new sentence");
         assert_eq!(described.sources()[1].handle, "new-friend");
         assert_eq!(
@@ -354,29 +360,31 @@ mod tests {
         );
         assert_ne!(after.facts, before.facts, "…it moves the facts fingerprint, and that is enough");
 
-        crate::browse::seed_sources_for_test(2, false);
-        let quiet = snapshot();
+        stores.browse.borrow_mut().seed_sources_for_test(2, false);
+        stores.capture_browse(&mut directory);
+        let quiet = snapshot_with_directory(directory.view());
         assert!(!described.same_publication(&quiet), "a source going quiet is a new sentence");
         assert!(quiet.sources().iter().all(|source| !source.live));
         assert!(described.sources().iter().all(|source| source.live),
             "…and the retained publication keeps saying what it said");
-        assert_ne!(read_key().source_list_gen, after.source_list_gen);
+        assert_ne!(read_key_with_directory(directory.view()).source_list_gen, after.source_list_gen);
     }
 
     #[test]
     fn equal_sized_roster_replacement_publishes_new_sources() {
         let _serial = crate::testlock::serial();
         let _reset = Reset;
-        let (_, old_share) = fixture();
-        let old = snapshot();
+        let (stores, mut directory, _, old_share) = fixture();
+        let old = snapshot_with_directory(directory.view());
 
         crate::plex::reset_servers_for_test();
         let replacement =
             crate::plex::register_for_test("replacement", "127.0.0.1", 3, "replacement", "scope");
         let other = crate::plex::register_for_test("other", "127.0.0.1", 4, "other", "scope");
         assert_ne!(old_share, replacement);
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-        let next = snapshot();
+        stores.browse_run(crate::stores::browse::BrowseCmd::Reset);
+        stores.capture_browse(&mut directory);
+        let next = snapshot_with_directory(directory.view());
 
         assert_eq!(old.sources().len(), 2);
         assert_eq!(next.sources().len(), 2);

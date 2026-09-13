@@ -231,7 +231,7 @@ mod tests {
         let src = include_str!("chrome.rs");
         let production = src.split("#[cfg(test)]").next().unwrap();
         assert!(!production.contains("crate::browse::"),
-            "Chrome must not select Browse's compatibility publication");
+            "Chrome must read only its retained Browse directory");
     }
 
     #[test]

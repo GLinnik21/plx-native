@@ -94,14 +94,13 @@ pub(crate) struct OnboardScreen {
     /// `an_action_that_changes_verb_under_an_armed_press_refuses_to_commit` below.
     armed_kind: Option<ActionKind>,
     /// **`has_band()`'s answer, cached rather than read live.** Whether the band holds a control
-    /// depends on `crate::browse::section_count()` — a temporary compatibility view of the active
-    /// Bridge-owned BrowseStore that a roster landing can change between two calls this screen
-    /// never sees as one event. `Focusable::groups` reaches
+    /// depends on the retained directory's section count, which a roster landing can change
+    /// between two calls this screen never sees as one event. `Focusable::groups` reaches
     /// `has_band()` through `view()`/`labels()` on every focus query the engine makes, which can
     /// happen at any point between two of this screen's own `step`s — so a live read there means
     /// the group SET the engine is reasoning about can change mid-query, the same class of race
     /// `armed_kind`'s own doc describes on the press side (and closes the same way: record the
-    /// answer at a point this screen controls, rather than re-deriving it from a compatibility
+    /// answer at a point this screen controls, rather than re-deriving it from a changing retained
     /// view whenever asked). `rebuild` is that point — it already reacts to every input that could move this
     /// answer (a fresh mount, a toggle, and the `Tick`/`StoreChanged` arms that watch
     /// `source_list_gen`) — so caching it there costs nothing and buys two things a live read
@@ -201,9 +200,8 @@ impl OnboardScreen {
     }
 
     /// The band holds a control unless this is a pristine Settings editor. Reads the CACHED
-    /// answer (`band`'s own doc has the reason) rather than re-deriving it from the live Browse
-    /// compatibility view `crate::browse::section_count()` on every call — `rebuild` is what keeps
-    /// the cache honest.
+    /// answer (`band`'s own doc has the reason) rather than re-deriving it from the retained
+    /// directory on every call — `rebuild` is what keeps the cache honest.
     fn has_band(&self) -> bool {
         self.band
     }
@@ -299,12 +297,10 @@ impl OnboardScreen {
     }
 
     /// The one action pill, pressed: retry discovery (nothing found yet) or write the draft down
-    /// for real. **Both leave through `fx` as an `AppFx::Store`, never by calling
-    /// `crate::stores::browse::apply` directly** — that direct spelling is the LEGACY loop's own
-    /// shim (`stores/mod.rs`'s module doc: "a legacy screen calls the store's `apply(cmd)` shim…
-    /// steps the same machine IMMEDIATELY"), and calling it from here would let an OWNED screen
-    /// reach around the one exit the restructure gives it (`ui::machine::Machine`'s doc: purity
-    /// is enforced by `Effects` being the only exit). `Bridge::app_fx` (`app/bridge.rs`) turns
+    /// for real. **Both leave through `fx` as an `AppFx::Store`**; calling an owner directly from
+    /// here would let an owned screen reach around the one exit the restructure gives it
+    /// (`ui::machine::Machine`'s doc: purity is enforced by `Effects` being the only exit).
+    /// `Bridge::app_fx` (`app/bridge.rs`) turns
     /// `AppFx::Store(id, cmd)` into `Fx::Deliver(MachineId::Store(id.ord()), …)` in the SAME
     /// drain the push happens in, so from outside this screen the command still lands before the
     /// frame presents — the difference is only who is allowed to call the mutator.
@@ -314,12 +310,12 @@ impl OnboardScreen {
             crate::log("onboard: no discovered libraries yet — retry queued");
             return;
         }
-        // The count logged below is read off `self.draft`, not off `crate::browse::pinned_count()`
-        // — `ApplyPins` is a QUEUED command now, not a call that has already run by the time this
-        // line executes, so the live table still reflects whatever was true BEFORE this commit.
+        // The count logged below is read off `self.draft`, not back from the Browse owner —
+        // `ApplyPins` is an effect here, not a call that has already run by the time this line
+        // executes, so the retained directory still reflects whatever was true BEFORE this commit.
         // `self.draft` is exactly what is about to become the live state, so counting it directly
         // says the true thing regardless of when the queued command is actually drained.
-        // `section_count()` is fine to read live for the total: pinning never changes how many
+        // The directory's `section_count()` is fine for the total: pinning never changes how many
         // libraries exist, so that half of the sentence cannot go stale under a queued command.
         let total = directory.section_count();
         let on = self.draft.iter().filter(|(_, pinned)| *pinned).count();
@@ -711,8 +707,9 @@ mod tests {
     #[test]
     fn the_home_sources_editor_names_one_word_in_both_mountings() {
         use crate::ui::screen::Screen;
-        let first = OnboardScreen::first_run(EntryId(0));
-        let inside = OnboardScreen::settings(EntryId(0));
+        let directory = crate::stores::browse::DirectoryView::empty_for_test();
+        let first = OnboardScreen::first_run(EntryId(0), directory);
+        let inside = OnboardScreen::settings(EntryId(0), directory);
         assert_eq!(Screen::<InnerHost>::name(&first), super::word::ONBOARD);
         assert_eq!(Screen::<InnerHost>::name(&inside), super::word::ONBOARD);
         assert_ne!(Screen::<InnerHost>::name(&inside), super::word::SETTINGS);
@@ -725,12 +722,8 @@ mod tests {
     use super::super::family::InnerHost;
     use super::super::registry::band_elem;
 
-    /// **This screen's teardown, wrapped around the shared session guard.** Ported verbatim from
-    /// `ui/onboard.rs`'s own `TempSession` — the only thing local to it now is the Browse
-    /// `BrowseCmd::Reset` compatibility shim,
-    /// since there is no `SETTINGS_MODE` static left to put back: a screen instance simply goes
-    /// out of scope with the test. A test using it must hold [`crate::testlock::serial`] for its
-    /// whole body, exactly as the inner guard requires.
+    /// This screen's session guard. Browse state belongs to each test's [`BrowseFixture`] and
+    /// therefore needs no process-global teardown.
     struct TempSession {
         _inner: crate::plex::session::TempSession,
     }
@@ -741,10 +734,46 @@ mod tests {
             TempSession { _inner: inner }
         }
     }
-    impl Drop for TempSession {
-        fn drop(&mut self) {
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-            // the inner guard's own Drop runs after this and takes the redirect back
+    struct BrowseFixture {
+        stores: crate::stores::Stores,
+        directory: crate::stores::browse::DirectorySnapshot,
+    }
+
+    impl BrowseFixture {
+        fn new() -> Self {
+            Self {
+                stores: crate::stores::Stores::default(),
+                directory: Default::default(),
+            }
+        }
+
+        fn capture(&mut self) -> DirectoryView<'_> {
+            self.stores.capture_browse(&mut self.directory);
+            self.directory.view()
+        }
+
+        fn seed_pins(&mut self, pinned: &[bool]) {
+            self.stores.browse.borrow_mut().seed_pins_for_test(pinned);
+        }
+
+        fn seed_two_sources(&mut self) {
+            self.stores.browse.borrow_mut().seed_two_source_table_for_test();
+        }
+
+        fn set_pinned(&mut self, index: usize, on: bool) {
+            self.stores.browse.borrow_mut().set_pinned_for_test(index, on);
+            // This seam deliberately models live drift without moving the store generation.
+            // Discard the fixture's retained publication so the next explicit capture observes
+            // that drift just as the old direct-state fixture did.
+            self.directory = Default::default();
+        }
+
+        fn land_pin(&mut self, pinned: bool) {
+            self.stores.browse.borrow_mut().land_pin_for_test(pinned);
+        }
+
+        fn pinned(&self, index: usize) -> bool {
+            self.stores.browse.borrow().pinned_for_test(index)
         }
     }
 
@@ -754,9 +783,13 @@ mod tests {
     /// makes `Machine::<InnerHost>::step` here the SAME code the Settings surface and the bridge
     /// both call — a screen generic over `H: AppLike` cannot be tested against a fixture that
     /// carries a different `Fx`/`Msg` pair, `FixtureHost` included.
-    fn test_cx(m: &crate::ui::fixture::FixtureMeasure, focus: Option<u32>) -> Cx<'_, InnerHost> {
+    fn test_cx<'a>(
+        m: &'a crate::ui::fixture::FixtureMeasure,
+        focus: Option<u32>,
+        directory: DirectoryView<'a>,
+    ) -> Cx<'a, InnerHost> {
         Cx {
-            views: (),
+            views: directory,
             tick: crate::ui::machine::Tick::default(),
             measure: m,
             press: PressRead::default(),
@@ -772,9 +805,14 @@ mod tests {
     /// calling `commit`/`toggle_row` as free functions the way the pre-restructure tests called
     /// `ui::onboard`'s (this screen no longer has any free function to call: everything is a
     /// method on the instance, reached exactly as the dispatcher reaches it).
-    fn step_ev(s: &mut OnboardScreen, ev: &ScreenEvent<InnerHost>, focus: Option<u32>) -> (Handled, Vec<Stamped<InnerHost>>) {
+    fn step_ev(
+        s: &mut OnboardScreen,
+        ev: &ScreenEvent<InnerHost>,
+        focus: Option<u32>,
+        directory: DirectoryView<'_>,
+    ) -> (Handled, Vec<Stamped<InnerHost>>) {
         let m = crate::ui::fixture::FixtureMeasure;
-        let cx = test_cx(&m, focus);
+        let cx = test_cx(&m, focus, directory);
         let mut present = Present::new();
         let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
         let handled = {
@@ -789,19 +827,25 @@ mod tests {
         let _g = crate::testlock::serial();
         let _t = TempSession::new("endpoint-onboard");
         crate::plex::reset_servers_for_test();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        let mut browse = BrowseFixture::new();
         let sid = crate::plex::register_for_test("endpoint-onboard", "127.0.0.1", 9, "synthetic", "cid");
         let client = crate::plex::client_for(sid).unwrap();
-        let mut s = OnboardScreen::first_run(EntryId(0));
-        crate::browse::queue_discovery_for_test(client, client.token_gen(), false);
-        let (_, effects) = crate::browse::with_refused_discovery_for_test(|| {
-            step_ev(&mut s, &ScreenEvent::Tick(crate::ui::machine::Tick { ms: 16, dt_us: 16_000 }), None)
-        });
-        assert_eq!(effects.iter().filter(|effect| matches!(effect.fx,
-            Fx::App(AppFx::Session(crate::auth::SessionCmd::RequestEndpoint { sid: target })) if target == sid
-        )).count(), 1);
-        assert_eq!(s.table_gen, crate::browse::source_list_gen(), "rebuild was not deferred");
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        browse.stores.browse.borrow_mut().queue_discovery_for_test(
+            client, client.token_gen(), false);
+        let outcome = browse.stores.browse_discover_pump();
+        assert_eq!(outcome.endpoints.iter().map(|request| request.sid).collect::<Vec<_>>(), [sid]);
+        let directory = browse.capture();
+        let source_list_gen = directory.source_list_gen();
+        let (_, effects) = step_ev(
+            &mut s,
+            &ScreenEvent::Tick(crate::ui::machine::Tick { ms: 16, dt_us: 16_000 }),
+            None,
+            directory,
+        );
+        assert!(effects.iter().any(|effect| matches!(effect.fx,
+            Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)))));
+        assert_eq!(s.table_gen, source_list_gen, "rebuild was not deferred");
         crate::plex::reset_servers_for_test();
     }
 
@@ -828,12 +872,12 @@ mod tests {
     /// `Fx::App` addresses, exactly as no test built on a scratch sink ever ran a real `Fx::Nav`
     /// either. A test that wants to see the live pin move belongs at `app/bridge.rs`'s own level,
     /// where a real `Dispatcher` drains what a screen pushes.
-    fn commit_now(s: &mut OnboardScreen) -> Vec<Stamped<InnerHost>> {
+    fn commit_now(s: &mut OnboardScreen, directory: DirectoryView<'_>) -> Vec<Stamped<InnerHost>> {
         let mut present = Present::new();
         let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
         {
             let mut fx = Effects::new(&mut buf, MachineId::Instance(InstanceId(0)), &mut present);
-            s.commit(&mut fx);
+            s.commit(directory, &mut fx);
         }
         buf
     }
@@ -877,30 +921,29 @@ mod tests {
     #[test]
     fn the_band_expresses_forward_back_and_commit_as_distinct_states() {
         let _g = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        let mut browse = BrowseFixture::new();
         assert!(
-            OnboardScreen::first_run(EntryId(0)).has_band(),
+            OnboardScreen::first_run(EntryId(0), browse.capture()).has_band(),
             "first run always offers its commit"
         );
 
-        crate::browse::seed_pins_for_test(&[true, true]);
+        browse.seed_pins(&[true, true]);
         assert!(
-            !OnboardScreen::settings(EntryId(0)).has_band(),
+            !OnboardScreen::settings(EntryId(0), browse.capture()).has_band(),
             "a clean Settings editor has nothing to commit, and no longer spends the band saying \
              how to leave"
         );
 
-        crate::browse::seed_pins_for_test(&[true, true]);
-        let mut s = OnboardScreen::settings(EntryId(0));
-        s.toggle_row(0);
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+        s.toggle_row(0, browse.capture());
         assert!(s.has_band(), "Done appears after an edit");
 
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        browse.stores.browse_run(BrowseCmd::Reset);
         assert!(
-            OnboardScreen::settings(EntryId(0)).has_band(),
+            OnboardScreen::settings(EntryId(0), browse.capture()).has_band(),
             "Retry is a real action even on a pristine editor"
         );
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// **Issue 9 reproduction, first run.** Before the draft model, a toggle wrote through to the
@@ -915,16 +958,17 @@ mod tests {
     fn toggling_never_touches_the_live_pin_or_the_recorded_answer_until_commit() {
         let _g = crate::testlock::serial();
         let _t = TempSession::new("draft");
-        crate::browse::seed_pins_for_test(&[true, true]);
-        let mut s = OnboardScreen::first_run(EntryId(0));
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
 
-        s.toggle_row(0);
+        s.toggle_row(0, browse.capture());
         assert!(
-            !s.draft_rows()[0].pinned,
+            !s.draft_rows(browse.capture())[0].pinned,
             "the draft reflects the toggle immediately — the screen must show it"
         );
         assert!(
-            crate::browse::pinned(0),
+            browse.pinned(0),
             "…but the LIVE pin has not moved: nothing is written until commit"
         );
         assert!(
@@ -939,12 +983,12 @@ mod tests {
         // rather than dropping the fresh instance and continuing with the stale one, so the toggle
         // below starts from a draft that matches the live table again rather than from the first
         // draft's already-toggled-off state (which would net the two toggles to a no-op).
-        let mut s = OnboardScreen::first_run(EntryId(0));
-        assert!(crate::browse::pinned(0), "a discarded draft leaves the live pin exactly where BACK found it");
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        assert!(browse.pinned(0), "a discarded draft leaves the live pin exactly where BACK found it");
 
         // Toggling and THEN committing is what actually queues the write.
-        s.toggle_row(0);
-        let effs = commit_now(&mut s);
+        s.toggle_row(0, browse.capture());
+        let effs = commit_now(&mut s, browse.capture());
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
@@ -954,7 +998,7 @@ mod tests {
             "commit emits the toggled draft as an ApplyPins store command"
         );
         assert!(
-            crate::browse::pinned(0),
+            browse.pinned(0),
             "…and the live pin has still not moved by this call — applying it is the STORE's job \
              once the queued command is actually drained, not this screen's"
         );
@@ -974,18 +1018,19 @@ mod tests {
     fn settings_mode_dirty_and_persistence_track_the_draft_not_the_live_table() {
         let _g = crate::testlock::serial();
         let _t = TempSession::new("settings-draft");
-        crate::browse::seed_pins_for_test(&[true, true]);
-        let mut s = OnboardScreen::settings(EntryId(0));
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
         assert!(!s.dirty(), "nothing has been touched yet");
 
-        s.toggle_row(0);
+        s.toggle_row(0, browse.capture());
         assert!(s.dirty(), "the draft moved, so Done has something to commit");
         assert!(
-            crate::browse::pinned(0),
+            browse.pinned(0),
             "Settings mode's toggle is a draft edit too — the live table still has not moved"
         );
 
-        let effs = commit_now(&mut s);
+        let effs = commit_now(&mut s, browse.capture());
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
@@ -996,7 +1041,7 @@ mod tests {
              itself"
         );
         assert!(
-            crate::browse::pinned(0),
+            browse.pinned(0),
             "…and the live table has still not moved by this call — the queued command is what \
              applies it, once a real dispatcher drains it"
         );
@@ -1016,14 +1061,15 @@ mod tests {
     fn an_untouched_rows_live_drift_is_absorbed_into_entry_not_read_as_an_edit() {
         let _g = crate::testlock::serial();
         let _t = TempSession::new("entry-drift");
-        crate::browse::seed_pins_for_test(&[true, true]);
-        let mut s = OnboardScreen::settings(EntryId(0));
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
         assert_eq!(s.entry_pins, vec![(0, true), (1, true)]);
 
         // Nobody touched anything — this is `resolve_pins` re-deriving an unrecorded default as a
         // second source lands, not a user press.
-        crate::browse::set_pinned_for_test(1, false);
-        s.rebuild(true);
+        browse.set_pinned(1, false);
+        s.rebuild(true, browse.capture());
 
         assert_eq!(
             s.entry_pins,
@@ -1045,22 +1091,23 @@ mod tests {
     fn a_table_reset_mid_edit_discards_the_stale_draft_instead_of_misapplying_it() {
         let _g = crate::testlock::serial();
         let _t = TempSession::new("epoch-reset");
-        crate::browse::seed_pins_for_test(&[true, true]);
-        let mut s = OnboardScreen::settings(EntryId(0));
-        s.toggle_row(0); // draft: section 0 off — a real, in-progress user edit
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+        s.toggle_row(0, browse.capture()); // draft: section 0 off — a real, in-progress user edit
         assert!(s.dirty());
 
         // What `sync_roster`'s `reset()` does mid-session: the table's IDENTITY changes out from
         // under the open editor. Re-seed with a DIFFERENT shape, so a surviving stale index would
         // provably be answering for the wrong library if this guard did nothing.
-        crate::browse::seed_pins_for_test(&[true, true, true]);
-        s.rebuild(false);
+        browse.seed_pins(&[true, true, true]);
+        s.rebuild(false, browse.capture());
 
         assert!(
             !s.dirty(),
             "the stale in-progress edit was discarded, not carried forward against new indices"
         );
-        let effs = commit_now(&mut s);
+        let effs = commit_now(&mut s, browse.capture());
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
@@ -1079,17 +1126,18 @@ mod tests {
     fn a_freshly_landed_row_can_independently_make_settings_dirty() {
         let _g = crate::testlock::serial();
         let _t = TempSession::new("late-row");
-        crate::browse::seed_pins_for_test(&[true]);
-        let mut s = OnboardScreen::settings(EntryId(0));
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
         assert!(!s.dirty());
 
         // A second library lands mid-edit — an ADDITIVE append, exactly like a real second source
         // answering, never a reset.
-        crate::browse::land_pin_for_test(true);
-        s.rebuild(true);
+        browse.land_pin(true);
+        s.rebuild(true, browse.capture());
         assert!(!s.dirty(), "landing alone is not an edit");
 
-        s.toggle_row(1);
+        s.toggle_row(1, browse.capture());
         assert!(
             s.dirty(),
             "a toggle on a freshly-landed row must make Done appear, or it can never be committed"
@@ -1103,21 +1151,19 @@ mod tests {
     #[test]
     fn the_last_pinned_library_cannot_be_turned_off() {
         let _g = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-        crate::browse::seed_pins_for_test(&[true, false]);
-        let mut s = OnboardScreen::first_run(EntryId(0));
-        assert!(s.draft_rows()[0].pinned, "section 0 starts as the only pinned library");
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, false]);
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        assert!(s.draft_rows(browse.capture())[0].pinned, "section 0 starts as the only pinned library");
 
-        s.toggle_row(0); // the only pinned library refuses to turn off
-        assert!(s.draft_rows()[0].pinned, "turning off the last favourite is refused");
+        s.toggle_row(0, browse.capture()); // the only pinned library refuses to turn off
+        assert!(s.draft_rows(browse.capture())[0].pinned, "turning off the last favourite is refused");
 
         // Turning the second one on first frees the floor, and the first can then turn off.
-        s.toggle_row(1);
-        assert!(s.draft_rows()[1].pinned);
-        s.toggle_row(0);
-        assert!(!s.draft_rows()[0].pinned, "with a second library on, the first is free to turn off");
-
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        s.toggle_row(1, browse.capture());
+        assert!(s.draft_rows(browse.capture())[1].pinned);
+        s.toggle_row(0, browse.capture());
+        assert!(!s.draft_rows(browse.capture())[0].pinned, "with a second library on, the first is free to turn off");
     }
 
     /// **Drives the REAL BACK/Cancel path through `step`**, not a stand-in for it — first run's
@@ -1131,15 +1177,16 @@ mod tests {
         let _g = crate::testlock::serial();
         let _t = TempSession::new("real-back");
 
-        crate::browse::seed_pins_for_test(&[true, true]);
-        let mut s = OnboardScreen::first_run(EntryId(0));
-        s.toggle_row(0);
-        let (handled, effs) = step_ev(&mut s, &key_back_down(), None);
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        s.toggle_row(0, browse.capture());
+        let (handled, effs) = step_ev(&mut s, &key_back_down(), None, browse.capture());
         assert_eq!(handled, Handled::Yes, "first run's BACK is its own answer to the key");
         assert!(effs
             .iter()
             .any(|st| matches!(st.fx, Fx::App(AppFx::Loop(LoopReq::OnboardBack)))));
-        assert!(crate::browse::pinned(0), "first-run BACK left the live pin exactly as it was");
+        assert!(browse.pinned(0), "first-run BACK left the live pin exactly as it was");
         assert!(
             crate::plex::session::peek()
                 .pins_for(&crate::plex::session::current_profile_key())
@@ -1147,13 +1194,13 @@ mod tests {
             "…and recorded nothing"
         );
 
-        crate::browse::seed_pins_for_test(&[true, true]);
-        let mut s = OnboardScreen::settings(EntryId(0));
-        s.toggle_row(0);
-        let (handled, effs) = step_ev(&mut s, &key_back_down(), None);
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+        s.toggle_row(0, browse.capture());
+        let (handled, effs) = step_ev(&mut s, &key_back_down(), None, browse.capture());
         assert_eq!(handled, Handled::No, "Settings BACK is the surface's own stack to pop");
         assert!(effs.is_empty(), "…and this screen asks for nothing on the way out");
-        assert!(crate::browse::pinned(0), "Settings-mode BACK left the live pin exactly as it was");
+        assert!(browse.pinned(0), "Settings-mode BACK left the live pin exactly as it was");
         assert!(
             crate::plex::session::peek()
                 .pins_for(&crate::plex::session::current_profile_key())
@@ -1180,21 +1227,26 @@ mod tests {
         // takes one of these; this one was written without it. `plex::session::TempSession`'s own
         // doc is the full account of why the guard exists.
         let _t = TempSession::new("armed-verb");
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-        let mut s = OnboardScreen::first_run(EntryId(0));
-        assert_eq!(s.action_kind(), ActionKind::Retry, "nothing discovered yet");
+        let mut browse = BrowseFixture::new();
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        assert_eq!(s.action_kind(browse.capture()), ActionKind::Retry, "nothing discovered yet");
 
         let band = band_elem(0);
-        let (handled, _) = step_ev(&mut s, &key_ok_down(), Some(band));
+        let (handled, _) = step_ev(&mut s, &key_ok_down(), Some(band), browse.capture());
         assert_eq!(handled, Handled::No, "the engine still arms the press itself");
         assert_eq!(s.armed_kind, Some(ActionKind::Retry));
 
         // …the roster lands while the press is still springing back.
-        crate::browse::seed_two_source_table_for_test();
-        s.rebuild(true);
-        assert_eq!(s.action_kind(), ActionKind::Start, "the same stop, a different verb");
+        browse.seed_two_sources();
+        s.rebuild(true, browse.capture());
+        assert_eq!(s.action_kind(browse.capture()), ActionKind::Start, "the same stop, a different verb");
 
-        let (_, effs) = step_ev(&mut s, &ScreenEvent::PressCommit(PressId(1)), Some(band));
+        let (_, effs) = step_ev(
+            &mut s,
+            &ScreenEvent::PressCommit(PressId(1)),
+            Some(band),
+            browse.capture(),
+        );
         assert!(
             !effs
                 .iter()
@@ -1209,14 +1261,17 @@ mod tests {
         );
 
         // …and an unchanged verb still commits normally: arm again at the NEW truth, then commit.
-        step_ev(&mut s, &key_ok_down(), Some(band));
+        step_ev(&mut s, &key_ok_down(), Some(band), browse.capture());
         assert_eq!(s.armed_kind, Some(ActionKind::Start));
-        let (_, effs) = step_ev(&mut s, &ScreenEvent::PressCommit(PressId(2)), Some(band));
+        let (_, effs) = step_ev(
+            &mut s,
+            &ScreenEvent::PressCommit(PressId(2)),
+            Some(band),
+            browse.capture(),
+        );
         assert!(effs
             .iter()
             .any(|st| matches!(st.fx, Fx::App(AppFx::Loop(LoopReq::OnboardDone)))));
-
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// **First run corrects a mismatched default seat to the band** — the `ScreenEvent::Enter`
@@ -1234,12 +1289,12 @@ mod tests {
     #[test]
     fn first_run_corrects_a_default_seat_on_the_table_to_the_band() {
         let _g = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-        let mut s = OnboardScreen::first_run(EntryId(0));
+        let mut browse = BrowseFixture::new();
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         let default_seat = ScreenEvent::Enter(Enter::Fresh {
             focus: FocusTarget::ContainerGroup(TABLE_GROUP),
         });
-        let (handled, effs) = step_ev(&mut s, &default_seat, None);
+        let (handled, effs) = step_ev(&mut s, &default_seat, None, browse.capture());
         assert_eq!(handled, Handled::Yes);
         assert!(
             effs.iter().any(|st| matches!(
@@ -1256,16 +1311,15 @@ mod tests {
         let already_band = ScreenEvent::Enter(Enter::Fresh {
             focus: FocusTarget::ContainerGroup(BAND_GROUP),
         });
-        let (_, effs) = step_ev(&mut s, &already_band, None);
+        let (_, effs) = step_ev(&mut s, &already_band, None, browse.capture());
         assert!(effs.is_empty(), "an Enter that already names the band must not be re-corrected");
 
         // Settings mode wants exactly the default it is given — the list — so it must never
         // correct anything.
-        crate::browse::seed_pins_for_test(&[true, true]);
-        let mut s = OnboardScreen::settings(EntryId(0));
-        let (_, effs) = step_ev(&mut s, &default_seat, None);
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+        let (_, effs) = step_ev(&mut s, &default_seat, None, browse.capture());
         assert!(effs.is_empty(), "the Settings editor's default seat on the table is the one it wants");
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// **Ported from TWO old tests with byte-identical bodies** —
@@ -1298,11 +1352,11 @@ mod tests {
     fn the_empty_roster_spinner_reports_motion_on_every_tick() {
         let _g = crate::testlock::serial();
         let _t = TempSession::new("no-library-yet-spinner");
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-        let mut s = OnboardScreen::first_run(EntryId(0));
+        let mut browse = BrowseFixture::new();
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         assert_eq!(s.table.n_rows(), 0, "a reset browse store starts with no rows");
         let m = crate::ui::fixture::FixtureMeasure;
-        let cxv = test_cx(&m, None);
+        let cxv = test_cx(&m, None, browse.capture());
         let mut present = Present::new();
         let _ = present.take(0);
         let mut buf: Vec<Stamped<InnerHost>> = Vec::new();
@@ -1321,14 +1375,14 @@ mod tests {
     fn commit_and_back_both_refuse_to_answer_before_a_real_library_lands() {
         let _g = crate::testlock::serial();
         let _t = TempSession::new("no-library-yet");
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset); // no discovered libraries at all, in either flavour
+        let mut browse = BrowseFixture::new(); // no discovered libraries at all, in either flavour
 
         // First run: `commit`'s own doc says why a re-queue rather than a refusal is the honest
         // shape — "the skip is honest precisely because it records what the screen was showing
         // rather than deferring the question to a prompt that never comes" — and that skip is
         // BACK's alone; the pill itself must never treat an empty roster as an answered question.
-        let mut s = OnboardScreen::first_run(EntryId(0));
-        let effs = commit_now(&mut s);
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        let effs = commit_now(&mut s, browse.capture());
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
@@ -1340,7 +1394,7 @@ mod tests {
             !effs.iter().any(|st| matches!(st.fx, Fx::App(AppFx::Loop(LoopReq::OnboardDone)))),
             "…and never leaves for Home — there is nothing here to have answered"
         );
-        let (handled, effs) = step_ev(&mut s, &key_back_down(), None);
+        let (handled, effs) = step_ev(&mut s, &key_back_down(), None, browse.capture());
         assert_eq!(handled, Handled::Yes, "first run's BACK is its own answer to the key");
         assert!(
             effs.iter().any(|st| matches!(st.fx, Fx::App(AppFx::Loop(LoopReq::OnboardBack)))),
@@ -1359,8 +1413,8 @@ mod tests {
         // a claim about LEAVING; this is the claim about the one ACTION a pristine, empty editor
         // still offers — Done must refuse to treat "nothing was ever discovered" as "the answer is
         // to keep nothing pinned".
-        let mut s = OnboardScreen::settings(EntryId(0));
-        let effs = commit_now(&mut s);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+        let effs = commit_now(&mut s, browse.capture());
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
@@ -1398,22 +1452,23 @@ mod tests {
     fn a_toggled_rows_independent_drift_is_never_restored_or_recorded_by_cancel() {
         let _g = crate::testlock::serial();
         let _t = TempSession::new("toggle-and-drift-race");
-        crate::browse::seed_pins_for_test(&[true, true]);
-        let mut s = OnboardScreen::settings(EntryId(0));
-        s.toggle_row(0); // a real user edit: draft[0] = false, entry_pins[0] stays true
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+        s.toggle_row(0, browse.capture()); // a real user edit: draft[0] = false, entry_pins[0] stays true
 
         // A second source answers mid-edit and `resolve_pins` re-derives section 0's own
         // still-unrecorded default independently of the user's press, landing on `false` — the
         // SAME direction the user's own toggle went in. `set_pinned_for_test` stands in for that
         // live mutation, exactly as the sibling test above does for an untouched row.
-        crate::browse::set_pinned_for_test(0, false);
-        s.rebuild(true);
+        browse.set_pinned(0, false);
+        s.rebuild(true, browse.capture());
 
-        let (handled, effs) = step_ev(&mut s, &key_back_down(), None);
+        let (handled, effs) = step_ev(&mut s, &key_back_down(), None, browse.capture());
         assert_eq!(handled, Handled::No, "Settings BACK is the surface's own stack to pop");
         assert!(effs.is_empty(), "…and this screen asks for nothing on the way out");
         assert!(
-            !crate::browse::pinned(0),
+            !browse.pinned(0),
             "Cancel must leave the drifted live pin exactly as the drift left it (false), not \
              restore the pre-toggle baseline (true)"
         );
@@ -1423,7 +1478,6 @@ mod tests {
                 .is_none(),
             "…and must record nothing — nothing here is an answer the user gave"
         );
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// **DOWN off the last library reaches the action pill.** Reported: "on screens containing a
@@ -1444,7 +1498,7 @@ mod tests {
     /// the screen on a real `Dispatcher<InnerHost>` and driving DOWN/UP as real key frames — and it
     /// is worth recording exactly why that road was abandoned rather than silently dropped: a real
     /// dispatcher delivers a real `ScreenEvent::Tick` every frame, and `OnboardScreen`'s own Tick
-    /// arm calls `stores::browse::discover_pump()` for real, whose `sync_roster` half retires any
+    /// arm schedules the owned discovery pass, whose `sync_roster` half retires any
     /// source not present in `crate::plex::server_ids()`'s LIVE roster (`browse::mod.rs`'s own
     /// words: "Roster removal is an identity boundary, not a failed fetch"). `seed_pins_for_test`
     /// stamps its fabricated source with `crate::plex::current_server()` — a real-looking id
@@ -1460,10 +1514,11 @@ mod tests {
     #[test]
     fn down_off_the_last_row_reaches_the_bottom_action() {
         let _g = crate::testlock::serial();
-        crate::browse::seed_pins_for_test(&[true, true]);
-        let s = OnboardScreen::first_run(EntryId(0));
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let s = OnboardScreen::first_run(EntryId(0), browse.capture());
         let m = crate::ui::fixture::FixtureMeasure;
-        let cx = test_cx(&m, None);
+        let cx = test_cx(&m, None, browse.capture());
         let mut groups: Vec<crate::ui::screen::GroupSpec> = Vec::new();
         crate::ui::screen::Focusable::<InnerHost>::groups(&s, &cx, &mut groups);
         let table = groups.iter().find(|g| g.id == TABLE_GROUP).expect("the table has a group");
@@ -1504,7 +1559,6 @@ mod tests {
             .expect("the band places");
         let back = crate::ui::focus::geometric(&groups, BAND_GROUP, band_from.rect, crate::ui::screen::Dir::Up);
         assert_eq!(back.map(|g| g.id), Some(TABLE_GROUP), "UP off the band returns to the table");
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// **A press the user walked away from must not swallow the next one.** Codex review,
@@ -1538,15 +1592,21 @@ mod tests {
     #[test]
     fn a_press_abandoned_for_the_list_does_not_swallow_the_row_s_own_ok() {
         let _g = crate::testlock::serial();
-        crate::browse::seed_two_source_table_for_test();
-        let mut s = OnboardScreen::first_run(EntryId(0));
-        assert_eq!(s.action_kind(), ActionKind::Start, "two sources are seeded");
+        let mut browse = BrowseFixture::new();
+        browse.seed_two_sources();
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        assert_eq!(s.action_kind(browse.capture()), ActionKind::Start, "two sources are seeded");
         s.armed_kind = Some(ActionKind::Start); // stands in for the pill's still-bouncing arm
 
-        let section = crate::browse::all_source_rows()[0].section;
+        let section = browse.capture().sections()[0].row.section;
         let before = s.draft.iter().find(|(sec, _)| *sec == section).map(|(_, on)| *on);
 
-        let (handled, effs) = step_ev(&mut s, &ScreenEvent::Activate(0), None);
+        let (handled, effs) = step_ev(
+            &mut s,
+            &ScreenEvent::Activate(0),
+            None,
+            browse.capture(),
+        );
         assert_eq!(handled, Handled::Yes);
         assert!(effs.is_empty(), "a row's own activation asks for nothing beyond the invalidate");
 
@@ -1561,6 +1621,5 @@ mod tests {
             Some(ActionKind::Start),
             "the row's activation does not read, let alone consume, the pill's own arm record"
         );
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 }

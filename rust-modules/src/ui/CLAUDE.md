@@ -589,13 +589,13 @@ designed in `docs/stores-as-machines.md`.** Browse is now the first physical own
 adapter and notice. Its PAGE/GENRE/LETTER/SRC/HUB mailboxes and single-flight flags are fields of
 that adapter, not process-wide state. `stores::StoreCmd` remains the complete mutation vocabulary;
 owned screens emit `AppFx::Store`, and `app/bridge.rs` delivers Browse commands to the owning
-machine. The old `crate::browse::*` reads are temporary compatibility views over the active
-owner, while `stores::browse::apply(BrowseCmd::…)` is the synchronous compatibility shim for
-legacy callers and tests. `app/bridge.rs` drains the aggregate Browse and compatibility notices
-once per frame into `Dispatcher::store_changed`, so a migrated screen hears `StoreChanged` for
-its own effect and for a changed landing. The shim still applies immediately for callers that need
-the old synchronous contract; the owned dispatcher path is the production route. Store state is
-NOT in the recorder's hash yet (the phase-2 anchor fixture pins `state_fp`).
+machine. Browse retirement Wave 2 removed the active selector, global publication, bootstrap
+handoff and free read/mutation shims: screens read retained `DirectoryView`/`ListingView`/
+`HubsView` values, and fixtures that seed Browse own a `BrowseStore` or `Stores`. Synchronous app
+boundaries call that explicit owner directly. `app/bridge.rs` drains the aggregate Browse notice
+and the other stores' compatibility notices once per frame into `Dispatcher::store_changed`, so
+a migrated screen hears `StoreChanged` for its own effect and for a changed landing. Store state
+is NOT in the recorder's hash yet (the phase-2 anchor fixture pins `state_fp`).
 
 **Phase 5a (2026-09-07): `table_screen.rs`** — `Header`, `TableScreen` and `DocumentScreen`
 EXTRACTED from the legacy Settings root and the Legal index/documents: those two modules keep
@@ -674,9 +674,9 @@ must hold still while focus walks the slots beneath it). If you touch focus navi
 or shelf motion, **add a test here** — that math is host-testable and these caught real bugs.
 Note the asymmetry, because it tells you where to put a new test: `card_row.rs` drives a **local**
 `CardRow`, so its tests are ordinary and parallel; an owned screen's tests hold no focus of their
-own (the `FocusEngine` does). Tests that seed the shared registry or Browse's compatibility view
-take `testlock::serial()`; tests using separate production BrowseStore owners can isolate their
-state and landings. **`xfade.rs` is
+own (the `FocusEngine` does). Tests that seed the shared registry or the remaining global stores
+take `testlock::serial()`; tests using separate production BrowseStore owners isolate their state
+and landings. **`xfade.rs` is
 the cautionary case**: its tests were ordinary and parallel until `tick` started reporting to
 `ui::idle`'s process-global flag, at which point driving a fader began mutating state *another
 module's* assertions read. They all take `testlock::serial()` now. Anything you make report to the

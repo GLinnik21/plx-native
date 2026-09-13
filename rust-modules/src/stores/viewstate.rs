@@ -64,13 +64,14 @@ pub(crate) fn pump() -> super::EndpointRefreshSet {
     endpoints
 }
 
-/// Owner-aware landing pass. The callback receives both delayed fan-out edits and the section-hub
-/// invalidation owed at the end of a write burst.
-pub(crate) fn pump_with_browse(
+/// Owner-aware landing pass. Browse receives delayed fan-out edits and section-hub invalidation;
+/// Home's refetch is scoped by the same retained directory at the application boundary.
+pub(crate) fn pump_with_owners(
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+    hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
 ) -> super::EndpointRefreshSet {
     let busy = crate::viewstate::is_busy();
-    let endpoints = crate::viewstate::pump_with_browse(browse);
+    let endpoints = crate::viewstate::pump_with_owners(browse, hubs);
     super::note(StoreId::ViewState, busy != crate::viewstate::is_busy());
     endpoints
 }

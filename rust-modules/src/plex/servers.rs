@@ -1134,8 +1134,8 @@ mod tests {
     /// modules' tests too.
     ///
     /// It empties the registry on the way OUT as well as on the way in, and that half is
-    /// load-bearing rather than tidy: `browse::pump` adopts every registered slot as a source and
-    /// then spawns a discovery worker for it, so servers left behind here would have another
+    /// load-bearing rather than tidy: an owned `BrowseStore::pump` adopts every registered slot as
+    /// a source and then spawns a discovery worker for it, so servers left behind here would have another
     /// module's tests dialling `10.0.0.1` on a background thread. The reset happens while the lock
     /// is still held (a struct's own `Drop` runs before its fields').
     struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
