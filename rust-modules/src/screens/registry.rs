@@ -1795,8 +1795,12 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 ///
 /// `#[cfg(test)]` because the pin is an ASSERTION about the array above and never a value the
 /// app reads — `state_fp()` hashes [`SCREEN_SHAPES`] itself.
+/// **Trailer PlayQueue / item menu** (0x3c0b_74a7_7a48_169c → this): `screens::item_menu::SHAPE`
+/// grows `Action` with `part`/`vcodec`/`acodec`/`title` so Play Trailer can carry the extra's
+/// play fields without a second PMS GET. Recorded bytes of an open menu that never offered that
+/// row are unchanged in practice; the shape string moved, so fixtures rerecord.
 #[cfg(test)]
-const SCREEN_SHAPES_PIN: u64 = 0x3c0b_74a7_7a48_169c;
+const SCREEN_SHAPES_PIN: u64 = 0xeb69_f6bf_105f_697f;
 
 #[cfg(test)]
 mod arg_tests {

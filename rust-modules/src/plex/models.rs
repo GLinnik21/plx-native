@@ -199,6 +199,24 @@ pub struct Metadata {
     pub kind: String, // movie|show|season|episode|clip
     #[serde(rename = "ratingKey", default)]
     pub rating_key: String,
+    /// `/library/metadata/{rk}` for a leaf, `/library/metadata/{rk}/children` for a show/season.
+    /// Extras matching also reads this against `primaryExtraKey` (docs/pms-api.md §4 extras).
+    #[serde(default)]
+    pub key: String,
+    /// Clip extras only: `trailer` / `behindTheScenes` / `sceneOrSample` / …
+    #[serde(default)]
+    pub subtype: String,
+    /// Clip extras only. `1` is a trailer; `5` behind-the-scenes; `6` scene-or-sample
+    /// (verified live 2026-09-12). Lenient: PMS string-encodes numerics on some endpoints.
+    #[serde(rename = "extraType", default, deserialize_with = "de_i64")]
+    pub extra_type: i64,
+    /// Path of the item's primary extra (`/library/metadata/{rk}`). Present on movie/show
+    /// metadata even without `includeExtras=1`.
+    #[serde(rename = "primaryExtraKey", default)]
+    pub primary_extra_key: String,
+    /// Nested extras, only with `?includeExtras=1`. Same rows as `GET …/extras`.
+    #[serde(rename = "Extras", default)]
+    pub extras: Option<ExtrasHub>,
     /// **The only PORTABLE identity Plex issues** — `plex://movie/6856…291d`, the metadata
     /// provider's id, identical on every server that ever matched this film. Everything else
     /// item-shaped (`ratingKey`, `librarySectionID`, `Part.key`, `Stream.id`) is a server-local
@@ -735,8 +753,14 @@ impl From<String> for HexColor {
     }
 }
 
-/// Lenient f64: a JSON number, a numeric string, or null → 0.0 (matches the old `jfloat`
-/// scrape). Called only when the field is present; a missing field uses `default` (0.0).
+/// `includeExtras=1` nests extras as `Extras.Metadata[]` — the same clip rows `GET …/extras`
+/// returns at the container root.
+#[derive(Deserialize, Default)]
+pub struct ExtrasHub {
+    #[serde(rename = "Metadata", default)]
+    pub metadata: Vec<Metadata>,
+}
+
 /// `OnDeck`'s envelope. Its `Metadata` is a single **object**, not the array every other nested hub
 /// in this file uses — precisely the shape inconsistency `plex/CLAUDE.md` warns about, and a strict
 /// field here would fail the WHOLE `MediaContainer` parse (an empty detail page), not just drop the
@@ -762,6 +786,8 @@ fn de_on_deck<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Box<Metad
     })
 }
 
+/// Lenient f64: a JSON number, a numeric string, or null → 0.0 (matches the old `jfloat`
+/// scrape). Called only when the field is present; a missing field uses `default` (0.0).
 fn de_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]

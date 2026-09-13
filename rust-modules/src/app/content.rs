@@ -90,9 +90,19 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 let started = match play {
                     crate::screens::registry::PlayIntent::Item {
                         sid, rk, part, vcodec, acodec, title, context,
-                    } => crate::route::request_play(
-                        &mut app.player.session, sid, &rk, &part, &vcodec, &acodec, &title, &context,
-                    ),
+                    } => {
+                        let ok = crate::route::request_play(
+                            &mut app.player.session, sid, &rk, &part, &vcodec, &acodec, &title, &context,
+                        );
+                        if ok && context == crate::metadata::TRAILER_CONTEXT {
+                            crate::stores::metadata::apply(
+                                crate::stores::metadata::MetadataCmd::SetNowPlaying(
+                                    crate::metadata::trailer_now_playing(sid, &rk),
+                                ),
+                            );
+                        }
+                        ok
+                    }
                     crate::screens::registry::PlayIntent::Movie(m) =>
                         crate::route::request_play_movie(&mut app.player.session, m),
                 };

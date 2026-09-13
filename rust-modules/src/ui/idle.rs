@@ -339,6 +339,26 @@ pub(crate) fn take_local_damage() -> u32 {
     LOCAL_DAMAGE.with(|c| c.replace(0))
 }
 
+/// Drain leftover gate state so another module's spring test can assert a quiet frame.
+/// Callers still take [`crate::testlock::serial`] first — this is not the lock.
+#[cfg(test)]
+pub(crate) fn reset_for_test() {
+    set_enabled(true);
+    frame_begin(1.0 / 60.0);
+    DIRTY.store(false, Relaxed);
+    WAKE.store(false, Relaxed);
+    LAST_PRESENT.store(0, Relaxed);
+    PRESENTS.store(0, Relaxed);
+    DAMAGE_GEN.store(0, Relaxed);
+    PRESENT_DAMAGE_GEN.with(|c| c.set(0));
+    PRESENT_DIRTY.with(|c| c.set(false));
+    WAS_MOVING.with(|c| c.set(false));
+    OWN_DAMAGE_N.store(0, Relaxed);
+    TAKEN_GEN.store(0, Relaxed);
+    VIDEO_PLANE.store(false, Relaxed);
+    let _ = take_local_damage();
+}
+
 thread_local! {
     /// Depth of open [`OwnScope`]s: while non-zero, every [`invalidate`] is a POPOVER's own damage.
     static OWN_SCOPE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -621,20 +641,7 @@ mod tests {
     /// module-local mutex (see `lib.rs::testlock`).
     fn fresh() -> crate::testlock::Serial {
         let g = crate::testlock::serial();
-        set_enabled(true);
-        frame_begin(1.0 / 60.0);
-        DIRTY.store(false, Relaxed);
-        WAKE.store(false, Relaxed);
-        LAST_PRESENT.store(0, Relaxed);
-        PRESENTS.store(0, Relaxed);
-        DAMAGE_GEN.store(0, Relaxed);
-        PRESENT_DAMAGE_GEN.with(|c| c.set(0));
-        PRESENT_DIRTY.with(|c| c.set(false));
-        WAS_MOVING.with(|c| c.set(false));
-        OWN_DAMAGE_N.store(0, Relaxed);
-        TAKEN_GEN.store(0, Relaxed);
-        VIDEO_PLANE.store(false, Relaxed);
-        let _ = take_local_damage();
+        reset_for_test();
         g
     }
 

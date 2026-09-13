@@ -343,7 +343,8 @@ and drawn from one `Bit` list so it can be bounded at `FACTS_R`, the people colu
 two are level, and the fragment has no natural width ceiling.
 Its **action row is a DYNAMIC control set and no index into it is a constant** (`HeroCtl`/`hero_set`/
 `hero_ctls`): the Play/Resume pill, then the ↺ restart disc only while Play would actually resume,
-then *Also available* only while a second source holds the item, then the **watch-state tail** — and
+then the Trailer disc only while the loaded movie/show has a playable extra, then *Also available*
+only while a second source holds the item, then the **watch-state tail** — and
 NOT a ⓘ *Track information* disc, which sat in that middle group until 2026-08-21 and now opens from
 the About footer's Languages column instead, the block it is about (`hero_ctls`' doc argues it; the
 row keeps only the controls that DO something to the item). Each

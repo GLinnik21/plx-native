@@ -107,8 +107,8 @@ pub(crate) struct DetailScreen {
     cast: CardRow,
     tabs: TabStrip,
     season_pop: CtlPop<1>,
-    ctl_pop: CtlPop<4>,
-    disc_unfurl: [Spring; 2],
+    ctl_pop: CtlPop<5>,
+    disc_unfurl: [Spring; 3],
     season_metrics: season::Metrics,
     about_rows: about::Rows,
     ground: AmbientWash,
@@ -154,7 +154,7 @@ impl DetailScreen {
             tabs: TabStrip::new(),
             season_pop: CtlPop::new(),
             ctl_pop: CtlPop::new(),
-            disc_unfurl: [Spring::at(0.0); 2],
+            disc_unfurl: [Spring::at(0.0); 3],
             season_metrics: season::Metrics::new(),
             about_rows: about::Rows::new(),
             ground,
@@ -578,7 +578,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             cx.measure,
             set,
             set.restart,
-            [self.disc_unfurl[0].pos, self.disc_unfurl[1].pos],
+            self.disc_unfurl.map(|s| s.pos),
             self.named_show(),
         );
         let (_, hero_n) = hero::hero_ctls(set);
@@ -778,7 +778,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                     cx.measure,
                     set,
                     set.restart,
-                    [self.disc_unfurl[0].pos, self.disc_unfurl[1].pos],
+                    self.disc_unfurl.map(|s| s.pos),
                     self.named_show(),
                 );
                 let base =
@@ -1615,7 +1615,7 @@ impl DetailScreen {
             cx.measure,
             set,
             set.restart,
-            [self.disc_unfurl[0].pos, self.disc_unfurl[1].pos],
+            self.disc_unfurl.map(|s| s.pos),
             self.named_show(),
         );
         let current = cx.focus.current.map(|k| k.elem);
@@ -1657,6 +1657,7 @@ impl DetailScreen {
                 ctl => {
                     let icon = match ctl {
                         hero::HeroCtl::Restart => crate::ui::icons::Icon::Restart,
+                        hero::HeroCtl::Trailer => crate::ui::icons::Icon::Trailer,
                         hero::HeroCtl::MarkWatched => crate::ui::icons::Icon::Check,
                         hero::HeroCtl::MarkUnwatched => crate::ui::icons::Icon::Minus,
                         _ => unreachable!(),
@@ -2205,17 +2206,19 @@ impl DetailScreen {
     }
 
     fn hero_set(&self) -> hero::HeroSet {
-        let (restart, mark) = self
+        let (restart, mark, trailer) = self
             .detail()
             .map(|d| {
                 (
                     hero::has_restart(hero::hero_resume_ns(d)),
                     hero::hero_mark(d),
+                    hero::trailer_play(d).is_some(),
                 )
             })
-            .unwrap_or((false, PosterMark::None));
+            .unwrap_or((false, PosterMark::None, false));
         hero::HeroSet {
             restart,
+            trailer,
             alt: self.alt_available(),
             mark,
         }
@@ -2339,6 +2342,24 @@ impl DetailScreen {
             hero::HeroCtl::Restart => {
                 self.play_hero(true, fx);
             }
+            hero::HeroCtl::Trailer => {
+                // Do not touch `NowPlaying` here. Extra/Detail live in `current()`, and a
+                // no-op (no playable extra) or a later `request_play` refusal must not wipe a
+                // leftover episode descriptor. The Play drain installs the trailer card after
+                // the session is accepted.
+                let Some(d) = self.detail() else { return };
+                let Some((extra, title)) = hero::trailer_play(d) else { return };
+                let play = PlayIntent::Item {
+                    sid: crate::route::item_sid(d.sid),
+                    rk: extra.rk.clone(),
+                    part: extra.part.clone(),
+                    vcodec: extra.vcodec.clone(),
+                    acodec: extra.acodec.clone(),
+                    title: title.to_string(),
+                    context: crate::metadata::TRAILER_CONTEXT.into(),
+                };
+                self.content(fx, ContentReq::Play { play, resume_ns: 0 });
+            }
             hero::HeroCtl::Alt => {
                 let set = self.hero_set();
                 if let Some(i) = hero::index_of(set, ctl) {
@@ -2346,7 +2367,7 @@ impl DetailScreen {
                         cx.measure,
                         set,
                         set.restart,
-                        [self.disc_unfurl[0].pos, self.disc_unfurl[1].pos],
+                        self.disc_unfurl.map(|s| s.pos),
                         self.named_show(),
                     );
                     let mut rect = hero::hero_btn_rect_at(set, i, self.hero_chain(measure).btn_y, widths);

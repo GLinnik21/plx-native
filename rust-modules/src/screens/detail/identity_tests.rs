@@ -44,7 +44,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         scroll_target: 0.0, episode_scroll: Spring::at(0.0), tab_scroll: Spring::at(0.0),
         episode_scale: [Spring::at(1.0); EP_SCALE_MAX], related: CardRow::new(),
         cast: CardRow::new(), tabs: TabStrip::new(), season_pop: CtlPop::new(),
-        ctl_pop: CtlPop::new(), disc_unfurl: [Spring::at(0.0); 2],
+        ctl_pop: CtlPop::new(), disc_unfurl: [Spring::at(0.0); 3],
         season_metrics: season::Metrics::new(), about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP), spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),

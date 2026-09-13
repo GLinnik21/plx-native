@@ -5067,7 +5067,13 @@ pub(crate) fn with_queue<R>(ps: &PlaybackSession, f: impl FnOnce(&[crate::plex::
 ///      for the session's own server rung 1 is empty and this is what saves a round trip.
 ///   3. `GET /identity`, whose answer travels back in `QueueInfo::machine_id` for `apply_plan` to
 ///      cache against this server.
-pub(super) fn resolve_playqueue(c: &crate::plex::Client, rk: &str, session: &str, cached: &str) -> QueueInfo {
+pub(super) fn resolve_playqueue(
+    c: &crate::plex::Client,
+    rk: &str,
+    session: &str,
+    cached: &str,
+    continuous: bool,
+) -> QueueInfo {
     let known = c.machine_id();
     // `mid` is the FETCHED id and nothing else: apply_plan's "" means "leave the cache alone", and
     // the first two rungs are already-known values with nothing to write back.
@@ -5087,7 +5093,7 @@ pub(super) fn resolve_playqueue(c: &crate::plex::Client, rk: &str, session: &str
         crate::player::log("playqueue: no machineIdentifier (skip)");
         return QueueInfo::default();
     }
-    match c.create_play_queue(effective, rk, session) {
+    match c.create_play_queue(effective, rk, session, continuous) {
         Some(q) => {
             let up_next = q.next.as_ref().and_then(up_next_of);
             crate::player::log(&format!(
@@ -5147,9 +5153,8 @@ impl ResolveEnv {
             sub_sid: cur_sub_sid(ps),
             cached_item: crate::metadata::cached_playing(sid, rk),
             quality: quality(),
-            src_kbps: crate::metadata::current()
-                .filter(|d| detail_describes(d, sid, rk))
-                .map_or(0, source_kbps),
+            src_kbps: resolve_src_kbps(crate::metadata::current(), sid, rk),
+            omit_queue_continuous: false,
         }
     }
 }
@@ -5383,6 +5388,7 @@ fn request_play_inner(
     let contract_revision = desired_contract_revision();
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
     let mut env = ResolveEnv::snapshot(ps, sid, rk);
+    env.omit_queue_continuous = ctx == crate::metadata::TRAILER_CONTEXT;
     if let Some(retry) = retry {
         // `request_play` resets the live selection because that is correct for a new item.  A
         // retry is the SAME item: override the fresh defaults with the selection captured before

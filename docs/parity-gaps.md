@@ -632,9 +632,9 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* CONFIRMED. fmt::time_left (ui/fmt.rs:29) has exactly one call site in the whole crate: ui/home.rs:606 (the Continue-Watching card). ui/detail.rs:794-806 builds the hero's date/runtime line from pretty_date + fmt::dur_long and nothing else. Detail.resume_ms IS populated (metadata.rs:328, resume_ms: it.view_offset) and is read only by set_resume (ui/detail.rs:1191-1193) — never drawn. Episodes do draw a resume BAR (ui/detail.rs:963-969) but no text. minor/small confirmed — genuinely a data-free change.
 
 - **No Extras / trailers shelf** — `minor` / `medium`  
-  The official movie and show detail pages carry an "Extras" row (trailers, behind the scenes, featurettes) from `/library/metadata/{rk}/extras`. We have Related and Cast rows but no extras, and the endpoint is not implemented.  
-  *Where:* plex/library.rs (`extras(rating_key)` → `/library/metadata/{rk}/extras`), metadata.rs (`Detail.extras` + fetch in `fetch_full`), ui/detail.rs (a sixth section id + a `draw_strip` shelf — the CardRow plumbing is already generic).  
-  *Verified:* CONFIRMED. plex/library.rs exposes sections, section_items, section_items_paged, section_items_query, section_directory, metadata, metadata_many, children, all_leaves, related, scrobble, unscrobble, select_streams, direct_play_url — no extras. Grepped extras|trailer across rust-modules/src: the only hit is ff.rs:706's av_write_trailer comment. ui/detail.rs sections() (163-191) enumerates ids 0-5 with no extras block, and n_items/block_h/draw_child (192-213, 662-686) match. minor/medium confirmed. Worth adding: sections() is a fixed [c_int; 6] stack array with `let mut v = [0; 6]` and pushes up
+  The official movie and show detail pages carry an "Extras" row (trailers, behind the scenes, featurettes) from `/library/metadata/{rk}/extras`. The Trailer disc / Play Trailer row landed 2026-09-12 (picker keeps one `Detail.trailer`); this gap is the **shelf** of the rest of the extras. Related and Cast still have no extras neighbour.  
+  *Where:* metadata.rs (`Detail` would keep a vec, not only the picker winner), ui/detail.rs (a sixth section id + a `draw_strip` shelf — the CardRow plumbing is already generic). The wire is already there: `plex/library.rs` `extras(rating_key)` and `Metadata.subtype` / `Extras`.  
+  *Verified:* UPDATED 2026-09-12. `/extras` and the clip DTO exist; the page still has no extras block. minor/medium confirmed for the shelf.
 
 - **Cast headshots are inert — no actor filmography** — `minor` / `large`  
   In the official client a Credits tile opens that person's page (their other titles). Ours explicitly does nothing on OK, and `Cast` carries no tag id to query with.  
@@ -666,9 +666,9 @@ player, transport and tracks auditors, and is counted once in the themes above.
 *Already implemented here: 17 reference features.*
 
 - **Extras shelf (trailers, behind-the-scenes, deleted scenes, featurettes)** — `major` / `medium`  
-  The official page carries an "Extras" shelf of 16:9 clip thumbnails that play in-app. We have no notion of extras at all: no endpoint, no DTO, no section id, nothing drawn.  
-  *Where:* rust-modules/src/plex/library.rs (new `extras(rk)` -> GET /library/metadata/{rk}/extras, or add includeExtras=1 to `metadata()`), rust-modules/src/plex/models.rs (Extras container + Metadata.subtype for trailer|behindTheScenes|deleted|featurette|interview|scene), rust-modules/src/metadata.rs (Detail.extras + fetch in fetch_full), rust-modules/src/ui/detail.rs (new section id + block_h + draw_extras, reusing the episode-still geometry and route::request_play for the clip part)  
-  *Verified:* Confirmed absent end to end. plex/library.rs:59-65 `metadata()` sends only includeChapters=1 + includeMarkers=1; there is no `extras()` method in the file's 120 lines. plex/models.rs Metadata (114-187) has no Extras container and no `subtype`. metadata.rs:199-233 Detail has no extras vec; fetch_full (metadata.rs:632-659) makes 2 calls for a movie, 5 for a show, none of them /extras. ui/detail.rs:163-191 sections() is a closed set (0 hero / 1 tabs / 2 episodes / 4 cast / 3 related / 5 about). Effort correction: 'medium' is right but note the section id space is a FIXED `[c_int; 6]` in sections(
+  The official page carries an "Extras" shelf of 16:9 clip thumbnails that play in-app. The Trailer **control** landed 2026-09-12 (`GET …/extras` in parallel with `/related`, one `Detail.trailer`). The shelf of the other extras is still not drawn: no section id, no strip.  
+  *Where:* rust-modules/src/metadata.rs (keep more than the picker winner), rust-modules/src/ui/detail.rs (new section id + block_h + draw_extras, reusing the episode-still geometry and route::request_play for the clip part). Endpoint + DTO are already in plex/library.rs `extras()` / plex/models.rs `subtype` + `Extras`.  
+  *Verified:* UPDATED 2026-09-12. Endpoint, DTO, and Trailer control exist. The extras **shelf** is still absent from `sections()` / `draw_child`.
 
 - **Cast members are not actionable — no person page / filmography** — `major` / `large`  
   In the official client a cast headshot is a link to that person's page (their filmography across your libraries). Ours is focusable and animates, but OK does nothing.  
@@ -949,10 +949,15 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* plex/ (a new syncplay.rs: POST /playQueues + the plex.tv SyncPlay rooms API, plus a websocket/notification listener the app currently has no transport for), player/ for clock slaving, ui/item_menu.rs for the row.  
   *Verified:* CONFIRMED. grep for syncplay/watch together over rust-modules/src returns nothing; plex/timeline.rs only creates a per-item local PlayQueue (:52-68) and posts /:/timeline. One nuance on the transport claim: the app does ship a WebSocket implementation, but it is in the HOST-side tools (tools/stream-screen.py's /ws + tools/jsmpeg.min.js consuming the capture stream) — the Rust side has no WebSocket client at all, so the auditor's point stands unchanged. Also correct that plex/client.rs:62-72's playback_identity headers are the only identity registration; there is no /player command endpoint or 
 
-- **No Play Trailer / Extras** — `minor` / `medium`  
-  The official client offers trailers and extras (behind-the-scenes, deleted scenes) from an item's page and its action menu. We never request /extras and the model has no Extras field, so the detail page shows only Related and Cast.  
-  *Where:* plex/library.rs (`extras(rating_key)` → GET /library/metadata/{rk}/extras, or `?includeExtras=1` on metadata()), plex/models.rs + metadata.rs::Detail (an `extras: Vec<Extra>`), ui/detail.rs (a new block id in sections()/block_h()/draw_child) and ui/item_menu.rs for the "Play Trailer" row; playback reuses route::request_play unchanged.  
-  *Verified:* CONFIRMED. grep for extras/trailer/includeExtras over BOTH rust-modules/src and docs/pms-api.md returns nothing relevant (only 'extra' as an English word: metadata.rs:446/:646 comments, transcoder.rs's X-Plex-Client-Profile-Extra, detail.rs:1004-1035's per-tile `extra` closure param). plex/library.rs's op list confirms no extras endpoint; plex/models.rs:113-190 Metadata has Media/Genre/Country/Director/Writer/Role/Chapter/Marker/UltraBlurColors but no Extras container. detail.rs sections() offers hero/tabs/episodes/cast/related/about only. Effort medium is right, and the auditor's landing spot
+- ~~**No Play Trailer / Extras**~~ — **button/menu CLOSED 2026-09-12.** Movie and show detail
+  heroes grow a Trailer disc, and the item menu offers Play Trailer, when PMS returns a playable
+  trailer extra. Playback reuses `request_play` with the extra's rk/part, `resume_ns = 0`, HUD
+  context `"Trailer"`, and `continuous` omitted so EOS cannot Up-Next into a sibling extra.
+  `metadata::current()` stays the parent. The extras **shelf** (behind-the-scenes, featurettes)
+  remains open — see "No Extras / trailers shelf" / "Extras shelf" above.
+  *Where (shelf remainder):* `screens/detail` sections still have no extras block; `Detail` keeps
+  one `trailer: Option<Extra>`, not the extras vector. Item menu Play Trailer is cache-only from
+  the loaded parent.
 
 - **The in-player action set is scattered across three controls with no single "More" list, and no Settings entry** — `minor` / `medium`  
   The official player's More menu is one list: Subtitle Track, Audio Track, Settings, Go to Show, Watch Together, Shuffle Season, Delete. Ours splits the two track pickers onto right-edge discs and buries Go to Show inside the Info card's button column; there is no consolidated list, and no Settings row at all (no playback-quality, subtitle-appearance, or player-preferences screen exists anywhere in the app).  

@@ -548,6 +548,8 @@ pub(crate) struct ResolveEnv {
     /// `PlayingItem` instead would measure every path, and is named as the follow-up in this
     /// unit's PR: that store is `metadata.rs`'s, not this lane's.
     pub src_kbps: i64,
+    /// Trailer sessions omit `continuous=1` so EOS cannot Up-Next into a sibling extra.
+    pub omit_queue_continuous: bool,
 }
 
 
@@ -596,6 +598,31 @@ pub(super) fn source_kbps(d: &crate::metadata::Detail) -> i64 {
     match d.video.as_ref().map(|v| v.bitrate) {
         Some(b) if b > 0 => b,
         _ => d.bitrate,
+    }
+}
+
+/// Rate the quality ceiling judges for this play. A trailer extra is a different file from the
+/// loaded parent: using the movie's 4K figure (or 0, which [`crate::plex::Ceiling::admits`]
+/// fails closed on) would force every non-Auto rung through the encoder.
+pub(super) fn resolve_src_kbps(
+    d: Option<&crate::metadata::Detail>,
+    sid: ServerId,
+    rk: &str,
+) -> i64 {
+    let Some(d) = d else {
+        return 0;
+    };
+    if let Some(extra) = d
+        .trailer
+        .as_ref()
+        .filter(|e| crate::plex::same_item((d.sid, e.rk.as_str()), (sid, rk)))
+    {
+        return extra.bitrate;
+    }
+    if detail_describes(d, sid, rk) {
+        source_kbps(d)
+    } else {
+        0
     }
 }
 
@@ -748,7 +775,13 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     let session = new_sess(rk);
     plan.sess = session.clone();
     if !rk.is_empty() {
-        let q = resolve_playqueue(client, rk, &session, &env.machine_id);
+        let q = resolve_playqueue(
+            client,
+            rk,
+            &session,
+            &env.machine_id,
+            !env.omit_queue_continuous,
+        );
         plan.machine_id = q.machine_id;
         plan.pq_id = q.id;
         plan.pq_item_id = q.item_id;
@@ -1709,6 +1742,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_clip_queue_row_does_not_arm_up_next() {
+        let clip = crate::plex::QueueRow {
+            kind: "clip".into(),
+            rk: "9".into(),
+            part: "/p".into(),
+            ..Default::default()
+        };
+        assert!(up_next_of(&clip).is_none());
+        let movie = crate::plex::QueueRow {
+            kind: "movie".into(),
+            rk: "1".into(),
+            ..Default::default()
+        };
+        assert!(up_next_of(&movie).is_none());
+    }
+
+    #[test]
     fn a_route_change_wins_over_an_expired_control_snapshot() {
         assert!(matches!(
             classify_prime_decision(false, crate::plex::JsonDeadlineOutcome::Deadline),
@@ -2073,6 +2123,50 @@ mod tests {
         };
         assert!(detail_describes(&movie, a, "7"));
         assert!(!detail_describes(&movie, a, "100"));
+    }
+
+    #[test]
+    fn a_trailer_play_judges_the_extra_file_not_the_parent_or_zero() {
+        let a = crate::plex::ServerId::from_raw(1);
+        let movie = crate::metadata::Detail {
+            sid: a,
+            rk: "7".into(),
+            bitrate: 48_000,
+            video: Some(crate::metadata::Stream {
+                bitrate: 40_000,
+                ..Default::default()
+            }),
+            trailer: Some(crate::metadata::Extra {
+                rk: "9".into(),
+                bitrate: 2_500,
+                part: "/p".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(resolve_src_kbps(Some(&movie), a, "7"), 40_000);
+        assert_eq!(
+            resolve_src_kbps(Some(&movie), a, "9"),
+            2_500,
+            "the extra's own rate, not the feature's"
+        );
+        assert_eq!(
+            resolve_src_kbps(Some(&movie), a, "8"),
+            0,
+            "an unrelated key is still unmeasured"
+        );
+        assert!(
+            quality_policy(Quality::P1080, false, 2_500, 1280, 720).direct_play,
+            "a small extra fits the 1080p · 8 Mbps rung"
+        );
+        assert!(
+            !quality_policy(Quality::P1080, false, 0, 1280, 720).direct_play,
+            "src_kbps=0 is the fail-closed hole this play used to hit"
+        );
+        assert!(
+            !quality_policy(Quality::P1080, false, 40_000, 3840, 2160).direct_play,
+            "the parent's 4K figure would have forced a transcode"
+        );
     }
 
     /// **The ceiling is spent as `maxVideoBitrate`, so it must be judged against the VIDEO rate.**

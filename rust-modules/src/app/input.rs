@@ -514,6 +514,45 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
                 playback.captured_card(ps, pa, mm, pages, bridge);
             }
         }
+        Action::PlayTrailer {
+            rk,
+            part,
+            vcodec,
+            acodec,
+            title,
+        } => {
+            if rk.is_empty() || part.is_empty() {
+                return;
+            }
+            if !crate::route::request_play(
+                ps,
+                sid,
+                &rk,
+                &part,
+                &vcodec,
+                &acodec,
+                &title,
+                crate::metadata::TRAILER_CONTEXT,
+            ) {
+                return;
+            }
+            crate::stores::metadata::apply(
+                crate::stores::metadata::MetadataCmd::SetNowPlaying(
+                    crate::metadata::trailer_now_playing(sid, &rk),
+                ),
+            );
+            super::playback::start_playback_with(
+                ps,
+                pa,
+                0,
+                Origin::Here,
+                HUD_LINGER_MS,
+                None,
+                pages,
+                bridge,
+                playback.0,
+            );
+        }
     }
 }
 

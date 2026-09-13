@@ -1066,6 +1066,7 @@ pub(crate) const MARK_UNWATCHED_VERB: &str = "Mark as Unwatched";
 /// `Icon::Restart`'s doc is the argument. One action, one word, and the mark chosen per surface for
 /// what that surface has to tell apart.
 pub(crate) const PLAY_FROM_START_VERB: &str = "Play from Start";
+pub(crate) const PLAY_TRAILER_VERB: &str = "Play Trailer";
 
 /// The **watched tick** on a poster, as fractions of the tile's DRAWN width: the tick's box, its
 /// corner inset, then the veil's box. Anchored on the design system's `ArtTile` — a 26px tick inset

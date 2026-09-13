@@ -128,6 +128,13 @@ impl Client {
         self.get_json(&path)?.metadata.into_iter().next()
     }
 
+    /// GET /library/metadata/{rating_key}/extras → clip rows (`subtype` trailer / behindTheScenes / …).
+    /// Same playable `Media`/`Part` as `?includeExtras=1` nested under the parent (docs/pms-api.md §4).
+    /// A refused GET is `None`; an empty list is `Some` with `metadata` empty.
+    pub fn extras(&self, rating_key: &str) -> Option<MediaContainer> {
+        self.get_json(&format!("/library/metadata/{rating_key}/extras"))
+    }
+
     /// GET /library/metadata/{csv} — the FULL records of MANY items in ONE request. The answer
     /// carries one `.metadata[]` row per key, in request order; the CSV is joined HERE, because
     /// assembling path syntax is this layer's job (`plex/CLAUDE.md`: every PMS query is built here).
