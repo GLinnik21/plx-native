@@ -54,6 +54,15 @@ pub struct HttpStream {
     status: c_int,
     chunked: c_int,
     chunk_left: i64,
+    /// 1 if this response allows the next [`http_open`] to reuse the live fd. HTTP/1.1
+    /// defaults to keep-alive unless the server sent `Connection: close`.
+    keep_alive: c_int,
+    /// 1 once the body has been fully consumed and the fd is still open. A second open
+    /// may reuse only when this is set — an unread body would poison the next request.
+    body_done: c_int,
+    peer_port: c_int,
+    peer_host_len: c_int,
+    peer_host: [u8; 256],
 }
 
 fn errno() -> c_int {
@@ -100,6 +109,9 @@ impl HttpStream {
     fn interrupted(&self) -> bool {
         self.interrupted.load(Ordering::Acquire) != 0
     }
+    fn body_is_done(&self) -> bool {
+        self.body_done != 0
+    }
     /// Reset every field EXCEPT `fd`. `http_open` used to `write_bytes`-memset the whole
     /// struct, which wrote the ATOMIC fd non-atomically — and momentarily as 0, i.e. stdin —
     /// while another thread could be loading it in `http_shutdown`. `fd` is reset separately
@@ -122,6 +134,8 @@ impl HttpStream {
         self.status = 0;
         self.chunked = 0;
         self.chunk_left = 0;
+        self.keep_alive = 0;
+        self.body_done = 0;
     }
 }
 
@@ -378,6 +392,32 @@ unsafe fn hs_next_chunk(
     Ok(if any { Some(sz) } else { None })
 }
 
+/// After the last-chunk size line, consume trailer fields and the terminating CRLF so the next
+/// keep-alive request does not parse leftover bytes as a status line.
+unsafe fn hs_skip_chunked_trailers(
+    hs: &mut HttpStream,
+    deadline: Option<Instant>,
+) -> Result<(), c_int> {
+    let mut line_empty = true;
+    loop {
+        let Some(b) = hs_getb(hs, deadline)? else {
+            // EOF before the terminating blank line: leftover trailer bytes would be parsed as
+            // the next status line if we reused. Close rather than keep-alive.
+            return Err(-1);
+        };
+        if b == b'\n' {
+            if line_empty {
+                return Ok(());
+            }
+            line_empty = true;
+            continue;
+        }
+        if b != b'\r' {
+            line_empty = false;
+        }
+    }
+}
+
 /// Strip the optional whitespace (RFC 9110 §5.6.3's `OWS` — spaces and horizontal tabs only) from
 /// both ends of a header token.
 fn trim_ows(v: &[u8]) -> &[u8] {
@@ -389,6 +429,63 @@ fn trim_ows(v: &[u8]) -> &[u8] {
         .take_while(|b| **b == b' ' || **b == b'\t')
         .count();
     &v[..v.len() - b]
+}
+
+/// `Connection: close` on an HTTP/1.1 response forbids reuse of this fd.
+fn header_has_connection_close(hdr: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"\r\nconnection:";
+    let mut at = 0usize;
+    while let Some(p) = find_ci(&hdr[at..], NEEDLE) {
+        let vs = at + p + NEEDLE.len();
+        let end = hdr[vs..]
+            .iter()
+            .position(|&b| b == b'\r' || b == b'\n')
+            .map_or(hdr.len(), |i| vs + i);
+        if hdr[vs..end]
+            .split(|&b| b == b',')
+            .any(|t| trim_ows(t).eq_ignore_ascii_case(b"close"))
+        {
+            return true;
+        }
+        at = end;
+    }
+    false
+}
+
+fn remember_peer(hs: &mut HttpStream, host: &str, port: c_int) {
+    let bytes = host.as_bytes();
+    let n = bytes.len().min(hs.peer_host.len());
+    hs.peer_host[..n].copy_from_slice(&bytes[..n]);
+    hs.peer_host_len = n as c_int;
+    hs.peer_port = port;
+}
+
+fn same_peer(hs: &HttpStream, host: &str, port: c_int) -> bool {
+    let n = hs.peer_host_len as usize;
+    n <= hs.peer_host.len()
+        && hs.peer_port == port
+        && hs.peer_host.get(..n) == Some(host.as_bytes())
+}
+
+/// May this open send its request on the live fd instead of dialling?
+fn can_reuse(hs: &HttpStream, host: &str, port: c_int) -> bool {
+    hs.fd() >= 0
+        && !hs.interrupted()
+        && hs.keep_alive != 0
+        && hs.body_done != 0
+        && (hs.bpos as usize) >= (hs.blen as usize)
+        && same_peer(hs, host, port)
+}
+
+/// Body complete: keep the fd when the server offered keep-alive, otherwise close.
+/// `body_done` is set in both cases so a closed Connection: close response is not mistaken for
+/// an incomplete transfer (and a mid-body close, which never reaches here, is not mistaken for
+/// done).
+unsafe fn finish_body(hs: &mut HttpStream) {
+    hs.body_done = 1;
+    if hs.keep_alive == 0 || hs.fd() < 0 {
+        close_owned(hs);
+    }
 }
 
 /// Is this response body framed with the `chunked` transfer coding?
@@ -922,15 +1019,65 @@ fn http_open_with_timeouts(
     }
     unsafe {
         let hs = &mut *hs;
-        hs.reset_fields();
-        hs.set_fd(-1);
-
         if open_deadline.is_some_and(|at| Instant::now() >= at) {
+            close_owned(hs);
             return Err(HttpOpenError::Deadline);
         }
 
         let host_s = CStr::from_ptr(host).to_string_lossy();
         let path_s = CStr::from_ptr(path).to_string_lossy();
+        // A shutdown of a live keep-alive fd is teardown of THIS open. Closing it and returning
+        // leaves `interrupted` set so we do not dial a replacement the already-fired shutdown
+        // cannot reach. `fd < 0` with a leftover interrupt is a later session: reset below.
+        if hs.interrupted() && hs.fd() >= 0 {
+            close_owned(hs);
+            return Err(HttpOpenError::Aborted);
+        }
+        let reuse = can_reuse(hs, &host_s, port);
+        if !reuse {
+            close_owned(hs);
+        }
+        let reused_fd = hs.fd();
+        // `reset_fields` clears the latch (it is per-request). Capture it first: a shutdown
+        // that lands after the check above and before this store must still abort, not send on
+        // a half-closed keep-alive and then redial.
+        let shutdown = hs.interrupted();
+        hs.reset_fields();
+        if reused_fd >= 0 && (shutdown || hs.interrupted()) {
+            close_owned(hs);
+            hs.interrupted.store(1, Ordering::Release);
+            return Err(HttpOpenError::Aborted);
+        }
+
+        if reused_fd >= 0 {
+            match perform_http_request(
+                hs,
+                reused_fd,
+                &host_s,
+                port,
+                &path_s,
+                extra,
+                method,
+                open_deadline,
+                restore_media_timeouts,
+            ) {
+                Ok(()) => return Ok(()),
+                Err(HttpOpenError::Aborted) => return Err(HttpOpenError::Aborted),
+                Err(HttpOpenError::Deadline) => return Err(HttpOpenError::Deadline),
+                Err(HttpOpenError::Status(status)) => return Err(HttpOpenError::Status(status)),
+                Err(HttpOpenError::Transport) => {
+                    // Idle timeout or a half-closed keep-alive: one redial, not a hard failure.
+                    close_owned(hs);
+                    if hs.interrupted() {
+                        return Err(HttpOpenError::Aborted);
+                    }
+                    hs.reset_fields();
+                    if hs.interrupted() {
+                        return Err(HttpOpenError::Aborted);
+                    }
+                }
+            }
+        }
 
         // Resolve FIRST, before any descriptor exists: the address family to open is the resolver's
         // answer, not this file's assumption, which is the whole of what makes an AF_INET6
@@ -1031,167 +1178,199 @@ fn http_open_with_timeouts(
         // remain the ordinary inactivity contract; `open_deadline` below is the separate absolute
         // conservation snapshot and is removed at the header/body boundary.
         set_socket_timeouts(fd, recv_timeout_ms, send_timeout_ms);
+        perform_http_request(
+            hs,
+            fd,
+            &host_s,
+            port,
+            &path_s,
+            extra,
+            method,
+            open_deadline,
+            restore_media_timeouts,
+        )
+    }
+}
 
-        // build + send the request (default Accept only if caller set none)
-        let extra_s: String = if extra.is_null() {
-            String::new()
-        } else {
-            CStr::from_ptr(extra).to_string_lossy().into_owned()
-        };
-        let accept = if extra_s.to_ascii_lowercase().contains("accept:") {
-            ""
-        } else {
-            "Accept: */*\r\n"
-        };
-        // `Host:` is the ORIGIN, never the address `connect_any` reached — see `host_header`.
-        let host_hdr = host_header(&host_s, port);
-        let req = format!(
-            "{method} {path_s} HTTP/1.1\r\nHost: {host_hdr}\r\nUser-Agent: plxnative/0.1\r\n{accept}{extra_s}Connection: close\r\n\r\n"
+unsafe fn perform_http_request(
+    hs: &mut HttpStream,
+    fd: c_int,
+    host_s: &str,
+    port: c_int,
+    path_s: &str,
+    extra: *const c_char,
+    method: &str,
+    open_deadline: Option<Instant>,
+    restore_media_timeouts: bool,
+) -> Result<(), HttpOpenError> {
+    // build + send the request (default Accept only if caller set none)
+    let extra_s: String = if extra.is_null() {
+        String::new()
+    } else {
+        CStr::from_ptr(extra).to_string_lossy().into_owned()
+    };
+    let accept = if extra_s.to_ascii_lowercase().contains("accept:") {
+        ""
+    } else {
+        "Accept: */*\r\n"
+    };
+    // `Host:` is the ORIGIN, never the address `connect_any` reached — see `host_header`.
+    let host_hdr = host_header(host_s, port);
+    // HTTP/1.1 keep-alive is the default; omitting Connection lets the server reuse this
+    // socket for the next HLS segment instead of forcing a fresh TCP handshake each time.
+    let req = format!(
+        "{method} {path_s} HTTP/1.1\r\nHost: {host_hdr}\r\nUser-Agent: plxnative/0.1\r\n{accept}{extra_s}\r\n"
+    );
+    let bytes = req.as_bytes();
+    let mut off = 0usize;
+    while off < bytes.len() {
+        let w = send_until(
+            fd,
+            bytes[off..].as_ptr() as *const c_void,
+            bytes.len() - off,
+            open_deadline,
         );
-        let bytes = req.as_bytes();
-        let mut off = 0usize;
-        while off < bytes.len() {
-            let w = send_until(
-                fd,
-                bytes[off..].as_ptr() as *const c_void,
-                bytes.len() - off,
-                open_deadline,
-            );
-            if w <= 0 {
-                let error = if hs.interrupted() {
-                    HttpOpenError::Aborted
-                } else if w == HTTP_READ_DEADLINE as isize {
-                    HttpOpenError::Deadline
-                } else {
-                    HttpOpenError::Transport
-                };
-                close_owned(hs);
-                return Err(error);
-            }
-            off += w as usize;
-        }
-
-        // read until end of headers (\r\n\r\n), keeping any body bytes that follow
-        let cap = hs.buf.len();
-        let mut hdr_end: Option<usize> = None;
-        hs.blen = 0;
-        while hdr_end.is_none() && (hs.blen as usize) < cap - 1 {
-            let r = recv_until(
-                fd,
-                hs.buf.as_mut_ptr().add(hs.blen as usize) as *mut c_void,
-                cap - hs.blen as usize,
-                open_deadline,
-            );
-            // r == 0 is also how an interrupted open surfaces: `http_shutdown` wakes this
-            // recv with EOF, so a teardown mid-header costs one syscall, not 15 s of SO_RCVTIMEO.
-            if r <= 0 {
-                let error = if hs.interrupted() {
-                    HttpOpenError::Aborted
-                } else if r == HTTP_READ_DEADLINE as isize {
-                    HttpOpenError::Deadline
-                } else {
-                    HttpOpenError::Transport
-                };
-                close_owned(hs);
-                return Err(error);
-            }
-            hs.blen += r as c_int;
-            let blen = hs.blen as usize;
-            let mut i = 3;
-            while i < blen {
-                if hs.buf[i - 3] == b'\r'
-                    && hs.buf[i - 2] == b'\n'
-                    && hs.buf[i - 1] == b'\r'
-                    && hs.buf[i] == b'\n'
-                {
-                    hdr_end = Some(i + 1);
-                    break;
-                }
-                i += 1;
-            }
-        }
-        let hdr_end = match hdr_end {
-            Some(e) => e,
-            None => {
-                close_owned(hs);
-                return Err(HttpOpenError::Transport);
-            }
-        };
-
-        // Parse status line + Content-Length + chunked. HEADERS ARE BYTES, not UTF-8 (RFC 9110
-        // §5.5: field values are octets, and a recipient must not reject the message for them).
-        // This used to run on `from_utf8(...).unwrap_or("")`, which meant ONE stray byte anywhere
-        // in the block — a Latin-1 character in a filename echoed back in a header, a mojibake
-        // title in an `X-Plex-*` round-trip — collapsed the WHOLE header block to "", left
-        // `status` at 0, and made the `status < 200` check below close a perfectly good 200 and
-        // report it as a transport failure. The bytes we actually care about are all ASCII, so
-        // reading them as bytes costs nothing and cannot be poisoned from a distance.
-        let hdr = &hs.buf[..hdr_end];
-        if hdr.starts_with(b"HTTP/1.") {
-            // `hdr[9..]` (a fixed index straight after "HTTP/1.x ") was also a panic: on the old
-            // `&str` it split a multi-byte char whose bytes straddled index 9, and on a byte slice
-            // it would still be an out-of-range index on a truncated line. `get` makes it total.
-            let rest = hdr.get(9..).unwrap_or(&[]);
-            let ndig = rest.iter().take_while(|b| b.is_ascii_digit()).count();
-            // RFC 9110 §15: status-code is exactly 3DIGIT. Requiring that (rather than folding a
-            // digit run of any length) keeps the well-formed case bit-identical while making the
-            // accumulate below unable to overflow. Anything else stays 0 — which is what the old
-            // `parse().unwrap_or(0)` produced for a malformed line too, and 0 fails the check
-            // below exactly as before.
-            hs.status = if ndig == 3 {
-                rest[..3]
-                    .iter()
-                    .fold(0 as c_int, |acc, &b| acc * 10 + (b - b'0') as c_int)
+        if w <= 0 {
+            let error = if hs.interrupted() {
+                HttpOpenError::Aborted
+            } else if w == HTTP_READ_DEADLINE as isize {
+                HttpOpenError::Deadline
             } else {
-                0
-            };
-        }
-        if let Some(p) = find_ci(hdr, b"\r\ncontent-length:") {
-            let v = &hdr[p + 17..];
-            // Only spaces/tabs are skipped (the OWS the grammar allows after the colon), NOT the
-            // `str::trim_start` of before, which also ate CR/LF and so could run on into the next
-            // header line's value. Identical on well-formed input, where there is one space.
-            let v = &v[v.iter().take_while(|b| **b == b' ' || **b == b'\t').count()..];
-            let ndig = v.iter().take_while(|b| b.is_ascii_digit()).count();
-            hs.content_length = std::str::from_utf8(&v[..ndig])
-                .ok()
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(-1);
-        }
-        if header_is_chunked(hdr) {
-            hs.chunked = 1;
-        }
-
-        hs.bpos = hdr_end as c_int; // first body byte
-        if hs.status < 200 || hs.status >= 300 {
-            // The code is known exactly here. The typed deadline API returns it directly; legacy
-            // callers still receive `-1`, and it also survives in the struct because `close_owned`
-            // touches only the fd. A seek reopen remains a legacy caller and therefore still has
-            // only the flat failure.
-            //
-            // `status=0` is not a code any server sent: it is what the parse above leaves when the
-            // status line was not `HTTP/1.x` followed by exactly three digits.
-            crate::log(&format!(
-                "stream: {method} {} status={}",
-                log_endpoint(&path_s),
-                hs.status
-            ));
-            let error = if hs.status == 0 {
                 HttpOpenError::Transport
-            } else {
-                HttpOpenError::Status(hs.status)
             };
             close_owned(hs);
             return Err(error);
         }
-        if restore_media_timeouts {
-            // The absolute open snapshot and its short socket options belong only to
-            // DNS/connect/send/headers. A paused candidate body is still a live media transfer;
-            // restore the ordinary inactivity contract before returning it to AVIO.
-            set_socket_timeouts(fd, MEDIA_RECV_TIMEOUT_MS, MEDIA_SEND_TIMEOUT_MS);
-        }
-        Ok(())
+        off += w as usize;
     }
+
+    // read until end of headers (\r\n\r\n), keeping any body bytes that follow
+    let cap = hs.buf.len();
+    let mut hdr_end: Option<usize> = None;
+    hs.blen = 0;
+    while hdr_end.is_none() && (hs.blen as usize) < cap - 1 {
+        let r = recv_until(
+            fd,
+            hs.buf.as_mut_ptr().add(hs.blen as usize) as *mut c_void,
+            cap - hs.blen as usize,
+            open_deadline,
+        );
+        // r == 0 is also how an interrupted open surfaces: `http_shutdown` wakes this
+        // recv with EOF, so a teardown mid-header costs one syscall, not 15 s of SO_RCVTIMEO.
+        if r <= 0 {
+            let error = if hs.interrupted() {
+                HttpOpenError::Aborted
+            } else if r == HTTP_READ_DEADLINE as isize {
+                HttpOpenError::Deadline
+            } else {
+                HttpOpenError::Transport
+            };
+            close_owned(hs);
+            return Err(error);
+        }
+        hs.blen += r as c_int;
+        let blen = hs.blen as usize;
+        let mut i = 3;
+        while i < blen {
+            if hs.buf[i - 3] == b'\r'
+                && hs.buf[i - 2] == b'\n'
+                && hs.buf[i - 1] == b'\r'
+                && hs.buf[i] == b'\n'
+            {
+                hdr_end = Some(i + 1);
+                break;
+            }
+            i += 1;
+        }
+    }
+    let hdr_end = match hdr_end {
+        Some(e) => e,
+        None => {
+            close_owned(hs);
+            return Err(HttpOpenError::Transport);
+        }
+    };
+
+    // Parse status line + Content-Length + chunked. HEADERS ARE BYTES, not UTF-8 (RFC 9110
+    // §5.5: field values are octets, and a recipient must not reject the message for them).
+    // This used to run on `from_utf8(...).unwrap_or("")`, which meant ONE stray byte anywhere
+    // in the block — a Latin-1 character in a filename echoed back in a header, a mojibake
+    // title in an `X-Plex-*` round-trip — collapsed the WHOLE header block to "", left
+    // `status` at 0, and made the `status < 200` check below close a perfectly good 200 and
+    // report it as a transport failure. The bytes we actually care about are all ASCII, so
+    // reading them as bytes costs nothing and cannot be poisoned from a distance.
+    let hdr = &hs.buf[..hdr_end];
+    if hdr.starts_with(b"HTTP/1.") {
+        // `hdr[9..]` (a fixed index straight after "HTTP/1.x ") was also a panic: on the old
+        // `&str` it split a multi-byte char whose bytes straddled index 9, and on a byte slice
+        // it would still be an out-of-range index on a truncated line. `get` makes it total.
+        let rest = hdr.get(9..).unwrap_or(&[]);
+        let ndig = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+        // RFC 9110 §15: status-code is exactly 3DIGIT. Requiring that (rather than folding a
+        // digit run of any length) keeps the well-formed case bit-identical while making the
+        // accumulate below unable to overflow. Anything else stays 0 — which is what the old
+        // `parse().unwrap_or(0)` produced for a malformed line too, and 0 fails the check
+        // below exactly as before.
+        hs.status = if ndig == 3 {
+            rest[..3]
+                .iter()
+                .fold(0 as c_int, |acc, &b| acc * 10 + (b - b'0') as c_int)
+        } else {
+            0
+        };
+    }
+    if let Some(p) = find_ci(hdr, b"\r\ncontent-length:") {
+        let v = &hdr[p + 17..];
+        // Only spaces/tabs are skipped (the OWS the grammar allows after the colon), NOT the
+        // `str::trim_start` of before, which also ate CR/LF and so could run on into the next
+        // header line's value. Identical on well-formed input, where there is one space.
+        let v = &v[v.iter().take_while(|b| **b == b' ' || **b == b'\t').count()..];
+        let ndig = v.iter().take_while(|b| b.is_ascii_digit()).count();
+        hs.content_length = std::str::from_utf8(&v[..ndig])
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(-1);
+    }
+    if header_is_chunked(hdr) {
+        hs.chunked = 1;
+    }
+    // HTTP/1.0 `Connection: keep-alive` is unused. PMS is 1.1; offering 1.0 reuse would add a
+    // handshake only if we ever saw that framing, which we have not.
+    hs.keep_alive = i32::from(hdr.starts_with(b"HTTP/1.1") && !header_has_connection_close(hdr));
+    remember_peer(hs, host_s, port);
+
+    hs.bpos = hdr_end as c_int; // first body byte
+    if hs.status < 200 || hs.status >= 300 {
+        // The code is known exactly here. The typed deadline API returns it directly; legacy
+        // callers still receive `-1`, and it also survives in the struct because `close_owned`
+        // touches only the fd. A seek reopen remains a legacy caller and therefore still has
+        // only the flat failure.
+        //
+        // `status=0` is not a code any server sent: it is what the parse above leaves when the
+        // status line was not `HTTP/1.x` followed by exactly three digits.
+        crate::log(&format!(
+            "stream: {method} {} status={}",
+            log_endpoint(path_s),
+            hs.status
+        ));
+        let error = if hs.status == 0 {
+            HttpOpenError::Transport
+        } else {
+            HttpOpenError::Status(hs.status)
+        };
+        close_owned(hs);
+        return Err(error);
+    }
+    if hs.content_length == 0 && hs.chunked == 0 {
+        finish_body(hs);
+    }
+    if restore_media_timeouts {
+        // The absolute open snapshot and its short socket options belong only to
+        // DNS/connect/send/headers. A paused candidate body is still a live media transfer;
+        // restore the ordinary inactivity contract before returning it to AVIO.
+        set_socket_timeouts(fd, MEDIA_RECV_TIMEOUT_MS, MEDIA_SEND_TIMEOUT_MS);
+    }
+    Ok(())
 }
 
 pub(crate) fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_int {
@@ -1214,11 +1393,43 @@ pub(crate) fn http_read_until(
         let hs = &mut *hs;
         let n = n as usize;
         if hs.chunked != 0 {
+            if hs.chunk_left < 0 {
+                match hs_skip_chunked_trailers(hs, deadline) {
+                    Ok(()) => {
+                        finish_body(hs);
+                        return 0;
+                    }
+                    Err(e) => {
+                        hs.keep_alive = 0;
+                        close_owned(hs);
+                        return e;
+                    }
+                }
+            }
             if hs.chunk_left <= 0 {
                 match hs_next_chunk(hs, deadline) {
-                    Ok(Some(cs)) if cs > 0 => hs.chunk_left = cs,
+                    Ok(Some(0)) => match hs_skip_chunked_trailers(hs, deadline) {
+                        Ok(()) => {
+                            finish_body(hs);
+                            return 0;
+                        }
+                        Err(e) => {
+                            hs.keep_alive = 0;
+                            close_owned(hs);
+                            return e;
+                        }
+                    },
+                    Ok(Some(cs)) => {
+                        if cs < 0 {
+                            hs.keep_alive = 0;
+                            close_owned(hs);
+                            return -1;
+                        }
+                        hs.chunk_left = cs;
+                    }
                     Err(e) => return e,
-                    _ => {
+                    Ok(None) => {
+                        hs.keep_alive = 0;
                         close_owned(hs);
                         return 0;
                     }
@@ -1250,6 +1461,9 @@ pub(crate) fn http_read_until(
                     }
                     if r == 0 {
                         close_owned(hs);
+                        if got == 0 {
+                            return -1;
+                        }
                         break;
                     }
                     got += r as usize;
@@ -1261,17 +1475,25 @@ pub(crate) fn http_read_until(
             hs.consumed += got as i64;
             return if got > 0 {
                 got as c_int
-            } else if hs.fd() < 0 {
-                0
             } else {
-                -1
+                hs_closed_or_idle_read_result(hs)
             };
         }
         if hs.fd() < 0 && (hs.bpos as usize) >= (hs.blen as usize) {
-            return 0;
+            return hs_closed_or_idle_read_result(hs);
         }
         if hs.content_length >= 0 && hs.consumed >= hs.content_length {
+            finish_body(hs);
             return 0;
+        }
+        let mut n = n;
+        if hs.content_length >= 0 {
+            let remain = (hs.content_length - hs.consumed).max(0) as usize;
+            if remain == 0 {
+                finish_body(hs);
+                return 0;
+            }
+            n = n.min(remain);
         }
         // serve buffered body first
         if (hs.bpos as usize) < (hs.blen as usize) {
@@ -1280,10 +1502,13 @@ pub(crate) fn http_read_until(
             std::ptr::copy_nonoverlapping(hs.buf.as_ptr().add(hs.bpos as usize), dst, take);
             hs.bpos += take as c_int;
             hs.consumed += take as i64;
+            if hs.content_length >= 0 && hs.consumed >= hs.content_length {
+                finish_body(hs);
+            }
             return take as c_int;
         }
         if hs.fd() < 0 {
-            return 0;
+            return hs_closed_or_idle_read_result(hs);
         }
         // Already-buffered response bytes and an already-proven EOF/completion are facts from the
         // transport before this call began. Only a read which would perform fresh I/O can be
@@ -1301,10 +1526,14 @@ pub(crate) fn http_read_until(
                 return r as c_int;
             }
             if r == 0 {
+                let short = hs.content_length >= 0 && hs.consumed < hs.content_length;
                 close_owned(hs);
-                return 0;
+                return if short { -1 } else { 0 };
             }
             hs.consumed += r as i64;
+            if hs.content_length >= 0 && hs.consumed >= hs.content_length {
+                finish_body(hs);
+            }
             return r as c_int;
         }
     }
@@ -1327,6 +1556,258 @@ pub(crate) fn http_close(hs: *mut HttpStream) {
         return;
     }
     unsafe { close_owned(&*hs) }
+}
+
+pub(crate) fn http_body_done(hs: *const HttpStream) -> bool {
+    if hs.is_null() {
+        return true;
+    }
+    unsafe { (*hs).body_is_done() }
+}
+
+unsafe fn hs_compact_buf(hs: &mut HttpStream) {
+    if hs.bpos <= 0 {
+        return;
+    }
+    let n = (hs.blen - hs.bpos) as usize;
+    if n > 0 {
+        hs.buf.copy_within(hs.bpos as usize..hs.blen as usize, 0);
+    }
+    hs.blen = n as c_int;
+    hs.bpos = 0;
+}
+
+unsafe fn hs_poll_in(fd: c_int) -> bool {
+    if fd < 0 {
+        return false;
+    }
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    libc::poll(&mut pfd, 1, 0) > 0 && pfd.revents & libc::POLLIN != 0
+}
+
+/// `>0` bytes, `0` peer FIN, `-1` transport error, `-2` nothing ready.
+unsafe fn hs_recv_dontwait(fd: c_int, dst: &mut [u8]) -> c_int {
+    if dst.is_empty() || fd < 0 {
+        return -2;
+    }
+    let r = libc::recv(
+        fd,
+        dst.as_mut_ptr() as *mut c_void,
+        dst.len(),
+        libc::MSG_DONTWAIT,
+    );
+    if r < 0 {
+        let e = errno();
+        if e == libc::EAGAIN || e == libc::EWOULDBLOCK || e == libc::EINTR {
+            return -2;
+        }
+        return -1;
+    }
+    r as c_int
+}
+
+unsafe fn hs_fill_buf_dontwait(hs: &mut HttpStream) -> c_int {
+    hs_compact_buf(hs);
+    let space = hs.buf.len().saturating_sub(hs.blen as usize);
+    if space == 0 {
+        return 0;
+    }
+    let fd = hs.fd();
+    if !hs_poll_in(fd) {
+        return 0;
+    }
+    let r = hs_recv_dontwait(fd, &mut hs.buf[hs.blen as usize..]);
+    if r > 0 {
+        hs.blen += r;
+        return r;
+    }
+    if r == 0 {
+        close_owned(hs);
+        return 0;
+    }
+    if r == -2 {
+        return 0;
+    }
+    r
+}
+
+/// True when `buf` holds a chunk-size line, not merely the previous chunk's trailing CRLF.
+/// Drain must not call [`hs_next_chunk`] until this is true: that helper `recv`s after skipping
+/// leftover CRLF, and a delayed next size line would sit on `SO_RCVTIMEO`.
+fn hs_chunk_size_line_ready(hs: &HttpStream) -> bool {
+    let start = hs.bpos as usize;
+    let end = hs.blen as usize;
+    if start >= end {
+        return false;
+    }
+    let buf = &hs.buf[start..end];
+    let Some(i) = buf.iter().position(|&b| b != b'\r' && b != b'\n') else {
+        return false;
+    };
+    buf[i..].contains(&b'\n')
+}
+
+fn hs_body_incomplete(hs: &HttpStream) -> bool {
+    if hs.body_done != 0 {
+        return false;
+    }
+    if hs.chunked != 0 {
+        return true;
+    }
+    hs.content_length >= 0 && hs.consumed < hs.content_length
+}
+
+fn hs_closed_or_idle_read_result(hs: &HttpStream) -> c_int {
+    if hs.fd() < 0 && hs_body_incomplete(hs) {
+        -1
+    } else if hs.fd() < 0 {
+        0
+    } else {
+        -1
+    }
+}
+
+/// Copy bytes already waiting on the socket into `dst` without blocking.
+///
+/// Original playback parks the demuxer in `aq_push` on the same thread as AVIO. A blocking
+/// `recv` there would freeze the TCP window; this is the drain that keeps the window open.
+/// At most already-buffered bytes plus one `MSG_DONTWAIT` recv. Never `http_read`.
+/// Returns bytes copied, `0` when the peer has nothing ready, or a negative transport error.
+pub(crate) fn http_drain_available(hs: *mut HttpStream, dst: &mut [u8]) -> c_int {
+    if hs.is_null() || dst.is_empty() {
+        return 0;
+    }
+    unsafe {
+        let hs = &mut *hs;
+        if hs.body_done != 0 {
+            return 0;
+        }
+        if hs.fd() < 0 && (hs.bpos as usize) >= (hs.blen as usize) {
+            return hs_closed_or_idle_read_result(hs);
+        }
+        if hs.content_length >= 0 && hs.consumed >= hs.content_length {
+            finish_body(hs);
+            return 0;
+        }
+        if hs.chunked != 0 && hs.chunk_left < 0 {
+            let due = Instant::now();
+            match hs_skip_chunked_trailers(hs, Some(due)) {
+                Ok(()) => {
+                    finish_body(hs);
+                    return 0;
+                }
+                Err(e) if e == HTTP_READ_DEADLINE => return 0,
+                Err(e) => {
+                    hs.keep_alive = 0;
+                    close_owned(hs);
+                    return e;
+                }
+            }
+        }
+        if hs.chunked != 0 && hs.chunk_left == 0 {
+            if !hs_chunk_size_line_ready(hs) {
+                let filled = hs_fill_buf_dontwait(hs);
+                if filled < 0 {
+                    return filled;
+                }
+                if !hs_chunk_size_line_ready(hs) {
+                    if hs.fd() < 0 {
+                        return hs_closed_or_idle_read_result(hs);
+                    }
+                    return 0;
+                }
+            }
+            // Size line is in `buf`. Deadline-now keeps `hs_next_chunk` from `recv`.
+            match hs_next_chunk(hs, Some(Instant::now())) {
+                Ok(Some(0)) => {
+                    hs.chunk_left = -1;
+                    let due = Instant::now();
+                    match hs_skip_chunked_trailers(hs, Some(due)) {
+                        Ok(()) => {
+                            finish_body(hs);
+                            return 0;
+                        }
+                        Err(e) if e == HTTP_READ_DEADLINE => return 0,
+                        Err(e) => {
+                            hs.keep_alive = 0;
+                            close_owned(hs);
+                            return e;
+                        }
+                    }
+                }
+                Ok(Some(cs)) => {
+                    if cs < 0 {
+                        hs.keep_alive = 0;
+                        close_owned(hs);
+                        return -1;
+                    }
+                    hs.chunk_left = cs;
+                }
+                Ok(None) => {
+                    hs.keep_alive = 0;
+                    close_owned(hs);
+                    return -1;
+                }
+                Err(e) if e == HTTP_READ_DEADLINE => return 0,
+                Err(e) => return e,
+            }
+        }
+        let remain = if hs.chunked != 0 {
+            hs.chunk_left.max(0) as usize
+        } else if hs.content_length >= 0 {
+            (hs.content_length - hs.consumed).max(0) as usize
+        } else {
+            dst.len()
+        };
+        if remain == 0 {
+            if hs.chunked == 0 {
+                finish_body(hs);
+            }
+            return 0;
+        }
+        let want = dst.len().min(remain);
+        let mut got = 0usize;
+        let avail = (hs.blen as usize).saturating_sub(hs.bpos as usize);
+        if avail > 0 {
+            let take = avail.min(want);
+            dst[..take].copy_from_slice(&hs.buf[hs.bpos as usize..hs.bpos as usize + take]);
+            hs.bpos += take as c_int;
+            got = take;
+        }
+        if got < want {
+            let fd = hs.fd();
+            if hs_poll_in(fd) {
+                let r = hs_recv_dontwait(fd, &mut dst[got..want]);
+                if r == -1 {
+                    if got == 0 {
+                        return -1;
+                    }
+                } else if r == 0 {
+                    close_owned(hs);
+                    if got == 0 {
+                        return hs_closed_or_idle_read_result(hs);
+                    }
+                } else if r > 0 {
+                    got += r as usize;
+                }
+            }
+        }
+        if got == 0 {
+            return 0;
+        }
+        if hs.chunked != 0 {
+            hs.chunk_left -= got as i64;
+        }
+        hs.consumed += got as i64;
+        if hs.chunked == 0 && hs.content_length >= 0 && hs.consumed >= hs.content_length {
+            finish_body(hs);
+        }
+        got as c_int
+    }
 }
 
 /// Interrupt a read in progress WITHOUT closing: `shutdown(2)` wakes a peer blocked in `recv`
@@ -1561,10 +2042,12 @@ mod tests {
     /// Regression: `connect(2)` was called blocking with no deadline, so an unreachable PMS
     /// froze the 60fps main loop for the kernel's SYN-retry budget (~2 min), once per request.
     /// 192.0.2.0/24 is TEST-NET-1 (RFC 5737) — guaranteed non-routable, so the handshake can
-    /// never complete and the only thing that can end this call is the timeout.
+    /// never complete and the only thing that can end this call is the timeout. Port 32400 is
+    /// the PMS port this client actually dials; :80 can complete locally through an HTTP
+    /// interceptor without the address being reachable.
     #[test]
     fn connect_to_a_black_hole_gives_up_on_the_deadline() {
-        let sa = sockaddr([192, 0, 2, 1], 80);
+        let sa = sockaddr([192, 0, 2, 1], 32400);
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         assert!(fd >= 0);
         let t0 = Instant::now();
@@ -2631,5 +3114,799 @@ mod tests {
             l.local_addr().expect("addr").port()
         };
         assert!(loopback_get(port).is_none());
+    }
+
+    fn drain_body(hs: &mut HttpStream) {
+        let mut buf = [0u8; 64];
+        loop {
+            let n = http_read(hs, buf.as_mut_ptr(), buf.len() as c_int);
+            if n <= 0 {
+                break;
+            }
+        }
+    }
+
+    fn with_keepalive_listener(
+        body: impl FnOnce(u16, &std::sync::atomic::AtomicUsize, &std::sync::atomic::AtomicUsize),
+        reply: &'static [u8],
+    ) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        srv.set_nonblocking(true).expect("set_nonblocking");
+        let accepts = AtomicUsize::new(0);
+        let requests = AtomicUsize::new(0);
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                while !stop.load(Ordering::Acquire) {
+                    match srv.accept() {
+                        Ok((s, _)) => {
+                            accepts.fetch_add(1, Ordering::AcqRel);
+                            let (rq, st) = (&requests, &stop);
+                            sc.spawn(move || {
+                                let _ =
+                                    s.set_read_timeout(Some(std::time::Duration::from_millis(200)));
+                                let mut w = match s.try_clone() {
+                                    Ok(c) => c,
+                                    Err(_) => return,
+                                };
+                                let mut buf: Vec<u8> = Vec::new();
+                                loop {
+                                    if let Some(k) = buf.windows(4).position(|x| x == b"\r\n\r\n") {
+                                        buf.drain(..k + 4);
+                                        rq.fetch_add(1, Ordering::AcqRel);
+                                        if w.write_all(reply).is_err() {
+                                            return;
+                                        }
+                                        let _ = w.flush();
+                                        continue;
+                                    }
+                                    let mut tmp = [0u8; 1024];
+                                    match (&s).read(&mut tmp) {
+                                        Ok(0) => return,
+                                        Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                                        Err(e)
+                                            if e.kind() == std::io::ErrorKind::WouldBlock
+                                                || e.kind() == std::io::ErrorKind::TimedOut =>
+                                        {
+                                            if st.load(Ordering::Acquire) {
+                                                return;
+                                            }
+                                            continue;
+                                        }
+                                        Err(_) => return,
+                                    }
+                                }
+                            });
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(_) => return,
+                    }
+                }
+            });
+            struct StopAll<'a>(&'a AtomicBool);
+            impl Drop for StopAll<'_> {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::Release);
+                }
+            }
+            let _stop_on_exit = StopAll(&stop);
+            body(port, &accepts, &requests);
+            stop.store(true, Ordering::Release);
+        });
+    }
+
+    #[test]
+    fn two_drained_gets_reuse_one_accept() {
+        with_keepalive_listener(
+            |port, accepts, requests| {
+                let host = std::ffi::CString::new("127.0.0.1").unwrap();
+                let path = std::ffi::CString::new("/seg").unwrap();
+                let mut hs = http_stream_boxed();
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                drain_body(&mut *hs);
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                drain_body(&mut *hs);
+                assert_eq!(
+                    accepts.load(std::sync::atomic::Ordering::Acquire),
+                    1,
+                    "a drained HTTP/1.1 body must reuse the live fd"
+                );
+                assert_eq!(
+                    requests.load(std::sync::atomic::Ordering::Acquire),
+                    2,
+                    "reuse is a second request on the same accept"
+                );
+                http_close(&mut *hs);
+            },
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH",
+        );
+    }
+
+    #[test]
+    fn an_unread_body_does_not_reuse_the_fd() {
+        with_keepalive_listener(
+            |port, accepts, _requests| {
+                let host = std::ffi::CString::new("127.0.0.1").unwrap();
+                let path = std::ffi::CString::new("/seg").unwrap();
+                let mut hs = http_stream_boxed();
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                assert_eq!(
+                    accepts.load(std::sync::atomic::Ordering::Acquire),
+                    2,
+                    "an unread body must not be followed by a pipelined request"
+                );
+                http_close(&mut *hs);
+            },
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH",
+        );
+    }
+
+    #[test]
+    fn connection_close_forces_a_new_accept() {
+        with_keepalive_listener(
+            |port, accepts, requests| {
+                let host = std::ffi::CString::new("127.0.0.1").unwrap();
+                let path = std::ffi::CString::new("/seg").unwrap();
+                let mut hs = http_stream_boxed();
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                drain_body(&mut *hs);
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                drain_body(&mut *hs);
+                assert_eq!(
+                    accepts.load(std::sync::atomic::Ordering::Acquire),
+                    2,
+                    "Connection: close must retire the fd"
+                );
+                assert_eq!(requests.load(std::sync::atomic::Ordering::Acquire), 2);
+                http_close(&mut *hs);
+            },
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nABCDEFGH",
+        );
+    }
+
+    #[test]
+    fn two_drained_chunked_gets_reuse_one_accept() {
+        with_keepalive_listener(
+            |port, accepts, requests| {
+                let host = std::ffi::CString::new("127.0.0.1").unwrap();
+                let path = std::ffi::CString::new("/seg").unwrap();
+                let mut hs = http_stream_boxed();
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                drain_body(&mut *hs);
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                drain_body(&mut *hs);
+                assert_eq!(
+                    accepts.load(std::sync::atomic::Ordering::Acquire),
+                    1,
+                    "a drained chunked body must consume trailers so the next GET can reuse"
+                );
+                assert_eq!(requests.load(std::sync::atomic::Ordering::Acquire), 2);
+                http_close(&mut *hs);
+            },
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\nABCDEFGH\r\n0\r\n\r\n",
+        );
+    }
+
+    #[test]
+    fn shutdown_of_a_live_keepalive_fd_does_not_dial_a_replacement() {
+        with_keepalive_listener(
+            |port, accepts, _requests| {
+                let host = std::ffi::CString::new("127.0.0.1").unwrap();
+                let path = std::ffi::CString::new("/seg").unwrap();
+                let mut hs = http_stream_boxed();
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                drain_body(&mut *hs);
+                http_shutdown(&mut *hs);
+                assert_ne!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0,
+                    "teardown must not be answered with a fresh connect"
+                );
+                assert_eq!(
+                    accepts.load(std::sync::atomic::Ordering::Acquire),
+                    1,
+                    "the already-fired shutdown cannot reach a replacement socket"
+                );
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0,
+                    "a later session on a closed stream must still be able to dial"
+                );
+                assert_eq!(accepts.load(std::sync::atomic::Ordering::Acquire), 2);
+                http_close(&mut *hs);
+            },
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH",
+        );
+    }
+
+    #[test]
+    fn a_media_get_omits_connection_close() {
+        use std::io::{Read, Write};
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                let Ok((mut s, _)) = srv.accept() else { return };
+                let mut buf = [0u8; 2048];
+                let n = s.read(&mut buf).unwrap_or(0);
+                assert!(
+                    !buf[..n]
+                        .windows(b"Connection: close".len())
+                        .any(|w| w.eq_ignore_ascii_case(b"connection: close")),
+                    "media sequential GETs must omit Connection: close so the fd can reuse"
+                );
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH");
+            });
+            let host = std::ffi::CString::new("127.0.0.1").unwrap();
+            let path = std::ffi::CString::new("/seg").unwrap();
+            let mut hs = http_stream_boxed();
+            assert_eq!(
+                http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0
+            );
+            http_close(&mut *hs);
+        });
+    }
+
+    #[test]
+    fn shutdown_after_an_idle_peer_close_does_not_redial() {
+        use std::io::{Read, Write};
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        let accepts = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                let Ok((mut s, _)) = srv.accept() else { return };
+                accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH");
+                let _ = s.shutdown(std::net::Shutdown::Both);
+                // Stay listening long enough that a Transport redial would show up as a second
+                // accept. A correct abort must not connect at all.
+                let _ = srv.set_nonblocking(true);
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                if srv.accept().is_ok() {
+                    accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                }
+            });
+            let host = std::ffi::CString::new("127.0.0.1").unwrap();
+            let path = std::ffi::CString::new("/seg").unwrap();
+            let mut hs = http_stream_boxed();
+            assert_eq!(
+                http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0
+            );
+            drain_body(&mut *hs);
+            http_shutdown(&mut *hs);
+            assert_ne!(
+                http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0,
+                "a teardown on a half-closed keep-alive must not redial"
+            );
+            assert_eq!(
+                accepts.load(std::sync::atomic::Ordering::Acquire),
+                1,
+                "the already-fired shutdown cannot reach a replacement socket"
+            );
+            http_close(&mut *hs);
+        });
+    }
+
+    #[test]
+    fn an_idle_peer_close_redials_instead_of_failing_the_next_get() {
+        use std::io::{Read, Write};
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        let accepts = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                for _ in 0..2 {
+                    let Ok((mut s, _)) = srv.accept() else { return };
+                    accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    let mut buf = [0u8; 1024];
+                    let _ = s.read(&mut buf);
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH");
+                    let _ = s.shutdown(std::net::Shutdown::Both);
+                }
+            });
+            let host = std::ffi::CString::new("127.0.0.1").unwrap();
+            let path = std::ffi::CString::new("/seg").unwrap();
+            let mut hs = http_stream_boxed();
+            assert_eq!(
+                http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0
+            );
+            drain_body(&mut *hs);
+            assert_eq!(
+                http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0,
+                "a peer that dropped an otherwise reusable fd must redial, not fail"
+            );
+            drain_body(&mut *hs);
+            assert_eq!(accepts.load(std::sync::atomic::Ordering::Acquire), 2);
+            http_close(&mut *hs);
+        });
+    }
+
+    #[test]
+    fn drain_available_returns_immediately_when_the_body_is_already_done() {
+        with_keepalive_listener(
+            |port, _, _| {
+                let host = std::ffi::CString::new("127.0.0.1").unwrap();
+                let path = std::ffi::CString::new("/seg").unwrap();
+                let mut hs = http_stream_boxed();
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                drain_body(&mut *hs);
+                let started = std::time::Instant::now();
+                let mut dst = [0u8; 32];
+                let n = http_drain_available(&mut *hs, &mut dst);
+                assert!(n <= 0);
+                assert!(
+                    started.elapsed() < std::time::Duration::from_millis(200),
+                    "drain must not wait out SO_RCVTIMEO on an already-finished body"
+                );
+                http_close(&mut *hs);
+            },
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH",
+        );
+    }
+
+    #[test]
+    fn named_chunked_trailers_reuse_one_accept() {
+        with_keepalive_listener(
+            |port, accepts, requests| {
+                let host = std::ffi::CString::new("127.0.0.1").unwrap();
+                let path = std::ffi::CString::new("/seg").unwrap();
+                let mut hs = http_stream_boxed();
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                drain_body(&mut *hs);
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                drain_body(&mut *hs);
+                assert_eq!(accepts.load(std::sync::atomic::Ordering::Acquire), 1);
+                assert_eq!(requests.load(std::sync::atomic::Ordering::Acquire), 2);
+                http_close(&mut *hs);
+            },
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\nABCDEFGH\r\n0\r\nExpires: never\r\n\r\n",
+        );
+    }
+
+    #[test]
+    fn incomplete_chunked_trailers_do_not_reuse_the_fd() {
+        use std::io::{Read, Write};
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        let accepts = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                for _ in 0..2 {
+                    let Ok((mut s, _)) = srv.accept() else { return };
+                    accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    let mut buf = [0u8; 1024];
+                    let _ = s.read(&mut buf);
+                    let _ = s.write_all(
+                        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\nABCDEFGH\r\n0\r\nFoo: ",
+                    );
+                    let _ = s.shutdown(std::net::Shutdown::Write);
+                }
+            });
+            let host = std::ffi::CString::new("127.0.0.1").unwrap();
+            let path = std::ffi::CString::new("/seg").unwrap();
+            let mut hs = http_stream_boxed();
+            assert_eq!(
+                http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0
+            );
+            drain_body(&mut *hs);
+            let second = http_open(
+                &mut *hs,
+                host.as_ptr(),
+                port as c_int,
+                path.as_ptr(),
+                std::ptr::null(),
+                "GET",
+            );
+            assert_eq!(
+                second, 0,
+                "a poisoned keep-alive must redial, not parse trailers"
+            );
+            drain_body(&mut *hs);
+            assert_eq!(
+                accepts.load(std::sync::atomic::Ordering::Acquire),
+                2,
+                "incomplete trailers must not reuse the fd"
+            );
+            http_close(&mut *hs);
+        });
+    }
+
+    #[test]
+    fn chunked_drain_returns_immediately_when_the_peer_stalls_after_a_partial_chunk() {
+        use std::io::{Read, Write};
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        let ready = std::sync::Barrier::new(2);
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                let Ok((mut s, _)) = srv.accept() else { return };
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ =
+                    s.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\nABCD");
+                ready.wait();
+                std::thread::sleep(std::time::Duration::from_millis(400));
+            });
+            let host = std::ffi::CString::new("127.0.0.1").unwrap();
+            let path = std::ffi::CString::new("/seg").unwrap();
+            let mut hs = http_stream_boxed();
+            assert_eq!(
+                http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0
+            );
+            ready.wait();
+            let started = std::time::Instant::now();
+            let mut dst = [0u8; 32];
+            let n = http_drain_available(&mut *hs, &mut dst);
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(200),
+                "drain must not wait out SO_RCVTIMEO on a stalled chunked body"
+            );
+            assert!(n >= 0);
+            http_close(&mut *hs);
+        });
+    }
+
+    #[test]
+    fn chunked_drain_does_not_block_waiting_for_the_next_size_line() {
+        use std::io::{Read, Write};
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                let Ok((mut s, _)) = srv.accept() else { return };
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\nABCDEFGH\r\n",
+                );
+                std::thread::sleep(std::time::Duration::from_millis(400));
+            });
+            let host = std::ffi::CString::new("127.0.0.1").unwrap();
+            let path = std::ffi::CString::new("/seg").unwrap();
+            let mut hs = http_stream_boxed();
+            assert_eq!(
+                http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0
+            );
+            let mut body = [0u8; 8];
+            let got = http_read(&mut *hs, body.as_mut_ptr(), 8);
+            assert_eq!(got, 8);
+            let started = std::time::Instant::now();
+            let mut dst = [0u8; 32];
+            let n = http_drain_available(&mut *hs, &mut dst);
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(200),
+                "drain must not block for the next chunk-size line"
+            );
+            assert!(n <= 0);
+            http_close(&mut *hs);
+        });
+    }
+
+    #[test]
+    fn mid_body_eof_is_a_transport_error() {
+        use std::io::{Read, Write};
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                let Ok((mut s, _)) = srv.accept() else { return };
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\nABCDEFGH");
+                let _ = s.shutdown(std::net::Shutdown::Write);
+            });
+            let host = std::ffi::CString::new("127.0.0.1").unwrap();
+            let path = std::ffi::CString::new("/seg").unwrap();
+            let mut hs = http_stream_boxed();
+            assert_eq!(
+                http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0
+            );
+            let mut buf = [0u8; 16];
+            let n = http_read(&mut *hs, buf.as_mut_ptr(), 8);
+            assert_eq!(n, 8);
+            let n = http_read(&mut *hs, buf.as_mut_ptr(), 8);
+            assert!(n < 0, "peer FIN before Content-Length is not clean EOF");
+            http_close(&mut *hs);
+        });
+    }
+
+    #[test]
+    fn drain_mid_body_eof_is_a_transport_error() {
+        use std::io::{Read, Write};
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                let Ok((mut s, _)) = srv.accept() else { return };
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\nABCDEFGH");
+                let _ = s.shutdown(std::net::Shutdown::Write);
+            });
+            let host = std::ffi::CString::new("127.0.0.1").unwrap();
+            let path = std::ffi::CString::new("/seg").unwrap();
+            let mut hs = http_stream_boxed();
+            assert_eq!(
+                http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0
+            );
+            let mut dst = [0u8; 32];
+            let mut got = 0i32;
+            let started = std::time::Instant::now();
+            while started.elapsed() < std::time::Duration::from_millis(200) {
+                let n = http_drain_available(&mut *hs, &mut dst);
+                if n < 0 {
+                    assert!(got > 0, "FIN must not hide the bytes already in buf");
+                    http_close(&mut *hs);
+                    return;
+                }
+                got += n;
+            }
+            panic!("park-time mid-body FIN must surface as a drain error, not idle-done");
+        });
+    }
+
+    #[test]
+    fn http_1_0_keep_alive_does_not_reuse_the_fd() {
+        with_keepalive_listener(
+            |port, accepts, _requests| {
+                let host = std::ffi::CString::new("127.0.0.1").unwrap();
+                let path = std::ffi::CString::new("/seg").unwrap();
+                let mut hs = http_stream_boxed();
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                drain_body(&mut *hs);
+                assert_eq!(
+                    http_open(
+                        &mut *hs,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0
+                );
+                drain_body(&mut *hs);
+                assert_eq!(
+                    accepts.load(std::sync::atomic::Ordering::Acquire),
+                    2,
+                    "HTTP/1.0 Connection: keep-alive is unused; PMS is 1.1"
+                );
+                http_close(&mut *hs);
+            },
+            b"HTTP/1.0 200 OK\r\nContent-Length: 8\r\nConnection: keep-alive\r\n\r\nABCDEFGH",
+        );
     }
 }
