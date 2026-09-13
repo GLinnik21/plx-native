@@ -12,6 +12,7 @@ pub(crate) const PEOPLE_INK: [f32; 4] = theme::TEXT_SECONDARY;
 pub(crate) const COMPACT_TITLE_BOT: f32 = MARGIN_Y + theme::logo::COMPACT_H_MAX;
 pub(crate) const TOP_MARGIN: f32 = COMPACT_TITLE_BOT + 26.0;
 
+#[derive(Clone, Copy)]
 pub(crate) struct HeroChain {
     pub(crate) meta_y: f32,
     pub(crate) ratings_y: f32,

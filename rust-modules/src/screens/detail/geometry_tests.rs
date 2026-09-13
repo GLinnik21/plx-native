@@ -84,6 +84,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         ground: AmbientWash::flat(theme::SURFACE_APP),
         spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),
+        layout: std::cell::Cell::new(None),
     };
     screen.sync_keys();
     screen

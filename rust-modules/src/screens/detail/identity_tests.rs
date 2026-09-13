@@ -48,6 +48,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         season_metrics: season::Metrics::new(), about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP), spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),
+        layout: std::cell::Cell::new(None),
     }
 }
 struct Mount;

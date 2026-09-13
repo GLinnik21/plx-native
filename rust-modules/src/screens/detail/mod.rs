@@ -44,6 +44,7 @@ use crate::ui::widgets::{
 };
 use crate::ui::{hero_alpha, theme, Env, Painter, Rect, Spring, View};
 use std::borrow::Cow;
+use std::cell::Cell;
 
 use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel, DetailRefreshPhase};
 
@@ -117,6 +118,76 @@ pub(crate) struct DetailScreen {
     spin_ms: f32,
     /// The underlying clock for [`spin_ms`](Self::spin_ms) (`motion::Phase`, phase 12 D4).
     spin_phase: crate::ui::motion::Phase,
+    /// Vertical section geometry for this frame. Synopsis height and the episode strip's
+    /// `block_h` are O(text) and used to be re-asked from every `place` in `record_stops`.
+    /// Cleared at the start of `tick` so a present reuses one walk; missed when
+    /// [`LayoutStamp`] no longer matches the live item (in-place season landings rewrite
+    /// `CURRENT` at a stable address). Never hashed.
+    layout: Cell<Option<LayoutCache>>,
+}
+
+#[derive(Clone, Copy)]
+struct LayoutCache {
+    stamp: LayoutStamp,
+    chain: crate::ui::detail_layout::HeroChain,
+    content_top: f32,
+    top: [f32; 6],
+    block: [f32; 6],
+    seen: u8,
+    end: f32,
+}
+
+/// Cheap identity of the values [`LayoutCache`] was measured from. `current()` hands out a
+/// `'static` borrow of one static slot, so pointer equality on `Detail` cannot see a replacement
+/// or an in-place `episodes =` from [`crate::metadata::pump_season`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct LayoutStamp {
+    episodes: usize,
+    n_ep: u32,
+    summary: usize,
+    summary_len: u32,
+    hero_ep: usize,
+    hero_chars: u32,
+    ep_chars: u32,
+    n_cast: u32,
+    n_rel: u32,
+    n_sea: u32,
+    flags: u8,
+}
+
+impl LayoutStamp {
+    fn of(d: &Detail) -> Self {
+        let hero = hero::hero_episode(d);
+        let mut ep_chars = 0u32;
+        for e in &d.episodes {
+            ep_chars = ep_chars
+                .saturating_add(e.title.len() as u32)
+                .saturating_add(e.summary.len() as u32)
+                .saturating_add(e.aired.len() as u32);
+        }
+        let mut flags = 0u8;
+        if d.is_show {
+            flags |= 1;
+        }
+        if !d.ratings.is_empty() {
+            flags |= 2;
+        }
+        Self {
+            episodes: d.episodes.as_ptr() as usize,
+            n_ep: d.episodes.len() as u32,
+            summary: d.summary.as_ptr() as usize,
+            summary_len: d.summary.len() as u32,
+            hero_ep: hero.map(|e| std::ptr::from_ref(e) as usize).unwrap_or(0),
+            hero_chars: hero
+                .map(|e| (e.title.len() + e.summary.len()) as u32)
+                .unwrap_or(0),
+            ep_chars,
+            n_cast: d.credits_len() as u32,
+            n_rel: d.related.len() as u32,
+            n_sea: d.seasons.len() as u32,
+            flags,
+        }
+    }
 }
 
 impl DetailScreen {
@@ -160,6 +231,7 @@ impl DetailScreen {
             ground,
             spin_ms: 0.0,
             spin_phase: crate::ui::motion::Phase::default(),
+            layout: Cell::new(None),
         }
     }
 
@@ -199,6 +271,7 @@ impl DetailScreen {
     }
 
     fn sync_keys(&mut self) {
+        self.layout.set(None);
         let pending_key = self.pending_season.and_then(season::elem).and_then(|local| self.engine_key(local));
         let mut identities = Vec::new();
         if let Some(d) = self.detail() {
@@ -394,19 +467,104 @@ impl DetailScreen {
     }
 
     fn hero_chain(&self, measure: &dyn crate::ui::machine::Measure) -> crate::ui::detail_layout::HeroChain {
-        let (lead, synopsis) = hero_blurb(self.detail(), self.selected());
+        if let Some(d) = self.detail() {
+            return self.ensure_layout(d, measure).chain;
+        }
+        self.compute_hero_chain(None, measure)
+    }
+
+    fn compute_hero_chain(
+        &self,
+        d: Option<&Detail>,
+        measure: &dyn crate::ui::machine::Measure,
+    ) -> crate::ui::detail_layout::HeroChain {
+        let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_h = crate::ui::hero_synopsis(&synopsis, &lead)
             .with_measure(measure)
             .measure_h(crate::ui::detail_layout::HERO_TEXT_W);
         crate::ui::detail_layout::hero_chain(
             synopsis_h,
-            self.detail()
-                .is_some_and(|detail| !detail.ratings.is_empty()),
+            d.is_some_and(|detail| !detail.ratings.is_empty()),
         )
     }
 
+    fn ensure_layout(&self, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> LayoutCache {
+        let stamp = LayoutStamp::of(d);
+        if let Some(c) = self.layout.get() {
+            if c.stamp == stamp {
+                return c;
+            }
+        }
+        let c = self.build_layout(d, measure, stamp);
+        self.layout.set(Some(c));
+        c
+    }
+
+    fn section_block_h(
+        section: i32,
+        d: &Detail,
+        measure: &dyn crate::ui::machine::Measure,
+    ) -> f32 {
+        match section {
+            1 => season::ROW_H,
+            2 => episodes::block_h(d, measure),
+            3 => related::block_h(),
+            4 => cast::block_h(),
+            _ => 0.0,
+        }
+    }
+
+    fn section_gap(section: i32, next: Option<i32>) -> f32 {
+        if section == 1 && next == Some(2) {
+            TAB_EP_GAP
+        } else {
+            SECTION_GAP
+        }
+    }
+
+    fn build_layout(
+        &self,
+        d: &Detail,
+        measure: &dyn crate::ui::machine::Measure,
+        stamp: LayoutStamp,
+    ) -> LayoutCache {
+        let chain = self.compute_hero_chain(Some(d), measure);
+        let content_top = chain.btn_y + hero::CD + theme::space::XL;
+        let (sections, n) = self.sections(Some(d));
+        let live = &sections[..n];
+        let mut top = [0.0f32; 6];
+        let mut block = [0.0f32; 6];
+        let mut seen = 0u8;
+        let mut y = content_top;
+        for (pos, &sec) in live.iter().enumerate().skip(1) {
+            let si = sec as usize;
+            if si < 6 {
+                top[si] = y;
+                seen |= 1 << si;
+            }
+            let h = Self::section_block_h(sec, d, measure);
+            if si < 6 {
+                block[si] = h;
+            }
+            y += h + Self::section_gap(sec, live.get(pos + 1).copied());
+        }
+        LayoutCache {
+            stamp,
+            chain,
+            content_top,
+            top,
+            block,
+            seen,
+            end: y,
+        }
+    }
+
     fn content_top(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
-        self.hero_chain(measure).btn_y + hero::CD + theme::space::XL
+        if let Some(d) = self.detail() {
+            self.ensure_layout(d, measure).content_top
+        } else {
+            self.compute_hero_chain(None, measure).btn_y + hero::CD + theme::space::XL
+        }
     }
 
     fn sections(&self, d: Option<&Detail>) -> ([i32; 6], usize) {
@@ -436,31 +594,21 @@ impl DetailScreen {
     }
 
     fn section_top(&self, section: i32, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
-        let (sections, n) = self.sections(Some(d));
-        let mut y = self.content_top(measure);
-        for (pos, &sec) in sections[..n].iter().enumerate().skip(1) {
-            if sec == section {
-                return y;
-            }
-            y += self.block_h(sec, d, measure);
-            let next = sections.get(pos + 1).copied();
-            y += if sec == 1 && next == Some(2) {
-                TAB_EP_GAP
-            } else {
-                SECTION_GAP
-            };
+        let c = self.ensure_layout(d, measure);
+        let si = section as usize;
+        if (1..6).contains(&si) && c.seen & (1 << si) != 0 {
+            return c.top[si];
         }
-        y
+        c.end
     }
 
     fn block_h(&self, section: i32, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
-        match section {
-            1 => season::ROW_H,
-            2 => episodes::block_h(d, measure),
-            3 => related::block_h(),
-            4 => cast::block_h(),
-            _ => 0.0,
+        let c = self.ensure_layout(d, measure);
+        let si = section as usize;
+        if (1..6).contains(&si) && c.seen & (1 << si) != 0 {
+            return c.block[si];
         }
+        Self::section_block_h(section, d, measure)
     }
 
     fn locate(&self, elem: u32) -> Option<Located> {
@@ -638,7 +786,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                         crate::ui::consts::MARGIN_X,
                         top,
                         crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
-                        episodes::block_h(d, measure),
+                        self.block_h(2, d, measure),
                     ),
                     len: d.episodes.len().min(episodes::MAX_ITEMS) * 2,
                     elem: ElemKind::Card,
@@ -653,7 +801,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                         crate::ui::consts::MARGIN_X,
                         top,
                         crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
-                        related::block_h(),
+                        self.block_h(3, d, measure),
                     ),
                     len: d.related.len().min(512),
                     elem: ElemKind::Card,
@@ -668,7 +816,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                         crate::ui::consts::MARGIN_X,
                         top,
                         crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
-                        cast::block_h(),
+                        self.block_h(4, d, measure),
                     ),
                     len: d.credits_len().min(512),
                     elem: ElemKind::Card,
@@ -932,7 +1080,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 from_i,
             );
             let row = if d.is_some_and(|d| {
-                from.rect.cy() > self.section_top(2, d, measure) - self.scroll_target + episodes::block_h(d, measure)
+                from.rect.cy() > self.section_top(2, d, measure) - self.scroll_target + self.block_h(2, d, measure)
             }) {
                 episodes::Row::Text
             } else {
@@ -1063,6 +1211,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 Handled::Yes
             }
             ScreenEvent::StoreChanged(ord, _) => {
+                self.layout.set(None);
                 if *ord == StoreId::Metadata.ord() {
                     self.sync_keys();
                     self.season_metrics.invalidate();
@@ -2061,6 +2210,7 @@ impl DetailScreen {
     }
 
     fn tick<H: ContentLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        self.layout.set(None);
         let dt = t.dt();
         self.pump_restore();
         let d = self.detail();

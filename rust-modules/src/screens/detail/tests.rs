@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::ui::machine::{Chrome, Host, InputEvent, PressRead, ScreenId};
-use crate::ui::screen::ScreenArg;
+use crate::ui::screen::{At, Focusable, ScreenArg};
 
 #[derive(Clone, PartialEq, Eq)]
 struct TestArg;
@@ -45,7 +45,7 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 
-fn cx<'a>(measure: &'a crate::ui::fixture::FixtureMeasure, elem: Option<u32>) -> Cx<'a, TestHost> {
+fn cx<'a>(measure: &'a dyn crate::ui::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
     Cx {
         views: (),
         tick: Default::default(),
@@ -90,6 +90,7 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         ground: AmbientWash::flat(theme::SURFACE_APP),
         spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),
+        layout: std::cell::Cell::new(None),
     };
     screen.sync_keys();
     screen
@@ -1549,6 +1550,262 @@ fn extras_landing_grows_the_trailer_disc_without_moving_play_identity() {
     assert!(after.trailer);
     assert_eq!(hero::index_of(after, hero::HeroCtl::Play), Some(0));
     assert_eq!(hero::HeroCtl::Play.elem(), play_elem);
+    clear();
+}
+
+#[test]
+fn section_tops_do_not_remeasure_per_credit() {
+    use std::cell::Cell;
+    use std::ffi::CStr;
+
+    struct CountMeasure {
+        widths: Cell<u32>,
+    }
+    impl crate::ui::machine::Measure for CountMeasure {
+        fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+            self.widths.set(self.widths.get() + 1);
+            crate::ui::fixture::FixtureMeasure.width(s, sz, bold)
+        }
+        fn cap_h(&self, sz: i32) -> f32 {
+            crate::ui::fixture::FixtureMeasure.cap_h(sz)
+        }
+        fn line_h(&self, sz: i32) -> f32 {
+            crate::ui::fixture::FixtureMeasure.line_h(sz)
+        }
+    }
+
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.summary = "word ".repeat(80);
+    d.episodes = (0..16).map(|i| episode(&format!("e{i}"), i as i64)).collect();
+    d.cast = (0..77)
+        .map(|i| crate::metadata::Cast {
+            tag: format!("Actor {i}"),
+            role: "Role".into(),
+            thumb: String::new(),
+            id: i as i64 + 1,
+            tag_key: String::new(),
+        })
+        .collect();
+    let _guard = install(d);
+    let screen = bare(&_guard, sid, "show");
+    let detail = screen.detail().expect("installed");
+    let measure = CountMeasure {
+        widths: Cell::new(0),
+    };
+    let first_top = screen.section_top(4, detail, &measure);
+    let after_first = measure.widths.get();
+    assert!(after_first > 0, "building layout must measure text");
+    for _ in 0..77 {
+        assert_eq!(screen.section_top(4, detail, &measure), first_top);
+    }
+    assert_eq!(
+        measure.widths.get(),
+        after_first,
+        "cached section tops must not remeasure per credit"
+    );
+
+    let context = cx(&measure, None);
+    for i in 0..77 {
+        let elem = screen
+            .engine_key(cast::elem(i).expect("cast elem"))
+            .expect("cast identity");
+        let placed = Focusable::<TestHost>::place(&screen, &elem, &context, At::Drawn)
+            .expect("cast credit must place");
+        assert_eq!(
+            placed.rect.y,
+            first_top + cast::LABEL_H,
+            "credit {i} must share the cached cast strip"
+        );
+    }
+    assert_eq!(
+        measure.widths.get(),
+        after_first,
+        "placing every credit must not remeasure synopsis or episode text"
+    );
+    clear();
+}
+
+#[test]
+fn cached_section_tops_match_the_stacking_walk() {
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.summary = "word ".repeat(40);
+    d.episodes = (0..8)
+        .map(|i| {
+            let mut ep = episode(&format!("e{i}"), i as i64);
+            ep.title = "A wrapping episode title with enough words to take two lines".into();
+            ep
+        })
+        .collect();
+    d.cast = vec![crate::metadata::Cast {
+        tag: "Actor".into(),
+        role: "Role".into(),
+        thumb: String::new(),
+        id: 1,
+        tag_key: String::new(),
+    }];
+    d.related = vec![Default::default()];
+    let _guard = install(d);
+    let screen = bare(&_guard, sid, "show");
+    let detail = screen.detail().expect("installed");
+    let measure = crate::ui::fixture::FixtureMeasure;
+
+    let cast_first = screen.section_top(4, detail, &measure);
+    let seasons = screen.section_top(1, detail, &measure);
+    let episodes = screen.section_top(2, detail, &measure);
+    let related = screen.section_top(3, detail, &measure);
+    let about = screen.section_top(5, detail, &measure);
+    assert_eq!(
+        screen.section_top(4, detail, &measure),
+        cast_first,
+        "asking a later section first must not change earlier tops"
+    );
+    assert_eq!(seasons, screen.content_top(&measure));
+    assert_eq!(episodes, seasons + season::ROW_H + super::TAB_EP_GAP);
+    assert_eq!(
+        cast_first,
+        episodes + screen.block_h(2, detail, &measure) + super::SECTION_GAP
+    );
+    assert_eq!(
+        related,
+        cast_first + screen.block_h(4, detail, &measure) + super::SECTION_GAP
+    );
+    assert_eq!(
+        about,
+        related + screen.block_h(3, detail, &measure) + super::SECTION_GAP
+    );
+    clear();
+}
+
+#[test]
+fn a_replaced_episode_list_moves_the_cast_row() {
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.cast = vec![crate::metadata::Cast {
+        tag: "Actor".into(),
+        role: "Role".into(),
+        thumb: String::new(),
+        id: 1,
+        tag_key: String::new(),
+    }];
+    let _guard = install(d);
+    let screen = bare(&_guard, sid, "show");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let before = screen.section_top(4, screen.detail().expect("installed"), &measure);
+
+    let mut taller = detail(sid, "show");
+    taller.cast = vec![crate::metadata::Cast {
+        tag: "Actor".into(),
+        role: "Role".into(),
+        thumb: String::new(),
+        id: 1,
+        tag_key: String::new(),
+    }];
+    taller.episodes = (0..8)
+        .map(|i| {
+            let mut ep = episode(&format!("tall{i}"), i as i64);
+            ep.title = "Wrapping title words enough to grow the filmstrip ".repeat(8);
+            ep.summary = "Wrapping episode prose that also grows the strip height. ".repeat(12);
+            ep
+        })
+        .collect();
+    crate::metadata::set_current_for_test(Some(taller));
+    let after = screen.section_top(4, screen.detail().expect("replaced"), &measure);
+    assert!(
+        after > before,
+        "replacing CURRENT must miss the cached walk, not keep the short-episode cast top ({after} vs {before})"
+    );
+    clear();
+}
+
+#[test]
+fn a_movie_without_a_filmstrip_sits_its_first_block_on_content_top() {
+    let sid = ServerId::UNSET;
+    let _guard = install(Detail {
+        sid,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        summary: "word ".repeat(40),
+        cast: vec![crate::metadata::Cast {
+            tag: "Actor".into(),
+            role: "Role".into(),
+            thumb: String::new(),
+            id: 1,
+            tag_key: String::new(),
+        }],
+        related: vec![Default::default()],
+        ..Default::default()
+    });
+    let screen = bare(&_guard, sid, "movie");
+    let detail = screen.detail().expect("installed");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let top = screen.content_top(&measure);
+    assert_eq!(screen.section_top(4, detail, &measure), top);
+    assert_eq!(
+        screen.section_top(1, detail, &measure),
+        screen.section_top(2, detail, &measure),
+        "absent filmstrip sections must share the walk's end"
+    );
+    assert!(
+        screen.section_top(1, detail, &measure) > screen.section_top(5, detail, &measure),
+        "an absent section's fallback is past About, not About's own top"
+    );
+    assert!(
+        screen.section_top(3, detail, &measure) > top,
+        "related follows cast"
+    );
+    clear();
+}
+
+#[test]
+fn ticking_the_page_allows_layout_to_remeasure() {
+    use std::cell::Cell;
+    use std::ffi::CStr;
+
+    struct CountMeasure {
+        widths: Cell<u32>,
+    }
+    impl crate::ui::machine::Measure for CountMeasure {
+        fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+            self.widths.set(self.widths.get() + 1);
+            crate::ui::fixture::FixtureMeasure.width(s, sz, bold)
+        }
+        fn cap_h(&self, sz: i32) -> f32 {
+            crate::ui::fixture::FixtureMeasure.cap_h(sz)
+        }
+        fn line_h(&self, sz: i32) -> f32 {
+            crate::ui::fixture::FixtureMeasure.line_h(sz)
+        }
+    }
+
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.summary = "word ".repeat(40);
+    let _guard = install(d);
+    let mut screen = bare(&_guard, sid, "show");
+    let measure = CountMeasure {
+        widths: Cell::new(0),
+    };
+    let detail = screen.detail().expect("installed");
+    let _ = screen.section_top(1, detail, &measure);
+    let after_first = measure.widths.get();
+    assert!(after_first > 0);
+    let _ = screen.section_top(1, detail, &measure);
+    assert_eq!(measure.widths.get(), after_first, "still cached before tick");
+    step(
+        &mut screen,
+        &ScreenEvent::Tick(crate::ui::machine::Tick {
+            ms: 16,
+            dt_us: 16_667,
+        }),
+        None,
+    );
+    let _ = screen.section_top(1, screen.detail().expect("still installed"), &measure);
+    assert!(
+        measure.widths.get() > after_first,
+        "tick must drop the walk so the next present can remeasure"
+    );
     clear();
 }
 
