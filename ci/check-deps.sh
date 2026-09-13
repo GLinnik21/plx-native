@@ -97,9 +97,9 @@ ok()   { echo "  ok — $*"; }
 # grep_code <pattern> <paths...>: matching lines, minus comment-only lines, as `path:line:text`.
 grep_code() {
   local pat="$1"; shift
-  # `[[:space:]]` is POSIX ERE. Do not use `\s` here: BSD grep accepts it, but GNU grep in the
-  # Ubuntu CI image treats it differently, causing comment-only examples to become gate hits.
-  grep -rnE --include='*.rs' "$pat" "$@" 2>/dev/null \
+  # `-H` keeps the promised `path:line:text` shape even when a caller scans one file: GNU grep
+  # otherwise omits the path while BSD grep keeps it. `[[:space:]]` is POSIX ERE; do not use `\s`.
+  grep -HrnE --include='*.rs' "$pat" "$@" 2>/dev/null \
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true
 }
 
