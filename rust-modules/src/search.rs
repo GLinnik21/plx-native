@@ -566,8 +566,10 @@ static VISIBLE: AtomicU32 = AtomicU32::new(0);
 /// site (`plex/CLAUDE.md` rule 5) and read by [`rebuild`]'s merge. It ranks; it never filters.
 static FAVS: Mutex<Vec<(ServerId, i64, bool)>> = Mutex::new(Vec::new());
 
-/// The retained Browse directory's section generation as of that snapshot — the second generation
-/// this store watches, beside [`VISIBLE`].
+/// The retained Browse directory's section generation as of that snapshot — the cheap half of the
+/// second identity this store watches beside [`VISIBLE`]. [`pump_with_optional_directory`] also
+/// compares the exact favourite table: generations are owner-local and two Browse stores can both
+/// be at zero while describing different libraries.
 ///
 /// It is genuinely needed. Search watched the ROSTER generation alone, and the favourite answer
 /// moves without the roster moving at all: discovery appends a library and `apply_pins` records an
@@ -595,6 +597,11 @@ fn snapshot_favs_from_directory(directory: crate::stores::browse::DirectoryView<
 /// The snapshot, for the merge and for a worker about to be spawned.
 fn favs() -> Vec<(ServerId, i64, bool)> {
     FAVS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn favs_match_directory(directory: crate::stores::browse::DirectoryView<'_>) -> bool {
+    FAVS.lock().unwrap_or_else(|e| e.into_inner()).as_slice()
+        == directory.favorite_sections()
 }
 
 /// The claim that source `i`'s fetch is out. Released by the mailbox take — the only event that
@@ -803,9 +810,10 @@ fn pump_with_optional_directory(
         supersede();
         unsafe { *addr_of_mut!(SHELVES) = None };
     }
-    // **The second generation, and it moves without the first.** Discovery appending a library and
-    // a favourites edit both bump `SECTIONS_GEN`, and this screen runs discovery immediately before
-    // its own pump — so the ranking answer really can change under a landed result set.
+    // **The second Browse identity, and it moves without the first.** Discovery appending a library
+    // and a favourites edit both bump `SECTIONS_GEN`; an independent owner can instead carry a
+    // different exact table at the SAME local generation. This screen runs discovery immediately
+    // before its own pump, so the ranking answer really can change under a landed result set.
     //
     // A resident query is SUPERSEDED AND RE-ARMED rather than re-sorted, because re-sorting is not
     // available: after the fold a `TagHit` no longer carries the section its bit came from, so the
@@ -813,7 +821,9 @@ fn pump_with_optional_directory(
     // invalidate and the snapshot is simply brought up to date, so the next query does not open by
     // re-arming itself.
     let sections_gen = directory.map_or(0, |directory| directory.sections_gen());
-    if FAV_GEN.load(Ordering::SeqCst) != sections_gen {
+    let favourites_changed = FAV_GEN.load(Ordering::SeqCst) != sections_gen
+        || directory.is_some_and(|directory| !favs_match_directory(directory));
+    if favourites_changed {
         if terms(query()).is_some() {
             match directory {
                 Some(directory) => supersede_from_directory(directory),
@@ -1361,6 +1371,44 @@ mod tests {
 
         assert_eq!(FAV_GEN.load(Ordering::SeqCst), directory.view().sections_gen());
         assert_eq!(favs(), directory.view().favorite_sections());
+        reset();
+    }
+
+    #[test]
+    fn equal_generation_browse_owners_replace_the_favourite_snapshot() {
+        let _guard = crate::testlock::serial();
+        reset();
+        let sid = ServerId::from_raw(3);
+        let directory = |key, title: &str| crate::stores::browse::DirectorySnapshot::fixture(
+            9,
+            0,
+            vec![crate::stores::browse::SectionView {
+                borrowed: false,
+                sid: Some(sid),
+                key,
+                kind: crate::stores::browse::SecKind::Movie,
+                row: crate::stores::browse::SrcRow {
+                    section: 0,
+                    title: title.into(),
+                    pinned: true,
+                    current: true,
+                    ..Default::default()
+                },
+            }],
+        );
+        let alpha = directory(41, "Alpha");
+        let beta = directory(42, "Beta");
+        assert_eq!(alpha.view().sections_gen(), beta.view().sections_gen(),
+            "the regression requires equal owner-local generations");
+        set_query_from_directory("wallace", alpha.view());
+        let first_gen = GEN.load(Ordering::SeqCst);
+
+        pump_with_directory(0.0, beta.view());
+
+        assert_eq!(favs(), beta.view().favorite_sections(),
+            "the resident query must adopt the second owner's favourites");
+        assert_ne!(GEN.load(Ordering::SeqCst), first_gen,
+            "the result generation projected under Alpha must be superseded");
         reset();
     }
 
