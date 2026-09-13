@@ -2043,7 +2043,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // is owed either way. Invalidates from inside, per landing.
         let endpoints = app.bridge.viewstate_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
-        crate::stores::person::pump();
+        app.bridge.person_pump();
         if let Some(target) = app.bridge.take_detail_refresh() {
             refresh_content(&mut app.pages, target);
         }

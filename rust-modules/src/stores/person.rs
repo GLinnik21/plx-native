@@ -1,9 +1,12 @@
-//! The person page's data layer, as a machine over `crate::person` (`docs/stores-as-machines.md`).
+//! The physically owned Person model and fetch transport (`docs/stores-as-machines.md`). Each
+//! production `Bridge` owns one [`PersonStore`]; no free selector can connect two Bridges.
 
 use crate::plex::ServerId;
 use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
-use super::{note, StoreEv, StoreId};
+use super::StoreEv;
 
 #[derive(Clone, Debug)]
 pub(crate) enum PersonCmd {
@@ -22,43 +25,121 @@ pub(crate) enum PersonCmd {
     SetWatchedLocal { sid: ServerId, rk: String, on: bool },
 }
 
-pub(crate) struct PersonStore;
-
-/// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
-pub(crate) fn apply(cmd: PersonCmd) -> bool {
-    super::apply(super::StoreCmd::Person(cmd)).changed
+/// One Person owner: logical state, the worker adapter all current requests capture, and notice.
+pub(crate) struct PersonStore {
+    state: crate::person::PersonState,
+    adapter: Arc<crate::person::PersonAdapter>,
+    notice_gen: AtomicU32,
+    notice_dirty: AtomicBool,
 }
 
-/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
-/// `person::run` — its arms called `pub(crate)` mutators (`open`, `close`, `reset`,
-/// `set_watched_local`) across this module boundary; those four are private to `person.rs` now
-/// and this is their only door.
-pub(super) fn run(cmd: PersonCmd) -> bool {
-    // `crate::person`'s statics are a crate global reached from both `apply` above and
-    // `crate::stores::apply(StoreCmd::Person(..))` directly (some fixtures deliver a `StoreCmd`
-    // without going through this module's `apply`) — guard the one point both funnel through. See
-    // `lib.rs::testlock` and D5.
+impl Default for PersonStore {
+    fn default() -> Self {
+        Self {
+            state: Default::default(),
+            adapter: Arc::new(Default::default()),
+            notice_gen: AtomicU32::new(0),
+            notice_dirty: AtomicBool::new(false),
+        }
+    }
+}
+
+impl PersonStore {
+    fn bump(&self) -> u32 {
+        self.notice_dirty.store(true, Ordering::Relaxed);
+        self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub(crate) fn gen(&self) -> u32 {
+        self.notice_gen.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn take_notice(&self) -> Option<u32> {
+        self.notice_dirty.swap(false, Ordering::Relaxed).then(|| self.gen())
+    }
+
+    pub(crate) fn view(&self) -> crate::person::PersonView<'_> {
+        self.state.view()
+    }
+
+    /// Synchronous addressed command path. Reset rotates the adapter before clearing state, so an
+    /// old worker can only finish into the retired mailbox it captured.
+    pub(crate) fn run(&mut self, cmd: PersonCmd) -> bool {
+        if matches!(&cmd, PersonCmd::Reset) {
+            self.adapter = Arc::new(Default::default());
+        }
+        let changed = self.state.run(&self.adapter, cmd);
+        self.bump();
+        changed
+    }
+
+    /// Route-unconditional landing/spawn pass for this owner's adapter.
+    pub(crate) fn pump(&mut self) -> bool {
+        let changed = self.state.pump(&self.adapter);
+        if changed {
+            self.bump();
+        }
+        changed
+    }
+
     #[cfg(test)]
-    crate::testlock::assert_held("the person store (apply)");
-    let answer = crate::person::run(cmd);
-    super::bump(StoreId::Person);
-    answer
-}
+    pub(crate) fn install_for_test(
+        &mut self,
+        movies: Vec<crate::pms::PmsMovie>,
+        shows: Vec<crate::pms::PmsMovie>,
+    ) {
+        self.state.install_for_test(movies, shows);
+        self.bump();
+    }
 
-/// The page's once-a-frame pass: land every fetch, schedule the next.
-pub(crate) fn pump() -> bool {
-    note(StoreId::Person, crate::person::pump())
+    #[cfg(test)]
+    pub(crate) fn install_source_for_test(
+        &mut self,
+        sid: ServerId,
+        movies: Vec<crate::pms::PmsMovie>,
+        shows: Vec<crate::pms::PmsMovie>,
+    ) {
+        self.state.install_source_for_test(sid, movies, shows);
+        self.bump();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_credits_for_test(&mut self, groups: &[(&str, usize)]) {
+        self.state.install_credits_for_test(groups);
+        self.bump();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_ownership_fixture_for_test(&mut self) {
+        self.state.seed_ownership_fixture_for_test(&self.adapter);
+        self.bump();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ownership_fixture_for_test(&self) -> crate::person::OwnershipFixture {
+        self.state.ownership_fixture_for_test(&self.adapter)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn late_completion_for_test(&self) -> Box<dyn FnOnce()> {
+        self.state.late_completion_for_test(&self.adapter)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn adapter_for_test(&self) -> Arc<crate::person::PersonAdapter> {
+        Arc::clone(&self.adapter)
+    }
 }
 
 impl<H: Host> Machine<H> for PersonStore {
     type Ev = StoreEv<PersonCmd>;
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
         match ev {
-            StoreEv::Cmd(c) => {
-                run(c.clone());
+            StoreEv::Cmd(command) => {
+                self.run(command.clone());
             }
             StoreEv::Pump { .. } => {
-                pump();
+                self.pump();
             }
         }
         Handled::Yes

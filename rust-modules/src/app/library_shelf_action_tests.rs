@@ -138,7 +138,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                     listing: rig.listing.view(),
                     directory: rig.directory.view(),
                     section_hubs: rig.section_hubs.view(),
-                    search: rig.search.view(), session: crate::route::idle_session_for_test(),
+                    search: rig.search.view(), person: rig.stores.person_view(), session: crate::route::idle_session_for_test(),
                 },
                 &rig.measure,
             );

@@ -280,8 +280,9 @@ pub(super) fn activate_server_owned(
     let directory = bridge.browse_directory();
     let _ = crate::stores::hubs::apply_with_directory(
         crate::stores::hubs::HubsCmd::Reset, directory).changed;
-    crate::stores::person::apply(crate::stores::person::PersonCmd::Reset);
+    bridge.person_run(crate::stores::person::PersonCmd::Reset);
     bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Reset);
+    let directory = bridge.browse_directory();
     let mut endpoints = crate::stores::hubs::apply_with_directory(
         crate::stores::hubs::HubsCmd::RefetchHubs, directory).endpoints;
     endpoints.merge(bridge.browse_discover_pump().endpoints);

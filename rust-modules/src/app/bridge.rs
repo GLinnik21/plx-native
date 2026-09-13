@@ -102,6 +102,7 @@ pub(crate) struct AppViews<'a> {
     pub(crate) directory: crate::stores::browse::DirectoryView<'a>,
     pub(crate) section_hubs: crate::stores::browse::HubsView<'a>,
     pub(crate) search: crate::search::view::SearchView<'a>,
+    pub(crate) person: crate::person::PersonView<'a>,
     /// **The playback session, as this frame's publication** (spec §2.3, phase 9). The Player
     /// machine (`App.player`) owns the value; `Split` can only lend what the RIG owns, so the loop
     /// copies the decisions in once per frame ([`crate::route::PlaybackSession::publication`]) and
@@ -193,6 +194,10 @@ impl crate::screens::registry::LibraryLike for AppHost {
     fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> { cx.views.section_hubs }
+}
+
+impl crate::screens::registry::PersonLike for AppHost {
+    fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a> { cx.views.person }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -565,7 +570,7 @@ impl Bridge {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback }, &self.measure);
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback }, &self.measure);
         let item = page.selected_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -585,7 +590,7 @@ impl Bridge {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback }, &self.measure);
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback }, &self.measure);
         let item = page.focused_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -638,7 +643,7 @@ impl Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
             }, &self.measure);
             screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?
                 .focused_rect::<AppHost>(Some(key), &cx, At::Drawn)
@@ -679,7 +684,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         Some(f(home, &cx, focus))
     }
@@ -805,7 +810,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         if home.grid_position::<AppHost>(parts.focus.current, &cx).is_none() { return false; }
         self.home_command(HomeCmd::ItemMenu)
@@ -830,7 +835,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
@@ -847,7 +852,7 @@ impl Bridge {
                 Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
             }
         } else if let Some(page) = screen.downcast_ref::<crate::screens::person::PersonScreen>() {
-            let item = page.focused_item(ret.focus).filter(|m| crate::screens::item_menu::has_actions(m))?;
+            let item = page.focused_item(ret.focus, &cx).filter(|m| crate::screens::item_menu::has_actions(m))?;
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
         } else { None }
@@ -880,7 +885,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         let mut frame = DrawFrame::with_navigation(&cx, crate::ui::Painter::root(), self.navigation_presentation());
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
@@ -978,11 +983,23 @@ impl Bridge {
         self.stores.browse_discover_pump()
     }
 
-    pub(crate) fn viewstate_run(&self, cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
+    pub(crate) fn person_run(&mut self, cmd: crate::stores::person::PersonCmd) -> bool {
+        self.stores.person_run(cmd)
+    }
+
+    pub(crate) fn person_pump(&mut self) -> bool {
+        self.stores.person_pump()
+    }
+
+    pub(crate) fn person_view(&self) -> crate::person::PersonView<'_> {
+        self.stores.person_view()
+    }
+
+    pub(crate) fn viewstate_run(&mut self, cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
         self.stores.viewstate_run(cmd, self.directory.view())
     }
 
-    pub(crate) fn viewstate_pump(&self) -> crate::stores::EndpointRefreshSet {
+    pub(crate) fn viewstate_pump(&mut self) -> crate::stores::EndpointRefreshSet {
         self.stores.viewstate_pump(self.directory.view())
     }
 
@@ -1118,7 +1135,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
             },
             measure: &self.measure,
         }
@@ -1149,7 +1166,7 @@ impl Rig<AppHost> for Bridge {
             let publication = self.session.publication();
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
             }, &self.measure);
             return self.session.step(event, &cx, fx);
         }
@@ -1201,11 +1218,22 @@ impl Rig<AppHost> for Bridge {
                 _ => {}
             }
         }
+        match msg {
+            AppMsg::Store(StoreCmd::Person(command)) => {
+                self.person_run(command.clone());
+                return Handled::Yes;
+            }
+            AppMsg::Store(StoreCmd::ViewState(command)) => {
+                self.viewstate_run(command.clone());
+                return Handled::Yes;
+            }
+            _ => {}
+        }
         let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         match msg {
             AppMsg::Store(StoreCmd::Browse(c)) => {
@@ -1218,10 +1246,6 @@ impl Rig<AppHost> for Bridge {
             AppMsg::Store(StoreCmd::Hubs(c)) => {
                 crate::stores::hubs::apply_with_directory(c.clone(), self.directory.view())
                     .endpoints.emit(fx);
-                Handled::Yes
-            }
-            AppMsg::Store(StoreCmd::ViewState(c)) => {
-                self.viewstate_run(c.clone());
                 Handled::Yes
             }
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
@@ -1425,13 +1449,13 @@ impl Bridge {
 }
 
 fn step_store(cmd: &StoreCmd, cx: &Cx<'_, AppHost>, fx: &mut Effects<'_, AppHost>) -> Handled {
-    use crate::stores::{metadata, person};
+    use crate::stores::metadata;
     match cmd {
         StoreCmd::Browse(_) => unreachable!("Browse is stepped by Bridge's owned store"),
         StoreCmd::Hubs(_) => unreachable!("Hubs is stepped by Bridge with its Browse directory"),
         StoreCmd::Metadata(c) => metadata::MetadataStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
         StoreCmd::Search(_) => unreachable!("Search is stepped by Bridge with its Browse directory"),
-        StoreCmd::Person(c) => person::PersonStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::Person(_) => unreachable!("Person is stepped by Bridge's owned store"),
         StoreCmd::ViewState(_) => unreachable!("ViewState is stepped by Bridge with its Browse owner"),
     }
 }
@@ -1719,7 +1743,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             hubs: rig.hubs.view(),
             listing: rig.listing.view(),
             directory: rig.directory.view(),
-            section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback,
+            section_hubs: rig.section_hubs.view(), search: rig.search.view(), person: rig.stores.person_view(), session: &rig.playback,
         }, &rig.measure);
         let position = home.grid_position::<AppHost>(focus, &cx);
         let (row, col) = position.map(|(r, c)| (r as i64, c as i64)).unwrap_or((-1, -1));
@@ -1741,7 +1765,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
         let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(), hubs: rig.hubs.view(), listing: rig.listing.view(),
-            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback }, &rig.measure);
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), person: rig.stores.person_view(), session: &rig.playback }, &rig.measure);
         let menu = d.top_surface_name() == Some("library_menu");
         let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
             crate::ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
@@ -1783,7 +1807,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         hubs: rig.hubs.view(),
         listing: rig.listing.view(),
         directory: rig.directory.view(),
-        section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback,
+        section_hubs: rig.section_hubs.view(), search: rig.search.view(), person: rig.stores.person_view(), session: &rig.playback,
     }, &rig.measure);
     let mut groups = Vec::new();
     instance.screen.groups(&cx, &mut groups);
@@ -1843,7 +1867,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             let _ = write!(out, " card={} filmography={}", card as u8, filmography as u8);
             let item = instance.screen.as_any()
                 .and_then(|s| s.downcast_ref::<crate::screens::person::PersonScreen>())
-                .and_then(|s| s.focused_item(focus));
+                .and_then(|s| s.focused_item(focus, &cx));
             if let Some(item) = item {
                 let _ = write!(out, " sid={} rk=", item.sid.raw());
                 crate::focusprobe::push_rk(&mut out, &item.rk);
@@ -3337,7 +3361,7 @@ mod tests {
                 &mut out, MachineId::Store(StoreId::ViewState.ord()), &mut present);
             stores.viewstate.borrow_mut().pump(&mut |_| false, &mut |cmd| {
                 crate::stores::hubs::apply(cmd)
-            }).emit(&mut fx);
+            }, &mut |_| false).emit(&mut fx);
             drop(fx);
             drop(cx);
             assert_eq!(out.len(), 2);
@@ -4953,7 +4977,7 @@ mod tests {
     fn separate_bridges_do_not_share_any_viewstate_owner_state_or_notice() {
         let _guard = crate::testlock::serial();
         let first = Bridge::for_test(|| 0);
-        let second = Bridge::for_test(|| 0);
+        let mut second = Bridge::for_test(|| 0);
 
         first.stores.viewstate.borrow_mut().seed_ownership_fixture_for_test();
         let before_reset = first.stores.viewstate.borrow().ownership_fixture_for_test();
@@ -4978,7 +5002,7 @@ mod tests {
     #[test]
     fn reset_fences_a_late_old_viewstate_worker_from_the_post_reset_request() {
         let _guard = crate::testlock::serial();
-        let bridge = Bridge::for_test(|| 0);
+        let mut bridge = Bridge::for_test(|| 0);
         bridge.stores.viewstate.borrow_mut().seed_post_reset_flight_for_test();
         let old_adapter = bridge.stores.viewstate.borrow().adapter_for_test();
         let finish_old_worker = bridge.stores.viewstate.borrow().late_completion_for_test();
@@ -4993,6 +5017,159 @@ mod tests {
 
         assert_eq!(bridge.stores.viewstate.borrow().ownership_fixture_for_test().sent.as_deref(), Some("post-reset"),
             "a completion from the retired adapter must not satisfy the replacement request");
+    }
+
+    fn person_open(sid: crate::plex::ServerId, name: &str) -> crate::stores::person::PersonCmd {
+        crate::stores::person::PersonCmd::Open {
+            sid,
+            key: "person-key".into(),
+            guid: "plex://person/person-guid".into(),
+            name: name.into(),
+            thumb: String::new(),
+        }
+    }
+
+    fn person_item(sid: crate::plex::ServerId, rk: &str, watched: bool) -> crate::pms::PmsMovie {
+        crate::pms::PmsMovie {
+            sid,
+            rk: rk.into(),
+            watched,
+            unwatched: !watched,
+            ..Default::default()
+        }
+    }
+
+    fn deliver_person(rig: &mut Bridge, command: crate::stores::person::PersonCmd) {
+        let parts = CxParts { tick: Tick::default(), press: Default::default(),
+            focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Person.ord()), &mut present);
+        assert_eq!(Rig::<AppHost>::deliver(rig, MachineId::Store(StoreId::Person.ord()),
+            &AppMsg::Store(StoreCmd::Person(command)), &parts, &mut fx), Handled::Yes);
+    }
+
+    #[test]
+    fn separate_bridges_do_not_share_any_person_owner_state_or_notice() {
+        let _guard = crate::testlock::serial();
+        let mut first = Bridge::for_test(|| 0);
+        let mut second = Bridge::for_test(|| 0);
+        let sid = crate::plex::ServerId::from_raw(0);
+
+        first.person_run(person_open(sid, "first-owner"));
+        first.stores.person.seed_ownership_fixture_for_test();
+        let before_reset = first.stores.person.ownership_fixture_for_test();
+        second.person_run(crate::stores::person::PersonCmd::Reset);
+        let after_reset = first.stores.person.ownership_fixture_for_test();
+
+        first.stores.person.seed_ownership_fixture_for_test();
+        let before_pump = first.stores.person.ownership_fixture_for_test();
+        let _ = second.person_pump();
+        let after_pump = first.stores.person.ownership_fixture_for_test();
+
+        assert_eq!((after_reset, after_pump), (before_reset, before_pump),
+            "resetting or pumping Bridge B must not alter Bridge A's model, generation, retry, flight or mailbox");
+        assert_eq!(first.person_view().current().map(|person| person.name.as_str()), Some("first-owner"));
+        assert!(second.person_view().current().is_none());
+        let second_notices = second.stores.take_notices();
+        let first_notices = first.stores.take_notices();
+        assert_eq!(second_notices.iter().filter(|(id, _)| *id == StoreId::Person).count(), 1,
+            "Bridge B owns only its reset notice");
+        assert_eq!(first_notices.iter().filter(|(id, _)| *id == StoreId::Person).count(), 1,
+            "Bridge B draining its notices must leave Bridge A's notice untouched");
+    }
+
+    #[test]
+    fn person_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
+        let _guard = crate::testlock::serial();
+        let mut bridge = Bridge::for_test(|| 0);
+        let sid = crate::plex::ServerId::from_raw(0);
+        bridge.person_run(person_open(sid, "old-person"));
+        let old_adapter = bridge.stores.person.adapter_for_test();
+        let finish_old_worker = bridge.stores.person.late_completion_for_test();
+
+        bridge.person_run(crate::stores::person::PersonCmd::Reset);
+        bridge.person_run(person_open(sid, "post-reset-person"));
+        let new_adapter = bridge.stores.person.adapter_for_test();
+        assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
+            "reset must rotate the Person worker adapter");
+        finish_old_worker();
+        let _ = bridge.person_pump();
+
+        let person = bridge.person_view().current().expect("post-reset person remains open");
+        assert_eq!(person.name, "post-reset-person");
+        assert!(person.bio.is_empty(), "the retired worker cannot write the replacement person");
+    }
+
+    #[test]
+    fn addressed_person_store_command_changes_and_notifies_only_its_bridge() {
+        let _guard = crate::testlock::serial();
+        let mut first = Bridge::for_test(|| 0);
+        let mut second = Bridge::for_test(|| 0);
+        let sid = crate::plex::ServerId::from_raw(0);
+        first.person_run(person_open(sid, "first-reader"));
+        second.person_run(person_open(sid, "second-reader"));
+        first.stores.person.install_for_test(vec![person_item(sid, "movie", false)], Vec::new());
+        second.stores.person.install_for_test(vec![person_item(sid, "movie", false)], Vec::new());
+        let _ = first.stores.take_notices();
+        let _ = second.stores.take_notices();
+
+        deliver_person(&mut first, crate::stores::person::PersonCmd::SetWatchedLocal {
+            sid, rk: "movie".into(), on: true,
+        });
+
+        assert!(first.person_view().current().unwrap().shelf(0)[0].watched,
+            "the addressed Person reader sees the optimistic edit immediately");
+        assert!(!second.person_view().current().unwrap().shelf(0)[0].watched,
+            "an unaddressed Person/Filmography reader keeps its own publication");
+        assert_eq!(first.stores.take_notices().iter().filter(|(id, _)| *id == StoreId::Person).count(), 1);
+        assert_eq!(second.stores.take_notices().iter().filter(|(id, _)| *id == StoreId::Person).count(), 0);
+    }
+
+    #[test]
+    fn profile_activation_clears_the_same_bridge_person_before_a_new_mount() {
+        let _guard = crate::testlock::serial();
+        let mut bridge = Bridge::for_test(|| 0);
+        let sid = crate::plex::ServerId::from_raw(0);
+        bridge.person_run(person_open(sid, "outgoing-profile"));
+        assert!(bridge.person_view().current().is_some());
+
+        let _ = super::super::boot::activate_server_owned(&mut bridge);
+
+        assert!(bridge.person_view().current().is_none(),
+            "profile activation must clear the Person owner on the same Bridge before any new page mounts");
+    }
+
+    #[test]
+    fn viewstate_optimistic_edit_mutates_only_its_bridge_person_store() {
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test(
+            "bridge-person-viewstate", "127.0.0.1", 9, "synthetic", "fixture");
+        let mut first = Bridge::for_test(|| 0);
+        let mut second = Bridge::for_test(|| 0);
+        for bridge in [&mut first, &mut second] {
+            bridge.person_run(person_open(sid, "shared-subject"));
+            bridge.stores.person.install_for_test(
+                vec![person_item(sid, "movie", false)], Vec::new());
+            bridge.stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
+            let _ = bridge.stores.take_notices();
+        }
+
+        assert!(first.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+            sid,
+            rk: "movie".into(),
+            write: crate::viewstate::Write::Watched,
+            detail: None,
+            guid: String::new(),
+        }));
+
+        assert!(first.person_view().current().unwrap().shelf(0)[0].watched);
+        assert!(!second.person_view().current().unwrap().shelf(0)[0].watched,
+            "ViewState's callback must address the Person owner beside its own queue");
+        assert_eq!(first.stores.take_notices().iter().filter(|(id, _)| *id == StoreId::Person).count(), 1);
+        assert_eq!(second.stores.take_notices().iter().filter(|(id, _)| *id == StoreId::Person).count(), 0);
+        crate::plex::reset_servers_for_test();
     }
 
     /// Detail owns the press decision, but the Bridge owns the retained Browse directory needed

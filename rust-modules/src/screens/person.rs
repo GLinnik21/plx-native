@@ -25,17 +25,19 @@ use crate::ui::machine::{
 };
 use crate::ui::present::{PresentEvent, Provenance};
 use crate::ui::screen::{
-    Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, Focusable,
+    Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, FocusSource, Focusable,
     GroupKind, GroupSpec, HitSource, Hover, Link, Placed, RenderStrategy, Screen, ScreenEvent,
     Seat, Step, Stop,
 };
+#[cfg(test)]
+use crate::ui::screen::Enter;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{AmbientWash, Art, PageGround, StatusKind, StatusOverlay};
 use crate::ui::{Column, Env, Painter, Rect, ScrollColumn, View};
 
 use super::registry::{
-    AppFx, CardIdentity, ContentArg, ContentLike, ContentReq, PageMemory, PersonMemory,
+    AppFx, CardIdentity, ContentArg, ContentLike, ContentReq, PageMemory, PersonLike, PersonMemory,
 };
 
 // -------------------------------------------------------------------------------------------
@@ -511,8 +513,8 @@ fn shelf_key_from(s: &OffsetShelf<'_>, col: usize) -> crate::ui::machine::FocusK
 pub(crate) struct PersonScreen {
     entry: EntryId,
     // ---- identity, fixed at construction; re-issued to the store on `Enter` (module doc: "an
-    // Enter, fresh or restored, re-opens" — the single-slot `crate::person` store is only ever
-    // one person's, so returning to a covered instance must re-claim it) ----
+    // Enter, fresh or restored, re-opens" — this Bridge's PersonStore holds one person, so
+    // returning to a covered instance must re-claim it through an addressed effect) ----
     sid: ServerId,
     key: String,
     guid: String,
@@ -535,6 +537,7 @@ pub(crate) struct PersonScreen {
     shelves: [CardRow; NSHELF],
     scroll: ScrollColumn,
     amb: PageGround,
+    amb_seeded: bool,
     /// Skeleton spinner clock, in ms — cached each tick from [`spin_phase`](Self::spin_phase)'s
     /// `advance`.
     spin_ms: f32,
@@ -551,6 +554,8 @@ pub(crate) struct PersonScreen {
     entry_count_c: CString,
     header: HeaderFlow,
     header_dirty: bool,
+    links_c: Vec<Link>,
+    covered_ready_c: bool,
 }
 
 impl LogicalState for PersonScreen {
@@ -598,7 +603,7 @@ impl PersonScreen {
         name: String,
         thumb: String,
     ) -> Self {
-        let mut s = Self {
+        Self {
             entry,
             sid,
             key,
@@ -612,6 +617,7 @@ impl PersonScreen {
             shelves: [CardRow::new(); NSHELF],
             scroll: ScrollColumn::new(HEADER_TOP, TOP_MARGIN),
             amb: PageGround::new(),
+            amb_seeded: false,
             spin_ms: 0.0,
             spin_phase: crate::ui::motion::Phase::default(),
             name_c: CString::default(),
@@ -621,36 +627,35 @@ impl PersonScreen {
             entry_count_c: CString::default(),
             header: HeaderFlow::default(),
             header_dirty: true,
-        };
-        s.request_store();
-        s
+            links_c: Vec::new(),
+            covered_ready_c: false,
+        }
     }
 
-    /// Claim the legacy single-slot store for this identity. Restores call this only when another
-    /// person actually displaced the slot; render springs and shell scroll deliberately survive.
-    fn request_store(&mut self) {
-        crate::stores::person::apply(PersonCmd::Open {
+    /// Claim this Bridge's Person owner for this identity through the addressed store effect.
+    fn request_store<H: ContentLike + PersonLike>(&mut self, fx: &mut Effects<'_, H>) {
+        fx.push(crate::ui::machine::Fx::App(AppFx::Store(
+            crate::stores::StoreId::Person,
+            crate::stores::StoreCmd::Person(PersonCmd::Open {
             sid: self.sid,
             key: self.key.clone(),
             guid: self.guid.clone(),
             name: self.name.clone(),
             thumb: self.thumb.clone(),
-        });
+            }),
+        )));
         self.header_dirty = true;
-        if let Some(p) = self.person() {
-            let k = amb_target(p, None);
-            self.amb.jump_target(k);
-        }
+        self.amb_seeded = false;
     }
 
-    fn person(&self) -> Option<&'static Person> {
-        crate::person::current().filter(|p| {
+    fn person<'a, H: PersonLike>(&self, cx: &Cx<'a, H>) -> Option<&'a Person> {
+        H::person(cx).current().filter(|p| {
             crate::plex::same_item((p.sid, p.key.as_str()), (self.sid, self.key.as_str()))
         })
     }
 
-    fn sync_card_keys(&mut self) {
-        let Some(p) = self.person() else {
+    fn sync_card_keys<H: PersonLike>(&mut self, cx: &Cx<'_, H>) {
+        let Some(p) = self.person(cx) else {
             return;
         };
         for item in (0..NSHELF).flat_map(|kind| p.shelf(kind).iter()) {
@@ -669,6 +674,30 @@ impl PersonScreen {
                 rk: item.rk.clone(),
                 elem,
             });
+        }
+    }
+
+    fn refresh_store_cache<H: PersonLike>(&mut self, cx: &Cx<'_, H>) {
+        self.sync_card_keys(cx);
+        self.links_c.clear();
+        self.covered_ready_c = false;
+        let Some(person) = self.person(cx) else { return };
+        self.covered_ready_c = person.credited && !H::person(cx).loading();
+        let (kinds, n) = present(person);
+        if entry_reachable(person) {
+            self.links_c.push(Link { from: HEADER_GROUP, dir: Dir::Down, to: ENTRY_GROUP });
+            self.links_c.push(Link { from: ENTRY_GROUP, dir: Dir::Up, to: HEADER_GROUP });
+            if let Some(&first) = kinds[..n].first() {
+                self.links_c.push(Link { from: ENTRY_GROUP, dir: Dir::Down, to: SHELF_GROUP[first] });
+                self.links_c.push(Link { from: SHELF_GROUP[first], dir: Dir::Up, to: ENTRY_GROUP });
+            }
+        } else if let Some(&first) = kinds[..n].first() {
+            self.links_c.push(Link { from: HEADER_GROUP, dir: Dir::Down, to: SHELF_GROUP[first] });
+            self.links_c.push(Link { from: SHELF_GROUP[first], dir: Dir::Up, to: HEADER_GROUP });
+        }
+        for pair in kinds[..n].windows(2) {
+            self.links_c.push(Link { from: SHELF_GROUP[pair[0]], dir: Dir::Down, to: SHELF_GROUP[pair[1]] });
+            self.links_c.push(Link { from: SHELF_GROUP[pair[1]], dir: Dir::Up, to: SHELF_GROUP[pair[0]] });
         }
     }
 
@@ -720,7 +749,7 @@ impl PersonScreen {
     /// Retire return hydration only after the engine's saved card has an answer from its own
     /// source. A page-level `landed` is intentionally not consulted: another server may already
     /// have populated a shelf while this card's server is still resolving or retrying.
-    fn settle_return_pending<H: ContentLike>(&mut self, cx: &Cx<'_, H>) {
+    fn settle_return_pending<H: ContentLike + PersonLike>(&mut self, cx: &Cx<'_, H>) {
         if !self.return_pending {
             return;
         }
@@ -736,7 +765,7 @@ impl PersonScreen {
             self.return_pending = false;
             return;
         };
-        let Some(person) = self.person() else {
+        let Some(person) = self.person(cx) else {
             return;
         };
         if self.locate(person, elem).is_some() || !crate::person::media_resolving(person, sid) {
@@ -841,11 +870,12 @@ impl PersonScreen {
         }
     }
 
-    pub(crate) fn focused_item(
+    pub(crate) fn focused_item<'a, H: PersonLike>(
         &self,
         focus: Option<crate::ui::machine::FocusKey<u32>>,
-    ) -> Option<&'static PmsMovie> {
-        let p = self.person()?;
+        cx: &Cx<'a, H>,
+    ) -> Option<&'a PmsMovie> {
+        let p = self.person(cx)?;
         self.focused_movie_in(p, focus.filter(|k| k.entry == self.entry).map(|k| k.elem))
     }
 
@@ -923,10 +953,11 @@ impl PersonScreen {
         })
     }
 
-    fn tick<H: ContentLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn tick<H: ContentLike + PersonLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let dt = t.dt();
         let cur = cx.focus.current.map(|k| k.elem);
-        let Some(p) = self.person() else {
+        self.refresh_store_cache(cx);
+        let Some(p) = self.person(cx) else {
             // Nothing is drawn while `person()` is `None` (`Screen::draw` returns before touching
             // the skeleton), so there is nothing on screen for the clock to animate — freeze
             // rather than advance-and-report for no visible reason.
@@ -938,7 +969,12 @@ impl PersonScreen {
 
         let focused_movie = self.focused_movie_in(p, cur);
         let k = amb_target(p, focused_movie);
-        self.amb.key_target(k, dt);
+        if self.amb_seeded {
+            self.amb.key_target(k, dt);
+        } else {
+            self.amb.jump_target(k);
+            self.amb_seeded = true;
+        }
 
         let focus_child = self.flow_child(p, cur);
         for kind in 0..NSHELF {
@@ -962,7 +998,7 @@ impl PersonScreen {
 
         let settling =
             (self.scroll.scroll.pos - want).abs() > 0.25 || self.scroll.scroll.vel.abs() > 0.5;
-        if crate::person::facts_pending(p) || crate::person::loading() {
+        if crate::person::facts_pending(p) || H::person(cx).loading() {
             self.spin_ms = self.spin_phase.advance(t, &mut fx.present());
         }
         if settling {
@@ -973,12 +1009,12 @@ impl PersonScreen {
     /// OK on the header: opens the biography panel when the bio is truncated. Mirrors
     /// `header_ok`'s tail (the overlay guard lives in `step`'s `Input` arm now — see the module
     /// doc for why the raw key is intercepted before the engine ever turns it into `Activate`).
-    fn activate_header<H: ContentLike>(&mut self, measure: &dyn Measure, fx: &mut Effects<'_, H>) {
+    fn activate_header<H: ContentLike + PersonLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         self.header_marked = true;
-        let Some(p) = self.person() else {
+        let Some(p) = self.person(cx) else {
             return;
         };
-        if bio_is_truncated(p, measure) {
+        if bio_is_truncated(p, cx.measure) {
             // The GATE is the page's, and stays the page's: the panel exists exactly when the
             // `MORE` mark is drawn, and both read `bio_is_truncated` — which depends on this
             // header's own column width. A surface asked to re-derive it would be how the mark and
@@ -1000,12 +1036,14 @@ impl PersonScreen {
     /// tracks_available` is the precedent and the reason.
     /// The scenario has no frame capability; it reads the header's last measured answer and
     /// waits for the next measure after a store invalidation, just as the painted header does.
-    pub(crate) fn bio_available(&self) -> bool {
-        self.person().is_some() && !self.header_dirty && self.header.bio_truncated
+    pub(crate) fn bio_available(&self, view: crate::person::PersonView<'_>) -> bool {
+        view.current().is_some_and(|person| crate::plex::same_item(
+            (person.sid, person.key.as_str()), (self.sid, self.key.as_str())))
+            && !self.header_dirty && self.header.bio_truncated
     }
 
-    fn activate_entry<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) {
-        let Some(p) = self.person() else {
+    fn activate_entry<H: ContentLike + PersonLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let Some(p) = self.person(cx) else {
             return;
         };
         if has_entry(p) {
@@ -1018,8 +1056,8 @@ impl PersonScreen {
         }
     }
 
-    fn commit_card<H: ContentLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
-        if let Some(m) = self.focused_item(cx.focus.current) {
+    fn commit_card<H: ContentLike + PersonLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        if let Some(m) = self.focused_item(cx.focus.current, cx) {
             fx.push(crate::ui::machine::Fx::App(AppFx::Content(
                 ContentReq::Push(ContentArg::Detail {
                     sid: m.sid,
@@ -1029,20 +1067,20 @@ impl PersonScreen {
         }
     }
 
-    pub(crate) fn focused_rect<H: ContentLike>(
+    pub(crate) fn focused_rect<H: ContentLike + PersonLike>(
         &self,
         focus: Option<crate::ui::machine::FocusKey<u32>>,
         cx: &Cx<'_, H>,
         at: At,
     ) -> Option<Rect> {
         let key = focus.filter(|k| k.entry == self.entry)?;
-        self.focused_item(Some(key))?;
+        self.focused_item(Some(key), cx)?;
         Focusable::<H>::place(self, &key.elem, cx, at).map(|p| p.rect)
     }
 
     /// Repaint the focused poster above an item-menu scrim. The current engine key is an explicit
     /// argument so this migration query cannot revive the old screen-local cursor.
-    pub(crate) fn redraw_focused<H: ContentLike>(
+    pub(crate) fn redraw_focused<H: ContentLike + PersonLike>(
         &self,
         f: &mut DrawFrame<'_, '_, H>,
         focus: Option<crate::ui::machine::FocusKey<u32>>,
@@ -1050,7 +1088,7 @@ impl PersonScreen {
         let Some(key) = focus.filter(|k| k.entry == self.entry) else {
             return;
         };
-        let Some(person) = self.person() else {
+        let Some(person) = self.person(f.cx) else {
             return;
         };
         let Some(Located::Shelf(kind, col)) = self.locate(person, key.elem) else {
@@ -1245,7 +1283,7 @@ impl PersonScreen {
         }
         let y = self.scroll.child_top(&self.live_flow(person, None), 1) - self.scroll.scroll.pos;
         let band = Rect::new(0.0, y, SCR_W, CARD_H);
-        if crate::person::loading() {
+        if !person.landed {
             let phase = crate::ui::widgets::skeleton_phase(self.spin_ms as u32);
             crate::ui::widgets::skeleton_bar(
                 p,
@@ -1355,9 +1393,9 @@ fn entry_run_x(w: f32, e: f32) -> f32 {
 // Focusable / Machine / Screen
 // -------------------------------------------------------------------------------------------
 
-impl<H: ContentLike> Focusable<H> for PersonScreen {
+impl<H: ContentLike + PersonLike> Focusable<H> for PersonScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
-        let Some(p) = self.person() else {
+        let Some(p) = self.person(cx) else {
             return;
         };
         out.push(GroupSpec {
@@ -1400,7 +1438,7 @@ impl<H: ContentLike> Focusable<H> for PersonScreen {
     }
 
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
-        let p = self.person()?;
+        let p = self.person(cx)?;
         match self.locate(p, *key)? {
             Located::Header => Some(HEADER_GROUP),
             Located::Entry => entry_reachable(p).then_some(ENTRY_GROUP),
@@ -1416,7 +1454,7 @@ impl<H: ContentLike> Focusable<H> for PersonScreen {
         dir: Dir,
         cx: &Cx<'_, H>,
     ) -> Step<u32> {
-        let Some(p) = self.person() else {
+        let Some(p) = self.person(cx) else {
             return Step::Edge;
         };
         match self.locate(p, key.elem) {
@@ -1429,7 +1467,7 @@ impl<H: ContentLike> Focusable<H> for PersonScreen {
     }
 
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
-        let p = self.person()?;
+        let p = self.person(cx)?;
         match self.locate(p, *key)? {
             Located::Header => {
                 let r = self.header_rect();
@@ -1464,7 +1502,7 @@ impl<H: ContentLike> Focusable<H> for PersonScreen {
     fn reconcile(
         &self,
         want: crate::ui::machine::FocusKey<u32>,
-        _cx: &Cx<'_, H>,
+        cx: &Cx<'_, H>,
     ) -> crate::ui::machine::FocusKey<u32> {
         let header_key = crate::ui::machine::FocusKey {
             entry: self.entry,
@@ -1475,7 +1513,7 @@ impl<H: ContentLike> Focusable<H> for PersonScreen {
         } else {
             None
         };
-        let Some(p) = self.person() else {
+        let Some(p) = self.person(cx) else {
             return if returning_card.is_some() {
                 want
             } else {
@@ -1512,7 +1550,7 @@ impl<H: ContentLike> Focusable<H> for PersonScreen {
     }
 
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
-        let Some(p) = self.person() else {
+        let Some(p) = self.person(cx) else {
             return crate::ui::machine::FocusKey {
                 entry: self.entry,
                 elem: HEADER_ELEM,
@@ -1567,7 +1605,7 @@ impl PersonScreen {
     }
 }
 
-impl<H: ContentLike> Machine<H> for PersonScreen {
+impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
@@ -1580,10 +1618,9 @@ impl<H: ContentLike> Machine<H> for PersonScreen {
                 self.tick(*t, cx, fx);
                 Handled::Yes
             }
-            ScreenEvent::Enter(Enter::Restored) => {
-                if self.person().is_none() {
-                    self.request_store();
-                    self.sync_card_keys();
+            ScreenEvent::Enter(_) | ScreenEvent::Uncover => {
+                if self.person(cx).is_none() {
+                    self.request_store(fx);
                     fx.invalidate(Provenance::Nav);
                 }
                 self.settle_return_pending(cx);
@@ -1592,13 +1629,13 @@ impl<H: ContentLike> Machine<H> for PersonScreen {
             ScreenEvent::FocusMoved { to, by, .. } => {
                 if matches!(by, By::Dir | By::Pointer)
                     || self
-                        .person()
+                        .person(cx)
                         .is_some_and(|person| self.locate(person, to.elem).is_some())
                 {
                     self.return_pending = false;
                 }
                 if matches!(
-                    self.person().and_then(|p| self.locate(p, to.elem)),
+                    self.person(cx).and_then(|p| self.locate(p, to.elem)),
                     Some(Located::Header)
                 ) && matches!(by, By::Dir | By::Pointer)
                 {
@@ -1608,9 +1645,9 @@ impl<H: ContentLike> Machine<H> for PersonScreen {
                 Handled::Yes
             }
             ScreenEvent::Activate(e) => {
-                match self.person().and_then(|p| self.locate(p, *e)) {
-                    Some(Located::Header) => self.activate_header(cx.measure, fx),
-                    Some(Located::Entry) => self.activate_entry(fx),
+                match self.person(cx).and_then(|p| self.locate(p, *e)) {
+                    Some(Located::Header) => self.activate_header(cx, fx),
+                    Some(Located::Entry) => self.activate_entry(cx, fx),
                     _ => {}
                 }
                 Handled::Yes
@@ -1620,7 +1657,7 @@ impl<H: ContentLike> Machine<H> for PersonScreen {
                 Handled::Yes
             }
             ScreenEvent::PressHold(_) => {
-                if self.focused_item(cx.focus.current).is_some() {
+                if self.focused_item(cx.focus.current, cx).is_some() {
                     fx.push(crate::ui::machine::Fx::App(AppFx::Content(
                         ContentReq::ItemMenu,
                     )));
@@ -1663,13 +1700,16 @@ impl<H: ContentLike> Machine<H> for PersonScreen {
             }
             ScreenEvent::StoreChanged(ord, _) if *ord == crate::stores::StoreId::Person.ord() => {
                 self.header_dirty = true;
-                self.sync_card_keys();
+                self.refresh_store_cache(cx);
                 self.settle_return_pending(cx);
                 Handled::Yes
             }
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
-                if self.person().is_some() {
-                    crate::stores::person::apply(PersonCmd::Close);
+                if self.person(cx).is_some() {
+                    fx.push(crate::ui::machine::Fx::App(AppFx::Store(
+                        crate::stores::StoreId::Person,
+                        crate::stores::StoreCmd::Person(PersonCmd::Close),
+                    )));
                 }
                 Handled::Yes
             }
@@ -1678,7 +1718,7 @@ impl<H: ContentLike> Machine<H> for PersonScreen {
     }
 }
 
-impl<H: ContentLike> Screen<H> for PersonScreen {
+impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
     fn name(&self) -> &'static str {
         // Filmography deliberately returns the same word: the manifest records that opaque modal
         // as the Person route with a separate `filmography=1` state bit.
@@ -1695,7 +1735,7 @@ impl<H: ContentLike> Screen<H> for PersonScreen {
         let p = f.painter.alpha(f.page_alpha);
         let cur = f.focus.current.map(|k| k.elem);
         let env = Env::inert();
-        let Some(person) = self.person() else {
+        let Some(person) = self.person(f.cx) else {
             return;
         };
         self.amb.draw(p, Rect::FULL);
@@ -1716,60 +1756,10 @@ impl<H: ContentLike> Screen<H> for PersonScreen {
         HitSource::Engine
     }
     fn covered_surfaces_ready(&self) -> bool {
-        self.person().is_some_and(|person| person.credited) && !crate::person::loading()
+        self.covered_ready_c
     }
     fn links(&self, out: &mut Vec<Link>) {
-        let Some(person) = self.person() else {
-            return;
-        };
-        let (kinds, n) = present(person);
-        if entry_reachable(person) {
-            out.push(Link {
-                from: HEADER_GROUP,
-                dir: Dir::Down,
-                to: ENTRY_GROUP,
-            });
-            out.push(Link {
-                from: ENTRY_GROUP,
-                dir: Dir::Up,
-                to: HEADER_GROUP,
-            });
-            if let Some(&first) = kinds[..n].first() {
-                out.push(Link {
-                    from: ENTRY_GROUP,
-                    dir: Dir::Down,
-                    to: SHELF_GROUP[first],
-                });
-                out.push(Link {
-                    from: SHELF_GROUP[first],
-                    dir: Dir::Up,
-                    to: ENTRY_GROUP,
-                });
-            }
-        } else if let Some(&first) = kinds[..n].first() {
-            out.push(Link {
-                from: HEADER_GROUP,
-                dir: Dir::Down,
-                to: SHELF_GROUP[first],
-            });
-            out.push(Link {
-                from: SHELF_GROUP[first],
-                dir: Dir::Up,
-                to: HEADER_GROUP,
-            });
-        }
-        for pair in kinds[..n].windows(2) {
-            out.push(Link {
-                from: SHELF_GROUP[pair[0]],
-                dir: Dir::Down,
-                to: SHELF_GROUP[pair[1]],
-            });
-            out.push(Link {
-                from: SHELF_GROUP[pair[1]],
-                dir: Dir::Up,
-                to: SHELF_GROUP[pair[0]],
-            });
-        }
+        out.extend(self.links_c.iter().copied());
     }
     fn memory_at(&self, _focus: Option<crate::ui::machine::FocusKey<u32>>) -> PageMemory {
         PageMemory::Person(self.memory())
@@ -1787,7 +1777,7 @@ impl PersonScreen {
     /// stops are the engine's ordinary `Card` hit-testing over [`OffsetShelf::place`], which needs
     /// no separate registration; only the two Bare rows (no drawn tile the strip already stops)
     /// need one, mirroring `screens::login::LoginScreen::draw_readout`'s single `f.stop(...)`.
-    fn record_stops<H: ContentLike>(
+    fn record_stops<H: ContentLike + PersonLike>(
         &self,
         f: &mut DrawFrame<'_, '_, H>,
         person: &Person,
@@ -1866,9 +1856,13 @@ mod tests {
         type Fx = AppFx;
         type Msg = super::super::registry::AppMsg;
         type Elem = u32;
-        type Views<'a> = ();
+        type Views<'a> = crate::person::PersonView<'a>;
         type Init = super::super::family::NoInit;
         type Memory = PageMemory;
+    }
+
+    impl PersonLike for PersonHost {
+        fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a> { cx.views }
     }
 
     fn item(rk: &str) -> PmsMovie {
@@ -1883,9 +1877,9 @@ mod tests {
         }
     }
 
-    fn cx(m: &dyn Measure) -> Cx<'_, PersonHost> {
+    fn cx<'a>(m: &'a dyn Measure, person: crate::person::PersonView<'a>) -> Cx<'a, PersonHost> {
         Cx {
-            views: (),
+            views: person,
             tick: Tick::default(),
             measure: m,
             press: PressRead::default(),
@@ -1894,12 +1888,12 @@ mod tests {
         }
     }
 
-    fn cx_at(m: &FixtureMeasure, focus: crate::ui::machine::FocusKey<u32>) -> Cx<'_, PersonHost> {
+    fn cx_at<'a>(m: &'a FixtureMeasure, person: crate::person::PersonView<'a>, focus: crate::ui::machine::FocusKey<u32>) -> Cx<'a, PersonHost> {
         Cx {
             focus: FocusRead {
                 current: Some(focus),
             ..Default::default() },
-            ..cx(m)
+            ..cx(m, person)
         }
     }
 
@@ -1908,7 +1902,15 @@ mod tests {
     /// true`, which is why every test below that wants a genuinely PENDING entry row reasons about
     /// [`entry_reachable_of`] directly instead (see that function's own doc for why no test seam
     /// can force `credited` back to `false` on a live `Person` from outside `crate::person`).
-    fn seed(movies: usize, shows: usize) -> PersonScreen {
+    fn seed(movies: usize, shows: usize) -> (crate::stores::person::PersonStore, PersonScreen) {
+        let mut store = crate::stores::person::PersonStore::default();
+        store.run(PersonCmd::Open {
+            sid: ServerId::UNSET,
+            key: "161".into(),
+            guid: "5d77682aeb5d26001f1de4b0".into(),
+            name: "Idina Menzel".into(),
+            thumb: String::new(),
+        });
         let mut s = PersonScreen::new(
             EntryId(0),
             ServerId::UNSET,
@@ -1917,16 +1919,16 @@ mod tests {
             "Idina Menzel".to_string(),
             String::new(),
         );
-        crate::person::install_for_test(
+        store.install_for_test(
             (0..movies).map(|i| item(&format!("m{i}"))).collect(),
             (0..shows).map(|i| item(&format!("s{i}"))).collect(),
         );
-        s.sync_card_keys();
-        s
+        s.refresh_store_cache(&cx(&FixtureMeasure, store.view()));
+        (store, s)
     }
 
-    fn focus_of(s: &PersonScreen, kind: usize, col: usize) -> crate::ui::machine::FocusKey<u32> {
-        s.shelf_key(s.person().unwrap(), kind, col)
+    fn focus_of(s: &PersonScreen, store: &crate::stores::person::PersonStore, kind: usize, col: usize) -> crate::ui::machine::FocusKey<u32> {
+        s.shelf_key(store.view().current().unwrap(), kind, col)
     }
 
     #[test]
@@ -1936,13 +1938,13 @@ mod tests {
         let path = crate::paths::in_runtime_dir("plxnative-personbio");
         assert!(!path.exists(), "this test needs an isolated runtime root");
         std::fs::write(&path, "A populated biography whose words must pass through the recorded measurement capability. ".repeat(60)).unwrap();
-        let mut s = seed(3, 2);
-        crate::person::install_credits_for_test(&[("Actor", 9)]);
+        let (mut store, mut s) = seed(3, 2);
+        store.install_credits_for_test(&[("Actor", 9)]);
         std::fs::remove_file(path).unwrap();
-        assert!(!s.person().unwrap().bio.is_empty());
+        assert!(!store.view().current().unwrap().bio.is_empty());
         crate::ui::rec::assert_measured_geometry(|measure| {
-            s.remeasure_header(s.person().unwrap(), measure);
-            let context = cx(measure);
+            s.remeasure_header(store.view().current().unwrap(), measure);
+            let context = cx(measure, store.view());
             let mut groups = Vec::new();
             Focusable::<PersonHost>::groups(&s, &context, &mut groups);
             assert_eq!(groups.len(), 4);
@@ -1950,7 +1952,7 @@ mod tests {
             for g in groups {
                 bits.extend([g.extent.x, g.extent.y, g.extent.w, g.extent.h].map(f32::to_bits));
             }
-            for key in [HEADER_ELEM, ENTRY_ELEM, focus_of(&s, 0, 0).elem, focus_of(&s, 1, 0).elem] {
+            for key in [HEADER_ELEM, ENTRY_ELEM, focus_of(&s, &store, 0, 0).elem, focus_of(&s, &store, 1, 0).elem] {
                 for at in [At::Drawn, At::SpringTarget] {
                     let p = Focusable::<PersonHost>::place(&s, &key, &context, at).unwrap();
                     bits.extend([p.rect.x, p.rect.y, p.rect.w, p.rect.h].map(f32::to_bits));
@@ -1958,7 +1960,7 @@ mod tests {
             }
             bits
         });
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     /// **The frozen-animator regression class, closed for the header skeleton's spinner (phase 12
@@ -1971,6 +1973,12 @@ mod tests {
     #[test]
     fn the_header_skeleton_spinner_reports_motion_while_facts_are_pending() {
         let _serial = crate::testlock::serial();
+        let mut store = crate::stores::person::PersonStore::default();
+        store.run(PersonCmd::Open {
+            sid: ServerId::UNSET, key: "161".into(),
+            guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
+            thumb: String::new(),
+        });
         let mut s = PersonScreen::new(
             EntryId(0),
             ServerId::UNSET,
@@ -1979,13 +1987,13 @@ mod tests {
             "Idina Menzel".to_string(),
             String::new(),
         );
-        let p = crate::person::current().expect("Open seeds a pending Person synchronously");
+        let p = store.view().current().expect("Open seeds a pending Person synchronously");
         assert!(
             crate::person::facts_pending(p),
             "a fresh mount must start pending, or this test is not exercising the skeleton clock"
         );
         let m = FixtureMeasure;
-        let cxv = cx(&m);
+        let cxv = cx(&m, store.view());
         let mut present = crate::ui::present::Present::new();
         let _ = present.take(0);
         let mut buf: Vec<crate::ui::machine::Stamped<PersonHost>> = Vec::new();
@@ -2002,7 +2010,46 @@ mod tests {
                 "a pending header skeleton must present every frame it is on screen (ms={ms})"
             );
         }
-        crate::stores::person::apply(PersonCmd::Close);
+        store.run(PersonCmd::Close);
+    }
+
+    #[test]
+    fn enter_and_leave_emit_addressed_person_store_commands() {
+        let mut screen = PersonScreen::new(
+            EntryId(0), ServerId::from_raw(2), "161".into(), "person-guid".into(),
+            "Person Name".into(), "thumb".into());
+        let measure = FixtureMeasure;
+        let mut present = crate::ui::present::Present::new();
+        let mut out = Vec::new();
+        {
+            let context = cx(&measure, crate::person::PersonView::default());
+            let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Instance(
+                crate::ui::machine::InstanceId(0)), &mut present);
+            Machine::<PersonHost>::step(
+                &mut screen, &ScreenEvent::Enter(Enter::Restored), &context, &mut fx);
+        }
+        assert!(matches!(&out[0].fx,
+            crate::ui::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
+                crate::stores::StoreCmd::Person(PersonCmd::Open { sid, key, guid, name, thumb })))
+                if *sid == ServerId::from_raw(2) && key == "161" && guid == "person-guid"
+                    && name == "Person Name" && thumb == "thumb"));
+
+        let mut store = crate::stores::person::PersonStore::default();
+        store.run(PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
+            guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
+        out.clear();
+        {
+            let context = cx(&measure, store.view());
+            let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Instance(
+                crate::ui::machine::InstanceId(0)), &mut present);
+            Machine::<PersonHost>::step(
+                &mut screen, &ScreenEvent::WillLeave(Leave::ForGood), &context, &mut fx);
+        }
+        assert!(matches!(&out[0].fx,
+            crate::ui::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
+                crate::stores::StoreCmd::Person(PersonCmd::Close)))));
+        assert!(store.view().current().is_some(),
+            "the screen emits; only the addressed Bridge is allowed to apply the command");
     }
 
     /// **The mount-on-entry-pill rule's PENDING half** (module doc, point 2 of `ui/person.rs`'s
@@ -2023,8 +2070,8 @@ mod tests {
     #[test]
     fn the_entry_group_releases_once_credits_settle_with_nothing_found() {
         let _serial = crate::testlock::serial();
-        let mut s = seed(1, 0);
-        let p = crate::person::current().unwrap();
+        let (mut store, mut s) = seed(1, 0);
+        let p = store.view().current().unwrap();
         assert!(!has_entry(p), "no credits were installed");
         assert!(
             !entry_reachable(p),
@@ -2035,14 +2082,14 @@ mod tests {
             entry: EntryId(0),
             elem: ENTRY_ELEM,
         };
-        let got = Focusable::<PersonHost>::reconcile(&s, want, &cx(&m));
+        let got = Focusable::<PersonHost>::reconcile(&s, want, &cx(&m, store.view()));
         assert_eq!(
             got,
-            focus_of(&s, 0, 0),
+            focus_of(&s, &store, 0, 0),
             "falls to the first present shelf's own head"
         );
         let _ = &mut s;
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     /// **`focused_item`/`focused_target` split** — mining `ui/person.rs`'s own regression: the
@@ -2051,31 +2098,31 @@ mod tests {
     #[test]
     fn focused_movie_answers_only_for_a_shelf_row() {
         let _serial = crate::testlock::serial();
-        let mut s = seed(2, 0);
+        let (mut store, mut s) = seed(2, 0);
         assert!(s
             .focused_item(Some(crate::ui::machine::FocusKey {
                 entry: s.entry,
                 elem: HEADER_ELEM
-            }))
+            }), &cx(&FixtureMeasure, store.view()))
             .is_none());
         assert!(s
             .focused_item(Some(crate::ui::machine::FocusKey {
                 entry: s.entry,
                 elem: ENTRY_ELEM
-            }))
+            }), &cx(&FixtureMeasure, store.view()))
             .is_none());
         assert_eq!(
-            s.focused_item(Some(focus_of(&s, 0, 0)))
+            s.focused_item(Some(focus_of(&s, &store, 0, 0)), &cx(&FixtureMeasure, store.view()))
                 .map(|m| m.rk.as_str()),
             Some("m0")
         );
         assert_eq!(
-            s.focused_item(Some(focus_of(&s, 0, 1)))
+            s.focused_item(Some(focus_of(&s, &store, 0, 1)), &cx(&FixtureMeasure, store.view()))
                 .map(|m| m.rk.as_str()),
             Some("m1")
         );
         let _ = &mut s;
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     /// A shelf that has vanished under the focus re-seats by IDENTITY first (the merge-redivide
@@ -2084,31 +2131,31 @@ mod tests {
     #[test]
     fn reconcile_reseats_by_identity_before_falling_back_to_index_clamp() {
         let _serial = crate::testlock::serial();
-        let mut s = seed(4, 0);
-        let want = focus_of(&s, 0, 2);
+        let (mut store, mut s) = seed(4, 0);
+        let want = focus_of(&s, &store, 0, 2);
         // the row is rebuilt with two items inserted ahead — "m2" is now at index 4
         let rebuilt: Vec<PmsMovie> = ["x0", "x1", "m0", "m1", "m2", "m3"]
             .iter()
             .map(|rk| item(rk))
             .collect();
-        crate::person::install_for_test(rebuilt, Vec::new());
+        store.install_for_test(rebuilt, Vec::new());
         let m = FixtureMeasure;
-        let got = Focusable::<PersonHost>::reconcile(&s, want, &cx(&m));
+        let got = Focusable::<PersonHost>::reconcile(&s, want, &cx(&m, store.view()));
         assert_eq!(
             got, want,
             "the engine key follows the card without a screen-owned cursor"
         );
         assert_eq!(
-            s.locate(s.person().unwrap(), got.elem),
+            s.locate(store.view().current().unwrap(), got.elem),
             Some(Located::Shelf(0, 4))
         );
 
         // the identity is gone entirely: falls back to clamping the SAME kind's own bounds
-        crate::person::install_for_test(vec![item("only")], Vec::new());
-        let got = Focusable::<PersonHost>::reconcile(&s, want, &cx(&m));
-        assert_eq!(got, focus_of(&s, 0, 0));
+        store.install_for_test(vec![item("only")], Vec::new());
+        let got = Focusable::<PersonHost>::reconcile(&s, want, &cx(&m, store.view()));
+        assert_eq!(got, focus_of(&s, &store, 0, 0));
         let _ = &mut s;
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     /// A shelf that disappears ENTIRELY (not merely shrinks) hands focus to the other present
@@ -2116,18 +2163,18 @@ mod tests {
     #[test]
     fn a_vanished_shelf_kind_falls_back_to_the_other_present_shelf() {
         let _serial = crate::testlock::serial();
-        let mut s = seed(2, 3);
-        let want = focus_of(&s, 1, 2);
-        crate::person::install_for_test(vec![item("m0")], Vec::new()); // shows vanished
+        let (mut store, mut s) = seed(2, 3);
+        let want = focus_of(&s, &store, 1, 2);
+        store.install_for_test(vec![item("m0")], Vec::new()); // shows vanished
         let m = FixtureMeasure;
-        let got = Focusable::<PersonHost>::reconcile(&s, want, &cx(&m));
+        let got = Focusable::<PersonHost>::reconcile(&s, want, &cx(&m, store.view()));
         assert_eq!(
             got,
-            focus_of(&s, 0, 0),
+            focus_of(&s, &store, 0, 0),
             "movies is the only present shelf left"
         );
         let _ = &mut s;
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     /// **Header pending vs answered-with-nothing vs answered-fully** — `header_flow`'s three
@@ -2185,36 +2232,36 @@ mod tests {
     #[test]
     fn a_page_with_no_shelves_answers_no_focused_movie_anywhere() {
         let _serial = crate::testlock::serial();
-        let s = seed(0, 0);
+        let (mut store, s) = seed(0, 0);
         assert!(s
             .focused_item(Some(crate::ui::machine::FocusKey {
                 entry: s.entry,
                 elem: HEADER_ELEM
-            }))
+            }), &cx(&FixtureMeasure, store.view()))
             .is_none());
         assert!(s
             .focused_item(Some(crate::ui::machine::FocusKey {
                 entry: s.entry,
                 elem: ENTRY_ELEM
-            }))
+            }), &cx(&FixtureMeasure, store.view()))
             .is_none());
         assert!(s
             .focused_item(Some(crate::ui::machine::FocusKey {
                 entry: s.entry,
                 elem: FIRST_CARD_ELEM
-            }))
+            }), &cx(&FixtureMeasure, store.view()))
             .is_none());
         let _ = &s;
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     /// `PressCommit` leaves immediately through the content contract; there is no pending latch.
     #[test]
     fn press_commit_on_a_card_pushes_detail_as_an_effect() {
         let _serial = crate::testlock::serial();
-        let mut s = seed(2, 0);
+        let (mut store, mut s) = seed(2, 0);
         let m = FixtureMeasure;
-        let cxv = cx(&m);
+        let cxv = cx(&m, store.view());
         let mut present = crate::ui::present::Present::new();
         let mut buf: Vec<crate::ui::machine::Stamped<PersonHost>> = Vec::new();
         {
@@ -2228,12 +2275,12 @@ mod tests {
         assert!(buf.is_empty(), "no focus means no navigation effect");
         // Feed the identical `Cx` shape but with focus parked on the first movie tile.
         let cxv2 = Cx {
-            views: (),
+            views: store.view(),
             tick: Tick::default(),
             measure: &m,
             press: PressRead::default(),
             focus: FocusRead {
-                current: Some(focus_of(&s, 0, 0)),
+                current: Some(focus_of(&s, &store, 0, 0)),
             ..Default::default() },
             owner: InputOwner::Entry(EntryId(0)),
         };
@@ -2250,7 +2297,7 @@ mod tests {
             crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Detail { sid, rk })))
                 if *sid == ServerId::UNSET && rk == "m0"
         )));
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     /// An explicit D-pad/pointer arrival on the header marks it (the bio truncation mark may show
@@ -2259,13 +2306,13 @@ mod tests {
     #[test]
     fn focus_moved_marks_the_header_only_on_an_explicit_arrival() {
         let _serial = crate::testlock::serial();
-        let mut s = seed(1, 0);
+        let (mut store, mut s) = seed(1, 0);
         let header_key = crate::ui::machine::FocusKey {
             entry: EntryId(0),
             elem: HEADER_ELEM,
         };
         let m = FixtureMeasure;
-        let cxv = cx(&m);
+        let cxv = cx(&m, store.view());
         let mut present = crate::ui::present::Present::new();
         let mut buf: Vec<crate::ui::machine::Stamped<PersonHost>> = Vec::new();
         let mut fx = Effects::new(
@@ -2302,7 +2349,7 @@ mod tests {
             s.header_marked,
             "an explicit D-pad press onto the header marks it"
         );
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     fn hash(s: &PersonScreen) -> u64 {
@@ -2316,7 +2363,7 @@ mod tests {
     #[test]
     fn logical_state_hash_includes_the_full_card_registry_and_counter() {
         let _serial = crate::testlock::serial();
-        let mut a = seed(1, 0);
+        let (mut store, mut a) = seed(1, 0);
         let mut b = PersonScreen::new(
             EntryId(0),
             ServerId::UNSET,
@@ -2346,7 +2393,7 @@ mod tests {
             "return hydration changes future reconciliation even when the page draws identically"
         );
         let _ = &mut a;
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     /// Entry eviction preserves the identity interner in PageMemory. A reordered landing after
@@ -2355,11 +2402,11 @@ mod tests {
     #[test]
     fn evict_remount_with_reordered_shelf_preserves_movie_identity() {
         let _serial = crate::testlock::serial();
-        let original = seed(2, 0);
-        let old_focus = focus_of(&original, 0, 1);
+        let (mut store, original) = seed(2, 0);
+        let old_focus = focus_of(&original, &store, 0, 1);
         assert_eq!(
             original
-                .focused_item(Some(old_focus))
+                .focused_item(Some(old_focus), &cx(&FixtureMeasure, store.view()))
                 .map(|m| m.rk.as_str()),
             Some("m1")
         );
@@ -2378,46 +2425,48 @@ mod tests {
             String::new(),
         );
         remounted.restore(&memory);
-        crate::person::install_for_test(vec![item("m1"), item("m0")], Vec::new());
-        remounted.sync_card_keys();
+        store.install_for_test(vec![item("m1"), item("m0")], Vec::new());
+        remounted.sync_card_keys(&cx(&FixtureMeasure, store.view()));
         let measure = FixtureMeasure;
-        let restored = Focusable::<PersonHost>::reconcile(&remounted, old_focus, &cx(&measure));
+        let restored = Focusable::<PersonHost>::reconcile(
+            &remounted, old_focus, &cx(&measure, store.view()));
         assert_eq!(restored.elem, old_focus.elem);
         assert_eq!(
             remounted
-                .focused_item(Some(restored))
+                .focused_item(Some(restored), &cx(&FixtureMeasure, store.view()))
                 .map(|m| m.rk.as_str()),
             Some("m1")
         );
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     #[test]
     fn restoring_a_frozen_registry_never_rewinds_keys_minted_after_the_snapshot() {
         let _serial = crate::testlock::serial();
-        let mut screen = seed(1, 0);
+        let (mut store, mut screen) = seed(1, 0);
         let frozen = screen.memory();
-        crate::person::install_for_test(vec![item("m0"), item("newer")], Vec::new());
-        screen.sync_card_keys();
+        store.install_for_test(vec![item("m0"), item("newer")], Vec::new());
+        screen.sync_card_keys(&cx(&FixtureMeasure, store.view()));
         let newer_elem = screen
-            .elem_for(&screen.person().unwrap().shelf(0)[1])
+            .elem_for(&store.view().current().unwrap().shelf(0)[1])
             .expect("the live body interned the later landing");
         let live_next = screen.next_card_elem;
 
         screen.restore(&frozen);
 
         assert_eq!(
-            screen.elem_for(&screen.person().unwrap().shelf(0)[1]),
+            screen.elem_for(&store.view().current().unwrap().shelf(0)[1]),
             Some(newer_elem),
             "request-time memory merges into a live interner instead of replacing it"
         );
         assert_eq!(screen.next_card_elem, live_next);
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     fn pending_share_return(
         measure: &FixtureMeasure,
     ) -> (
+        crate::stores::person::PersonStore,
         PersonScreen,
         crate::ui::machine::FocusKey<u32>,
         ServerId,
@@ -2428,6 +2477,10 @@ mod tests {
             crate::plex::register_for_test("person-pending-origin", "127.0.0.1", 1, "a", "cid");
         let share =
             crate::plex::register_for_test("person-pending-share", "127.0.0.1", 2, "b", "cid");
+        let mut store = crate::stores::person::PersonStore::default();
+        store.run(PersonCmd::Open { sid: origin, key: "161".into(),
+            guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
+            thumb: String::new() });
         let mut original = PersonScreen::new(
             EntryId(0),
             origin,
@@ -2436,16 +2489,16 @@ mod tests {
             "Idina Menzel".to_string(),
             String::new(),
         );
-        crate::person::install_source_for_test(share, vec![item_on(share, "wanted")], Vec::new());
-        original.sync_card_keys();
-        let old_focus = focus_of(&original, 0, 0);
+        store.install_source_for_test(share, vec![item_on(share, "wanted")], Vec::new());
+        original.sync_card_keys(&cx(measure, store.view()));
+        let old_focus = focus_of(&original, &store, 0, 0);
         let PageMemory::Person(memory) =
             Screen::<PersonHost>::memory_at(&original, Some(old_focus))
         else {
             panic!("Person must persist its interner through PageMemory::Person");
         };
 
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
         let mut returned = PersonScreen::new(
             EntryId(0),
             origin,
@@ -2465,16 +2518,19 @@ mod tests {
         Machine::<PersonHost>::step(
             &mut returned,
             &ScreenEvent::RestoreMemory(PageMemory::Person(memory)),
-            &cx_at(measure, old_focus),
+            &cx_at(measure, store.view(), old_focus),
             &mut fx,
         );
         Machine::<PersonHost>::step(
             &mut returned,
             &ScreenEvent::Enter(Enter::Restored),
-            &cx_at(measure, old_focus),
+            &cx_at(measure, store.view(), old_focus),
             &mut fx,
         );
-        crate::person::install_source_for_test(
+        store.run(PersonCmd::Open { sid: origin, key: "161".into(),
+            guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
+            thumb: String::new() });
+        store.install_source_for_test(
             origin,
             vec![item_on(origin, "available")],
             Vec::new(),
@@ -2482,22 +2538,22 @@ mod tests {
         Machine::<PersonHost>::step(
             &mut returned,
             &ScreenEvent::StoreChanged(crate::stores::StoreId::Person.ord(), 1),
-            &cx_at(measure, old_focus),
+            &cx_at(measure, store.view(), old_focus),
             &mut fx,
         );
         assert!(returned.return_pending);
         assert_eq!(
-            Focusable::<PersonHost>::reconcile(&returned, old_focus, &cx_at(measure, old_focus)),
+            Focusable::<PersonHost>::reconcile(&returned, old_focus, &cx_at(measure, store.view(), old_focus)),
             old_focus
         );
-        (returned, old_focus, origin, share)
+        (store, returned, old_focus, origin, share)
     }
 
     #[test]
     fn a_direction_abandons_an_unavailable_return_card_and_allows_fallback() {
         let _serial = crate::testlock::serial();
         let measure = FixtureMeasure;
-        let (mut returned, old_focus, _origin, _share) = pending_share_return(&measure);
+        let (mut store, mut returned, old_focus, _origin, _share) = pending_share_return(&measure);
         let mut present = crate::ui::present::Present::new();
         let mut out = Vec::new();
         let mut fx = Effects::new(
@@ -2520,7 +2576,7 @@ mod tests {
             Machine::<PersonHost>::step(
                 &mut returned,
                 &right,
-                &cx_at(&measure, old_focus),
+                &cx_at(&measure, store.view(), old_focus),
                 &mut fx,
             ),
             Handled::No,
@@ -2528,11 +2584,11 @@ mod tests {
         );
         assert!(!returned.return_pending);
         assert_eq!(
-            Focusable::<PersonHost>::reconcile(&returned, old_focus, &cx_at(&measure, old_focus)),
-            focus_of(&returned, 0, 0),
+            Focusable::<PersonHost>::reconcile(&returned, old_focus, &cx_at(&measure, store.view(), old_focus)),
+            focus_of(&returned, &store, 0, 0),
             "the same frame's dispatcher reconcile can seat the available card"
         );
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
         crate::plex::reset_servers_for_test();
     }
 
@@ -2540,8 +2596,8 @@ mod tests {
     fn a_click_abandons_an_unavailable_return_card() {
         let _serial = crate::testlock::serial();
         let measure = FixtureMeasure;
-        let (mut returned, old_focus, _origin, _share) = pending_share_return(&measure);
-        let available = focus_of(&returned, 0, 0);
+        let (mut store, mut returned, old_focus, _origin, _share) = pending_share_return(&measure);
+        let available = focus_of(&returned, &store, 0, 0);
         let mut present = crate::ui::present::Present::new();
         let mut out = Vec::new();
         let mut fx = Effects::new(
@@ -2562,13 +2618,13 @@ mod tests {
             Machine::<PersonHost>::step(
                 &mut returned,
                 &click,
-                &cx_at(&measure, old_focus),
+                &cx_at(&measure, store.view(), old_focus),
                 &mut fx,
             ),
             Handled::No
         );
         assert!(!returned.return_pending);
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
         crate::plex::reset_servers_for_test();
     }
 
@@ -2576,8 +2632,8 @@ mod tests {
     fn a_successful_empty_source_answer_releases_the_return_card_to_fallback() {
         let _serial = crate::testlock::serial();
         let measure = FixtureMeasure;
-        let (mut returned, old_focus, _origin, share) = pending_share_return(&measure);
-        crate::person::install_source_for_test(share, Vec::new(), Vec::new());
+        let (mut store, mut returned, old_focus, _origin, share) = pending_share_return(&measure);
+        store.install_source_for_test(share, Vec::new(), Vec::new());
         let mut present = crate::ui::present::Present::new();
         let mut out = Vec::new();
         let mut fx = Effects::new(
@@ -2588,7 +2644,7 @@ mod tests {
         Machine::<PersonHost>::step(
             &mut returned,
             &ScreenEvent::StoreChanged(crate::stores::StoreId::Person.ord(), 2),
-            &cx_at(&measure, old_focus),
+            &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
         assert!(
@@ -2596,10 +2652,10 @@ mod tests {
             "a successful empty media answer is terminal for this saved source"
         );
         assert_eq!(
-            Focusable::<PersonHost>::reconcile(&returned, old_focus, &cx_at(&measure, old_focus)),
-            focus_of(&returned, 0, 0)
+            Focusable::<PersonHost>::reconcile(&returned, old_focus, &cx_at(&measure, store.view(), old_focus)),
+            focus_of(&returned, &store, 0, 0)
         );
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
         crate::plex::reset_servers_for_test();
     }
 
@@ -2616,6 +2672,10 @@ mod tests {
             crate::plex::register_for_test("person-return-origin", "127.0.0.1", 1, "a", "cid");
         let share =
             crate::plex::register_for_test("person-return-share", "127.0.0.1", 2, "b", "cid");
+        let mut store = crate::stores::person::PersonStore::default();
+        store.run(PersonCmd::Open { sid: origin, key: "161".into(),
+            guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
+            thumb: String::new() });
         let mut first = PersonScreen::new(
             EntryId(0),
             origin,
@@ -2624,16 +2684,16 @@ mod tests {
             "Idina Menzel".to_string(),
             String::new(),
         );
-        crate::person::install_source_for_test(
+        store.install_source_for_test(
             share,
             vec![item_on(share, "m0"), item_on(share, "m1")],
             Vec::new(),
         );
-        first.sync_card_keys();
-        let old_focus = focus_of(&first, 0, 1);
+        first.sync_card_keys(&cx(&FixtureMeasure, store.view()));
+        let old_focus = focus_of(&first, &store, 0, 1);
         assert_eq!(
             first
-                .focused_item(Some(old_focus))
+                .focused_item(Some(old_focus), &cx(&FixtureMeasure, store.view()))
                 .map(|movie| movie.rk.as_str()),
             Some("m1")
         );
@@ -2650,7 +2710,9 @@ mod tests {
             "Other Person".to_string(),
             String::new(),
         );
-        assert!(first.person().is_none(), "Person B displaced Person A");
+        store.run(PersonCmd::Open { sid: origin, key: "other".into(), guid: "other-guid".into(),
+            name: "Other Person".into(), thumb: String::new() });
+        assert!(first.person(&cx(&FixtureMeasure, store.view())).is_none(), "Person B displaced Person A");
 
         let measure = FixtureMeasure;
         let mut present = crate::ui::present::Present::new();
@@ -2663,13 +2725,13 @@ mod tests {
         Machine::<PersonHost>::step(
             &mut first,
             &ScreenEvent::RestoreMemory(PageMemory::Person(memory)),
-            &cx_at(&measure, old_focus),
+            &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
         Machine::<PersonHost>::step(
             &mut first,
             &ScreenEvent::StoreChanged(crate::stores::StoreId::Person.ord(), 1),
-            &cx_at(&measure, old_focus),
+            &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
         assert!(
@@ -2677,28 +2739,31 @@ mod tests {
             "Person B's store notice is not an answer about A"
         );
         assert_eq!(
-            Focusable::<PersonHost>::reconcile(&first, old_focus, &cx_at(&measure, old_focus)),
+            Focusable::<PersonHost>::reconcile(&first, old_focus, &cx_at(&measure, store.view(), old_focus)),
             old_focus,
             "a wrong-person notice cannot consume return hydration"
         );
         Machine::<PersonHost>::step(
             &mut first,
             &ScreenEvent::Enter(Enter::Restored),
-            &cx_at(&measure, old_focus),
+            &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
-        assert!(first.person().is_some(), "return reclaims Person A's store");
+        store.run(PersonCmd::Open { sid: origin, key: "161".into(),
+            guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
+            thumb: String::new() });
+        assert!(first.person(&cx(&FixtureMeasure, store.view())).is_some(), "return reclaims Person A's store");
         assert!(
-            first.person().unwrap().shelf(0).is_empty(),
+            first.person(&cx(&FixtureMeasure, store.view())).unwrap().shelf(0).is_empty(),
             "the addressed shelves have not landed yet"
         );
         assert_eq!(
-            Focusable::<PersonHost>::reconcile(&first, old_focus, &cx_at(&measure, old_focus)),
+            Focusable::<PersonHost>::reconcile(&first, old_focus, &cx_at(&measure, store.view(), old_focus)),
             old_focus,
             "a known return identity must survive the empty resolving interval"
         );
 
-        crate::person::install_source_for_test(
+        store.install_source_for_test(
             origin,
             vec![item_on(origin, "other-source-card")],
             Vec::new(),
@@ -2706,20 +2771,20 @@ mod tests {
         Machine::<PersonHost>::step(
             &mut first,
             &ScreenEvent::StoreChanged(crate::stores::StoreId::Person.ord(), 2),
-            &cx_at(&measure, old_focus),
+            &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
         assert!(
-            first.person().unwrap().landed,
+            first.person(&cx(&FixtureMeasure, store.view())).unwrap().landed,
             "another source has enough content to settle the page-level spinner"
         );
         assert_eq!(
-            Focusable::<PersonHost>::reconcile(&first, old_focus, &cx_at(&measure, old_focus)),
+            Focusable::<PersonHost>::reconcile(&first, old_focus, &cx_at(&measure, store.view(), old_focus)),
             old_focus,
             "page-level landed must not settle the saved card's still-resolving source"
         );
 
-        crate::person::install_source_for_test(
+        store.install_source_for_test(
             share,
             vec![item_on(share, "m1"), item_on(share, "m0")],
             Vec::new(),
@@ -2727,7 +2792,7 @@ mod tests {
         Machine::<PersonHost>::step(
             &mut first,
             &ScreenEvent::StoreChanged(crate::stores::StoreId::Person.ord(), 3),
-            &cx_at(&measure, old_focus),
+            &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
         assert!(
@@ -2735,16 +2800,16 @@ mod tests {
             "the matching card landing retires hydration"
         );
         let restored =
-            Focusable::<PersonHost>::reconcile(&first, old_focus, &cx_at(&measure, old_focus));
+            Focusable::<PersonHost>::reconcile(&first, old_focus, &cx_at(&measure, store.view(), old_focus));
         assert_eq!(restored, old_focus);
         assert_eq!(
             first
-                .focused_item(Some(restored))
+                .focused_item(Some(restored), &cx(&FixtureMeasure, store.view()))
                 .map(|movie| movie.rk.as_str()),
             Some("m1"),
             "the reordered landing resolves the preserved identity"
         );
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
         crate::plex::reset_servers_for_test();
     }
 
@@ -2756,6 +2821,10 @@ mod tests {
         let _serial = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test("person-cold-return", "127.0.0.1", 1, "a", "cid");
+        let mut store = crate::stores::person::PersonStore::default();
+        store.run(PersonCmd::Open { sid, key: "161".into(),
+            guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
+            thumb: String::new() });
         let mut original = PersonScreen::new(
             EntryId(0),
             sid,
@@ -2764,20 +2833,20 @@ mod tests {
             "Idina Menzel".to_string(),
             String::new(),
         );
-        crate::person::install_source_for_test(
+        store.install_source_for_test(
             sid,
             vec![item_on(sid, "m0"), item_on(sid, "m1")],
             Vec::new(),
         );
-        original.sync_card_keys();
-        let old_focus = focus_of(&original, 0, 1);
+        original.sync_card_keys(&cx(&FixtureMeasure, store.view()));
+        let old_focus = focus_of(&original, &store, 0, 1);
         let PageMemory::Person(memory) =
             Screen::<PersonHost>::memory_at(&original, Some(old_focus))
         else {
             panic!("Person must persist its interner through PageMemory::Person");
         };
 
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
         let mut remounted = PersonScreen::new(
             EntryId(0),
             sid,
@@ -2799,23 +2868,26 @@ mod tests {
         Machine::<PersonHost>::step(
             &mut remounted,
             &ScreenEvent::RestoreMemory(PageMemory::Person(memory)),
-            &cx_at(&measure, old_focus),
+            &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
         Machine::<PersonHost>::step(
             &mut remounted,
             &ScreenEvent::Enter(Enter::Restored),
-            &cx_at(&measure, old_focus),
+            &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
-        assert!(remounted.person().unwrap().shelf(0).is_empty());
+        store.run(PersonCmd::Open { sid, key: "161".into(),
+            guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
+            thumb: String::new() });
+        assert!(remounted.person(&cx(&FixtureMeasure, store.view())).unwrap().shelf(0).is_empty());
         assert_eq!(
-            Focusable::<PersonHost>::reconcile(&remounted, old_focus, &cx_at(&measure, old_focus)),
+            Focusable::<PersonHost>::reconcile(&remounted, old_focus, &cx_at(&measure, store.view(), old_focus)),
             old_focus,
             "CAP eviction must not turn the saved card identity into Header while A reloads"
         );
 
-        crate::person::install_source_for_test(
+        store.install_source_for_test(
             sid,
             vec![item_on(sid, "m1"), item_on(sid, "m0")],
             Vec::new(),
@@ -2823,27 +2895,27 @@ mod tests {
         Machine::<PersonHost>::step(
             &mut remounted,
             &ScreenEvent::StoreChanged(crate::stores::StoreId::Person.ord(), 2),
-            &cx_at(&measure, old_focus),
+            &cx_at(&measure, store.view(), old_focus),
             &mut fx,
         );
         assert!(!remounted.return_pending);
         let restored =
-            Focusable::<PersonHost>::reconcile(&remounted, old_focus, &cx_at(&measure, old_focus));
+            Focusable::<PersonHost>::reconcile(&remounted, old_focus, &cx_at(&measure, store.view(), old_focus));
         assert_eq!(restored, old_focus);
         assert_eq!(
             remounted
-                .focused_item(Some(restored))
+                .focused_item(Some(restored), &cx(&FixtureMeasure, store.view()))
                 .map(|movie| movie.rk.as_str()),
             Some("m1")
         );
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
         crate::plex::reset_servers_for_test();
     }
 
     #[test]
     fn restore_reclaims_only_a_displaced_store_and_preserves_shell_scroll() {
         let _serial = crate::testlock::serial();
-        let mut first = seed(2, 0);
+        let (mut store, mut first) = seed(2, 0);
         first.scroll.scroll.jump(173.0);
         let _other = PersonScreen::new(
             EntryId(8),
@@ -2853,7 +2925,9 @@ mod tests {
             "Other Person".to_string(),
             String::new(),
         );
-        assert!(first.person().is_none());
+        store.run(PersonCmd::Open { sid: ServerId::UNSET, key: "other".into(),
+            guid: "other-guid".into(), name: "Other Person".into(), thumb: String::new() });
+        assert!(first.person(&cx(&FixtureMeasure, store.view())).is_none());
 
         let measure = FixtureMeasure;
         let mut present = crate::ui::present::Present::new();
@@ -2866,33 +2940,36 @@ mod tests {
         Machine::<PersonHost>::step(
             &mut first,
             &ScreenEvent::Enter(Enter::Restored),
-            &cx(&measure),
+            &cx(&measure, store.view()),
             &mut fx,
         );
-        assert!(first.person().is_some());
+        store.run(PersonCmd::Open { sid: ServerId::UNSET, key: "161".into(),
+            guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(),
+            thumb: String::new() });
+        assert!(first.person(&cx(&FixtureMeasure, store.view())).is_some());
         assert_eq!(first.scroll.scroll.pos, 173.0);
 
         // A second restore while the matching store is already current is a true no-op.
-        let before_gen = crate::stores::gen(crate::stores::StoreId::Person);
+        let before_gen = store.gen();
         Machine::<PersonHost>::step(
             &mut first,
             &ScreenEvent::Enter(Enter::Restored),
-            &cx(&measure),
+            &cx(&measure, store.view()),
             &mut fx,
         );
         assert_eq!(
-            crate::stores::gen(crate::stores::StoreId::Person),
+            store.gen(),
             before_gen
         );
         assert_eq!(first.scroll.scroll.pos, 173.0);
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     #[test]
     fn entry_back_and_hold_emit_their_content_effects_without_latches() {
         let _serial = crate::testlock::serial();
-        let mut s = seed(1, 0);
-        crate::person::install_credits_for_test(&[("Actor", 7)]);
+        let (mut store, mut s) = seed(1, 0);
+        store.install_credits_for_test(&[("Actor", 7)]);
         let measure = FixtureMeasure;
         let mut present = crate::ui::present::Present::new();
         let mut out = Vec::new();
@@ -2901,7 +2978,7 @@ mod tests {
                        event: ScreenEvent<PersonHost>,
                        focus: Option<crate::ui::machine::FocusKey<u32>>| {
             let context = Cx {
-                views: (),
+                views: store.view(),
                 tick: Tick::default(),
                 measure: &measure,
                 press: PressRead::default(),
@@ -2920,7 +2997,7 @@ mod tests {
             run(&mut s, ScreenEvent::Activate(ENTRY_ELEM), None),
             Handled::Yes
         );
-        let card = focus_of(&s, 0, 0);
+        let card = focus_of(&s, &store, 0, 0);
         assert_eq!(
             run(
                 &mut s,
@@ -2957,13 +3034,13 @@ mod tests {
             &st.fx,
             crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Back))
         )));
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     #[test]
     fn header_geometric_anchor_is_not_its_pointer_hit_rectangle() {
         let _serial = crate::testlock::serial();
-        let s = seed(1, 0);
+        let (mut store, s) = seed(1, 0);
         let anchor = s.header_anchor();
         let hit = s.header_rect();
         assert_eq!(anchor.x, MARGIN_X);
@@ -2974,38 +3051,41 @@ mod tests {
         );
 
         let measure = FixtureMeasure;
-        let placed = Focusable::<PersonHost>::place(&s, &HEADER_ELEM, &cx(&measure), At::Drawn)
+        let placed = Focusable::<PersonHost>::place(
+            &s, &HEADER_ELEM, &cx(&measure, store.view()), At::Drawn)
             .expect("the header is a real engine element");
         assert_eq!(
             (placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
             (hit.x, hit.y, hit.w, hit.h),
             "place and the recorded stop share the hit geometry"
         );
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     #[test]
     fn focus_walks_only_the_shelves_that_exist() {
         let _serial = crate::testlock::serial();
-        let s = seed(3, 0);
+        let (mut store, mut s) = seed(3, 0);
         let measure = FixtureMeasure;
-        let context = cx(&measure);
+        let context = cx(&measure, store.view());
         let mut groups = Vec::new();
         Focusable::<PersonHost>::groups(&s, &context, &mut groups);
         assert!(groups.iter().any(|g| g.id == SHELF_GROUP[0] && g.len == 3));
         assert!(!groups.iter().any(|g| g.id == SHELF_GROUP[1]));
-        let last = focus_of(&s, 0, 2);
+        let last = focus_of(&s, &store, 0, 2);
         assert!(matches!(
             Focusable::<PersonHost>::neighbour(&s, last, Dir::Right, &context),
             Step::Edge
         ));
-        crate::person::install_credits_for_test(&[("Actor", 3)]);
+        drop(context);
+        store.install_credits_for_test(&[("Actor", 3)]);
+        s.refresh_store_cache(&cx(&measure, store.view()));
         let mut links = Vec::new();
         Screen::<PersonHost>::links(&s, &mut links);
         assert!(links.iter().any(|link| {
             link.from == ENTRY_GROUP && link.dir == Dir::Down && link.to == SHELF_GROUP[0]
         }));
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+        store.run(PersonCmd::Close);
     }
 
     #[test]
