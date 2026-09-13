@@ -1346,12 +1346,15 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             app.refresh_hubs_at = 0;
             super::bridge::execute_endpoint_outcomes(
                 &mut app.pages,
-                crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints,
+                crate::stores::hubs::apply_with_directory(
+                    crate::stores::hubs::HubsCmd::RefetchHubs,
+                    app.bridge.browse_directory(),
+                ).endpoints,
             );
             // …and every library's OWN shelves, for the same reason and at the same moment:
             // a finished playback moves Continue Watching and watch state, and a section deck
             // is as stale as the global one (`browse::section_hubs::invalidate_all`).
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
+            app.bridge.browse_run(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
             log("home: hubs refresh queued after playback");
         }
         // (The lost-keyup safety net and the CLIENT-SIDE LONG-PRESS REPEAT stood here — the one
@@ -1629,7 +1632,8 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                     crate::dev::playback_quality_override()
                         .unwrap_or_else(|| saved.playback_quality()),
                 );
-                let endpoints = install_pms(&c.origin, &c.token, c.tier, c.pin.as_ref(), &c.install);
+                let endpoints = super::boot::install_pms_owned(&mut app.bridge, &c.origin,
+                    &c.token, c.tier, c.pin.as_ref(), &c.install);
                 super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
                 // **A new user must never be able to walk BACK into the previous one's pages**,
                 // which is the fourth store an identity change must not survive beside the
@@ -2048,7 +2052,9 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // "Also available" appears when the other servers have answered, not when the page
         // mounts. It raises the Metadata store's notice, since a landing that grows
         // the actions row must be drawn without waiting for a keypress.
-        crate::stores::metadata::pump_alt_sources();
+        if crate::metadata::pump_alt_sources_with_directory(app.bridge.browse_directory()) {
+            crate::stores::bump(crate::stores::StoreId::Metadata);
+        }
 }
 
 /// The draw phase, entered only on a presenting frame: `clear_opaque_region` at entry, the

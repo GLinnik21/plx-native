@@ -31,9 +31,30 @@ pub(crate) fn land(result: &HubsResult) -> super::StoreOutcome {
     outcome
 }
 
+#[allow(dead_code)] // Owner contract consumed when the core dispatcher lane is integrated.
+pub(crate) fn land_with_directory(
+    result: &HubsResult,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> super::StoreOutcome {
+    let outcome = crate::pms::land_with_directory(result, directory);
+    super::note(StoreId::Hubs, outcome.changed);
+    outcome
+}
+
 fn tick(dt: f32) -> super::StoreOutcome {
     let before = crate::pms::catalog_gen();
     let endpoints = crate::pms::tick(dt);
+    let changed = super::note(StoreId::Hubs, crate::pms::catalog_gen() != before);
+    super::StoreOutcome { changed, endpoints }
+}
+
+#[allow(dead_code)] // Owner contract consumed when the core dispatcher lane is integrated.
+pub(crate) fn tick_with_directory(
+    dt: f32,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> super::StoreOutcome {
+    let before = crate::pms::catalog_gen();
+    let endpoints = crate::pms::tick_with_directory(dt, directory);
     let changed = super::note(StoreId::Hubs, crate::pms::catalog_gen() != before);
     super::StoreOutcome { changed, endpoints }
 }
@@ -68,6 +89,17 @@ pub(crate) fn controlled_with_directory(cmd: Option<HubsCmd>, dt: f32,
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
 pub(crate) fn apply(cmd: HubsCmd) -> super::StoreOutcome {
     super::apply(super::StoreCmd::Hubs(cmd))
+}
+
+pub(crate) fn apply_with_directory(
+    cmd: HubsCmd,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> super::StoreOutcome {
+    #[cfg(test)]
+    crate::testlock::assert_held("the hubs store (owned apply)");
+    let answer = crate::pms::run_with_directory(cmd, directory);
+    super::bump(StoreId::Hubs);
+    answer
 }
 
 /// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
