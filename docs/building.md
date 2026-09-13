@@ -10,8 +10,9 @@ subsystem has a guide of its own next to the code.
 
 ## Requirements
 
-Cross-compiled to 32-bit ARM. Host must be macOS (x86_64 or arm64) or **arm64** Linux — there is no
-x86_64 build of the webOS NDK, so an x86_64 Linux host cannot build this.
+The ARM/webOS product build requires macOS (x86_64 or arm64) or **arm64** Linux because the webOS
+NDK has no x86_64 Linux build. The UI-only simulator also builds on x86_64 Ubuntu through WSLg on
+Windows and needs no webOS NDK; run `tools/sim.ps1 setup` there.
 
 - The **webOS NDK**, fetched by `make setup-env` (a few hundred MB, once).
 - A **Rust nightly** toolchain with `rust-src` (for `-Z build-std`) and `clippy` (the lint gate).
@@ -62,10 +63,18 @@ the name traps.
 
 ## The desktop simulator
 
-`make sim` builds the same application core against desktop SDL2 and GL; `make sim-run` opens the
-window, and `make sim-shot` boots it headlessly and writes a PNG. It renders the real interface
-against a real Plex Media Server, and since 2026-08-28 it also streams and demuxes, so the whole
-pipeline between the socket and the decoder runs on the host.
+The platform entry points are deliberately separate:
+
+- macOS: `make sim-macos`, `make sim-macos-run`, and `make sim-macos-shot`. This build includes
+  host FFmpeg, so the pipeline between the socket and decoder runs on the host. The historical
+  `sim`, `sim-run`, and `sim-shot` names remain aliases for these macOS targets.
+- Windows/WSLg: `tools/sim.ps1 build|run|shot|send`, backed by `make sim-wsl`. This optimized build
+  covers UI, Plex sign-in and browsing without host FFmpeg or playback.
+
+The PowerShell launcher refuses to run when WSLg reports `use_gfxredir=0`. In that degraded mode
+the app can render and count 60 frames each second while the Windows window receives only a few of
+them through WSLg's copy fallback. Close other WSL work, run `wsl.exe --shutdown`, and launch again;
+`grep "RDP backend: use_gfxredir" /mnt/wslg/weston.log | tail -1` should then end in `= 1`.
 
 Several simulators run side by side, which the television cannot — prefer it for ordinary UI and
 data-layer work. It **cannot** answer frame rate (different GPU), text rasterization, or anything

@@ -106,11 +106,11 @@ const KEEPALIVE_MS: u32 = 2000;
 
 /// How long the loop sleeps on a frame it decided not to present.
 ///
-/// **The swap is the loop's only blocking call** — there is no `SDL_Delay`, `nanosleep` or frame
-/// budget anywhere else in `app.rs` — so skipping it without sleeping turns a 16%-of-a-core app
-/// into a 100% spinner, which is strictly worse than the problem this module exists to solve.
-/// One frame period keeps the input poll rate (and therefore key latency) exactly where it is
-/// today; the saving being chased is the GPU and the compositor, not these few CPU percent.
+/// Device and macOS presented frames block in swap. WSLg/X11 hostsim frames are paced after its
+/// nonblocking GLX swap; other Linux backends keep their own swap behaviour. A frame skipped by
+/// this gate reaches none of those paths, so it must sleep here or a settled screen becomes a 100%
+/// CPU spinner. One frame period keeps input polling near the normal presented-frame cadence; the
+/// saving being chased is the GPU and compositor.
 pub(crate) const IDLE_POLL_MS: u32 = 16;
 
 thread_local! {

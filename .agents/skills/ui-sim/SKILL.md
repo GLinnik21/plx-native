@@ -1,20 +1,21 @@
 ---
 name: ui-sim
 description: >
-  Verify a UI or Plex-data-layer change on the macOS desktop simulator — build it, boot it to a
+  Verify a UI or Plex-data-layer change on the macOS or Windows/WSLg desktop simulator — build it, boot it to a
   screen, drive it with keys, screenshot it, and know when the answer does NOT count and you must
   finish on the television. Use whenever a change needs to be SEEN and a TV is not required or not
   free: "check this looks right", "screenshot the detail page", "does the library grid still lay
   out", "iterate on this spacing", "test my change", "run the app locally", "I don't have the TV",
   "someone else is using the TV", or when several agents need to verify work AT THE SAME TIME.
   Also covers what the simulator provably cannot answer — frame rates, text rasterization, LG's
-  decoder, the video plane — and hands those to the `tv-session` skill. Since 2026-08-28 it DOES
+  decoder, the video plane — and hands those to the `tv-session` skill. On macOS, `make sim-macos` DOES
   stream and demux (`plxnative-clocksink` + a host FFmpeg), so the pipeline between the socket and
-  the decoder is answerable here too. Prefer this over
+  the decoder is answerable there too. Windows/WSLg's `make sim-wsl` covers UI and Plex browsing.
+  Prefer this over
   `tv-session` for ordinary UI work; the television is a single shared resource and this is not.
 ---
 
-# ui-sim — verify UI work on macOS, finish on the TV
+# ui-sim — verify UI work on a desktop, finish on the TV
 
 
 > **This is also what you do while the television is locked.** One set, one lane at a time
@@ -22,10 +23,12 @@ description: >
 > lane holds it, the simulator is usually the answer rather than the queue — N instances run at
 > once, each with its own `PLXNATIVE_RUNTIME_DIR`. Come back to the TV only for what the simulator
 > provably cannot answer (frame rate, text rasterization, LG's decoder, the video plane) — a
-> shorter list than it was, since the streaming pipeline moved onto this side on 2026-08-28.
+> shorter list on macOS since the streaming pipeline moved onto that simulator on 2026-08-28.
+> Windows/WSLg's UI-only path stops at the existing host no-video seam.
 
 `plxnative-sim` is the same application core the television runs, linked against desktop SDL2 and
-desktop GL. It draws the real interface against your real Plex Media Server, on this Mac.
+desktop GL. It draws the real interface against your real Plex Media Server on macOS or through
+WSLg on Windows.
 
 **Why it exists:** the TV serializes the entire dev loop. One set, one app instance, and two
 `tests/run.py` jobs kill each other's app — so every UI change queues behind every other. Several
@@ -36,11 +39,52 @@ simulators run at once, each with its own instance root, so parallel agents neve
 ## Build and boot
 
 ```sh
-make sim                       # build (cargo, ~seconds; no NDK, no cross toolchain)
-make sim-token                 # stage the PMS token into the instance root (once per root)
-make sim-shot                  # headless: boot, settle, write ONE png, exit
-make sim-run                   # interactive: opens a window, Ctrl-C to quit
+make sim-macos                 # build with host FFmpeg (cargo; no NDK or cross toolchain)
+make sim-macos-token           # stage the PMS token into the instance root (once per root)
+make sim-macos-shot            # headless: boot, settle, write ONE png, exit
+make sim-macos-run             # interactive: opens a window, Ctrl-C to quit
 ```
+
+The historical `sim`, `sim-token`, `sim-shot`, and `sim-run` names remain macOS aliases.
+
+### Windows 11 through WSLg
+
+The Windows entry point is `tools/sim.ps1`. It builds an optimized UI/Plex simulator inside the
+existing Ubuntu 22.04 WSL distribution, keeps Cargo output and runtime state on WSL's Linux
+filesystem, and opens the SDL/OpenGL window through WSLg:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/sim.ps1 setup
+powershell -ExecutionPolicy Bypass -File tools/sim.ps1 run
+powershell -ExecutionPolicy Bypass -File tools/sim.ps1 run -StageToken
+powershell -ExecutionPolicy Bypass -File tools/sim.ps1 shot -Output .\shot.png
+powershell -ExecutionPolicy Bypass -File tools/sim.ps1 send right ok shot
+```
+
+`setup` installs stable Rust, SDL2/SDL2_ttf, Mesa OpenGL and diagnostics in WSL and refuses a
+software renderer. `run` and `shot` default to a 1920×1080 drawable, request vsync, and apply a
+60 Hz host frame cap because WSLg's X11/GLX swap does not block on that request. They use
+`~/.cache/plxnative-sim/target`, `~/.local/state/plxnative-sim`, and an isolated asset directory;
+override those with `-TargetDir`, `-RuntimeDir`, and `-AssetDir`; quoted paths containing spaces are
+supported. These three overrides are absolute Linux paths inside WSL, keeping Cargo and runtime
+files off the Windows-mounted checkout. `-StageToken` copies the token from gitignored
+`src/config.local.h` without printing it.
+The staged token persists in that runtime directory, so use a fresh `-RuntimeDir` for QR sign-in
+after staging one. `-PmsHost` overrides the header's PMS host.
+
+This path deliberately calls `make sim-wsl`, which skips bundled host FFmpeg. UI, sign-in, Plex
+browsing, screenshots and remote commands work; playback reaches the existing host "no video
+path" result. Use macOS `make sim-macos` when the demux/clock-sink simulation is required.
+
+Check `glxinfo -B` before interpreting local smoothness: `Device: D3D12 (<GPU>)` and
+`Accelerated: yes` prove WSLg is using the GPU; `llvmpipe`, `softpipe`, or `Accelerated: no` do not.
+The result is still host evidence and never a television FPS result.
+
+Also check the last `RDP backend: use_gfxredir` line in `/mnt/wslg/weston.log`. `= 0` means WSLg
+lost its shared-memory graphics transport and fell back to copying the window through RDP: the app
+can report 60 swaps while Windows visibly updates at only a few FPS. The launcher now refuses that
+state. Close other WSL work, run `wsl.exe --shutdown`, and retry; accept the run only after it says
+`use_gfxredir = 1`.
 
 **Ask for `SIM_W=1920 SIM_H=1080` on any shot you intend to JUDGE.** The window is otherwise sized
 to fit the display (`app::boot::desktop_window_size`), and on a 1x screen that divisor lands on 2, so
@@ -51,15 +95,15 @@ may then be larger than the display; for a headless grab that is fine, because t
 window's own framebuffer, not the part of it a compositor happens to show.
 
 ```sh
-make sim-shot SIM_DIR=$D SIM_W=1920 SIM_H=1080 SIM_SHOT=$D/home.png
+make sim-macos-shot SIM_DIR=$D SIM_W=1920 SIM_H=1080 SIM_SHOT=$D/home.png
 ```
 
 `SIM_DIR` is the **instance root** — the whole point of the design. Give every concurrent
 simulator its own:
 
 ```sh
-make sim-shot SIM_DIR=/tmp/sim-a SIM_SHOT=/tmp/sim-a/home.png
-make sim-shot SIM_DIR=/tmp/sim-b SIM_SHOT=/tmp/sim-b/home.png     # safe, simultaneously
+make sim-macos-shot SIM_DIR=/tmp/sim-a SIM_SHOT=/tmp/sim-a/home.png
+make sim-macos-shot SIM_DIR=/tmp/sim-b SIM_SHOT=/tmp/sim-b/home.png # safe, simultaneously
 ```
 
 Inside a root live that instance's dev triggers, its remote FIFO and its event log — the same
@@ -83,7 +127,7 @@ compilation, but the cause is the filesystem. Point the build somewhere local an
 checkout where it is:
 
 ```sh
-export SIM_TDIR=$HOME/plxnative-sim-target      # SIM_BIN follows it
+export SIM_TDIR=$HOME/plxnative-sim-target      # print-simbin follows it
 ```
 
 Only the simulator is rescuable this way. `make` and `make check` build under
@@ -91,7 +135,10 @@ Only the simulator is rescuable this way. `make` and `make check` build under
 and the host suite still need the repo on a local filesystem. That is usually fine — the whole
 point of the simulator is that it needs neither.
 
-### What a second machine needs
+### What a second Mac needs
+
+On Windows, run `tools/sim.ps1 setup`; use `-PmsHost` for an explicit server and `-StageToken`
+when credentials should be copied from `src/config.local.h`.
 
 Three things, and notably no webOS NDK and no nightly:
 
@@ -117,7 +164,7 @@ owns the screen-to-trigger recipes.
 ```sh
 touch $SIM_DIR/plxnative-library            # boot into the browse grid
 echo 3 > $SIM_DIR/plxnative-library         # ...on section 3
-make sim-shot SIM_DIR=$SIM_DIR
+make sim-macos-shot SIM_DIR=$SIM_DIR
 ```
 
 Stale triggers change which screen you boot to, silently — same trap as on the device. `make
@@ -141,14 +188,15 @@ exec 3>&-
 
 Shots land in the instance root as **numbered** files (`shot-1.png`, `shot-2.png`, …) so a
 sequence never overwrites one file or races whoever is reading it. `PLXNATIVE_SHOT` only overrides
-the location — the `shot` token works in any session without it, including `make sim-run`. Then look at them — that is the whole point; a shot
+the location — the `shot` token works in any session without it, including `make sim-macos-run`.
+Then look at them — that is the whole point; a shot
 nobody opens has verified nothing.
 
 Tokens: `up`/`down`/`left`/`right`, `ok`, `back`, `play`/`pause`/`stop`, `ck:X,Y` (clicks in
 authored 1920×1080 coords), `okdown`/`okup` (split halves — the only way to drive a press-and-hold
 past `press::LONG_MS`), and `shot` (simulator only).
 
-A desktop keyboard also works directly in `make sim-run`: arrows, RETURN, ESC (`is_ok`/`is_back`
+A desktop keyboard also works directly in `make sim-macos-run`: arrows, RETURN, ESC (`is_ok`/`is_back`
 have always accepted keyboard keys), plus space=pause, `p`=play, `s`=stop, backspace=BACK.
 
 **`back` at a ROOT is the platform's root press** (`webos::go_home`) — Home's root, the
@@ -204,7 +252,7 @@ Report these ONLY from the device, via the **`tv-session`** skill (and `wake-tv`
   **`plxnative-clocksink`** in the instance root and the seam becomes a plant: access units are
   accepted and discarded and a presentation clock advances at real time, clamped to the last fed
   PTS, reporting position at the television's own measured 5 Hz. And since **2026-08-28** the
-  source of those AUs can be a real network stream: `make sim` now builds a HOST copy of the
+  source of those AUs can be a real network stream: `make sim-macos` builds a HOST copy of the
   bundled FFmpeg (`HOST=1 ci/build-ffmpeg.sh`, staged into `pkg/` as `libavformat-plx.63.dylib`),
   so `ff.rs` demuxes here. What that makes runnable off-device is everything between the socket
   and the decoder — both AVIO transports, the HLS demux, the AU queues and their byte-cap
@@ -218,7 +266,7 @@ Report these ONLY from the device, via the **`tv-session`** skill (and `wake-tv`
   install), and `dynlib!` learned to bind a variadic C function correctly — Apple's ARM64 ABI puts
   variadic arguments on the stack, so the old non-variadic `curl_easy_setopt` binding SIGSEGV'd
   inside libcurl the instant it could open one. The QR flow, discovery and the who's-watching
-  roster all run here now. `make sim-token` is still the faster way into a known server, and is
+  roster all run here now. `make sim-macos-token` is still the faster way into a known server, and is
   what headless recipes should keep using.
 - **Anything that smelled like a platform difference.** If a bug appears only in the simulator,
   suspect the simulator first — the seam is real code and it has had real bugs (a missing core-
@@ -226,7 +274,8 @@ Report these ONLY from the device, via the **`tv-session`** skill (and `wake-tv`
 
 ## The expected workflow
 
-1. Iterate on the simulator: change → `make sim-shot` → **look at the image** → repeat. No TV, no
+1. Iterate on macOS: change → `make sim-macos-shot` → **look at the image** → repeat. On Windows,
+   use `tools/sim.ps1 shot`. No TV, no
    queue, parallel-safe.
 2. When it looks right, run `make check` (host suite + lint).
 3. Then verify once on the device with **`tv-session`** — and run `./tests/run.py --fps` there if
