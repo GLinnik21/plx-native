@@ -57,16 +57,15 @@ const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 struct Fixture {
-    listing: crate::browse::view::ListingSnapshot,
-    directory: crate::browse::view::DirectorySnapshot,
-    hubs: crate::browse::section_hubs::HubsSnapshot,
+    listing: crate::stores::browse::ListingSnapshot,
+    directory: crate::stores::browse::DirectorySnapshot,
+    hubs: crate::stores::browse::HubsSnapshot,
     measure: FixtureMeasure,
 }
 impl Fixture {
     fn new() -> Self {
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         let sid = crate::plex::ServerId::from_raw(0);
-        let listing = crate::browse::view::ListingSnapshot::fixture(
+        let listing = crate::stores::browse::ListingSnapshot::fixture(
             sid,
             (0..36)
                 .map(|i| {
@@ -80,15 +79,15 @@ impl Fixture {
                 .collect(),
             vec![("A".into(), 18), ("Z".into(), 18)],
         );
-        let directory = crate::browse::view::DirectorySnapshot::fixture(
+        let directory = crate::stores::browse::DirectorySnapshot::fixture(
             1,
             0,
-            vec![crate::browse::view::SectionView {
+            vec![crate::stores::browse::SectionView {
                 borrowed: false,
                 sid: Some(sid),
                 key: 1,
                 kind: SecKind::Movie,
-                row: crate::browse::SrcRow {
+                row: crate::stores::browse::SrcRow {
                     section: 0,
                     title: "Cinema".into(),
                     pinned: true,
@@ -100,7 +99,7 @@ impl Fixture {
         Self {
             listing,
             directory,
-            hubs: crate::stores::browse::hubs_snapshot(),
+            hubs: crate::stores::browse::HubsSnapshot::empty(),
             measure: FixtureMeasure,
         }
     }
@@ -156,13 +155,13 @@ fn fresh_bookmarks_follow_stable_items_then_slots_and_keep_the_returned_card_vis
                 34
             }
         };
-        fixture.listing = crate::browse::view::ListingSnapshot::fixture(
+        fixture.listing = crate::stores::browse::ListingSnapshot::fixture(
             crate::plex::ServerId::from_raw(0),
             items,
             vec![("A".into(), 18), ("Z".into(), 18)],
         )
-        .with_cursor(crate::browse::Cursor {
-            at: crate::browse::CursorAt::ItemKey {
+        .with_cursor(crate::stores::browse::Cursor {
+            at: crate::stores::browse::CursorAt::ItemKey {
                 sid: crate::plex::ServerId::from_raw(if scenario == 3 { 1 } else { 0 }),
                 rk: if scenario == 2 { "36" } else { "18" }.into(),
                 slot,
@@ -238,7 +237,7 @@ fn leaving_with_a_foreign_frame_snapshot_cannot_bookmark_that_section() {
         fixture.listing = if sid == 0 {
             original.clone().with_section(epoch, section)
         } else {
-            crate::browse::view::ListingSnapshot::fixture(
+            crate::stores::browse::ListingSnapshot::fixture(
                 crate::plex::ServerId::from_raw(sid),
                 vec![None; 36],
                 Vec::new(),
@@ -269,8 +268,8 @@ fn leaving_with_a_foreign_frame_snapshot_cannot_bookmark_that_section() {
 fn live_engine_memory_wins_over_a_stale_store_bookmark_and_saves_from_toolbar() {
     let _guard = crate::testlock::serial();
     let mut fixture = Fixture::new();
-    fixture.listing = fixture.listing.clone().with_cursor(crate::browse::Cursor {
-        at: crate::browse::CursorAt::SlotIndex(17),
+    fixture.listing = fixture.listing.clone().with_cursor(crate::stores::browse::Cursor {
+        at: crate::stores::browse::CursorAt::SlotIndex(17),
         scroll: 900.0,
     });
     let mut page = fixture.screen();
@@ -309,8 +308,8 @@ fn live_engine_memory_wins_over_a_stale_store_bookmark_and_saves_from_toolbar() 
     );
     assert!(output.iter().any(|effect| matches!(&effect.fx,
         Fx::App(AppFx::Store(_, crate::stores::StoreCmd::Browse(BrowseCmd::Addressed {
-            work: LibraryWork::SaveCursor { cursor: crate::browse::Cursor {
-                at: crate::browse::CursorAt::ItemKey { rk, slot: 5, .. }, ..
+            work: LibraryWork::SaveCursor { cursor: crate::stores::browse::Cursor {
+                at: crate::stores::browse::CursorAt::ItemKey { rk, slot: 5, .. }, ..
             }, .. }, ..
         }))) if rk == "6")));
 }
@@ -320,8 +319,8 @@ fn a_late_listing_keeps_its_bookmark_seed_pending_until_the_card_is_placeable() 
     let _guard = crate::testlock::serial();
     for fetch in [SecFetch::Loading, SecFetch::Failed] {
         let mut fixture = Fixture::new();
-        let saved = crate::browse::Cursor {
-            at: crate::browse::CursorAt::ItemKey {
+        let saved = crate::stores::browse::Cursor {
+            at: crate::stores::browse::CursorAt::ItemKey {
                 sid: crate::plex::ServerId::from_raw(0),
                 rk: "18".into(),
                 slot: 17,
@@ -329,7 +328,7 @@ fn a_late_listing_keeps_its_bookmark_seed_pending_until_the_card_is_placeable() 
             scroll: 900.0,
         };
         let loaded = fixture.listing.clone().with_cursor(saved.clone());
-        fixture.listing = crate::browse::view::ListingSnapshot::fixture(
+        fixture.listing = crate::stores::browse::ListingSnapshot::fixture(
             crate::plex::ServerId::from_raw(0),
             Vec::new(),
             Vec::new(),
@@ -338,19 +337,19 @@ fn a_late_listing_keeps_its_bookmark_seed_pending_until_the_card_is_placeable() 
         .with_fetch(fetch, -1);
         // Two favorite rows make the document's first block available before its grid arrives.
         let mut sections = fixture.directory.view().sections().to_vec();
-        sections.push(crate::browse::view::SectionView {
+        sections.push(crate::stores::browse::SectionView {
             borrowed: true,
             sid: Some(crate::plex::ServerId::from_raw(1)),
             key: 2,
             kind: SecKind::Movie,
-            row: crate::browse::SrcRow {
+            row: crate::stores::browse::SrcRow {
                 section: 1,
                 title: "Shared".into(),
                 pinned: true,
                 ..Default::default()
             },
         });
-        fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, sections);
+        fixture.directory = crate::stores::browse::DirectorySnapshot::fixture(1, 0, sections);
         let mut page = fixture.screen();
         let mut output = Vec::new();
         let mut present = crate::ui::present::Present::new();
@@ -388,19 +387,19 @@ fn switch_diagnostic_requests_type_sort_filter_and_rail_actions() {
     let _guard = crate::testlock::serial();
     let mut fixture = Fixture::new();
     let mut sections = fixture.directory.view().sections().to_vec();
-    sections.push(crate::browse::view::SectionView {
+    sections.push(crate::stores::browse::SectionView {
         borrowed: false,
         sid: Some(crate::plex::ServerId::from_raw(0)),
         key: 2,
         kind: SecKind::Show,
-        row: crate::browse::SrcRow {
+        row: crate::stores::browse::SrcRow {
             section: 1,
             title: "Series".into(),
             pinned: true,
             ..Default::default()
         },
     });
-    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, sections);
+    fixture.directory = crate::stores::browse::DirectorySnapshot::fixture(1, 0, sections);
     let mut page = fixture.screen();
     let cx = fixture.cx(None);
     let mut output = Vec::new();

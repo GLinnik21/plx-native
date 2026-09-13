@@ -29,14 +29,14 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+            run_browse_for_test(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
     let session = crate::plex::session::TempSession::new("library-back-before-floor");
     session.watching("u-library-back-before-floor");
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    run_browse_for_test(crate::stores::browse::BrowseCmd::Reset);
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_for_test("back-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared =
@@ -45,7 +45,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
     crate::browse::seed_registered_table_for_test([sid, shared]);
     let mut directory = crate::stores::browse::DirectorySnapshot::default();
     directory.capture();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
+    run_browse_for_test(crate::stores::browse::BrowseCmd::SetCur(0));
     crate::browse::seed_items_for_test(120);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
