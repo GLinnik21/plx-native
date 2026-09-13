@@ -55,7 +55,6 @@
 //! dormancy at all — and the screen that draws the shelves is what woke it.
 #![allow(dead_code)] // the accessors are Landing 3's; see the Dormant note above
 
-use super::EPOCH;
 use crate::plex::ServerId;
 use crate::pms::{parse_item, PmsMovie, MAX_SHELF_ITEMS};
 use std::panic::catch_unwind;
@@ -132,7 +131,12 @@ pub(crate) struct HubsSnapshot {
 
 impl HubsSnapshot {
     pub(crate) fn empty() -> Self {
-        Self { data: None, id: None, publication: Publication::Fetching, revision: None }
+        Self {
+            data: None,
+            id: None,
+            publication: Publication::Fetching,
+            revision: None,
+        }
     }
     #[cfg(test)]
     pub(crate) fn empty_for_test() -> Self {
@@ -216,7 +220,10 @@ pub(crate) struct SecHubs {
 
 impl SecHubs {
     fn revised(&mut self) {
-        self.revision = self.revision.checked_add(1).expect("section shelf revision exhausted");
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("section shelf revision exhausted");
     }
 
     /// The published shelves — what a layout may be built from, and the only set a screen draws.
@@ -334,21 +341,265 @@ impl SecHubs {
 
 /// Arm a section's shelves and let the first fetch happen. Idempotent; call it every frame the
 /// screen wants shelves. **This is the only thing in the module that issues a request.**
+impl super::BrowseState {
+    pub(super) fn hubs_kick(&mut self, sec: usize) {
+        let Some(st) = self.state_mut(sec) else {
+            return;
+        };
+        if !st.hubs.armed {
+            st.hubs.armed = true;
+            st.hubs.first_paint_left = FIRST_PAINT_FRAMES;
+            st.hubs.owed = true;
+        }
+        // Failing sections keep asking; a published, healthy one is owed nothing until something
+        // invalidates it.
+        if st.hubs.fails > 0 && !st.hubs.published {
+            st.hubs.owed = true;
+        }
+        self.hubs_pump_spawns();
+    }
+
+    fn hubs_pump_spawns(&mut self) {
+        if HUB_FETCHING.load(Ordering::SeqCst) {
+            return;
+        }
+        let want = self
+            .states()
+            .iter()
+            .position(|st| st.hubs.armed && st.hubs.owed && st.hubs.retry_left == 0);
+        if let Some(sec) = want {
+            self.hubs_spawn(sec);
+        }
+    }
+
+    fn hubs_spawn(&mut self, sec: usize) {
+        let Some(key) = self.sections().get(sec).map(|s| s.key) else {
+            return;
+        };
+        let Some(sid) = self.section_sid(sec) else {
+            return;
+        };
+        let Some(client) = crate::plex::client_for(sid) else {
+            return;
+        };
+        let token_gen = client.token_gen();
+        if HUB_FETCHING.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let epoch = self.table_epoch();
+        let spawned = crate::task::spawn_small("libhubs", move || {
+            let shelves = catch_unwind(|| {
+                let mc = client.library_hubs(key, HUB_FETCH_COUNT)?;
+                Some(parse_hubs(&mc, sid))
+            })
+            .unwrap_or(None);
+            *HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(HubResult {
+                epoch,
+                sec,
+                client,
+                token_gen,
+                shelves,
+            });
+        });
+        if spawned {
+            if let Some(st) = self.state_mut(sec) {
+                st.hubs.owed = false;
+            }
+        } else {
+            HUB_FETCHING.store(false, Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) fn hubs_land(&mut self) -> bool {
+        let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+            HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()
+        });
+        let Some(result) = taken else {
+            return false;
+        };
+        HUB_FETCHING.store(false, Ordering::SeqCst);
+        if result.epoch != self.table_epoch() {
+            return false;
+        }
+        let still_current = self
+            .section_sid(result.sec)
+            .and_then(crate::plex::client_for)
+            .map(|client| {
+                std::ptr::eq(client, result.client) && client.token_gen() == result.token_gen
+            })
+            .unwrap_or(false);
+        if !still_current {
+            if let Some(state) = self.state_mut(result.sec) {
+                state.hubs.landing_was_not_ours();
+            }
+            return false;
+        }
+        let Some(state) = self.state_mut(result.sec) else {
+            return false;
+        };
+        match result.shelves {
+            Some(shelves) => {
+                crate::log(&format!(
+                    "libhubs: section {} landed {} shelves",
+                    result.sec,
+                    shelves.len()
+                ));
+                state.hubs.land_ok(shelves);
+            }
+            None => {
+                crate::log(&format!(
+                    "libhubs: section {} failed ({} in a row)",
+                    result.sec,
+                    state.hubs.fails + 1
+                ));
+                state.hubs.land_fail();
+                state.hubs.owed = true;
+            }
+        }
+        crate::ui::idle::invalidate();
+        true
+    }
+
+    fn hubs_invalidate(&mut self, sec: usize) {
+        if let Some(st) = self.state_mut(sec) {
+            if st.hubs.armed {
+                st.hubs.fails = 0;
+                st.hubs.retry_left = 0;
+                st.hubs.owed = true;
+            }
+        }
+        self.hubs_pump_spawns();
+    }
+
+    pub(crate) fn hubs_tick_all(&mut self) -> bool {
+        let mut moved = false;
+        for st in self.states_mut() {
+            moved |= st.hubs.tick();
+        }
+        self.hubs_pump_spawns();
+        moved
+    }
+
+    fn hubs_shelves(&self, sec: usize) -> &[Shelf] {
+        self.states()
+            .get(sec)
+            .map(|s| s.hubs.shelves())
+            .unwrap_or(&[])
+    }
+
+    fn hubs_publication(&self, sec: usize) -> Publication {
+        self.states()
+            .get(sec)
+            .map(|s| s.hubs.publication())
+            .unwrap_or(Publication::Fetching)
+    }
+
+    pub(crate) fn hubs_snapshot(&self, sec: usize) -> HubsSnapshot {
+        let Some(section) = self.sections().get(sec) else {
+            return HubsSnapshot::empty();
+        };
+        let Some(state) = self.states().get(sec) else {
+            return HubsSnapshot::empty();
+        };
+        let Some(source) = self.sources().get(section.src) else {
+            return HubsSnapshot::empty();
+        };
+        HubsSnapshot {
+            data: Some(Arc::clone(&state.hubs.committed)),
+            id: Some(HubsId {
+                epoch: self.table_epoch(),
+                sid: source.sid,
+                section: section.key,
+            }),
+            publication: state.hubs.publication(),
+            revision: Some(state.hubs.revision),
+        }
+    }
+
+    pub(super) fn hubs_commit_staged(&mut self, sec: usize, may_move: bool) -> bool {
+        self.state_mut(sec)
+            .map(|s| s.hubs.commit_staged(may_move))
+            .unwrap_or(false)
+    }
+
+    pub(super) fn hubs_set_watched_local(&mut self, sid: ServerId, rk: &str, on: bool) -> bool {
+        let mut hit = false;
+        for st in self.states_mut() {
+            if edit_watched(&mut st.hubs.committed, sid, rk, on) {
+                st.hubs.revised();
+                hit = true;
+            }
+            if let Some(staged) = st.hubs.staged.as_mut() {
+                edit_watched(staged, sid, rk, on);
+            }
+        }
+        hit
+    }
+
+    pub(super) fn hubs_left_the_deck(&mut self, sid: ServerId, rk: &str) -> bool {
+        let mut hit = false;
+        for st in self.states_mut() {
+            if drop_from_deck(&mut st.hubs.committed, sid, rk) {
+                st.hubs.revised();
+                hit = true;
+            }
+            if let Some(staged) = st.hubs.staged.as_mut() {
+                drop_from_deck(staged, sid, rk);
+            }
+        }
+        hit
+    }
+
+    pub(super) fn hubs_invalidate_all(&mut self) {
+        for sec in 0..self.sections().len() {
+            self.hubs_invalidate(sec);
+        }
+    }
+}
+
+fn edit_watched(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str, on: bool) -> bool {
+    if !shelves
+        .iter()
+        .flat_map(|shelf| shelf.items.iter())
+        .any(|item| crate::plex::same_item((item.sid, &item.rk), (sid, rk)))
+    {
+        return false;
+    }
+    for item in Arc::make_mut(shelves)
+        .iter_mut()
+        .flat_map(|shelf| shelf.items.iter_mut())
+    {
+        if crate::plex::same_item((item.sid, &item.rk), (sid, rk)) {
+            crate::pms::set_watched(item, on);
+        }
+    }
+    true
+}
+
+fn drop_from_deck(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str) -> bool {
+    if !shelves
+        .iter()
+        .filter(|shelf| shelf.is_continue)
+        .flat_map(|shelf| shelf.items.iter())
+        .any(|item| crate::plex::same_item((item.sid, &item.rk), (sid, rk)))
+    {
+        return false;
+    }
+    let shelves = Arc::make_mut(shelves);
+    let mut hit = false;
+    for shelf in shelves.iter_mut().filter(|shelf| shelf.is_continue) {
+        let before = shelf.items.len();
+        shelf
+            .items
+            .retain(|item| !crate::plex::same_item((item.sid, &item.rk), (sid, rk)));
+        hit |= shelf.items.len() != before;
+    }
+    shelves.retain(|shelf| !shelf.items.is_empty());
+    hit
+}
+
 pub(super) fn kick(sec: usize) {
-    let Some(st) = super::state_mut(sec) else {
-        return;
-    };
-    if !st.hubs.armed {
-        st.hubs.armed = true;
-        st.hubs.first_paint_left = FIRST_PAINT_FRAMES;
-        st.hubs.owed = true;
-    }
-    // Failing sections keep asking; a published, healthy one is owed nothing until something
-    // invalidates it.
-    if st.hubs.fails > 0 && !st.hubs.published {
-        st.hubs.owed = true;
-    }
-    pump_spawns();
+    super::legacy_mut().hubs_kick(sec);
 }
 
 /// Start ONE fetch for whichever armed section is owed one, if the single flight is free.
@@ -359,15 +610,7 @@ pub(super) fn kick(sec: usize) {
 /// alike. `tick_all` calls it every frame, so a section blocked by another's fetch is picked up on
 /// the frame that one lands.
 fn pump_spawns() {
-    if HUB_FETCHING.load(Ordering::SeqCst) {
-        return; // somebody else is out; every owed section stays owed
-    }
-    let want = super::states()
-        .iter()
-        .position(|st| st.hubs.armed && st.hubs.owed && st.hubs.retry_left == 0);
-    if let Some(sec) = want {
-        spawn(sec);
-    }
+    super::legacy_mut().hubs_pump_spawns();
 }
 
 /// Mark a section's shelves stale — after playback, and after a view-state write. Home already
@@ -375,93 +618,35 @@ fn pump_spawns() {
 /// Continue Watching row needs the matching invalidation. The answer arrives as `Staged`, so a
 /// refresh never moves the grid under the eye.
 fn invalidate(sec: usize) {
-    if let Some(st) = super::state_mut(sec) {
-        if st.hubs.armed {
-            st.hubs.fails = 0;
-            st.hubs.retry_left = 0;
-            // OWED, not spawned. The attempt is `pump_spawns`' — this only records that one is
-            // wanted, so a section blocked behind another's in-flight fetch keeps its refresh
-            // instead of losing it to an early return.
-            st.hubs.owed = true;
-        }
-    }
-    pump_spawns();
+    super::legacy_mut().hubs_invalidate(sec);
 }
 
 /// Advance every armed section by one frame. Called from [`super::pump`]; returns whether any
 /// section published something, which is a repaint. A section nobody has [`kick`]ed is inert here,
 /// which is what keeps this module dormant while it is wired in.
 pub(crate) fn tick_all() -> bool {
-    let mut moved = false;
-    for st in super::states_mut() {
-        moved |= st.hubs.tick();
-    }
-    // …and give an owed section its turn now that a backoff may have expired or another
-    // section's flight may have landed. Cheap: one atomic load, then a scan only when free.
-    pump_spawns();
-    moved
+    super::legacy_mut().hubs_tick_all()
 }
 
 /// The accessors a screen uses. Absent section = no shelves and `Fetching`, which is the same
 /// answer a section that has never been armed gives, and is the safe one: a layout built from it
 /// commits no geometry.
 pub(crate) fn shelves(sec: usize) -> &'static [Shelf] {
-    super::states()
-        .get(sec)
-        .map(|s| s.hubs.shelves())
-        .unwrap_or(&[])
+    super::legacy().hubs_shelves(sec)
 }
 pub(crate) fn publication(sec: usize) -> Publication {
-    super::states()
-        .get(sec)
-        .map(|s| s.hubs.publication())
-        .unwrap_or(Publication::Fetching)
+    super::legacy().hubs_publication(sec)
 }
 
 /// Capture one section's published shelves and identity in O(1), independent of the loaded item
 /// count. The returned owner remains valid across every later store mutation and reset.
 pub(crate) fn snapshot(sec: usize) -> HubsSnapshot {
-    let Some(section) = super::sections().get(sec) else {
-        return HubsSnapshot {
-            data: None,
-            id: None,
-            publication: Publication::Fetching,
-            revision: None,
-        };
-    };
-    let Some(state) = super::states().get(sec) else {
-        return HubsSnapshot {
-            data: None,
-            id: None,
-            publication: Publication::Fetching,
-            revision: None,
-        };
-    };
-    let Some(source) = super::sources().get(section.src) else {
-        return HubsSnapshot {
-            data: None,
-            id: None,
-            publication: Publication::Fetching,
-            revision: None,
-        };
-    };
-    HubsSnapshot {
-        data: Some(Arc::clone(&state.hubs.committed)),
-        id: Some(HubsId {
-            epoch: EPOCH.load(Ordering::SeqCst),
-            sid: source.sid,
-            section: section.key,
-        }),
-        publication: state.hubs.publication(),
-        revision: Some(state.hubs.revision),
-    }
+    super::legacy().hubs_snapshot(sec)
 }
 /// Publish `sec`'s staged shelves if the caller says the ground may move. See
 /// [`SecHubs::commit_staged`]; the caller owes a focus re-resolve when this returns `true`.
 pub(super) fn commit_staged(sec: usize, may_move: bool) -> bool {
-    super::state_mut(sec)
-        .map(|s| s.hubs.commit_staged(may_move))
-        .unwrap_or(false)
+    super::legacy_mut().hubs_commit_staged(sec, may_move)
 }
 
 /// Publish a section's shelves directly, for the screen tests that need a document with a shelf
@@ -473,7 +658,10 @@ pub(crate) fn seed_shelves_for_test(sec: usize, titles: &[&str], per_row: usize)
         return;
     };
     // Seeding replaces contents within the same section identity, like a normal publication.
-    st.hubs = SecHubs { revision: st.hubs.revision, ..Default::default() };
+    st.hubs = SecHubs {
+        revision: st.hubs.revision,
+        ..Default::default()
+    };
     st.hubs.armed = true;
     st.hubs.land_ok(
         titles
@@ -526,81 +714,13 @@ pub(crate) fn seed_landscape_for_test(sec: usize, show: &str) {
 /// This was the sixth store and it was not on the list; `viewstate::edit_local`'s five calls
 /// predate the Library growing shelves of its own.
 pub(super) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
-    fn edit(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str, on: bool) -> bool {
-        // `Arc::make_mut` clones the whole publication when a retained reader exists. Prove a hit
-        // first, so an edit for some other library does not copy this section's catalog.
-        if !shelves
-            .iter()
-            .flat_map(|sh| sh.items.iter())
-            .any(|m| crate::plex::same_item((m.sid, &m.rk), (sid, rk)))
-        {
-            return false;
-        }
-        for m in Arc::make_mut(shelves)
-            .iter_mut()
-            .flat_map(|sh| sh.items.iter_mut())
-        {
-            if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
-                crate::pms::set_watched(m, on);
-            }
-        }
-        true
-    }
-
-    let mut hit = false;
-    for st in super::states_mut() {
-        if edit(&mut st.hubs.committed, sid, rk, on) {
-            st.hubs.revised();
-            hit = true;
-        }
-        // …the STAGED set too, or a landing held back over a watch change publishes the stale
-        // answer the moment the ground is allowed to move.
-        if let Some(stg) = st.hubs.staged.as_mut() {
-            edit(stg, sid, rk, on);
-        }
-    }
-    hit
+    super::legacy_mut().hubs_set_watched_local(sid, rk, on)
 }
 
 /// The item has left Continue Watching: drop it from every SECTION DECK that holds it, and nowhere
 /// else. A `*.inprogress.*` row is the only shelf that endpoint changes the membership of.
 pub(super) fn left_the_deck(sid: ServerId, rk: &str) -> bool {
-    fn drop_from(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str) -> bool {
-        if !shelves
-            .iter()
-            .filter(|sh| sh.is_continue)
-            .flat_map(|sh| sh.items.iter())
-            .any(|m| crate::plex::same_item((m.sid, &m.rk), (sid, rk)))
-        {
-            return false;
-        }
-        let shelves = Arc::make_mut(shelves);
-        let mut hit = false;
-        for sh in shelves.iter_mut().filter(|sh| sh.is_continue) {
-            let before = sh.items.len();
-            sh.items
-                .retain(|m| !crate::plex::same_item((m.sid, &m.rk), (sid, rk)));
-            hit |= sh.items.len() != before;
-        }
-        shelves.retain(|sh| !sh.items.is_empty());
-        hit
-    }
-    let mut hit = false;
-    for st in super::states_mut() {
-        if drop_from(&mut st.hubs.committed, sid, rk) {
-            st.hubs.revised();
-            hit = true;
-        }
-        // …and the STAGED set too, exactly as [`set_watched_local`] does and for the same reason:
-        // a refresh held back over the removal still holds the removed item, so publishing it when
-        // the ground is next allowed to move RESURRECTS a row the user deleted. This half was
-        // missing while its sibling had it — the optimistic edit vanished from the visible deck and
-        // came back a moment later, which reads as the press having failed.
-        if let Some(stg) = st.hubs.staged.as_mut() {
-            drop_from(stg, sid, rk);
-        }
-    }
-    hit
+    super::legacy_mut().hubs_left_the_deck(sid, rk)
 }
 
 /// **Every section's shelves are stale.** The whole-store twin of [`invalidate`], for the two
@@ -611,9 +731,7 @@ pub(super) fn left_the_deck(sid: ServerId, rk: &str) -> bool {
 /// Marks rather than fetches: `owed` is spent by [`pump_spawns`] under the single-flight, so a
 /// twelve-library table costs one request at a time rather than twelve at once.
 pub(super) fn invalidate_all() {
-    for i in 0..super::sections().len() {
-        invalidate(i);
-    }
+    super::legacy_mut().hubs_invalidate_all();
 }
 
 // ---- the fetch ------------------------------------------------------------------------------
@@ -637,116 +755,12 @@ static HUB_RESULT: Mutex<Option<HubResult>> = Mutex::new(None);
 pub(super) static HUB_FETCHING: AtomicBool = AtomicBool::new(false);
 
 fn spawn(sec: usize) {
-    let Some(&key) = super::sections().get(sec).map(|s| &s.key) else {
-        return;
-    };
-    // the SERVER this section lives on, resolved on the MAIN THREAD — a worker that asked for the
-    // current server would fetch whichever one the user had wandered off to (`plex/CLAUDE.md`
-    // rule 5)
-    let Some(sid) = super::section_sid(sec) else {
-        return;
-    };
-    let Some(client) = crate::plex::client_for(sid) else {
-        return;
-    };
-    let token_gen = client.token_gen();
-    if HUB_FETCHING.swap(true, Ordering::SeqCst) {
-        return; // another section is out; this one stays `owed` and is retried by `pump_spawns`
-    }
-    let epoch = EPOCH.load(Ordering::SeqCst);
-    let spawned = crate::task::spawn_small("libhubs", move || {
-        // outside the guard, so a panicking fetch still lands — as a FAILURE, not as "this library
-        // has no shelves"
-        let shelves = catch_unwind(|| {
-            let mc = client.library_hubs(key, HUB_FETCH_COUNT)?;
-            Some(parse_hubs(&mc, sid))
-        })
-        .unwrap_or(None);
-        *HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(HubResult {
-            epoch,
-            sec,
-            client,
-            token_gen,
-            shelves,
-        });
-    });
-    if spawned {
-        // **Cleared on a successful CLAIM, never on an attempt.** A worker is now guaranteed to
-        // fill the mailbox, so the request is no longer outstanding.
-        if let Some(st) = super::state_mut(sec) {
-            st.hubs.owed = false;
-        }
-    } else {
-        // nothing will ever fill the mailbox and the claim is cleared only by a take — release it
-        // here, or no section ever fetches shelves again. `owed` is deliberately left set, so
-        // `pump_spawns` retries this on a later frame.
-        HUB_FETCHING.store(false, Ordering::SeqCst);
-    }
+    super::legacy_mut().hubs_spawn(sec);
 }
 
 /// Take the mailbox and apply it. Called from [`super::pump`].
 pub(crate) fn land() -> bool {
-    // the landing GATE (§3.3 step 3, `ui::landgate`): a replay takes this on its recorded frame
-    let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
-        HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()
-    });
-    let Some(r) = taken else {
-        return false;
-    };
-    // the take ALWAYS releases the claim, whatever the landing turns out to be
-    HUB_FETCHING.store(false, Ordering::SeqCst);
-    if r.epoch != EPOCH.load(Ordering::SeqCst) {
-        return false;
-    }
-    // …and the table's identity is not enough: a slot re-pointed or retokened since the spawn is a
-    // different server answering under the same index.
-    let still = super::section_sid(r.sec)
-        .and_then(crate::plex::client_for)
-        .map(|c| std::ptr::eq(c, r.client) && c.token_gen() == r.token_gen)
-        .unwrap_or(false);
-    if !still {
-        // **The section is still OWED this fetch.** `spawn` clears `owed` on a successful CLAIM,
-        // because a worker is then guaranteed to fill the mailbox — but a landing rejected on the
-        // client's lifecycle fills it with an answer nobody may use, and `kick` will not re-arm a
-        // section that is published, or an unpublished one with `fails == 0`. Without this the
-        // shelves stay empty (or stale) for the rest of the session, silently, after an ordinary
-        // `sync_roster` re-point or a token refresh. Not a FAILURE — the ladder is for a server
-        // that answered badly, and this one may never have answered at all.
-        if let Some(st) = super::state_mut(r.sec) {
-            st.hubs.landing_was_not_ours();
-        }
-        return false;
-    }
-    let Some(st) = super::state_mut(r.sec) else {
-        return false;
-    };
-    match r.shelves {
-        Some(s) => {
-            // ONE line per landing, and it names the publication the landing produced rather than
-            // just the count: `Staged` and `Committed` differ by whether the grid moved under the
-            // viewer, and that is exactly the question a log is read to answer. Shelf TITLES are
-            // never written — they are library content (`diag/scrub.rs`).
-            crate::log(&format!(
-                "libhubs: section {} landed {} shelves",
-                r.sec,
-                s.len()
-            ));
-            st.hubs.land_ok(s);
-        }
-        None => {
-            crate::log(&format!(
-                "libhubs: section {} failed ({} in a row)",
-                r.sec,
-                st.hubs.fails + 1
-            ));
-            st.hubs.land_fail();
-            // a failure is still owed an answer — the ladder decides WHEN, `owed` that it happens
-            st.hubs.owed = true;
-        }
-    }
-    // shelves arriving repaint a page that may have settled
-    crate::ui::idle::invalidate();
-    true
+    super::legacy_mut().hubs_land()
 }
 
 // ---- the pure half --------------------------------------------------------------------------
@@ -845,6 +859,136 @@ pub(crate) fn shelf_is_continue(id: &str, key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_browse_state_values_share_no_core_state() {
+        let mut first = super::super::BrowseState::default();
+        let mut second = super::super::BrowseState::default();
+
+        first
+            .sources
+            .push(super::super::tests::a_source("machine-a", "", true));
+        for (key, title) in [(7, "Films A"), (8, "Films B")] {
+            first.sections.push(super::super::BrowseSection {
+                src: 0,
+                key,
+                title: title.into(),
+                kind: super::super::SecKind::Movie,
+                count: 12,
+                pinned: true,
+            });
+            first.states.push(super::super::SecState::default());
+        }
+        first.set_cur(1);
+        first.want(60, 120);
+        first.bump_gen();
+        first.sections_gen = first.sections_gen.wrapping_add(1);
+        first.src_facts_gen = first.src_facts_gen.wrapping_add(1);
+        first
+            .remembered
+            .push((super::super::SecKind::Movie, "machine-a".into(), 7));
+        first.recorded = Some(crate::plex::session::HomePins {
+            user: "profile-a".into(),
+            asked: true,
+            on: Vec::new(),
+            off: Vec::new(),
+        });
+        first.retry_cd = 120;
+        first.states[1].hubs.armed = true;
+        first.states[1].hubs.land_ok(vec![Shelf {
+            id: "movie.recent.8".into(),
+            title: "Recently Added".into(),
+            ..Default::default()
+        }]);
+        assert!(first.states[1].hubs.commit_staged(true));
+        let first_tabs_gen = first.tabs_gen();
+
+        second
+            .sources
+            .push(super::super::tests::a_source("machine-b", "", false));
+        second.sections.push(super::super::BrowseSection {
+            src: 0,
+            key: 70,
+            title: "Other Films".into(),
+            kind: super::super::SecKind::Movie,
+            count: 3,
+            pinned: true,
+        });
+        second.states.push(super::super::SecState::default());
+        second.states[0].hubs.armed = true;
+        second.states[0].hubs.land_ok(vec![Shelf {
+            id: "movie.recent.70".into(),
+            title: "Other Recent".into(),
+            ..Default::default()
+        }]);
+        assert!(second.states[0].hubs.commit_staged(true));
+        second.want(1, 3);
+
+        let retained_listing = first.listing_snapshot();
+        let retained_hubs = first.hubs_snapshot(1);
+        let second_hubs = second.hubs_snapshot(0);
+
+        assert_eq!(first.sources().len(), 1);
+        assert_eq!(first.sections().len(), 2);
+        assert_eq!(first.states().len(), 2);
+        assert_eq!(first.cur(), 1, "the test exercises a real selection move");
+        assert_eq!(first.want, (60, 120));
+        assert_eq!(first.query_gen(), 2);
+        assert_eq!(first.sections_gen(), 1);
+        assert_eq!(first.source_list_gen(), 2);
+        assert!(first_tabs_gen > 1);
+        assert_eq!(first.pinned_count(), 2);
+        assert_eq!(first.remembered.len(), 1);
+        assert!(first.recorded.is_some());
+        assert_eq!(first.retry_cd, 120);
+        assert_eq!(first.states[1].hubs.publication(), Publication::Committed);
+        assert_eq!(first.states[1].hubs.shelves().len(), 1);
+
+        assert_eq!(second.sources().len(), 1);
+        assert_eq!(second.sections().len(), 1);
+        assert_eq!(second.states().len(), 1);
+        assert_eq!(second.cur(), 0);
+        assert_eq!(second.want, (1, 3));
+        assert_eq!(second.query_gen(), 0);
+        assert_eq!(second.sections_gen(), 0);
+        assert_eq!(second.source_list_gen(), 0);
+        assert_eq!(second.tabs_gen, 1);
+        assert_eq!(second.tab_shape, u32::MAX);
+        assert_eq!(second.pinned_count(), 1);
+        assert!(second.remembered.is_empty());
+        assert!(second.recorded.is_none());
+        assert_eq!(second.retry_cd, 0);
+
+        first.reset();
+        assert_eq!(first.query_gen(), 3);
+        assert_eq!(first.sections_gen(), 2);
+        assert_eq!(first.table_epoch(), 1);
+        assert!(first.sections().is_empty());
+        assert_eq!(
+            first.want,
+            (60, 120),
+            "the extraction preserves legacy reset timing/state"
+        );
+        assert!(
+            retained_listing.view().id().is_some(),
+            "retained listing survives owner reset"
+        );
+        assert_eq!(
+            retained_hubs.view().shelves().len(),
+            1,
+            "retained hubs survive owner reset"
+        );
+
+        assert_eq!(
+            second.sections().len(),
+            1,
+            "resetting first cannot clear second"
+        );
+        assert_eq!(second.table_epoch(), 0);
+        assert_eq!(second.want, (1, 3));
+        assert_eq!(second.hubs_snapshot(0).view().shelves().len(), 1);
+        assert_eq!(second_hubs.view().shelves().len(), 1);
+    }
 
     /// **The measured shape**, trimmed from a live PMS 1.43.3 answer (`docs/pms-api.md` §3a) and
     /// held INLINE rather than as a captured fixture file: a real body carries this household's
@@ -1099,7 +1243,11 @@ mod tests {
         let after = snapshot(sec);
         assert_eq!(Arc::as_ptr(after.data.as_ref().unwrap()), allocation);
         assert_eq!(after.view().shelves()[0].items.len(), 2);
-        assert_ne!(after.view().revision(), revision, "pointer equality cannot detect this edit");
+        assert_ne!(
+            after.view().revision(),
+            revision,
+            "pointer equality cannot detect this edit"
+        );
         crate::browse::reset();
     }
 
@@ -1111,7 +1259,10 @@ mod tests {
         let revision = before.view().revision();
         assert!(revision.is_some());
         assert_eq!(snapshot(sec).view().revision(), revision);
-        super::super::state_mut(sec).unwrap().hubs.land_ok(vec![row("next")]);
+        super::super::state_mut(sec)
+            .unwrap()
+            .hubs
+            .land_ok(vec![row("next")]);
         assert_eq!(snapshot(sec).view().revision(), revision);
         assert!(!commit_staged(sec, false));
         assert_eq!(snapshot(sec).view().revision(), revision);
@@ -1139,8 +1290,18 @@ mod tests {
         assert_ne!(edited.view().revision(), revision);
         assert!(!before.view().shelves()[0].items[0].watched);
         assert!(edited.view().shelves()[0].items[0].watched);
-        let staged = Shelf { items: vec![PmsMovie { sid, rk: "staged-only".into(), ..Default::default() }], ..row("staged") };
-        super::super::state_mut(sec).unwrap().hubs.land_ok(vec![staged]);
+        let staged = Shelf {
+            items: vec![PmsMovie {
+                sid,
+                rk: "staged-only".into(),
+                ..Default::default()
+            }],
+            ..row("staged")
+        };
+        super::super::state_mut(sec)
+            .unwrap()
+            .hubs
+            .land_ok(vec![staged]);
         assert!(!set_watched_local(sid, "staged-only", true));
         assert_eq!(snapshot(sec).view().revision(), edited.view().revision());
         assert!(commit_staged(sec, true));
