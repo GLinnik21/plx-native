@@ -290,6 +290,8 @@ impl super::BrowseState {
     }
 }
 
+/// Temporary compatibility capture for callers not yet migrated to an owned `BrowseStore`.
+#[allow(dead_code)] // Temporary compatibility fixture path during consumer migration.
 pub(crate) fn snapshot() -> ListingSnapshot {
     super::legacy().listing_snapshot()
 }
@@ -309,6 +311,7 @@ pub(crate) struct SectionView {
 struct DirectoryData {
     sources: Vec<(ServerId, super::SrcGroup)>,
     sections: Vec<SectionView>,
+    favorites: Vec<(ServerId, i64, bool)>,
 }
 
 /// Retained by the Bridge-owned `BrowseStore` and captured from its `BrowseState`, never a new
@@ -323,6 +326,8 @@ pub(crate) struct DirectorySnapshot {
     source: Option<usize>,
     source_fetch: SecFetch,
     discovery: SecFetch,
+    sections_gen: u32,
+    tabs_gen: u32,
 }
 
 impl Default for DirectorySnapshot {
@@ -335,6 +340,8 @@ impl Default for DirectorySnapshot {
             source: None,
             source_fetch: SecFetch::Loading,
             discovery: SecFetch::Loading,
+            sections_gen: 0,
+            tabs_gen: 0,
         }
     }
 }
@@ -357,12 +364,15 @@ impl DirectorySnapshot {
                         sid: state.sources().get(section.src).map(|source| source.sid),
                         key: section.key, kind: section.kind, row,
                     }).collect(),
+                favorites: state.favorite_sections(),
             });
             self.stamp = Some(stamp);
         }
         self.source = state.cur_source_idx();
         self.source_fetch = state.cur_source_state();
         self.discovery = state.discovery_state();
+        self.sections_gen = state.sections_gen();
+        self.tabs_gen = state.tabs_gen();
         for (i, kind) in [super::SecKind::Movie, super::SecKind::Show].into_iter().enumerate() {
             self.preferred[i] = state.tab_of_kind(kind).and_then(|tab| state.tab_section(tab));
             self.kind_fetch[i] = state.kind_state(kind);
@@ -383,10 +393,13 @@ impl DirectorySnapshot {
             data: Arc::new(DirectoryData {
                 sources: vec![(sid, source)],
                 sections: Vec::new(),
+                favorites: Vec::new(),
             }),
             source: Some(0),
             source_fetch: fetch,
             discovery: fetch,
+            sections_gen: 0,
+            tabs_gen: 0,
         }
     }
 
@@ -395,6 +408,8 @@ impl DirectorySnapshot {
             && self.source == other.source
             && self.source_fetch == other.source_fetch
             && self.discovery == other.discovery
+            && self.sections_gen == other.sections_gen
+            && self.tabs_gen == other.tabs_gen
             && self.preferred == other.preferred
             && self.kind_fetch == other.kind_fetch
     }
@@ -402,6 +417,9 @@ impl DirectorySnapshot {
     pub(crate) fn fixture(epoch: u32, current: usize, sections: Vec<SectionView>) -> Self {
         let preferred = [super::SecKind::Movie, super::SecKind::Show]
             .map(|kind| sections.iter().position(|s| s.kind == kind && s.row.pinned));
+        let favorites = sections.iter().filter_map(|section| {
+            section.sid.map(|sid| (sid, section.key, section.row.pinned))
+        }).collect();
         Self {
             preferred,
             kind_fetch: [SecFetch::Ready; 2],
@@ -409,15 +427,18 @@ impl DirectorySnapshot {
             data: Arc::new(DirectoryData {
                 sources: Vec::new(),
                 sections,
+                favorites,
             }),
             source: None,
             source_fetch: SecFetch::Ready,
             discovery: SecFetch::Ready,
+            sections_gen: 0,
+            tabs_gen: 0,
         }
     }
-    /// Main-thread capture. The existing source-list generation covers names, reachability,
-    /// counts and pins. Current section is separate because its tick can move without a landing;
-    /// source count also catches a newly granted source before it has any sections to append.
+
+    /// Temporary compatibility capture. Owned callers use `capture_from` through
+    /// `Stores::capture_browse`; this remains until the consumer waves are woven.
     pub(crate) fn capture(&mut self) {
         let stamp = (
             super::table_epoch(),
@@ -427,33 +448,24 @@ impl DirectorySnapshot {
         );
         if self.stamp != Some(stamp) {
             self.data = Arc::new(DirectoryData {
-                sources: super::sources()
-                    .iter()
-                    .map(|s| s.sid)
-                    .zip(super::source_groups())
-                    .collect(),
-                sections: super::sections()
-                    .iter()
-                    .zip(super::all_source_rows())
-                    .map(|(s, row)| SectionView {
+                sources: super::sources().iter().map(|s| s.sid)
+                    .zip(super::source_groups()).collect(),
+                sections: super::sections().iter().zip(super::all_source_rows())
+                    .map(|(section, row)| SectionView {
                         borrowed: super::section_sid_is_borrowed(row.section),
-                        sid: super::sources().get(s.src).map(|source| source.sid),
-                        key: s.key,
-                        kind: s.kind,
-                        row,
-                    })
-                    .collect(),
+                        sid: super::sources().get(section.src).map(|source| source.sid),
+                        key: section.key, kind: section.kind, row,
+                    }).collect(),
+                favorites: super::favorite_sections(),
             });
             self.stamp = Some(stamp);
         }
-        // These can change without changing the directory's prose (for example a retry).
         self.source = super::cur_source_idx();
         self.source_fetch = super::cur_source_state();
         self.discovery = super::discovery_state();
-        for (i, kind) in [super::SecKind::Movie, super::SecKind::Show]
-            .into_iter()
-            .enumerate()
-        {
+        self.sections_gen = super::sections_gen();
+        self.tabs_gen = super::tabs_gen();
+        for (i, kind) in [super::SecKind::Movie, super::SecKind::Show].into_iter().enumerate() {
             self.preferred[i] = super::tab_of_kind(kind).and_then(super::tab_section);
             self.kind_fetch[i] = super::kind_state(kind);
         }
@@ -468,6 +480,43 @@ impl DirectorySnapshot {
 pub(crate) struct DirectoryView<'a>(&'a DirectorySnapshot);
 
 impl<'a> DirectoryView<'a> {
+    #[allow(dead_code)] // Wave 0 publication contract; consumer lanes take these accessors.
+    pub(crate) fn section_count(self) -> usize { self.sections().len() }
+    #[allow(dead_code)]
+    pub(crate) fn source_list_gen(self) -> u32 { self.0.stamp.map_or(0, |stamp| stamp.1) }
+    #[allow(dead_code)]
+    pub(crate) fn sections_gen(self) -> u32 { self.0.sections_gen }
+    #[allow(dead_code)]
+    pub(crate) fn tabs_gen(self) -> u32 { self.0.tabs_gen }
+    #[allow(dead_code)]
+    pub(crate) fn pinned_count(self) -> usize {
+        self.sections().iter().filter(|section| section.row.pinned).count()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn favorite_sections(self) -> &'a [(ServerId, i64, bool)] {
+        &self.0.data.favorites
+    }
+    #[allow(dead_code)]
+    pub(crate) fn tab_kind(self, tab: usize) -> Option<super::SecKind> {
+        [super::SecKind::Movie, super::SecKind::Show].into_iter()
+            .filter(|kind| self.preferred(*kind).is_some()).nth(tab)
+    }
+    #[allow(dead_code)]
+    pub(crate) fn tab_count(self) -> usize {
+        [super::SecKind::Movie, super::SecKind::Show].into_iter()
+            .filter(|kind| self.preferred(*kind).is_some()).count()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn tab_of_kind(self, kind: super::SecKind) -> Option<usize> {
+        [super::SecKind::Movie, super::SecKind::Show].into_iter()
+            .filter(|candidate| self.preferred(*candidate).is_some())
+            .position(|candidate| candidate == kind)
+    }
+    #[allow(dead_code)]
+    pub(crate) fn library_titles(self, sid: ServerId) -> impl Iterator<Item = &'a str> {
+        self.sections().iter().filter(move |section| section.sid == Some(sid))
+            .map(|section| section.row.title.as_str())
+    }
     pub(crate) fn preferred(self, kind: super::SecKind) -> Option<usize> {
         self.0.preferred[match kind {
             super::SecKind::Movie => 0,

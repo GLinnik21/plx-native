@@ -4599,6 +4599,9 @@ class DepGates(unittest.TestCase):
     # rules are absent from the table below on purpose, the same way a deleted allowlist's own
     # entry disappears rather than pinning at 0.
     PINNED_ALLOWLIST_COUNTS = {
+        # Browse ownership Wave 0 pins the compile-scaffolding surface exactly. Consumer waves
+        # lower this with the corresponding symbol deletion; full retirement lands at zero.
+        "browse-ownership-migration.txt": 22,
         "libm.txt": 5,
         "mutators.txt": 0,
         "nav.txt": 0,
