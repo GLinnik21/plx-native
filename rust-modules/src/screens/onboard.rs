@@ -99,14 +99,15 @@ pub(crate) struct OnboardScreen {
     /// `an_action_that_changes_verb_under_an_armed_press_refuses_to_commit` below.
     armed_kind: Option<ActionKind>,
     /// **`has_band()`'s answer, cached rather than read live.** Whether the band holds a control
-    /// depends on `crate::browse::section_count()` — a MUTABLE GLOBAL a roster-landing worker can
-    /// change between two calls this screen never sees as one event. `Focusable::groups` reaches
+    /// depends on `crate::browse::section_count()` — a temporary compatibility view of the active
+    /// Bridge-owned BrowseStore that a roster landing can change between two calls this screen
+    /// never sees as one event. `Focusable::groups` reaches
     /// `has_band()` through `view()`/`labels()` on every focus query the engine makes, which can
     /// happen at any point between two of this screen's own `step`s — so a live read there means
     /// the group SET the engine is reasoning about can change mid-query, the same class of race
     /// `armed_kind`'s own doc describes on the press side (and closes the same way: record the
-    /// answer at a point this screen controls, rather than re-deriving it from a global whenever
-    /// asked). `rebuild` is that point — it already reacts to every input that could move this
+    /// answer at a point this screen controls, rather than re-deriving it from a compatibility
+    /// view whenever asked). `rebuild` is that point — it already reacts to every input that could move this
     /// answer (a fresh mount, a toggle, and the `Tick`/`StoreChanged` arms that watch
     /// `source_list_gen`) — so caching it there costs nothing and buys two things a live read
     /// cannot: a STABLE group set for the whole gap between two `rebuild`s, and a state the
@@ -205,8 +206,9 @@ impl OnboardScreen {
     }
 
     /// The band holds a control unless this is a pristine Settings editor. Reads the CACHED
-    /// answer (`band`'s own doc has the reason) rather than re-deriving it from the live global
-    /// `crate::browse::section_count()` on every call — `rebuild` is what keeps the cache honest.
+    /// answer (`band`'s own doc has the reason) rather than re-deriving it from the live Browse
+    /// compatibility view `crate::browse::section_count()` on every call — `rebuild` is what keeps
+    /// the cache honest.
     fn has_band(&self) -> bool {
         self.band
     }
@@ -454,20 +456,11 @@ impl<H: AppLike> Machine<H> for OnboardScreen {
             ScreenEvent::Tick(t) => {
                 let dt = t.dt();
                 // The roster half of the pump: sources and their sections land on workers that
-                // only the Library screen otherwise schedules. **Called directly rather than
-                // through `fx` as an `AppFx::Store`, and deliberately so** — unlike `RetryDiscovery`
-                // and `ApplyPins` below, this is not a MUTATION with a `BrowseCmd` of its own; it
-                // is the same per-frame LANDING PASS `stores::browse::pump()` already is (that
-                // function's own doc: "The landing pass the Library screen runs once a frame while
-                // it is up"), just the roster-only half of it, and every existing caller of a pump
-                // — the Library screen's own `pump()` call, `viewstate::pump()` from `app/run.rs`
-                // — reaches it directly rather than round-tripping it through a command a
-                // `Machine::step` would have to invent a `BrowseCmd::Pump` variant to spell. A
-                // command that changed nothing would still have to bump the store's generation for
-                // every other reader to notice it ran, which a landing pass one screen polls for
-                // itself has no need of. If a mutating mistake ever sneaks into `discover_pump`'s
-                // own body, this call site would not be the fix — the fix belongs in `browse/`,
-                // which decides what a pump is allowed to touch.
+                // only the Library screen otherwise schedules. This roster-only work remains a
+                // direct helper rather than a BrowseCmd; `stores::browse::discover_pump()`
+                // resolves through the active Bridge-owned store. The mutating actions below do
+                // emit BrowseCmd effects, so an owned screen never calls the synchronous apply
+                // shim itself.
                 let endpoints = crate::stores::browse::discover_pump();
                 for request in endpoints.iter() {
                     fx.push(crate::ui::machine::Fx::App(crate::screens::registry::AppFx::Session(
@@ -743,7 +736,8 @@ mod tests {
     use super::super::registry::band_elem;
 
     /// **This screen's teardown, wrapped around the shared session guard.** Ported verbatim from
-    /// `ui/onboard.rs`'s own `TempSession` — the only thing local to it now is `browse::reset()`,
+    /// `ui/onboard.rs`'s own `TempSession` — the only thing local to it now is the Browse
+    /// `BrowseCmd::Reset` compatibility shim,
     /// since there is no `SETTINGS_MODE` static left to put back: a screen instance simply goes
     /// out of scope with the test. A test using it must hold [`crate::testlock::serial`] for its
     /// whole body, exactly as the inner guard requires.
@@ -1052,7 +1046,7 @@ mod tests {
         );
     }
 
-    /// **Codex review finding, 2026-09-04.** `browse::reset()` (a profile switch, or ordinary
+    /// **Codex review finding, 2026-09-04.** Browse's `BrowseCmd::Reset` (a profile switch, or ordinary
     /// `sync_roster` maintenance while this screen is open) makes every section INDEX mean a
     /// different library, or none — so a `draft`/`entry_pins` built from the old indices would
     /// misapply. Historically red: removing `reseed_if_table_identity_changed`'s call from

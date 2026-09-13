@@ -1,21 +1,22 @@
 //! **Stores as machines** (restructure spec §2.1/§2.2, phase 4; `docs/stores-as-machines.md`).
 //!
-//! Six data modules own the application's server-derived state — `browse`, `pms` (the Home
-//! hubs), `metadata`, `search`, `person`, `viewstate` — and every one is still the `static mut`
-//! + mailbox + `pump()` shape it was born with. This layer puts ONE entrance in front of each:
-//! a [`StoreCmd`] is the complete, enumerated vocabulary of mutations, a store's `Machine::step`
-//! is the one place a legacy mutator is called, and every applied command or changed landing
-//! raises the store's NOTICE (a generation the shadow dispatcher delivers to every live
-//! instance as `ScreenEvent::StoreChanged`, spec §3.4).
+//! Six data modules provide the application's server-derived state — `browse`, `pms` (the Home
+//! hubs), `metadata`, `search`, `person`, `viewstate`. Browse is physically owned by one
+//! [`Stores`] aggregate per `crate::app::bridge::Bridge`, with per-instance state, adapter and notice;
+//! the other five retain the compatibility global + mailbox shape. This layer puts ONE entrance in
+//! front of each: a [`StoreCmd`] is the complete, enumerated vocabulary of mutations, a store's
+//! `Machine::step` is the one place a legacy mutator is called, and every command that changes
+//! observable state or landing that changes the store raises the store's NOTICE (a generation the
+//! bridge dispatcher delivers to every live instance as `ScreenEvent::StoreChanged`, spec §3.4).
 //!
-//! Two callers, one `step`. A migrated screen emits `AppFx::Store(id, cmd)` and the shadow rig
-//! delivers it (`app/legacy.rs`); a legacy screen calls the store's `apply(cmd)` shim, which
-//! steps the same machine IMMEDIATELY on the main thread and returns the store's own answer —
-//! the design note's §3 says why the shim is not a deferred queue in this phase. Either way the
-//! mutator has one caller and the notice is raised once.
+//! Two callers, one vocabulary. An owned screen emits `AppFx::Store(id, cmd)` and
+//! `app/bridge.rs` delivers it to the owning machine; a legacy caller uses the store's
+//! `apply(cmd)` shim, which steps the same Browse machine IMMEDIATELY on the main thread and
+//! returns the store's own answer. The design note's §3 says why the shim is not a deferred queue
+//! in this phase. Either way the mutation has one command path and the notice is raised once.
 //!
-//! What lives here is the VOCABULARY and the machine; the data stays in the legacy modules until
-//! each screen's phase moves it (§14). This module names data crates, `ui::machine` and — since
+//! What lives here is the vocabulary and machine plus Browse's production aggregate; the remaining
+//! data stays in the legacy modules until its ownership slice (§14). This module names data crates, `ui::machine` and — since
 //! phase 11's landing schedule — `ui::landgate`, and nothing else (spec §2.1's layer rule;
 //! `ci/check-deps.sh`'s `mutators` gate refuses the old spelling outside `stores/` and the data
 //! modules).
@@ -79,6 +80,50 @@ pub(crate) mod metadata;
 pub(crate) mod person;
 pub(crate) mod search;
 pub(crate) mod viewstate;
+
+/// Production store aggregate. Browse is the first physical owner to move here; the remaining
+/// stores retain their compatibility owners until their corresponding ownership slices land.
+pub(crate) struct Stores {
+    pub(crate) browse: std::rc::Rc<std::cell::RefCell<browse::BrowseStore>>,
+}
+
+impl Default for Stores {
+    fn default() -> Self {
+        let browse = std::rc::Rc::new(std::cell::RefCell::new(browse::BrowseStore::default()));
+        browse::activate(&browse);
+        Self { browse }
+    }
+}
+
+impl Stores {
+    #[cfg(test)]
+    pub(crate) fn production_bootstrap_for_test() -> Self {
+        let browse = std::rc::Rc::new(std::cell::RefCell::new(
+            browse::BrowseStore::production_bootstrap_for_test()));
+        browse::activate(&browse);
+        Self { browse }
+    }
+
+    pub(crate) fn activate(&mut self) {
+        browse::activate(&self.browse);
+    }
+
+    pub(crate) fn gen(&self, id: StoreId) -> u32 {
+        match id {
+            StoreId::Browse => self.browse.borrow().gen(),
+            _ => gen(id),
+        }
+    }
+
+    pub(crate) fn take_notices(&self) -> Vec<(StoreId, u32)> {
+        let mut notices = take_notices();
+        notices.retain(|(id, _)| *id != StoreId::Browse);
+        if let Some(generation) = self.browse.borrow().take_notice() {
+            notices.insert(0, (StoreId::Browse, generation));
+        }
+        notices
+    }
+}
 
 /// The application's stores, in the library's ordinal order (`StoreOrd`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -171,17 +216,17 @@ impl StoreCmd {
 #[derive(Clone)]
 pub(crate) enum StoreEv<C> {
     Cmd(C),
-    /// The legacy `pump()`: land whatever arrived. `dt` for the pumps that debounce on it.
-    /// Constructed by the dispatcher path once a store is stepped on `Tick` (a migrated screen's
-    /// phase); the legacy loop calls the store's `pump` fn directly.
+    /// The store's once-a-frame landing pass: land whatever arrived. `dt` is for pumps that
+    /// debounce on it. Browse reaches this through `app/bridge.rs`'s `StoreWork` delivery; the
+    /// remaining stores retain their legacy pump callers until their ownership slices land.
     #[allow(dead_code)]
     Pump { dt: f32 },
 }
 
-/// Apply ONE command to whichever store it names — THE dispatch. Every shim (`browse::apply`
-/// and its five siblings) wraps its command into the vocabulary and comes through here, and the
-/// dispatcher path steps the same `run` through the store's `Machine::step`; a trace or a
-/// recorder hook for store mutations has exactly one place to stand.
+/// Apply ONE command to whichever store it names — the compatibility dispatch. Each shim wraps its
+/// command into the vocabulary and comes through here; the owned Browse dispatcher path steps the
+/// per-Bridge machine directly. A trace or recorder hook for store mutations still has exactly one
+/// command vocabulary to observe.
 pub(crate) fn apply(cmd: StoreCmd) -> StoreOutcome {
     match cmd {
         StoreCmd::Browse(c) => StoreOutcome::changed(browse::run(c)),
@@ -194,8 +239,10 @@ pub(crate) fn apply(cmd: StoreCmd) -> StoreOutcome {
 }
 
 // ---------------------------------------------------------------------------------------------
-// the notice: one generation per store, marked dirty by every applied command and every
-// changed landing, drained once a frame into the shadow dispatcher
+// the compatibility notices for the five not-yet-owned stores plus pre-Bridge Browse calls.
+// BrowseStore carries its production notice in the per-Bridge aggregate and consumes the seed only
+// when it adopts the compatibility state. An owned aggregate thereafter discards any retired
+// compatibility Browse generation.
 // ---------------------------------------------------------------------------------------------
 
 struct Notice {
@@ -208,6 +255,11 @@ const fn notice() -> Notice {
         gen: AtomicU32::new(0),
         dirty: AtomicBool::new(false),
     }
+}
+
+pub(crate) fn take_browse_notice_seed() -> (u32, bool) {
+    let notice = &NOTICES[StoreId::Browse as usize];
+    (notice.gen.load(Ordering::Relaxed), notice.dirty.swap(false, Ordering::Relaxed))
 }
 
 /// Atomics rather than `static mut`: they are read and written on the main thread only, but an
@@ -228,7 +280,8 @@ pub(crate) fn gen(id: StoreId) -> u32 {
     NOTICES[id as usize].gen.load(Ordering::Relaxed)
 }
 
-/// Drain the owed notices, once a frame at the loop's drain point (`app/legacy.rs::mirror`).
+/// Drain the compatibility notices. `Stores::take_notices` adds the owning BrowseStore's notice
+/// and is the aggregate drain used by `app/bridge.rs` once per frame.
 pub(crate) fn take_notices() -> Vec<(StoreId, u32)> {
     let mut out = Vec::new();
     for id in StoreId::ALL {

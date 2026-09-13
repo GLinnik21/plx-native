@@ -432,7 +432,7 @@ library uses `value_dim` and states the rule on its sub-line; an unreachable ser
 still reads `On`. The row model is the pure `source_sections`, host-tested against literal
 `browse::SrcGroup`/`SrcRow` projections.
 What its content region shows is the pure `readout_of` — Grid / Loading / **Failed** / Empty — the
-whole decision in one host-gradeable function, over `browse`'s per-section `SecFetch` AND the
+whole decision in one host-gradeable function, over BrowseStore's per-section `SecFetch` AND the
 per-SOURCE one (`cur_source_state`, a projection of the same `reachable`/`sections_done` flags the
 Sources list dims a group by): a source that did not answer is the same symptom one layer up, and
 used to spin forever with no way out. Both of the source's terminal answers are gated on there
@@ -443,8 +443,8 @@ always made and kept identical at both layers on purpose. The **Failed** read-ou
 `StatusOverlay` anchored in the CONTENT REGION rather than on the panel, because the chrome above
 it is still live and that is the difference between a section failing and the app failing: it names
 the MACHINE that failed, gives one reason line naming the person who shared it, and offers one
-*Try again* that re-kicks that one source (`browse::retry_cur_source` picks the layer — an
-undiscovered table is re-fetched, a failed page only clears its back-off). Those two names are the
+*Try again* that emits the addressed Browse command for that one source — an undiscovered table is
+re-fetched, a failed page only clears its back-off. Those two names are the
 only identifying strings it renders and the list is CLOSED: no address, no path, no
 machineIdentifier (`app/diagnostics.rs`'s redaction rule, for its reason — a read-out is photographed). It is
 drawn beside NO GRID CONTROL — no Sort, no Filter, no count, no A–Z rail (all four act on a grid
@@ -459,8 +459,8 @@ this screen's failure is otherwise unreachable on purpose — and is compiled ou
 with every other trigger.
 It also
 owns the **deferred reload**: every path that REPLACES the item set (tab, sort, unwatched, genre, and
-`browse::reset()` wiping the store from underneath — caught by an `EPOCH` watchdog on
-`browse::query_gen()`) goes through `Xfade` instead of the store, as a typed `Pending` the fade's
+the `BrowseCmd::Reset` account-switch wipe) goes through `Xfade` instead of the store, as a typed
+`Pending` the fade's
 commit frame applies. The 70 ms that buys is why the top chrome reads `view_section`/`view_unwatched`/
 `view_sort_label`/`view_filter_label` rather than `browse` — a control must acknowledge its press on
 the press frame while the grid is still dissolving. Do **not** close that gap by committing the query
@@ -584,23 +584,18 @@ rule), and `Dispatcher::state_hash` is folded into the recorder frame as the `tr
 for 5b.
 
 **Phase 4 (2026-09-07) put the STORES behind one vocabulary and one step — `rust-modules/src/stores/`,
-designed in `docs/stores-as-machines.md`.** Six unit machines (`BrowseStore`, `HubsStore`,
-`MetadataStore`, `SearchStore`, `PersonStore`, `ViewStateStore`) front the legacy data modules;
-`stores::StoreCmd` is the complete mutation set and `stores::apply` the one dispatch every shim
-(`stores::browse::apply(BrowseCmd::…)` and its siblings) and the dispatcher path
-(`AppFx::Store` → `Rig::deliver`, `app/legacy.rs`) come through. A screen never names
-`crate::browse::set_cur(` again — `ci/check-deps.sh`'s `mutators` gate refuses it on production
-lines of `ui/` and `app/`, with an EMPTY allowlist. Every applied command and every changed
-landing bumps the store's generation and owes a notice that `bridge::frame` (`app/legacy.rs`'s own
-`mirror` at the time this phase landed, folded into `app/bridge.rs` by 5b) drains into
-`Dispatcher::store_changed` once a frame, so a migrated screen hears `StoreChanged` for a shim
-call and for its own effect alike. The shim applies IMMEDIATELY (the note's §3 says why a deferred
-queue is not implementable against screens written for synchronous mutators); the "same drain"
-ordering of spec §14 arrives with each screen's migration. `ui/landing.rs` has its first consumer:
-`metadata`'s detail landing, keyed on `(server, ratingKey)` with admission control, so a
-same-numbered item on another server is skipped and counted rather than installed. Store state
-is NOT in the recorder's hash yet (the phase-2 anchor fixture pins `state_fp`; 5b records a new
-one).
+designed in `docs/stores-as-machines.md`.** Browse is now the first physical owner: each
+`app::bridge::Bridge` owns a `Stores::browse` `BrowseStore` with per-instance state, worker
+adapter and notice. Its PAGE/GENRE/LETTER/SRC/HUB mailboxes and single-flight flags are fields of
+that adapter, not process-wide state. `stores::StoreCmd` remains the complete mutation vocabulary;
+owned screens emit `AppFx::Store`, and `app/bridge.rs` delivers Browse commands to the owning
+machine. The old `crate::browse::*` reads are temporary compatibility views over the active
+owner, while `stores::browse::apply(BrowseCmd::…)` is the synchronous compatibility shim for
+legacy callers and tests. `app/bridge.rs` drains the aggregate Browse and compatibility notices
+once per frame into `Dispatcher::store_changed`, so a migrated screen hears `StoreChanged` for
+its own effect and for a changed landing. The shim still applies immediately for callers that need
+the old synchronous contract; the owned dispatcher path is the production route. Store state is
+NOT in the recorder's hash yet (the phase-2 anchor fixture pins `state_fp`).
 
 **Phase 5a (2026-09-07): `table_screen.rs`** — `Header`, `TableScreen` and `DocumentScreen`
 EXTRACTED from the legacy Settings root and the Legal index/documents: those two modules keep
@@ -679,9 +674,9 @@ must hold still while focus walks the slots beneath it). If you touch focus navi
 or shelf motion, **add a test here** — that math is host-testable and these caught real bugs.
 Note the asymmetry, because it tells you where to put a new test: `card_row.rs` drives a **local**
 `CardRow`, so its tests are ordinary and parallel; an owned screen's tests hold no focus of their
-own (the `FocusEngine` does) but the ones that seed a store read crate globals, so they take
-`testlock::serial()` or they race each other rather than the code. That
-lock is the cost of process-wide data state — hold it, don't work around it. **`xfade.rs` is
+own (the `FocusEngine` does). Tests that seed the shared registry or Browse's compatibility view
+take `testlock::serial()`; tests using separate production BrowseStore owners can isolate their
+state and landings. **`xfade.rs` is
 the cautionary case**: its tests were ordinary and parallel until `tick` started reporting to
 `ui::idle`'s process-global flag, at which point driving a fader began mutating state *another
 module's* assertions read. They all take `testlock::serial()` now. Anything you make report to the

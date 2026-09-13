@@ -8,6 +8,7 @@ pub(crate) struct Result {
     source: usize,
     instance: u32,
     landing: SrcLanding,
+    adapter: Option<Arc<BrowseAdapter>>,
 }
 
 impl std::fmt::Debug for Result {
@@ -40,9 +41,13 @@ enum What {
     Counts(Vec<(i64, i64)>),
 }
 
-pub(crate) fn take() -> Option<Result> {
-    let (epoch, source, landing) = SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()?;
-    Some(Result { epoch, source, instance: landing.client.instance_gen(), landing })
+pub(crate) fn take_from(adapter: &Arc<BrowseAdapter>) -> Option<Result> {
+    let (epoch, source, landing) = adapter.src_result.lock()
+        .unwrap_or_else(|e| e.into_inner()).take()?;
+    Some(Result {
+        epoch, source, instance: landing.client.instance_gen(), landing,
+        adapter: Some(Arc::clone(adapter)),
+    })
 }
 
 pub(crate) fn encode(result: &Result) -> serde_json::Value {
@@ -73,7 +78,8 @@ pub(crate) fn decode(value: serde_json::Value,
         }).collect::<std::result::Result<Vec<_>, _>>()).transpose()?),
     };
     Ok(Result { epoch: wire.epoch, source: wire.source as usize, instance: wire.client,
-        landing: SrcLanding { client, token_gen: wire.token_gen, name: wire.name, what } })
+        landing: SrcLanding { client, token_gen: wire.token_gen, name: wire.name, what },
+        adapter: None })
 }
 
 pub(crate) fn validate_binding(value: serde_json::Value, instance: u32) -> std::result::Result<u32, &'static str> {
@@ -92,5 +98,20 @@ pub(crate) fn validate_binding(value: serde_json::Value, instance: u32) -> std::
 
 pub(crate) fn apply(result: &Result, preferences: Option<&crate::plex::session::Session>)
     -> Option<crate::stores::EndpointRefresh> {
+    if result.adapter.as_ref().is_some_and(|origin| {
+        !Arc::ptr_eq(origin, &legacy_adapter())
+    }) {
+        return None;
+    }
     apply_discovery(result.epoch, result.source, result.landing.clone(), preferences)
+}
+
+pub(crate) fn apply_to(state: &mut BrowseState, adapter: &Arc<BrowseAdapter>, result: &Result,
+    preferences: Option<&crate::plex::session::Session>)
+    -> crate::stores::StoreOutcome {
+    if result.adapter.as_ref().is_some_and(|origin| !Arc::ptr_eq(origin, adapter)) {
+        return Default::default();
+    }
+    state.apply_discovery(
+        result.epoch, result.source, result.landing.clone(), preferences, adapter)
 }
