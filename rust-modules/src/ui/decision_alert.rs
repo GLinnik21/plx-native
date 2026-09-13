@@ -218,7 +218,8 @@ impl DecisionAlert {
         (l.cancel, l.destructive)
     }
     /// Confirmation disclosures must be complete, never silently capped. The panel grows from
-    /// this same measured view; both static callers are checked visually to fit the viewport.
+    /// this same measured view. Each caller still needs a simulator capture confirming that the
+    /// full title, disclosure and buttons fit the viewport; measurement alone does not prove it.
     /// A character-count budget cannot prove wrapping: the richer report disclosure fit that
     /// budget but exceeded the former eight-line cap and lost its final privacy sentence.
     pub(crate) fn body_view(text: &str) -> TextView<'_> {
