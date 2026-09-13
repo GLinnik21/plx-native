@@ -502,13 +502,18 @@ fn request_refetch_hubs() -> crate::stores::EndpointRefreshSet {
 }
 
 fn request_refetch_hubs_with(launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    request_refetch_hubs_with_scope(&BrowseScope::compatibility(), launch)
+}
+
+fn request_refetch_hubs_with_scope(scope: &BrowseScope,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
     // The source table and HUB_GEN are crate globals; a test reaching this outside
     // `crate::testlock::serial()` writes them in the middle of some other module's test — see
     // `lib.rs::testlock`.
     #[cfg(test)]
     crate::testlock::assert_held("the pms hub catalog (request_refetch_hubs)");
     HUB_GEN.fetch_add(1, Ordering::SeqCst); // supersede every retry already in flight
-    sync_roster();
+    sync_roster_with_scope(scope);
     let mut srcs = lock_srcs();
     // A superseded worker's landing is dropped on the generation above, so releasing the
     // single-flight latches here cannot double-apply anything — and without it a source whose
@@ -789,7 +794,11 @@ pub(crate) fn allot(budget: usize, want: &[usize]) -> Vec<usize> {
 /// the other half of the same rule — a transient failure must not blank a populated Home, and a
 /// source that is really gone leaves the ROSTER, which is what drops its shelves.
 fn merge(srcs: &[Src]) -> HubBuild {
-    let pins = library_pins_by_server();
+    merge_with_scope(srcs, &BrowseScope::compatibility())
+}
+
+fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
+    let pins = &scope.pins;
     let live: Vec<(&str, &SourceBuild)> = srcs
         .iter()
         .filter_map(|s| s.last.as_ref().map(|b| (s.handle.as_str(), b)))
@@ -808,7 +817,7 @@ fn merge(srcs: &[Src]) -> HubBuild {
     let mut cw: Vec<(&str, &CwItem)> = live
         .iter()
         .flat_map(|(h, b)| b.cw.iter().map(move |c| (*h, c)))
-        .filter(|(_, c)| item_pinned(&pins, &c.m))
+        .filter(|(_, c)| item_pinned(pins, &c.m))
         .collect();
     // stable: equal timestamps keep source order, so the owned server wins a tie
     cw.sort_by(|a, b| b.1.last_viewed_at.cmp(&a.1.last_viewed_at));
@@ -1214,6 +1223,23 @@ fn library_pins_by_server() -> Vec<(ServerId, i64, bool)> {
     crate::browse::favorite_sections()
 }
 
+/// The only Browse facts Home consumes. Controlled execution snapshots these from the Bridge's
+/// retained directory so another active compatibility owner cannot change its source decision.
+struct BrowseScope {
+    sections_gen: u32,
+    pins: Vec<(ServerId, i64, bool)>,
+}
+
+impl BrowseScope {
+    fn compatibility() -> Self {
+        Self { sections_gen: crate::browse::sections_gen(), pins: library_pins_by_server() }
+    }
+
+    fn retained(directory: crate::stores::browse::DirectoryView<'_>) -> Self {
+        Self { sections_gen: directory.sections_gen(), pins: directory.favorite_sections().to_vec() }
+    }
+}
+
 /// May this row appear on Home? **Per LIBRARY, which is the grain the switch offers.**
 ///
 /// `/hubs` is a whole-SERVER request and answers with rows from every library on that server, so
@@ -1261,8 +1287,8 @@ fn home_server_sets(pins: &[(ServerId, i64, bool)]) -> (Vec<ServerId>, Vec<Serve
 /// `plxnative-servers` dev trigger) handed us a token for it — and [`feeds_home`] is what narrows
 /// the grant to a pin. The handle comes from the same place (`ServerFacts`), so nothing here has an
 /// opinion about who a server belongs to that the Sources list does not share.
-fn roster() -> Vec<(ServerId, String)> {
-    let (pinned, known) = home_server_sets(&library_pins_by_server());
+fn roster_with_scope(scope: &BrowseScope) -> Vec<(ServerId, String)> {
+    let (pinned, known) = home_server_sets(&scope.pins);
     let mut own: Vec<(ServerId, String)> = Vec::new();
     let mut shared: Vec<(ServerId, String)> = Vec::new();
     for sid in crate::plex::server_ids() {
@@ -1292,8 +1318,13 @@ fn roster() -> Vec<(ServerId, String)> {
 /// Folding the pinned SERVERS in by hand meant walking `browse`'s table and building two `Vec`s
 /// here, on a path `pump` runs every loop iteration — ~60×/s including on a settled Home, which is
 /// the screen `ui::idle` was tuned down to ~1% of a core on.
+#[allow(dead_code)] // Compatibility helper retained while controlled callers pass BrowseScope.
 fn roster_key() -> u64 {
-    ((crate::plex::server_roster_gen() as u64) << 32) | crate::browse::sections_gen() as u64
+    roster_key_with_scope(&BrowseScope::compatibility())
+}
+
+fn roster_key_with_scope(scope: &BrowseScope) -> u64 {
+    ((crate::plex::server_roster_gen() as u64) << 32) | scope.sections_gen as u64
 }
 
 /// The other half of the fingerprint, kept as its OWN counter rather than folded into the 64 bits
@@ -1311,8 +1342,13 @@ fn facts_key() -> u32 {
 /// Bring the source table in line with the roster: a surviving source keeps everything it has
 /// (its state, its backoff, and the build it last answered with), a new one arrives Loading and is
 /// picked up by the next [`pump`], and one that has left takes its shelves with it.
+#[allow(dead_code)] // Compatibility helper retained while controlled callers pass BrowseScope.
 fn sync_roster() {
-    let (k, fk) = (roster_key(), facts_key());
+    sync_roster_with_scope(&BrowseScope::compatibility());
+}
+
+fn sync_roster_with_scope(scope: &BrowseScope) {
+    let (k, fk) = (roster_key_with_scope(scope), facts_key());
     // Both, and both swapped every time: a frame on which only one moved must still record the
     // other, or the next change to it reads as "unchanged" against a value from two epochs ago.
     let (was_k, was_fk) = (
@@ -1322,7 +1358,7 @@ fn sync_roster() {
     if was_k == k && was_fk == fk {
         return;
     }
-    let want = roster();
+    let want = roster_with_scope(scope);
     let mut srcs = lock_srcs();
     let mut out: Vec<Src> = Vec::with_capacity(want.len());
     // A retained source whose CREDIT moved — `plex::servers::owner_credit`'s answer, which is what
@@ -1360,7 +1396,7 @@ fn sync_roster() {
     let dropped = srcs.iter().any(|x| x.last.is_some());
     *srcs = out;
     if dropped || restamped {
-        let build = merge(&srcs);
+        let build = merge_with_scope(&srcs, scope);
         drop(srcs); // before calling out — `detail::reselect` walks the catalog this replaces
         commit(build);
     }
@@ -1594,13 +1630,26 @@ pub(crate) fn run(cmd: crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutc
 }
 
 /// The same Home decision path with an explicit application-owned request executor.
+#[allow(dead_code)] // Compatibility controlled path without an explicit retained directory.
 pub(crate) fn controlled_work(cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
+    controlled_work_with_scope(cmd, dt, &BrowseScope::compatibility(), launch)
+}
+
+pub(crate) fn controlled_work_with_directory(cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
+    directory: crate::stores::browse::DirectoryView<'_>,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
+    controlled_work_with_scope(cmd, dt, &BrowseScope::retained(directory), launch)
+}
+
+fn controlled_work_with_scope(cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
+    scope: &BrowseScope,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
     use crate::stores::hubs::HubsCmd;
     let before = catalog_gen();
     let command = cmd.is_some();
     let endpoints = match cmd {
-        Some(HubsCmd::RefetchHubs) => request_refetch_hubs_with(launch),
+        Some(HubsCmd::RefetchHubs) => request_refetch_hubs_with_scope(scope, launch),
         Some(HubsCmd::Retry) => {
             let mut endpoints = crate::stores::EndpointRefreshSet::default();
             for source in lock_srcs().iter_mut() {
@@ -1608,8 +1657,12 @@ pub(crate) fn controlled_work(cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32
             }
             endpoints
         }
+        Some(HubsCmd::Reset) => {
+            reset_with_sections_gen(scope.sections_gen);
+            crate::stores::EndpointRefreshSet::default()
+        }
         Some(other) => return run(other),
-        None => step_landings_with(Some(dt), Vec::new, launch),
+        None => step_landings_with_scope(Some(dt), Vec::new, scope, launch),
     };
     crate::stores::StoreOutcome { changed: command || before != catalog_gen(), endpoints }
 }
@@ -1620,8 +1673,14 @@ fn step_landings(dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>) -> crate:
 
 fn step_landings_with(dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    step_landings_with_scope(dt, take, &BrowseScope::compatibility(), launch)
+}
+
+fn step_landings_with_scope(dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>,
+    scope: &BrowseScope,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
-    sync_roster();
+    sync_roster_with_scope(scope);
     let landed = take();
     let any_landed = !landed.is_empty();
     let cur = HUB_GEN.load(Ordering::SeqCst);
@@ -1677,9 +1736,9 @@ fn step_landings_with(dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>,
     // `merge` is pure over the builds each source already answered with: no request, no allocation
     // beyond the rebuilt catalog. Cheap enough to run on a generation change rather than to try to
     // predict which changes matter.
-    let sgen = crate::browse::sections_gen();
+    let sgen = scope.sections_gen;
     let sections_moved = LAST_SECTIONS_GEN.swap(sgen, Ordering::SeqCst) != sgen;
-    let build = (dirty || sections_moved).then(|| merge(&srcs));
+    let build = (dirty || sections_moved).then(|| merge_with_scope(&srcs, scope));
     drop(srcs); // before calling out: `detail::reselect` walks the catalog this is about to replace
     if any_landed {
         // A landing that COMMITS repaints from inside `commit`; this is the one that does not —
@@ -1759,6 +1818,10 @@ pub(crate) fn seed_for_test(items: usize, state: HubState) {
 /// `stores::hubs::apply(HubsCmd::Reset)` — `HubsCmd` already had the variant and `pms::run`
 /// already matched it, so closing this was a caller-site swap alone, no new enum surface.
 fn reset() {
+    reset_with_sections_gen(crate::browse::sections_gen());
+}
+
+fn reset_with_sections_gen(sections_gen: u32) {
     // Same crate-global catalog guard as `request_refetch_hubs` — see `lib.rs::testlock`.
     #[cfg(test)]
     crate::testlock::assert_held("the pms hub catalog (reset)");
@@ -1772,7 +1835,7 @@ fn reset() {
     // next `pump` "caught up" on a generation some other era had moved and re-committed — freeing
     // the HUBS strings out from under a `hub_title` borrow held across that pump, which is how the
     // test suite read freed memory whenever another module's `browse::reset` ran in between.
-    LAST_SECTIONS_GEN.store(crate::browse::sections_gen(), Ordering::SeqCst);
+    LAST_SECTIONS_GEN.store(sections_gen, Ordering::SeqCst);
     commit((Vec::new(), Vec::new(), Vec::new()));
 }
 // ---------------------------------------------------------------------------------------
