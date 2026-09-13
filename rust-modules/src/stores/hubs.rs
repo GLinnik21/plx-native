@@ -1,8 +1,6 @@
-//! Home's hub catalog, as a machine over `crate::pms` (`docs/stores-as-machines.md`).
+//! Home's hub catalog store boundary over `crate::pms` (`docs/stores-as-machines.md`).
 
-use crate::ui::machine::{Cx, Effects, Handled, Machine};
-
-use super::{StoreEv, StoreId};
+use super::StoreId;
 
 #[derive(Clone, Debug)]
 pub(crate) enum HubsCmd {
@@ -16,8 +14,6 @@ pub(crate) enum HubsCmd {
     EditItem { sid: crate::plex::ServerId, rk: String, edit: crate::pms::LocalEdit },
 }
 
-pub(crate) struct HubsStore;
-
 pub(crate) use crate::pms::Landing as HubsResult;
 
 /// The adapter boundary: drain owned results without applying any store state.
@@ -25,13 +21,6 @@ pub(crate) fn take_results() -> Vec<HubsResult> {
     crate::pms::take_landings()
 }
 
-pub(crate) fn land(result: &HubsResult) -> super::StoreOutcome {
-    let outcome = crate::pms::land(result);
-    super::note(StoreId::Hubs, outcome.changed);
-    outcome
-}
-
-#[allow(dead_code)] // Owner contract consumed when the core dispatcher lane is integrated.
 pub(crate) fn land_with_directory(
     result: &HubsResult,
     directory: crate::stores::browse::DirectoryView<'_>,
@@ -41,14 +30,6 @@ pub(crate) fn land_with_directory(
     outcome
 }
 
-fn tick(dt: f32) -> super::StoreOutcome {
-    let before = crate::pms::catalog_gen();
-    let endpoints = crate::pms::tick(dt);
-    let changed = super::note(StoreId::Hubs, crate::pms::catalog_gen() != before);
-    super::StoreOutcome { changed, endpoints }
-}
-
-#[allow(dead_code)] // Owner contract consumed when the core dispatcher lane is integrated.
 pub(crate) fn tick_with_directory(
     dt: f32,
     directory: crate::stores::browse::DirectoryView<'_>,
@@ -59,16 +40,15 @@ pub(crate) fn tick_with_directory(
     super::StoreOutcome { changed, endpoints }
 }
 
-/// Same mutation and notice rules as run/tick, with an application-owned resource executor.
-#[allow(dead_code)] // Compatibility controlled path without an explicit retained directory.
+/// Test-only compatibility shape for bootstrap fixtures that predate retained directories.
+#[cfg(test)]
 pub(crate) fn controlled(cmd: Option<HubsCmd>, dt: f32,
     launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
-    #[cfg(test)]
     crate::testlock::assert_held("controlled hubs store");
     let command = cmd.is_some();
-    let outcome = crate::pms::controlled_work(cmd,dt,launch);
+    let outcome = crate::pms::controlled_work(cmd, dt, launch);
     if command { super::bump(StoreId::Hubs); }
-    else { super::note(StoreId::Hubs,outcome.changed); }
+    else { super::note(StoreId::Hubs, outcome.changed); }
     outcome
 }
 
@@ -117,18 +97,6 @@ pub(super) fn run(cmd: HubsCmd) -> super::StoreOutcome {
     let answer = crate::pms::run(cmd);
     super::bump(StoreId::Hubs);
     answer
-}
-
-impl<H: super::StoreEffectHost> Machine<H> for HubsStore {
-    type Ev = StoreEv<HubsCmd>;
-    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        let outcome = match ev {
-            StoreEv::Cmd(c) => run(c.clone()),
-            StoreEv::Pump { dt } => tick(*dt),
-        };
-        outcome.endpoints.emit(fx);
-        Handled::Yes
-    }
 }
 
 #[cfg(test)]
