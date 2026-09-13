@@ -1,3 +1,5 @@
+
+const fn set_cur(i: usize) {}
 //! browse — the Library screen's per-section paged catalog.
 //!
 //! Production ownership is in `stores::browse::BrowseStore`, one instance per app Bridge. This

@@ -106,7 +106,7 @@ So the HUD freezes *while it is on screen*, mid-interaction. Note `transcode_see
 >    progress (contrary to the documented `ENOTCONN`), which is what makes that publication useful.
 > 2. Fixed. `threads::wait_or_stop` is a **condvar** wait, and `teardown` latches `report_wake` and
 >    `notify_all()`s *before* it joins — the deterministic 0-1000 ms is gone.
-> 3. Fixed. `HttpStream::reset_fields` excludes the atomic `fd`.
+> 3. Fixed. `HttpStream::reset_request_fields` excludes the atomic `fd`.
 >
 > **Carry this forward:** the timeline reporter's uncancellable window is now the ~10-50 ms it is
 > genuinely inside a POST, not ~99.9% of teardowns. Any rationale that still cites "every teardown

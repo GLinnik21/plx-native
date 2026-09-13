@@ -13,9 +13,10 @@ why `Range` is not optional here (§4 of the spec below).
 
 THE SPEC — what the app actually requires of a server (all read out of the code, not assumed):
 
-  1. Request line is `GET <abs-path> HTTP/1.1` with `Host:`, `User-Agent: plxnative/0.1`,
-     `Accept: */*` and `Connection: close` (`stream.rs::http_open`). One request per connection;
-     there is no keep-alive to support and no pipelining.
+  1. Request line is `GET <abs-path> HTTP/1.1` with `Host:`, `User-Agent: plxnative/0.1` and
+     `Accept: */*` (`stream.rs::http_open`). Media GETs omit `Connection: close` so HTTP/1.1
+     keep-alive is the default; sequential HLS/playlist GETs to the same peer reuse the fd.
+     Range seeks still close from the client (`ff.rs::seek_cb`). No pipelining.
   2. Only the status code, `Content-Length:` and `Transfer-Encoding: chunked` are parsed
      (`stream.rs`, the block after the header read). Everything else we send is ignored, so extra
      headers are free but never load-bearing.
@@ -129,6 +130,10 @@ class FixtureHandler(BaseHTTPRequestHandler):
     # run can attribute every open and every seek to a case.
     def log_message(self, fmt, *args):  # noqa: A003  (BaseHTTPRequestHandler's name)
         self.server.note(f"{self.address_string()} {fmt % args}")
+
+    def setup(self):
+        super().setup()
+        self.server.count_accept()
 
     def _resolve(self):
         """Map the request target to a real file under the root, or None.
@@ -256,9 +261,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.apple.mpegurl")
             self.send_header("Content-Length", str(len(playlist)))
-            self.send_header("Connection", "close")
             self.end_headers()
-            self.close_connection = True
             if body:
                 self.server.count(False)
                 self.server.write_body(self.wfile, playlist)
@@ -291,9 +294,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         if partial:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        self.send_header("Connection", "close")
         self.end_headers()
-        self.close_connection = True
         if not body:
             return
         self.server.count(partial)
@@ -330,7 +331,7 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         # Two counters, not a log: every request is already narrated through `note()`, and
         # `stats()` is the only reader — it wants totals. A list of per-request tuples grew for
         # the life of the run and read as though something consulted it.
-        self.n_opens = self.n_ranged = 0
+        self.n_opens = self.n_ranged = self.n_accepts = 0
         self.rate_profile = []
         self.rate_started = None
         # The REQUEST-indexed schedule, and the count it is indexed by. See `set_segment_profile`.
@@ -597,10 +598,15 @@ class FixtureServer(socketserver.ThreadingTCPServer):
             self.n_opens += 1
             self.n_ranged += bool(partial)
 
+    def count_accept(self):
+        with self.lock:
+            self.n_accepts += 1
+
     def stats(self):
         """(total opens, range opens) — the harness asserts on these: a seek case that never
         produced a range open never reached the demuxer's seek path at all, which is a different
-        failure from a seek that landed in the wrong place."""
+        failure from a seek that landed in the wrong place. Accepts are a separate counter
+        (`n_accepts`); keep-alive means sequential GETs share one TCP connection."""
         with self.lock:
             return self.n_opens, self.n_ranged
 
