@@ -5,26 +5,27 @@ use crate::ui::containers::tabs::StripMember;
 use crate::ui::dispatch::STRIP_BASE;
 use crate::ui::machine::{FocusKey, Measure};
 use crate::ui::widgets::{self, ChromeRead, ProfileChipRead, TabLabels, TopFocus};
+use crate::stores::browse::{DirectoryView, SecKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Pill {
     Home,
-    Section(crate::browse::SecKind),
+    Section(SecKind),
     Search,
 }
 
-pub(crate) fn tab_count() -> usize {
-    1 + crate::browse::tab_count() + 1
+pub(crate) fn tab_count(directory: DirectoryView<'_>) -> usize {
+    1 + directory.tab_count() + 1
 }
 
-pub(crate) fn pill_at(i: usize) -> Pill {
-    pill_in(i, tab_count() - 1, crate::browse::tab_kind)
+pub(crate) fn pill_at(directory: DirectoryView<'_>, i: usize) -> Pill {
+    pill_in(i, tab_count(directory) - 1, |tab| directory.tab_kind(tab))
 }
 
 fn pill_in(
     i: usize,
     search: usize,
-    kind_at: impl Fn(usize) -> Option<crate::browse::SecKind>,
+    kind_at: impl Fn(usize) -> Option<SecKind>,
 ) -> Pill {
     if i == search {
         Pill::Search
@@ -35,15 +36,15 @@ fn pill_in(
     }
 }
 
-pub(crate) fn pill_of(pill: Pill) -> Option<usize> {
-    let search = tab_count() - 1;
-    pill_index(pill, search, crate::browse::tab_of_kind)
+pub(crate) fn pill_of(directory: DirectoryView<'_>, pill: Pill) -> Option<usize> {
+    let search = tab_count(directory) - 1;
+    pill_index(pill, search, |kind| directory.tab_of_kind(kind))
 }
 
 fn pill_index(
     pill: Pill,
     search: usize,
-    tab_of: impl Fn(crate::browse::SecKind) -> Option<usize>,
+    tab_of: impl Fn(SecKind) -> Option<usize>,
 ) -> Option<usize> {
     match pill {
         Pill::Home => Some(0),
@@ -66,24 +67,24 @@ pub(crate) struct ChromeSnapshot {
 }
 
 impl ChromeSnapshot {
-    pub(crate) fn refresh(&mut self, measure: &dyn Measure) {
-        self.refresh_with_profile(measure, None);
+    pub(crate) fn refresh(&mut self, measure: &dyn Measure, directory: DirectoryView<'_>) {
+        self.refresh_with_profile(measure, directory, None);
     }
 
-    pub(crate) fn refresh_with_profile(&mut self, measure: &dyn Measure,
+    pub(crate) fn refresh_with_profile(&mut self, measure: &dyn Measure, directory: DirectoryView<'_>,
         captured: Option<(&crate::plex::session::CurrentProfile, &crate::plex::session::Session)>) {
-        let generation = crate::browse::tabs_gen();
+        let generation = directory.tabs_gen();
         if self.tabs_generation != Some(generation) {
             self.labels.clear();
             self.keys.clear();
             self.labels.push("Home".into());
             self.keys.push(STRIP_BASE);
-            for i in 0..crate::browse::tab_count() {
-                let Some(kind) = crate::browse::tab_kind(i) else { continue };
-                self.labels.push(crate::browse::tab_title(i).into());
+            for i in 0..directory.tab_count() {
+                let Some(kind) = directory.tab_kind(i) else { continue };
+                self.labels.push(match kind { SecKind::Movie => "Movies", SecKind::Show => "TV Shows" }.into());
                 self.keys.push(STRIP_BASE + match kind {
-                    crate::browse::SecKind::Movie => 1,
-                    crate::browse::SecKind::Show => 2,
+                    SecKind::Movie => 1,
+                    SecKind::Show => 2,
                 });
             }
             self.labels.push(String::new());
@@ -110,8 +111,8 @@ impl ChromeSnapshot {
         TabLabels { generation: self.tabs_generation.unwrap_or(0), labels: &self.labels }
     }
 
-    pub(crate) fn library_selection(&self, kind: crate::browse::SecKind) -> u32 {
-        let elem = STRIP_BASE + match kind { crate::browse::SecKind::Movie => 1, crate::browse::SecKind::Show => 2 };
+    pub(crate) fn library_selection(&self, kind: SecKind) -> u32 {
+        let elem = STRIP_BASE + match kind { SecKind::Movie => 1, SecKind::Show => 2 };
         self.keys.iter().position(|key| *key == elem).unwrap_or(0) as u32
     }
 
@@ -161,7 +162,19 @@ impl ChromeSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stores::browse::{DirectorySnapshot, SectionView, SrcRow};
     use crate::ui::machine::EntryId;
+
+    fn directory(kinds: &[SecKind]) -> DirectorySnapshot {
+        DirectorySnapshot::fixture(7, 0, kinds.iter().enumerate().map(|(i, &kind)| SectionView {
+            borrowed: i >= 2,
+            sid: Some(crate::plex::ServerId::from_raw((i / 2) as u16)),
+            key: i as i64 + 1,
+            kind,
+            row: SrcRow { section: i, title: format!("Library {i}"), pinned: true,
+                ..Default::default() },
+        }).collect())
+    }
 
     #[test]
     fn published_bar_focus_uses_destination_identity_not_position() {
@@ -179,25 +192,22 @@ mod tests {
 
     #[test]
     fn four_libraries_on_two_servers_publish_two_type_destinations() {
-        let _guard = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-        crate::browse::seed_two_source_table_for_test();
+        let directory = directory(&[SecKind::Movie, SecKind::Show, SecKind::Movie, SecKind::Show]);
         let mut snapshot = ChromeSnapshot {
             profile_generation: Some(crate::plex::session::current_gen()), ..Default::default()
         };
-        snapshot.refresh(&crate::ui::fixture::FixtureMeasure);
+        snapshot.refresh(&crate::ui::fixture::FixtureMeasure, directory.view());
         assert_eq!(snapshot.keys, vec![STRIP_BASE, STRIP_BASE + 1, STRIP_BASE + 2, STRIP_BASE + 3]);
         assert_eq!(&snapshot.labels[..3], &["Home", "Movies", "TV Shows"]);
         let mut members = Vec::new();
         snapshot.members(0, None, 0.0, &mut members);
         assert_eq!(members.iter().map(|member| member.elem).collect::<Vec<_>>(),
             vec![STRIP_BASE + 4, STRIP_BASE, STRIP_BASE + 1, STRIP_BASE + 2, STRIP_BASE + 3]);
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     #[test]
     fn every_projected_pill_round_trips_by_stable_section_identity() {
-        use crate::browse::SecKind::{Movie, Show};
+        use crate::stores::browse::SecKind::{Movie, Show};
         let kinds = [Movie, Show];
         let at = |i| kinds.get(i).copied();
         let search = kinds.len() + 1;
@@ -214,6 +224,14 @@ mod tests {
             "a type the captured strip no longer contains borrows no other position");
         assert_eq!(pill_in(1, 3, |_| None), Pill::Home,
             "an unfilled section slot falls back to the one fixed destination");
+    }
+
+    #[test]
+    fn chrome_production_reads_only_its_retained_directory() {
+        let src = include_str!("chrome.rs");
+        let production = src.split("#[cfg(test)]").next().unwrap();
+        assert!(!production.contains("crate::browse::"),
+            "Chrome must not select Browse's compatibility publication");
     }
 
     #[test]
