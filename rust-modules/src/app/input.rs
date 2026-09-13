@@ -452,7 +452,9 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // detail page is holding belongs to the SHOW when this rk is one of its episodes. A
             // guid that is merely close marks a DIFFERENT title watched on every other source, so
             // `viewstate` looks the right one up from `(sid, rk)` on its own worker instead.
-            crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Request { sid, rk: rk.to_string(), write: w, detail, guid: String::new() });
+            bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+                sid, rk: rk.to_string(), write: w, detail, guid: String::new(),
+            });
         }
         Action::RemoveFromDeck(rk) => {
             // A HIDE, not a reset: the server keeps the item's `viewOffset`, so the card leaves
@@ -470,7 +472,10 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // No guid, and it would be ignored if there were one: a deck removal does not follow
             // the title across sources (`viewstate::Write::propagates`) — your Continue Watching
             // row is yours, and hiding a friend's item from it is not a claim about their deck.
-            crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Request { sid, rk: rk.to_string(), write: crate::viewstate::Write::RemoveFromDeck, detail: None, guid: String::new() });
+            bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+                sid, rk: rk.to_string(), write: crate::viewstate::Write::RemoveFromDeck,
+                detail: None, guid: String::new(),
+            });
         }
         Action::PlayFromStart(rk) => {
             // On the detail page the target is an episode of the LOADED SEASON, which the hub
