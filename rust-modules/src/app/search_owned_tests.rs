@@ -793,7 +793,7 @@ fn a_seeded_boot_query_survives_the_freshly_mounted_screens_first_sync() {
     crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    crate::dev::scenarios::apply_search_boot_trigger("dune", &mut d);
+    crate::dev::scenarios::apply_search_boot_trigger("dune", &mut d, &rig);
     crate::search::publish_shelves_for_test([crate::search::Kind::Movie].into_iter()
         .map(|kind| crate::search::Shelf { kind, items: vec![crate::search::Item::Media(
             crate::pms::PmsMovie { rk: "synthetic-boot-seed".into(), title: "Dune".into(), ..Default::default() })] })

@@ -11,11 +11,6 @@ fn menu_arg(kind: LibraryMenuKind, anchor: [u32; 4]) -> LibraryMenuArg {
     }
 }
 
-fn run_browse(cmd: crate::stores::browse::BrowseCmd) {
-    let stores = crate::stores::Stores::default();
-    stores.browse_run(cmd);
-}
-
 fn anchor_bits(rect: Rect) -> [u32; 3] {
     [rect.x.to_bits(), rect.y.to_bits(), rect.w.to_bits()]
 }
@@ -46,13 +41,14 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     let _guard = crate::testlock::serial();
     let session = crate::plex::session::TempSession::new("menu-anchor-contract");
     session.watching("u-menu-anchor-contract");
-    crate::browse::seed_two_source_table_for_test();
-    run_browse(crate::stores::browse::BrowseCmd::SetCur(0));
-    let listing = crate::stores::browse::listing_snapshot();
-    let hubs = crate::stores::browse::hubs_snapshot();
+    let stores = crate::stores::Stores::default();
+    stores.browse.borrow_mut().seed_two_source_table_for_test();
+    stores.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
     let measure = FixtureMeasure;
     let mut first = crate::stores::browse::DirectorySnapshot::default();
-    first.capture();
+    let publication = stores.capture_browse(&mut first);
+    let listing = publication.listing;
+    let hubs = publication.section_hubs;
     let old_anchor = [100.0f32.to_bits(), 400.0f32.to_bits(), 220.0f32.to_bits(), 60.0f32.to_bits()];
     let new_anchor = [760.0f32.to_bits(), 260.0f32.to_bits(), 240.0f32.to_bits(), 60.0f32.to_bits()];
     let mut old = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, old_anchor));
@@ -69,10 +65,13 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     old.groups(&cx_first, &mut old_groups);
     let old_extent = old_groups[0].extent;
 
-    crate::browse::append_section_for_test(1, 3, "New Films", SecKind::Movie);
-    crate::browse::set_pinned_for_test(4, true);
+    {
+        let mut browse = stores.browse.borrow_mut();
+        browse.append_section_for_test(1, 3, "New Films", SecKind::Movie);
+        browse.set_pinned_for_test(4, true);
+    }
     let mut changed = crate::stores::browse::DirectorySnapshot::default();
-    changed.capture();
+    stores.capture_browse(&mut changed);
     let cx_changed = source_cx(&listing, &changed, &hubs, &measure, Tick { ms: 2, dt_us: 16_000 });
     old.step(
         &ScreenEvent::Tick(Tick { ms: 2, dt_us: 16_000 }),
@@ -93,7 +92,6 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     fresh.groups(&cx_changed, &mut fresh_groups);
     assert_ne!(anchor_bits(fresh_groups[0].extent), anchor_bits(old_extent), "a new open releases the old anchor");
     assert_eq!(fresh_groups[0].extent.x, 760.0);
-    run_browse(crate::stores::browse::BrowseCmd::Reset);
 }
 
 #[test]
@@ -221,13 +219,14 @@ fn open_sources_refreshes_metadata_once_then_settles() {
     let _guard = crate::testlock::serial();
     let session = crate::plex::session::TempSession::new("menu-refresh-contract");
     session.watching("u-menu-refresh-contract");
-    crate::browse::seed_two_source_table_for_test();
-    run_browse(crate::stores::browse::BrowseCmd::SetCur(0));
-    let listing = crate::stores::browse::listing_snapshot();
-    let hubs = crate::stores::browse::hubs_snapshot();
+    let stores = crate::stores::Stores::default();
+    stores.browse.borrow_mut().seed_two_source_table_for_test();
+    stores.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
     let measure = FixtureMeasure;
     let mut first = crate::stores::browse::DirectorySnapshot::default();
-    first.capture();
+    let publication = stores.capture_browse(&mut first);
+    let listing = publication.listing;
+    let hubs = publication.section_hubs;
     let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, [0; 4]));
     assert_eq!(first.view().current(), Some(0), "the added Movie row must affect the menu's current kind");
     let mut output = Vec::new();
@@ -251,10 +250,13 @@ fn open_sources_refreshes_metadata_once_then_settles() {
     let first_selection = menu.table.sel;
     assert_eq!(menu.draft_rebuilds, 1);
 
-    crate::browse::append_section_for_test(1, 3, "New Films", SecKind::Movie);
-    crate::browse::set_pinned_for_test(4, true);
+    {
+        let mut browse = stores.browse.borrow_mut();
+        browse.append_section_for_test(1, 3, "New Films", SecKind::Movie);
+        browse.set_pinned_for_test(4, true);
+    }
     let mut changed = crate::stores::browse::DirectorySnapshot::default();
-    changed.capture();
+    stores.capture_browse(&mut changed);
     let cx_changed = source_cx(&listing, &changed, &hubs, &measure, Tick { ms: 2, dt_us: 16_000 });
     effects(&mut menu, &cx_changed);
     assert_ne!(menu.stamp, first_stamp, "source metadata refresh rebuilds the open menu");
@@ -266,5 +268,4 @@ fn open_sources_refreshes_metadata_once_then_settles() {
     assert_eq!(menu.rows[0].key, first_key);
     assert_eq!(menu.table.sel, first_selection);
     assert_eq!(menu.draft_rebuilds, 2);
-    run_browse(crate::stores::browse::BrowseCmd::Reset);
 }

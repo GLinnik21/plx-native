@@ -1,35 +1,29 @@
 //! The Library table and its per-section listing, as a machine over `crate::browse`
 //! (`docs/stores-as-machines.md`). The vocabulary is [`BrowseCmd`]; each [`BrowseStore`] owns its
 //! main-thread state, worker adapter and notice while `crate::browse` retains the core
-//! implementation and a temporary compatibility read publication for unmigrated callers.
+//! implementation.
 
 use crate::plex::ServerId;
 use crate::ui::machine::{Cx, Effects, Handled, Machine};
-use std::cell::RefCell;
-use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use super::{StoreEv, StoreId};
-#[cfg(test)]
-use super::note;
 
-#[allow(unused_imports)] // Wave 0 type surface; consumer lanes switch imports onto it.
+#[allow(unused_imports)] // Shared owner vocabulary; some members are feature/test specific.
 pub(crate) use crate::browse::{
     Cursor, CursorAt, GenreEntry, SecFetch, SecKind, SortEntry, SourceState, SrcGroup, SrcRow,
 };
-#[allow(unused_imports)] // Wave 0 type surface; consumer lanes switch imports onto it.
+#[allow(unused_imports)] // Shared owner vocabulary; some members are feature/test specific.
 pub(crate) use crate::browse::section_hubs::{HubsId, HubsSnapshot, HubsView, Publication};
-#[allow(unused_imports)] // Wave 0 type surface; consumer lanes switch imports onto it.
+#[allow(unused_imports)] // Shared owner vocabulary; some members are feature/test specific.
 pub(crate) use crate::browse::view::{
     DirectorySnapshot, DirectoryView, ListingId, ListingSnapshot, ListingView, SectionView,
 };
 
 /// Owner-aware first-run gate shared by boot and login. The retained directory is the granted
-/// Browse publication for this Bridge; the compatibility screen wrapper remains until its lane
-/// migrates.
+/// Browse publication for this Bridge.
 pub(crate) mod onboard {
-    #[allow(dead_code)] // Wave 0.5 contract; the app lane owns the routing caller.
     pub(crate) fn asks(directory: super::DirectoryView<'_>) -> bool {
         let session = crate::plex::session::peek();
         crate::plex::pins::asks(
@@ -47,30 +41,6 @@ pub(crate) struct BrowsePublications {
     pub(crate) listing: ListingSnapshot,
     pub(crate) directory: DirectorySnapshot,
     pub(crate) section_hubs: HubsSnapshot,
-}
-
-impl BrowsePublications {
-    #[allow(dead_code)] // Fixture/controlled constructor for the Wave 1 publication API.
-    pub(crate) fn empty() -> Self {
-        Self {
-            listing: ListingSnapshot::empty(),
-            directory: DirectorySnapshot::default(),
-            section_hubs: HubsSnapshot::empty(),
-        }
-    }
-}
-
-#[allow(dead_code)] // Temporary compatibility fixture path during consumer migration.
-pub(crate) fn hubs_snapshot() -> HubsSnapshot {
-    with_active(|store| store.hubs_snapshot()).unwrap_or_else(|| {
-        crate::browse::section_hubs::snapshot(crate::browse::cur())
-    })
-}
-
-/// Retain the current listing for one dispatcher frame, without copying its items.
-#[allow(dead_code)] // Temporary compatibility fixture path during consumer migration.
-pub(crate) fn listing_snapshot() -> ListingSnapshot {
-    with_active(|store| store.listing_snapshot()).unwrap_or_else(crate::browse::view::snapshot)
 }
 
 /// Every mutation of the browse store a screen may ask for.
@@ -114,124 +84,20 @@ pub(crate) struct BrowseStore {
     adapter: Arc<crate::browse::BrowseAdapter>,
     notice_gen: AtomicU32,
     notice_dirty: AtomicBool,
-    #[cfg(test)]
-    compatibility_publications: std::cell::Cell<u32>,
-}
-
-thread_local! {
-    static ACTIVE: RefCell<Weak<RefCell<BrowseStore>>> = RefCell::new(Weak::new());
-}
-
-static BOOTSTRAP_AVAILABLE: AtomicBool = AtomicBool::new(true);
-
-#[cfg(test)]
-pub(crate) fn reset_bootstrap_for_test() {
-    BOOTSTRAP_AVAILABLE.store(true, Ordering::SeqCst);
 }
 
 impl Default for BrowseStore {
     fn default() -> Self {
-        #[cfg(test)]
-        let take_legacy = active_owner().is_none() && crate::testlock::held();
-        #[cfg(not(test))]
-        let take_legacy = take_bootstrap_token();
-        Self::new(take_legacy)
-    }
-}
-
-fn take_bootstrap_token() -> bool {
-    // Process-lifetime handoff: dropping or switching an owner never replenishes this token.
-    BOOTSTRAP_AVAILABLE.compare_exchange(
-        true, false, Ordering::SeqCst, Ordering::SeqCst).is_ok()
-}
-
-impl BrowseStore {
-    fn new(take_legacy: bool) -> Self {
-        let (state, adapter, (notice_gen, notice_dirty)) = if take_legacy {
-            (crate::browse::take_legacy_state(), crate::browse::take_legacy_adapter(),
-                super::take_browse_notice_seed())
-        } else {
-            (Default::default(), Arc::new(Default::default()), (0, false))
-        };
         Self {
-            state,
-            adapter,
-            notice_gen: AtomicU32::new(notice_gen),
-            notice_dirty: AtomicBool::new(notice_dirty),
-            #[cfg(test)]
-            compatibility_publications: std::cell::Cell::new(0),
+            state: Default::default(),
+            adapter: Arc::new(Default::default()),
+            notice_gen: AtomicU32::new(0),
+            notice_dirty: AtomicBool::new(false),
         }
     }
-
-    #[cfg(test)]
-    pub(super) fn production_bootstrap_for_test() -> Self {
-        Self::new(take_bootstrap_token())
-    }
-}
-
-fn with_active<R>(f: impl FnOnce(&mut BrowseStore) -> R) -> Option<R> {
-    let owner = active_owner()?;
-    let mut store = owner.try_borrow_mut()
-        .expect("reentrant Browse compatibility call");
-    Some(f(&mut store))
-}
-
-fn active_owner() -> Option<Rc<RefCell<BrowseStore>>> {
-    ACTIVE.with(|active| active.borrow().upgrade())
-}
-
-pub(crate) fn activate(store: &Rc<RefCell<BrowseStore>>) {
-    let next = Rc::downgrade(store);
-    if ACTIVE.with(|active| Weak::ptr_eq(&active.borrow(), &next)) {
-        return;
-    }
-    // Publish before committing the selector. A failed borrow or clone leaves the previous
-    // compatibility owner selected instead of exposing a half-activated aggregate.
-    store.borrow().publish_compatibility();
-    ACTIVE.with(|active| *active.borrow_mut() = next);
-}
-
-#[cfg(test)]
-fn with_activation<R>(store: &Rc<RefCell<BrowseStore>>, f: impl FnOnce() -> R) -> R {
-    struct Restore {
-        owner: Weak<RefCell<BrowseStore>>,
-        publication: crate::browse::BrowseState,
-    }
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            if let Some(owner) = self.owner.upgrade() {
-                if let Ok(owner) = owner.try_borrow() {
-                    owner.publish_compatibility();
-                } else {
-                    crate::browse::publish_legacy(&self.publication);
-                }
-            } else {
-                crate::browse::publish_legacy(&self.publication);
-            }
-            ACTIVE.with(|active| *active.borrow_mut() = self.owner.clone());
-        }
-    }
-    let previous = ACTIVE.with(|active| active.borrow().clone());
-    let publication = previous.upgrade().and_then(|owner| {
-        owner.try_borrow().ok().map(|owner| owner.state.clone())
-    }).unwrap_or_else(crate::browse::clone_legacy_state);
-    let _restore = Restore { owner: previous, publication };
-    activate(store);
-    f()
 }
 
 impl BrowseStore {
-    fn publish_compatibility(&self) {
-        #[cfg(test)]
-        if !crate::testlock::held() {
-            return;
-        }
-        #[cfg(test)]
-        self.compatibility_publications
-            .set(self.compatibility_publications.get().wrapping_add(1));
-        crate::browse::publish_legacy(&self.state);
-    }
-
     fn bump(&self) -> u32 {
         self.notice_dirty.store(true, Ordering::Relaxed);
         self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1
@@ -262,9 +128,6 @@ impl BrowseStore {
         }
         let discovery = matches!(&cmd, BrowseCmd::Discovery(_));
         let changed = self.state.run_owned(&self.adapter, cmd) || roster_changed;
-        if !quiet && !save_cursor && changed {
-            self.publish_compatibility();
-        }
         if (save_cursor && changed) || (!quiet && !save_cursor && (!discovery || changed)) {
             self.bump();
         }
@@ -280,9 +143,6 @@ impl BrowseStore {
         let mut outcome = self.state.pump_owned(&self.adapter);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
         if outcome.changed {
-            self.publish_compatibility();
-        }
-        if outcome.changed {
             self.bump();
         }
         outcome
@@ -296,10 +156,7 @@ impl BrowseStore {
         let source_gen = self.state.source_list_gen();
         let mut outcome = self.state.discover_pump_owned(&self.adapter);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
-        if outcome.changed {
-            self.publish_compatibility();
-            self.bump();
-        }
+        if outcome.changed { self.bump(); }
         outcome
     }
 
@@ -334,7 +191,6 @@ impl BrowseStore {
         let changed = self.sync_roster();
         self.state.controlled_discover_owned(&self.adapter, launch);
         if changed {
-            self.publish_compatibility();
             self.bump();
         }
     }
@@ -347,7 +203,6 @@ impl BrowseStore {
         let outcome = crate::browse::record::apply_to(
             &mut self.state, &self.adapter, result, Some(preferences));
         if outcome.changed {
-            self.publish_compatibility();
             self.bump();
         }
         outcome
@@ -363,13 +218,126 @@ impl BrowseStore {
     }
 
     #[cfg(test)]
-    fn seed_items_for_test(&mut self, count: usize) {
+    pub(crate) fn seed_items_for_test(&mut self, count: usize) {
         crate::browse::seed_items_for_owner_test(&mut self.state, count);
-        self.publish_compatibility();
     }
 
     #[cfg(test)]
-    fn queue_discovery_for_test(
+    pub(crate) fn seed_sources_for_test(&mut self, count: usize, reachable: bool) {
+        crate::browse::seed_sources_for_owner_test(&mut self.state, count, reachable);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_pins_for_test(&mut self, pinned: &[bool]) {
+        crate::browse::seed_pins_for_owner_test(&mut self.state, pinned);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_pinned_for_test(&mut self, index: usize, on: bool) {
+        crate::browse::set_pinned_for_owner_test(&mut self.state, index, on);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn land_pin_for_test(&mut self, pinned: bool) {
+        crate::browse::land_pin_for_owner_test(&mut self.state, pinned);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_two_source_table_for_test(&mut self) {
+        crate::browse::seed_two_source_table_for_owner_test(&mut self.state);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_registered_table_for_test(&mut self, sids: [ServerId; 2]) {
+        crate::browse::seed_registered_table_for_owner_test(&mut self.state, sids);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn append_section_for_test(
+        &mut self,
+        source: usize,
+        key: i64,
+        title: &str,
+        kind: SecKind,
+    ) {
+        crate::browse::append_section_for_owner_test(&mut self.state, source, key, title, kind);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_letter_counts_for_test(&mut self, letters: &[(&str, i64)]) {
+        crate::browse::seed_letter_counts_for_owner_test(&mut self.state, letters);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_query_choices_for_test(
+        &mut self,
+        sorts: Vec<SortEntry>,
+        genres: Vec<GenreEntry>,
+    ) {
+        crate::browse::seed_query_choices_for_owner_test(&mut self.state, sorts, genres);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_shelves_for_test(
+        &mut self,
+        section: usize,
+        titles: &[&str],
+        per_row: usize,
+    ) {
+        crate::browse::section_hubs::seed_shelves_for_owner_test(
+            &mut self.state,
+            section,
+            titles,
+            per_row,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_landscape_for_test(&mut self, section: usize, show: &str) {
+        crate::browse::section_hubs::seed_landscape_for_owner_test(
+            &mut self.state,
+            section,
+            show,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pinned_for_test(&self, index: usize) -> bool {
+        self.state.pinned_for_test(index)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_for_test(&self) -> usize {
+        self.state.cur()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn table_epoch_for_test(&self) -> u32 {
+        self.state.table_epoch()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resolve_section_for_test(
+        &self,
+        epoch: u32,
+        sid: ServerId,
+        key: i64,
+    ) -> Option<usize> {
+        self.state.resolve_section(epoch, sid, key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prepare_discovery_replay_for_test(&mut self, sid: ServerId, epoch: u32) {
+        self.state.prepare_discovery_replay_for_test(&self.adapter, sid, epoch);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn discovery_policy_for_test(&self) -> (bool, u32, bool) {
+        self.state.discovery_policy_for_test(&self.adapter)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_discovery_for_test(
         &mut self,
         client: &'static crate::plex::Client,
         token_gen: u32,
@@ -403,27 +371,6 @@ impl BrowseStore {
     fn source_list_gen_for_test(&self) -> u32 {
         self.state.source_list_gen()
     }
-}
-
-#[allow(dead_code)] // Compatibility active-owner path retained until the UI consumer wave.
-pub(crate) fn controlled_discover_active(
-    launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool,
-) -> bool {
-    with_active(|store| store.controlled_discover(launch)).is_some()
-}
-
-#[cfg(test)]
-pub(crate) fn seed_items_active_for_test(count: usize) -> bool {
-    with_active(|store| store.seed_items_for_test(count)).is_some()
-}
-
-#[cfg(test)]
-pub(crate) fn queue_discovery_active_for_test(
-    client: &'static crate::plex::Client,
-    token_gen: u32,
-    ok: bool,
-) -> bool {
-    with_active(|store| store.queue_discovery_for_test(client, token_gen, ok)).is_some()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -464,55 +411,6 @@ pub(crate) enum LibraryWork {
     Retry,
 }
 
-/// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
-pub(crate) fn apply(cmd: BrowseCmd) -> bool {
-    super::apply(super::StoreCmd::Browse(cmd)).changed
-}
-
-/// The compatibility entry point for the store's command runner. D3 moved the match itself
-/// (`addressed` included) into `browse::run` — it called `pub(crate)` mutators across this
-/// module boundary; those are private to `browse/mod.rs` now and this is their compatibility door.
-/// The production `Bridge` path reaches the owning [`BrowseStore`] through `Machine::step`; this
-/// shim remains for legacy callers and tests.
-pub(super) fn run(cmd: BrowseCmd) -> bool {
-    // `crate::browse`'s temporary holder is reached from both `apply` above and
-    // `crate::stores::apply(StoreCmd::Browse(..))` directly (some fixtures deliver a `StoreCmd`
-    // without going through this module's `apply`) — guard the one point both funnel through. See
-    // `lib.rs::testlock` and D5.
-    #[cfg(test)]
-    crate::testlock::assert_held("the browse store (apply)");
-    let save_cursor = matches!(&cmd, BrowseCmd::Addressed {
-        work: LibraryWork::SaveCursor { .. }, ..
-    });
-    with_active(|store| store.run(cmd.clone())).unwrap_or_else(|| {
-        let changed = crate::browse::run(cmd);
-        if !save_cursor || changed {
-            super::bump(StoreId::Browse);
-        }
-        changed
-    })
-}
-
-/// Compatibility entry point for the landing pass: pages, menu data, the roster and shelves.
-/// Production Library work reaches the per-Bridge store through `app/bridge.rs`; this remains for
-/// legacy callers and tests. Answers `true` when the store changed.
-#[cfg(test)]
-pub(crate) fn pump() -> super::StoreOutcome {
-    with_active(BrowseStore::pump).unwrap_or_else(|| {
-        let outcome = crate::browse::pump();
-        note(StoreId::Browse, outcome.changed);
-        outcome
-    })
-}
-
-/// Compatibility entry point for the roster half alone — what Onboard, Home and Search run to
-/// learn about a friend's libraries without fetching any page. Production Browse work still
-/// resolves to the active Bridge-owned store rather than a second global owner.
-pub(crate) fn discover_pump() -> super::EndpointRefreshSet {
-    with_active(BrowseStore::discover_pump)
-        .map(|outcome| outcome.endpoints).unwrap_or_else(crate::browse::discover_pump)
-}
-
 impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
     type Ev = StoreEv<BrowseCmd>;
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
@@ -535,12 +433,12 @@ mod contract_tests {
     #[test]
     fn explicit_store_commands_answer_now_and_capture_one_consistent_publication() {
         let _guard = crate::testlock::serial();
-        reset_bootstrap_for_test();
-        apply(BrowseCmd::Reset);
-        crate::browse::seed_two_source_table_for_test();
-        crate::browse::seed_items_for_test(3);
-
-        let stores = crate::stores::Stores::production_bootstrap_for_test();
+        let stores = crate::stores::Stores::default();
+        {
+            let mut browse = stores.browse.borrow_mut();
+            browse.seed_two_source_table_for_test();
+            browse.seed_items_for_test(3);
+        }
         let mut directory = DirectorySnapshot::default();
         let publication = stores.capture_browse(&mut directory);
         let view = publication.directory.view();
@@ -565,52 +463,32 @@ mod contract_tests {
             "listing capture must follow directory's possible current-section repoint");
         assert_eq!(publication.section_hubs.view().id().unwrap().section, id.section,
             "section hubs and listing must describe the same post-directory section");
-
-        drop(stores);
-        apply(BrowseCmd::Reset);
     }
 
     #[test]
-    fn bootstrap_adoption_is_permanently_one_shot_even_after_the_owner_drops() {
+    fn separate_store_aggregates_never_share_state_transport_or_notices() {
         let _guard = crate::testlock::serial();
-        reset_bootstrap_for_test();
-        apply(BrowseCmd::Reset);
-        crate::browse::seed_two_source_table_for_test();
-        crate::browse::seed_items_for_test(1);
-
-        let first = crate::stores::Stores::production_bootstrap_for_test();
+        let first = crate::stores::Stores::default();
+        let second = crate::stores::Stores::default();
+        first.browse.borrow_mut().seed_two_source_table_for_test();
+        first.browse.borrow_mut().seed_items_for_test(1);
         assert!(first.browse.borrow_mut().listing_snapshot().view().item(0).is_some());
-        drop(first);
-
-        let second = crate::stores::Stores::production_bootstrap_for_test();
-        assert!(second.browse.borrow_mut().listing_snapshot().view().item(0).is_none(),
-            "dropping the bootstrap owner must not mint another adoption token");
-        drop(second);
-        apply(BrowseCmd::Reset);
+        assert!(second.browse.borrow_mut().listing_snapshot().view().item(0).is_none());
+        assert!(!Arc::ptr_eq(
+            &first.browse.borrow().adapter,
+            &second.browse.borrow().adapter,
+        ));
+        first.browse_run(BrowseCmd::Reset);
+        assert_eq!(first.take_notices(), [(StoreId::Browse, 1)]);
+        assert!(second.take_notices().is_empty());
     }
 
     #[test]
-    fn owned_notices_never_merge_the_retired_compatibility_generation() {
+    fn snapshots_and_an_idle_pump_are_quiet() {
         let _guard = crate::testlock::serial();
-        apply(BrowseCmd::Reset);
-        let stores = crate::stores::Stores::default();
-        let _ = stores.take_notices();
-
-        super::super::bump(StoreId::Browse);
-        assert!(stores.take_notices().iter().all(|(id, _)| *id != StoreId::Browse),
-            "an owned aggregate must not import a later compatibility generation");
-
-        drop(stores);
-        apply(BrowseCmd::Reset);
-    }
-
-    #[test]
-    fn snapshots_and_an_idle_pump_publish_no_compatibility_clone() {
-        let _guard = crate::testlock::serial();
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let stores = crate::stores::Stores::default();
-        let before = stores.browse.borrow().compatibility_publications.get();
+        let before = stores.browse.borrow().gen();
         let mut directory = DirectorySnapshot::default();
         {
             let mut browse = stores.browse.borrow_mut();
@@ -620,94 +498,22 @@ mod contract_tests {
             assert_eq!(browse.pump(), super::super::StoreOutcome::default());
             assert_eq!(browse.discover_pump(), super::super::StoreOutcome::default());
         }
-        assert_eq!(stores.browse.borrow().compatibility_publications.get(), before);
-        drop(stores);
-        apply(BrowseCmd::Reset);
+        assert_eq!(stores.browse.borrow().gen(), before);
+        assert!(stores.take_notices().is_empty());
     }
 
     #[test]
-    fn compatibility_owner_is_drop_safe_and_reentrancy_refuses_without_corruption() {
+    fn an_owned_discovery_landing_is_consumed_once_and_noticed_once() {
         let _guard = crate::testlock::serial();
-        reset_bootstrap_for_test();
-        apply(BrowseCmd::Reset);
-        crate::browse::seed_two_source_table_for_test();
-        let first = crate::stores::Stores::default();
-        let second = crate::stores::Stores::default();
-        activate(&first.browse);
-        assert_eq!(crate::browse::section_count(), 4);
-        with_activation(&second.browse, || {
-            assert_eq!(crate::browse::section_count(), 0,
-                "the scoped owner must publish before the callback reads compatibility state");
-        });
-        assert_eq!(crate::browse::section_count(), 4,
-            "normal scoped exit must restore the prior compatibility publication");
-        let nested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_activation(&second.browse, || {
-                assert_eq!(crate::browse::section_count(), 0);
-                panic!("nested owner unwind");
-            });
-        }));
-        assert!(nested.is_err());
-        assert_eq!(crate::browse::section_count(), 4,
-            "panic exit must restore the prior compatibility publication immediately");
-        let first_gen = first.browse.borrow().gen();
-        let held = first.browse.borrow_mut();
-        let reentrant = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            apply(BrowseCmd::Reset);
-        }));
-        assert!(reentrant.is_err());
-        drop(held);
-        assert_eq!(first.browse.borrow().gen(), first_gen,
-            "a refused same-owner reentry cannot partially mutate the owner");
-
-        let held_second = second.browse.borrow_mut();
-        let refused_switch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            activate(&second.browse);
-        }));
-        assert!(refused_switch.is_err());
-        drop(held_second);
-        apply(BrowseCmd::Reset);
-        assert_eq!(first.browse.borrow().gen(), first_gen + 1,
-            "a failed publication must leave the prior owner active");
-        assert_eq!(second.browse.borrow().gen(), 0);
-
-        let nested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_activation(&second.browse, || panic!("nested owner unwind after reset"));
-        }));
-        assert!(nested.is_err());
-        apply(BrowseCmd::Reset);
-        assert_eq!(first.browse.borrow().gen(), first_gen + 2,
-            "the prior owner is restored when a nested owner unwinds");
-        assert_eq!(second.browse.borrow().gen(), 0);
-
-        drop(first);
-        apply(BrowseCmd::Reset);
-        assert!(crate::stores::take_notices().iter().any(|(id, _)| *id == StoreId::Browse),
-            "a dead Weak falls back to the compatibility store instead of dangling");
-        drop(second);
-    }
-
-    #[test]
-    fn first_owner_atomically_adopts_prebridge_state_adapter_and_notice() {
-        let _guard = crate::testlock::serial();
-        reset_bootstrap_for_test();
         let session = crate::plex::session::TempSession::new("browse-preowner");
         session.watching("u-browse-preowner");
         crate::plex::reset_servers_for_test();
-        apply(BrowseCmd::Reset);
         let sid = crate::plex::register_for_test(
             "browse-preowner", "127.0.0.1", 9, "synthetic", "fixture");
         let client = crate::plex::client_for(sid).unwrap();
-        crate::browse::queue_discovery_for_test(client, client.token_gen(), false);
-        let generation = crate::stores::gen(StoreId::Browse);
-
         let stores = crate::stores::Stores::default();
-        assert_eq!(stores.browse.borrow().gen(), generation);
-        let browse_notices: Vec<_> = stores.take_notices().into_iter()
-            .filter(|(id, _)| *id == StoreId::Browse).collect();
-        assert_eq!(browse_notices, [(StoreId::Browse, generation)],
-            "the pre-owner dirty notice moves once rather than being merged twice");
-        assert!(crate::stores::take_notices().iter().all(|(id, _)| *id != StoreId::Browse));
+        stores.browse.borrow_mut().queue_discovery_for_test(
+            client, client.token_gen(), false);
         let before_landing = stores.browse.borrow().gen();
         let endpoints = stores.browse.borrow_mut().discover_pump();
         assert_eq!(endpoints.endpoints.iter().map(|request| request.sid).collect::<Vec<_>>(), [sid]);
@@ -716,21 +522,17 @@ mod contract_tests {
         assert!(stores.take_notices().is_empty(), "one discovery landing owes one notice");
         assert_eq!(stores.browse.borrow_mut().discover_pump().endpoints.iter().count(), 0,
             "the transferred adapter result is consumed exactly once");
-        drop(stores);
-        crate::stores::browse::apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 
     #[test]
     fn controlled_discovery_apply_and_directory_landing_each_bump_exactly_once() {
         let _guard = crate::testlock::serial();
-        reset_bootstrap_for_test();
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "browse-owned-landings", "127.0.0.1", 9, "synthetic", "fixture");
-        crate::browse::seed_registered_table_for_test([sid, sid]);
         let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
         let _ = stores.take_notices();
         let client = crate::plex::client_for(sid).unwrap();
 
@@ -752,21 +554,17 @@ mod contract_tests {
         assert_eq!(stores.take_notices(), [(StoreId::Browse, before_directory + 1)]);
         assert!(stores.take_notices().is_empty());
 
-        drop(stores);
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 
     #[test]
     fn reset_rotates_the_adapter_away_from_a_late_old_worker() {
         let _guard = crate::testlock::serial();
-        reset_bootstrap_for_test();
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "browse-reset-worker", "127.0.0.1", 9, "synthetic", "fixture");
-        crate::browse::seed_registered_table_for_test([sid, sid]);
         let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
         let client = crate::plex::client_for(sid).unwrap();
         stores.browse.borrow_mut().prepare_page_for_test(sid);
         let old = Arc::clone(&stores.browse.borrow().adapter);
@@ -785,20 +583,17 @@ mod contract_tests {
         assert!(crate::browse::adapter_fetching_for_test(&new),
             "a retired worker must not clear the replacement flight");
 
-        drop(stores);
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 
     #[test]
     fn roster_removal_rotates_transport_away_from_a_held_old_worker() {
         let _guard = crate::testlock::serial();
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "browse-roster-retire", "127.0.0.1", 9, "synthetic", "fixture");
-        crate::browse::seed_registered_table_for_test([sid, sid]);
         let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
         let client = crate::plex::client_for(sid).unwrap();
         stores.browse.borrow_mut().prepare_page_for_test(sid);
         let old = Arc::clone(&stores.browse.borrow().adapter);
@@ -817,19 +612,16 @@ mod contract_tests {
         assert!(!crate::browse::adapter_has_page_for_test(&new));
         assert!(crate::browse::adapter_fetching_for_test(&new));
 
-        drop(stores);
-        apply(BrowseCmd::Reset);
     }
 
     #[test]
     fn extracted_discovery_result_cannot_clear_the_post_reset_source_flight() {
         let _guard = crate::testlock::serial();
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "browse-result-retire", "127.0.0.1", 9, "synthetic", "fixture");
-        crate::browse::seed_registered_table_for_test([sid, sid]);
         let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
         let client = crate::plex::client_for(sid).unwrap();
         stores.browse.borrow_mut().queue_discovery_for_test(
             client, client.token_gen(), true);
@@ -848,15 +640,12 @@ mod contract_tests {
         assert!(crate::browse::adapter_src_fetching_for_test(&replacement),
             "a result extracted from the retired adapter must not release the new source flight");
 
-        drop(stores);
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 
     #[test]
     fn controlled_roster_addition_is_one_published_change_even_when_spawn_is_refused() {
         let _guard = crate::testlock::serial();
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let stores = crate::stores::Stores::default();
         let _ = stores.take_notices();
@@ -865,15 +654,13 @@ mod contract_tests {
         crate::plex::register_for_test(
             "", "127.0.0.1", 9, "synthetic", "fixture");
         let mut launches = 0;
-        assert!(controlled_discover_active(&mut |_| {
+        stores.browse_controlled_discover(&mut |_| {
             launches += 1;
             false
-        }));
+        });
         assert_eq!(launches, 1);
         let owned_sources = stores.browse.borrow().source_list_gen_for_test();
         assert_ne!(owned_sources, before_sources);
-        assert_eq!(crate::browse::source_list_gen(), owned_sources,
-            "the compatibility publication must immediately expose the owned roster");
         assert_eq!(stores.browse.borrow().gen(), before_notice + 1);
         assert_eq!(stores.take_notices(), [(StoreId::Browse, before_notice + 1)]);
         assert!(stores.take_notices().is_empty());
@@ -881,32 +668,24 @@ mod contract_tests {
 
         let settled_notice = stores.browse.borrow().gen();
         let settled_sources = stores.browse.borrow().source_list_gen_for_test();
-        let settled_publications = stores.browse.borrow().compatibility_publications.get();
         let mut second_launches = 0;
-        assert!(controlled_discover_active(&mut |_| {
+        stores.browse_controlled_discover(&mut |_| {
             second_launches += 1;
             false
-        }));
+        });
         assert_eq!(second_launches, 0, "the refused source is still in retry backoff");
         assert_eq!(stores.browse.borrow().gen(), settled_notice);
         assert_eq!(stores.browse.borrow().source_list_gen_for_test(), settled_sources);
-        assert_eq!(crate::browse::source_list_gen(), settled_sources);
-        assert_eq!(stores.browse.borrow().compatibility_publications.get(),
-            settled_publications);
         assert!(stores.take_notices().is_empty());
         assert_eq!(crate::ui::idle::take_local_damage(), 0,
             "an empty-to-empty machine identity must not invalidate the settled frame");
 
-        drop(stores);
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 
     #[test]
-    fn direct_controlled_discovery_never_selects_the_active_compatibility_owner() {
+    fn direct_controlled_discovery_mutates_only_the_addressed_owner() {
         let _guard = crate::testlock::serial();
-        reset_bootstrap_for_test();
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let selected = crate::stores::Stores::default();
         let decoy = crate::stores::Stores::default();
@@ -925,27 +704,24 @@ mod contract_tests {
         assert_ne!(selected.browse.borrow().source_list_gen_for_test(), selected_before,
             "the explicitly addressed owner must admit the discovery request");
         assert_eq!(decoy.browse.borrow().source_list_gen_for_test(), decoy_before,
-            "the ACTIVE compatibility owner is not part of the direct contract");
+            "an unaddressed owner is not part of the direct contract");
         assert_eq!(selected.take_notices().into_iter()
             .filter(|(id, _)| *id == StoreId::Browse).count(), 1,
             "the direct call owes exactly one notice from the addressed Browse owner");
         assert!(decoy.take_notices().is_empty());
 
-        drop((selected, decoy));
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 
     #[test]
     fn isolated_current_page_failure_is_one_observable_change_and_notice() {
         let _guard = crate::testlock::serial();
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "browse-page-failure", "127.0.0.1", 9, "synthetic", "fixture");
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
-        crate::browse::seed_registered_table_for_test([sid, sid]);
         let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
         let client = crate::plex::client_for(sid).unwrap();
         stores.browse.borrow_mut().prepare_page_for_test(sid);
         let _ = stores.browse.borrow_mut().discover_pump();
@@ -961,8 +737,6 @@ mod contract_tests {
         assert_eq!(stores.take_notices(), [(StoreId::Browse, before + 1)]);
         assert!(stores.take_notices().is_empty());
 
-        drop(stores);
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 
@@ -974,12 +748,10 @@ mod contract_tests {
         struct Cleanup;
         impl Drop for Cleanup {
             fn drop(&mut self) {
-                apply(BrowseCmd::Reset);
                 crate::plex::reset_servers_for_test();
             }
         }
         let _cleanup = Cleanup;
-        apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let own =
             crate::plex::register_for_test("switch-own", "127.0.0.1", 9, "synthetic", "fixture");
@@ -990,20 +762,21 @@ mod contract_tests {
             "synthetic",
             "fixture",
         );
-        crate::browse::seed_registered_table_for_test([own, shared]);
-        apply(BrowseCmd::SetCur(0));
+        let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
+        stores.browse_run(BrowseCmd::SetCur(0));
         let a = SectionAddress {
-            epoch: crate::browse::table_epoch(),
+            epoch: stores.browse.borrow().table_epoch_for_test(),
             sid: own,
             section: 1,
         };
         let b = SectionAddress { sid: shared, ..a };
         assert_eq!(
-            crate::browse::resolve_section(b.epoch, b.sid, b.section),
+            stores.browse.borrow().resolve_section_for_test(b.epoch, b.sid, b.section),
             Some(2)
         );
         let commit = |target, select, choice| {
-            apply(BrowseCmd::Addressed {
+            stores.browse_run(BrowseCmd::Addressed {
                 target,
                 work: LibraryWork::Commit {
                     select,
@@ -1041,20 +814,20 @@ mod contract_tests {
             (false, vec![]),
             "foreign work without selection cannot count"
         );
-        assert_eq!(crate::browse::cur(), 0);
+        assert_eq!(stores.browse.borrow().current_for_test(), 0);
         assert_eq!(
             observe(b, true, false),
             (true, vec![]),
             "boot/repoint is not a viewer choice"
         );
-        assert_eq!(crate::browse::cur(), 2);
+        assert_eq!(stores.browse.borrow().current_for_test(), 2);
         assert_eq!(
             observe(b, true, true),
             (true, vec![]),
             "choosing the current library is quiet"
         );
         assert_eq!(observe(a, true, true), (true, vec![switched]));
-        assert_eq!(crate::browse::cur(), 0);
+        assert_eq!(stores.browse.borrow().current_for_test(), 0);
         assert_eq!(
             observe(a, true, true),
             (true, vec![]),
@@ -1066,7 +839,7 @@ mod contract_tests {
             "a later real switch counts once"
         );
         let (accepted, events) = crate::diag::test_events::capture(|| {
-            apply(BrowseCmd::Addressed {
+            stores.browse_run(BrowseCmd::Addressed {
                 target: b,
                 work: LibraryWork::Commit {
                     select: false,
