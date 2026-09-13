@@ -775,12 +775,14 @@ fn supersede_with_directory(directory: Option<crate::stores::browse::DirectoryVi
     }
 }
 
-/// Advance the debounce and land whatever arrived. Called once a frame from the screen's update.
-/// Returns whether anything changed, so the caller can re-clamp focus.
+/// Test-only compatibility pump for fixtures without a retained directory.
+#[cfg(test)]
 pub(crate) fn pump(dt: f32) -> bool {
     pump_with_optional_directory(dt, None)
 }
 
+/// Advance the debounce and land whatever arrived under this frame's retained directory policy.
+/// Returns whether anything changed, so the caller can re-clamp focus.
 pub(crate) fn pump_with_directory(
     dt: f32,
     directory: crate::stores::browse::DirectoryView<'_>,
