@@ -432,9 +432,8 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
         // `crate::viewstate`, which is where the reasoning, the ordering rules and the
         // `client_for(sid)`-never-`client()` note now live.
         //
-        // When the popover was over the DETAIL page, that page is the surface the user is watching,
-        // so it is re-read too — the rk rides along so the filmstrip lands back on the episode that
-        // changed (`detail::KEEP_EP`).
+        // When the popover was over the DETAIL page, that page is re-read too — its exact address
+        // and the episode ride together, so a landing after navigation cannot refresh another page.
         ref a @ (Action::MarkWatched(ref rk) | Action::MarkUnwatched(ref rk)) => {
             // Unreachable by construction — this arm matches exactly the two variants
             // `watch_write` answers for — and a `return` rather than an `expect` because a
@@ -447,7 +446,17 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // asking for a refetch here would re-read the mounted show for a write that never
             // touched it. The tile's own tick is flipped by `metadata::set_watched_local` instead,
             // which walks the Related shelf for exactly this case.
-            let detail = loaded_episode.then(|| rk.clone());
+            let detail = loaded_episode.then(|| ()).and_then(|()| {
+                let entry = pages.nav.top_page()?;
+                let crate::screens::registry::AppArg::Content(
+                    crate::screens::registry::ContentArg::Detail { sid, rk: detail_rk },
+                ) = &entry.arg else { return None };
+                Some(crate::stores::viewstate::DetailRefresh {
+                    sid: *sid,
+                    rk: detail_rk.clone(),
+                    keep: Some(rk.clone()),
+                })
+            });
             // NO GUID from here, and deliberately: a catalog row carries none, and the guid the
             // detail page is holding belongs to the SHOW when this rk is one of its episodes. A
             // guid that is merely close marks a DIFFERENT title watched on every other source, so

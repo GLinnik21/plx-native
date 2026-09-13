@@ -497,15 +497,17 @@ which the linking section explains is load-bearing rather than tidy.
   deadlocked the whole `auth` test block and put five `read`s on every log line.
 - `rust-modules/src/stores/` — **the data stores behind ONE vocabulary and ONE step** (restructure
   phase 4, 2026-09-07; `docs/stores-as-machines.md`): `StoreCmd` is the complete set of mutations
-  of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`. Browse is now physically owned per
-  `Bridge` by `Stores::browse` (`BrowseStore`), including its `BrowseState`, worker adapter and
-  notice; the former PAGE/GENRE/LETTER/SRC/HUB worker state is no longer process-global. Owned
+  of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`. Browse and ViewState are physically
+  owned per `Bridge` by `Stores`: `BrowseStore` owns its state/adapter/notice, and `ViewStateStore`
+  owns its queue, in-flight request, retry/refresh latches, rotated worker adapter and notice.
+  ViewState completions carry a monotone request ID and only the exact in-flight identity lands;
+  a deferred Detail refresh retains its originating `(server, ratingKey, episode)` address. Owned
   screens emit `AppFx::Store`, and `app/bridge.rs` delivers it to the owning machine. A command
   that changes observable state raises the store's notice. Browse has no active-owner compatibility
   reads and no `stores::browse::apply(Cmd)` shim: consumers receive per-owner retained
   `DirectoryView`/`ListingView`/`HubsView` publications, and fixtures own a `BrowseStore` or
   `Stores` before capturing those publications. The aggregate notice drain in `app/bridge.rs`
-  delivers `StoreChanged` to live pages; the other stores still retain their compatibility
+  delivers `StoreChanged` to live pages; the other four stores still retain their compatibility
   global/mailbox implementations.
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Four** callers in a lab build and three in every other, each for its own
@@ -1075,9 +1077,9 @@ you get without waking a television. What it covers today, by module:
   `metadata.rs`'s two take `lib.rs`'s crate-wide `testlock::serial()` (the detail and season
   mailboxes contend across modules — a per-module mutex cannot see that, because the season
   generation also moves under `pump_detail`), and `pms`'s compatibility catalog statics are still
-  shared. Browse is the exception: a production `Bridge` owns its own `BrowseStore`, adapter and
-  notice, so separate owners do not share Browse state or landings; Browse fixtures use their own
-  `BrowseStore`/`Stores` and retained publications. Those locks are load-bearing, not incidental
+  shared. Browse and ViewState are the exceptions: a production `Bridge` owns both stores' state,
+  adapters and notices, so separate owners share neither state nor landings; their fixtures use
+  explicit `Stores` owners. Those locks are load-bearing for the remaining globals, not incidental
   — hold one for anything that touches the shared registry, compatibility state or the app frame.
   **Since 2026-09-10 the lock also records WHICH THREAD holds it, and the stores ASSERT it.** A
   mutex nobody is obliged to take is a convention, and a convention broken by one test in two

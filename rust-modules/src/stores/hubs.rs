@@ -67,6 +67,7 @@ pub(crate) fn controlled_with_directory(cmd: Option<HubsCmd>, dt: f32,
 }
 
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
+#[cfg(test)]
 pub(crate) fn apply(cmd: HubsCmd) -> super::StoreOutcome {
     super::apply(super::StoreCmd::Hubs(cmd))
 }

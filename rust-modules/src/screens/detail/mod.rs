@@ -2,7 +2,8 @@
 //!
 //! The six focus groups are composed here; section modules own their geometry and paint. Focus and
 //! remembered group cursors belong exclusively to the input engine. This instance stores only
-//! content decisions (season debounce/restoration) and render state (springs, metrics and caches).
+//! content decisions (season debounce/restoration and server reconciliation) and render state
+//! (springs, metrics and caches). User input cancels restoration, never the reconciliation owed.
 
 mod about;
 mod cast;
@@ -44,7 +45,7 @@ use crate::ui::widgets::{
 use crate::ui::{hero_alpha, theme, Env, Painter, Rect, Spring, View};
 use std::borrow::Cow;
 
-use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel};
+use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel, DetailRefreshPhase};
 
 const FIRST_ITEM_ELEM: u32 = 2048;
 
@@ -55,7 +56,7 @@ const EP_SCALE_MAX: usize = 40;
 const K_SCROLL: f32 = crate::ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
 
-pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;6],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
+pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,refresh:u32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;6],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
 
 const _: () = assert!(hero::HERO_ELEM_RANGE_END == season::SEASON_ELEM_RANGE_START);
 const _: () = assert!(season::SEASON_ELEM_RANGE_END == episodes::EPISODES_ELEM_RANGE_START);
@@ -91,6 +92,9 @@ pub(crate) struct DetailScreen {
     /// committed replay fixtures. The `tick` arm that advances it explains the fix that DID land —
     /// the dwell timer now reports `Motion`, which it never did before.
     season_settle: f32,
+    /// Server reconciliation owed by this item, independent of cancellable focus restoration.
+    /// Navigation memory cannot rewind it; only a new refresh or its terminal request changes it.
+    refresh: DetailRefreshPhase,
     restore_intent: Option<RestoreIntent>,
 
     // Render state.
@@ -138,6 +142,7 @@ impl DetailScreen {
             return_pending: false,
             pending_season: None,
             season_settle: 0.0,
+            refresh: DetailRefreshPhase::None,
             restore_intent: None,
             scroll: Spring::at(0.0),
             scroll_target: 0.0,
@@ -169,7 +174,14 @@ impl DetailScreen {
         }
         self.next_elem = self.next_elem.max(memory.next_elem).max(FIRST_ITEM_ELEM).max(
             self.keys.iter().map(|key| key.elem).max().and_then(|n| n.checked_add(1)).unwrap_or(FIRST_ITEM_ELEM));
+        let newer_restore = self.restore_intent.take()
+            .filter(|_| self.refresh != DetailRefreshPhase::None);
         self.restore(&memory.spot);
+        if let Some(newer_restore) = newer_restore {
+            // The entry memory is the request-time navigation snapshot. A ViewState completion
+            // delivered while covered is newer and carries the episode whose write just settled.
+            self.restore_intent = Some(newer_restore);
+        }
         self.return_pending = true;
         self.sync_keys();
     }
@@ -1024,11 +1036,27 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 Handled::Yes
             }
             ScreenEvent::Enter(_) => {
-                if self.detail().is_none() && crate::metadata::detail_request_status(self.sid, &self.rk) != Some(true) {
+                let refresh = self.refresh;
+                let request_status = crate::metadata::detail_request_status(self.sid, &self.rk);
+                // Deferred is newer than every request that could already occupy this address:
+                // it was armed only after the ViewState write completed. Always supersede that
+                // pre-write generation when the page becomes visible. Requested normally reuses
+                // its live reconciliation, but another Detail may have superseded that shared
+                // request while this page was covered; that is the None case. Some(false) is a
+                // completed reconciliation to consume, not a request to repeat.
+                // Ordinary enters still reuse an in-flight request instead of duplicating it.
+                let request = refresh == DetailRefreshPhase::Deferred
+                    || refresh == DetailRefreshPhase::Requested && request_status.is_none()
+                    || refresh == DetailRefreshPhase::None && self.detail().is_none()
+                        && request_status != Some(true);
+                if request && refresh == DetailRefreshPhase::None {
                     apply_metadata(MetadataCmd::RequestDetail {
                         sid: self.sid,
                         rk: self.rk.clone(),
                     });
+                }
+                if request && refresh != DetailRefreshPhase::None {
+                    self.start_reconciliation();
                 }
                 self.reveal_focus(cx.focus.current, cx.measure);
                 fx.invalidate(Provenance::Input);
@@ -1147,8 +1175,17 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 }
                 Handled::No
             }
-            ScreenEvent::App(AppMsg::DetailRestore { spot, episode }) => {
+            ScreenEvent::App(AppMsg::DetailRestore { spot, episode, refresh }) => {
                 self.restore_episode(spot, episode.as_deref());
+                // A focus-only restore (including navigation memory) cannot discharge a newer
+                // write's server obligation. A visible completion starts through the Metadata
+                // compatibility boundary before Requested becomes observable; a covered page
+                // keeps Deferred until Enter gives it ownership of the shared Metadata slot.
+                match refresh {
+                    DetailRefreshPhase::None => {}
+                    DetailRefreshPhase::Deferred => self.refresh = DetailRefreshPhase::Deferred,
+                    DetailRefreshPhase::Requested => self.start_reconciliation(),
+                }
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
             }
@@ -1162,6 +1199,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 self.pending_season = None;
                 self.season_settle = 0.0;
                 self.restore_intent = None;
+                self.refresh = DetailRefreshPhase::None;
                 self.return_pending = false;
                 if self.detail().is_some() {
                     apply_metadata(MetadataCmd::Clear);
@@ -1174,6 +1212,18 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
 }
 
 impl DetailScreen {
+    fn start_reconciliation(&mut self) {
+        // One synchronous transition: the command allocates/supersedes the addressed Metadata
+        // request before the screen publishes Requested. Its resource admission and spawn answer
+        // remain recorder-visible through `bootstrap::stores::admit`; queuing an AppFx copy here
+        // would start the non-idempotent command twice when that effect eventually drained.
+        apply_metadata(MetadataCmd::RequestDetail {
+            sid: self.sid,
+            rk: self.rk.clone(),
+        });
+        self.refresh = DetailRefreshPhase::Requested;
+    }
+
     fn restore_target_matches(&self, located: Located) -> bool {
         self.restore_focus().and_then(|elem| self.locate(elem)) == Some(located)
     }
@@ -1334,6 +1384,24 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
 }
 
 impl DetailScreen {
+    #[cfg(test)]
+    pub(crate) fn restore_target_for_test(&self) -> Option<(Spot, Option<String>)> {
+        self.restore_intent.as_ref().map(|intent| (
+            intent.spot.clone(),
+            intent.episode.clone(),
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refresh_for_test(&self) -> DetailRefreshPhase {
+        self.refresh
+    }
+
+    #[cfg(test)]
+    pub(crate) fn return_waiting_for_test(&self) -> bool {
+        self.return_waiting()
+    }
+
     fn art_identity(&self, d: Option<&Detail>) -> (ServerId, String, String) {
         if let Some(d) = d {
             let path = if d.is_show {
@@ -1868,6 +1936,11 @@ impl LogicalState for DetailScreen {
             }
         }
         w.f32(self.season_settle);
+        w.u32(match self.refresh {
+            DetailRefreshPhase::None => 0,
+            DetailRefreshPhase::Deferred => 1,
+            DetailRefreshPhase::Requested => 2,
+        });
         match &self.restore_intent {
             Some(intent) => {
                 w.bool(true)
@@ -1908,7 +1981,7 @@ impl LogicalState for DetailScreen {
 
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "detail sid={} pending_season={} settle_us={} restore={} restore_season_sent={}",
+            "detail sid={} pending_season={} settle_us={} restore={} restore_season_sent={} refresh={:?}",
             self.sid.raw(),
             self.pending_season
                 .map(|index| index.to_string())
@@ -1921,6 +1994,7 @@ impl LogicalState for DetailScreen {
             self.restore_intent
                 .as_ref()
                 .is_some_and(|intent| intent.season_requested),
+            self.refresh,
         ));
     }
 }
@@ -1937,12 +2011,21 @@ impl DetailScreen {
 
     fn return_waiting(&self) -> bool {
         self.return_pending && self.restore_intent.as_ref().is_some_and(|intent| {
-            self.detail().is_none() || season::restore_step(self.detail(), intent.spot.season,
+            self.refresh != DetailRefreshPhase::None || self.detail().is_none()
+                || season::restore_step(self.detail(), intent.spot.season,
                 intent.season_requested, crate::metadata::season_loading()) != season::RestoreStep::Ready
         })
     }
 
     fn pump_restore(&mut self) {
+        // Consume terminal reconciliation even after directional input cancelled restoration.
+        match (self.refresh, crate::metadata::detail_request_status(self.sid, &self.rk)) {
+            (DetailRefreshPhase::Deferred, _) | (DetailRefreshPhase::Requested, None | Some(true)) => return,
+            (DetailRefreshPhase::Requested, Some(false)) => {
+                self.refresh = DetailRefreshPhase::None;
+            }
+            (DetailRefreshPhase::None, _) => {}
+        }
         if self.detail().is_none() && crate::metadata::detail_request_status(self.sid, &self.rk) == Some(false) {
             self.restore_intent = None;
             self.return_pending = false;
@@ -2290,7 +2373,11 @@ impl DetailScreen {
                             } else {
                                 crate::viewstate::Write::Unwatched
                             },
-                            detail: Some(String::new()),
+                            detail: Some(crate::stores::viewstate::DetailRefresh {
+                                sid: d.sid,
+                                rk: d.rk.clone(),
+                                keep: None,
+                            }),
                             guid: d.guid.clone(),
                         }),
                     )));

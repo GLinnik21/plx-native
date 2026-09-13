@@ -72,6 +72,7 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         local_by_key: Default::default(), return_pending: false,
         pending_season: None,
         season_settle: 0.0,
+        refresh: DetailRefreshPhase::None,
         restore_intent: None,
         scroll: Spring::at(0.0),
         scroll_target: 0.0,
@@ -206,6 +207,9 @@ fn logical_hash_names_the_full_restore_target() {
     a.restore_episode(&left, Some("e1"));
     b.restore_episode(&right, Some("e2"));
     assert_ne!(a.hash(), b.hash());
+    let settled = b.hash();
+    b.refresh = DetailRefreshPhase::Deferred;
+    assert_ne!(settled, b.hash(), "a future reconciliation request is logical state");
 }
 
 #[test]
@@ -218,6 +222,128 @@ fn logical_hash_names_the_debounce_deadline() {
     a.season_settle = 0.05;
     b.season_settle = 0.15;
     assert_ne!(a.hash(), b.hash());
+}
+
+#[test]
+fn refresh_obligation_is_logical_state_without_a_restore_intent() {
+    let guard = crate::testlock::serial();
+    let mut screen = bare(&guard, ServerId::UNSET, "show");
+    let none = screen.hash();
+    screen.refresh = DetailRefreshPhase::Deferred;
+    let deferred = screen.hash();
+    screen.refresh = DetailRefreshPhase::Requested;
+    let requested = screen.hash();
+    assert_ne!(none, deferred);
+    assert_ne!(none, requested);
+    assert_ne!(deferred, requested);
+    let mut probe = String::new();
+    screen.probe(&mut probe);
+    assert!(probe.contains("restore=false") && probe.contains("refresh=Requested"));
+}
+
+#[test]
+fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
+    let guard = crate::testlock::serial();
+    let sid = ServerId::UNSET;
+    for cached in [false, true] {
+        for phase in [DetailRefreshPhase::None, DetailRefreshPhase::Deferred, DetailRefreshPhase::Requested] {
+            for status in [None, Some(true), Some(false)] {
+                apply_metadata(MetadataCmd::Clear);
+                crate::metadata::set_current_for_test(cached.then(|| detail(sid, "show")));
+                let pending = status.and_then(|loading| {
+                    let generation = crate::metadata::begin_detail_for_test(sid, "show");
+                    if !loading {
+                        crate::metadata::land_detail_for_test(sid, "show", generation, None);
+                    }
+                    loading.then_some(generation)
+                });
+                assert_eq!(crate::metadata::detail_request_status(sid, "show"), status);
+                let mut screen = bare(&guard, sid, "show");
+                screen.refresh = phase;
+                let generation = crate::metadata::detail_generation_for_test();
+                step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Restored), None);
+                let requests = match phase {
+                    DetailRefreshPhase::Deferred => 1,
+                    DetailRefreshPhase::Requested => u32::from(status.is_none()),
+                    DetailRefreshPhase::None => u32::from(!cached && status != Some(true)),
+                };
+                assert_eq!(crate::metadata::detail_generation_for_test(), generation + requests,
+                    "cached={cached} phase={phase:?} status={status:?}");
+                screen.pump_restore();
+                let expected = match (phase, status) {
+                    (DetailRefreshPhase::None, _) | (DetailRefreshPhase::Requested, Some(false)) => DetailRefreshPhase::None,
+                    _ => DetailRefreshPhase::Requested,
+                };
+                assert_eq!(screen.refresh, expected,
+                    "cached={cached} phase={phase:?} status={status:?} after={:?}",
+                    crate::metadata::detail_request_status(sid, "show"));
+                assert!(screen.restore_intent.is_none());
+                // Synthetic workers still owe a terminal acknowledgment after supersession;
+                // otherwise this matrix exhausts the production reservation budget itself.
+                if let Some(generation) = pending {
+                    crate::metadata::land_detail_for_test(sid, "show", generation, None);
+                }
+                if requests > 0 {
+                    crate::metadata::land_detail_for_test(sid, "show", generation + requests, None);
+                }
+                crate::stores::metadata::pump_detail();
+            }
+        }
+    }
+    apply_metadata(MetadataCmd::Clear);
+    clear();
+}
+
+#[test]
+fn restore_memory_cannot_rewind_a_newer_refresh_obligation() {
+    let guard = install(detail(ServerId::UNSET, "show"));
+    for phase in [DetailRefreshPhase::Deferred, DetailRefreshPhase::Requested] {
+        for cancelled in [false, true] {
+            let mut screen = bare(&guard, ServerId::UNSET, "show");
+            let PageMemory::Detail(memory) = Screen::<TestHost>::memory_at(&screen, None) else { unreachable!() };
+            let spot = Spot { section: 2, season: Some(2), ..Default::default() };
+            screen.restore_episode(&spot, Some("e2"));
+            screen.refresh = phase;
+            if cancelled { screen.restore_intent = None; }
+            step(&mut screen, &ScreenEvent::RestoreMemory(PageMemory::Detail(memory)), None);
+            assert_eq!(screen.refresh, phase, "old navigation memory cannot discharge the write");
+            if !cancelled {
+                let intent = screen.restore_intent.as_ref().unwrap();
+                assert_eq!(intent.spot, spot);
+                assert_eq!(intent.episode.as_deref(), Some("e2"));
+            }
+        }
+    }
+    clear();
+}
+
+#[test]
+fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_failure() {
+    let guard = crate::testlock::serial();
+    let sid = ServerId::UNSET;
+    for success in [false, true] {
+        apply_metadata(MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(Some(detail(sid, "show")));
+        let generation = crate::metadata::begin_detail_for_test(sid, "show");
+        let mut screen = bare(&guard, sid, "show");
+        screen.restore_episode(&Spot::default(), Some("e2"));
+        screen.refresh = DetailRefreshPhase::Requested;
+        step(&mut screen, &ScreenEvent::Input(crate::ui::machine::InputEvent {
+            at: Default::default(), source: crate::ui::machine::Source::Script,
+            kind: InputKind::Key { key: Key::Down, edge: Edge::Down, sym: 0, wcode: 0, at_edge: false },
+        }), None);
+        assert!(screen.restore_intent.is_none());
+        assert_eq!(screen.refresh, DetailRefreshPhase::Requested);
+        assert_eq!(crate::metadata::land_detail_for_test(sid, "show", generation,
+            success.then(|| detail(sid, "show"))), success);
+        step(&mut screen, &ScreenEvent::StoreChanged(StoreId::Metadata.ord(), generation), None);
+        assert_eq!(screen.refresh, DetailRefreshPhase::None);
+        assert!(screen.restore_intent.is_none());
+        screen.pump_restore();
+        assert_eq!(crate::metadata::detail_generation_for_test(), generation);
+    }
+    apply_metadata(MetadataCmd::Clear);
+    clear();
 }
 
 #[test]
@@ -1029,10 +1155,13 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
         Fx::App(AppFx::Store(StoreId::ViewState,
             crate::stores::StoreCmd::ViewState(ViewStateCmd::Request {
                 sid, rk, write, detail, guid,
-            }))) => Some((*sid, rk.as_str(), *write, detail.as_deref(), guid.as_str())),
+            }))) => Some((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str())),
         _ => None,
     }).collect();
-    assert_eq!(addressed, [(sid, "movie", crate::viewstate::Write::Watched, Some(""), "")],
+    assert_eq!(addressed, [(sid, "movie", crate::viewstate::Write::Watched,
+        Some(&crate::stores::viewstate::DetailRefresh {
+            sid, rk: "movie".into(), keep: None,
+        }), "")],
         "Detail must address the typed ViewState command to its owning Bridge");
     assert!(!crate::metadata::current().unwrap().watched,
         "the screen must not call the process-global compatibility facade itself");

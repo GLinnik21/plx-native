@@ -979,19 +979,15 @@ impl Bridge {
     }
 
     pub(crate) fn viewstate_run(&self, cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
-        if matches!(&cmd, crate::stores::viewstate::ViewStateCmd::Reset) {
-            return self.stores.viewstate_run(cmd);
-        }
-        let directory = self.directory.view();
-        crate::stores::viewstate::run_with_owners(
-            cmd,
-            &mut |browse| self.stores.browse_run(browse),
-            &mut |hubs| crate::stores::hubs::apply_with_directory(hubs, directory),
-        )
+        self.stores.viewstate_run(cmd, self.directory.view())
     }
 
     pub(crate) fn viewstate_pump(&self) -> crate::stores::EndpointRefreshSet {
         self.stores.viewstate_pump(self.directory.view())
+    }
+
+    pub(crate) fn take_detail_refresh(&self) -> Option<crate::stores::viewstate::DetailRefresh> {
+        self.stores.take_detail_refresh()
     }
 
     /// Search commands snapshot their initial favourite-library ranking from the same retained
@@ -3332,14 +3328,16 @@ mod tests {
                 executed.push(sid);
             }
             assert_eq!(executed, expected);
-            crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
-            crate::viewstate::owe_hubs_refresh_for_test();
+            let stores = crate::stores::Stores::default();
+            stores.viewstate.borrow_mut().owe_hubs_refresh_for_test();
             let split = rig.split();
             let cx = parts.cx::<AppHost>(split.views, split.measure);
             let mut out = Vec::new();
-            let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::ViewState.ord()), &mut present);
-            crate::stores::viewstate::ViewStateStore.step(
-                &crate::stores::StoreEv::Pump { dt: 0.0 }, &cx, &mut fx);
+            let mut fx: Effects<'_, AppHost> = Effects::new(
+                &mut out, MachineId::Store(StoreId::ViewState.ord()), &mut present);
+            stores.viewstate.borrow_mut().pump(&mut |_| false, &mut |cmd| {
+                crate::stores::hubs::apply(cmd)
+            }).emit(&mut fx);
             drop(fx);
             drop(cx);
             assert_eq!(out.len(), 2);
@@ -4911,7 +4909,6 @@ mod tests {
 
     impl Drop for DirectoryPolicyCleanup {
         fn drop(&mut self) {
-            crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
             crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
             crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
             crate::plex::reset_servers_for_test();
@@ -4929,7 +4926,7 @@ mod tests {
         let mut rig = Bridge::for_test(|| 0);
         rig.directory = directory_policy_fixture(sid, sid);
         crate::pms::seed_two_library_home_for_test(sid, rig.directory.view());
-        crate::viewstate::hold_inflight_for_test(sid, "held");
+        rig.stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
         let _ = rig.stores.take_notices();
 
         assert!(rig.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
@@ -4952,9 +4949,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn separate_bridges_do_not_share_any_viewstate_owner_state_or_notice() {
+        let _guard = crate::testlock::serial();
+        let first = Bridge::for_test(|| 0);
+        let second = Bridge::for_test(|| 0);
+
+        first.stores.viewstate.borrow_mut().seed_ownership_fixture_for_test();
+        let before_reset = first.stores.viewstate.borrow().ownership_fixture_for_test();
+        second.viewstate_run(crate::stores::viewstate::ViewStateCmd::Reset);
+        let after_reset = first.stores.viewstate.borrow().ownership_fixture_for_test();
+
+        first.stores.viewstate.borrow_mut().seed_ownership_fixture_for_test();
+        let before_pump = first.stores.viewstate.borrow().ownership_fixture_for_test();
+        let _ = second.viewstate_pump();
+        let after_pump = first.stores.viewstate.borrow().ownership_fixture_for_test();
+
+        let second_notices = second.stores.take_notices();
+        let first_notices = first.stores.take_notices();
+        assert_eq!((after_reset, after_pump), (before_reset, before_pump),
+            "resetting or pumping Bridge B must not clear or consume Bridge A's queue, flight, mailbox, retry/refresh latches");
+        assert_eq!(second_notices.iter().filter(|(id, _)| *id == StoreId::ViewState).count(), 1,
+            "Bridge B owns only its reset notice");
+        assert_eq!(first_notices.iter().filter(|(id, _)| *id == StoreId::ViewState).count(), 1,
+            "Bridge B draining its notices must leave Bridge A's notice untouched");
+    }
+
+    #[test]
+    fn reset_fences_a_late_old_viewstate_worker_from_the_post_reset_request() {
+        let _guard = crate::testlock::serial();
+        let bridge = Bridge::for_test(|| 0);
+        bridge.stores.viewstate.borrow_mut().seed_post_reset_flight_for_test();
+        let old_adapter = bridge.stores.viewstate.borrow().adapter_for_test();
+        let finish_old_worker = bridge.stores.viewstate.borrow().late_completion_for_test();
+
+        bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Reset);
+        bridge.stores.viewstate.borrow_mut().seed_post_reset_flight_for_test();
+        let new_adapter = bridge.stores.viewstate.borrow().adapter_for_test();
+        assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
+            "reset must rotate the ViewState worker adapter");
+        finish_old_worker();
+        let _ = bridge.viewstate_pump();
+
+        assert_eq!(bridge.stores.viewstate.borrow().ownership_fixture_for_test().sent.as_deref(), Some("post-reset"),
+            "a completion from the retired adapter must not satisfy the replacement request");
+    }
+
     /// Detail owns the press decision, but the Bridge owns the retained Browse directory needed
-    /// by ViewState's optimistic Hubs edit. Keep both halves on the production dispatcher path:
-    /// a direct screen-side `viewstate::apply` passes under `cfg(test)` and panics in production.
+    /// by ViewState's optimistic Hubs edit. Keep both halves on the production dispatcher path;
+    /// the screen must not regain a free ViewState facade that can bypass this owner.
     #[test]
     fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_frame() {
         use crate::ui::dispatch::Tap;
@@ -4972,9 +5015,11 @@ mod tests {
                         StoreCmd::ViewState(crate::stores::viewstate::ViewStateCmd::Request {
                             sid, rk, write, detail, guid,
                         }))) => {
-                        assert_eq!((*sid, rk.as_str(), *write, detail.as_deref(), guid.as_str()),
+                        assert_eq!((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str()),
                             (self.sid, "movie", crate::viewstate::Write::Watched,
-                                Some(""), "plex://movie"));
+                                Some(&crate::stores::viewstate::DetailRefresh {
+                                    sid: self.sid, rk: "movie".into(), keep: None,
+                                }), "plex://movie"));
                         self.app_effects += 1;
                     }
                     Fx::Deliver(MachineId::Store(ord), Delivery::Machine(AppMsg::Store(
@@ -4982,9 +5027,11 @@ mod tests {
                             sid, rk, write, detail, guid,
                         })))) => {
                         assert_eq!(*ord, StoreId::ViewState.ord());
-                        assert_eq!((*sid, rk.as_str(), *write, detail.as_deref(), guid.as_str()),
+                        assert_eq!((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str()),
                             (self.sid, "movie", crate::viewstate::Write::Watched,
-                                Some(""), "plex://movie"));
+                                Some(&crate::stores::viewstate::DetailRefresh {
+                                    sid: self.sid, rk: "movie".into(), keep: None,
+                                }), "plex://movie"));
                         self.store_deliveries += 1;
                     }
                     _ => {}
@@ -5018,7 +5065,7 @@ mod tests {
         let watch = dispatcher.focus().expect("RIGHT reaches the watch control");
         assert_ne!(watch.elem, play.elem);
 
-        crate::viewstate::hold_inflight_for_test(sid, "held");
+        rig.stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
         let instance = dispatcher.nav.top_page().and_then(|entry| entry.inst.as_ref())
             .expect("the Detail page is mounted").id;
         dispatcher.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),

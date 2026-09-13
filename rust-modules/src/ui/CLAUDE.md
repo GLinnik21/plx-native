@@ -366,6 +366,13 @@ detail-on-detail moves, and both leave the mounted `DetailScreen` as
 the BACK trail. The page being left contributes its `Spot` through `Screen::memory_at` from the
 current engine focus; the navigation entry restores that memory when BACK uncovers or remounts it,
 so no screen-global pending-open latch or `open_rk_at` bridge owns the return position.
+Detail's server reconciliation obligation is separate from that return position: directional
+input cancels focus/episode restoration but leaves the refresh phase on `DetailScreen`. A covered
+page retries a superseded reconciliation on Enter; a terminal response consumes the obligation
+even after restoration was cancelled. Navigation memory cannot overwrite a newer obligation. On
+a visible ViewState completion, Detail synchronously starts the Metadata request and only then
+publishes `Requested`; its recorder-visible resource admission is the acknowledgment, so a queued
+Tick or stale StoreChanged can never observe `Requested` against the previous settled status.
 DOWN/UP pair the two exactly, LEFT/RIGHT hold the row, and the text row is deliberately NOT a
 `focus_is_card` — it is a link, so it commits at once and can never be held open into the still's
 menu. Its focus mark is About's idiom — literally the same call, `widgets::text_block_highlight`,
@@ -584,16 +591,18 @@ rule), and `Dispatcher::state_hash` is folded into the recorder frame as the `tr
 for 5b.
 
 **Phase 4 (2026-09-07) put the STORES behind one vocabulary and one step — `rust-modules/src/stores/`,
-designed in `docs/stores-as-machines.md`.** Browse is now the first physical owner: each
-`app::bridge::Bridge` owns a `Stores::browse` `BrowseStore` with per-instance state, worker
-adapter and notice. Its PAGE/GENRE/LETTER/SRC/HUB mailboxes and single-flight flags are fields of
-that adapter, not process-wide state. `stores::StoreCmd` remains the complete mutation vocabulary;
-owned screens emit `AppFx::Store`, and `app/bridge.rs` delivers Browse commands to the owning
-machine. Browse retirement Wave 2 removed the active selector, global publication, bootstrap
+designed in `docs/stores-as-machines.md`.** Browse and ViewState are now physical owners: each
+`app::bridge::Bridge` owns a `Stores` aggregate containing a `BrowseStore` and `ViewStateStore`,
+each with per-instance state, worker adapter and notice. Browse's PAGE/GENRE/LETTER/SRC/HUB
+mailboxes and ViewState's queue/flight/retry/refresh/mailbox state are fields of those owners, not
+process-wide state. Both rotate their adapter on reset so a late old worker cannot enter the new
+identity; ViewState additionally lands only an exact monotone request ID. `stores::StoreCmd`
+remains the complete mutation vocabulary; owned screens emit `AppFx::Store`, and `app/bridge.rs`
+delivers Browse and ViewState commands to the owning machines. Browse retirement Wave 2 removed the active selector, global publication, bootstrap
 handoff and free read/mutation shims: screens read per-owner retained `DirectoryView`/`ListingView`/
 `HubsView` publications, and fixtures that seed Browse own a `BrowseStore` or `Stores` before
 capturing those publications. Synchronous app boundaries call that explicit owner directly.
-`app/bridge.rs` drains the aggregate Browse notice
+`app/bridge.rs` drains both owned notices
 and the other stores' compatibility notices once per frame into `Dispatcher::store_changed`, so
 a migrated screen hears `StoreChanged` for its own effect and for a changed landing. Store state
 is NOT in the recorder's hash yet (the phase-2 anchor fixture pins `state_fp`).

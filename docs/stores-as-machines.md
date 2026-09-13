@@ -2,8 +2,8 @@
 
 R2B-E endpoint recovery: the generic `stores::apply` path returns a `StoreOutcome` containing the
 existing `changed` verdict and a bounded, deduplicated set of endpoint requests in
-first-observation order. Hubs failure/refetch/retry and ViewState's hub refetch propagate that set
-to their callers; Browse uses its explicit owner paths. Generic store steps use the layer-neutral
+first-observation order. Hubs failure/refetch/retry propagates that set through generic dispatch;
+ViewState's hub refetch and Browse both use explicit owner paths. Generic store steps use the layer-neutral
 `StoreEffectHost`; Bridge and
 Onboard translate requests to `AppFx::Session(RequestEndpoint)`. Boot/run accumulate outcomes
 locally and share the temporary app-side Session command executor with Bridge. Data modules
@@ -14,7 +14,7 @@ The design note for spec v4 (`ui-plxnative-structured-phoenix.md`) phase 4, writ
 code rather than from the spec's sentence, because the sentence hides four decisions the tree
 forces. Read `rust-modules/src/stores/mod.rs` for the vocabulary; this is the reasoning.
 
-Browse retirement Wave 2 completed the destination contract:
+Browse retirement Wave 2 and the ViewState ownership stage completed their destination contracts:
 `BrowsePublications` is the retained directory/listing/section-hubs aggregate,
 `Stores::capture_browse` captures it from one owner borrow in directory-first order, and
 `Stores::{browse_run,browse_discover_pump}` plus the matching Bridge methods are explicit,
@@ -22,16 +22,20 @@ synchronous owner paths. There is no active selector, bootstrap-adoption token, 
 publication, legacy adapter or free mutation/read facade. `ci/check-deps.sh` enforces that zero
 surface directly; its deleted Browse migration allowlist is distinct from the retained, general
 `ci/allow/mutators.txt` gate allowlist (currently empty).
+`Stores::viewstate` likewise owns the write queue, in-flight request, retry/refresh latches, rotated
+`Arc` mailbox and notice. Its zero-tolerance `viewstate-owner` gate has no allowlist.
 
 ## 1. What a store is, today
 
 Six data modules own the application's server-derived state: `browse` (the Library table and its
 per-section paged listing), `pms` (Home's hub catalog), `metadata` (the detail page's item,
 seasons and episodes, the playing item), `search`, `person` and `viewstate` (the view-state
-WRITE queue). Browse is the exception to the older global shape: each `Bridge` owns one
-`BrowseStore`, whose `BrowseState`, `BrowseAdapter` and notice generation are per-instance. The
+WRITE queue). Browse and ViewState are exceptions to the older global shape: each `Bridge` owns one
+of each store. `BrowseStore`'s state/adapter/notice and `ViewStateStore`'s queue, flight, retry and
+refresh state, worker adapter and notice are per-instance. The Browse
 adapter holds Browse's page, genre, letter, source-discovery and section-hub mailboxes and
-single-flight flags. The other five still use compatibility globals and mailboxes, with a worker
+single-flight flags. ViewState's adapter carries request-ID completions and is rotated on reset.
+The other four still use compatibility globals and mailboxes, with a worker
 spawned through `task::spawn_small`, generation atomics that supersede a late landing, and a
 once-a-frame pump in their existing callers.
 
@@ -44,15 +48,15 @@ exactly these (file: callers):
 | browse | `BrowseCmd` (including `Reset`) | owned screens emit `AppFx::Store`; `app/bridge.rs` delivers the command to that Bridge's `BrowseStore`; synchronous app boundaries call `Stores::browse_run` on an explicit aggregate |
 | browse | `StoreWork::{BrowseDiscovery,Browse}` | Onboard schedules the roster-only owned pass; Library schedules the full owned landing pass; `app/bridge.rs` delivers both to the addressed Bridge's `BrowseStore` |
 | browse::section_hubs | `kick`, `commit_staged`, `invalidate_all`, `set_watched_local`, `left_the_deck` | Library mutations are carried by `StoreCmd::Browse`; the BrowseStore owns the section-hub adapter and its per-section state |
-| viewstate | `request` | `app/input.rs`, `screens/detail/mod.rs` |
+| viewstate | `ViewStateCmd::{Request,Reset}` | owned Detail emits `AppFx::Store`; `app/bridge.rs` delivers to its `ViewStateStore`; synchronous item-menu/boot boundaries call that Bridge; run pumps and drains addressed Detail refreshes through the same owner |
 | person | `open`, `close`, `pump` | `screens/person.rs` |
 | metadata | `request_detail`, `load_detail_now`, `clear`, `load_season`, `set_now_playing`, `set_watched_local`, `pump_season` | `screens/detail/mod.rs`, `app/{input,playback,run}.rs` |
 | metadata | `install_playing`, `mark_skipped`, `pump_detail`, `pump_alt_sources` | `route/decision.rs`, `app/{playback,run}.rs` |
 | search | `set_query`, `reset`, `pump` | none direct — reached only through `StoreCmd::Search` from the owned `screens/search/mod.rs` (`ui/search/mod.rs` and `ui/search/recents.rs` are both deleted) |
 | pms | `request_refetch_hubs`, `request_retry`, `reset`, `pump` | `app/{boot,run}.rs` (`ui/home.rs` is deleted; the owned Home emits `StoreCmd::Hubs(..)` and never a mutator — see the Phase 8 note below) |
 
-The phase-4 census is historical. Browse's sole production owners are the `BrowseStore` values
-inside Bridges. `screens/library/*` and `screens/onboard.rs` emit Browse effects, `app/bridge.rs`
+The phase-4 census is historical. Browse and ViewState's sole production owners are their store
+values inside Bridges. `screens/library/*`, `screens/onboard.rs` and Detail emit store effects; `app/bridge.rs`
 delivers them to the addressed machine, and every fixture that needs mutable Browse data owns a
 `BrowseStore` or `Stores`. Retained `DirectoryView`, `ListingView` and `HubsView` values are the
 only cross-layer reads; the old free `crate::browse` publication and mutator functions are gone.
@@ -76,9 +80,9 @@ about to establish. That fact is what decides §3 below.
 
 1. **One vocabulary per store.** `stores::StoreCmd` is the complete, enumerated set of mutations
    — `Browse(BrowseCmd)`, `ViewState(..)`, `Person(..)`, `Metadata(..)`, `Search(..)`,
-   `Hubs(..)` — and a store's `Machine::step` is the ONE place its mutation vocabulary is decoded.
+   `Hubs(..)` — and a store's owned `run`/`step` is the ONE place its mutation vocabulary is decoded.
    An owned screen emits `AppFx::Store(StoreId::Browse, StoreCmd::Browse(cmd))`; Bridge delivers
-   it to its own BrowseStore, while synchronous application boundaries name their `Stores` owner.
+   it to its own BrowseStore or ViewStateStore, while synchronous application boundaries name their `Stores` owner.
    A screen names the Browse command vocabulary, never `crate::browse::set_cur(i)`;
    `ci/check-deps.sh`'s new `mutators` gate refuses the old spelling on every production line
    of `ui/` and `app/` (test modules are skipped by brace depth wherever they sit in a file);
@@ -86,7 +90,7 @@ about to establish. That fact is what decides §3 below.
    player side (`route/plan.rs`, `route/decision.rs`, `player/`) already spells its two writes
    through the vocabulary and joins the gate's scope in phase 9.
 2. **One notice.** Every command that changes observable state and every landing that changes the
-   store bumps its generation and marks it dirty. `Stores::take_notices()` drains the owned Browse notice
+   store bumps its generation and marks it dirty. `Stores::take_notices()` drains the owned Browse and ViewState notices
    together with the remaining compatibility notices once per frame at `app/bridge.rs`'s drain
    point (right after NAV COMMIT), and `bridge::frame` delivers the aggregate as
    `Dispatcher::store_changed(ord, gen)` to every live instance. The owned Browse path also
@@ -95,7 +99,7 @@ about to establish. That fact is what decides §3 below.
 3. **The dispatcher path is real.** `AppFx::Store(StoreId, StoreCmd)` is the application's first
    effect: `app::bridge::Bridge` turns it into `Fx::Deliver(MachineId::Store(ord),
    Delivery::Machine(AppMsg::Store(cmd)))`. Its `Rig::deliver` branch steps the per-Bridge
-   `BrowseStore` directly for Browse and dispatches the other stores through their compatibility
+   `BrowseStore` and `ViewStateStore` directly and dispatches the other stores through their compatibility
    machines. Screen effects and explicit synchronous owner calls preserve one command vocabulary
    without a process-wide Browse selection path.
 4. **`Landing` reserves one terminal per exact admitted address** (spec §5.2, R2Q1 clarification).
@@ -144,25 +148,27 @@ about to establish. That fact is what decides §3 below.
 
 §14 says a legacy mutator becomes "a pure synchronous validation plus `queue(StoreCmd)`, so legacy
 and migrated callers land in the same drain". That temporary legacy-apply guidance explicitly
-excludes Browse. Browse still has answers consumed in the same turn: owned Library and Onboard
-screens emit `AppFx::Store`, `app/bridge.rs` delivers the command to the owning `BrowseStore`, and
-synchronous boot/input boundaries call `Stores::browse_run` on the owner they already hold. Both
+excludes Browse and ViewState. Both still have answers consumed in the same turn: owned Library
+and Onboard screens emit Browse effects, Detail emits ViewState effects, `app/bridge.rs` delivers
+each command to the matching owned store, and
+synchronous boot/input boundaries call the explicit Bridge/Stores owner they already hold. Both
 paths step on the main thread before the frame presents, and the aggregate drain delivers that
 owner's notice to its live screens. Preserving that timing requires no global selector or adapter;
-the other five stores retain their older compatibility arrangement until their ownership slices
+the other four stores retain their older compatibility arrangement until their ownership slices
 land.
 
 ## 4. What is NOT in phase 4, and why
 
-- **The other mailboxes stay.** Search's `SLOT[NSRC]`, `person`'s `FETCH[]`, `viewstate`'s
-  `MAIL` and `pms`'s `RESULTS` keep their one-slot / per-source shapes. Browse's page, genre,
+- **The other mailboxes stay.** Search's `SLOT[NSRC]`, `person`'s `FETCH[]` and `pms`'s `RESULTS`
+  keep their one-slot / per-source shapes. Browse's page, genre,
   letter, source-discovery and section-hub mailboxes are now fields of its per-`BrowseStore`
   `BrowseAdapter`, not process-wide `PAGE_RESULT`/`GENRE_RESULT`/`LETTER_RESULT`/`SRC_RESULT`/
-  `HUB_FETCHING` state. Each remaining compatibility store is single-flight by construction
+  `HUB_FETCHING` state. ViewState's `MAIL` moved into its per-owner rotated adapter. Each remaining compatibility store is single-flight by construction
   (`FETCHING`/`IN_FLIGHT` bounds the worker count), so
   the backpressure `Landing` adds is a no-op for them today, and their supersede rules are keyed on
   generations the screens read. Browse is already stepped by `app/bridge.rs` for `StoreWork::Browse`
-  and `StoreWork::BrowseDiscovery`; the other stores retain their compatibility paths until their
+  and `StoreWork::BrowseDiscovery`, while ViewState's route-unconditional pump is owner-bound;
+  the other four stores retain their compatibility paths until their
   ownership slices land.
 - **The pumps stay where they are.** A route-gated pump moved to the machine's `Tick` would fetch
   behind the player, which `pms::pump`'s doc forbids for a reason. Browse's owned full and
@@ -174,7 +180,7 @@ land.
   term folding in `Dispatcher::state_hash`), but that term is the CONTAINER TREE's own
   `LogicalState` — the Settings family's live instances, its surface phases, the engine's focus
   and the queue depth — not the six PMS-derived stores. `browse`/`pms`/`metadata`/`search`/
-  `person`/`viewstate`'s generations stay out of `recorder::state_hash`; Browse ownership does
+  `person`/`viewstate`'s generations stay out of `recorder::state_hash`; physical ownership does
   not by itself make store state part of the recorder hash, and the remaining stores still await
   their ownership slices.
 - **`dev_flags_reach_machines_only_as_recorded_sys_results` stays pending — 5b did NOT close it.**
@@ -188,7 +194,7 @@ land.
 
 Add a variant to the store's `Cmd` enum, apply it in that store's `step`, and emit
 `AppFx::Store(StoreId, StoreCmd::…)` from an owned screen. A legacy caller for a not-yet-owned
-store may use the temporary `stores::<store>::apply(Cmd::…)` shim; Browse is excluded and requires
-its concrete `BrowseStore`/`Stores` owner. Do not add a `pub(crate) fn` to the data module that a
+store may use the temporary `stores::<store>::apply(Cmd::…)` shim; Browse and ViewState are excluded
+and require their concrete `Stores` owner. Do not add a `pub(crate) fn` to the data module that a
 screen calls: `check-deps` will refuse it, and the point of the vocabulary is that the mutation
 set is one `match` a reviewer can read.

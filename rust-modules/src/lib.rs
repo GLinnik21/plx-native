@@ -101,12 +101,13 @@ pub(crate) mod testlock {
     //! That DoD criterion scopes a bare `static mut` OUT of `screens`/`ui` engine code — it asks
     //! "does a SCREEN still own process-wide state a second instance would corrupt", and an
     //! allowlisted exception there is a debt with a name and a phase number. A store's data module
-    //! (`browse`, `pms`, `metadata`, `search`, `person`, `viewstate`) is a different question
-    //! entirely: it keeps process-wide statics **by design** — `docs/stores-as-machines.md` §1 is
-    //! explicit that this is "the same shape" on purpose, one Home catalog and one Library table
-    //! for the whole process, not a per-screen instance — so an allowlist entry for a store's
-    //! `static` would be a permanent fixture wearing a temporary label. What a store genuinely
-    //! owes is not "stop being global" but "a test that mutates you holds the one lock every other
+    //! (`pms`, `metadata`, `search`, `person`) is a different question entirely: those remaining
+    //! compatibility stores keep process-wide statics **by design** — `docs/stores-as-machines.md`
+    //! §1 is explicit about that temporary shape. Browse and ViewState have since moved to
+    //! per-`Bridge` physical owners, and their owner gates reject a restored process global. For
+    //! each remaining compatibility store, an allowlist entry would therefore be a permanent
+    //! fixture wearing a temporary label. What such a store genuinely owes is not "stop being
+    //! global" but "a test that mutates you holds the one lock every other
     //! test mutating you also holds", which is exactly what [`assert_held`] enforces at every
     //! mutator a test can reach, rather than at the `static` declaration site. Put differently: the
     //! allowlist answers "is this global allowed to exist", the assertion answers "was this write to
@@ -115,9 +116,9 @@ pub(crate) mod testlock {
     //!
     //! **Phase 12 / D5 closed the coverage this claim depends on** (2026-09-10): each remaining
     //! process-global store's `apply`/`run` funnel asserts (`stores::hubs::run`,
-    //! `stores::metadata::run`, `stores::person::run`, `stores::search::run`, and
-    //! `stores::viewstate::run`), as does every `_for_test` installer that touches shared state.
-    //! Browse fixtures instead own a `BrowseStore`; its explicit helpers cover source, pin,
+    //! `stores::metadata::run`, `stores::person::run`, and `stores::search::run`), as does every
+    //! `_for_test` installer that touches shared state. Browse and ViewState fixtures instead own
+    //! explicit stores; Browse's helpers cover source, pin,
     //! table, item, letter and query seeds without selecting process Browse state. Helpers that
     //! also touch the shared session or server registry assert the same lock. The remaining global
     //! installers include `metadata.rs`

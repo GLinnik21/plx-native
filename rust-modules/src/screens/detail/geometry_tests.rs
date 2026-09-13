@@ -67,6 +67,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         pending_season: None,
         season_settle: 0.0,
         restore_intent: None,
+        refresh: DetailRefreshPhase::None,
         scroll: Spring::at(0.0),
         scroll_target: 0.0,
         episode_scroll: Spring::at(0.0),
