@@ -4412,19 +4412,44 @@ class DepGates(unittest.TestCase):
             with open(target, "w", encoding="utf-8") as f:
                 f.write(original)
 
+    def _prepend(self, relpath, content):
+        """Temporarily prepend a valid module-level fixture to a scanned Rust file."""
+        target = os.path.join(self.ROOT, "rust-modules", "src", relpath)
+        with open(target, encoding="utf-8") as f:
+            original = f.read()
+        try:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(content + original)
+            return subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")],
+                                  capture_output=True, text=True)
+        finally:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(original)
+
     def test_browse_owner_gate_rejects_a_republished_free_mutator(self):
-        """The retired Browse surface must not come back as a free/global mutator. RED:
-        temporarily turn the owned `set_cur` implementation into a top-level `pub(crate)`
-        declaration; `browse-owner` must catch the declaration even though no call site exists."""
-        r = self._mutate(
-            os.path.join("browse", "mod.rs"),
-            "    fn set_cur(&mut self, i: usize) {",
-            "pub(crate) fn set_cur(i: usize) {",
-        )
+        """A valid module-level declaration is rejected even without a call site."""
+        r = self._prepend("browse/mod.rs", "\npub(crate) fn set_cur(i: usize) {}\n")
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
         self.assertIn("browse-owner:", out)
         self.assertIn("fn set_cur", out)
+
+    def test_browse_owner_gate_rejects_all_free_declaration_modifiers(self):
+        for declaration in (
+            "    pub(super) fn set_cur(i: usize) {}\n",
+            "async fn set_cur(i: usize) {}\n",
+            "const fn set_cur(i: usize) {}\n",
+            "unsafe extern \"C\" fn set_cur(i: usize) {}\n",
+        ):
+            with self.subTest(declaration=declaration):
+                r = self._prepend("browse/mod.rs", "\n" + declaration)
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("browse-owner:", r.stdout + r.stderr)
+
+    def test_browse_owner_gate_is_nonvacuous_for_indented_free_declarations(self):
+        r = self._prepend("browse/mod.rs", "\n    pub fn set_cur(i: usize) {}\n")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("browse/mod.rs", r.stdout + r.stderr)
 
     def test_browse_owner_gate_accepts_receiver_bound_owned_methods(self):
         """A BrowseState selector is safe when it requires an explicit receiver. GREEN:
