@@ -40,6 +40,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         local_by_key: Default::default(), return_pending: false,
         season_settle: 0.0,
         restore_intent: None, scroll: Spring::at(0.0),
+        refresh: DetailRefreshPhase::None,
         scroll_target: 0.0, episode_scroll: Spring::at(0.0), tab_scroll: Spring::at(0.0),
         episode_scale: [Spring::at(1.0); EP_SCALE_MAX], related: CardRow::new(),
         cast: CardRow::new(), tabs: TabStrip::new(), season_pop: CtlPop::new(),

@@ -855,7 +855,8 @@ pub(crate) trait AuthLike: AppLike + Sized {
     fn auth<'a>(cx: &Cx<'a, Self>) -> crate::auth::SessionRead<'a>;
 }
 
-/// The application's messages (spec §3.1).
+/// An item's server reconciliation obligation. Detail owns this independently of its cancellable
+/// focus/episode restore intent; visibility retries a superseded Requested obligation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DetailRefreshPhase {
     None,
@@ -863,6 +864,7 @@ pub(crate) enum DetailRefreshPhase {
     Requested,
 }
 
+/// The application's messages (spec §3.1).
 pub(crate) enum AppMsg {
     Session(crate::auth::owner::SessionEvent),
     Consent(ConsentCmd),
@@ -1785,15 +1787,15 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// changed is the SHAPE STRING, which is what a shape pin is for: the fixtures are re-recorded
 /// because their header names the shape, not because their frames disagree.
 ///
-/// **Detail's deferred ViewState refresh** (`0xb7cc_e355_9fd5_f0f9` → this): the restore intent now
-/// records whether its addressed reconciliation is waiting for visibility or already requested.
-/// That state decides a future Metadata request, so omitting it would let two replay-identical
-/// covered pages diverge when Back uncovers them.
+/// **Detail's independent ViewState refresh** (`0x8249_16e7_058b_2ada` → this): the phase moved
+/// out of the optional restore intent into the screen's own logical state. Directional input can
+/// cancel focus restoration while server reconciliation remains owed; the hash must distinguish
+/// those pages even with no restore intent, because Back can owe a replacement Metadata request.
 ///
 /// `#[cfg(test)]` because the pin is an ASSERTION about the array above and never a value the
 /// app reads — `state_fp()` hashes [`SCREEN_SHAPES`] itself.
 #[cfg(test)]
-const SCREEN_SHAPES_PIN: u64 = 0x8249_16e7_058b_2ada;
+const SCREEN_SHAPES_PIN: u64 = 0x3c0b_74a7_7a48_169c;
 
 #[cfg(test)]
 mod arg_tests {
