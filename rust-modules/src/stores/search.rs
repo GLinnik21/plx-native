@@ -9,6 +9,13 @@ pub(crate) use crate::search::view::SearchSnapshot;
 /// Capture the store publication at the dispatcher frame boundary, not during paint.
 pub(crate) fn snapshot() -> SearchSnapshot { crate::search::view::snapshot() }
 
+#[allow(dead_code)] // Owner contract consumed when the core dispatcher lane is integrated.
+pub(crate) fn snapshot_with_directory(
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> SearchSnapshot {
+    crate::search::view::snapshot_with_directory(directory)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum SearchCmd {
     /// The field's text; a change of the TRIMMED terms supersedes the answer and restarts the
@@ -67,6 +74,14 @@ pub(crate) fn run_with_directory(
 /// The screen's once-a-frame pass: the debounce, the spawns, the landings.
 pub(crate) fn pump(dt: f32) -> bool {
     note(StoreId::Search, crate::search::pump(dt))
+}
+
+#[allow(dead_code)] // Owner contract consumed when the core dispatcher lane is integrated.
+pub(crate) fn pump_with_directory(
+    dt: f32,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> bool {
+    note(StoreId::Search, crate::search::pump_with_directory(dt, directory))
 }
 
 impl<H: Host> Machine<H> for SearchStore {
