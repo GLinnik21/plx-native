@@ -382,6 +382,17 @@ pub(crate) fn sanitize_query(q: &str) -> std::borrow::Cow<'_, str> {
 
 /// Replace the query. Idempotent on an unchanged string, so a caller may hand it every frame.
 fn set_query(q: &str) {
+    set_query_with_directory(q, None);
+}
+
+fn set_query_from_directory(q: &str, directory: crate::stores::browse::DirectoryView<'_>) {
+    set_query_with_directory(q, Some(directory));
+}
+
+fn set_query_with_directory(
+    q: &str,
+    directory: Option<crate::stores::browse::DirectoryView<'_>>,
+) {
     let q = &*sanitize_query(q);
     // Two different changes, and only one of them is news for the SERVER: the field draws the raw
     // string (so a typed space must repaint), while the fetch is addressed to the trimmed one (so
@@ -403,7 +414,10 @@ fn set_query(q: &str) {
     if restart {
         // A new query invalidates the old answer immediately. Leaving the previous shelves up
         // while the next lands would show results for a string that is no longer on screen.
-        supersede();
+        match directory {
+            Some(directory) => supersede_from_directory(directory),
+            None => supersede(),
+        }
         unsafe {
             *addr_of_mut!(SHELVES) = None;
             *addr_of_mut!(STATE) = if real_query {
@@ -552,8 +566,10 @@ static VISIBLE: AtomicU32 = AtomicU32::new(0);
 /// site (`plex/CLAUDE.md` rule 5) and read by [`rebuild`]'s merge. It ranks; it never filters.
 static FAVS: Mutex<Vec<(ServerId, i64, bool)>> = Mutex::new(Vec::new());
 
-/// `browse::sections_gen()` as of that snapshot — the second generation this store watches, beside
-/// [`VISIBLE`].
+/// The retained Browse directory's section generation as of that snapshot — the cheap half of the
+/// second identity this store watches beside [`VISIBLE`]. [`pump_with_optional_directory`] also
+/// compares the exact favourite table: generations are owner-local and two Browse stores can both
+/// be at zero while describing different libraries.
 ///
 /// It is genuinely needed. Search watched the ROSTER generation alone, and the favourite answer
 /// moves without the roster moving at all: discovery appends a library and `apply_pins` records an
@@ -566,17 +582,26 @@ static FAVS: Mutex<Vec<(ServerId, i64, bool)>> = Mutex::new(Vec::new());
 /// retaining full contributing-section provenance through both folds; re-arming is cheaper.
 static FAV_GEN: AtomicU32 = AtomicU32::new(0);
 
-/// Take the favourite snapshot and publish the generation it belongs to. Main thread only — it
-/// reads Browse's compatibility publication; `app/bridge.rs` activates the current Bridge-owned
-/// BrowseStore before this store pumps.
+/// Standalone fixture scope. Production always supplies the owning Bridge's retained directory;
+/// tests that exercise Search in isolation have no Browse favourites by construction.
 fn snapshot_favs() {
-    FAV_GEN.store(crate::browse::sections_gen(), Ordering::SeqCst);
-    *FAVS.lock().unwrap_or_else(|e| e.into_inner()) = crate::browse::favorite_sections();
+    FAV_GEN.store(0, Ordering::SeqCst);
+    FAVS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+fn snapshot_favs_from_directory(directory: crate::stores::browse::DirectoryView<'_>) {
+    FAV_GEN.store(directory.sections_gen(), Ordering::SeqCst);
+    *FAVS.lock().unwrap_or_else(|e| e.into_inner()) = directory.favorite_sections().to_vec();
 }
 
 /// The snapshot, for the merge and for a worker about to be spawned.
 fn favs() -> Vec<(ServerId, i64, bool)> {
     FAVS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn favs_match_directory(directory: crate::stores::browse::DirectoryView<'_>) -> bool {
+    FAVS.lock().unwrap_or_else(|e| e.into_inner()).as_slice()
+        == directory.favorite_sections()
 }
 
 /// The claim that source `i`'s fetch is out. Released by the mailbox take — the only event that
@@ -733,11 +758,22 @@ fn land(i: usize, gen: u32, what: Option<Projection>) {
 /// and "never asked" has exactly one spelling. The ONE place those move together, and what a
 /// keystroke calls. It does NOT stop the workers; see [`IN_FLIGHT`] for what that costs.
 fn supersede() {
+    supersede_with_directory(None);
+}
+
+fn supersede_from_directory(directory: crate::stores::browse::DirectoryView<'_>) {
+    supersede_with_directory(Some(directory));
+}
+
+fn supersede_with_directory(directory: Option<crate::stores::browse::DirectoryView<'_>>) {
     GEN.fetch_add(1, Ordering::SeqCst);
     // A fresh favourite snapshot belongs to the fresh generation, and taking it HERE is what makes
     // the staleness rule need no second mailbox field: a landing projected under the old table
     // carries the old `gen`, and `pump` already discards those. One rejection rule, not two.
-    snapshot_favs();
+    match directory {
+        Some(directory) => snapshot_favs_from_directory(directory),
+        None => snapshot_favs(),
+    }
     for i in 0..NSRC {
         *SLOT[i].lock().unwrap_or_else(|e| e.into_inner()) = None;
         IN_FLIGHT[i].store(false, Ordering::SeqCst);
@@ -745,9 +781,25 @@ fn supersede() {
     }
 }
 
-/// Advance the debounce and land whatever arrived. Called once a frame from the screen's update.
-/// Returns whether anything changed, so the caller can re-clamp focus.
+/// Test-only compatibility pump for fixtures without a retained directory.
+#[cfg(test)]
 pub(crate) fn pump(dt: f32) -> bool {
+    pump_with_optional_directory(dt, None)
+}
+
+/// Advance the debounce and land whatever arrived under this frame's retained directory policy.
+/// Returns whether anything changed, so the caller can re-clamp focus.
+pub(crate) fn pump_with_directory(
+    dt: f32,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> bool {
+    pump_with_optional_directory(dt, Some(directory))
+}
+
+fn pump_with_optional_directory(
+    dt: f32,
+    directory: Option<crate::stores::browse::DirectoryView<'_>>,
+) -> bool {
     let live = slots();
     let visible = crate::plex::server_roster_gen();
     let roster_changed = VISIBLE.swap(visible, Ordering::SeqCst) != visible;
@@ -758,25 +810,35 @@ pub(crate) fn pump(dt: f32) -> bool {
         supersede();
         unsafe { *addr_of_mut!(SHELVES) = None };
     }
-    // **The second generation, and it moves without the first.** Discovery appending a library and
-    // a favourites edit both bump `SECTIONS_GEN`, and this screen runs discovery immediately before
-    // its own pump — so the ranking answer really can change under a landed result set.
+    // **The second Browse identity, and it moves without the first.** Discovery appending a library
+    // and a favourites edit both bump `SECTIONS_GEN`; an independent owner can instead carry a
+    // different exact table at the SAME local generation. This screen runs discovery immediately
+    // before its own pump, so the ranking answer really can change under a landed result set.
     //
     // A resident query is SUPERSEDED AND RE-ARMED rather than re-sorted, because re-sorting is not
     // available: after the fold a `TagHit` no longer carries the section its bit came from, so the
     // bit cannot be re-derived locally (see [`FAV_GEN`]). With nothing resident there is nothing to
     // invalidate and the snapshot is simply brought up to date, so the next query does not open by
     // re-arming itself.
-    if FAV_GEN.load(Ordering::SeqCst) != crate::browse::sections_gen() {
+    let sections_gen = directory.map_or(0, |directory| directory.sections_gen());
+    let favourites_changed = FAV_GEN.load(Ordering::SeqCst) != sections_gen
+        || directory.is_some_and(|directory| !favs_match_directory(directory));
+    if favourites_changed {
         if terms(query()).is_some() {
-            supersede();
+            match directory {
+                Some(directory) => supersede_from_directory(directory),
+                None => supersede(),
+            }
             unsafe {
                 *addr_of_mut!(SHELVES) = None;
                 *addr_of_mut!(SETTLE_US) = 0;
                 *addr_of_mut!(ARMED) = true;
             }
         } else {
-            snapshot_favs();
+            match directory {
+                Some(directory) => snapshot_favs_from_directory(directory),
+                None => snapshot_favs(),
+            }
         }
     }
     unsafe {
@@ -1228,15 +1290,36 @@ fn reset() {
 /// go private; `RememberRecent`/`ClearRecents`/`SetQueryScoped` still address `search::recents`
 /// and `search::scope`, which stay `pub(crate)` (out of this package's scope, per the census).
 pub(crate) fn run(cmd: crate::stores::search::SearchCmd) -> bool {
+    run_with_optional_directory(cmd, None)
+}
+
+pub(crate) fn run_with_directory(
+    cmd: crate::stores::search::SearchCmd,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> bool {
+    scope::snapshot_with_directory(directory);
+    run_with_optional_directory(cmd, Some(directory))
+}
+
+fn run_with_optional_directory(
+    cmd: crate::stores::search::SearchCmd,
+    directory: Option<crate::stores::browse::DirectoryView<'_>>,
+) -> bool {
     use crate::stores::search::SearchCmd;
     match cmd {
         SearchCmd::SetQuery(q) => {
-            set_query(&q);
+            match directory {
+                Some(directory) => set_query_from_directory(&q, directory),
+                None => set_query(&q),
+            }
             true
         }
         SearchCmd::SetQueryScoped { profile_generation, query } => {
             if profile_generation != crate::plex::session::current_gen() { return false; }
-            set_query(&query);
+            match directory {
+                Some(directory) => set_query_from_directory(&query, directory),
+                None => set_query(&query),
+            }
             true
         }
         SearchCmd::RememberRecent { profile_generation, term } => {
@@ -1262,6 +1345,72 @@ mod tests {
     /// favourite — so every test below that does not care about ranking grades the round-robin
     /// merge exactly as it did before favourites existed. The ranking tests build their own table.
     const NO_FAVS: &[(ServerId, i64, bool)] = &[];
+
+    #[test]
+    fn initial_query_scope_comes_from_the_retained_directory() {
+        let _guard = crate::testlock::serial();
+        reset();
+        let sid = ServerId::from_raw(3);
+        let directory = crate::stores::browse::DirectorySnapshot::fixture(9, 0, vec![
+            crate::stores::browse::SectionView {
+                borrowed: false,
+                sid: Some(sid),
+                key: 41,
+                kind: crate::stores::browse::SecKind::Movie,
+                row: crate::stores::browse::SrcRow {
+                    section: 0, title: "Retained".into(), pinned: true, current: true,
+                    ..Default::default()
+                },
+            },
+        ]);
+
+        run_with_directory(
+            crate::stores::search::SearchCmd::SetQuery("wallace".into()),
+            directory.view(),
+        );
+
+        assert_eq!(FAV_GEN.load(Ordering::SeqCst), directory.view().sections_gen());
+        assert_eq!(favs(), directory.view().favorite_sections());
+        reset();
+    }
+
+    #[test]
+    fn equal_generation_browse_owners_replace_the_favourite_snapshot() {
+        let _guard = crate::testlock::serial();
+        reset();
+        let sid = ServerId::from_raw(3);
+        let directory = |key, title: &str| crate::stores::browse::DirectorySnapshot::fixture(
+            9,
+            0,
+            vec![crate::stores::browse::SectionView {
+                borrowed: false,
+                sid: Some(sid),
+                key,
+                kind: crate::stores::browse::SecKind::Movie,
+                row: crate::stores::browse::SrcRow {
+                    section: 0,
+                    title: title.into(),
+                    pinned: true,
+                    current: true,
+                    ..Default::default()
+                },
+            }],
+        );
+        let alpha = directory(41, "Alpha");
+        let beta = directory(42, "Beta");
+        assert_eq!(alpha.view().sections_gen(), beta.view().sections_gen(),
+            "the regression requires equal owner-local generations");
+        set_query_from_directory("wallace", alpha.view());
+        let first_gen = GEN.load(Ordering::SeqCst);
+
+        pump_with_directory(0.0, beta.view());
+
+        assert_eq!(favs(), beta.view().favorite_sections(),
+            "the resident query must adopt the second owner's favourites");
+        assert_ne!(GEN.load(Ordering::SeqCst), first_gen,
+            "the result generation projected under Alpha must be superseded");
+        reset();
+    }
 
     /// [`merge`] with no favourite table, for the tests whose subject is the merge itself.
     fn merge_favs(sources: &[Source]) -> Vec<Shelf> {
@@ -1558,16 +1707,20 @@ mod tests {
         let _t = crate::plex::session::TempSession::new("search-favgen");
         _t.watching("u-search-favgen");
         register(1);
-        set_query("wallace");
+        let stores = crate::stores::Stores::default();
+        let mut directory = crate::stores::browse::DirectorySnapshot::default();
+        stores.capture_browse(&mut directory);
+        set_query_from_directory("wallace", directory.view());
         hold_off();
-        pump(SETTLE_S + 0.1); // settles and takes the snapshot's generation
+        pump_with_directory(SETTLE_S + 0.1, directory.view()); // settles and takes the snapshot's generation
         let gen0 = GEN.load(Ordering::SeqCst);
         unsafe { *addr_of_mut!(ARMED) = false };
 
         // …a library lands, which is what `apply_pins` and discovery both look like from here
-        crate::browse::seed_two_source_table_for_test();
+        stores.browse.borrow_mut().seed_two_source_table_for_test();
+        stores.capture_browse(&mut directory);
         hold_off();
-        pump(0.016);
+        pump_with_directory(0.016, directory.view());
         assert_ne!(
             GEN.load(Ordering::SeqCst),
             gen0,
@@ -1579,7 +1732,7 @@ mod tests {
         );
         assert_eq!(
             FAV_GEN.load(Ordering::SeqCst),
-            crate::browse::sections_gen(),
+            directory.view().sections_gen(),
             "the snapshot moved with it"
         );
 
@@ -1587,9 +1740,8 @@ mod tests {
         // after any edit would supersede the query it just started
         hold_off();
         let gen1 = GEN.load(Ordering::SeqCst);
-        pump(0.016);
+        pump_with_directory(0.016, directory.view());
         assert_eq!(GEN.load(Ordering::SeqCst), gen1, "it settles");
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     /// The other half, and the one that costs nothing to get wrong until a user types: with NO
@@ -1602,13 +1754,17 @@ mod tests {
         let _t = crate::plex::session::TempSession::new("search-favgen-idle");
         _t.watching("u-search-favgen-idle");
         register(1);
+        let stores = crate::stores::Stores::default();
+        let mut directory = crate::stores::browse::DirectorySnapshot::default();
+        stores.capture_browse(&mut directory);
         hold_off();
-        pump(0.016);
+        pump_with_directory(0.016, directory.view());
         let gen0 = GEN.load(Ordering::SeqCst);
 
-        crate::browse::seed_two_source_table_for_test();
+        stores.browse.borrow_mut().seed_two_source_table_for_test();
+        stores.capture_browse(&mut directory);
         hold_off();
-        pump(0.016);
+        pump_with_directory(0.016, directory.view());
         assert_eq!(
             GEN.load(Ordering::SeqCst),
             gen0,
@@ -1616,10 +1772,9 @@ mod tests {
         );
         assert_eq!(
             FAV_GEN.load(Ordering::SeqCst),
-            crate::browse::sections_gen(),
+            directory.view().sections_gen(),
             "…but the snapshot is current, so the next query does not open by re-arming"
         );
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     // ---- favourites RANK, and never filter (§6) --------------------------------------------

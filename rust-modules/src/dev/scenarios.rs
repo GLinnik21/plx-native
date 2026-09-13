@@ -630,8 +630,12 @@ mod content_boot_tests {
 /// `app::search_owned_tests::a_seeded_boot_query_survives_the_freshly_mounted_screens_first_sync`,
 /// which calls this function directly and does NOT drive [`super::read`] itself (that one line is
 /// not covered by a host test; a full `App`/SDL frame would be needed to reach it).
-pub(crate) fn apply_search_boot_trigger(q: &str, d: &mut crate::ui::dispatch::Dispatcher<crate::app::bridge::AppHost>) {
-    crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(q.trim().to_string()));
+pub(crate) fn apply_search_boot_trigger(
+    q: &str,
+    d: &mut crate::ui::dispatch::Dispatcher<crate::app::bridge::AppHost>,
+    bridge: &crate::app::bridge::Bridge,
+) {
+    bridge.search_run(crate::stores::search::SearchCmd::SetQuery(q.trim().to_string()));
     // A peer of Home, exactly as an interactive press on the strip's last pill is — and a ROOT
     // rather than a push, because at boot there is nothing above the root to stand on.
     crate::app::bridge::nav_root(d, AppArg::Search);
@@ -733,14 +737,14 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
         }
         if let Some(s) = crate::dev::read("library") {
             let kind = match s.parse::<usize>().unwrap_or(0) {
-                1 => crate::browse::SecKind::Show,
-                _ => crate::browse::SecKind::Movie,
+                1 => crate::stores::browse::SecKind::Show,
+                _ => crate::stores::browse::SecKind::Movie,
             };
             app.bridge.enter_library(kind);
             crate::app::bridge::nav_root(&mut app.pages, AppArg::Library);
         }
         if let Some(q) = crate::dev::read("search") {
-            apply_search_boot_trigger(&q, &mut app.pages);
+            apply_search_boot_trigger(&q, &mut app.pages, &app.bridge);
         }
         if let Some(s) = crate::dev::read("heroidx") {
             if let Ok(n) = s.parse::<c_int>() {
@@ -1270,16 +1274,20 @@ pub(crate) fn nav_osc_tick(app: &mut App, now: u32) {
             }
             AppArg::Content(_) => crate::app::bridge::nav_pop(&mut app.pages),
             AppArg::Home => {
-                if let Some(kind) = crate::browse::tab_kind(0) {
+                if let Some(kind) = app.bridge.browse_directory().tab_kind(0) {
                     let tab = match kind {
-                        crate::browse::SecKind::Show => HomeTab::Shows,
+                        crate::stores::browse::SecKind::Show => HomeTab::Shows,
                         _ => HomeTab::Movies,
                     };
                     crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge, tab, None, None);
                 }
             }
-            AppArg::Library => crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge,
-                HomeTab::Home, Some(crate::app::chrome::pill_at(1)), None),
+            AppArg::Library => {
+                let origin = crate::app::chrome::pill_at(
+                    app.bridge.browse_directory(), 1);
+                crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge,
+                    HomeTab::Home, Some(origin), None);
+            }
             _ => {}
         }
     }

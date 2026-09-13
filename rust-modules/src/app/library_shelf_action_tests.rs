@@ -6,32 +6,32 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
     for row in 0..2 {
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let own =
             crate::plex::register_for_test("shelf-own", "127.0.0.1", 9, "synthetic", "fixture");
         let shared =
             crate::plex::register_for_test("shelf-shared", "127.0.0.1", 10, "synthetic", "fixture");
         crate::plex::set_current(own);
-        crate::browse::seed_registered_table_for_test([own, shared]);
-        let mut directory = crate::stores::browse::DirectorySnapshot::default();
-        directory.capture();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
-        crate::browse::seed_items_for_test(12);
-        crate::browse::section_hubs::seed_shelves_for_test(
-            0,
-            &["movie.inprogress.1", "tv.recentlyreleased.1"],
-            3,
-        );
-        crate::browse::section_hubs::seed_landscape_for_test(0, "Synthetic show");
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
+        rig.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
+        rig.refresh_browse_directory();
+        rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+        {
+            let mut browse = rig.stores.browse.borrow_mut();
+            browse.seed_items_for_test(12);
+            browse.seed_shelves_for_test(
+                0,
+                &["movie.inprogress.1", "tv.recentlyreleased.1"],
+                3,
+            );
+            browse.seed_landscape_for_test(0, "Synthetic show");
+        }
         for i in 0..80 {
             frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
         }

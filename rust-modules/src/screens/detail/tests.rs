@@ -1008,7 +1008,7 @@ fn episode_text_ok_activates_on_down_without_arming_a_holdable_press() {
 }
 
 #[test]
-fn a_watch_disc_press_writes_through_the_store_and_reconciles_its_identity() {
+fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply() {
     let _guard = crate::testlock::serial();
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_for_test("detail-watch", "127.0.0.1", 1, "t", "c");
@@ -1025,21 +1025,17 @@ fn a_watch_disc_press_writes_through_the_store_and_reconciles_its_identity() {
         &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
         Some(hero::ELEM_MARK_WATCHED),
     );
-    assert!(
-        effects.is_empty(),
-        "the write is a store command, not navigation"
-    );
-    assert!(crate::metadata::current().unwrap().watched);
-    let measure = crate::ui::fixture::FixtureMeasure;
-    let reconciled = Focusable::<TestHost>::reconcile(
-        &screen,
-        FocusKey {
-            entry: EntryId(7),
-            elem: hero::ELEM_MARK_WATCHED,
-        },
-        &cx(&measure, None),
-    );
-    assert_eq!(reconciled.elem, hero::ELEM_MARK_UNWATCHED);
+    let addressed: Vec<_> = effects.iter().filter_map(|effect| match &effect.fx {
+        Fx::App(AppFx::Store(StoreId::ViewState,
+            crate::stores::StoreCmd::ViewState(ViewStateCmd::Request {
+                sid, rk, write, detail, guid,
+            }))) => Some((*sid, rk.as_str(), *write, detail.as_deref(), guid.as_str())),
+        _ => None,
+    }).collect();
+    assert_eq!(addressed, [(sid, "movie", crate::viewstate::Write::Watched, Some(""), "")],
+        "Detail must address the typed ViewState command to its owning Bridge");
+    assert!(!crate::metadata::current().unwrap().watched,
+        "the screen must not call the process-global compatibility facade itself");
     clear();
     crate::plex::reset_servers_for_test();
 }

@@ -50,7 +50,7 @@ use crate::ui::table_screen::{Header, TableScreen};
 use crate::ui::{theme, Painter, Rect};
 
 use super::family::{inner_cx, table_focus, InnerHost, SettingsPage};
-use super::registry::{word, AppLike};
+use super::registry::{word, DirectoryLike};
 
 /// Which ceremony the surface carries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -184,7 +184,7 @@ impl RouteSurface {
 
     /// Run the inner stack's lifecycle against its own bodies; the page events a push or pop
     /// produces are delivered to the bodies here, in order, and their emissions forwarded.
-    fn run_inner<H: AppLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn run_inner<H: DirectoryLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let steps = self.inner.commit(&mut self.ids);
         for step in steps {
             match step {
@@ -250,7 +250,7 @@ impl RouteSurface {
     }
 
     /// Step one inner body under the outer context and forward what it emitted.
-    fn deliver<H: AppLike>(
+    fn deliver<H: DirectoryLike>(
         &mut self,
         eid: EntryId,
         ev: ScreenEvent<InnerHost>,
@@ -272,7 +272,7 @@ impl RouteSurface {
     }
 
     /// Step the TOP page.
-    fn step_top<H: AppLike>(
+    fn step_top<H: DirectoryLike>(
         &mut self,
         ev: ScreenEvent<InnerHost>,
         cx: &Cx<'_, H>,
@@ -286,7 +286,7 @@ impl RouteSurface {
 
     /// An inner page's emissions, translated to the outer sink: a `Nav` op is the inner stack's
     /// (§6.2), everything else passes through unchanged (same bundle, same element type).
-    fn forward<H: AppLike>(
+    fn forward<H: DirectoryLike>(
         &mut self,
         out: Vec<Stamped<InnerHost>>,
         cx: &Cx<'_, H>,
@@ -353,7 +353,7 @@ impl RouteSurface {
     /// above it, so it becomes `Dismiss(self.entry)` — the same effect `forward` already
     /// translates an inner `Dismiss` into for consent's final answer, so both roads out of the
     /// family end at one op.
-    fn request<H: AppLike>(
+    fn request<H: DirectoryLike>(
         &mut self,
         op: NavOp<SettingsPage>,
         cx: &Cx<'_, H>,
@@ -427,7 +427,7 @@ fn mount_page(
     fx: &mut Effects<'_, InnerHost>,
 ) -> Box<dyn Screen<InnerHost>> {
     match arg {
-        SettingsPage::Root => Box::new(RootPage::new(entry)),
+        SettingsPage::Root => Box::new(RootPage::new(entry, cx.views)),
         SettingsPage::Legal => Box::new(super::legal::LegalIndex::new(entry)),
         SettingsPage::About => Box::new(super::legal::DocumentPage::about(entry)),
         SettingsPage::Document(i) => Box::new(super::legal::DocumentPage::legal(entry, i)),
@@ -436,7 +436,7 @@ fn mount_page(
         SettingsPage::ConsentStage(i) => {
             Box::new(super::consent::ConsentPage::first_run(entry, i, cx, fx))
         }
-        SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry)),
+        SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry, cx.views)),
     }
 }
 
@@ -569,7 +569,7 @@ impl LogicalState for RouteSurface {
     }
 }
 
-impl<H: AppLike> Machine<H> for RouteSurface {
+impl<H: DirectoryLike> Machine<H> for RouteSurface {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
@@ -705,7 +705,7 @@ impl<H: AppLike> Machine<H> for RouteSurface {
 }
 
 impl RouteSurface {
-    fn tick<H: AppLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn tick<H: DirectoryLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         if !self.push.settled() {
             let mut ph: PresentHandle<'_> = fx.present();
             motion::spring(
@@ -753,7 +753,7 @@ impl RouteSurface {
     }
 }
 
-impl<H: AppLike> Focusable<H> for RouteSurface {
+impl<H: DirectoryLike> Focusable<H> for RouteSurface {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         if let Some(top) = self.top() {
             top.screen.groups(&inner_cx(cx), out);
@@ -786,7 +786,7 @@ impl<H: AppLike> Focusable<H> for RouteSurface {
     }
 }
 
-impl<H: AppLike> Screen<H> for RouteSurface {
+impl<H: DirectoryLike> Screen<H> for RouteSurface {
     fn name(&self) -> &'static str {
         self.top_word()
     }
@@ -847,7 +847,7 @@ impl<H: AppLike> Screen<H> for RouteSurface {
 impl RouteSurface {
     /// Draw the nested pages through the surface's entrance cascade. Kept separate from the
     /// ground paint so the real page selection and frame propagation can be tested without GL.
-    fn draw_pages<H: AppLike>(&mut self, f: &mut DrawFrame<'_, '_, H>, entrance: Painter) {
+    fn draw_pages<H: DirectoryLike>(&mut self, f: &mut DrawFrame<'_, '_, H>, entrance: Painter) {
         let navigation = f.navigation();
         let t = self.push.amount();
         let icx = inner_cx(f.cx);
@@ -977,7 +977,7 @@ fn signed_in() -> bool {
 
 
 impl RootPage {
-    fn new(entry: EntryId) -> Self {
+    fn new(entry: EntryId, directory: crate::stores::browse::DirectoryView<'_>) -> Self {
         let mut s = Self {
             entry,
             table: TableView::new(),
@@ -987,11 +987,11 @@ impl RootPage {
                 auto_sign_in: false,
             },
         };
-        s.rebuild(0);
+        s.rebuild(0, directory);
         s
     }
 
-    fn rebuild(&mut self, sel: i32) {
+    fn rebuild(&mut self, sel: i32, directory: crate::stores::browse::DirectoryView<'_>) {
         let sess = crate::plex::session::peek();
         let signed_in = signed_in();
         let auto_sign_in = sess.auto_sign_in();
@@ -1001,7 +1001,7 @@ impl RootPage {
         let mut actions = Vec::new();
         let mut sections = Vec::new();
         if signed_in {
-            let n = crate::browse::pinned_count();
+            let n = directory.pinned_count();
             // The section is Libraries and the row is Favorite libraries: the switch governs the
             // whole app — Home's shelves, the top tab strip and the Library's Sources picker.
             sections.push(
@@ -1069,14 +1069,15 @@ impl RootPage {
         )
     }
 
-    fn activate(&mut self, row: i32, fx: &mut Effects<'_, InnerHost>) {
+    fn activate(&mut self, row: i32, directory: crate::stores::browse::DirectoryView<'_>,
+        fx: &mut Effects<'_, InnerHost>) {
         let Some(&action) = usize::try_from(row).ok().and_then(|i| self.rows.get(i)) else {
             return;
         };
         match action {
             Action::AutoSignIn => {
                 crate::plex::session::set_auto_sign_in(!self.state.auto_sign_in);
-                self.rebuild(self.table.sel);
+                self.rebuild(self.table.sel, directory);
             }
             Action::Favourites => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Favourites))),
             Action::Privacy => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Privacy))),
@@ -1098,7 +1099,7 @@ impl Machine<InnerHost> for RootPage {
             ScreenEvent::Enter(_) => {
                 // a return from a child: the favourite count may have changed
                 let sel = self.table.sel;
-                self.rebuild(sel);
+                self.rebuild(sel, cx.views);
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
@@ -1112,7 +1113,7 @@ impl Machine<InnerHost> for RootPage {
                 Handled::Yes
             }
             ScreenEvent::Activate(e) => {
-                self.activate(*e as i32, fx);
+                self.activate(*e as i32, cx.views, fx);
                 Handled::Yes
             }
             ScreenEvent::Input(crate::ui::machine::InputEvent {
@@ -1127,7 +1128,7 @@ impl Machine<InnerHost> for RootPage {
                 // rule 8: RIGHT on a row that opens nested content enters it, exactly as OK does
                 if let Some(k) = cx.focus.current {
                     if self.table.row_opens(k.elem as i32) {
-                        self.activate(k.elem as i32, fx);
+                        self.activate(k.elem as i32, cx.views, fx);
                     }
                 }
                 Handled::Yes
@@ -1228,15 +1229,22 @@ mod tests {
     // site inside `cx` below.
     static MEASURE: FixtureMeasure = FixtureMeasure;
 
-    fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, InnerHost> {
+    fn cx_with<'a>(
+        focus: Option<FocusKey<u32>>,
+        directory: crate::stores::browse::DirectoryView<'a>,
+    ) -> Cx<'a, InnerHost> {
         Cx {
-            views: (),
+            views: directory,
             tick: Tick::default(),
             measure: &MEASURE,
             press: PressRead::default(),
             focus: FocusRead { current: focus , ..Default::default() },
             owner: InputOwner::Entry(EntryId(0)),
         }
+    }
+
+    fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, InnerHost> {
+        cx_with(focus, crate::stores::browse::DirectoryView::empty_for_test())
     }
 
     /// Step the surface once and return what it emitted, the way `RouteSurface::forward` would
@@ -2312,15 +2320,30 @@ mod tests {
         struct SurfaceRig {
             mounter: SurfaceMounter,
             measure: FixtureMeasure,
+            stores: crate::stores::Stores,
+            directory: crate::stores::browse::DirectorySnapshot,
             /// How many times BACK reached the root of the ROOT stack (the platform's Home).
             roots: u32,
         }
 
+        impl SurfaceRig {
+            fn new() -> Self {
+                Self {
+                    mounter: SurfaceMounter,
+                    measure: FixtureMeasure,
+                    stores: crate::stores::Stores::default(),
+                    directory: Default::default(),
+                    roots: 0,
+                }
+            }
+        }
+
         impl Rig<InnerHost> for SurfaceRig {
             fn split(&mut self) -> Split<'_, InnerHost> {
+                self.stores.capture_browse(&mut self.directory);
                 Split {
                     mounter: &mut self.mounter,
-                    views: (),
+                    views: self.directory.view(),
                     measure: &self.measure,
                 }
             }
@@ -2381,11 +2404,7 @@ mod tests {
         /// and the surface's entry id.
         fn opened() -> (Dispatcher<InnerHost>, SurfaceRig, EntryId) {
             let mut d: Dispatcher<InnerHost> = Dispatcher::new();
-            let mut rig = SurfaceRig {
-                mounter: SurfaceMounter,
-                measure: FixtureMeasure,
-                roots: 0,
-            };
+            let mut rig = SurfaceRig::new();
             d.request(MachineId::Nav, NavOp::Root(SettingsPage::About));
             frame(&mut d, &mut rig, 0, vec![]);
             d.nav.next_style = Style::Opaque { snapshot: true };
@@ -2427,8 +2446,14 @@ mod tests {
         }
 
         fn consent_opened(page: SettingsPage) -> (Dispatcher<InnerHost>, SurfaceRig, EntryId) {
+            consent_opened_on(page, SurfaceRig::new())
+        }
+
+        fn consent_opened_on(
+            page: SettingsPage,
+            mut rig: SurfaceRig,
+        ) -> (Dispatcher<InnerHost>, SurfaceRig, EntryId) {
             let mut d = Dispatcher::new();
-            let mut rig = SurfaceRig { mounter: SurfaceMounter, measure: FixtureMeasure, roots: 0 };
             d.request(MachineId::Nav, NavOp::Root(SettingsPage::About));
             frame(&mut d, &mut rig, 0, vec![]);
             d.nav.next_style = Style::Opaque { snapshot: true };
@@ -2525,7 +2550,6 @@ mod tests {
             struct ResetSources;
             impl Drop for ResetSources {
                 fn drop(&mut self) {
-                    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
                     crate::plex::reset_servers_for_test();
                 }
             }
@@ -2535,16 +2559,18 @@ mod tests {
             let b = crate::plex::register_for_test("focus-b", "127.0.0.1", 9, "synthetic", "focus-test");
             // The existing fixture pins client identities and marks sections/counts complete:
             // the real Onboard Tick can poll discovery without spawning network work.
-            crate::browse::seed_registered_table_for_test([a, b]);
-            let pins = crate::browse::favorite_sections();
-            let (mut d, mut rig, id) = consent_opened(SettingsPage::Favourites);
+            let mut rig = SurfaceRig::new();
+            rig.stores.browse.borrow_mut().seed_registered_table_for_test([a, b]);
+            rig.stores.capture_browse(&mut rig.directory);
+            let pins = rig.directory.view().favorite_sections().to_vec();
+            let (mut d, mut rig, id) = consent_opened_on(SettingsPage::Favourites, rig);
             seat(&mut d, id, 0);
             frame(&mut d, &mut rig, 32, vec![key(Key::Ok, tick(32))]); // local draft only
             for (round, direction) in [Key::Left, Key::Down].into_iter().enumerate() {
                 let ms = 48 + round as u32 * 32;
                 let screen = &d.nav.entry(id).unwrap().inst.as_ref().unwrap().screen;
                 let mut groups = Vec::new();
-                screen.groups(&cx(None), &mut groups);
+                screen.groups(&cx_with(None, rig.directory.view()), &mut groups);
                 let table = groups.iter().find(|g| g.id == GroupId(0)).unwrap();
                 assert!(table.len > 0, "actual Favourites rows must exist");
                 assert!(groups.iter().any(|g| g.id == GroupId(1) && g.len == 1), "draft offers Done");
@@ -2554,7 +2580,9 @@ mod tests {
                 frame(&mut d, &mut rig, ms + 16, vec![]);
                 assert_eq!(d.focus().unwrap().elem, registry::BAND);
             }
-            assert_eq!(crate::browse::favorite_sections(), pins, "draft navigation cannot persist pins");
+            rig.stores.capture_browse(&mut rig.directory);
+            assert_eq!(rig.directory.view().favorite_sections(), pins,
+                "draft navigation cannot persist pins");
             assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)));
         }
 

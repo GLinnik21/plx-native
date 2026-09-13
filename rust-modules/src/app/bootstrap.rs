@@ -41,10 +41,12 @@ impl HomeIo {
         self.requests.push(recorded);
         admitted
     }
+    #[cfg(test)]
     pub fn hubs(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32)
         -> crate::stores::StoreOutcome {
         self.hubs_with(cmd, dt, &mut crate::pms::spawn_fetch)
     }
+    #[cfg(test)]
     fn hubs_with(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> crate::stores::StoreOutcome {
         crate::stores::hubs::controlled(cmd, dt, &mut |request| {
@@ -53,11 +55,26 @@ impl HomeIo {
                 "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
         })
     }
-    pub fn discovery(&mut self) {
-        self.discovery_with(&mut crate::browse::execute_discovery);
+    pub(crate) fn hubs_with_directory(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
+        directory: crate::stores::browse::DirectoryView<'_>) -> crate::stores::StoreOutcome {
+        self.hubs_with_directory_and_launch(cmd, dt, directory, &mut crate::pms::spawn_fetch)
     }
-    pub(crate) fn discovery_with(&mut self, launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool) {
-        crate::browse::controlled_discover(&mut |request| {
+    fn hubs_with_directory_and_launch(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
+        directory: crate::stores::browse::DirectoryView<'_>,
+        launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> crate::stores::StoreOutcome {
+        crate::stores::hubs::controlled_with_directory(cmd, dt, directory, &mut |request| {
+            let (epoch, req, sid, client, token_gen) = request.descriptor();
+            self.admit(serde_json::json!({"kind":"hubs", "epoch":epoch,
+                "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
+        })
+    }
+    pub(crate) fn discovery_owned(&mut self, stores: &crate::stores::Stores) {
+        self.discovery_owned_with(stores, &mut crate::browse::execute_discovery);
+    }
+
+    pub(crate) fn discovery_owned_with(&mut self, stores: &crate::stores::Stores,
+        launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool) {
+        stores.browse_controlled_discover(&mut |request| {
             self.admit(request.descriptor(), || launch(request))
         });
     }

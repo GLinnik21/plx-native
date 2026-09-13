@@ -22,8 +22,8 @@ use crate::metadata::{Detail, Spot};
 use crate::screens::registry::PlayIntent;
 use crate::plex::ServerId;
 use crate::stores::metadata::{apply as apply_metadata, MetadataCmd};
-use crate::stores::viewstate::{apply as apply_viewstate, ViewStateCmd};
-use crate::stores::StoreId;
+use crate::stores::viewstate::ViewStateCmd;
+use crate::stores::{StoreCmd, StoreId};
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::frame::Budget;
 use crate::ui::hero_logo::{HeroLogo, LogoRung};
@@ -2280,17 +2280,20 @@ impl DetailScreen {
             }
             hero::HeroCtl::MarkWatched | hero::HeroCtl::MarkUnwatched => {
                 if let Some(d) = self.detail() {
-                    apply_viewstate(ViewStateCmd::Request {
-                        sid: d.sid,
-                        rk: d.rk.clone(),
-                        write: if ctl == hero::HeroCtl::MarkWatched {
-                            crate::viewstate::Write::Watched
-                        } else {
-                            crate::viewstate::Write::Unwatched
-                        },
-                        detail: Some(String::new()),
-                        guid: d.guid.clone(),
-                    });
+                    fx.push(Fx::App(AppFx::Store(
+                        StoreId::ViewState,
+                        StoreCmd::ViewState(ViewStateCmd::Request {
+                            sid: d.sid,
+                            rk: d.rk.clone(),
+                            write: if ctl == hero::HeroCtl::MarkWatched {
+                                crate::viewstate::Write::Watched
+                            } else {
+                                crate::viewstate::Write::Unwatched
+                            },
+                            detail: Some(String::new()),
+                            guid: d.guid.clone(),
+                        }),
+                    )));
                 }
             }
         }

@@ -5,6 +5,7 @@ use crate::ui::focus::{FocusEngine, Outcome};
 use crate::ui::machine::{Host, InputOwner, Tick};
 
 struct TestHost;
+
 #[derive(Clone, Copy)]
 struct Views<'a> {
     listing: crate::stores::browse::ListingView<'a>,
@@ -34,33 +35,34 @@ impl LibraryLike for TestHost {
 const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 struct Fixture {
+    _stores: crate::stores::Stores,
     listing: crate::stores::browse::ListingSnapshot,
     directory: crate::stores::browse::DirectorySnapshot,
     hubs: crate::stores::browse::HubsSnapshot,
-    sections: Vec<crate::browse::view::SectionView>,
+    sections: Vec<crate::stores::browse::SectionView>,
     epoch: u32,
 }
 impl Fixture {
     fn new(libraries: usize, items: usize, shelves: usize) -> Self {
-        crate::stores::browse::apply(BrowseCmd::Reset);
-        crate::browse::seed_two_source_table_for_test();
-        crate::stores::browse::apply(BrowseCmd::SetCur(0));
+        let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_two_source_table_for_test();
+        stores.browse_run(BrowseCmd::SetCur(0));
         let titles: Vec<_> = (0..shelves)
             .map(|i| format!("Synthetic shelf {i}"))
             .collect();
         let titles: Vec<_> = titles.iter().map(String::as_str).collect();
         if shelves > 0 {
-            crate::browse::section_hubs::seed_shelves_for_test(0, &titles, 4);
+            stores.browse.borrow_mut().seed_shelves_for_test(0, &titles, 4);
         }
-        let epoch = crate::browse::table_epoch();
+        let epoch = stores.browse.borrow().table_epoch_for_test();
         let sid = crate::plex::ServerId::UNSET;
         let sections = (0..libraries)
-            .map(|i| crate::browse::view::SectionView {
+            .map(|i| crate::stores::browse::SectionView {
                 borrowed: libraries == 1,
                 sid: Some(sid),
                 key: i as i64 + 1,
                 kind: SecKind::Movie,
-                row: crate::browse::SrcRow {
+                row: crate::stores::browse::SrcRow {
                     section: i,
                     title: format!("Library {i}"),
                     pinned: true,
@@ -69,10 +71,13 @@ impl Fixture {
                 },
             })
             .collect();
+        let listing = stores.browse.borrow_mut().listing_snapshot();
+        let hubs = stores.browse.borrow_mut().hubs_snapshot();
         let mut fixture = Self {
-            listing: crate::stores::browse::listing_snapshot(),
+            listing,
             directory: Default::default(),
-            hubs: crate::stores::browse::hubs_snapshot(),
+            hubs,
+            _stores: stores,
             sections,
             epoch,
         };
@@ -90,12 +95,12 @@ impl Fixture {
         } else {
             0
         };
-        self.directory = crate::browse::view::DirectorySnapshot::fixture(
+        self.directory = crate::stores::browse::DirectorySnapshot::fixture(
             self.epoch,
             current,
             self.sections.clone(),
         );
-        self.listing = crate::browse::view::ListingSnapshot::fixture(
+        self.listing = crate::stores::browse::ListingSnapshot::fixture(
             sid,
             (0..items)
                 .map(|i| {
@@ -177,12 +182,6 @@ impl Fixture {
         }
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        crate::stores::browse::apply(BrowseCmd::Reset);
-    }
-}
-
 #[test]
 fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_movie_listing() {
     let _guard = crate::testlock::serial();
@@ -210,24 +209,24 @@ fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_
     }
     let sid = crate::plex::ServerId::UNSET;
     fixture.sections = vec![
-        crate::browse::view::SectionView {
+        crate::stores::browse::SectionView {
             borrowed: false,
             sid: Some(sid),
             key: 1,
             kind: SecKind::Movie,
-            row: crate::browse::SrcRow {
+            row: crate::stores::browse::SrcRow {
                 section: 0,
                 title: "Movies".into(),
                 pinned: true,
                 ..Default::default()
             },
         },
-        crate::browse::view::SectionView {
+        crate::stores::browse::SectionView {
             borrowed: false,
             sid: Some(sid),
             key: 2,
             kind: SecKind::Show,
-            row: crate::browse::SrcRow {
+            row: crate::stores::browse::SrcRow {
                 section: 1,
                 title: "Shows".into(),
                 pinned: true,

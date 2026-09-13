@@ -771,7 +771,7 @@ mod tests {
             Vec::new(),
         );
         let directory = crate::stores::browse::DirectorySnapshot::default();
-        let hubs = crate::stores::browse::hubs_snapshot();
+        let hubs = crate::stores::browse::HubsSnapshot::empty_for_test();
         let measure = FixtureMeasure;
         test(&Cx {
             views: Views {
@@ -947,7 +947,7 @@ mod tests {
 
     #[test]
     fn sources_keep_server_identity_and_align_recheck_after_separator() {
-        // with_cx retains a snapshot of the active Bridge-owned BrowseStore's compatibility view.
+        // with_cx retains the same explicit directory shape a Bridge captures from its owner.
         let _guard = crate::testlock::serial();
         let (groups, sections) = source_sections();
         let draft = source_draft(11, 0, &groups, &sections);

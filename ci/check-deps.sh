@@ -196,6 +196,191 @@ gate() {
 }
 
 echo "== check-deps =="
+
+# browse-owner: Browse has one physical owner per `Stores`; the migration allowlist ended at zero
+# and is deliberately gone. Reject both the old storage/selector machinery and every free
+# state-shaped facade it exposed. Methods on `BrowseState`/`BrowseStore` are intentionally outside
+# this spelling: they require an explicit receiver and therefore cannot select process state.
+browse_facades='legacy_adapter|adapter|take_legacy_adapter|legacy|legacy_mut|publish_legacy|clone_legacy_state|take_legacy_state|sections|sources|source_mut|states|state_mut|cur_state|bump_gen|requery|reset|sections_gen|table_epoch|source_list_gen|query_gen|sync_roster|append_sections|section_count|library_titles|section_title|section_kind|section_sid|cur|handle_of|set_cur|tabs_gen|tab_has_favorite|tab_kinds|tab_count|tab_title|tab_kind|tab_of_kind|tab_section|section_of_kind|remembered_section|load_remembered|lib_refs|resolve_pins|resolve_pins_from|record_pins|first_run_asks|retry_discovery|discovery_state|pinned|pinned_count|is_last_pinned|toggle_pin|apply_pins|repoint_cur|section_sid_is_borrowed|favorite_sections|library_pins|source_groups|cur_kind|source_rows|kind_position|source_rows_for|all_source_rows|rows_where|recheck_shares|total|set_watched_local|fetch_state|loading_initial|cur_source_state|seed_sources_for_test|set_pinned_for_test|land_pin_for_test|seed_pins_for_test|retry_source|cur_source_idx|sorts|set_sort_by_key|set_unwatched|set_genre_by_id|genres|land_directory|rail_available|resolve_section|maybe_discover|maybe_discover_with|queue_discovery_for_test|discovery_spawn_refused|land_discovery|apply_discovery|addressed|run|discover_pump|controlled_discover|pump|maybe_spawn|seed_two_source_table_for_test|seed_registered_table_for_test|seed_items_for_test|seed_letter_counts_for_test|seed_query_choices_for_test|append_section_for_test'
+browse_hub_facades='pump_spawns|invalidate|tick_all|shelves|publication|snapshot|seed_shelves_for_test|seed_landscape_for_test|spawn|land'
+browse_store_facades='hubs_snapshot|listing_snapshot|reset_bootstrap_for_test|take_bootstrap_token|with_active|active_owner|activate|with_activation|controlled_discover_active|seed_items_active_for_test|queue_discovery_active_for_test|apply|pump|discover_pump'
+# Scan only module-level declarations. A plain grep cannot tell a retired free facade from a
+# receiver method with the same word (and historically also missed indentation and modifiers).
+# Scope is counted from Rust tokens, not raw braces: comments (including nested block comments),
+# strings (ordinary, raw and byte) and character literals may all contain brace-shaped data.
+browse_declarations() {
+  local names="$1" file
+  shift
+  for file in "$@"; do
+    awk -v names="$names" '
+      function blanks(n, s) { s=""; while (n-- > 0) s=s " "; return s }
+      function hashes(n, s) { s=""; while (n-- > 0) s=s "#"; return s }
+
+      # Return the raw-string hash count at s[pos], or -1 when prefix does not begin one.
+      function raw_start(s, pos, prefix, i, count) {
+        if (substr(s, pos, length(prefix)) != prefix) return -1
+        i=pos+length(prefix); count=0
+        while (substr(s, i, 1) == "#") { count++; i++ }
+        return substr(s, i, 1) == "\"" ? count : -1
+      }
+
+      # Rust lifetimes also begin with apostrophe. Recognize only a complete one-codepoint or
+      # escaped character literal, leaving lifetimes and labels as code.
+      function char_end(s, quote, i, c) {
+        i=quote+1
+        c=substr(s, i, 1)
+        if (c == "" || c == "\n" || c == "\r" || c == "\047") return 0
+        if (c == "\\") {
+          i++
+          c=substr(s, i, 1)
+          if (c == "u" && substr(s, i+1, 1) == "{") {
+            i+=2
+            while (i <= length(s) && substr(s, i, 1) != "}") i++
+            if (substr(s, i, 1) != "}") return 0
+            i++
+          } else if (c == "x") {
+            i+=3
+          } else if (c != "") {
+            i++
+          } else return 0
+        } else i++
+        return substr(s, i, 1) == "\047" ? i : 0
+      }
+
+      function retired_fn(s, re) {
+        re="(^|[^[:alnum:]_])fn[[:space:]]+(" names ")([^[:alnum:]_]|$)"
+        return s ~ re
+      }
+
+      function selector_static(s, prefix) {
+        prefix="(^|[^[:alnum:]_])static[[:space:]]+(mut[[:space:]]+)?"
+        return s ~ (prefix "(ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE)([^[:alnum:]_]|$)")
+      }
+
+      function retired_module_decl(s, prefix) {
+        prefix="(^|[^[:alnum:]_])static[[:space:]]+(mut[[:space:]]+)?"
+        return retired_fn(s) || selector_static(s) ||
+          s ~ (prefix "[A-Z][A-Z_0-9]*[[:space:]]*:.*(BrowseState|BrowseAdapter|BrowseStore)")
+      }
+
+      function opens_thread_local(s) {
+        return s ~ /(^|[^[:alnum:]_])thread_local[[:space:]]*![[:space:]]*\{[[:space:]]*$/
+      }
+
+      BEGIN { raw=-1 }
+      {
+        original=$0; code=""; before=depth; i=1; n=length(original)
+        while (i <= n) {
+          c=substr(original, i, 1); two=substr(original, i, 2)
+          if (block > 0) {
+            if (two == "/*") { block++; code=code "  "; i+=2; continue }
+            if (two == "*/") { block--; code=code "  "; i+=2; continue }
+            code=code " "; i++; continue
+          }
+          if (raw >= 0) {
+            raw_close="\"" hashes(raw)
+            if (substr(original, i, length(raw_close)) == raw_close) {
+              code=code blanks(length(raw_close)); i+=length(raw_close); raw=-1; continue
+            }
+            code=code " "; i++; continue
+          }
+          if (string) {
+            if (c == "\\") { code=code "  "; i+=2; continue }
+            code=code " "; i++
+            if (c == "\"") string=0
+            continue
+          }
+          if (two == "//") break
+          if (two == "/*") { block=1; code=code "  "; i+=2; continue }
+
+          rh=raw_start(original, i, "br")
+          if (rh < 0) rh=raw_start(original, i, "rb")
+          if (rh >= 0) {
+            opener=2+rh+1; raw=rh; code=code blanks(opener); i+=opener; continue
+          }
+          rh=raw_start(original, i, "r")
+          if (rh >= 0) {
+            opener=1+rh+1; raw=rh; code=code blanks(opener); i+=opener; continue
+          }
+          if (two == "b\"") { string=1; code=code "  "; i+=2; continue }
+          if (c == "\"") { string=1; code=code " "; i++; continue }
+
+          if (c == "b" && substr(original, i+1, 1) == "\047") {
+            end=char_end(original, i+1)
+            if (end) { code=code blanks(end-i+1); i=end+1; continue }
+          }
+          if (c == "\047") {
+            end=char_end(original, i)
+            if (end) { code=code blanks(end-i+1); i=end+1; continue }
+          }
+
+          code=code c
+          i++
+        }
+
+        # Assemble declarations from code tokens, not physical lines. `module_decl` sees only
+        # depth-zero text, so attributes/modifiers may span lines while methods inside impls stay
+        # invisible. The sole nested exception is a module-level thread_local! body, where only
+        # the retired selector spellings are inspected at the macro body direct depth.
+        hit=0; level=before
+        for (j=1; j <= length(code); j++) {
+          c=substr(code, j, 1)
+          if (level == 0) {
+            module_decl=module_decl c
+            if (c == "{" || c == ";") {
+              if (retired_module_decl(module_decl)) hit=1
+              if (c == "{" && opens_thread_local(module_decl)) thread_local_depth=level+1
+              module_decl=""
+            }
+          } else if (thread_local_depth > 0 && level == thread_local_depth) {
+            thread_decl=thread_decl c
+            if (c == ";") {
+              if (selector_static(thread_decl)) hit=1
+              thread_decl=""
+            }
+          }
+
+          if (c == "{") level++
+          else if (c == "}") {
+            level--
+            if (thread_local_depth > 0 && level < thread_local_depth) {
+              thread_local_depth=0
+              thread_decl=""
+            }
+          }
+        }
+
+        if (level == 0 && retired_module_decl(module_decl)) {
+          hit=1
+          module_decl=""
+        }
+        if (thread_local_depth > 0 && selector_static(thread_decl)) {
+          hit=1
+          thread_decl=""
+        }
+        if (hit) print FILENAME ":" NR ":" $0
+        if (level == 0) module_decl=module_decl " "
+        if (thread_local_depth > 0) thread_decl=thread_decl " "
+        depth=level
+        if (depth < 0) depth = 0
+      }
+    ' "$file" || echo "$file:0:browse declaration scanner failed"
+  done
+}
+browse_owner_matches=$({
+  browse_declarations "$browse_facades" "$SRC/browse/mod.rs"
+  browse_declarations "$browse_hub_facades" "$SRC/browse/section_hubs.rs"
+  browse_declarations 'snapshot' "$SRC/browse/view.rs"
+  browse_declarations "$browse_store_facades" "$SRC/stores/browse.rs"
+  grep_code "(crate::browse|crate::stores::browse|stores::browse)::($browse_facades|$browse_store_facades)\(" "$SRC"
+} | sort -u)
+if [ -z "$browse_owner_matches" ]; then
+  ok "browse-owner: zero global state, selectors, adapters, and free facades"
+else
+  echo "$browse_owner_matches" | sed 's/^/    /'
+  fail "browse-owner: retired Browse compatibility surface returned"
+fi
+
 # libm: the method-call spelling, OUTSIDE ui/motion.rs (which owns the integrators and their
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
 libm_lines=$(grep_code '\.(exp|ln|log|powf|powi|cbrt|sin|cos|tan|atan2|hypot|mul_add|sin_cos)\(' "$SRC" \

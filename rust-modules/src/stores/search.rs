@@ -1,13 +1,18 @@
-//! The Search data layer, as a machine over `crate::search` (`docs/stores-as-machines.md`).
+//! The Search store boundary over `crate::search` (`docs/stores-as-machines.md`).
 
-use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
-
-use super::{note, StoreEv, StoreId};
+use super::{note, StoreId};
 
 pub(crate) use crate::search::view::SearchSnapshot;
 
 /// Capture the store publication at the dispatcher frame boundary, not during paint.
+#[cfg(test)]
 pub(crate) fn snapshot() -> SearchSnapshot { crate::search::view::snapshot() }
+
+pub(crate) fn snapshot_with_directory(
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> SearchSnapshot {
+    crate::search::view::snapshot_with_directory(directory)
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum SearchCmd {
@@ -24,8 +29,6 @@ pub(crate) enum SearchCmd {
     /// The optimistic half of a view-state write, on the result shelves.
     SetWatchedLocal { sid: crate::plex::ServerId, rk: String, on: bool },
 }
-
-pub(crate) struct SearchStore;
 
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
 pub(crate) fn apply(cmd: SearchCmd) -> bool {
@@ -50,22 +53,22 @@ pub(super) fn run(cmd: SearchCmd) -> bool {
     answer
 }
 
-/// The screen's once-a-frame pass: the debounce, the spawns, the landings.
-pub(crate) fn pump(dt: f32) -> bool {
-    note(StoreId::Search, crate::search::pump(dt))
+/// Synchronous command path with the Browse owner publication captured by the application.
+/// Query admission snapshots its favourite-library ranking from this directory.
+pub(crate) fn run_with_directory(
+    cmd: SearchCmd,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> bool {
+    #[cfg(test)]
+    crate::testlock::assert_held("the search store (owned apply)");
+    let answer = crate::search::run_with_directory(cmd, directory);
+    super::bump(StoreId::Search);
+    answer
 }
 
-impl<H: Host> Machine<H> for SearchStore {
-    type Ev = StoreEv<SearchCmd>;
-    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
-        match ev {
-            StoreEv::Cmd(c) => {
-                run(c.clone());
-            }
-            StoreEv::Pump { dt } => {
-                pump(*dt);
-            }
-        }
-        Handled::Yes
-    }
+pub(crate) fn pump_with_directory(
+    dt: f32,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> bool {
+    note(StoreId::Search, crate::search::pump_with_directory(dt, directory))
 }

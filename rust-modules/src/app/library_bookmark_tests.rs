@@ -2,36 +2,37 @@
 fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
     use crate::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
     let _guard = crate::testlock::serial();
-    crate::stores::browse::apply(BrowseCmd::Reset);
-    crate::browse::seed_two_source_table_for_test();
+    let stores = crate::stores::Stores::default();
+    stores.browse.borrow_mut().seed_two_source_table_for_test();
     let mut directory = crate::stores::browse::DirectorySnapshot::default();
-    directory.capture();
+    stores.capture_browse(&mut directory);
     let section = &directory.view().sections()[0];
     let target = SectionAddress {
         epoch: directory.view().epoch().unwrap(),
         sid: section.sid.unwrap(),
         section: section.key,
     };
-    crate::stores::browse::apply(BrowseCmd::SetCur(0));
+    stores.browse_run(BrowseCmd::SetCur(0));
     let mut retained = None;
     for at in [
-        crate::browse::CursorAt::SlotIndex(52),
-        crate::browse::CursorAt::ItemKey {
+        crate::stores::browse::CursorAt::SlotIndex(52),
+        crate::stores::browse::CursorAt::ItemKey {
             sid: target.sid,
             rk: "synthetic-52".into(),
             slot: 52,
         },
     ] {
-        let cursor = crate::browse::Cursor { at, scroll: 1200.0 };
+        let cursor = crate::stores::browse::Cursor { at, scroll: 1200.0 };
+        let query = stores.browse.borrow_mut().listing_snapshot().view().id().unwrap().query;
         let command = BrowseCmd::Addressed {
             target,
             work: LibraryWork::SaveCursor {
-                query: crate::browse::query_gen(),
+                query,
                 cursor: cursor.clone(),
             },
         };
-        assert!(crate::stores::browse::apply(command.clone()));
-        let snapshot = crate::stores::browse::listing_snapshot();
+        assert!(stores.browse_run(command.clone()));
+        let snapshot = stores.browse.borrow_mut().listing_snapshot();
         assert_eq!(snapshot.view().cursor(), Some(&cursor));
         if let Some((old, value)) = &retained {
             let old: &crate::stores::browse::ListingSnapshot = old;
@@ -42,44 +43,44 @@ fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
             );
         }
         retained = Some((snapshot, cursor.clone()));
-        crate::stores::take_notices();
-        let generation = crate::stores::gen(StoreId::Browse);
-        assert!(!crate::stores::browse::apply(command));
-        assert_eq!(crate::stores::gen(StoreId::Browse), generation);
+        stores.take_notices();
+        let generation = stores.gen(StoreId::Browse);
+        assert!(!stores.browse_run(command));
+        assert_eq!(stores.gen(StoreId::Browse), generation);
         assert!(
-            crate::stores::take_notices().is_empty(),
+            stores.take_notices().is_empty(),
             "identical snapshots owe no store notice"
         );
-        assert!(!crate::stores::browse::apply(BrowseCmd::Addressed {
+        assert!(!stores.browse_run(BrowseCmd::Addressed {
             target: SectionAddress {
                 epoch: target.epoch.wrapping_add(1),
                 ..target
             },
             work: LibraryWork::SaveCursor {
-                query: crate::browse::query_gen(),
+                query,
                 cursor: cursor.clone()
             },
         }));
-        assert_eq!(crate::stores::gen(StoreId::Browse), generation);
+        assert_eq!(stores.gen(StoreId::Browse), generation);
         assert!(
-            crate::stores::take_notices().is_empty(),
+            stores.take_notices().is_empty(),
             "rejected snapshots owe no store notice"
         );
-        assert!(!crate::stores::browse::apply(BrowseCmd::Addressed {
+        assert!(!stores.browse_run(BrowseCmd::Addressed {
             target,
             work: LibraryWork::SaveCursor {
-                query: crate::browse::query_gen().wrapping_add(1),
+                query: query.wrapping_add(1),
                 cursor
             },
         }));
-        assert_eq!(crate::stores::gen(StoreId::Browse), generation);
+        assert_eq!(stores.gen(StoreId::Browse), generation);
         assert!(
-            crate::stores::take_notices().is_empty(),
+            stores.take_notices().is_empty(),
             "an obsolete query snapshot is quiet too"
         );
     }
-    crate::stores::browse::apply(BrowseCmd::Reset);
-    assert!(crate::stores::browse::listing_snapshot()
+    stores.browse_run(BrowseCmd::Reset);
+    assert!(stores.browse.borrow_mut().listing_snapshot()
         .view()
         .cursor()
         .is_none());
@@ -94,7 +95,7 @@ fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
 #[test]
 fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     #[derive(Default)]
-    struct Saves(Vec<(crate::stores::browse::SectionAddress, crate::browse::Cursor)>);
+    struct Saves(Vec<(crate::stores::browse::SectionAddress, crate::stores::browse::Cursor)>);
     impl crate::ui::dispatch::Tap<AppHost> for Saves {
         fn effect(&mut self, _: u64, effect: &crate::ui::machine::Stamped<AppHost>) {
             if let Fx::App(AppFx::Store(
@@ -113,27 +114,24 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
     let session = crate::plex::session::TempSession::new("library-bookmark-return");
     session.watching("u-library-bookmark-return");
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     crate::plex::reset_servers_for_test();
     let sid =
         crate::plex::register_for_test("bookmark-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared =
         crate::plex::register_for_test("bookmark-shared", "127.0.0.1", 10, "synthetic", "fixture");
     crate::plex::set_current(sid);
-    crate::browse::seed_registered_table_for_test([sid, shared]);
-    let mut directory = crate::stores::browse::DirectorySnapshot::default();
-    directory.capture();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
-    crate::browse::seed_items_for_test(120);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
+    rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
+    rig.refresh_browse_directory();
+    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
     frame(&mut d, &mut rig, AppArg::Library, tick(1), vec![]);
@@ -201,7 +199,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
         );
     }
     assert!(saves.0.iter().any(|(target, cursor)| target.sid == item.sid
-        && matches!(&cursor.at, crate::browse::CursorAt::ItemKey { sid, rk, slot: 52 } if *sid == item.sid && rk == &item.rk)),
+        && matches!(&cursor.at, crate::stores::browse::CursorAt::ItemKey { sid, rk, slot: 52 } if *sid == item.sid && rk == &item.rk)),
         "section switching must emit the outgoing A snapshot through the StoreCmd drain");
     assert_eq!(
         rig.directory.view().current(),
@@ -209,7 +207,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
         "the actual deferred transaction enters section B"
     );
     d.request(MachineId::Nav, NavOp::Dismiss(menu_entry));
-    crate::browse::seed_items_for_test(120);
+    rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Library, tick(120), vec![]);
     Bridge::library_command(
         &mut d,
@@ -235,13 +233,13 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
         d.prune(&report.unmounted);
     }
     assert!(saves.0.iter().any(|(target, cursor)| target.sid == b_item.sid
-        && matches!(&cursor.at, crate::browse::CursorAt::ItemKey { sid, rk, slot: 19 } if *sid == b_item.sid && rk == &b_item.rk)),
+        && matches!(&cursor.at, crate::stores::browse::CursorAt::ItemKey { sid, rk, slot: 19 } if *sid == b_item.sid && rk == &b_item.rk)),
         "outgoing WillLeave must emit B's snapshot before its engine memory is retired");
     assert!(
         d.nav.entry(old_entry).is_none(),
         "the test must retire, not merely evict, the old entry"
     );
-    rig.enter_library(crate::browse::SecKind::Movie);
+    rig.enter_library(crate::stores::browse::SecKind::Movie);
     for i in 210..290 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }

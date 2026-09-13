@@ -5,15 +5,14 @@
 //! [`Stores`] aggregate per `crate::app::bridge::Bridge`, with per-instance state, adapter and notice;
 //! the other five retain the compatibility global + mailbox shape. This layer puts ONE entrance in
 //! front of each: a [`StoreCmd`] is the complete, enumerated vocabulary of mutations, a store's
-//! `Machine::step` is the one place a legacy mutator is called, and every command that changes
+//! `Machine::step` is the one place its command is decoded, and every command that changes
 //! observable state or landing that changes the store raises the store's NOTICE (a generation the
 //! bridge dispatcher delivers to every live instance as `ScreenEvent::StoreChanged`, spec §3.4).
 //!
-//! Two callers, one vocabulary. An owned screen emits `AppFx::Store(id, cmd)` and
-//! `app/bridge.rs` delivers it to the owning machine; a legacy caller uses the store's
-//! `apply(cmd)` shim, which steps the same Browse machine IMMEDIATELY on the main thread and
-//! returns the store's own answer. The design note's §3 says why the shim is not a deferred queue
-//! in this phase. Either way the mutation has one command path and the notice is raised once.
+//! Browse has two caller shapes and one explicit owner: screens emit `AppFx::Store(id, cmd)` for
+//! `app/bridge.rs` to deliver, while same-turn application boundaries call a method on the
+//! [`Stores`] value they already hold. The generic `apply(cmd)` dispatcher remains only for the
+//! five not-yet-owned stores and rejects Browse commands.
 //!
 //! What lives here is the vocabulary and machine plus Browse's production aggregate; the remaining
 //! data stays in the legacy modules until its ownership slice (§14). This module names data crates, `ui::machine` and — since
@@ -90,22 +89,57 @@ pub(crate) struct Stores {
 impl Default for Stores {
     fn default() -> Self {
         let browse = std::rc::Rc::new(std::cell::RefCell::new(browse::BrowseStore::default()));
-        browse::activate(&browse);
         Self { browse }
     }
 }
 
 impl Stores {
-    #[cfg(test)]
-    pub(crate) fn production_bootstrap_for_test() -> Self {
-        let browse = std::rc::Rc::new(std::cell::RefCell::new(
-            browse::BrowseStore::production_bootstrap_for_test()));
-        browse::activate(&browse);
-        Self { browse }
+    /// Explicit synchronous Browse command path. The answer is available before this call returns.
+    pub(crate) fn browse_run(&self, cmd: browse::BrowseCmd) -> bool {
+        self.browse.borrow_mut().run(cmd)
     }
 
-    pub(crate) fn activate(&mut self) {
-        browse::activate(&self.browse);
+    pub(crate) fn browse_discover_pump(&self) -> StoreOutcome {
+        self.browse.borrow_mut().discover_pump()
+    }
+
+    /// Controlled discovery against this aggregate's Browse owner.
+    pub(crate) fn browse_controlled_discover(
+        &self,
+        launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool,
+    ) {
+        self.browse.borrow_mut().controlled_discover(launch);
+    }
+
+    /// ViewState's synchronous command path, with every Browse side effect addressed back to this
+    /// aggregate. The callback is invoked inline, preserving the press-frame optimistic edit.
+    pub(crate) fn viewstate_run(&self, cmd: viewstate::ViewStateCmd) -> bool {
+        viewstate::run_with_browse(cmd, &mut |browse| self.browse_run(browse))
+    }
+
+    /// ViewState's route-unconditional landing pass. Fan-out edits and the terminal section-hubs
+    /// invalidation are applied to this aggregate's Browse owner before the pump returns.
+    pub(crate) fn viewstate_pump(
+        &self,
+        directory: browse::DirectoryView<'_>,
+    ) -> EndpointRefreshSet {
+        viewstate::pump_with_owners(
+            &mut |browse| self.browse_run(browse),
+            &mut |hubs| hubs::apply_with_directory(hubs, directory),
+        )
+    }
+
+    /// Capture all three retained Browse publications from one owner borrow. Directory capture
+    /// runs first because resolving profile pins may repoint the current section.
+    pub(crate) fn capture_browse(&self, directory: &mut browse::DirectorySnapshot)
+        -> browse::BrowsePublications {
+        let mut browse = self.browse.borrow_mut();
+        browse.capture_directory(directory);
+        browse::BrowsePublications {
+            listing: browse.listing_snapshot(),
+            directory: directory.clone(),
+            section_hubs: browse.hubs_snapshot(),
+        }
     }
 
     pub(crate) fn gen(&self, id: StoreId) -> u32 {
@@ -223,13 +257,11 @@ pub(crate) enum StoreEv<C> {
     Pump { dt: f32 },
 }
 
-/// Apply ONE command to whichever store it names — the compatibility dispatch. Each shim wraps its
-/// command into the vocabulary and comes through here; the owned Browse dispatcher path steps the
-/// per-Bridge machine directly. A trace or recorder hook for store mutations still has exactly one
-/// command vocabulary to observe.
+/// Apply one command to a not-yet-owned store. Browse is deliberately rejected: its dispatcher and
+/// synchronous paths both require the concrete [`Stores`] owner.
 pub(crate) fn apply(cmd: StoreCmd) -> StoreOutcome {
     match cmd {
-        StoreCmd::Browse(c) => StoreOutcome::changed(browse::run(c)),
+        StoreCmd::Browse(_) => panic!("Browse commands require an explicit Stores owner"),
         StoreCmd::Hubs(c) => hubs::run(c),
         StoreCmd::Metadata(c) => StoreOutcome::changed(metadata::run(c)),
         StoreCmd::Search(c) => StoreOutcome::changed(search::run(c)),
@@ -239,10 +271,8 @@ pub(crate) fn apply(cmd: StoreCmd) -> StoreOutcome {
 }
 
 // ---------------------------------------------------------------------------------------------
-// the compatibility notices for the five not-yet-owned stores plus pre-Bridge Browse calls.
-// BrowseStore carries its production notice in the per-Bridge aggregate and consumes the seed only
-// when it adopts the compatibility state. An owned aggregate thereafter discards any retired
-// compatibility Browse generation.
+// Compatibility notices for the five not-yet-owned stores. BrowseStore carries its notice in the
+// per-Bridge aggregate; the Browse slot in this pre-existing ordinal array is never read or bumped.
 // ---------------------------------------------------------------------------------------------
 
 struct Notice {
@@ -255,11 +285,6 @@ const fn notice() -> Notice {
         gen: AtomicU32::new(0),
         dirty: AtomicBool::new(false),
     }
-}
-
-pub(crate) fn take_browse_notice_seed() -> (u32, bool) {
-    let notice = &NOTICES[StoreId::Browse as usize];
-    (notice.gen.load(Ordering::Relaxed), notice.dirty.swap(false, Ordering::Relaxed))
 }
 
 /// Atomics rather than `static mut`: they are read and written on the main thread only, but an
@@ -280,11 +305,11 @@ pub(crate) fn gen(id: StoreId) -> u32 {
     NOTICES[id as usize].gen.load(Ordering::Relaxed)
 }
 
-/// Drain the compatibility notices. `Stores::take_notices` adds the owning BrowseStore's notice
-/// and is the aggregate drain used by `app/bridge.rs` once per frame.
+/// Drain the five compatibility notices. `Stores::take_notices` adds its owning BrowseStore's
+/// notice and is the aggregate drain used by `app/bridge.rs` once per frame.
 pub(crate) fn take_notices() -> Vec<(StoreId, u32)> {
     let mut out = Vec::new();
-    for id in StoreId::ALL {
+    for id in StoreId::ALL.into_iter().filter(|id| *id != StoreId::Browse) {
         let n = &NOTICES[id as usize];
         if n.dirty.swap(false, Ordering::Relaxed) {
             out.push((id, n.gen.load(Ordering::Relaxed)));

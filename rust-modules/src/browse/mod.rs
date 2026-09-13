@@ -1,8 +1,8 @@
 //! browse — the Library screen's per-section paged catalog.
 //!
 //! Production ownership is in `stores::browse::BrowseStore`, one instance per app Bridge. This
-//! module supplies the core state transitions plus temporary compatibility views and shims for
-//! callers that have not moved to the owned path.
+//! module supplies the core state transitions and immutable publication types; every stateful
+//! operation requires an explicit `BrowseState` or `BrowseStore` receiver.
 //!
 //! Sibling of `pms.rs`'s hub catalog, which stays hub-only (256-cap, rebuilt wholesale by
 //! `pms`'s worker-driven hub catalog); this store pages arbitrarily large sections without blocking the
@@ -41,7 +41,6 @@ use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
 #[cfg(test)]
 use std::panic::AssertUnwindSafe;
-use std::ptr::{addr_of, addr_of_mut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -533,26 +532,6 @@ impl BrowseAdapter {
     }
 }
 
-// Compatibility-only worker transport used when the legacy facade is active. Production workers
-// capture the adapter belonging to their Bridge-owned BrowseStore.
-thread_local! {
-    static LEGACY_ADAPTER: std::cell::RefCell<Arc<BrowseAdapter>> =
-        std::cell::RefCell::new(Arc::new(BrowseAdapter::default()));
-}
-
-fn legacy_adapter() -> Arc<BrowseAdapter> {
-    LEGACY_ADAPTER.with(|adapter| Arc::clone(&adapter.borrow()))
-}
-
-fn adapter() -> Arc<BrowseAdapter> {
-    legacy_adapter()
-}
-
-pub(crate) fn take_legacy_adapter() -> Arc<BrowseAdapter> {
-    LEGACY_ADAPTER.with(|adapter| std::mem::replace(
-        &mut *adapter.borrow_mut(), Arc::new(BrowseAdapter::default())))
-}
-
 impl Default for BrowseState {
     fn default() -> Self {
         Self {
@@ -636,14 +615,8 @@ impl BrowseState {
     fn sources(&self) -> &[BrowseSource] {
         &self.sources
     }
-    fn sources_mut(&mut self) -> &mut Vec<BrowseSource> {
-        &mut self.sources
-    }
     fn sections(&self) -> &[BrowseSection] {
         &self.sections
-    }
-    fn sections_mut(&mut self) -> &mut Vec<BrowseSection> {
-        &mut self.sections
     }
     fn states(&self) -> &[SecState] {
         &self.states
@@ -676,7 +649,7 @@ impl BrowseState {
     fn sections_gen(&self) -> u32 {
         self.sections_gen
     }
-    fn table_epoch(&self) -> u32 {
+    pub(crate) fn table_epoch(&self) -> u32 {
         self.epoch
     }
     pub(crate) fn source_list_gen(&self) -> u32 {
@@ -714,7 +687,7 @@ impl BrowseState {
     fn want(&mut self, lo: usize, hi: usize) {
         self.want = (lo, hi);
     }
-    fn resolve_section(&self, epoch: u32, sid: ServerId, key: i64) -> Option<usize> {
+    pub(crate) fn resolve_section(&self, epoch: u32, sid: ServerId, key: i64) -> Option<usize> {
         if epoch != self.table_epoch() {
             return None;
         }
@@ -1049,16 +1022,79 @@ impl BrowseState {
             }
         }
     }
-    #[cfg(test)]
-    pub(crate) fn addressed(
-        &mut self,
-        target: crate::stores::browse::SectionAddress,
-        work: crate::stores::browse::LibraryWork,
-    ) -> bool {
-        self.addressed_with_adapter(&legacy_adapter(), target, work)
-    }
     fn pinned_count(&self) -> usize {
         self.sections.iter().filter(|s| s.pinned).count()
+    }
+    #[cfg(test)]
+    pub(crate) fn pinned_for_test(&self, index: usize) -> bool {
+        self.sections.get(index).is_some_and(|section| section.pinned)
+    }
+    #[cfg(test)]
+    fn toggle_pin(&mut self, index: usize) -> bool {
+        if self.pinned_for_test(index) && self.pinned_count() == 1 {
+            return false;
+        }
+        let Some(section) = self.sections.get_mut(index) else {
+            return false;
+        };
+        section.pinned = !section.pinned;
+        self.record_pins(true);
+        self.bump_sections_gen();
+        crate::ui::idle::invalidate();
+        true
+    }
+    #[cfg(test)]
+    pub(crate) fn prepare_discovery_replay_for_test(
+        &mut self,
+        adapter: &BrowseAdapter,
+        sid: ServerId,
+        epoch: u32,
+    ) {
+        self.reset_owned(adapter);
+        self.sync_roster_owned();
+        let source = self.sources.iter_mut().find(|source| source.sid == sid)
+            .expect("registered replay source");
+        // The replay fixture starts from the same already-known name on both passes. The live
+        // pass publishes the landed name into the process registry; deriving the replay seed from
+        // that mutated registry would otherwise change `want_name` in frame zero.
+        source.name = "original".into();
+        source.sections_done = false;
+        source.counts_done = true;
+        self.epoch = epoch;
+        adapter.src_fetching.store(false, Ordering::SeqCst);
+    }
+    #[cfg(test)]
+    pub(crate) fn discovery_policy_for_test(&self, adapter: &BrowseAdapter) -> (bool, u32, bool) {
+        let source = self.sources.first().expect("a replay source");
+        (
+            adapter.src_fetching.load(Ordering::SeqCst),
+            source.retry_cd,
+            source.sections_done,
+        )
+    }
+    fn library_pins(&self) -> Vec<(usize, i64, bool)> {
+        let mut out: Vec<(usize, i64, bool)> = self.sections
+            .iter()
+            .map(|s| (s.src, s.key, s.pinned))
+            .collect();
+        let Some(rec) = self.recorded.as_ref() else { return out };
+        for (si, src) in self.sources.iter().enumerate() {
+            if src.machine_id.is_empty() || self.sections.iter().any(|s| s.src == si) {
+                continue;
+            }
+            for (lib, on) in rec.on.iter().map(|lib| (lib, true))
+                .chain(rec.off.iter().map(|lib| (lib, false))) {
+                if lib.machine_id == src.machine_id {
+                    out.push((si, lib.key, on));
+                }
+            }
+        }
+        out
+    }
+    fn favorite_sections(&self) -> Vec<(ServerId, i64, bool)> {
+        self.library_pins().into_iter().filter_map(|(source, key, favorite)| {
+            self.sources.get(source).map(|row| (row.sid, key, favorite))
+        }).collect()
     }
     fn tab_has_favorite(&self, kind: SecKind) -> bool {
         self.sections.iter().any(|s| s.kind == kind && s.pinned)
@@ -1129,6 +1165,24 @@ impl BrowseState {
     }
     fn all_source_rows(&self) -> Vec<SrcRow> {
         self.rows_where(|_| true)
+    }
+    #[cfg(test)]
+    fn source_rows_for(&self, index: usize) -> Vec<SrcRow> {
+        let Some(kind) = self.section_kind(index) else {
+            return Vec::new();
+        };
+        self.rows_where(|section| section.kind == kind && section.pinned)
+    }
+    #[cfg(test)]
+    fn rail_available(&self) -> bool {
+        let Some(state) = self.cur_state() else {
+            return false;
+        };
+        let title_asc = match state.sorts.get(state.sort_idx) {
+            Some(sort) => sort.key == "titleSort" && !state.sort_desc,
+            None => true,
+        };
+        title_asc && !state.unwatched && state.genre.is_none() && state.letters.len() > 1
     }
     fn discovery_state(&self) -> SecFetch {
         if !self.sections.is_empty() || self.sources.iter().all(|source| source.sections_done) {
@@ -1565,10 +1619,13 @@ impl BrowseState {
         };
         adapter.src_fetching.store(true, Ordering::SeqCst);
         if !launch(request) {
-            adapter.src_fetching.store(false, Ordering::SeqCst);
-            if let Some(source) = self.source_mut(source) {
-                source.retry_cd = SRC_RETRY_CD;
-            }
+            self.discovery_spawn_refused_owned(adapter, source);
+        }
+    }
+    fn discovery_spawn_refused_owned(&mut self, adapter: &BrowseAdapter, source: usize) {
+        adapter.src_fetching.store(false, Ordering::SeqCst);
+        if let Some(source) = self.source_mut(source) {
+            source.retry_cd = SRC_RETRY_CD;
         }
     }
     fn land_discovery_owned(
@@ -1784,74 +1841,6 @@ impl BrowseState {
     }
 }
 
-// Compatibility holder for callers outside the Browse-owner slice and for the synchronous
-// implementation while an owned state is stepped. Bridge's BrowseStore is the production owner;
-// it publishes a clone here on owner changes and observable mutations so untouched read-only
-// callers stay coherent. Snapshot reads and idle pumps never clone this table.
-static mut LEGACY: BrowseState = BrowseState {
-    sources: Vec::new(),
-    sections: Vec::new(),
-    states: Vec::new(),
-    cur: 0,
-    want: (0, 0),
-    gen: 0,
-    sections_gen: 0,
-    epoch: 0,
-    src_facts_gen: 0,
-    tabs_gen: 1,
-    tab_shape: u32::MAX,
-    retry_cd: 0,
-    remembered: Vec::new(),
-    recorded: None,
-};
-
-fn legacy() -> &'static BrowseState {
-    unsafe { &*addr_of!(LEGACY) }
-}
-fn legacy_mut() -> &'static mut BrowseState {
-    unsafe { &mut *addr_of_mut!(LEGACY) }
-}
-
-// Compatibility publication only: production reads come from the active Bridge-owned store's
-// retained snapshots. These helpers remain so legacy callers can observe a coherent copy while
-// the ownership migration finishes.
-pub(crate) fn publish_legacy(state: &BrowseState) {
-    let publication = state.clone();
-    *legacy_mut() = publication;
-}
-
-#[cfg(test)]
-pub(crate) fn clone_legacy_state() -> BrowseState {
-    legacy().clone()
-}
-
-pub(crate) fn take_legacy_state() -> BrowseState {
-    std::mem::take(legacy_mut())
-}
-
-fn sections() -> &'static [BrowseSection] {
-    legacy().sections()
-}
-/// The granted roster, in registration order — the session's own server first.
-pub(crate) fn sources() -> &'static [BrowseSource] {
-    legacy().sources()
-}
-fn source_mut(i: usize) -> Option<&'static mut BrowseSource> {
-    legacy_mut().source_mut(i)
-}
-fn states() -> &'static [SecState] {
-    legacy().states()
-}
-#[cfg(test)]
-fn state_mut(i: usize) -> Option<&'static mut SecState> {
-    legacy_mut().state_mut(i)
-}
-/// Every section's state, mutably — for a sweep that must touch all of them rather than the
-/// current one. [`section_hubs::tick_all`] is the only caller.
-fn cur_state() -> Option<&'static SecState> {
-    legacy().cur_state()
-}
-
 // ---- fetch plumbing (generation + single-flight + mailboxes) --------------------------------
 
 /// Bumped whenever the section table's SHAPE changes — a source's sections appended, or the whole
@@ -1916,241 +1905,23 @@ enum SrcWhat {
     Counts(Vec<(i64, i64)>),
 }
 
-/// Supersede everything in flight for the CURRENT query (sort/filter/section change): a late
-/// landing with an older generation is discarded by [`pump`].
-#[cfg(test)]
-fn bump_gen() -> u32 {
-    legacy_mut().bump_gen()
-}
-
-/// Reset the current section's item store for a changed query (menus + remembered view keep).
-#[cfg(test)]
-fn requery() {
-    legacy_mut().requery();
-}
-
-// ---- public surface: sections ---------------------------------------------------------------
-
-/// Compatibility implementation of [`crate::stores::browse::BrowseCmd::Reset`]. The production
-/// path runs the same reset through the owning `BrowseStore`; a profile/account switch must never
-/// show the previous user's cached grid, watched-state angles, or section tabs (pms.rs's hub
-/// catalog is rebuilt wholesale on the same event; this is the browse twin).
-fn reset() {
-    // This compatibility publication is shared by legacy readers, and emptying it under another
-    // module's test is exactly the pollution `testlock` exists to stop — see `lib.rs::testlock`.
-    #[cfg(test)]
-    crate::testlock::assert_held("browse's section table (reset)");
-    let adapter = adapter();
-    legacy_mut().reset_with(|| {
-        *adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *adapter.genre_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *adapter.letter_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        // Dropping a mailbox without clearing its flag latches the fetch forever (the flag is only
-        // cleared on a successful take), so the two must move together.
-        for flag in [&adapter.fetching, &adapter.genre_fetching, &adapter.letters_fetching,
-            &adapter.src_fetching, &adapter.hubs.fetching] {
-            flag.store(false, Ordering::SeqCst);
-        }
-    });
-}
-
-/// The section-table SHAPE generation — bumped by [`reset`] and by every append; the tab-row label
-/// cache and the rail's letter cache key on it.
-pub(crate) fn sections_gen() -> u32 {
-    legacy().sections_gen()
-}
-
-/// The table's IDENTITY epoch, read out. A caller that keeps its own
-/// state keyed by SECTION INDEX across more than one frame (`screens::onboard`'s draft, in
-/// particular)
-/// must capture this at the point it captured those indices and treat a later mismatch as "the
-/// indices no longer mean what they meant" rather than apply them: `reset` runs on a profile
-/// switch, but also from inside ordinary roster maintenance (`sync_roster`, pumped every frame
-/// while a screen like the first-run route is open) whenever the LIVE roster has dropped a source
-/// the table still holds — a share revoked mid-session, not only a signed-out/signed-in boundary.
-pub(crate) fn table_epoch() -> u32 {
-    legacy().table_epoch()
-}
-
-/// Bumped when a source FACT the Sources list states changes without the table's shape moving: a
-/// machine name learned off the server itself, a library's item count landing, a source flipping
-/// reachable. Deliberately not the section-shape generation, whose documented meaning is the SHAPE and whose
-/// readers (the tab-strip pill widths, the A–Z rail's letters) rely on "the table only ever grows,
-/// so a cache keyed on this is complete".
-
-/// **The generation of everything the Sources list DRAWS** — the table's shape plus the facts its
-/// rows state. The number both surfaces that draw that list watch (`screens::library::menu` and
-/// `screens::onboard`'s route), because a surface keyed on the SHAPE alone goes on saying "Films"
-/// long
-/// after the count arrived and heads an unnamed group with no header at all — which is precisely
-/// what both did.
-///
-/// A SUM of two monotone counters, so it is itself strictly monotone: any bump to either moves it
-/// by one, and there is no pair of states that can alias.
-pub(crate) fn source_list_gen() -> u32 {
-    legacy().source_list_gen()
-}
-
-/// The QUERY generation — the content epoch. [`bump_gen`] moves it from exactly three places
-/// ([`requery`], [`reset`], [`set_cur`]), i.e. precisely when the item set is REPLACED, and never
-/// on a scroll / letter jump / focus move / page landing. The Library screen watches it so a store
-/// wiped from underneath it (a profile switch calling [`reset`]) is cross-faded like any other
-/// reload instead of cut.
-#[cfg(test)]
-pub(crate) fn query_gen() -> u32 {
-    legacy().query_gen()
-}
-
-/// Adopt every server the registry holds that the table does not — the granted roster, appended
-/// in registration order so the session's own server is source 0. Cheap enough for every Library
-/// entry: it touches only the slots it has not seen.
-///
-/// Facts are re-read on every call rather than copied once: the roster ingest and the server's own
-/// `friendlyName` land at different times, in either order, and a source whose header was blank
-/// when it was adopted must be able to fill in later.
-fn sync_roster() {
-    let live: Vec<ServerId> = crate::plex::server_ids().collect();
-    if sources().iter().any(|s| !live.contains(&s.sid)) {
-        // Roster removal is an identity boundary, not a failed fetch. The section/state arrays are
-        // indexed by source position, so compacting them piecemeal would re-file every later row;
-        // the existing whole-store reset is the safe removal primitive and supersedes landings.
-        reset();
-    }
-    // One borrow of the consolidated compatibility value for the whole reconciliation. Production
-    // callers reconcile their own BrowseState; this fallback keeps the legacy publication's source
-    // table internally consistent.
-    let store = legacy_mut();
-    let known = store.sources.len();
-    for sid in live {
-        // matched on the SLOT, not on position: the roster and this table happen to be appended in
-        // the same order today, and that is an invariant nobody outside this loop would know to
-        // keep. The list is a handful of servers, so the scan costs nothing.
-        let at = store.sources.iter().position(|s| s.sid == sid);
-        match at {
-            // Steady state — every frame the Library is up — allocates nothing PER SOURCE: the
-            // machine name is read (and cloned) only while it is still unknown, and the two facts
-            // that DO follow the registry are compared before anything is cloned. See the block
-            // below for which is which and why the answer differs per field. (`sync_roster` itself
-            // still builds one `live: Vec<ServerId>` per call, above — a handful of `u16`s.)
-            Some(index) => {
-                let now = crate::plex::client_for(sid);
-                let client_addr = now.map_or(0, |c| c as *const _ as usize);
-                let token_gen = now.map_or(0, |c| c.token_gen());
-                let mut fact_changes = 0u32;
-                let s = &mut store.sources[index];
-                if s.client_addr != client_addr || s.token_gen != token_gen {
-                    // Keep learned rows visible, but make the replacement lifecycle enumerate
-                    // sections again. Its eventual append reconciles by source/key.
-                    s.client_addr = client_addr;
-                    s.token_gen = token_gen;
-                    s.sections_done = false;
-                    s.counts_done = false;
-                    s.retry_cd = 0;
-                    fact_changes += 1;
-                }
-                if let Some((state, tier)) = source_snapshot(sid) {
-                    if s.state != state || s.tier != tier {
-                        s.state = state;
-                        s.tier = tier;
-                        fact_changes += 1;
-                    }
-                }
-                if let Some(f) = crate::plex::server_facts(sid) {
-                    // The machine NAME is a FILL: a roster that later renames a server we already
-                    // have a name for is deliberately not followed, because a machine name changing
-                    // under an open panel is churn, not news.
-                    if s.name.is_empty() && !f.name.is_empty() {
-                        s.name = f.name.clone();
-                        fact_changes += 1;
-                    }
-                    // The CREDIT and the relationship are FOLLOWS, and this cache used to refuse
-                    // both — the whole block sat behind `name.is_empty() || handle.is_empty()`, so
-                    // a source that once had a handle could never lose or change it, and `owned`
-                    // silently inherited that gate despite the comment below claiming otherwise.
-                    // Neither is a name that churns: `handle` is `plex::servers::owner_credit`'s
-                    // ANSWER (empty means *nobody to credit*, not *not learned yet*), and `owned`
-                    // is the input to which libraries feed Home. A background roster refresh that
-                    // corrects either — which is exactly how the household's own server stops being
-                    // captioned "Shared by <the account holder>" — has to reach this panel, or the
-                    // registry is right and the screen is not.
-                    if s.handle != f.handle || s.owned != f.owned {
-                        s.handle = f.handle.clone();
-                        s.owned = f.owned;
-                        fact_changes += 1;
-                    }
-                }
-                // The machine id is learned LATE on the one path that matters: a stored session
-                // registers the primary by address (`plex::install`) before the roster names it.
-                // Once known it never changes — the registry keys on it — so this is a fill, not a
-                // follow.
-                if s.machine_id.is_empty() {
-                    s.machine_id = machine_of(sid);
-                }
-                store.src_facts_gen = store.src_facts_gen.wrapping_add(fact_changes);
-                if fact_changes != 0 {
-                    crate::ui::idle::invalidate();
-                }
-            }
-            None => {
-                let f = crate::plex::server_facts(sid);
-                // Optimistically OURS, for [`BrowseSource::reachable`]'s reason one field down: a
-                // source plex.tv has not described yet is not a source known to be somebody
-                // else's, and defaulting it to a share would take your own libraries off Home for
-                // the frames between registration and the roster landing.
-                let owned = f.map(|f| f.owned).unwrap_or(true);
-                let (name, handle) = f
-                    .map(|f| (f.name.clone(), f.handle.clone()))
-                    .unwrap_or_default();
-                let Some((state, tier)) = source_snapshot(sid) else {
-                    continue;
-                };
-                store.sources.push(BrowseSource {
-                    sid,
-                    client_addr: crate::plex::client_for(sid).map_or(0, |c| c as *const _ as usize),
-                    token_gen: crate::plex::client_for(sid).map_or(0, |c| c.token_gen()),
-                    machine_id: machine_of(sid),
-                    owned,
-                    name,
-                    handle,
-                    // Optimistic until proven otherwise: a source nobody has dialled yet is not a
-                    // source that failed, and the whole group would otherwise open dimmed. That
-                    // is `NotProbed`, which `reachable()` answers `true` for — the seed this
-                    // replaced was a literal `true`, and the two say the same thing here.
-                    state,
-                    tier,
-                    sections_done: false,
-                    counts_done: false,
-                    retry_cd: 0,
-                });
-            }
-        }
-    }
-    if store.sources.len() != known {
-        crate::log(&format!(
-            "browse: roster now {} source(s)",
-            store.sources.len()
-        ));
-    }
-}
-
 /// Legacy synchronous harness retained only for lifecycle regression fixtures. Production section
 /// discovery is uniformly `kick → worker → mailbox → commit` via [`discover_pump`].
 #[cfg(test)]
 fn ensure_sections_with(
+    state: &mut BrowseState,
     fetch: impl FnOnce(&crate::plex::Client) -> Option<Vec<(i64, String, SecKind)>>,
 ) -> usize {
-    sync_roster();
+    state.sync_roster_owned();
     let cur_sid = crate::plex::current_server();
-    let Some(si) = sources().iter().position(|s| s.sid == cur_sid) else {
-        return sections().len();
+    let Some(si) = state.sources().iter().position(|s| s.sid == cur_sid) else {
+        return state.sections().len();
     };
-    if sources()[si].sections_done {
-        return sections().len();
+    if state.sources()[si].sections_done {
+        return state.sections().len();
     }
     let Some(client) = crate::plex::client_for(cur_sid) else {
-        return sections().len();
+        return state.sections().len();
     };
     let token_gen = client.token_gen();
     let found = catch_unwind(AssertUnwindSafe(|| fetch(client))).unwrap_or(None);
@@ -2162,11 +1933,11 @@ fn ensure_sections_with(
         ok,
         None,
         |outcome| {
-            if sources().get(si).map(|s| s.sid) != Some(client.id()) {
+            if state.sources().get(si).map(|s| s.sid) != Some(client.id()) {
                 return false;
             }
-            append_sections(si, found.unwrap_or_default());
-            if let Some(s) = source_mut(si) {
+            state.append_sections_with(si, found.unwrap_or_default(), None);
+            if let Some(s) = state.source_mut(si) {
                 s.sections_done = ok;
                 s.set_probe_outcome(outcome);
                 s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
@@ -2175,9 +1946,9 @@ fn ensure_sections_with(
         },
     );
     if committed != Some(true) {
-        return sections().len();
+        return state.sections().len();
     }
-    sections().len()
+    state.sections().len()
 }
 
 /// `MediaContainer.Directory[]` → the (key, title, kind) rows this app can browse. The ONE
@@ -2267,120 +2038,6 @@ impl SecKind {
     }
 }
 
-/// APPEND one source's sections to the table, with their per-section states in lockstep.
-///
-/// Append, never rebuild — see this module's header. Existing indices (and therefore `CUR`, every
-/// remembered view, and every in-flight page landing's `sec`) survive untouched, which is what
-/// makes a source arriving late safe at all. A source is only ever appended once, so a repeat call
-/// for it is a no-op rather than a duplicated library.
-#[cfg(test)]
-fn append_sections(src: usize, list: Vec<(i64, String, SecKind)>) {
-    append_sections_with(src, list, None);
-}
-
-fn append_sections_with(
-    src: usize,
-    list: Vec<(i64, String, SecKind)>,
-    preferences: Option<&crate::plex::session::Session>,
-) {
-    #[cfg(test)]
-    crate::testlock::assert_held("browse's section table (append)");
-    // Only what this source does not already have. A re-discovery ("Check for new shares", or a
-    // server that came back) therefore ADDS a library the owner has since created and leaves every
-    // existing row — and every index — exactly where it was.
-    let fresh: Vec<(i64, String, SecKind)> = list
-        .into_iter()
-        .filter(|(k, _, _)| !sections().iter().any(|s| s.src == src && s.key == *k))
-        .collect();
-    if fresh.is_empty() {
-        return;
-    }
-    // Pushed UNSET, then resolved with the whole table below. **The default lives in
-    // `plex::pins`, not here**, and it is per-PROFILE: this line was a bare `let pinned = true`
-    // for as long as deliverable F (the first-run route) had nowhere to ask the question — a
-    // deliberate stand-in, because "your own On, a friend's Off" without a screen to say so is a
-    // share that is granted, discovered, browsable and silently absent from Home with no visible
-    // control anywhere to turn it on. That screen exists now, so the real rule applies.
-    {
-        let state = legacy_mut();
-        let secs = &mut state.sections;
-        let states = &mut state.states;
-        for (key, title, kind) in fresh {
-            secs.push(BrowseSection {
-                src,
-                key,
-                title,
-                kind,
-                count: -1,
-                pinned: false,
-            });
-            states.push(SecState::default());
-        }
-    }
-    if let Some(session) = preferences {
-        resolve_pins_from(session, "");
-    } else {
-        resolve_pins();
-    }
-    legacy_mut().bump_sections_gen();
-    crate::ui::idle::invalidate(); // a new tab pill / Sources row appears under a settled screen
-}
-
-pub(crate) fn section_count() -> usize {
-    sections().len()
-}
-/// The LIBRARY titles this source contributed, in table order — what a source is called in
-/// CONTENT, as opposed to [`BrowseSource::name`], which is its machine and belongs in the Sources
-/// list. A friend's server is experienced as the library it gave you ("Film Club"), never as a
-/// hostname; `ui_kits/tv-app/SearchScreen.jsx` names its scope that way, and the app's own rule is
-/// "people in content, machines in settings".
-///
-/// Empty while the section table is still landing, which the caller must read as "not yet known"
-/// rather than "none" — the same trap `Session::pinned` documents.
-pub(crate) fn library_titles(sid: ServerId) -> Vec<&'static str> {
-    let srcs = sources();
-    sections()
-        .iter()
-        .filter(|s| srcs.get(s.src).map(|c| c.sid) == Some(sid))
-        .map(|s| s.title.as_str())
-        .collect()
-}
-pub(crate) fn section_title(i: usize) -> &'static str {
-    sections().get(i).map(|s| s.title.as_str()).unwrap_or("")
-}
-/// The TYPE of section `i` — `None` for an index the table does not hold.
-pub(crate) fn section_kind(i: usize) -> Option<SecKind> {
-    legacy().section_kind(i)
-}
-/// The registry slot section `i` is browsed through. **Read this at the SPAWN SITE**; a worker
-/// that calls `client()` instead dials whichever server happens to be current when it runs.
-#[cfg(test)]
-fn section_sid(i: usize) -> Option<ServerId> {
-    legacy().section_sid(i)
-}
-pub(crate) fn cur() -> usize {
-    legacy().cur()
-}
-/// The handle of section `i`'s owner — `""` on your own libraries, where the annotation is absent
-/// rather than empty. The Source chip's dim trailing run.
-///
-/// Takes the section rather than reading `cur()`, because the chip must relabel on the PRESS frame:
-/// its name comes from the queued section (`view_section`) and a handle resolved from the committed
-/// one would pop in 70 ms later, changing the chip's measured width mid-fade.
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn handle_of(i: usize) -> &'static str {
-    sections()
-        .get(i)
-        .and_then(|s| sources().get(s.src))
-        .map(|s| s.handle.as_str())
-        .unwrap_or("")
-}
-/// Switch section tab. Keeps the target section's remembered query/view; only re-fetches
-/// when its store is empty.
-fn set_cur(i: usize) {
-    legacy_mut().set_cur(i);
-}
-
 /// Point the app's CURRENT server at the source of section `i`, and drop the per-server state that
 /// belonged to the old one.
 ///
@@ -2416,20 +2073,6 @@ fn activate_source_of(_i: usize) {
     // was a single server. Kept as a named no-op rather than deleted at the call site so the next
     // person to reach for a re-point here finds this note first.
 }
-/// Record what a request proved only if the source still names the exact client lifecycle that
-/// performed it. The registry merges the generic bit with identity-probe state while holding its
-/// writer lock, then returns the canonical outcome for this local projection.
-fn apply_source_outcome(
-    src: usize,
-    client: &'static crate::plex::Client,
-    outcome: crate::plex::probe::Outcome,
-) -> bool {
-    // One mutable borrow of the consolidated holder. Before BrowseState existed the source and
-    // its generation were separate statics; borrowing the source and then calling `legacy_mut()`
-    // again would alias the whole state value even though the fields are disjoint.
-    legacy_mut().apply_source_outcome(src, client, outcome)
-}
-
 // ---- the TAB projection: which sections get a pill in the shared top strip -------------------
 //
 // **A pill is a TYPE, never a person.** Discovery resolves each type to an owned library first,
@@ -2453,182 +2096,6 @@ fn apply_source_outcome(
 /// Every type this product has a pill for, in strip order. A pill is only DRAWN when the
 /// favourite set can fill it — see [`tab_kinds`] — so this is the vocabulary, not the strip.
 pub(crate) const TAB_KINDS: [SecKind; 2] = [SecKind::Movie, SecKind::Show];
-
-/// The generation of the strip's SHAPE — **and it is the shape's, not the table's.**
-///
-/// It returned a constant `1` for as long as the strip was invariant: two pills, always, for the
-/// life of the process. The favourite switch governs the strip now (`Library Screens.dc.html` B:
-/// "a type left with no ON library draws no pill"), so it has to move — but it must NOT simply
-/// follow `SECTIONS_GEN`. The table's generation moves on every append, and every borrowed film
-/// library that folds onto a *Movies* pill you already have moves it while changing nothing in the
-/// row. Keying the label + width cache on that re-measures every pill in the strip once per
-/// source, on Home's hot path, for a strip that has not moved. Those are two different questions
-/// and this answers the second.
-///
-/// So the shape is derived and compared at the section-generation write boundary: one bit per
-/// type in [`TAB_KINDS`], and the counter moves only when that mask does. The getter is read-only;
-/// otherwise a compatibility read could advance a generation the owning Bridge never observed.
-///
-/// **Anything cached against this must be invalidated when it moves**, and the label/width cache in
-/// `ui::widgets` is not the only one: a stored strip CURSOR is keyed on it too, because a pill
-/// appearing or vanishing changes what a bare index MEANS. That is why [`crate::ui::widgets::Pill`]
-/// carries a `SecKind` rather than a tab index.
-/// The last shape observed at a section-table write — one bit per [`TAB_KINDS`] entry.
-/// `u32::MAX` is "not yet measured", which no real mask can be, so reset records a shape move
-/// before any reader can observe the new table.
-pub(crate) fn tabs_gen() -> u32 {
-    legacy().tabs_gen()
-}
-
-/// Does any FAVOURITE library of this type exist? The predicate behind the pill.
-///
-/// The grant is not enough on its own any more. A library that has been switched off contributes
-/// no shelves to Home, draws no row in the Library picker and — this — holds no pill: it is out of
-/// the app until it is switched back on, which is the whole content of the setting.
-pub(crate) fn tab_has_favorite(kind: SecKind) -> bool {
-    legacy().tab_has_favorite(kind)
-}
-
-/// The types the strip actually DRAWS, in order. Never allocates: the vocabulary is two long.
-fn tab_kinds() -> impl Iterator<Item = SecKind> {
-    TAB_KINDS.into_iter().filter(|&k| tab_has_favorite(k))
-}
-
-/// Pills in the strip (excluding Home and Search, which the strip supplies itself).
-pub(crate) fn tab_count() -> usize {
-    tab_kinds().count()
-}
-pub(crate) fn tab_title(t: usize) -> &'static str {
-    match tab_kind(t) {
-        Some(SecKind::Movie) => "Movies",
-        Some(SecKind::Show) => "TV Shows",
-        None => "",
-    }
-}
-/// The type drawn at strip position `t`.
-pub(crate) fn tab_kind(t: usize) -> Option<SecKind> {
-    tab_kinds().nth(t)
-}
-/// Where a type is drawn, or `None` when it has no favourite library and so no pill. The inverse
-/// of [`tab_kind`], and the reason a stored cursor can survive the strip reshaping under it.
-pub(crate) fn tab_of_kind(kind: SecKind) -> Option<usize> {
-    tab_kinds().position(|k| k == kind)
-}
-/// Resolve a type pill to a FAVOURITE library — an owned one first, then the first shared one.
-///
-/// The favourite filter is what makes the pill and the page agree. Without it a pill could be
-/// drawn (because some library of the type is granted) and land on a library the user has
-/// switched off, which is the "tab that leads to nothing" the design rejects from both directions.
-pub(crate) fn tab_section(t: usize) -> Option<usize> {
-    section_of_kind(tab_kind(t)?)
-}
-/// The favourite library this type opens on — owned first, then the first shared. Split out
-/// because the last-favourite fallback ([`repoint_cur`]) asks the same question of a kind it did
-/// not get from a strip position.
-fn section_of_kind(kind: SecKind) -> Option<usize> {
-    // **What you were last browsing of this type wins**, when it is still granted and still a
-    // favourite. Without it a tab resolves the same way on every launch — owned first, then TABLE
-    // order, which is the server's order and is not a preference anybody expressed — so a
-    // household with two libraries of one type opens whichever their server happens to list first,
-    // forever. That is the second half of what issue #68 costs: with the switcher drawn it is one
-    // press, but it is one press EVERY launch.
-    //
-    // The fallback below is unchanged and still does all the work on a fresh install, on a profile
-    // that has never browsed this type, and whenever the remembered library has been switched off
-    // or has gone away with its server.
-    if let Some(i) = remembered_section(kind) {
-        return Some(i);
-    }
-    sections()
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| s.kind == kind && s.pinned)
-        .min_by_key(|(_, s)| !sources().get(s.src).map(|x| x.owned).unwrap_or(false))
-        .map(|(i, _)| i)
-}
-
-/// This profile's remembered library for `kind`, resolved against the table as it is NOW.
-///
-/// Every term is a re-check rather than a lookup, because a record outlives the world it was
-/// written in: the server may be gone from the roster, the library may have been deleted, and the
-/// profile may since have switched it off. Any of those falls through to the ordinary resolution
-/// instead of pointing a tab at something that is not there — which is the failure the whole
-/// `section_of_kind` guard exists to prevent, arriving by a new route.
-fn remembered_section(kind: SecKind) -> Option<usize> {
-    let want = legacy().remembered.iter().find(|(k, _, _)| *k == kind)?;
-    sections().iter().position(|s| {
-        s.kind == kind
-            && s.pinned
-            && s.key == want.2
-            && sources().get(s.src).map(|x| x.machine_id.as_str()) == Some(want.1.as_str())
-    })
-}
-
-/// This profile's remembered libraries, as `(kind, machine id, section key)` — the session record
-/// (`plex::session::LastLibrary`) held in memory so [`section_of_kind`] can consult it without
-/// touching the disk.
-///
-/// **It must not read the session file**, which is why this exists at all rather than a `peek()` at
-/// the point of use: `section_of_kind` runs from `tab_section`, i.e. off the tab strip's own draw
-/// and from `repoint_cur`, and `session::peek` takes the session lock and reads files. That is the
-/// same deadlock `diag::scrub` documents — identities are PUSHED to it for exactly this reason —
-/// and the same per-frame file read. Loaded by [`load_remembered`] on the paths that already hold
-/// the session, and cleared by [`reset`] so it can never outlive the profile that chose it.
-
-/// Take this profile's remembered libraries out of the session and into [`BrowseState`].
-///
-/// Called from [`resolve_pins`], which already holds the session for the pins and runs on exactly
-/// the events that can change the answer: a table landing, a profile switch, a favourite flip.
-fn load_remembered(sess: &crate::plex::session::Session, user: &str) {
-    let libs = sess
-        .last_library
-        .iter()
-        .find(|l| l.user == user)
-        .map(|l| {
-            l.libs
-                .iter()
-                .filter_map(|t| {
-                    SecKind::from_wire(&t.kind).map(|k| (k, t.machine_id.clone(), t.key))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    legacy_mut().remembered = libs;
-}
-
-/// **Remember the library the viewer is now browsing, for its type.**
-///
-/// Called by `stores::browse` when it applies an addressed Library choice commit, never
-/// from [`set_cur`] itself. The distinction is the whole correctness of the record: `set_cur` also
-/// runs from [`repoint_cur`], which MOVES the cursor when the library under it stops being a
-/// favourite, and from the boot path before discovery has settled. Recording either would write
-/// down a library the user never chose and then open there next launch — a preference invented by
-/// the app, which is worse than having none.
-/// The pill that represents section `s`: the pill of its own TYPE — so browsing a friend's film
-/// library keeps the *Movies* pill lit, which is what "a pill is a type" means for the selection
-/// capsule. `None` when that type draws no pill, which a section being browsed while its type has
-/// just lost its last favourite can produce for exactly one frame before [`repoint_cur`] runs.
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn tab_of_section(s: usize) -> Option<usize> {
-    section_kind(s).and_then(tab_of_kind)
-}
-
-/// Discovery state for a type that may not have produced a concrete section yet.
-pub(crate) fn kind_state(kind: SecKind) -> SecFetch {
-    if let Some(i) = sections().iter().position(|s| s.kind == kind) {
-        return states()
-            .get(i)
-            .map(|s| s.fetch)
-            .unwrap_or(SecFetch::Loading);
-    }
-    if sources().iter().any(|s| s.reachable() && !s.sections_done) || sources().is_empty() {
-        SecFetch::Loading
-    } else if sources().iter().any(|s| !s.sections_done) {
-        SecFetch::Failed
-    } else {
-        SecFetch::Ready
-    }
-}
 
 // ---- favourites: the ONE control, it governs the WHOLE APP, and it is PER PROFILE ------------
 //
@@ -2677,352 +2144,6 @@ fn machine_of(sid: ServerId) -> String {
 }
 
 /// The section table as the pin rules see it, in table order.
-fn lib_refs() -> Vec<crate::plex::pins::LibRef<'static>> {
-    let srcs = sections();
-    let owns_type = |kind: SecKind| {
-        srcs.iter()
-            .any(|s| s.kind == kind && sources().get(s.src).map(|c| c.owned).unwrap_or(true))
-    };
-    let srcs = sources();
-    sections()
-        .iter()
-        .map(|s| {
-            let (machine_id, owned) = srcs
-                .get(s.src)
-                .map(|c| (c.machine_id.as_str(), c.owned))
-                .unwrap_or(("", true));
-            crate::plex::pins::LibRef {
-                machine_id,
-                key: s.key,
-                owned,
-                // The one fact `plex::pins` cannot work out for itself: it holds no types, by
-                // design (see `LibRef::own_type`), and the section table is what knows them.
-                own_type: owns_type(s.kind),
-            }
-        })
-        .collect()
-}
-
-/// Re-derive every row's pin from the CURRENT profile's persisted answer.
-///
-/// Called on every append rather than only on the fresh rows, because the never-empty floor is a
-/// question about the whole table (`plex::pins::resolve`). Idempotent over rows that already have
-/// an answer: every flip is recorded, so a resolved row and its record agree.
-///
-/// It reads the session file, which is a lock + an `fs::read` — acceptable only because this runs
-/// once per source's sections landing and never per frame. `session.rs`'s own doc forbids the
-/// latter, and this is the reason the read is here rather than inside [`pinned`].
-fn resolve_pins() {
-    let sess = crate::plex::session::peek();
-    let user = crate::plex::session::current_profile_key();
-    resolve_pins_from(&sess, &user);
-}
-
-fn resolve_pins_from(sess: &crate::plex::session::Session, user: &str) {
-    let libs = lib_refs();
-    // The remembered libraries ride along with the pins: this is already the one place holding the
-    // session on exactly the events that can change what a tab should open — a table landing, a
-    // profile switch, a favourite flip — and reading it here keeps `section_of_kind` off the disk.
-    load_remembered(sess, user);
-    let rec = sess.pins_for(user);
-    let want = crate::plex::pins::resolve(&libs, rec);
-    {
-        // …and keep the record itself, because [`library_pins`] needs it for the sources this
-        // table does NOT hold and cannot afford to read the file (it runs off Home's per-frame
-        // pump). Cleared by [`reset`], so it can never outlive the profile that gave it.
-        let state = legacy_mut();
-        state.recorded = rec.cloned();
-        let secs = &mut state.sections;
-        let mut moved = false;
-        for (i, on) in want.into_iter().enumerate() {
-            if let Some(s) = secs.get_mut(i) {
-                moved |= s.pinned != on;
-                s.pinned = on;
-            }
-        }
-        // **A re-derive can take the CURRENT section's favourite away, so it owes the same repoint
-        // an explicit edit does** (Codex review, 2026-09-05). `lib_refs` computes `own_type` from
-        // the sections that have LANDED, and discovery is asynchronous: a borrowed film library on
-        // an account that owns no films defaults ON, and then an owned film library arrives a
-        // second later and the same rule flips it OFF. `apply_pins` calls `repoint_cur` on exactly
-        // this transition; this path mutated the same bits and did not, leaving the Library paging
-        // a section its own picker no longer offers — and, once the strip follows favourites, one
-        // whose pill may not be drawn either.
-        if moved {
-            repoint_cur();
-        }
-    }
-}
-
-/// Write the table's current state down as this profile's answer.
-///
-/// `asked` is what the first-run route passes `true` for; a toggle made later from the Library's
-/// Sources panel also records `true`, because a recorded decision is a recorded decision — the
-/// defaults must never come back and overrule one, and a profile that has flipped a switch has
-/// plainly been asked.
-fn record_pins(asked: bool) {
-    let libs = lib_refs();
-    let on: Vec<bool> = sections().iter().map(|s| s.pinned).collect();
-    let user = crate::plex::session::current_profile_key();
-    let fresh = crate::plex::pins::record(&user, asked, &libs, &on);
-    let mut written: Option<crate::plex::session::HomePins> = None;
-    // Through `update`, never `save`: this owns ONE field of a file four other writers touch (the
-    // roster worker, the profile switch, the sign-in save, the search-recents flush), and a
-    // whole-file replace from a stale snapshot is how a lost update signs the device out.
-    crate::plex::session::update(|s| {
-        // …and MERGE rather than replace, because this table is what has answered, not what
-        // exists: a friend's server asleep at the moment a switch is flipped must not have its
-        // recorded answer overwritten with silence (`plex::pins::carry_forward`).
-        let rec = crate::plex::pins::carry_forward(fresh.clone(), s.pins_for(&user), &libs);
-        let mut next = s.clone();
-        next.set_pins_for(&user, rec.clone());
-        written = Some(rec);
-        Some(next)
-    });
-    // Only what actually reached the file: `update` is a no-op on a session with no `client_id`,
-    // and adopting a record that was never written would make the snapshot disagree with disk.
-    //
-    // No `SECTIONS_GEN` bump here, deliberately — a caller that CHANGED something owes one
-    // ([`toggle_pin`] makes it, one line after this call). Writing alone cannot change what
-    // [`library_pins`] answers: the fresh record is the table's own state, and `carry_forward` can
-    // only put back entries the state's recorded pins already held. A future caller that flips a row without
-    // going through `toggle_pin` owes the bump too, or Home does not re-merge.
-    if let Some(rec) = written {
-        legacy_mut().recorded = Some(rec);
-    }
-}
-
-/// **Has the first-run question been put to the profile now watching?** — the route's own gate,
-/// answered from the granted roster and this profile's record. See `plex::pins::asks`.
-pub(crate) fn first_run_asks() -> bool {
-    let sess = crate::plex::session::peek();
-    let granted = crate::plex::server_ids().count();
-    #[cfg(test)]
-    let granted = granted.max(sources().len());
-    crate::plex::pins::asks(
-        granted,
-        sess.pins_for(&crate::plex::session::current_profile_key()),
-    )
-}
-
-fn retry_discovery() {
-    for s in legacy_mut().sources_mut() {
-        if !s.sections_done {
-            s.retry_cd = 0;
-        }
-    }
-    crate::ui::idle::invalidate();
-}
-
-pub(crate) fn discovery_state() -> SecFetch {
-    if !sections().is_empty() || sources().iter().all(|s| s.sections_done) {
-        SecFetch::Ready
-    } else if sources().iter().any(|s| s.reachable() && !s.sections_done) || sources().is_empty() {
-        SecFetch::Loading
-    } else {
-        SecFetch::Failed
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn pinned(i: usize) -> bool {
-    sections().get(i).map(|s| s.pinned).unwrap_or(false)
-}
-pub(crate) fn pinned_count() -> usize {
-    legacy().pinned_count()
-}
-/// Is this the last library feeding Home? Its row draws its value dimmed and states the rule; it
-/// is NOT dimmed whole, because dim means unavailable and this is the library that works.
-#[cfg(test)]
-pub(crate) fn is_last_pinned(i: usize) -> bool {
-    pinned(i) && pinned_count() == 1
-}
-/// Flip a library's pin. Returns false — changing nothing — for the last pinned one: unpinning it
-/// would leave Home with nothing to draw, which is the only real failure this control has.
-///
-/// **Test-only since 2026-09-04.** The Home editor writes through [`apply_pins`] — one record for
-/// the whole draft on `Done` — and its BACK no longer undoes per-press writes, because there are
-/// none; this per-press flip and the two predicates above it survive as the fixture the pin
-/// invariants below are graded through.
-#[cfg(test)]
-fn toggle_pin(i: usize) -> bool {
-    if is_last_pinned(i) {
-        return false;
-    }
-    let Some(s) = legacy_mut().sections_mut().get_mut(i) else {
-        return false;
-    };
-    s.pinned = !s.pinned;
-    // …and it OUTLIVES the run. Every flip was in-memory until 2026-08-21, so a selection made on
-    // the Sources panel was gone by the next boot and the ownership default came back — which
-    // reads as the switch not working rather than as nothing having been written down.
-    record_pins(true);
-    // The pin is an input to Home's merge (`pms::feeds_home`), and the merge re-runs off this
-    // generation — without the bump the switch said `On`, the store agreed, and Home did not
-    // change until something else happened to land. Reported on the device exactly that way:
-    // "Film Club is enabled On Home but not on home".
-    legacy_mut().bump_sections_gen();
-    crate::ui::idle::invalidate();
-    true
-}
-/// Apply a batch of pin edits and persist ONCE — the Home editor's draft commit
-/// (`screens::onboard`'s `OnboardScreen::commit`), never a per-toggle write, and since 2026-09-04
-/// the ONLY way a pin is
-/// written by a control at all: the per-press [`toggle_pin`] has no production caller left and is
-/// compiled only for the tests that grade the pin invariants through it. The editor's whole point
-/// is that an editing session can toggle N rows while the route is open, and every one of them
-/// must cost this app nothing until the user explicitly commits, and then exactly one write and
-/// one Home re-merge, not N of each. `i` indexes the state's section table exactly as `toggle_pin`
-/// does; an edit naming a since-vanished index is silently dropped rather than panicking, because
-/// the table only ever grows (see this module's header) and a caller holding a draft from before a
-/// `reset` is a lifecycle bug elsewhere, not something this function should crash over.
-///
-/// Trusts the caller's edits rather than re-checking [`is_last_pinned`] per entry — the draft that
-/// produced them already enforced the never-empty floor against its OWN running count as each
-/// toggle was made (`screens::onboard`'s `OnboardScreen::toggle_row`), which `toggle_pin`'s
-/// per-call check cannot see
-/// mid-edit anyway (it only ever sees what is on disk).
-fn apply_pins(edits: &[(usize, bool)]) {
-    let mut changed = false;
-    {
-        let secs = legacy_mut().sections_mut();
-        for &(i, on) in edits {
-            if let Some(s) = secs.get_mut(i) {
-                if s.pinned != on {
-                    s.pinned = on;
-                    changed = true;
-                }
-            }
-        }
-    }
-    // Recorded even when nothing moved: a first-run "Start watching" on the untouched defaults is
-    // still an explicit answer (`record_pins`'s own `asked` rule — a profile that has SEEN the
-    // question and left it alone has still been asked), and the commit's own log line reads
-    // `pinned_count()`/`section_count()` right after this returns regardless.
-    record_pins(true);
-    if changed {
-        repoint_cur();
-        legacy_mut().bump_sections_gen();
-        crate::ui::idle::invalidate();
-    }
-}
-
-/// Keep the browsed library inside the FAVOURITE set, and do it in the same breath as the edit
-/// that can take it out.
-///
-/// The never-empty floor is GLOBAL — `plex::pins` and the editor's draft forbid switching off the
-/// last favourite anywhere, not the last of each type — so switching off your only film library
-/// while a show library is still on is legal, and leaves `cur()` naming a library that is now out
-/// of the app. Everything downstream then disagrees for as long as it lasts: the grid pages a
-/// library the picker will not list, `tab_of_section` finds no pill for it, and the strip has
-/// nothing lit.
-///
-/// So the fallback is stated rather than left to whoever notices first: **the same type if it
-/// still has a favourite, otherwise the first favourite anywhere.** Same type first because a
-/// viewer switching off one film library of two means "not that one", not "leave the films"; the
-/// global fallback only runs when the type is gone entirely, and it cannot fail, because the floor
-/// guarantees at least one favourite exists.
-///
-/// Deliberately inside [`apply_pins`]'s `changed` arm rather than lazily at the next read: it must
-/// happen BEFORE `SECTIONS_GEN` moves, so the frame that observes the new strip observes a `cur()`
-/// that already agrees with it. A lazy repoint would let one frame draw a pill set and a page that
-/// contradict each other.
-fn repoint_cur() {
-    let c = cur();
-    if sections().get(c).map(|s| s.pinned).unwrap_or(false) {
-        return;
-    }
-    let want = section_kind(c)
-        .and_then(section_of_kind)
-        .or_else(|| sections().iter().position(|s| s.pinned));
-    if let Some(i) = want {
-        set_cur(i);
-    }
-}
-/// Every library this profile has an ANSWER for as `(source index, section key, pinned)` — the
-/// READ side of the pin store, and the ONE projection of it this module exports.
-///
-/// It replaced two narrower ones (`pinned_libraries`, `discovered_sources`) that `pms` folded into
-/// server sets separately — three loops resolving a source index to a registry slot, so a change to
-/// that mapping had to land in three places. Both are columns of this table.
-///
-/// **Two sources of answer, and the second one is not an optimisation.** The section table for
-/// everything that has been enumerated, plus the state's recorded pins for every roster source whose worker has
-/// not landed yet. Home, Library, Search and Onboard all drive [`discover_pump`], but Home's hub
-/// worker can still answer first; without the recorded half, `pms::feeds_home` would read that
-/// source as "undecided" and briefly put a friend's shelves back on the front door of somebody who
-/// had turned them off. The recorded answer is keyed by machine, precisely the join that is needed.
-///
-/// NB an EMPTY result STILL means "nothing has been discovered or recorded yet", NOT "nothing is
-/// pinned": the never-empty floor (`screens::onboard`'s `OnboardScreen::toggle_row` on the
-/// editor's draft, `plex::pins`
-/// on a recorded selection) forbids unpinning the last library, so the pinned set is never
-/// legitimately empty. `pms::feeds_home` is written around exactly that distinction.
-///
-/// The section KEY is what an item carries (`librarySectionID`), so this is the join Home needs to
-/// honour a per-library pin: `/hubs` is a whole-SERVER request and answers with rows from every
-/// library on it, pinned or not. Without the key the finest gate available is "does this server
-/// feed Home at all", which is why unpinning one library of a two-library server changed nothing.
-/// **The favourite table as `(server, section key, favourite)`** — [`library_pins`]'s rows with
-/// their source INDEX resolved to a registry slot, which is the form a consumer holding an item can
-/// join against.
-///
-/// It lived in `pms.rs` as a private `library_pins_by_server` for as long as Home was the only
-/// surface that read the switch. Search needs the same table now (§6: favourites RANK results, they
-/// never remove one), and a second fold there would be a second place to fix when a source index
-/// stops mapping to a registry slot the way it does today. It is here rather than in `pms` because
-/// both of its inputs are this module's.
-///
-/// **It is a SNAPSHOT, and a worker must take it at the spawn site** (`plex/CLAUDE.md` rule 5): the
-/// section table moves under discovery and under every favourites edit, so a thread that asked what
-/// was current would be answering a question from a different moment than the one it was given.
-/// Is section `i` on a server somebody SHARED with us, rather than one of our own? `false` for an
-/// unknown index, which is the safe answer: the chip that reads this exists to name an owner, and
-/// naming one we cannot resolve would be worse than not offering it.
-pub(crate) fn section_sid_is_borrowed(i: usize) -> bool {
-    sections()
-        .get(i)
-        .and_then(|s| sources().get(s.src))
-        .map(|s| !s.owned)
-        .unwrap_or(false)
-}
-
-pub(crate) fn favorite_sections() -> Vec<(crate::plex::ServerId, i64, bool)> {
-    let srcs = sources();
-    library_pins()
-        .into_iter()
-        .filter_map(|(si, key, fav)| srcs.get(si).map(|s| (s.sid, key, fav)))
-        .collect()
-}
-
-pub(crate) fn library_pins() -> Vec<(usize, i64, bool)> {
-    let mut out: Vec<(usize, i64, bool)> = sections()
-        .iter()
-        .map(|s| (s.src, s.key, s.pinned))
-        .collect();
-    let Some(rec) = legacy().recorded.as_ref() else {
-        return out;
-    };
-    for (si, src) in sources().iter().enumerate() {
-        // A source with rows here has been enumerated and the table is the truth for it — including
-        // a library it has since lost. A nameless machine cannot be joined against a record at all.
-        if src.machine_id.is_empty() || sections().iter().any(|s| s.src == si) {
-            continue;
-        }
-        for (lib, on) in rec
-            .on
-            .iter()
-            .map(|l| (l, true))
-            .chain(rec.off.iter().map(|l| (l, false)))
-        {
-            if lib.machine_id == src.machine_id {
-                out.push((si, lib.key, on));
-            }
-        }
-    }
-    out
-}
-
 // ---- the Sources list's data, projected ------------------------------------------------------
 //
 // Two plain owned types rather than borrows of the statics, for one reason worth stating: the
@@ -3075,149 +2196,6 @@ pub(crate) struct SrcRow {
     pub(crate) current: bool,
 }
 
-pub(crate) fn source_groups() -> Vec<SrcGroup> {
-    sources()
-        .iter()
-        .map(|s| SrcGroup {
-            name: s.name.clone(),
-            handle: s.handle.clone(),
-            state: s.state,
-            tier: s.tier,
-        })
-        .collect()
-}
-
-/// The TYPE the Source panel is scoped to: the kind of the library currently being browsed, which
-/// is also the kind of the selected TAB. `None` only before any section exists.
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-fn cur_kind() -> Option<SecKind> {
-    sections().get(cur()).map(|s| s.kind)
-}
-
-/// The Sources list's rows — **only the libraries of the CURRENT TAB'S TYPE**, across every source.
-///
-/// The scoping is the whole point and it is owner-directed (2026-08-14): "the chip should not switch
-/// tabs — the Movies tab should show only movie shared libraries, and shows shows." Picking a row
-/// used to be able to land on a library of another type, which moved the selected SECTION and
-/// therefore the selected TAB, so a control in the toolbar silently navigated the row above it.
-///
-/// Filtering here rather than guarding the activation is deliberate: a guard would leave rows on
-/// screen that refuse to do anything when pressed, and the panel would have to explain why. With the
-/// type as the scope there is nothing to explain — the tab bar is how you reach the other type, and
-/// a source with no library of this type drops out of the panel entirely (`source_sections` already
-/// omits a group whose rows are all gone, so no empty header is drawn).
-///
-/// **…and only the FAVOURITE ones, since 2026-09-05.** The panel is a picker: it lists the
-/// libraries that are switched on and nothing else, because a library list that holds only what
-/// you want to see is the point of the switch. A granted library that is switched off draws no row
-/// here, no pill in the strip and no shelf on Home — one place to change your mind, and it is not
-/// this one. [`all_source_rows`] is that place's list, and the only one that shows every grant.
-///
-/// The panel's second level went with the same change. It used to be one row set shown two ways
-/// (Browse ⟷ On Home) with a segment control to swap them; the switch is a Settings route now, so
-/// what is left here is one level and one tick. `pinned`/`last_pinned` stay whole-roster facts on
-/// the row regardless, because the never-empty refusal still counts every favourite rather than
-/// the visible ones.
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn source_rows() -> Vec<SrcRow> {
-    let Some(kind) = cur_kind() else {
-        return Vec::new();
-    };
-    rows_where(|s| s.kind == kind && s.pinned)
-}
-
-/// **Where library `i` sits among the ones its own tab pill can reach, and how many there are** —
-/// the library chip's `1 of 2`.
-///
-/// It answers the question the chip could not: the chip's PRESENCE already means "there is
-/// somewhere else to go" (the legacy Library chip's presence rule), but that is knowledge the user
-/// has no way to have. Issue #68 is what it costs — two TV libraries behind one *TV Shows* pill,
-/// the second one read as missing rather than as one press away.
-///
-/// **The same predicate and the same order as [`source_rows`]**, deliberately: the number the chip
-/// prints is a promise about the list the chip OPENS, so a position derived any other way could
-/// disagree with the menu it names. Scoped to the type of `i` rather than to `cur()`, because the
-/// chip relabels on the press frame from `view_section()` while the store still holds the old one.
-///
-/// `None` when there is nothing to count — one library of this type, or a section that is not a
-/// favourite of its own type and so draws no row in that list at all. Absence, not `1 of 1`.
-///
-/// Allocation-free, unlike `source_rows`, because the chip's cache KEY is rebuilt every frame on
-/// this screen's hot path and cloning every row's title to count them is not what that key is for.
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn kind_position(i: usize) -> Option<(usize, usize)> {
-    let kind = section_kind(i)?;
-    if !sections().get(i)?.pinned {
-        return None;
-    }
-    let (mut pos, mut n) = (0usize, 0usize);
-    for (j, s) in sections().iter().enumerate() {
-        if s.kind != kind || !s.pinned {
-            continue;
-        }
-        if j == i {
-            pos = n;
-        }
-        n += 1;
-    }
-    (n > 1).then_some((pos + 1, n))
-}
-
-/// The Sources rows for the type of **section `i`**, rather than of `cur()`.
-///
-/// It exists because [`source_rows`] reads `cur_kind()`, and the Library's head relabels on the
-/// PRESS frame from `view_section()` — so between a tab press and the fade floor the two name
-/// different types. Building the head's row from the current one drew the MOVIE libraries under a
-/// *TV Shows* tab and then never corrected itself: the row's cache is keyed on the viewed section,
-/// which does not move again at the commit, so the stale answer was cached for the life of the
-/// page. Same predicate, same order, same projection — only the scope's source differs.
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn source_rows_for(i: usize) -> Vec<SrcRow> {
-    let Some(kind) = section_kind(i) else {
-        return Vec::new();
-    };
-    rows_where(|s| s.kind == kind && s.pinned)
-}
-
-/// **Every library, unscoped** — the first-run route's list (`Shared Sources.dc.html` §F).
-///
-/// The panel's [`source_rows`] is scoped to the browsed TYPE (and to the FAVOURITES of it) because
-/// a chip at the head of the Library must not silently navigate the tab above it. The route has no
-/// tab bar and no current library: it asks about the whole roster at once, which is the only shape
-/// in which "which libraries do you want?" is one question — and it is also why this is the ONE
-/// surface listing every granted library, so a switched-off one has a way back. Same rows, same projection, same row model on the other side — see
-/// `ui::source_list`.
-pub(crate) fn all_source_rows() -> Vec<SrcRow> {
-    rows_where(|_| true)
-}
-
-/// The projection both row sets share. Split out so the two can never disagree about what a row
-/// SAYS while disagreeing about which rows there are — the failure a second hand-written builder
-/// invites, and the reason `source_rows` grew a twin rather than the route growing its own.
-fn rows_where(keep: impl Fn(&BrowseSection) -> bool) -> Vec<SrcRow> {
-    // Whole-roster facts, both of them, even when the caller is showing a subset: the "Home needs
-    // one library" refusal counts every pin, not just the visible ones.
-    let last = pinned_count() == 1;
-    let cur = cur();
-    sections()
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| keep(s))
-        .map(|(i, s)| SrcRow {
-            src: s.src,
-            section: i,
-            title: s.title.clone(),
-            count_line: count_line(s.count, s.kind),
-            pinned: s.pinned,
-            last_pinned: last && s.pinned,
-            current: i == cur,
-        })
-        .collect()
-}
-
-/// A library's sub-line: its size once the count has landed, else its TYPE. Never absent — a row
-/// that loses its second line changes height, and the panel is not allowed to resize under a level
-/// switch or a landing.
 fn count_line(count: i64, kind: SecKind) -> String {
     if count >= 0 {
         format!("{count} {}", kind.noun())
@@ -3233,345 +2211,6 @@ fn count_line(count: i64, kind: SecKind) -> String {
 /// owns the roster ingest, and this is where it hooks in. What it does today is the half that is
 /// ours: a friend who has switched their server back on stops being unreachable on the next pump
 /// instead of after the ten-second backoff.
-fn recheck_shares() {
-    sync_roster();
-    // EVERY source, not only the ones already known to be down. Asking again is the whole content
-    // of this row: a server that has since gone offline learns it (its group dims), one that came
-    // back learns that, and a library the owner has created since appears — `append_sections` adds
-    // only what is new, so nothing already on screen moves.
-    for i in 0..sources().len() {
-        if let Some(s) = source_mut(i) {
-            s.retry_cd = 0;
-            s.sections_done = false;
-            s.counts_done = false;
-        }
-    }
-    crate::ui::idle::invalidate();
-}
-
-// ---- public surface: items ------------------------------------------------------------------
-
-/// totalSize of the current query, or -1 while the first page is still out.
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn total() -> i64 {
-    cur_state().map(|s| s.total).unwrap_or(-1)
-}
-/// Flip `(sid, rk)`'s watched state in every section's item store — the optimistic half of a
-/// view-state write, for the browse grid.
-///
-/// `pms::edit_item`'s twin, and it exists because that one only ever touched the HOME hubs: its own
-/// doc says "the item is on no shelf (a Library-grid or Related item): nothing to redraw", which
-/// was exactly right and exactly the gap. Mark a film watched from the grid's context menu and the
-/// tick did not appear until a refetch — the press read as having done nothing.
-///
-/// **Every section, not the current one.** A section the user browsed a minute ago keeps its items
-/// and its scroll position (that is the whole point of the per-section store), so leaving it stale
-/// would put the tick back the wrong way round the moment they tab back to it.
-///
-/// The row is edited, never REMOVED: an "unwatched only" listing genuinely no longer contains an
-/// item just marked watched, but a card vanishing from under the cursor on a press that was about
-/// state and not about membership is worse than one that is briefly in a list it no longer matches.
-/// The refetch the write's landing kicks is what reconciles that, as it does everywhere else here.
-///
-/// Returns whether anything matched, matching `pms::edit_item`'s shape. **MAIN THREAD.**
-fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
-    legacy_mut().set_watched_local(sid, rk, on)
-}
-
-/// The grid's desired index window (visible + lookahead) — drives which page fetches next.
-/// What the current section's last page fetch did — the Library screen's read-out is a projection
-/// of this and the store, never of the store alone.
-pub(crate) fn fetch_state() -> SecFetch {
-    cur_state().map(|s| s.fetch).unwrap_or(SecFetch::Loading)
-}
-
-/// True while the current query has no data yet (first page in flight) — the grid's full-screen
-/// spinner state.
-///
-/// Reads the STATE, not `total < 0`: those two agreed for every path that ends in an answer, and
-/// disagreed for the one that doesn't. A failed first page leaves `total` at -1 forever, so this
-/// used to spin forever with it.
-///
-/// **Only the suite calls it now** — `screens::library::readout` folds retained listing state
-/// together with the section TABLE's. Kept, and marked, because the tests that assert
-/// it are asserting exactly the distinction above; `rustc`'s dead-code warning does not count test
-/// callers, so this reads as removable and is not.
-#[allow(dead_code)]
-pub(crate) fn loading_initial() -> bool {
-    fetch_state() == SecFetch::Loading
-}
-
-/// The same three states for the SOURCE behind what the screen is showing — the layer above a
-/// page, and the other half of `screens::library`'s pure `readout` projection.
-///
-/// It is a PROJECTION of [`BrowseSource`]'s flags, not a fourth field: `reachable` and
-/// `sections_done` already carry the whole answer, per source, which is strictly more than the one
-/// global this replaced could say. (That global existed on a branch written before the table had a
-/// source dimension at all; keeping both would have been one rule in two places, and this file's
-/// history is mostly that mistake.)
-///
-/// It asks about the source of the section at [`cur`], falling back to the current SERVER when the
-/// table has no section to ask about — which is exactly the case the read-out one layer up exists
-/// for, a server that could not be reached to discover anything.
-pub(crate) fn cur_source_state() -> SecFetch {
-    let Some(s) = cur_source_idx().and_then(|i| sources().get(i)) else {
-        return SecFetch::Loading;
-    };
-    if !s.reachable() {
-        SecFetch::Failed
-    } else if s.sections_done {
-        SecFetch::Ready
-    } else {
-        SecFetch::Loading
-    }
-}
-/// Seed the roster with `n` sources in a chosen reachability, for a host test on the SCREEN side —
-/// the Library read-out is a projection of these flags, and its tests cannot reach this
-/// module's private ones. The real transition needs a server that refuses to answer, which no host
-/// tier has. Compiled out of every shipped build.
-#[cfg(test)]
-pub(crate) fn seed_sources_for_test(n: usize, reachable: bool) {
-    crate::testlock::assert_held("browse's section table (seed_sources_for_test)");
-    reset();
-    // Source 0 takes whatever `plex::current` already is, and NOTHING is registered. Registering
-    // here would leave slots in a crate-global registry that `pump`'s `sync_roster` re-adopts, and
-    // `maybe_discover` would then park a worker in `connect(2)` against a fixture address on behalf
-    // of some later test — the hazard `plex::servers`' own `Fresh` guard exists for. Matching the
-    // current server instead makes the empty-table fallback in `cur_source_idx` resolve to source 0
-    // by construction, with no global touched but this module's own.
-    let cur = crate::plex::current_server();
-    let v: Vec<BrowseSource> = (0..n)
-        .map(|k| BrowseSource {
-            sid: if k == 0 {
-                cur
-            } else {
-                ServerId::from_raw(k as u16)
-            },
-            client_addr: 0,
-            token_gen: 0,
-            machine_id: format!("mach-{k}"),
-            owned: k == 0,
-            name: if k == 0 {
-                "nas-home".into()
-            } else {
-                "film-club".into()
-            },
-            handle: if k == 0 {
-                String::new()
-            } else {
-                "friend".into()
-            },
-            state: if reachable {
-                SourceState::Reachable
-            } else {
-                SourceState::Unreachable
-            },
-            tier: None,
-            sections_done: reachable,
-            counts_done: true,
-            retry_cd: 0,
-        })
-        .collect();
-    legacy_mut().sources = v;
-}
-
-/// One reachable, named source with one library per entry of `pinned`, at exactly the pin state
-/// given — a host test on the PIN side's shortcut. [`seed_sources_for_test`] gives screen
-/// tests a roster with no libraries at all, which is right for grading a source's reachability word
-/// and wrong for anything that toggles or commits a pin: `plex::pins::record` needs a real
-/// `(machine_id, key)` pair to write anything down, and an empty-`machine_id` source (what
-/// `seed_sources_for_test` leaves for `k > 0`, and what `n == 0` sections leave regardless) makes
-/// every write a silent no-op — see [`plex::pins::record`](crate::plex::pins::record)'s own doc.
-/// Real discovery goes through `sync_roster` + `append_sections`; this writes `SOURCES`/`SECTIONS`
-/// directly, runs no `resolve_pins`, and touches neither the network nor the session file — a test
-/// that also wants to grade what got PERSISTED still has to set up its own session (redirect a temp
-/// file, `plex::session::save` a `client_id`, `plex::session::set_current`), exactly as `browse`'s
-/// own `TempPins` does for the tests beside this one.
-/// Flip section `i`'s pin directly, with NONE of [`toggle_pin`]'s side effects — no persist, no
-/// generation bump, no "last pinned" refusal. A host test's stand-in for the ONE thing this module
-/// does to a live pin that is not a user's own press: [`resolve_pins`] re-deriving an as-yet
-/// UNRECORDED row's default as the roster's ownership mix changes out from under it (a second
-/// source landing async). `apply_pins`/`toggle_pin` both go through the real path and are what a
-/// test should reach for to simulate an actual toggle; this is for simulating everything else.
-#[cfg(test)]
-pub(crate) fn set_pinned_for_test(i: usize, on: bool) {
-    crate::testlock::assert_held("browse's section table (set_pinned_for_test)");
-    if let Some(s) = legacy_mut().sections_mut().get_mut(i) {
-        s.pinned = on;
-    }
-}
-
-/// Append ONE more library to the fake source [`seed_pins_for_test`] built, with none of that
-/// function's `reset()` — the structural difference between a library LANDING (`append_sections`,
-/// `SECTIONS_GEN` moves, `EPOCH` does not) and the table's IDENTITY changing (`reset`, both move).
-/// A host test's stand-in for a second source answering after this profile's editor is already
-/// open, without needing the worker/mailbox machinery real discovery goes through.
-#[cfg(test)]
-pub(crate) fn land_pin_for_test(pinned: bool) {
-    crate::testlock::assert_held("browse's section table (land_pin_for_test)");
-    {
-        let secs = legacy_mut().sections_mut();
-        let key = secs.len() as i64 + 1;
-        secs.push(BrowseSection {
-            src: 0,
-            key,
-            title: format!("Library {}", secs.len()),
-            kind: SecKind::Movie,
-            count: -1,
-            pinned,
-        });
-    }
-    legacy_mut().bump_sections_gen();
-}
-
-#[cfg(test)]
-pub(crate) fn seed_pins_for_test(pinned: &[bool]) {
-    crate::testlock::assert_held("browse's section table (seed_pins_for_test)");
-    reset();
-    {
-        let state = legacy_mut();
-        state.sources = vec![BrowseSource {
-            sid: crate::plex::current_server(),
-            client_addr: 0,
-            token_gen: 0,
-            machine_id: "mach-test".into(),
-            owned: true,
-            name: "nas-home".into(),
-            handle: String::new(),
-            state: SourceState::Reachable,
-            tier: None,
-            sections_done: true,
-            counts_done: true,
-            retry_cd: 0,
-        }];
-        state.sections = pinned
-            .iter()
-            .enumerate()
-            .map(|(i, &on)| BrowseSection {
-                src: 0,
-                key: i as i64 + 1,
-                title: format!("Library {i}"),
-                kind: SecKind::Movie,
-                count: -1,
-                pinned: on,
-            })
-            .collect();
-    }
-    legacy_mut().bump_sections_gen();
-}
-
-/// Discovery may fail before there is a section to address. Retry exactly this source
-/// publication; a retired profile/table or removed server cannot affect its replacement.
-fn retry_source(epoch: u32, sid: ServerId) -> bool {
-    legacy_mut().retry_source(epoch, sid)
-}
-
-/// The source behind what the screen is showing: the section at [`cur`], else the current server —
-/// an empty table has no section to ask about, and that is exactly the case the read-out one layer
-/// up exists for. Shared by [`cur_source_state`] and [`retry_cur_source`] so the state that draws
-/// the read-out and the retry that answers it can never mean two different servers.
-fn cur_source_idx() -> Option<usize> {
-    legacy().cur_source_idx()
-}
-
-// ---- public surface: sort menu --------------------------------------------------------------
-
-#[allow(dead_code)] // Compatibility read facade; retained ListingView is the production reader.
-pub(crate) fn sorts() -> &'static [SortEntry] {
-    legacy().sorts()
-}
-/// Apply a sort by its stable SERVER KEY rather than by its position in the current section's
-/// menu, and say whether it landed.
-///
-/// A queued grid action can outlive the section it was chosen in — the Library keeps its controls
-/// live during a page transition, on the argument that a control which ignores a press is worse
-/// than one that acts a beat later. Sort menus are built per section from that section's own
-/// `/sorts`, so carrying an INDEX across would select a different value in the target, or silently
-/// no-op. The key is the same string on both.
-#[cfg(test)]
-fn set_sort_by_key(key: &str, desc: bool) -> bool {
-    legacy_mut().set_sort_by_key(key, desc)
-}
-
-/// Apply an explicit unwatched-filter value. A deferred UI transaction carries intent, not a
-/// toggle which could invert a section that changed while the page was fading.
-#[cfg(test)]
-fn set_unwatched(on: bool) -> bool {
-    legacy_mut().set_unwatched(on)
-}
-
-/// Apply a genre by its stable TAG ID rather than by its position, for [`set_sort_by_key`]'s
-/// reason. `None` is "All genres", which needs no lookup.
-#[cfg(test)]
-fn set_genre_by_id(id: Option<&str>) -> bool {
-    legacy_mut().set_genre_by_id(id)
-}
-
-// ---- public surface: filters ----------------------------------------------------------------
-
-#[allow(dead_code)] // Compatibility read facade; retained ListingView is the production reader.
-pub(crate) fn genres() -> &'static [GenreEntry] {
-    legacy().genres()
-}
-/// The landing half of [`kick_directory`]: take the mailbox, clear the single-flight, and
-/// apply to the section's state iff the table's identity epoch still holds. Not its
-/// shape: a section appended by another source since the spawn cannot have moved this index.
-#[cfg(test)]
-fn land_directory<T>(
-    flag: &AtomicBool,
-    mail: &Mutex<Option<DirectoryResult<T>>>,
-    apply: impl FnOnce(&'static mut SecState, Vec<T>),
-) {
-    // the landing GATE (§3.3 step 3, `ui::landgate`): a replay takes this on its recorded frame
-    let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
-        mail.lock().unwrap_or_else(|e| e.into_inner()).take()
-    });
-    if let Some(result) = taken {
-        // a menu's value list arriving repopulates an open Sort/Filter popover (`ui::idle`)
-        crate::ui::idle::invalidate();
-        flag.store(false, Ordering::SeqCst);
-        if result.epoch != table_epoch() {
-            return;
-        }
-        let DirectoryResult {
-            sec,
-            client,
-            token_gen,
-            list,
-            ..
-        } = result;
-        let _ = crate::plex::commit_if_current(client.id(), client, token_gen, || {
-            if section_sid(sec) == Some(client.id()) {
-                if let Some(st) = state_mut(sec) {
-                    apply(st, list);
-                }
-            }
-        });
-    }
-}
-
-// ---- letter rail (firstCharacter index) -----------------------------------------------------
-
-/// The rail is only truthful on the unfiltered ascending title listing: the letter counts
-/// describe exactly that ordering. Menus not landed yet ⇒ the server default (titleSort asc)
-/// is in effect, so the rail may show.
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn rail_available() -> bool {
-    let Some(st) = cur_state() else { return false };
-    let title_asc = match st.sorts.get(st.sort_idx) {
-        Some(s) => s.key == "titleSort" && !st.sort_desc,
-        None => true, // server default IS titleSort asc
-    };
-    title_asc && !st.unwatched && st.genre.is_none() && st.letters.len() > 1
-}
-// ---- remembered view ------------------------------------------------------------------------
-
-/// Resolve an addressed Library command without leaking a borrow of the compatibility publication.
-#[cfg(test)]
-pub(crate) fn resolve_section(epoch: u32, sid: ServerId, key: i64) -> Option<usize> {
-    legacy().resolve_section(epoch, sid, key)
-}
-
 // ---- source discovery, off the main thread ---------------------------------------------------
 
 /// What a discovery worker is being asked for. Two phases per source, one worker at a time within
@@ -3582,84 +2221,6 @@ enum SrcJob {
     Sections,
     /// the unfiltered item count of each of its libraries, by section key
     Counts(Vec<i64>),
-}
-
-/// Pick and spawn the next source-discovery fetch, if any. Called once a frame by [`pump`].
-fn maybe_discover() {
-    maybe_discover_with(&mut execute_discovery)
-}
-
-pub(crate) fn maybe_discover_with(launch: &mut dyn FnMut(DiscoveryRequest) -> bool) {
-    // per-source failure backoff (the roster is short; this loop is cheaper than a heap of timers)
-    for i in 0..sources().len() {
-        if let Some(s) = source_mut(i) {
-            s.retry_cd = s.retry_cd.saturating_sub(1);
-        }
-    }
-    let adapter = adapter();
-    if adapter.src_fetching.load(Ordering::SeqCst) {
-        return;
-    }
-    // SECTIONS for every source before the COUNTS of any: the section list is what puts a library
-    // on screen (a tab pill, a Sources row), the count is a sub-line refining one that is already
-    // drawn. Doing them source-by-source instead would put our own libraries' counts — three LAN
-    // requests — ahead of a friend's libraries existing at all.
-    let mut pick: Option<(usize, ServerId, SrcJob, bool)> = None;
-    let ready = |i: usize| sources().get(i).map(|s| s.retry_cd == 0).unwrap_or(false);
-    let no_name = |i: usize| sources().get(i).map(|s| s.name.is_empty()).unwrap_or(false);
-    for i in 0..sources().len() {
-        if ready(i) && !sources()[i].sections_done {
-            pick = Some((i, sources()[i].sid, SrcJob::Sections, no_name(i)));
-            break;
-        }
-    }
-    if pick.is_none() {
-        for i in 0..sources().len() {
-            if !ready(i) || sources()[i].counts_done {
-                continue;
-            }
-            let keys: Vec<i64> = sections()
-                .iter()
-                .filter(|x| x.src == i)
-                .map(|x| x.key)
-                .collect();
-            if keys.is_empty() {
-                // a source with nothing browsable (music/photo only) has no counts to fetch, and
-                // must not be picked again for the rest of the session
-                if let Some(s) = source_mut(i) {
-                    s.counts_done = true;
-                }
-                continue;
-            }
-            pick = Some((i, sources()[i].sid, SrcJob::Counts(keys), no_name(i)));
-            break;
-        }
-    }
-    let Some((si, sid, job, want_name)) = pick else {
-        return;
-    };
-
-    let Some(client) = crate::plex::client_for(sid) else {
-        return;
-    };
-    let token_gen = client.token_gen();
-    let epoch = table_epoch();
-    adapter.src_fetching.store(true, Ordering::SeqCst);
-    // The exact client is captured HERE, on the main thread. It is leaked and therefore safe for
-    // the worker to retain, while the landing's pointer+token generation rejects results from an
-    // origin/profile lifecycle the slot has since replaced.
-    let spawned = launch(DiscoveryRequest {
-        epoch,
-        si,
-        client,
-        token_gen,
-        job,
-        want_name,
-        adapter: Arc::clone(&adapter),
-    });
-    if !spawned {
-        discovery_spawn_refused(si);
-    }
 }
 
 pub(crate) struct DiscoveryRequest {
@@ -3674,10 +2235,19 @@ pub(crate) struct DiscoveryRequest {
 
 impl DiscoveryRequest {
     pub(crate) fn descriptor(&self) -> serde_json::Value {
-        serde_json::json!({"epoch":self.epoch, "source":self.si, "sid":self.client.id().raw(),
-            "client":self.client.instance_gen(), "token_gen":self.token_gen, "name":self.want_name,
-            "sections":matches!(self.job, SrcJob::Sections),
-            "counts":match &self.job { SrcJob::Sections => Vec::new(), SrcJob::Counts(keys) => keys.clone() }})
+        serde_json::json!({
+            "epoch": self.epoch,
+            "source": self.si,
+            "sid": self.client.id().raw(),
+            "client": self.client.instance_gen(),
+            "token_gen": self.token_gen,
+            "name": self.want_name,
+            "sections": matches!(self.job, SrcJob::Sections),
+            "counts": match &self.job {
+                SrcJob::Sections => Vec::new(),
+                SrcJob::Counts(keys) => keys.clone(),
+            },
+        })
     }
 }
 
@@ -3779,19 +2349,6 @@ pub(crate) fn with_refused_discovery_for_test<R>(f: impl FnOnce() -> R) -> R {
 
 /// Supply a transport observation, retaining the actual source epoch and captured lifecycle.
 #[cfg(test)]
-pub(crate) fn queue_discovery_for_test(
-    client: &'static crate::plex::Client,
-    token_gen: u32,
-    ok: bool,
-) {
-    if crate::stores::browse::queue_discovery_active_for_test(client, token_gen, ok) {
-        return;
-    }
-    let adapter = legacy_adapter();
-    queue_discovery_for_owner_test(legacy_mut(), &adapter, client, token_gen, ok);
-}
-
-#[cfg(test)]
 pub(crate) fn queue_discovery_for_owner_test(
     state: &mut BrowseState,
     adapter: &Arc<BrowseAdapter>,
@@ -3815,578 +2372,6 @@ pub(crate) fn queue_discovery_for_owner_test(
     ));
 }
 
-/// The OS refused a discovery worker ([`crate::task::spawn_small`] returned `false`) — release the
-/// single flight and back this source off.
-///
-/// Both halves are load-bearing and neither is enough alone.
-///
-/// * **Release**: `SRC_FETCHING` is cleared only inside a successful mailbox take, and nothing is
-///   ever going to fill that mailbox — the same latch
-///   `reset_clears_the_single_flight_flags_with_the_mailboxes` guards.
-/// * **Back off**, by the same [`SRC_RETRY_CD`] a failed landing arms. Releasing alone leaves
-///   [`maybe_discover`] re-picking this source on the very NEXT frame, and `task::spawn` logs every
-///   refusal (`task: spawn 'sources' REFUSED`) — so a machine under enough thread pressure to
-///   refuse a thread would write ~60 lines a second into the one file on-device triage reads. A
-///   quieter log is the wrong fix: retrying at 60 Hz cannot succeed either, because nothing about
-///   the refusal changes within a frame.
-///
-/// What it deliberately does NOT do is mark the source unreachable. Nothing was asked of the
-/// server, so the Sources list must not dim its group and the Library must not say it failed; only
-/// the next ATTEMPT moves. [`retry_cur_source`] clears this exactly as it clears a real failure, so
-/// the read-out's *Try again* still skips the wait.
-fn discovery_spawn_refused(si: usize) {
-    adapter().src_fetching.store(false, Ordering::SeqCst);
-    if let Some(s) = source_mut(si) {
-        s.retry_cd = SRC_RETRY_CD;
-    }
-}
-
-/// Apply a discovery landing. Gated on the table EPOCH, not on its shape generation: an append
-/// from one source must not throw away another's answer.
-fn land_discovery() -> Option<crate::stores::EndpointRefresh> {
-    // the landing GATE (§3.3 step 3, `ui::landgate`): a replay takes this on its recorded frame.
-    // `maybe_discover`, which spawns the next one, is outside the gate at both call sites.
-    let adapter = adapter();
-    let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
-        adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).take()
-    });
-    let Some((epoch, si, landing)) = taken else {
-        return None;
-    };
-    apply_discovery(epoch, si, landing, None)
-}
-
-fn apply_discovery(
-    epoch: u32,
-    si: usize,
-    landing: SrcLanding,
-    preferences: Option<&crate::plex::session::Session>,
-) -> Option<crate::stores::EndpointRefresh> {
-    let adapter = adapter();
-    adapter.src_fetching.store(false, Ordering::SeqCst);
-    crate::ui::idle::invalidate(); // a Sources row, a tab pill or a count appears
-    if epoch != table_epoch() {
-        return None; // the account changed under it — every index means something else now
-    }
-    let SrcLanding {
-        client,
-        token_gen,
-        name,
-        what,
-    } = landing;
-    let ok = match &what {
-        SrcWhat::Sections(list) => list.is_some(),
-        SrcWhat::Counts(counts) => !counts.is_empty(),
-    };
-    let fact_name = (!name.is_empty()).then_some(name.as_str());
-    let committed = crate::plex::commit_reachability_if_current(
-        client.id(),
-        client,
-        token_gen,
-        ok,
-        fact_name,
-        |outcome| {
-            if !apply_source_outcome(si, client, outcome) {
-                return false;
-            }
-            if !name.is_empty() {
-                if let Some(s) = source_mut(si) {
-                    s.name = name.clone();
-                }
-                legacy_mut().bump_source_facts_gen(); // the group's header exists now
-                                                      // The registry fact was committed beside the probe while WRITE is still held, so
-                                                      // a re-point cannot file this old lifecycle's name under a replacement client.
-                                                      // Ownership is carried through unchanged by the registry: this answer learned a
-                                                      // machine name, not a sharing grant.
-            }
-            match what {
-                SrcWhat::Sections(list) => {
-                    let ok = list.is_some();
-                    append_sections_with(si, list.unwrap_or_default(), preferences);
-                    if let Some(s) = source_mut(si) {
-                        s.sections_done = ok;
-                        s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
-                    }
-                    if !ok {
-                        // The machine name, never a token or an address — this line is what a user sends us.
-                        let who = sources()
-                            .get(si)
-                            .map(|s| s.name.clone())
-                            .unwrap_or_default();
-                        crate::log(&format!(
-                            "browse: source {si} ({who}) did not answer — its group reads unreachable"
-                        ));
-                    }
-                }
-                SrcWhat::Counts(counts) => {
-                    // EMPTY is a failure, not an answer: the worker pushes one entry per request
-                    // that succeeded, so a server that stopped answering mid-probe yields nothing.
-                    let ok = !counts.is_empty();
-                    {
-                        for s in legacy_mut()
-                            .sections_mut()
-                            .iter_mut()
-                            .filter(|s| s.src == si)
-                        {
-                            if let Some((_, n)) = counts.iter().find(|(k, _)| *k == s.key) {
-                                s.count = *n;
-                            }
-                        }
-                    }
-                    if ok {
-                        legacy_mut().bump_source_facts_gen(); // "Films" becomes "185 films"
-                    }
-                    if let Some(s) = source_mut(si) {
-                        s.counts_done = ok;
-                        s.retry_cd = if ok { 0 } else { SRC_RETRY_CD };
-                    }
-                }
-            }
-            true
-        },
-    );
-    if committed != Some(true) {
-        return None; // same slot, different origin/token/profile: every byte belongs to the old lifecycle
-    }
-    if !ok {
-        // A retry against the same Client cannot follow a Wi-Fi/LAN transition to another
-        // advertised endpoint. Auth performs the targeted Resource re-probe on a worker and the
-        // registry lifecycle change above re-arms this source when it lands.
-        return Some(crate::stores::EndpointRefresh { sid: client.id() });
-    }
-    None
-}
-
-// ---- D3: stores::browse's one door onto every BrowseCmd -------------------------------------
-
-/// Deferred Library work against the source and table epoch a screen captured — relocated here
-/// (D3) from `stores/browse.rs`, whose `addressed` used to call every arm's mutator across the
-/// module boundary. `target`/`work` are `crate::stores::browse::{SectionAddress, LibraryWork}`.
-fn addressed(
-    target: crate::stores::browse::SectionAddress,
-    work: crate::stores::browse::LibraryWork,
-) -> bool {
-    legacy_mut().addressed_with_adapter(&legacy_adapter(), target, work)
-}
-
-/// `stores::browse`'s one door onto every [`BrowseCmd`](crate::stores::browse::BrowseCmd) (D3):
-/// the match (and [`addressed`] above) used to live in `stores/browse.rs::run`, calling
-/// `pub(crate)` mutators across the module boundary. Relocating both here is what lets those
-/// mutators go private. Replicates the bump-vs-note bookkeeping `stores/browse.rs::run` used to
-/// do inline: every arm bumps the store's generation unconditionally EXCEPT a `SaveCursor` that
-/// changed nothing — a scroll-driven cursor save is too frequent to move the generation on a
-/// no-op. The owning store applies that notice policy after this synchronous mutation returns.
-pub(crate) fn run(cmd: crate::stores::browse::BrowseCmd) -> bool {
-    use crate::stores::browse::{BrowseCmd, LibraryWork};
-    let answer = match cmd {
-        BrowseCmd::Discovery(result) => {
-            let _ = record::apply(&result, None);
-            true
-        }
-        BrowseCmd::Addressed {
-            target,
-            work: LibraryWork::SaveCursor { query, cursor },
-        } => {
-            return addressed(target, LibraryWork::SaveCursor { query, cursor });
-        }
-        BrowseCmd::RetrySource { epoch, sid } => retry_source(epoch, sid),
-        BrowseCmd::Addressed { target, work } => addressed(target, work),
-        #[cfg(test)]
-        BrowseCmd::SetCur(i) => {
-            set_cur(i);
-            true
-        }
-        BrowseCmd::RecheckShares => {
-            recheck_shares();
-            true
-        }
-        BrowseCmd::ApplyPins(edits) => {
-            apply_pins(&edits);
-            true
-        }
-        BrowseCmd::RetryDiscovery => {
-            retry_discovery();
-            true
-        }
-        BrowseCmd::Reset => {
-            reset();
-            true
-        }
-        BrowseCmd::HubsInvalidateAll => {
-            section_hubs::invalidate_all();
-            true
-        }
-        BrowseCmd::SetWatchedLocal { sid, rk, on } => {
-            let a = set_watched_local(sid, &rk, on);
-            let b = section_hubs::set_watched_local(sid, &rk, on);
-            a || b
-        }
-        BrowseCmd::LeftTheDeck { sid, rk } => section_hubs::left_the_deck(sid, &rk),
-    };
-    answer
-}
-
-// ---- pump: mailbox apply + next-fetch scheduling (main thread, once a frame) ----------------
-
-/// Returns true when new items just landed (the grid re-clamps focus on it).
-/// The ROSTER half of [`pump`], and nothing else: adopt newly registered servers, land a
-/// discovery, schedule the next one. No paging, no menu fetches — so a screen that needs to know
-/// what libraries exist can say so without pulling a grid's worth of items it will never draw.
-///
-/// It exists because the section table is only populated by [`pump`], which runs from the Library
-/// screen alone. A boot straight into Search therefore knew the roster ("2 sources") and not one
-/// library NAME, and the scope line below the field — whose whole job is naming them — fell back
-/// to "a shared server" forever. Cheap and idempotent: the same single-flight and per-source
-/// backoff [`pump`] relies on, so calling it every frame from a second screen costs one comparison
-/// once the answers are in.
-pub(crate) fn discover_pump() -> crate::stores::EndpointRefreshSet {
-    sync_roster();
-    let mut endpoints = crate::stores::EndpointRefreshSet::default();
-    if let Some(request) = land_discovery() {
-        endpoints.insert(request);
-    }
-    maybe_discover();
-    endpoints
-}
-
-/// Scheduling only; controlled ingress is supplied separately through the dispatcher.
-pub(crate) fn controlled_discover(launch: &mut dyn FnMut(DiscoveryRequest) -> bool) {
-    if crate::stores::browse::controlled_discover_active(launch) {
-        return;
-    }
-    sync_roster();
-    maybe_discover_with(launch);
-}
-
-#[cfg(test)]
-pub(crate) fn pump() -> crate::stores::StoreOutcome {
-    let adapter = adapter();
-    let mut changed = false;
-    if legacy().retry_cd > 0 {
-        legacy_mut().retry_cd -= 1;
-    }
-    // the roster: adopt anything newly registered, land a discovery, schedule the next one. Cheap
-    // and idempotent, and it is what lets a friend's libraries arrive without the main thread ever
-    // waiting on their server.
-    sync_roster();
-    let mut endpoints = crate::stores::EndpointRefreshSet::default();
-    if let Some(request) = land_discovery() {
-        endpoints.insert(request);
-    }
-    maybe_discover();
-    // the library's own shelves: land whatever arrived and advance the publication machine. Both
-    // are inert until something calls `section_hubs::kick`, which nothing does yet — see that
-    // module's Dormant note. They are wired here rather than left for Landing 3 so the landing gate
-    // and the first-paint window live on the same frame clock as every other browse landing.
-    changed |= section_hubs::land();
-    changed |= section_hubs::tick_all();
-    // menu-data landings (query-independent; epoch-gated inside land_directory so a pre-reset
-    // fetch can't populate a new user's state at the same index)
-    land_directory(&adapter.genre_fetching, &adapter.genre_result, |st, list| {
-        st.genres_done = true;
-        if st.genres.is_empty() {
-            st.genres = Arc::new(list);
-        }
-    });
-    land_directory(&adapter.letters_fetching, &adapter.letter_result, |st, list| {
-        st.letters_done = true;
-        if st.letters.is_empty() {
-            st.letters = Arc::new(list);
-        }
-    });
-    // page landing
-    // the landing GATE (§3.3 step 3, `ui::landgate`): a replay takes this on its recorded frame
-    let page = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
-        adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).take()
-    });
-    if let Some(r) = page {
-        // a page landing fills the grid under a screen that may have gone idle waiting for it;
-        // the FAILED branch repaints too, since the retry back-off changes what the grid shows
-        crate::ui::idle::invalidate();
-        adapter.fetching.store(false, Ordering::SeqCst);
-        // A page fetch is also EVIDENCE ABOUT THE SERVER, and it is the only evidence that keeps
-        // arriving after discovery: `sections_done` latches on success, so without this a source
-        // that went offline an hour into the session could never stop reading as reachable. It is
-        // a fact about NOW in both directions — a served page says the server is answering, a
-        // failed one says it is not — and it is deliberately not gated on the query generation:
-        // whether the machine replied does not depend on which listing was asked for.
-        if let Some(src) = sections().get(r.sec).map(|section| section.src) {
-            let client = r.client;
-            let token_gen = r.token_gen;
-            let _ = crate::plex::commit_reachability_if_current(
-                client.id(),
-                client,
-                token_gen,
-                r.total >= 0,
-                None,
-                |outcome| {
-                    if !apply_source_outcome(src, client, outcome) {
-                        return false;
-                    }
-                    if r.total < 0 {
-                        // the fetch FAILED (network/parse) — leave the store exactly as it was and
-                        // back off before retrying; one wifi hiccup must not blank a populated grid
-                        legacy_mut().retry_cd = 120; // ~2s at 60fps
-                                                     // A failure is blamed only on the query it actually fetched.
-                        if r.gen == query_gen() {
-                            if let Some(st) = state_mut(r.sec) {
-                                st.fetch = SecFetch::Failed;
-                            }
-                        }
-                    } else if r.gen == query_gen() {
-                        if let Some(st) = state_mut(r.sec) {
-                            // the server answered: Ready even at totalSize 0 — an empty library is
-                            // an answer, never a fault (`StatusKind::Empty`'s rule)
-                            st.fetch = SecFetch::Ready;
-                            if let Some(sorts) = r.sorts {
-                                if st.sorts.is_empty() {
-                                    st.sorts = Arc::new(sorts);
-                                }
-                            }
-                            if st.total != r.total {
-                                st.total = r.total;
-                                st.items.resize(st.total as usize);
-                            }
-                            for (k, m) in r.items.into_iter().enumerate() {
-                                st.items.set(r.start + k, m);
-                            }
-                            changed = true;
-                        }
-                    }
-                    true
-                },
-            );
-        }
-    }
-    maybe_spawn();
-    crate::stores::StoreOutcome { changed, endpoints }
-}
-
-/// One fetch in flight at a time: pick the first missing page inside the wanted window
-/// (or page 0 when the query has no data yet) and spawn it.
-#[cfg(test)]
-fn maybe_spawn() {
-    let adapter = adapter();
-    if adapter.fetching.load(Ordering::SeqCst) || legacy().retry_cd > 0 {
-        return;
-    }
-    let c = cur();
-    let Some(st) = states().get(c) else { return };
-    let Some(sec) = sections().get(c) else { return };
-
-    let start = if st.total < 0 {
-        0 // first page of this query
-    } else {
-        let (lo, hi) = legacy().want;
-        let hi = hi.min(st.total as usize);
-        let mut found: Option<usize> = None;
-        let mut p = (lo / PAGE) * PAGE;
-        while p < hi {
-            if st.items.page_missing(p / PAGE) {
-                found = Some(p);
-                break;
-            }
-            p += PAGE;
-        }
-        match found {
-            Some(p) => p,
-            None => return, // wanted window fully resident
-        }
-    };
-
-    let include_meta = st.sorts.is_empty();
-    // sort param: empty until the menus land (server default = titleSort asc — the same
-    // listing the menus arrive with, so the first page is never re-sorted under the user)
-    let sort = match st.sorts.get(st.sort_idx) {
-        Some(s) => format!("{}:{}", s.key, if st.sort_desc { "desc" } else { "asc" }),
-        None => String::new(),
-    };
-    let mut filters: Vec<(String, String)> = Vec::new();
-    // The unwatched filter is a MOVIE/SHOW question, and those are now the only two types that
-    // reach here at all: shows advertise `unwatchedLeaves` (any unwatched episode), movies take a
-    // plain `unwatched=1`, and the comment this replaced already recorded that the plain form has
-    // odd semantics off type=1 (verified live 2026-07-19). The music/photo arm this match used to
-    // carry went with `SecKind`'s variants — see its doc; an unplayable type is refused at
-    // `from_wire` now, so there is no listing of one to send a filter to.
-    if st.unwatched {
-        match sec.kind {
-            SecKind::Show => filters.push(("unwatchedLeaves".to_string(), "1".to_string())),
-            SecKind::Movie => filters.push(("unwatched".to_string(), "1".to_string())),
-        }
-    }
-    if let Some(g) = &st.genre {
-        filters.push(("genre".to_string(), g.id.clone()));
-    }
-
-    let gen = query_gen();
-    let key = sec.key;
-    let sec_idx = c; // captured on the main thread; the worker must not read the statics
-                     // …and so is the SERVER — the section's OWN one, not whatever is current. `key` alone is
-                     // ambiguous across sources (both servers have a section `1`), `client()` inside the worker
-                     // would answer with whatever is current by then, and the sid is stamped onto every row this
-                     // parses, so a row is only ever addressable as `(sid, rk)` — see `pms::PmsMovie::sid`.
-    let Some(sid) = section_sid(c) else { return };
-    let Some(client) = crate::plex::client_for(sid) else {
-        return;
-    };
-    let token_gen = client.token_gen();
-    adapter.fetching.store(true, Ordering::SeqCst);
-    let worker_adapter = Arc::clone(&adapter);
-    let spawned = crate::task::spawn_small("page", move || {
-        let result = catch_unwind(|| {
-            let q = SectionQuery {
-                section_key: key,
-                sort: &sort,
-                filters: &filters,
-                start: start as i64,
-                size: PAGE as i64,
-                include_meta,
-            };
-            let mc = client.section_items_query(&q);
-            let Some(mc) = mc else {
-                return (Vec::new(), -1i64, None); // FAILURE sentinel — pump leaves the store alone
-            };
-            let items: Vec<PmsMovie> = mc.metadata.iter().map(|m| parse_item(m, sid)).collect();
-            // keep the item count authoritative even when PMS omits totalSize on an
-            // unpaged-shaped response (paged queries carry it; belt and braces)
-            let total = if mc.total_size > 0 {
-                mc.total_size
-            } else {
-                start as i64 + items.len() as i64
-            };
-            let sorts = mc.meta.as_ref().and_then(|m| {
-                m.types
-                    .iter()
-                    .find(|t| t.active != 0)
-                    .or_else(|| m.types.first())
-                    .map(|t| {
-                        t.sort
-                            .iter()
-                            .filter(|s| !s.key.is_empty())
-                            .map(|s| SortEntry {
-                                key: s.key.clone(),
-                                title: if s.title.is_empty() {
-                                    s.key.clone()
-                                } else {
-                                    s.title.clone()
-                                },
-                                default_desc: s.default_direction == "desc",
-                            })
-                            .collect::<Vec<_>>()
-                    })
-            });
-            (items, total, sorts)
-        })
-        .unwrap_or((Vec::new(), -1, None)); // a panicking fetch is a failure, not an empty library
-                                            // mailbox filled outside the guard so a panicking fetch still lands; single-flight
-                                            // (FETCHING) means no monotone race — pump clears the flag when it takes this
-        let (items, total, sorts) = result;
-        *worker_adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
-            client,
-            token_gen,
-            gen,
-            sec: sec_idx,
-            start,
-            items,
-            total,
-            sorts,
-        });
-    });
-    if !spawned {
-        // the flag is cleared ONLY inside a successful mailbox take, and nothing will fill that
-        // mailbox — the same latch `reset_clears_the_single_flight_flags_with_the_mailboxes`
-        // guards. `maybe_spawn` runs every frame, so releasing it here retries by itself.
-        adapter.fetching.store(false, Ordering::SeqCst);
-    }
-}
-
-// ---------------------------------------------------------------------------------------
-/// A two-source table for tests OUTSIDE this module (the top strip's destination walk): your Movies and
-/// TV Shows, and a friend's films and shows that fold onto them — four libraries projecting to
-/// two library-type pills (Home/Search are supplied by chrome). Writes crate globals, so the caller holds
-/// [`crate::testlock::serial`] and `reset()`s afterwards.
-///
-/// **"Two pills" is a claim about the PINS as well as about the table**, and it is the half this
-/// fixture used to leave to chance. [`append_sections`] ends in [`resolve_pins`], which reads the
-/// CURRENT PROFILE's recorded answer out of the session file — so a record naming these very
-/// machines turns a library off and the fixture quietly produces a different strip. That is not
-/// hypothetical: `library_publishes_the_actual_container_strip` and
-/// `four_libraries_on_two_servers_publish_two_type_destinations` failed alone and single-threaded
-/// in one checkout, and passed in another built from the same commit, on nothing but a
-/// `home_pins` record left in `target/<profile>/deps/auth.json` by an earlier run
-/// (`plex::session::fallback_file` is the account, and the reason a test binary can no longer
-/// reach such a file at all). Forgetting the record first is what makes the documented shape the
-/// shape every caller actually gets: the ownership defaults, yours On and a friend's Off.
-#[cfg(test)]
-pub(crate) fn seed_two_source_table_for_test() {
-    crate::testlock::assert_held("browse's section table (seed_two_source_table_for_test)");
-    crate::plex::session::forget_pins_for_test(&crate::plex::session::current_profile_key());
-    tests::seed_sources(vec![
-        tests::a_source("mac-mini", "", true),
-        tests::a_source("nas-home", "friend", true),
-    ]);
-    // Our own server has BOTH types; the share has one library of each. The third row here
-    // used to be a Music library, standing in for "a type only a friend has" — that type is
-    // gone (see `SecKind`), so the growth case is expressed by the OWNED side instead, in the
-    // tests that need it: an owner with only Movies, a friend who also has Shows.
-    append_sections(
-        0,
-        vec![
-            (1, "Movies".into(), SecKind::Movie),
-            (2, "TV Shows".into(), SecKind::Show),
-        ],
-    );
-    append_sections(
-        1,
-        vec![
-            (1, "Film Club".into(), SecKind::Movie),
-            (2, "Film Club".into(), SecKind::Show),
-        ],
-    );
-}
-
-/// The same fixture attached to real synthetic registry slots, for dispatcher tests that run
-/// the production store pump. The legacy fixture's UNSET sources intentionally have no client
-/// and are removed by roster reconciliation; they are only suitable for pure screen tests.
-#[cfg(test)]
-pub(crate) fn seed_registered_table_for_test(sids: [ServerId; 2]) {
-    crate::testlock::assert_held("browse's section table (seed_registered_table_for_test)");
-    seed_two_source_table_for_test();
-    for (index, sid) in sids.into_iter().enumerate() {
-        let client = crate::plex::client_for(sid).expect("registered fixture source");
-        let source = source_mut(index).unwrap();
-        source.sid = sid;
-        source.client_addr = client as *const _ as usize;
-        source.token_gen = client.token_gen();
-        crate::plex::describe_server(sid, &source.name, &source.handle, source.owned);
-    }
-    for state in legacy_mut().states_mut().iter_mut() {
-        state.letters_done = true;
-    }
-}
-
-/// One more library landing on source `src`, for tests OUTSIDE this module — the discovery
-/// worker's answer arriving late, which the Library screen's open Sources panel has to rebuild
-/// for. Goes through the real [`append_sections`], so it moves [`sections_gen`] exactly as the
-/// landing does; a test that wrote `SECTIONS` directly would prove nothing about that bump.
-/// Same contract as [`seed_two_source_table_for_test`]: crate globals, so hold
-/// [`crate::testlock::serial`] and `reset()` afterwards.
-/// Give the CURRENT section a listing of `n` placeholder items, so a screen test has a real GRID
-/// under it rather than an empty page.
-///
-/// It exists because the Library's focus walk stopped being a fixed ladder: with the vertical
-/// transitions derived from what is actually DRAWN, a fixture with no items has nothing below the
-/// tab bar and every DOWN is correctly a no-op — which is the fix for parking focus on an undrawn
-/// control, and which silently turned two navigation tests into assertions about nothing. Seeding a
-/// grid is how those tests get their subject back.
-#[cfg(test)]
-pub(crate) fn seed_items_for_test(n: usize) {
-    if crate::stores::browse::seed_items_active_for_test(n) {
-        return;
-    }
-    seed_items_for_owner_test(legacy_mut(), n);
-}
-
 #[cfg(test)]
 pub(crate) fn seed_items_for_owner_test(state: &mut BrowseState, n: usize) {
     crate::testlock::assert_held("browse's section table (seed_items_for_test)");
@@ -4408,6 +2393,199 @@ pub(crate) fn seed_items_for_owner_test(state: &mut BrowseState, n: usize) {
                 .collect(),
         );
         st.fetch = SecFetch::Ready;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn seed_sources_for_owner_test(
+    state: &mut BrowseState,
+    n: usize,
+    reachable: bool,
+) {
+    crate::testlock::assert_held("an owned browse section table (seed_sources_for_test)");
+    state.reset_with(|| {});
+    let current = crate::plex::current_server();
+    state.sources = (0..n)
+        .map(|index| BrowseSource {
+            sid: if index == 0 {
+                current
+            } else {
+                ServerId::from_raw(index as u16)
+            },
+            client_addr: 0,
+            token_gen: 0,
+            machine_id: format!("mach-{index}"),
+            owned: index == 0,
+            name: if index == 0 {
+                "nas-home".into()
+            } else {
+                "film-club".into()
+            },
+            handle: if index == 0 {
+                String::new()
+            } else {
+                "friend".into()
+            },
+            state: if reachable {
+                SourceState::Reachable
+            } else {
+                SourceState::Unreachable
+            },
+            tier: None,
+            sections_done: reachable,
+            counts_done: true,
+            retry_cd: 0,
+        })
+        .collect();
+}
+
+#[cfg(test)]
+pub(crate) fn seed_pins_for_owner_test(state: &mut BrowseState, pinned: &[bool]) {
+    crate::testlock::assert_held("an owned browse section table (seed_pins_for_test)");
+    state.reset_with(|| {});
+    state.sources = vec![BrowseSource {
+        sid: crate::plex::current_server(),
+        client_addr: 0,
+        token_gen: 0,
+        machine_id: "mach-test".into(),
+        owned: true,
+        name: "nas-home".into(),
+        handle: String::new(),
+        state: SourceState::Reachable,
+        tier: None,
+        sections_done: true,
+        counts_done: true,
+        retry_cd: 0,
+    }];
+    state.sections = pinned
+        .iter()
+        .enumerate()
+        .map(|(index, &on)| BrowseSection {
+            src: 0,
+            key: index as i64 + 1,
+            title: format!("Library {index}"),
+            kind: SecKind::Movie,
+            count: -1,
+            pinned: on,
+        })
+        .collect();
+    state.states.resize_with(state.sections.len(), SecState::default);
+    state.bump_sections_gen();
+}
+
+#[cfg(test)]
+pub(crate) fn set_pinned_for_owner_test(state: &mut BrowseState, index: usize, on: bool) {
+    crate::testlock::assert_held("an owned browse section table (set_pinned_for_test)");
+    if let Some(section) = state.sections.get_mut(index) {
+        section.pinned = on;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn land_pin_for_owner_test(state: &mut BrowseState, pinned: bool) {
+    crate::testlock::assert_held("an owned browse section table (land_pin_for_test)");
+    let key = state.sections.len() as i64 + 1;
+    state.sections.push(BrowseSection {
+        src: 0,
+        key,
+        title: format!("Library {}", state.sections.len()),
+        kind: SecKind::Movie,
+        count: -1,
+        pinned,
+    });
+    state.states.push(SecState::default());
+    state.bump_sections_gen();
+}
+
+#[cfg(test)]
+pub(crate) fn seed_two_source_table_for_owner_test(state: &mut BrowseState) {
+    crate::testlock::assert_held("an owned browse section table (seed_two_source_table_for_test)");
+    crate::plex::session::forget_pins_for_test(&crate::plex::session::current_profile_key());
+    state.reset_with(|| {});
+    state.sources = vec![
+        tests::a_source("mac-mini", "", true),
+        tests::a_source("nas-home", "friend", true),
+    ];
+    state.append_sections_with(
+        0,
+        vec![
+            (1, "Movies".into(), SecKind::Movie),
+            (2, "TV Shows".into(), SecKind::Show),
+        ],
+        None,
+    );
+    state.append_sections_with(
+        1,
+        vec![
+            (1, "Film Club".into(), SecKind::Movie),
+            (2, "Film Club".into(), SecKind::Show),
+        ],
+        None,
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn seed_registered_table_for_owner_test(
+    state: &mut BrowseState,
+    sids: [ServerId; 2],
+) {
+    crate::testlock::assert_held("an owned browse section table (seed_registered_table_for_test)");
+    seed_two_source_table_for_owner_test(state);
+    for (index, sid) in sids.into_iter().enumerate() {
+        let client = crate::plex::client_for(sid).expect("registered fixture source");
+        let source = state.source_mut(index).unwrap();
+        source.sid = sid;
+        source.client_addr = client as *const _ as usize;
+        source.token_gen = client.token_gen();
+        crate::plex::describe_server(sid, &source.name, &source.handle, source.owned);
+    }
+    for section in &mut state.states {
+        section.letters_done = true;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn append_section_for_owner_test(
+    state: &mut BrowseState,
+    source: usize,
+    key: i64,
+    title: &str,
+    kind: SecKind,
+) {
+    crate::testlock::assert_held("an owned browse section table (append_section_for_test)");
+    state.append_sections_with(source, vec![(key, title.into(), kind)], None);
+}
+
+#[cfg(test)]
+pub(crate) fn seed_letter_counts_for_owner_test(
+    state: &mut BrowseState,
+    letters: &[(&str, i64)],
+) {
+    crate::testlock::assert_held("an owned browse section table (seed_letter_counts_for_test)");
+    let current = state.cur();
+    if let Some(section) = state.state_mut(current) {
+        section.letters = Arc::new(
+            letters
+                .iter()
+                .map(|(label, count)| ((*label).into(), *count))
+                .collect(),
+        );
+        section.letters_done = true;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn seed_query_choices_for_owner_test(
+    state: &mut BrowseState,
+    sorts: Vec<SortEntry>,
+    genres: Vec<GenreEntry>,
+) {
+    crate::testlock::assert_held("an owned browse section table (seed_query_choices_for_test)");
+    let current = state.cur();
+    if let Some(section) = state.state_mut(current) {
+        section.sorts = Arc::new(sorts);
+        section.genres = Arc::new(genres);
+        section.genres_done = true;
     }
 }
 
@@ -4516,36 +2694,6 @@ pub(crate) fn spawn_owned_page_for_test(
 }
 
 #[cfg(test)]
-pub(crate) fn seed_letter_counts_for_test(letters: &[(&str, i64)]) {
-    crate::testlock::assert_held("browse's section table (seed_letter_counts_for_test)");
-    if let Some(state) = state_mut(cur()) {
-        state.letters = Arc::new(
-            letters
-                .iter()
-                .map(|(label, count)| ((*label).into(), *count))
-                .collect(),
-        );
-        state.letters_done = true;
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn seed_query_choices_for_test(sorts: Vec<SortEntry>, genres: Vec<GenreEntry>) {
-    crate::testlock::assert_held("browse's section table (seed_query_choices_for_test)");
-    if let Some(state) = state_mut(cur()) {
-        state.sorts = Arc::new(sorts);
-        state.genres = Arc::new(genres);
-        state.genres_done = true;
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn append_section_for_test(src: usize, key: i64, title: &str, kind: SecKind) {
-    crate::testlock::assert_held("browse's section table (append_section_for_test)");
-    append_sections(src, vec![(key, title.into(), kind)]);
-}
-
-#[cfg(test)]
 mod tests {
     #[test]
     fn addressed_instance_commit_validates_identity_and_selects_before_query() {
@@ -4578,8 +2726,10 @@ mod tests {
             sid,
             section: 8,
         };
+        let adapter = Arc::new(BrowseAdapter::default());
 
-        assert!(!state.addressed(
+        assert!(!state.addressed_with_adapter(
+            &adapter,
             SectionAddress {
                 epoch: target.epoch.wrapping_add(1),
                 ..target
@@ -4592,7 +2742,8 @@ mod tests {
         ));
         assert_eq!(state.cur(), 0);
         assert_eq!(state.query_gen(), 0);
-        assert!(state.addressed(
+        assert!(state.addressed_with_adapter(
+            &adapter,
             target,
             LibraryWork::Commit {
                 select: true,
@@ -4728,75 +2879,196 @@ mod tests {
 
     use super::*;
 
+    struct TestBrowse {
+        state: BrowseState,
+        adapter: Arc<BrowseAdapter>,
+    }
+
+    impl Default for TestBrowse {
+        fn default() -> Self {
+            Self {
+                state: BrowseState::default(),
+                adapter: Arc::new(BrowseAdapter::default()),
+            }
+        }
+    }
+
+    impl TestBrowse {
+        fn reset(&mut self) {
+            self.state.reset_owned(&self.adapter);
+        }
+
+        fn pump(&mut self) -> crate::stores::StoreOutcome {
+            let roster = self.state.sync_roster_owned();
+            if roster.retire_adapter {
+                self.adapter = Arc::new(BrowseAdapter::default());
+            }
+            let mut outcome = self.state.pump_owned(&self.adapter);
+            outcome.changed |= roster.changed;
+            outcome
+        }
+
+        fn discover_pump(&mut self) -> crate::stores::StoreOutcome {
+            self.state.discover_pump_owned(&self.adapter)
+        }
+
+        fn sync_roster(&mut self) {
+            if self.state.sync_roster_owned().retire_adapter {
+                self.adapter = Arc::new(BrowseAdapter::default());
+            }
+        }
+
+        fn seed_sources(&mut self, sources: Vec<BrowseSource>) {
+            self.reset();
+            self.state.sources = sources;
+        }
+
+        fn append_sections(&mut self, source: usize, sections: Vec<(i64, String, SecKind)>) {
+            self.state.append_sections_with(source, sections, None);
+        }
+
+        fn section_title(&self, index: usize) -> &str {
+            self.state.sections.get(index).map_or("", |section| section.title.as_str())
+        }
+
+        fn section_count(&self) -> usize {
+            self.state.sections.len()
+        }
+
+        fn pinned(&self, index: usize) -> bool {
+            self.state.pinned_for_test(index)
+        }
+
+        fn source_rows(&self) -> Vec<SrcRow> {
+            let Some(kind) = self.state.section_kind(self.state.cur()) else {
+                return Vec::new();
+            };
+            self.state.rows_where(|section| section.kind == kind && section.pinned)
+        }
+
+        fn kind_position(&self, index: usize) -> Option<(usize, usize)> {
+            let kind = self.state.section_kind(index)?;
+            if !self.pinned(index) {
+                return None;
+            }
+            let (mut position, mut count) = (0, 0);
+            for (candidate, section) in self.state.sections.iter().enumerate() {
+                if section.kind != kind || !section.pinned {
+                    continue;
+                }
+                if candidate == index {
+                    position = count;
+                }
+                count += 1;
+            }
+            (count > 1).then_some((position + 1, count))
+        }
+
+        fn tab_count(&self) -> usize {
+            self.state.tab_kinds().count()
+        }
+
+        fn tab_title(&self, tab: usize) -> &str {
+            match self.state.tab_kinds().nth(tab) {
+                Some(SecKind::Movie) => "Movies",
+                Some(SecKind::Show) => "TV Shows",
+                None => "",
+            }
+        }
+
+        fn tab_of_section(&self, section: usize) -> Option<usize> {
+            self.state.section_kind(section).and_then(|kind| self.state.tab_of_kind(kind))
+        }
+
+        fn loading_initial(&self) -> bool {
+            self.state.cur_state().is_some_and(|state| {
+                state.total < 0 && matches!(state.fetch, SecFetch::Loading)
+            })
+        }
+
+        fn fetch_state(&self) -> SecFetch {
+            self.state.cur_state().map_or(SecFetch::Loading, |state| state.fetch)
+        }
+
+        fn first_run_asks(&self) -> bool {
+            let session = crate::plex::session::peek();
+            crate::plex::pins::asks(
+                self.state.sources.len(),
+                session.pins_for(&crate::plex::session::current_profile_key()),
+            )
+        }
+    }
+
     struct RegisteredCleanup;
 
     #[test]
     fn addressed_discovery_retry_rejects_retired_tables_and_other_sources() {
         let _guard = crate::testlock::serial();
-        reset();
-        seed_sources_for_test(2, false);
-        source_mut(0).unwrap().retry_cd = 9;
-        source_mut(1).unwrap().retry_cd = 13;
-        let sid = sources()[1].sid;
-        let epoch = table_epoch();
-        assert!(retry_source(epoch, sid));
-        assert_eq!(sources()[0].retry_cd, 9);
-        assert_eq!(sources()[1].retry_cd, 0);
-        source_mut(1).unwrap().retry_cd = 17;
-        assert!(!retry_source(epoch.wrapping_add(1), sid));
-        assert!(!retry_source(epoch, ServerId::from_raw(99)));
-        assert_eq!(sources()[1].retry_cd, 17);
-        reset();
+        let mut browse = TestBrowse::default();
+        seed_sources_for_owner_test(&mut browse.state, 2, false);
+        browse.state.source_mut(0).unwrap().retry_cd = 9;
+        browse.state.source_mut(1).unwrap().retry_cd = 13;
+        let sid = browse.state.sources()[1].sid;
+        let epoch = browse.state.table_epoch();
+        assert!(browse.state.retry_source(epoch, sid));
+        assert_eq!(browse.state.sources()[0].retry_cd, 9);
+        assert_eq!(browse.state.sources()[1].retry_cd, 0);
+        browse.state.source_mut(1).unwrap().retry_cd = 17;
+        assert!(!browse.state.retry_source(epoch.wrapping_add(1), sid));
+        assert!(!browse.state.retry_source(epoch, ServerId::from_raw(99)));
+        assert_eq!(browse.state.sources()[1].retry_cd, 17);
     }
 
     impl Drop for RegisteredCleanup {
         fn drop(&mut self) {
-            reset();
             crate::plex::reset_servers_for_test();
         }
     }
 
-    fn registered_source() -> (RegisteredCleanup, ServerId, &'static crate::plex::Client) {
+    fn registered_source(
+    ) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client) {
         crate::plex::reset_servers_for_test();
-        reset();
         let sid = crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "old", "cid");
         assert!(crate::plex::set_current(sid));
         let mut source = a_source("original", "", true);
         source.sid = sid;
         source.sections_done = false;
-        seed_sources(vec![source]);
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![source]);
         (
             RegisteredCleanup,
+            browse,
             sid,
             crate::plex::client_for(sid).unwrap(),
         )
     }
 
-    fn registered_page_source() -> (RegisteredCleanup, ServerId, &'static crate::plex::Client) {
-        let (cleanup, sid, client) = registered_source();
-        if let Some(source) = source_mut(0) {
+    fn registered_page_source(
+    ) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client) {
+        let (cleanup, mut browse, sid, client) = registered_source();
+        if let Some(source) = browse.state.source_mut(0) {
             source.sections_done = true;
             source.counts_done = true;
         }
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
-        (cleanup, sid, client)
+        browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        (cleanup, browse, sid, client)
     }
 
     fn registered_resident_page_source(
-    ) -> (RegisteredCleanup, ServerId, &'static crate::plex::Client) {
-        let (cleanup, sid, client) = registered_page_source();
-        let state = state_mut(0).unwrap();
+    ) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client) {
+        let (cleanup, mut browse, sid, client) = registered_page_source();
+        let state = browse.state.state_mut(0).unwrap();
         state.fetch = SecFetch::Ready;
         state.total = 1;
         state.items = SecItems::from_vec(vec![Some(PmsMovie::default())]);
-        (cleanup, sid, client)
+        (cleanup, browse, sid, client)
     }
 
     #[test]
     fn a_settled_query_change_with_unknown_total_is_still_page_work() {
         let _g = crate::testlock::serial();
-        let (_cleanup, _, _) = registered_resident_page_source();
-        let mut state = legacy().clone();
+        let (_cleanup, browse, _, _) = registered_resident_page_source();
+        let mut state = browse.state;
         let adapter = BrowseAdapter::default();
         let _ = state.sync_roster_owned();
         for source in &mut state.sources {
@@ -4813,10 +3085,11 @@ mod tests {
             "unknown total means page zero is owed even before a wanted window is published");
     }
 
-    fn registered_directory_source() -> (RegisteredCleanup, ServerId, &'static crate::plex::Client)
+    fn registered_directory_source(
+    ) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client)
     {
-        let (cleanup, sid, client) = registered_page_source();
-        let state = state_mut(0).unwrap();
+        let (cleanup, mut browse, sid, client) = registered_page_source();
+        let state = browse.state.state_mut(0).unwrap();
         state.genres = Arc::new(vec![GenreEntry {
             id: "new".into(),
             title: "New Genre".into(),
@@ -4824,38 +3097,51 @@ mod tests {
         state.letters = Arc::new(vec![("N".into(), 7)]);
         state.genres_done = false;
         state.letters_done = false;
-        (cleanup, sid, client)
+        (cleanup, browse, sid, client)
     }
 
-    fn queue_success_from(client: &'static crate::plex::Client, token_gen: u32) {
+    fn queue_success_from(
+        browse: &mut TestBrowse,
+        client: &'static crate::plex::Client,
+        token_gen: u32,
+    ) {
         let landing = SrcLanding {
             client,
             token_gen,
             name: "stale-name".into(),
             what: SrcWhat::Sections(Some(vec![(99, "Stale Library".into(), SecKind::Movie)])),
         };
-        *adapter().src_result.lock().unwrap_or_else(|e| e.into_inner()) = Some((table_epoch(), 0, landing));
-        land_discovery();
+        *browse.adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((browse.state.table_epoch(), 0, landing));
+        let _ = browse.state.land_discovery_owned(&browse.adapter);
     }
 
-    fn queue_page_from(client: &'static crate::plex::Client, token_gen: u32) {
-        *adapter().page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
+    fn queue_page_from(
+        browse: &mut TestBrowse,
+        client: &'static crate::plex::Client,
+        token_gen: u32,
+    ) {
+        *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
             client,
             token_gen,
-            gen: query_gen(),
+            gen: browse.state.query_gen(),
             sec: 0,
             start: 0,
             items: Vec::new(),
             total: 0,
             sorts: None,
         });
-        adapter().fetching.store(true, Ordering::SeqCst);
-        let _outcome = pump();
+        browse.adapter.fetching.store(true, Ordering::SeqCst);
+        let _outcome = browse.pump();
     }
 
-    fn queue_directories_from(client: &'static crate::plex::Client, token_gen: u32) {
-        let epoch = table_epoch();
-        *adapter().genre_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
+    fn queue_directories_from(
+        browse: &mut TestBrowse,
+        client: &'static crate::plex::Client,
+        token_gen: u32,
+    ) {
+        let epoch = browse.state.table_epoch();
+        *browse.adapter.genre_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
             epoch,
             sec: 0,
             client,
@@ -4865,27 +3151,29 @@ mod tests {
                 title: "Stale Genre".into(),
             }],
         });
-        *adapter().letter_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
+        *browse.adapter.letter_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
             epoch,
             sec: 0,
             client,
             token_gen,
             list: vec![("S".into(), 99)],
         });
-        adapter().genre_fetching.store(true, Ordering::SeqCst);
-        adapter().letters_fetching.store(true, Ordering::SeqCst);
-        land_directory(&adapter().genre_fetching, &adapter().genre_result, |st, list| {
+        browse.adapter.genre_fetching.store(true, Ordering::SeqCst);
+        browse.adapter.letters_fetching.store(true, Ordering::SeqCst);
+        browse.state.land_directory_owned(
+            &browse.adapter.genre_fetching, &browse.adapter.genre_result, |st, list| {
             st.genres_done = true;
             st.genres = Arc::new(list);
         });
-        land_directory(&adapter().letters_fetching, &adapter().letter_result, |st, list| {
+        browse.state.land_directory_owned(
+            &browse.adapter.letters_fetching, &browse.adapter.letter_result, |st, list| {
             st.letters_done = true;
             st.letters = Arc::new(list);
         });
     }
 
-    fn assert_new_directories_survive() {
-        let state = states().first().unwrap();
+    fn assert_new_directories_survive(browse: &TestBrowse) {
+        let state = browse.state.states().first().unwrap();
         assert_eq!(state.genres.len(), 1);
         assert_eq!(state.genres[0].id, "new");
         assert_eq!(state.genres[0].title, "New Genre");
@@ -4898,11 +3186,11 @@ mod tests {
     fn an_equal_size_profile_roster_replaces_the_inactive_source_instead_of_appending() {
         let _g = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
-        reset();
+        let mut browse = TestBrowse::default();
         let a = crate::plex::register_for_test("browse-a", "127.0.0.1", 1, "a", "cid");
         let b = crate::plex::register_for_test("browse-b", "127.0.0.1", 2, "b", "cid");
-        sync_roster();
-        assert_eq!(sources().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, b]);
+        browse.sync_roster();
+        assert_eq!(browse.state.sources().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, b]);
 
         crate::plex::revoke_for_profile_switch();
         let c = crate::plex::register_for_test("browse-c", "127.0.0.1", 3, "c", "cid");
@@ -4911,10 +3199,9 @@ mod tests {
             2,
             "the replacement deliberately preserves count"
         );
-        sync_roster();
-        assert_eq!(sources().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, c]);
+        browse.sync_roster();
+        assert_eq!(browse.state.sources().iter().map(|s| s.sid).collect::<Vec<_>>(), [a, c]);
 
-        reset();
         crate::plex::reset_servers_for_test();
     }
 
@@ -4923,24 +3210,24 @@ mod tests {
         let _g = crate::testlock::serial();
         let _cleanup = RegisteredCleanup;
         crate::plex::reset_servers_for_test();
-        reset();
+        let mut browse = TestBrowse::default();
         let sid = crate::plex::register_for_test("browse-name-fill", "127.0.0.1", 1, "t", "cid");
         crate::plex::describe_server(sid, "", "", true);
-        sync_roster();
+        browse.sync_roster();
         let mut directory = view::DirectorySnapshot::default();
-        directory.capture();
+        directory.capture_from(&mut browse.state);
         let old = directory.clone();
-        let generation = source_list_gen();
+        let generation = browse.state.source_list_gen();
         crate::plex::describe_server_name(sid, "Learned");
-        sync_roster();
-        assert_ne!(source_list_gen(), generation);
-        directory.capture();
+        browse.sync_roster();
+        assert_ne!(browse.state.source_list_gen(), generation);
+        directory.capture_from(&mut browse.state);
         assert_eq!(directory.view().sources()[0].1.name, "Learned");
         assert_eq!(old.view().sources()[0].1.name, "");
-        let generation = source_list_gen();
-        sync_roster();
+        let generation = browse.state.source_list_gen();
+        browse.sync_roster();
         assert_eq!(
-            source_list_gen(),
+            browse.state.source_list_gen(),
             generation,
             "a steady name does not republish"
         );
@@ -4962,39 +3249,38 @@ mod tests {
     fn a_source_follows_a_corrected_credit_but_not_a_renamed_machine() {
         let _g = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
-        reset();
+        let mut browse = TestBrowse::default();
         let sid = crate::plex::register_for_test("browse-credit", "127.0.0.1", 1, "t", "cid");
 
         // what a build without the rule left in the registry at boot
         crate::plex::describe_server(sid, "Mac mini", "admin", false);
-        sync_roster();
+        browse.sync_roster();
         assert_eq!(
-            sources().first().map(|s| (s.handle.as_str(), s.owned)),
+            browse.state.sources().first().map(|s| (s.handle.as_str(), s.owned)),
             Some(("admin", false))
         );
 
         // the roster refresh lands, re-graded: nobody is credited for the household's own server
         crate::plex::describe_server(sid, "Mac mini", "", false);
-        sync_roster();
+        browse.sync_roster();
         assert_eq!(
-            sources().first().map(|s| s.handle.as_str()),
+            browse.state.sources().first().map(|s| s.handle.as_str()),
             Some(""),
             "the panel follows the registry off a credit, not only onto one"
         );
 
         // …and a rename still does not travel
         crate::plex::describe_server(sid, "nas-loft", "", false);
-        sync_roster();
-        assert_eq!(sources().first().map(|s| s.name.as_str()), Some("Mac mini"));
+        browse.sync_roster();
+        assert_eq!(browse.state.sources().first().map(|s| s.name.as_str()), Some("Mac mini"));
 
-        reset();
         crate::plex::reset_servers_for_test();
     }
 
     #[test]
     fn a_discovery_landing_from_before_a_same_slot_repoint_is_inert() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, old) = registered_source();
+        let (_cleanup, mut browse, sid, old) = registered_source();
         let old_gen = old.token_gen();
         assert_eq!(
             crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
@@ -5002,14 +3288,14 @@ mod tests {
         );
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
 
-        queue_success_from(old, old_gen);
+        queue_success_from(&mut browse, old, old_gen);
         assert_eq!(
             crate::plex::server_probe_result(sid),
             Some(crate::plex::probe::Outcome::Unauthorized)
         );
-        assert_eq!(sources()[0].name, "original");
+        assert_eq!(browse.state.sources()[0].name, "original");
         assert!(
-            sections().is_empty(),
+            browse.state.sections().is_empty(),
             "old-origin rows must not enter the new lifecycle"
         );
     }
@@ -5017,47 +3303,47 @@ mod tests {
     #[test]
     fn endpoint_outcomes_follow_only_current_failed_discovery_through_both_pumps() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, client) = registered_source();
+        let (_cleanup, mut browse, sid, client) = registered_source();
         with_refused_discovery_for_test(|| {
-            queue_discovery_for_test(client, client.token_gen(), false);
-            let requests = crate::stores::browse::discover_pump();
-            assert_eq!(requests.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
+            queue_discovery_for_owner_test(
+                &mut browse.state, &browse.adapter, client, client.token_gen(), false);
+            let requests = browse.discover_pump();
+            assert_eq!(requests.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
             assert!(
                 !crate::plex::write_held_for_test(),
                 "intent returned after lifecycle lock release"
             );
-            queue_discovery_for_test(client, client.token_gen(), false);
-            assert_eq!(crate::stores::browse::pump().endpoints.iter().count(), 1);
-            queue_discovery_for_test(client, client.token_gen(), true);
-            assert_eq!(crate::stores::browse::discover_pump().iter().count(), 0);
+            queue_discovery_for_owner_test(
+                &mut browse.state, &browse.adapter, client, client.token_gen(), false);
+            assert_eq!(browse.pump().endpoints.iter().count(), 1);
+            queue_discovery_for_owner_test(
+                &mut browse.state, &browse.adapter, client, client.token_gen(), true);
+            assert_eq!(browse.discover_pump().endpoints.iter().count(), 0);
             let old_gen = client.token_gen();
             client.set_token("new-synthetic");
-            queue_discovery_for_test(client, old_gen, false);
-            assert_eq!(crate::stores::browse::pump().endpoints.iter().count(), 0);
+            queue_discovery_for_owner_test(
+                &mut browse.state, &browse.adapter, client, old_gen, false);
+            assert_eq!(browse.pump().endpoints.iter().count(), 0);
         });
     }
 
     #[test]
     fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() {
         let _serial = crate::testlock::serial();
-        let (_cleanup, sid, client) = registered_source();
+        let (_cleanup, browse, sid, client) = registered_source();
         // Two independent executions start from this pre-request store value. No worker is
         // running: only the OS executor is substituted, below the real discovery policy.
-        let initial_epoch = table_epoch();
+        let initial_epoch = browse.state.table_epoch();
+        let stores = crate::stores::Stores::default();
         let mt = unsafe { crate::task::MainThread::assume() };
         let mut transcript: Vec<std::collections::VecDeque<serde_json::Value>> = Vec::new();
         let mut states = Vec::new();
         let mut successful_result = None;
         let mut parsed: Option<crate::ui::rec::Recording> = None;
         for replay in [false, true] {
-            let mut source = a_source("original", "", true);
-            source.sid = sid;
-            source.sections_done = false;
-            seed_sources(vec![source]);
             // seed_sources is a reset fixture; restore the same pre-execution epoch on each
             // independent run, never to cancel or bypass a guard during either history.
-            legacy_mut().epoch = initial_epoch;
-            adapter().src_fetching.store(false, Ordering::SeqCst);
+            stores.browse.borrow_mut().prepare_discovery_replay_for_test(sid, initial_epoch);
             let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
             let mut io = crate::app::HomeIo {
                 replay,
@@ -5080,7 +3366,7 @@ mod tests {
                         .map(|effect| effect["payload"].clone())
                         .collect();
                 }
-                io.discovery_with(&mut |request| {
+                io.discovery_owned_with(&stores, &mut |request| {
                     assert!(!replay, "replay must never execute live admission");
                     attempts += 1;
                     if attempts == 1 { return false; }
@@ -5097,15 +3383,16 @@ mod tests {
                             (id == client.instance_gen()).then_some(client)
                         })
                         .unwrap();
-                    assert!(record::apply(&result, Some(&io.preferences)).is_none());
+                    assert!(stores.browse.borrow_mut()
+                        .apply_discovery(&result, &io.preferences)
+                        .endpoints
+                        .iter()
+                        .next()
+                        .is_none());
                 }
                 let requests: std::collections::VecDeque<_> =
                     std::mem::take(&mut io.requests).into();
-                let state = (
-                    adapter().src_fetching.load(Ordering::SeqCst),
-                    sources()[0].retry_cd,
-                    sources()[0].sections_done,
-                );
+                let state = stores.browse.borrow().discovery_policy_for_test();
                 assert!(
                     io.failure.is_none() && io.admissions.is_empty(),
                     "frame={frame} replay={replay} failure={:?} pending={}",
@@ -5138,7 +3425,7 @@ mod tests {
                 }
             }
             assert!(
-                sources()[0].sections_done,
+                stores.browse.borrow().discovery_policy_for_test().2,
                 "admitted retry delivers its real result"
             );
             assert_eq!(attempts, if replay { 0 } else { 2 });
@@ -5165,22 +3452,22 @@ mod tests {
     #[test]
     fn a_same_slot_repoint_rearms_section_discovery_without_erasing_known_rows() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, _) = registered_page_source();
-        assert!(sources()[0].sections_done);
-        assert_eq!(section_count(), 1);
+        let (_cleanup, mut browse, sid, _) = registered_page_source();
+        assert!(browse.state.sources()[0].sections_done);
+        assert_eq!(browse.section_count(), 1);
         assert_eq!(
             crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
             sid
         );
 
-        sync_roster();
+        browse.sync_roster();
 
         assert!(
-            !sources()[0].sections_done,
+            !browse.state.sources()[0].sections_done,
             "the new lifecycle must enumerate again"
         );
         assert_eq!(
-            section_count(),
+            browse.section_count(),
             1,
             "known rows stay visible until a fresh answer lands"
         );
@@ -5189,7 +3476,7 @@ mod tests {
     #[test]
     fn a_discovery_landing_from_before_an_in_place_retoken_is_inert() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, old) = registered_source();
+        let (_cleanup, mut browse, sid, old) = registered_source();
         let old_gen = old.token_gen();
         assert_eq!(
             crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
@@ -5201,19 +3488,19 @@ mod tests {
         );
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
 
-        queue_success_from(old, old_gen);
+        queue_success_from(&mut browse, old, old_gen);
         assert_eq!(
             crate::plex::server_probe_result(sid),
             Some(crate::plex::probe::Outcome::Unauthorized)
         );
-        assert_eq!(sources()[0].name, "original");
-        assert!(sections().is_empty());
+        assert_eq!(browse.state.sources()[0].name, "original");
+        assert!(browse.state.sections().is_empty());
     }
 
     #[test]
     fn a_discovery_landing_from_before_a_profile_reset_is_inert() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, old) = registered_source();
+        let (_cleanup, mut browse, sid, old) = registered_source();
         let old_gen = old.token_gen();
         crate::plex::revoke_for_profile_switch();
         assert_eq!(
@@ -5223,39 +3510,42 @@ mod tests {
         crate::plex::finish_profile_switch(&[sid]);
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
 
-        queue_success_from(old, old_gen);
+        queue_success_from(&mut browse, old, old_gen);
         assert_eq!(
             crate::plex::server_probe_result(sid),
             Some(crate::plex::probe::Outcome::Unreachable)
         );
-        assert_eq!(sources()[0].name, "original");
-        assert!(sections().is_empty());
+        assert_eq!(browse.state.sources()[0].name, "original");
+        assert!(browse.state.sections().is_empty());
     }
 
     #[test]
     fn page_failure_and_recovery_republish_directory_reachability() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, client) = registered_resident_page_source();
+        let (_cleanup, mut browse, sid, client) = registered_resident_page_source();
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Reachable);
         // A fully discovered, current lifecycle: neither directory discovery nor the next-page
         // scheduler has work. Only the injected page results below can change the source.
-        let source = source_mut(0).unwrap();
+        browse.sync_roster();
+        let source = browse.state.source_mut(0).unwrap();
         source.client_addr = client as *const _ as usize;
         source.token_gen = client.token_gen();
+        source.sections_done = true;
+        source.counts_done = true;
         let mut directory = view::DirectorySnapshot::default();
-        directory.capture();
+        directory.capture_from(&mut browse.state);
         let original = directory.clone();
         for (total, expected, fetch) in [
             (-1, SourceState::Unreachable, SecFetch::Failed),
             (-1, SourceState::Unreachable, SecFetch::Failed),
             (1, SourceState::Reachable, SecFetch::Ready),
         ] {
-            let changed = sources()[0].state != expected;
-            let generation = source_list_gen();
-            *adapter().page_result.lock().unwrap() = Some(PageResult {
+            let changed = browse.state.sources()[0].state != expected;
+            let generation = browse.state.source_list_gen();
+            *browse.adapter.page_result.lock().unwrap() = Some(PageResult {
                 client,
                 token_gen: client.token_gen(),
-                gen: query_gen(),
+                gen: browse.state.query_gen(),
                 sec: 0,
                 start: 0,
                 items: if total < 0 {
@@ -5269,17 +3559,17 @@ mod tests {
                 total,
                 sorts: None,
             });
-            adapter().fetching.store(true, Ordering::SeqCst);
-            let _outcome = pump();
-            assert_eq!(sources()[0].state, expected);
+            browse.adapter.fetching.store(true, Ordering::SeqCst);
+            let _outcome = browse.pump();
+            assert_eq!(browse.state.sources()[0].state, expected);
             assert_eq!(
-                source_list_gen(),
+                browse.state.source_list_gen(),
                 generation.wrapping_add(u32::from(changed))
             );
             // A later roster sync cannot be relied on to supply a missing notification: its
             // registry and local states already match after the page's atomic commit.
-            sync_roster();
-            directory.capture();
+            browse.sync_roster();
+            directory.capture_from(&mut browse.state);
             assert_eq!(directory.view().sources()[0].1.state, expected);
             assert_eq!(directory.view().source_fetch(), fetch);
             assert_eq!(original.view().sources()[0].1.state, SourceState::Reachable);
@@ -5289,7 +3579,7 @@ mod tests {
     #[test]
     fn a_page_landing_from_before_a_same_slot_repoint_is_inert() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, old) = registered_resident_page_source();
+        let (_cleanup, mut browse, sid, old) = registered_resident_page_source();
         let old_gen = old.token_gen();
         assert_eq!(
             crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
@@ -5297,24 +3587,24 @@ mod tests {
         );
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
 
-        queue_page_from(old, old_gen);
+        queue_page_from(&mut browse, old, old_gen);
         assert_eq!(
             crate::plex::server_probe_result(sid),
             Some(crate::plex::probe::Outcome::Unauthorized)
         );
-        assert_eq!(sources()[0].state, SourceState::Unauthorized);
+        assert_eq!(browse.state.sources()[0].state, SourceState::Unauthorized);
         assert_eq!(
-            states()[0].total,
+            browse.state.states()[0].total,
             1,
             "old-origin page must not replace the new lifecycle's rows"
         );
-        assert_eq!(states()[0].items.len(), 1);
+        assert_eq!(browse.state.states()[0].items.len(), 1);
     }
 
     #[test]
     fn a_page_landing_from_before_an_in_place_retoken_is_inert() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, old) = registered_resident_page_source();
+        let (_cleanup, mut browse, sid, old) = registered_resident_page_source();
         let old_gen = old.token_gen();
         assert_eq!(
             crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
@@ -5323,20 +3613,20 @@ mod tests {
         assert!(std::ptr::eq(old, crate::plex::client_for(sid).unwrap()));
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
 
-        queue_page_from(old, old_gen);
+        queue_page_from(&mut browse, old, old_gen);
         assert_eq!(
             crate::plex::server_probe_result(sid),
             Some(crate::plex::probe::Outcome::Unauthorized)
         );
-        assert_eq!(sources()[0].state, SourceState::Unauthorized);
-        assert_eq!(states()[0].total, 1);
-        assert_eq!(states()[0].items.len(), 1);
+        assert_eq!(browse.state.sources()[0].state, SourceState::Unauthorized);
+        assert_eq!(browse.state.states()[0].total, 1);
+        assert_eq!(browse.state.states()[0].items.len(), 1);
     }
 
     #[test]
     fn a_page_landing_from_before_a_profile_reset_is_inert() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, old) = registered_resident_page_source();
+        let (_cleanup, mut browse, sid, old) = registered_resident_page_source();
         let old_gen = old.token_gen();
         crate::plex::revoke_for_profile_switch();
         assert_eq!(
@@ -5346,20 +3636,20 @@ mod tests {
         crate::plex::finish_profile_switch(&[sid]);
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
 
-        queue_page_from(old, old_gen);
+        queue_page_from(&mut browse, old, old_gen);
         assert_eq!(
             crate::plex::server_probe_result(sid),
             Some(crate::plex::probe::Outcome::Unreachable)
         );
-        assert_eq!(sources()[0].state, SourceState::Unreachable);
-        assert_eq!(states()[0].total, 1);
-        assert_eq!(states()[0].items.len(), 1);
+        assert_eq!(browse.state.sources()[0].state, SourceState::Unreachable);
+        assert_eq!(browse.state.states()[0].total, 1);
+        assert_eq!(browse.state.states()[0].items.len(), 1);
     }
 
     #[test]
     fn a_repoint_requested_after_validation_waits_for_the_local_page_commit() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, client) = registered_resident_page_source();
+        let (_cleanup, mut browse, sid, client) = registered_resident_page_source();
         let token_gen = client.token_gen();
         let (start_tx, start_rx) = std::sync::mpsc::channel();
         let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
@@ -5398,48 +3688,48 @@ mod tests {
                 );
                 start_tx.send(()).unwrap();
                 attempt_rx.recv().unwrap(); // the other thread is now about to take WRITE
-                assert!(apply_source_outcome(0, client, outcome));
-                state_mut(0).unwrap().total = 2;
+                assert!(browse.state.apply_source_outcome(0, client, outcome));
+                browse.state.state_mut(0).unwrap().total = 2;
                 committed.store(true, Ordering::SeqCst);
                 true
             },
         );
         assert_eq!(applied, Some(true));
         repoint.join().unwrap();
-        assert_eq!(states()[0].total, 2);
+        assert_eq!(browse.state.states()[0].total, 2);
         assert!(!std::ptr::eq(client, crate::plex::client_for(sid).unwrap()));
     }
 
     #[test]
     fn directory_landings_from_before_a_same_slot_repoint_are_inert() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, old) = registered_directory_source();
+        let (_cleanup, mut browse, sid, old) = registered_directory_source();
         let old_gen = old.token_gen();
         assert_eq!(
             crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
             sid
         );
-        queue_directories_from(old, old_gen);
-        assert_new_directories_survive();
+        queue_directories_from(&mut browse, old, old_gen);
+        assert_new_directories_survive(&browse);
     }
 
     #[test]
     fn directory_landings_from_before_an_in_place_retoken_are_inert() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, old) = registered_directory_source();
+        let (_cleanup, mut browse, sid, old) = registered_directory_source();
         let old_gen = old.token_gen();
         assert_eq!(
             crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
             sid
         );
-        queue_directories_from(old, old_gen);
-        assert_new_directories_survive();
+        queue_directories_from(&mut browse, old, old_gen);
+        assert_new_directories_survive(&browse);
     }
 
     #[test]
     fn directory_landings_from_before_a_profile_reset_are_inert() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, old) = registered_directory_source();
+        let (_cleanup, mut browse, sid, old) = registered_directory_source();
         let old_gen = old.token_gen();
         crate::plex::revoke_for_profile_switch();
         assert_eq!(
@@ -5447,16 +3737,16 @@ mod tests {
             sid
         );
         crate::plex::finish_profile_switch(&[sid]);
-        queue_directories_from(old, old_gen);
-        assert_new_directories_survive();
+        queue_directories_from(&mut browse, old, old_gen);
+        assert_new_directories_survive(&browse);
     }
 
     #[test]
     fn directory_landings_for_the_current_lifecycle_commit_both_menus() {
         let _g = crate::testlock::serial();
-        let (_cleanup, _, client) = registered_directory_source();
-        queue_directories_from(client, client.token_gen());
-        let state = states().first().unwrap();
+        let (_cleanup, mut browse, _, client) = registered_directory_source();
+        queue_directories_from(&mut browse, client, client.token_gen());
+        let state = browse.state.states().first().unwrap();
         assert_eq!(state.genres[0].id, "stale");
         assert_eq!(*state.letters, vec![("S".into(), 99)]);
         assert!(state.genres_done);
@@ -5466,8 +3756,8 @@ mod tests {
     #[test]
     fn blocking_section_discovery_discards_a_same_slot_repoint_during_the_request() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, old) = registered_source();
-        let count = ensure_sections_with(|client| {
+        let (_cleanup, mut browse, sid, old) = registered_source();
+        let count = ensure_sections_with(&mut browse.state, |client| {
             assert!(std::ptr::eq(client, old));
             assert_eq!(
                 crate::plex::register_for_test("browse-life", "10.0.0.2", 32400, "new", "cid"),
@@ -5478,7 +3768,7 @@ mod tests {
 
         assert_eq!(count, 0);
         assert!(
-            sections().is_empty(),
+            browse.state.sections().is_empty(),
             "the old origin's section table must not land"
         );
         assert_eq!(
@@ -5491,10 +3781,10 @@ mod tests {
     #[test]
     fn blocking_section_discovery_discards_an_in_place_retoken_during_the_request() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, old) = registered_source();
+        let (_cleanup, mut browse, sid, old) = registered_source();
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
         let old_gen = old.token_gen();
-        let count = ensure_sections_with(|client| {
+        let count = ensure_sections_with(&mut browse.state, |client| {
             assert!(std::ptr::eq(client, old));
             assert_eq!(
                 crate::plex::register_for_test("browse-life", "10.0.0.1", 32400, "new", "cid"),
@@ -5505,7 +3795,7 @@ mod tests {
 
         assert_ne!(old.token_gen(), old_gen);
         assert_eq!(count, 0);
-        assert!(sections().is_empty());
+        assert!(browse.state.sections().is_empty());
         assert_eq!(
             crate::plex::server_probe_result(sid),
             Some(crate::plex::probe::Outcome::Unauthorized)
@@ -5515,8 +3805,8 @@ mod tests {
     #[test]
     fn blocking_section_failure_preserves_an_auth_401_published_during_the_request() {
         let _g = crate::testlock::serial();
-        let (_cleanup, sid, _) = registered_source();
-        let count = ensure_sections_with(|_| {
+        let (_cleanup, mut browse, sid, _) = registered_source();
+        let count = ensure_sections_with(&mut browse.state, |_| {
             crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
             None
         });
@@ -5527,7 +3817,7 @@ mod tests {
             Some(crate::plex::probe::Outcome::Unauthorized)
         );
         assert_eq!(
-            sources()[0].state,
+            browse.state.sources()[0].state,
             SourceState::Unauthorized,
             "browse mirrors the canonical merged answer"
         );
@@ -5542,23 +3832,24 @@ mod tests {
     #[test]
     fn reset_clears_the_single_flight_flags_with_the_mailboxes() {
         let _g = crate::testlock::serial();
-        adapter().fetching.store(true, Ordering::SeqCst);
-        adapter().genre_fetching.store(true, Ordering::SeqCst);
-        adapter().letters_fetching.store(true, Ordering::SeqCst);
-        *adapter().page_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let mut browse = TestBrowse::default();
+        browse.adapter.fetching.store(true, Ordering::SeqCst);
+        browse.adapter.genre_fetching.store(true, Ordering::SeqCst);
+        browse.adapter.letters_fetching.store(true, Ordering::SeqCst);
+        *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
-        reset();
+        browse.reset();
 
         assert!(
-            !adapter().fetching.load(Ordering::SeqCst),
+            !browse.adapter.fetching.load(Ordering::SeqCst),
             "page fetch stayed latched — Library wedges"
         );
         assert!(
-            !adapter().genre_fetching.load(Ordering::SeqCst),
+            !browse.adapter.genre_fetching.load(Ordering::SeqCst),
             "genre fetch stayed latched"
         );
         assert!(
-            !adapter().letters_fetching.load(Ordering::SeqCst),
+            !browse.adapter.letters_fetching.load(Ordering::SeqCst),
             "letters fetch stayed latched"
         );
     }
@@ -5571,40 +3862,41 @@ mod tests {
         // there. `reset()` is the most destructive call in this module, and a test that makes it
         // without the lock is not testing concurrently, it is CORRUPTING whoever is.
         let _g = crate::testlock::serial();
-        legacy_mut().retry_cd = 120;
-        reset();
-        assert_eq!(legacy().retry_cd, 0);
+        let mut browse = TestBrowse::default();
+        browse.state.retry_cd = 120;
+        browse.reset();
+        assert_eq!(browse.state.retry_cd, 0);
     }
 
     // ---- the three-state fetch machine ---------------------------------------------------------
     //
-    // These drive the compatibility `pump`, which reports to `ui::idle`'s process-global flag —
-    // the exact obligation `ui/xfade.rs` inherited when its `tick` started doing the same — so
-    // they take the CRATE-wide serial lock, not a module-local one. They also leave no
-    // compatibility section table behind them: with one default state and no sections,
-    // `maybe_spawn` returns before it can reach the network, so nothing here spawns a worker.
+    // These drive the same owned pump core that reports to `ui::idle`'s process-global flag — the
+    // exact obligation `ui/xfade.rs` inherited when its `tick` started doing the same — so they
+    // take the CRATE-wide serial lock, not a module-local one. Their local state has one default
+    // row and no sections; `maybe_spawn` returns before it can reach the network, so nothing here
+    // spawns a worker.
 
     /// One default state with no section table, used by store-only tests that never land a page.
-    fn seed_one_section() {
-        reset();
-        *adapter().page_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        legacy_mut().states = vec![SecState::default()];
+    fn seed_one_section(browse: &mut TestBrowse) {
+        browse.reset();
+        *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        browse.state.states = vec![SecState::default()];
     }
     /// Land what a worker would post for the CURRENT query: `total < 0` is the failure sentinel.
-    fn land_page(total: i64, items: usize) {
+    fn land_page(browse: &mut TestBrowse, total: i64, items: usize) {
         let client = crate::plex::client();
         let r = PageResult {
             client,
             token_gen: client.token_gen(),
-            gen: query_gen(),
+            gen: browse.state.query_gen(),
             sec: 0,
             start: 0,
             items: (0..items).map(|_| PmsMovie::default()).collect(),
             total,
             sorts: None,
         };
-        *adapter().page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
-        let _outcome = pump();
+        *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+        let _outcome = browse.pump();
     }
 
     /// THE bug: a failed first page armed the retry cooldown and nothing else, so `total` stayed
@@ -5614,31 +3906,29 @@ mod tests {
     #[test]
     fn a_failed_first_page_leaves_the_section_failed_and_not_loading() {
         let _g = crate::testlock::serial();
-        let _cleanup = registered_page_source().0;
-        land_page(-1, 0);
-        assert_eq!(fetch_state(), SecFetch::Failed);
+        let (_cleanup, mut browse, _, _) = registered_page_source();
+        land_page(&mut browse, -1, 0);
+        assert_eq!(browse.fetch_state(), SecFetch::Failed);
         assert!(
-            !loading_initial(),
+            !browse.loading_initial(),
             "the grid must stop spinning on a failure"
         );
         assert_eq!(
-            total(),
+            browse.state.cur_state().unwrap().total,
             -1,
             "…with nothing to show, which is what makes it the SCREEN's failure too"
         );
-        reset();
     }
 
     /// A served page is Ready, and stays the plain "here are your items" state.
     #[test]
     fn a_served_page_leaves_the_section_ready() {
         let _g = crate::testlock::serial();
-        let _cleanup = registered_page_source().0;
-        land_page(3, 3);
-        assert_eq!(fetch_state(), SecFetch::Ready);
-        assert!(!loading_initial());
-        assert_eq!(total(), 3);
-        reset();
+        let (_cleanup, mut browse, _, _) = registered_page_source();
+        land_page(&mut browse, 3, 3);
+        assert_eq!(browse.fetch_state(), SecFetch::Ready);
+        assert!(!browse.loading_initial());
+        assert_eq!(browse.state.cur_state().unwrap().total, 3);
     }
 
     /// An EMPTY answer is an answer — `Ready`, never `Failed`. The library really does hold
@@ -5648,12 +3938,12 @@ mod tests {
     #[test]
     fn an_empty_but_successful_listing_is_ready_not_failed() {
         let _g = crate::testlock::serial();
-        let _cleanup = registered_page_source().0;
-        land_page(0, 0);
-        assert_eq!(fetch_state(), SecFetch::Ready);
-        assert_eq!(total(), 0, "an empty library is an answer, not a fault");
-        assert!(!loading_initial());
-        reset();
+        let (_cleanup, mut browse, _, _) = registered_page_source();
+        land_page(&mut browse, 0, 0);
+        assert_eq!(browse.fetch_state(), SecFetch::Ready);
+        assert_eq!(browse.state.cur_state().unwrap().total, 0,
+            "an empty library is an answer, not a fault");
+        assert!(!browse.loading_initial());
     }
 
     /// A failure belongs to the query it was fetched for. Re-query (a sort/filter/section change
@@ -5662,13 +3952,12 @@ mod tests {
     #[test]
     fn a_requery_clears_a_previous_failure() {
         let _g = crate::testlock::serial();
-        let _cleanup = registered_page_source().0;
-        land_page(-1, 0);
-        assert_eq!(fetch_state(), SecFetch::Failed);
-        requery();
-        assert_eq!(fetch_state(), SecFetch::Loading);
-        assert!(loading_initial());
-        reset();
+        let (_cleanup, mut browse, _, _) = registered_page_source();
+        land_page(&mut browse, -1, 0);
+        assert_eq!(browse.fetch_state(), SecFetch::Failed);
+        browse.state.requery();
+        assert_eq!(browse.fetch_state(), SecFetch::Loading);
+        assert!(browse.loading_initial());
     }
 
     // ---- the SOURCE's own state, one layer up ---------------------------------------------------
@@ -5684,10 +3973,14 @@ mod tests {
     /// Seed one source in a chosen phase and make it the CURRENT server, so the empty-table
     /// fallback in [`cur_source_state`] resolves to it rather than to whatever the registry was
     /// left holding. Registration dials nothing — it publishes a slot.
-    fn seed_one_source(reachable: bool, sections_done: bool) -> usize {
+    fn seed_one_source(
+        browse: &mut TestBrowse,
+        reachable: bool,
+        sections_done: bool,
+    ) -> usize {
         // The CURRENT server's id, registered or not — see `seed_sources_for_test` for why nothing
         // is registered here. It makes `cur_source_idx`'s empty-table fallback resolve to this row.
-        seed_sources(vec![BrowseSource {
+        browse.seed_sources(vec![BrowseSource {
             sid: crate::plex::current_server(),
             client_addr: 0,
             token_gen: 0,
@@ -5715,19 +4008,19 @@ mod tests {
     #[test]
     fn a_source_that_did_not_answer_is_observable_rather_than_an_eternal_spinner() {
         let _g = crate::testlock::serial();
-        seed_one_source(true, false);
+        let mut browse = TestBrowse::default();
+        seed_one_source(&mut browse, true, false);
         assert_eq!(
-            cur_source_state(),
+            browse.state.cur_source_state(),
             SecFetch::Loading,
             "nobody has asked it anything yet"
         );
-        source_mut(0).unwrap().set_reachable(false);
+        browse.state.source_mut(0).unwrap().set_reachable(false);
         assert_eq!(
-            cur_source_state(),
+            browse.state.cur_source_state(),
             SecFetch::Failed,
             "the screen must be able to see this"
         );
-        reset();
     }
 
     /// An account with nothing we browse ANSWERED. `Ready` with no sections, never `Failed` — the
@@ -5736,14 +4029,14 @@ mod tests {
     #[test]
     fn a_source_with_no_browsable_library_answered_and_did_not_fail() {
         let _g = crate::testlock::serial();
-        seed_one_source(true, true);
+        let mut browse = TestBrowse::default();
+        seed_one_source(&mut browse, true, true);
         assert_eq!(
-            cur_source_state(),
+            browse.state.cur_source_state(),
             SecFetch::Ready,
             "an empty answer is an answer"
         );
-        assert_eq!(section_count(), 0);
-        reset();
+        assert_eq!(browse.section_count(), 0);
     }
 
     /// A served table clears a previous failure and seeds one state per section, and from then on
@@ -5751,24 +4044,24 @@ mod tests {
     #[test]
     fn a_served_table_clears_the_failure_and_seeds_its_states() {
         let _g = crate::testlock::serial();
-        seed_one_source(false, false);
-        assert_eq!(cur_source_state(), SecFetch::Failed);
+        let mut browse = TestBrowse::default();
+        seed_one_source(&mut browse, false, false);
+        assert_eq!(browse.state.cur_source_state(), SecFetch::Failed);
         {
-            let s = source_mut(0).unwrap();
+            let s = browse.state.source_mut(0).unwrap();
             s.set_reachable(true);
             s.sections_done = true;
         }
-        append_sections(
+        browse.append_sections(
             0,
             vec![
                 (1, "Movies".into(), SecKind::Movie),
                 (2, "Film Club".into(), SecKind::Movie),
             ],
         );
-        assert_eq!(cur_source_state(), SecFetch::Ready);
-        assert_eq!(section_count(), 2);
-        assert!(loading_initial(), "a fresh section has not answered yet");
-        reset();
+        assert_eq!(browse.state.cur_source_state(), SecFetch::Ready);
+        assert_eq!(browse.section_count(), 2);
+        assert!(browse.loading_initial(), "a fresh section has not answered yet");
     }
 
     // ---- the (source, section) table ------------------------------------------------------------
@@ -5800,33 +4093,29 @@ mod tests {
             retry_cd: 0,
         }
     }
-    pub(super) fn seed_sources(srcs: Vec<BrowseSource>) {
-        reset();
-        legacy_mut().sources = srcs;
-    }
-
     /// THE reason the table gained a source dimension. Measured against the real share on
     /// 2026-08-11: both servers have a section `1`, and they are different libraries. A bare key
     /// names two things, so every row carries its source and the two rows coexist.
     #[test]
     fn two_servers_both_have_a_section_one_and_the_table_tells_them_apart() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
         ]);
-        append_sections(
+        browse.append_sections(
             0,
             vec![
                 (1, "Movies".into(), SecKind::Movie),
                 (2, "TV Shows".into(), SecKind::Show),
             ],
         );
-        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
 
-        assert_eq!(section_count(), 3);
-        let ours = &sections()[0];
-        let theirs = &sections()[2];
+        assert_eq!(browse.section_count(), 3);
+        let ours = &browse.state.sections()[0];
+        let theirs = &browse.state.sections()[2];
         assert_eq!((ours.key, ours.src), (1, 0), "our section 1, on source 0");
         assert_eq!(
             (theirs.key, theirs.src),
@@ -5834,13 +4123,13 @@ mod tests {
             "THEIR section 1 — same key, different source"
         );
         assert_eq!(
-            (section_title(0), section_title(2)),
+            (browse.section_title(0), browse.section_title(2)),
             ("Movies", "Film Club")
         );
         // and the chip's annotation follows the section being browsed, not the account
-        assert_eq!(handle_of(2), "friend");
-        assert_eq!(handle_of(0), "", "your own libraries carry no owner at all");
-        reset();
+        assert_eq!(browse.state.sources()[theirs.src].handle, "friend");
+        assert_eq!(browse.state.sources()[ours.src].handle, "",
+            "your own libraries carry no owner at all");
     }
 
     /// A source discovered LATE must never move an existing index. `PageResult.sec` is a section
@@ -5856,56 +4145,60 @@ mod tests {
         // scratch session it grades whatever `auth.json` a neighbouring test left behind.
         let _t = TempPins::new("late-append");
         _t.watching("u-late-append");
-        seed_sources(vec![
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
         ]);
-        append_sections(
+        browse.append_sections(
             0,
             vec![
                 (1, "Movies".into(), SecKind::Movie),
                 (2, "TV Shows".into(), SecKind::Show),
             ],
         );
-        set_cur(1);
-        let before = (cur(), section_title(1).to_string(), states().len());
+        browse.state.set_cur(1);
+        let before = (
+            browse.state.cur(),
+            browse.section_title(1).to_string(),
+            browse.state.states().len(),
+        );
 
-        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
         assert_eq!(
-            cur(),
+            browse.state.cur(),
             before.0,
             "the library being browsed is still the one at that index"
         );
-        assert_eq!(section_title(1), before.1);
+        assert_eq!(browse.section_title(1), before.1);
         assert_eq!(
-            states().len(),
-            section_count(),
+            browse.state.states().len(),
+            browse.section_count(),
             "states stay in lockstep with the table"
         );
-        assert_eq!(states().len(), before.2 + 1);
+        assert_eq!(browse.state.states().len(), before.2 + 1);
 
         // A RE-discovery ("Check for new shares", or a server that came back) re-offers the same
         // list: every row is already there, so nothing is duplicated and nothing moves…
-        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
-        assert_eq!(section_count(), 3);
-        assert_eq!(cur(), before.0);
+        browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        assert_eq!(browse.section_count(), 3);
+        assert_eq!(browse.state.cur(), before.0);
         // …while a library the owner has CREATED since is appended, at the end, where it cannot
         // disturb an index anything is already holding.
-        append_sections(
+        browse.append_sections(
             1,
             vec![
                 (1, "Film Club".into(), SecKind::Movie),
                 (4, "Club Shows".into(), SecKind::Show),
             ],
         );
-        assert_eq!(section_count(), 4);
-        assert_eq!(section_title(3), "Club Shows");
+        assert_eq!(browse.section_count(), 4);
+        assert_eq!(browse.section_title(3), "Club Shows");
         assert_eq!(
-            section_title(1),
+            browse.section_title(1),
             before.1,
             "and the row we were browsing is untouched"
         );
-        reset();
     }
 
     // ---- the Home selection: defaults, persistence, and one answer per PROFILE ------------------
@@ -5921,19 +4214,19 @@ mod tests {
     use crate::plex::session::TempSession as TempPins;
 
     /// One account, two servers — seeded and discovered exactly as a boot does it.
-    fn seed_two_servers() {
-        seed_sources(vec![
+    fn seed_two_servers(browse: &mut TestBrowse) {
+        browse.seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
         ]);
-        append_sections(
+        browse.append_sections(
             0,
             vec![
                 (1, "Movies".into(), SecKind::Movie),
                 (2, "TV Shows".into(), SecKind::Show),
             ],
         );
-        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
     }
 
     /// **The first-run defaults, and the one rule the control has.**
@@ -5948,30 +4241,30 @@ mod tests {
         let _g = crate::testlock::serial();
         let t = TempPins::new("defaults");
         t.watching("u-owner");
-        seed_two_servers();
+        let mut browse = TestBrowse::default();
+        seed_two_servers(&mut browse);
         assert_eq!(
-            (pinned(0), pinned(1), pinned(2)),
+            (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
             (true, true, false),
             "yours On, a friend's Off"
         );
-        assert_eq!(pinned_count(), 2);
+        assert_eq!(browse.state.pinned_count(), 2);
 
         assert!(
-            toggle_pin(2),
+            browse.state.toggle_pin(2),
             "…and a friend's can be turned on, which is what makes it a decision"
         );
-        assert_eq!(pinned_count(), 3);
+        assert_eq!(browse.state.pinned_count(), 3);
         assert!(
-            toggle_pin(0) && toggle_pin(1),
+            browse.state.toggle_pin(0) && browse.state.toggle_pin(1),
             "your own can be unpinned — a preference, not a mistake"
         );
-        assert_eq!(pinned_count(), 1);
+        assert_eq!(browse.state.pinned_count(), 1);
 
-        assert!(is_last_pinned(2));
-        assert!(!toggle_pin(2), "the last pinned library is refused");
-        assert!(pinned(2), "…and refused means UNCHANGED, not toggled twice");
-        assert_eq!(pinned_count(), 1);
-        reset();
+        assert!(browse.pinned(2) && browse.state.pinned_count() == 1);
+        assert!(!browse.state.toggle_pin(2), "the last pinned library is refused");
+        assert!(browse.pinned(2), "…and refused means UNCHANGED, not toggled twice");
+        assert_eq!(browse.state.pinned_count(), 1);
     }
 
     /// **The SHARED fixture's shape is its own, not the disk's.**
@@ -6016,15 +4309,16 @@ mod tests {
             "the answer really is on disk, or this test grades nothing"
         );
 
-        seed_two_source_table_for_test();
+        let mut browse = TestBrowse::default();
+        seed_two_source_table_for_owner_test(&mut browse.state);
 
         assert_eq!(
-            (tab_kind(0), tab_kind(1), tab_count()),
+            (browse.state.tab_kind(0), browse.state.tab_kind(1), browse.tab_count()),
             (Some(SecKind::Movie), Some(SecKind::Show), 2),
             "the fixture's own two pills, whatever anybody recorded for this profile"
         );
         assert_eq!(
-            (pinned(0), pinned(1), pinned(2), pinned(3)),
+            (browse.pinned(0), browse.pinned(1), browse.pinned(2), browse.pinned(3)),
             (true, true, false, false),
             "…and they are the OWNERSHIP defaults: yours On, a friend's Off"
         );
@@ -6032,7 +4326,6 @@ mod tests {
             crate::plex::session::peek().pins_for(&user).is_none(),
             "the record was forgotten rather than worked around, so a later resolve agrees"
         );
-        reset();
     }
 
     /// **The editor's commit is one write for the whole batch, not one per toggle.** [`toggle_pin`]
@@ -6046,12 +4339,13 @@ mod tests {
         let _g = crate::testlock::serial();
         let t = TempPins::new("apply-pins");
         t.watching("u-owner");
-        seed_two_servers();
-        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, true, false));
+        let mut browse = TestBrowse::default();
+        seed_two_servers(&mut browse);
+        assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, true, false));
 
-        apply_pins(&[(2, true), (1, false)]);
+        browse.state.apply_pins(&[(2, true), (1, false)]);
         assert_eq!(
-            (pinned(0), pinned(1), pinned(2)),
+            (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
             (true, false, true),
             "every edit in the batch landed"
         );
@@ -6062,7 +4356,6 @@ mod tests {
             rec.is_some_and(|r| r.asked),
             "one commit is still a recorded answer"
         );
-        reset();
     }
 
     /// **A selection outlives the run.** Every flip was in-memory until 2026-08-21, so the answer
@@ -6073,19 +4366,19 @@ mod tests {
         let _g = crate::testlock::serial();
         let t = TempPins::new("persist");
         t.watching("u-owner");
-        seed_two_servers();
-        assert!(toggle_pin(2) && toggle_pin(1)); // the share On, one of ours Off
-        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, false, true));
+        let mut browse = TestBrowse::default();
+        seed_two_servers(&mut browse);
+        assert!(browse.state.toggle_pin(2) && browse.state.toggle_pin(1)); // the share On, one of ours Off
+        assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, false, true));
 
         // …and now the table is wiped and re-discovered, which is what a profile switch, a
         // sign-in and a `reset` all do
-        seed_two_servers();
+        seed_two_servers(&mut browse);
         assert_eq!(
-            (pinned(0), pinned(1), pinned(2)),
+            (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
             (true, false, true),
             "the answer came back"
         );
-        reset();
     }
 
     /// **The answer reaches Home before that server's libraries have been ENUMERATED.**
@@ -6100,16 +4393,17 @@ mod tests {
         let _g = crate::testlock::serial();
         let t = TempPins::new("unenumerated");
         t.watching("u-owner");
-        seed_two_servers();
-        record_pins(true); // `Start watching` on the defaults: ours On, the friend's Off
+        let mut browse = TestBrowse::default();
+        seed_two_servers(&mut browse);
+        browse.state.record_pins(true); // `Start watching` on the defaults: ours On, the friend's Off
 
         // the next boot, before the share's section worker has landed
-        let boot = || {
-            seed_sources(vec![
+        let boot = |browse: &mut TestBrowse| {
+            browse.seed_sources(vec![
                 a_source("mac-mini", "", true),
                 a_source("nas-home", "friend", true),
             ]);
-            append_sections(
+            browse.append_sections(
                 0,
                 vec![
                     (1, "Movies".into(), SecKind::Movie),
@@ -6117,13 +4411,13 @@ mod tests {
                 ],
             );
         };
-        boot();
+        boot(&mut browse);
         assert_eq!(
-            sections().len(),
+            browse.state.sections().len(),
             2,
             "the share has not answered — it contributes no rows"
         );
-        let pins = library_pins();
+        let pins = browse.state.library_pins();
         assert!(
             pins.contains(&(1, 1, false)),
             "the friend's recorded Off is reported anyway, or Home reads it as undecided: {pins:?}"
@@ -6136,27 +4430,26 @@ mod tests {
 
         // the other direction, so this is a JOIN and not a blanket "a share is off"
         t.watching("u-owner");
-        seed_two_servers();
-        assert!(toggle_pin(2));
-        record_pins(true);
-        boot();
+        seed_two_servers(&mut browse);
+        assert!(browse.state.toggle_pin(2));
+        browse.state.record_pins(true);
+        boot(&mut browse);
         assert!(
-            library_pins().contains(&(1, 1, true)),
+            browse.state.library_pins().contains(&(1, 1, true)),
             "a recorded On reaches Home the same way"
         );
 
         // and a source the record cannot NAME is left undecided rather than joined by accident
-        seed_sources(vec![a_source("mac-mini", "", true), {
+        browse.seed_sources(vec![a_source("mac-mini", "", true), {
             let mut s = a_source("nas-home", "friend", true);
             s.machine_id = String::new();
             s
         }]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
         assert!(
-            library_pins().iter().all(|&(si, _, _)| si == 0),
+            browse.state.library_pins().iter().all(|&(si, _, _)| si == 0),
             "a nameless machine joins nothing"
         );
-        reset();
     }
 
     /// **A flip made while a friend's server is asleep does not withdraw the answer about it.**
@@ -6170,32 +4463,32 @@ mod tests {
         let _g = crate::testlock::serial();
         let t = TempPins::new("merge");
         t.watching("u-owner");
-        seed_two_servers();
-        assert!(toggle_pin(2), "the friend's library goes on Home");
-        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, true, true));
+        let mut browse = TestBrowse::default();
+        seed_two_servers(&mut browse);
+        assert!(browse.state.toggle_pin(2), "the friend's library goes on Home");
+        assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, true, true));
 
         // a boot the share missed entirely, on which one of our own is turned off
-        seed_sources(vec![
+        browse.seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
         ]);
-        append_sections(
+        browse.append_sections(
             0,
             vec![
                 (1, "Movies".into(), SecKind::Movie),
                 (2, "TV Shows".into(), SecKind::Show),
             ],
         );
-        assert!(toggle_pin(1));
+        assert!(browse.state.toggle_pin(1));
         assert!(
-            library_pins().contains(&(1, 1, true)),
+            browse.state.library_pins().contains(&(1, 1, true)),
             "the absent share is still recorded On"
         );
 
         // …and the next boot on which it DOES answer finds both answers intact
-        seed_two_servers();
-        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, false, true));
-        reset();
+        seed_two_servers(&mut browse);
+        assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, false, true));
     }
 
     /// **THE requirement: the selection is per PROFILE.** It hung off the `Session` — one per
@@ -6205,33 +4498,33 @@ mod tests {
     fn two_profiles_keep_their_own_home_selections_across_a_switch() {
         let _g = crate::testlock::serial();
         let t = TempPins::new("profiles");
+        let mut browse = TestBrowse::default();
 
         // Dad wants the friend's films on Home and does not want his own TV shows there.
         t.watching("u-dad");
-        seed_two_servers();
-        assert!(toggle_pin(2) && toggle_pin(1));
-        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, false, true));
+        seed_two_servers(&mut browse);
+        assert!(browse.state.toggle_pin(2) && browse.state.toggle_pin(1));
+        assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, false, true));
 
         // The kid switches in. Never asked, so the defaults — NOT dad's answer.
         t.watching("u-kid");
-        seed_two_servers();
+        seed_two_servers(&mut browse);
         assert_eq!(
-            (pinned(0), pinned(1), pinned(2)),
+            (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
             (true, true, false),
             "a switch switches the shelves"
         );
-        assert!(toggle_pin(0), "…and the kid answers for themselves");
-        assert_eq!((pinned(0), pinned(1), pinned(2)), (false, true, false));
+        assert!(browse.state.toggle_pin(0), "…and the kid answers for themselves");
+        assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (false, true, false));
 
         // …and back, with dad's answer intact rather than overwritten by the kid's.
         t.watching("u-dad");
-        seed_two_servers();
+        seed_two_servers(&mut browse);
         assert_eq!(
-            (pinned(0), pinned(1), pinned(2)),
+            (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
             (true, false, true),
             "one file, two answers"
         );
-        reset();
     }
 
     /// The route's own gate, end to end: two sources and an unanswered profile, then never again
@@ -6241,25 +4534,25 @@ mod tests {
         let _g = crate::testlock::serial();
         let t = TempPins::new("gate");
         t.watching("u-dad");
-        seed_two_servers();
+        let mut browse = TestBrowse::default();
+        seed_two_servers(&mut browse);
         assert!(
-            first_run_asks(),
+            browse.first_run_asks(),
             "two sources, and nobody has asked this profile"
         );
 
-        record_pins(true); // what `Start watching` — and BACK, which commits the same thing — does
-        assert!(!first_run_asks(), "asked once, never again");
+        browse.state.record_pins(true); // what `Start watching` — and BACK, which commits the same thing — does
+        assert!(!browse.first_run_asks(), "asked once, never again");
         t.watching("u-kid");
         assert!(
-            first_run_asks(),
+            browse.first_run_asks(),
             "…and the answer belongs to the person who gave it"
         );
 
         // A single-server install is not a question at all, whoever is watching.
-        seed_sources(vec![a_source("mac-mini", "", true)]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
-        assert!(!first_run_asks());
-        reset();
+        browse.seed_sources(vec![a_source("mac-mini", "", true)]);
+        browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        assert!(!browse.first_run_asks());
     }
 
     /// **The switch governs the strip, and a strip POSITION is not a name.**
@@ -6286,8 +4579,9 @@ mod tests {
     fn two_libraries_behind_one_pill_have_a_position_and_a_lone_one_has_none() {
         let _g = crate::testlock::serial();
         let _t = TempPins::new("kind-position");
-        seed_sources(vec![a_source("mac-mini", "", true)]);
-        append_sections(
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![a_source("mac-mini", "", true)]);
+        browse.append_sections(
             0,
             vec![
                 (1, "Movies".into(), SecKind::Movie),
@@ -6296,23 +4590,23 @@ mod tests {
             ],
         );
         assert_eq!(
-            tab_count(),
+            browse.tab_count(),
             2,
             "still two pills — the second TV library folds onto the one it shares a type with, \
              which is the whole shape of the report"
         );
         assert_eq!(
-            kind_position(1),
+            browse.kind_position(1),
             Some((1, 2)),
             "the TV library the pill opens on is the FIRST of two"
         );
         assert_eq!(
-            kind_position(2),
+            browse.kind_position(2),
             Some((2, 2)),
             "…and the reported one the second"
         );
         assert_eq!(
-            kind_position(0),
+            browse.kind_position(0),
             None,
             "the lone film library has no position: `1 of 1` would advertise a choice that does \
              not exist"
@@ -6320,14 +4614,14 @@ mod tests {
 
         // …and the count is a promise about the list the head OPENS, so it follows the same
         // favourite filter that list does rather than the grant.
-        set_pinned_for_test(2, false);
+        set_pinned_for_owner_test(&mut browse.state, 2, false);
         assert_eq!(
-            kind_position(1),
+            browse.kind_position(1),
             None,
             "with its sibling switched off there is nowhere else to go, and nothing to count"
         );
         assert_eq!(
-            source_rows().len(),
+            browse.source_rows().len(),
             1,
             "the panel agrees — one row, so a `1 of 2` beside it would have been a lie"
         );
@@ -6347,8 +4641,9 @@ mod tests {
     fn the_rows_a_head_offers_follow_the_viewed_librarys_type_not_the_current_one() {
         let _g = crate::testlock::serial();
         let _t = TempPins::new("rows-for-section");
-        seed_sources(vec![a_source("mac-mini", "", true)]);
-        append_sections(
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![a_source("mac-mini", "", true)]);
+        browse.append_sections(
             0,
             vec![
                 (1, "Movies".into(), SecKind::Movie),
@@ -6358,8 +4653,8 @@ mod tests {
             ],
         );
         // browsing a FILM library, asking about a SHOW one — the mid-fade shape exactly
-        set_cur(0);
-        let rows = source_rows_for(3);
+        browse.state.set_cur(0);
+        let rows = browse.state.source_rows_for(3);
         let shows: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
         assert_eq!(
             shows,
@@ -6367,21 +4662,21 @@ mod tests {
             "the rows must follow the section asked about, not `cur()`"
         );
         assert_eq!(
-            source_rows().len(),
+            browse.source_rows().len(),
             2,
             "…while `source_rows` answers for the films, which is what made it the wrong call"
         );
 
         // …and it is the FAVOURITE filter too, so the count on a head can never promise a row the
         // panel behind it will not draw.
-        set_pinned_for_test(3, false); // "Animes"
+        set_pinned_for_owner_test(&mut browse.state, 3, false); // "Animes"
         assert_eq!(
-            source_rows_for(3).len(),
+            browse.state.source_rows_for(3).len(),
             1,
             "a switched-off library draws no row here either"
         );
         assert_eq!(
-            kind_position(3),
+            browse.kind_position(3),
             None,
             "…and so there is nothing left to count"
         );
@@ -6393,8 +4688,9 @@ mod tests {
     fn a_position_is_scoped_to_the_type_of_the_library_it_is_asked_about() {
         let _g = crate::testlock::serial();
         let _t = TempPins::new("kind-position-scope");
-        seed_sources(vec![a_source("mac-mini", "", true)]);
-        append_sections(
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![a_source("mac-mini", "", true)]);
+        browse.append_sections(
             0,
             vec![
                 (1, "Movies".into(), SecKind::Movie),
@@ -6402,14 +4698,14 @@ mod tests {
                 (3, "TV Shows".into(), SecKind::Show),
             ],
         );
-        set_cur(2); // browsing the SHOW library…
+        browse.state.set_cur(2); // browsing the SHOW library…
         assert_eq!(
-            kind_position(0),
+            browse.kind_position(0),
             Some((1, 2)),
             "…and a film library still counts against the films, not against what is on screen"
         );
         assert_eq!(
-            kind_position(2),
+            browse.kind_position(2),
             None,
             "the lone show library, from the same call"
         );
@@ -6429,33 +4725,34 @@ mod tests {
     fn switching_a_librarys_favourite_off_repoints_its_tab_at_the_one_that_is_left() {
         let _g = crate::testlock::serial();
         let _t = TempPins::new("tab-follows-favourite");
-        seed_sources(vec![a_source("mac-mini", "", true)]);
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![a_source("mac-mini", "", true)]);
         // The reporter's shape, in their order: the pill lands on the library they were trying to
         // get away from, because table order is the server's and nothing else.
-        append_sections(
+        browse.append_sections(
             0,
             vec![
                 (1, "Animes".into(), SecKind::Show),
                 (2, "TV Shows".into(), SecKind::Show),
             ],
         );
-        let shows = tab_of_kind(SecKind::Show).expect("the type has a pill");
+        let shows = browse.state.tab_of_kind(SecKind::Show).expect("the type has a pill");
         assert_eq!(
-            tab_section(shows),
+            browse.state.tab_section(shows),
             Some(0),
             "the pill opens the first of the two — which is the complaint, not the bug"
         );
 
         // …and now the switch they actually reached for.
-        set_pinned_for_test(0, false);
+        set_pinned_for_owner_test(&mut browse.state, 0, false);
 
         assert_eq!(
-            tab_section(shows),
+            browse.state.tab_section(shows),
             Some(1),
             "with Animes switched off the TV Shows pill must open the library that is left"
         );
         assert!(
-            tab_has_favorite(SecKind::Show),
+            browse.state.tab_has_favorite(SecKind::Show),
             "…and it keeps its pill: one of the two is still on"
         );
     }
@@ -6467,42 +4764,42 @@ mod tests {
         // RECORDED per-profile answer — so this test needs a session of its own, or it
         // grades whatever the host machine happens to have on disk.
         let _t = TempPins::new("strip-reshape");
-        seed_sources(vec![a_source("mac-mini", "", true)]);
-        append_sections(
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![a_source("mac-mini", "", true)]);
+        browse.append_sections(
             0,
             vec![
                 (1, "Movies".into(), SecKind::Movie),
                 (2, "TV Shows".into(), SecKind::Show),
             ],
         );
-        assert_eq!(tab_count(), 2, "both types have a favourite to start with");
-        assert_eq!(tab_of_kind(SecKind::Show), Some(1));
+        assert_eq!(browse.tab_count(), 2, "both types have a favourite to start with");
+        assert_eq!(browse.state.tab_of_kind(SecKind::Show), Some(1));
 
         // …and this profile has since switched its film library off.
-        set_pinned_for_test(0, false);
+        set_pinned_for_owner_test(&mut browse.state, 0, false);
 
         assert_eq!(
-            tab_count(),
+            browse.tab_count(),
             1,
             "the type with no favourite left draws no pill"
         );
-        assert_eq!(tab_title(0), "TV Shows");
+        assert_eq!(browse.tab_title(0), "TV Shows");
         assert_eq!(
-            tab_of_kind(SecKind::Movie),
+            browse.state.tab_of_kind(SecKind::Movie),
             None,
             "a switched-off type has no position at all — not position 0"
         );
         assert_eq!(
-            tab_of_kind(SecKind::Show),
+            browse.state.tab_of_kind(SecKind::Show),
             Some(0),
             "…and the type that remains has MOVED, which is the whole hazard"
         );
         assert_eq!(
-            tab_section(0),
+            browse.state.tab_section(0),
             Some(1),
             "the surviving pill opens the surviving library"
         );
-        reset();
     }
 
     /// **A pill is a TYPE, never a person.** The strip names your own libraries; a friend's film
@@ -6516,12 +4813,13 @@ mod tests {
         // RECORDED per-profile answer — so this test needs a session of its own, or it
         // grades whatever the host machine happens to have on disk.
         let _t = TempPins::new("strip-types");
-        seed_sources(vec![
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
         ]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
-        append_sections(
+        browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        browse.append_sections(
             1,
             vec![
                 (1, "Film Club".into(), SecKind::Movie),
@@ -6530,23 +4828,22 @@ mod tests {
         );
 
         assert_eq!(
-            tab_count(),
+            browse.tab_count(),
             2,
             "your Movies, plus the shows nobody of yours provides"
         );
-        assert_eq!((tab_title(0), tab_title(1)), ("Movies", "TV Shows"));
-        assert_eq!(tab_section(1), Some(2));
+        assert_eq!((browse.tab_title(0), browse.tab_title(1)), ("Movies", "TV Shows"));
+        assert_eq!(browse.state.tab_section(1), Some(2));
         assert_eq!(
-            tab_of_section(1),
+            browse.tab_of_section(1),
             Some(0),
             "their films ride YOUR Movies pill — same type, one level"
         );
         assert_eq!(
-            tab_of_section(2),
+            browse.tab_of_section(2),
             Some(1),
             "their shows have a pill of their own"
         );
-        reset();
     }
 
     /// The case a BOOLEAN type could not express, and the reason [`SecKind`] exists: "does an owned
@@ -6564,12 +4861,13 @@ mod tests {
         // RECORDED per-profile answer — so this test needs a session of its own, or it
         // grades whatever the host machine happens to have on disk.
         let _t = TempPins::new("strip-missing-type");
-        seed_sources(vec![
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
         ]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]); // we own films and nothing else
-        append_sections(
+        browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]); // we own films and nothing else
+        browse.append_sections(
             1,
             vec![
                 (1, "Film Club".into(), SecKind::Movie),
@@ -6578,18 +4876,18 @@ mod tests {
         );
 
         assert_eq!(
-            tab_count(),
+            browse.tab_count(),
             2,
             "your films, plus the shows nobody of yours provides"
         );
-        assert_eq!(tab_title(1), "TV Shows");
+        assert_eq!(browse.tab_title(1), "TV Shows");
         assert_eq!(
-            tab_of_section(2),
+            browse.tab_of_section(2),
             Some(1),
             "their shows are their own pill, NOT your Movies one"
         );
         assert_eq!(
-            tab_of_section(1),
+            browse.tab_of_section(1),
             Some(0),
             "…while their films still ride yours"
         );
@@ -6608,7 +4906,6 @@ mod tests {
             None,
             "a type with no level is still refused"
         );
-        reset();
     }
 
     /// **The deliverable, as an assertion**: the strip does not grow by PEOPLE. Its pill list —
@@ -6626,7 +4923,8 @@ mod tests {
         // RECORDED per-profile answer — so this test needs a session of its own, or it
         // grades whatever the host machine happens to have on disk.
         let _t = TempPins::new("strip-width");
-        seed_sources(vec![
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
             a_source("nas-home", "friend", true),
@@ -6637,16 +4935,16 @@ mod tests {
         // as borrows and compared after the next source lands is reading freed memory. Every
         // caller in the app consumes these inside one frame with no append in between, which is
         // what makes the signature sound in the product and unsound in a test that spans landings.
-        let row = || {
-            (0..tab_count())
-                .map(|t| tab_title(t).to_string())
+        let row = |browse: &TestBrowse| {
+            (0..browse.tab_count())
+                .map(|tab| browse.tab_title(tab).to_string())
                 .collect::<Vec<_>>()
         };
         // We own FILMS and nothing else. The owner used to hold both types here, which made the
         // second half of this test need a third type (music) to have anything left over; with the
         // product's list down to two, the un-owned type has to be one of them.
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
-        let alone = row();
+        browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        let alone = row(&browse);
         assert_eq!(
             alone,
             vec!["Movies"],
@@ -6654,7 +4952,7 @@ mod tests {
         );
 
         for src in 1..=3 {
-            append_sections(
+            browse.append_sections(
                 src,
                 vec![
                     (1, "Film Club".into(), SecKind::Movie),
@@ -6662,13 +4960,13 @@ mod tests {
                 ],
             );
             assert_eq!(
-                row(),
+                row(&browse),
                 alone,
                 "source {src} added a pill — the strip must not grow by people"
             );
         }
-        assert_eq!(section_count(), 7, "seven libraries…");
-        assert_eq!(tab_count(), 1, "…and still the one pill they all fold onto");
+        assert_eq!(browse.section_count(), 7, "seven libraries…");
+        assert_eq!(browse.tab_count(), 1, "…and still the one pill they all fold onto");
 
         // …and a type NOBODY owns grows the row by exactly one however many people share it. Every
         // fixture above is a type we own, which is why this half needs saying separately: it is the
@@ -6676,15 +4974,14 @@ mod tests {
         // of a type you have none of defaults ON (`pins::default_on`), so it really does arrive as
         // a new pill rather than as a switched-off one nobody can reach.
         for src in 1..=3 {
-            append_sections(src, vec![(9, "Their Shows".into(), SecKind::Show)]);
+            browse.append_sections(src, vec![(9, "Their Shows".into(), SecKind::Show)]);
         }
         assert_eq!(
-            tab_count(),
+            browse.tab_count(),
             2,
             "three friends sharing shows are ONE TV Shows pill"
         );
-        assert_eq!(row().len(), 2);
-        reset();
+        assert_eq!(row(&browse).len(), 2);
     }
 
     /// A profile switch must not leave the previous account's pills on screen — and now that the
@@ -6704,33 +5001,34 @@ mod tests {
         // RECORDED per-profile answer — so this test needs a session of its own, or it
         // grades whatever the host machine happens to have on disk.
         let _t = TempPins::new("strip-profile");
-        seed_sources(vec![a_source("mac-mini", "", true)]);
-        append_sections(
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![a_source("mac-mini", "", true)]);
+        browse.append_sections(
             0,
             vec![
                 (1, "Movies".into(), SecKind::Movie),
                 (2, "TV Shows".into(), SecKind::Show),
             ],
         );
-        assert_eq!(tab_count(), 2);
-        let before = tabs_gen();
+        assert_eq!(browse.tab_count(), 2);
+        let before = browse.state.tabs_gen();
 
-        reset(); // install_pms: a different account signs in
+        browse.reset(); // install_pms: a different account signs in
         assert_eq!(
-            tab_count(),
+            browse.tab_count(),
             0,
             "the previous account's pills are gone, not inherited"
         );
         assert_ne!(
-            tabs_gen(),
+            browse.state.tabs_gen(),
             before,
             "…and the row's generation moved, so the label cache cannot serve them"
         );
 
         // the new account's own libraries land and the row is rebuilt from THEM
-        seed_sources(vec![a_source("nas-home", "", true)]);
-        append_sections(0, vec![(4, "Films".into(), SecKind::Movie)]);
-        assert_eq!((tab_count(), tab_title(0)), (1, "Movies"));
+        browse.seed_sources(vec![a_source("nas-home", "", true)]);
+        browse.append_sections(0, vec![(4, "Films".into(), SecKind::Movie)]);
+        assert_eq!((browse.tab_count(), browse.tab_title(0)), (1, "Movies"));
     }
 
     /// The strip's own generation moves when the ROW changes and not when the TABLE does — which,
@@ -6745,24 +5043,25 @@ mod tests {
         // RECORDED per-profile answer — so this test needs a session of its own, or it
         // grades whatever the host machine happens to have on disk.
         let _t = TempPins::new("strip-cache");
-        seed_sources(vec![
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
             a_source("nas-home", "friend", true),
         ]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
-        let (g0, table0) = (tabs_gen(), sections_gen());
+        browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        let (g0, table0) = (browse.state.tabs_gen(), browse.state.sections_gen());
 
         // two friends' film libraries land: both fold onto your Movies pill
-        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
-        append_sections(2, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        browse.append_sections(2, vec![(1, "Film Club".into(), SecKind::Movie)]);
         assert_ne!(
-            sections_gen(),
+            browse.state.sections_gen(),
             table0,
             "the TABLE's generation moved, twice"
         );
         assert_eq!(
-            tabs_gen(),
+            browse.state.tabs_gen(),
             g0,
             "…and the row did not, so it must not re-measure"
         );
@@ -6770,20 +5069,19 @@ mod tests {
         // …and the other direction, which is the half that makes the generation worth having: a
         // type gaining its FIRST favourite library really does reshape the row — a new pill — so
         // this landing MUST cost a re-measure where the three above must not.
-        append_sections(2, vec![(9, "Their Shows".into(), SecKind::Show)]);
+        browse.append_sections(2, vec![(9, "Their Shows".into(), SecKind::Show)]);
         assert_ne!(
-            tabs_gen(),
+            browse.state.tabs_gen(),
             g0,
             "a new pill appeared: the cached labels and widths are stale"
         );
-        let g1 = tabs_gen();
-        append_sections(2, vec![(10, "More Shows".into(), SecKind::Show)]);
+        let g1 = browse.state.tabs_gen();
+        browse.append_sections(2, vec![(10, "More Shows".into(), SecKind::Show)]);
         assert_eq!(
-            tabs_gen(),
+            browse.state.tabs_gen(),
             g1,
             "…and the next one folds onto it again, costing nothing"
         );
-        reset();
     }
 
     /// **The Source chip cannot switch tabs, because it is scoped to the tab's own TYPE.**
@@ -6802,19 +5100,19 @@ mod tests {
         // RECORDED per-profile answer — so this test needs a session of its own, or it
         // grades whatever the host machine happens to have on disk.
         let _t = TempPins::new("picker-scope");
-        reset();
-        seed_sources(vec![
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
         ]);
-        append_sections(
+        browse.append_sections(
             0,
             vec![
                 (1, "Movies".into(), SecKind::Movie),
                 (2, "TV Shows".into(), SecKind::Show),
             ],
         );
-        append_sections(
+        browse.append_sections(
             1,
             vec![
                 (1, "Film Club".into(), SecKind::Movie),
@@ -6825,12 +5123,12 @@ mod tests {
         // the picker — which is favourite-scoped now — would not offer them at all. Favourite them
         // explicitly: what is under test here is the TYPE scope, and it has to be graded on a
         // roster where both servers have something to contribute to each tab.
-        set_pinned_for_test(2, true);
-        set_pinned_for_test(3, true);
+        set_pinned_for_owner_test(&mut browse.state, 2, true);
+        set_pinned_for_owner_test(&mut browse.state, 3, true);
 
         // browsing a FILM library: both servers' film libraries, and no show library from either
-        set_cur(0);
-        let films: Vec<String> = source_rows().iter().map(|r| r.title.clone()).collect();
+        browse.state.set_cur(0);
+        let films: Vec<String> = browse.source_rows().iter().map(|r| r.title.clone()).collect();
         assert_eq!(
             films,
             vec!["Movies", "Film Club"],
@@ -6838,8 +5136,8 @@ mod tests {
         );
 
         // …and the same panel on the shows tab is the other list entirely
-        set_cur(1);
-        let shows: Vec<String> = source_rows().iter().map(|r| r.title.clone()).collect();
+        browse.state.set_cur(1);
+        let shows: Vec<String> = browse.source_rows().iter().map(|r| r.title.clone()).collect();
         assert_eq!(
             shows,
             vec!["TV Shows", "Their Shows"],
@@ -6849,25 +5147,24 @@ mod tests {
         // …and the picker is FAVOURITE-scoped as well as type-scoped: switching one off takes it
         // out of the list, which is how a non-favourite library stops being reachable from here.
         // Settings' own editor (`all_source_rows`) is the unscoped list that brings it back.
-        set_pinned_for_test(3, false);
-        let shows: Vec<String> = source_rows().iter().map(|r| r.title.clone()).collect();
+        set_pinned_for_owner_test(&mut browse.state, 3, false);
+        let shows: Vec<String> = browse.source_rows().iter().map(|r| r.title.clone()).collect();
         assert_eq!(shows, vec!["TV Shows"], "a non-favourite is not offered");
         assert!(
-            all_source_rows().iter().any(|r| r.title == "Their Shows"),
+            browse.state.all_source_rows().iter().any(|r| r.title == "Their Shows"),
             "…but Settings still lists it, or it could never come back"
         );
-        set_pinned_for_test(3, true);
+        set_pinned_for_owner_test(&mut browse.state, 3, true);
 
         // the decisive property: every row the panel can activate keeps the browsed TYPE, so the
         // tab derived from it cannot move. Stated over the section each row opens, not its title.
-        for r in source_rows() {
+        for r in browse.source_rows() {
             assert_eq!(
-                sections()[r.section].kind,
+                browse.state.sections()[r.section].kind,
                 SecKind::Show,
                 "a row of another type is reachable"
             );
         }
-        reset();
     }
 
     /// **Reachability is a fact about NOW, and a page fetch is the only evidence that keeps
@@ -6878,40 +5175,40 @@ mod tests {
     #[test]
     fn a_page_fetch_is_what_keeps_reachability_honest_after_discovery() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
         ]);
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
-        append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+        browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
         assert!(
-            sources()[1].sections_done,
+            browse.state.sources()[1].sections_done,
             "discovery is done — it will never re-ask by itself"
         );
 
-        source_mut(1).unwrap().set_reachable(false); // a page for THEIR library did not come back
-        assert!(!sources()[1].reachable(), "their group dims");
+        browse.state.source_mut(1).unwrap().set_reachable(false); // a page for THEIR library did not come back
+        assert!(!browse.state.sources()[1].reachable(), "their group dims");
         assert!(
-            sources()[0].reachable(),
+            browse.state.sources()[0].reachable(),
             "…and ours is untouched — it answered"
         );
 
-        source_mut(1).unwrap().set_reachable(true); // …and it comes back
-        assert!(sources()[1].reachable());
+        browse.state.source_mut(1).unwrap().set_reachable(true); // …and it comes back
+        assert!(browse.state.sources()[1].reachable());
         assert_eq!(
-            sources()[1].retry_cd,
+            browse.state.sources()[1].retry_cd,
             0,
             "a server that answered is worth re-asking at once"
         );
 
-        source_mut(1).unwrap().state = SourceState::Unauthorized;
-        source_mut(1).unwrap().set_reachable(true);
+        browse.state.source_mut(1).unwrap().state = SourceState::Unauthorized;
+        browse.state.source_mut(1).unwrap().set_reachable(true);
         assert_eq!(
-            sources()[1].state,
+            browse.state.sources()[1].state,
             SourceState::Reachable,
             "a successful page clears a known 401"
         );
-        reset();
     }
 
     /// **The widening contract, pinned.** [`SourceState`] replaced a `bool`, and the whole claim of
@@ -6956,7 +5253,6 @@ mod tests {
             s.reachable(),
             "it answered; this old bool projection is only the network question"
         );
-        reset();
     }
 
     #[test]
@@ -6965,34 +5261,33 @@ mod tests {
         struct Cleanup;
         impl Drop for Cleanup {
             fn drop(&mut self) {
-                reset();
                 crate::plex::reset_servers_for_test();
             }
         }
         crate::plex::reset_servers_for_test();
-        reset();
         let _cleanup = Cleanup;
+        let mut browse = TestBrowse::default();
 
         let sid = crate::plex::register_for_test("mach-A", "10.0.0.1", 32400, "tok", "cid");
         crate::plex::client_for(sid)
             .unwrap()
             .set_link(crate::plex::probe::Location::Remote);
-        sync_roster();
+        browse.sync_roster();
         assert_eq!(
-            sources()[0].state,
+            browse.state.sources()[0].state,
             SourceState::NotProbed,
             "a restored tier is not a current probe answer"
         );
         assert_eq!(
-            sources()[0].tier,
+            browse.state.sources()[0].tier,
             Some(crate::plex::probe::Location::Remote)
         );
 
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unauthorized);
-        sync_roster();
-        assert_eq!(sources()[0].state, SourceState::Unauthorized);
+        browse.sync_roster();
+        assert_eq!(browse.state.sources()[0].state, SourceState::Unauthorized);
         assert_eq!(
-            sources()[0].tier,
+            browse.state.sources()[0].tier,
             Some(crate::plex::probe::Location::Remote),
             "cached route metadata is retained"
         );
@@ -7001,15 +5296,15 @@ mod tests {
             .unwrap()
             .set_link(crate::plex::probe::Location::Relay);
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Reachable);
-        sync_roster();
-        assert_eq!(sources()[0].state, SourceState::Reachable);
-        assert_eq!(sources()[0].tier, Some(crate::plex::probe::Location::Relay));
+        browse.sync_roster();
+        assert_eq!(browse.state.sources()[0].state, SourceState::Reachable);
+        assert_eq!(browse.state.sources()[0].tier, Some(crate::plex::probe::Location::Relay));
 
         crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Unreachable);
-        sync_roster();
-        assert_eq!(sources()[0].state, SourceState::Unreachable);
+        browse.sync_roster();
+        assert_eq!(browse.state.sources()[0].state, SourceState::Unreachable);
         assert_eq!(
-            sources()[0].tier,
+            browse.state.sources()[0].tier,
             Some(crate::plex::probe::Location::Relay),
             "offline does not erase the last route"
         );
@@ -7020,21 +5315,21 @@ mod tests {
     #[test]
     fn the_source_group_projection_answers_reachability_the_same_way() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
         ]);
         // Set the SOURCE directly. `mark_source_reachable` takes a *section* index and resolves the
         // source through it (`sections()[i].src`), so with no sections seeded it early-returns —
         // which cost this test one failing run before the name gave it away.
-        source_mut(1).unwrap().set_reachable(false);
-        let g = source_groups();
+        browse.state.source_mut(1).unwrap().set_reachable(false);
+        let g = browse.state.source_groups();
         assert_eq!(g[0].state, SourceState::Reachable);
         assert!(g[0].reachable());
         assert_eq!(g[1].state, SourceState::Unreachable);
         assert!(!g[1].reachable(), "the dim the Sources list draws");
         assert_eq!(g[1].tier, None);
-        reset();
     }
 
     /// A REFUSED discovery spawn must back off, not retry at 60 Hz.
@@ -7055,52 +5350,52 @@ mod tests {
     #[test]
     fn a_refused_discovery_spawn_backs_off_instead_of_flooding_the_log() {
         let _g = crate::testlock::serial();
-        seed_sources(vec![
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
         ]);
         for i in 0..2 {
-            let s = source_mut(i).unwrap();
+            let s = browse.state.source_mut(i).unwrap();
             s.sections_done = false; // both still want discovery
             s.counts_done = true;
         }
-        adapter().src_fetching.store(true, Ordering::SeqCst); // as `maybe_discover` armed it before spawning
+        browse.adapter.src_fetching.store(true, Ordering::SeqCst); // as `maybe_discover` armed it before spawning
 
-        discovery_spawn_refused(1);
+        browse.state.discovery_spawn_refused_owned(&browse.adapter, 1);
 
         assert!(
-            !adapter().src_fetching.load(Ordering::SeqCst),
+            !browse.adapter.src_fetching.load(Ordering::SeqCst),
             "the single flight must be released"
         );
         assert_eq!(
-            sources()[1].retry_cd,
+            browse.state.sources()[1].retry_cd,
             SRC_RETRY_CD,
             "…and the next attempt is ~10s out, not 1 frame"
         );
         assert!(
-            sources()[1].reachable(),
+            browse.state.sources()[1].reachable(),
             "a refused THREAD says nothing about their server"
         );
         assert!(
-            !sources()[1].sections_done,
+            !browse.state.sources()[1].sections_done,
             "…and it is still a source waiting to be discovered"
         );
-        assert_eq!(sources()[0].retry_cd, 0, "the other source is untouched");
+        assert_eq!(browse.state.sources()[0].retry_cd, 0, "the other source is untouched");
 
         // one second of frames: the picker must not come back to it
-        source_mut(0).unwrap().retry_cd = SRC_RETRY_CD; // so nothing in this table is dialable
+        browse.state.source_mut(0).unwrap().retry_cd = SRC_RETRY_CD; // so nothing in this table is dialable
         for _ in 0..60 {
-            maybe_discover();
+            browse.state.maybe_discover_owned(&browse.adapter, &mut execute_discovery);
         }
         assert!(
-            !adapter().src_fetching.load(Ordering::SeqCst),
+            !browse.adapter.src_fetching.load(Ordering::SeqCst),
             "no attempt was made in a whole second"
         );
         assert!(
-            sources()[1].retry_cd > 0,
+            browse.state.sources()[1].retry_cd > 0,
             "…and the backoff still has most of its cooldown left"
         );
-        reset();
     }
 
     /// An EMPTY count landing is a failure, not an answer: the worker pushes one entry per request
@@ -7111,15 +5406,15 @@ mod tests {
     #[test]
     fn an_empty_count_landing_does_not_latch_the_probe_off() {
         let _g = crate::testlock::serial();
-        let (_cleanup, _, client) = registered_source();
-        append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
-        if let Some(s) = source_mut(0) {
+        let (_cleanup, mut browse, _, client) = registered_source();
+        browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+        if let Some(s) = browse.state.source_mut(0) {
             s.counts_done = false;
         }
-        let epoch = table_epoch();
+        let epoch = browse.state.table_epoch();
 
         // nothing came back
-        *adapter().src_result.lock().unwrap_or_else(|e| e.into_inner()) = Some((
+        *browse.adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()) = Some((
             epoch,
             0,
             SrcLanding {
@@ -7129,15 +5424,15 @@ mod tests {
                 what: SrcWhat::Counts(Vec::new()),
             },
         ));
-        land_discovery();
+        let _ = browse.state.land_discovery_owned(&browse.adapter);
         assert!(
-            !sources()[0].counts_done,
+            !browse.state.sources()[0].counts_done,
             "an empty answer must leave the probe armed"
         );
-        assert_eq!(sections()[0].count, -1);
+        assert_eq!(browse.state.sections()[0].count, -1);
 
         // …and the real one does land, and does latch
-        *adapter().src_result.lock().unwrap_or_else(|e| e.into_inner()) = Some((
+        *browse.adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()) = Some((
             epoch,
             0,
             SrcLanding {
@@ -7147,10 +5442,10 @@ mod tests {
                 what: SrcWhat::Counts(vec![(1, 185)]),
             },
         ));
-        land_discovery();
-        assert!(sources()[0].counts_done);
+        let _ = browse.state.land_discovery_owned(&browse.adapter);
+        assert!(browse.state.sources()[0].counts_done);
         assert_eq!(
-            sections()[0].count,
+            browse.state.sections()[0].count,
             185,
             "the row can say \"185 films\" now"
         );
@@ -7165,26 +5460,26 @@ mod tests {
         // RECORDED per-profile answer — so this test needs a session of its own, or it
         // grades whatever the host machine happens to have on disk.
         let _t = TempPins::new("strip-one-source");
-        seed_sources(vec![a_source("mac-mini", "", true)]);
-        append_sections(
+        let mut browse = TestBrowse::default();
+        browse.seed_sources(vec![a_source("mac-mini", "", true)]);
+        browse.append_sections(
             0,
             vec![
                 (1, "Movies".into(), SecKind::Movie),
                 (2, "TV Shows".into(), SecKind::Show),
             ],
         );
-        assert_eq!(tab_count(), section_count());
-        for i in 0..section_count() {
-            assert_eq!(tab_section(i), Some(i));
-            assert_eq!(tab_of_section(i), Some(i));
-            assert_eq!(tab_title(i), section_title(i));
+        assert_eq!(browse.tab_count(), browse.section_count());
+        for i in 0..browse.section_count() {
+            assert_eq!(browse.state.tab_section(i), Some(i));
+            assert_eq!(browse.tab_of_section(i), Some(i));
+            assert_eq!(browse.tab_title(i), browse.section_title(i));
         }
         assert_eq!(
-            sources().len(),
+            browse.state.sources().len(),
             1,
             "…and the Source chip's own condition is false"
         );
-        reset();
     }
 
     /// A failure landing from a SUPERSEDED query must not blame the current one: the user has
@@ -7193,9 +5488,9 @@ mod tests {
     #[test]
     fn a_stale_failure_landing_does_not_blame_the_current_query() {
         let _g = crate::testlock::serial();
-        let (_cleanup, _, client) = registered_page_source();
-        let stale = query_gen();
-        bump_gen(); // the query moved on under the in-flight fetch
+        let (_cleanup, mut browse, _, client) = registered_page_source();
+        let stale = browse.state.query_gen();
+        browse.state.bump_gen(); // the query moved on under the in-flight fetch
         let r = PageResult {
             client,
             token_gen: client.token_gen(),
@@ -7206,14 +5501,13 @@ mod tests {
             total: -1,
             sorts: None,
         };
-        *adapter().page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
-        let _outcome = pump();
+        *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+        let _outcome = browse.pump();
         assert_eq!(
-            fetch_state(),
+            browse.fetch_state(),
             SecFetch::Loading,
             "the current query has not answered yet — it has not failed"
         );
-        reset();
     }
 
     /// The optimistic edit behind the browse grid's context menu — three properties in one, because
@@ -7227,7 +5521,8 @@ mod tests {
     #[test]
     fn a_watched_edit_reaches_every_section_and_only_the_right_server() {
         let _g = crate::testlock::serial();
-        seed_one_section();
+        let mut browse = TestBrowse::default();
+        seed_one_section(&mut browse);
         let sid = crate::plex::ServerId::UNSET;
         let other = crate::plex::ServerId::from_raw(1);
         let row = |sid, rk: &str, resume: i64| {
@@ -7239,7 +5534,7 @@ mod tests {
             Some(m)
         };
         {
-            let st = legacy_mut().states_mut();
+            let st = browse.state.states_mut();
             *st = vec![SecState::default(), SecState::default()];
             // the section on screen, the one browsed a minute ago (which keeps its items), and a
             // FRIEND's row carrying the same key — both servers number their items from 1
@@ -7248,39 +5543,38 @@ mod tests {
         }
 
         assert!(
-            set_watched_local(sid, "7", true),
+            browse.state.set_watched_local(sid, "7", true),
             "the item is in the store, so the edit lands"
         );
-        let watched = |sec: usize, i: usize| {
-            let st = legacy().states();
+        let watched = |browse: &TestBrowse, sec: usize, i: usize| {
+            let st = browse.state.states();
             let m = st[sec].items.get(i).unwrap();
             (m.watched, m.unwatched, m.resume_ms)
         };
         assert_eq!(
-            watched(0, 0),
+            watched(&browse, 0, 0),
             (true, false, 0),
             "…tick on, and the resume bar retires with it"
         );
         assert_eq!(
-            watched(1, 0),
+            watched(&browse, 1, 0),
             (true, false, 0),
             "…in a section that is not the one being browsed"
         );
         assert_eq!(
-            watched(0, 1),
+            watched(&browse, 0, 1),
             (false, true, 0),
             "…and never on the friend's item with the same key"
         );
         assert_eq!(
-            watched(1, 1),
+            watched(&browse, 1, 1),
             (false, true, 0),
             "…nor on an item that was not asked about"
         );
 
         assert!(
-            !set_watched_local(sid, "404", true),
+            !browse.state.set_watched_local(sid, "404", true),
             "an item in no section reports a miss"
         );
-        reset();
     }
 }

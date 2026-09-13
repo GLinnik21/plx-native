@@ -4,14 +4,12 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
     let session = crate::plex::session::TempSession::new("library-query-leave");
     session.watching("u-library-query-leave");
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     crate::plex::reset_servers_for_test();
     let sid =
         crate::plex::register_for_test("query-leave-own", "127.0.0.1", 9, "synthetic", "fixture");
@@ -23,13 +21,12 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
         "fixture",
     );
     crate::plex::set_current(sid);
-    crate::browse::seed_registered_table_for_test([sid, shared]);
-    let mut directory = crate::stores::browse::DirectorySnapshot::default();
-    directory.capture();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
-    crate::browse::seed_items_for_test(120);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
+    rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
+    rig.refresh_browse_directory();
+    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
     frame(&mut d, &mut rig, AppArg::Library, tick(1), vec![]);
@@ -63,16 +60,20 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
     d.request(MachineId::Nav, NavOp::Root(AppArg::Home));
     frame(&mut d, &mut rig, AppArg::Home, tick(80), vec![]);
     assert!(d.nav.entry(entry).is_none());
-    let snapshot = crate::stores::browse::listing_snapshot();
-    assert_ne!(snapshot.view().id().unwrap().query, id.query);
+    let owned_id = rig.stores.browse.borrow_mut().listing_snapshot().view().id().unwrap();
+    assert_ne!(owned_id.query, id.query,
+        "the accepted command mutates the explicit owner in the same dispatcher turn");
+    rig.capture_views(&mut d);
+    let snapshot = rig.listing.clone();
+    assert_eq!(snapshot.view().id(), Some(owned_id));
     assert_eq!(snapshot.view().total(), -1, "no new page has arrived");
-    assert!(snapshot.view().cursor().is_none_or(|cursor| matches!(cursor.at, crate::browse::CursorAt::SlotIndex(0))),
+    assert!(snapshot.view().cursor().is_none_or(|cursor| matches!(cursor.at, crate::stores::browse::CursorAt::SlotIndex(0))),
         "the carried WillLeave save must not overwrite the new query with an old deep bookmark: {:?}", snapshot.view().cursor());
-    rig.enter_library(crate::browse::SecKind::Movie);
+    rig.enter_library(crate::stores::browse::SecKind::Movie);
     for i in 81..86 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
-    crate::browse::seed_items_for_test(120);
+    rig.stores.browse.borrow_mut().seed_items_for_test(120);
     for i in 86..166 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
@@ -111,26 +112,23 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
     let session = crate::plex::session::TempSession::new("library-covered-query-reset");
     session.watching("u-library-covered-query-reset");
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_for_test("query-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared =
         crate::plex::register_for_test("query-shared", "127.0.0.1", 10, "synthetic", "fixture");
     crate::plex::set_current(sid);
-    crate::browse::seed_registered_table_for_test([sid, shared]);
-    let mut directory = crate::stores::browse::DirectorySnapshot::default();
-    directory.capture();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
-    crate::browse::seed_items_for_test(120);
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
+    rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
+    rig.refresh_browse_directory();
+    rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+    rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     Bridge::library_command(
         &mut d,
@@ -247,7 +245,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         }
     }
     let landed_at = landed_at.expect("the actual Filter edit must commit its new query");
-    crate::browse::seed_items_for_test(120);
+    rig.stores.browse.borrow_mut().seed_items_for_test(120);
     for i in landed_at + 1..landed_at + 6 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }

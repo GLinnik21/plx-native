@@ -24,6 +24,7 @@ pub(crate) enum ViewStateCmd {
 pub(crate) struct ViewStateStore;
 
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
+#[cfg_attr(not(test), allow(dead_code))] // Compatibility facade retained for the next ownership stage.
 pub(crate) fn apply(cmd: ViewStateCmd) -> bool {
     super::apply(super::StoreCmd::ViewState(cmd)).changed
 }
@@ -43,12 +44,51 @@ pub(super) fn run(cmd: ViewStateCmd) -> bool {
     answer
 }
 
+/// Owner-aware command path. `browse` is synchronous because the optimistic edit is part of the
+/// command's same-frame answer, not deferred work.
+pub(crate) fn run_with_owners(
+    cmd: ViewStateCmd,
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+    hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
+) -> bool {
+    #[cfg(test)]
+    crate::testlock::assert_held("the viewstate store (owned apply)");
+    let answer = crate::viewstate::run_with_owners(cmd, browse, hubs);
+    super::bump(StoreId::ViewState);
+    answer
+}
+
+/// Test/compatibility owner path without a retained Home directory. Production Bridge delivery
+/// uses [`run_with_owners`] so every Hubs edit carries the frame's directory policy.
+pub(crate) fn run_with_browse(
+    cmd: ViewStateCmd,
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+) -> bool {
+    #[cfg(test)]
+    crate::testlock::assert_held("the viewstate store (compatibility apply)");
+    let answer = crate::viewstate::run_with_browse(cmd, browse);
+    super::bump(StoreId::ViewState);
+    answer
+}
+
 /// The route-unconditional landing the loop runs every frame.
 pub(crate) fn pump() -> super::EndpointRefreshSet {
     let busy = crate::viewstate::is_busy();
     let endpoints = crate::viewstate::pump();
     // a landing is what turns "busy" off; the refresh it owes is raised through the stores it
     // touches (hubs, the detail re-read), so the notice here is the queue's own state
+    super::note(StoreId::ViewState, busy != crate::viewstate::is_busy());
+    endpoints
+}
+
+/// Owner-aware landing pass. Browse receives delayed fan-out edits and section-hub invalidation;
+/// Home's refetch is scoped by the same retained directory at the application boundary.
+pub(crate) fn pump_with_owners(
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+    hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
+) -> super::EndpointRefreshSet {
+    let busy = crate::viewstate::is_busy();
+    let endpoints = crate::viewstate::pump_with_owners(browse, hubs);
     super::note(StoreId::ViewState, busy != crate::viewstate::is_busy());
     endpoints
 }

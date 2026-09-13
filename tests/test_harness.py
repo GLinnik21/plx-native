@@ -4412,36 +4412,177 @@ class DepGates(unittest.TestCase):
             with open(target, "w", encoding="utf-8") as f:
                 f.write(original)
 
-    def test_mutators_visibility_gate_catches_a_republished_mutator(self):
-        """D3: `browse::set_cur` was narrowed to private so `stores::browse::apply` is the only
-        door — but a call-site gate alone can only ever prove nobody currently calls a mutator
-        directly, never that nobody CAN (the D3 census's own finding: zero call-site violations
-        coexisted with every mutator across six stores sitting `pub(crate)` for years). RED:
-        temporarily re-publishing `set_cur` as `pub(crate)` — with no call site touched at all —
-        must fail `mutators-visibility` on the DECLARATION alone."""
-        r = self._mutate(
-            os.path.join("browse", "mod.rs"),
-            "fn set_cur(i: usize) {",
-            "pub(crate) fn set_cur(i: usize) {",
+    def _prepend(self, relpath, content):
+        """Temporarily prepend a valid module-level fixture to a scanned Rust file."""
+        target = os.path.join(self.ROOT, "rust-modules", "src", relpath)
+        with open(target, encoding="utf-8") as f:
+            original = f.read()
+        try:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(content + original)
+            return subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")],
+                                  capture_output=True, text=True)
+        finally:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(original)
+
+    def test_browse_owner_gate_rejects_a_republished_free_mutator(self):
+        """A valid module-level declaration is rejected even without a call site."""
+        r = self._prepend("browse/mod.rs", "\npub(crate) fn set_cur(i: usize) {}\n")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("browse-owner:", out)
+        self.assertIn("fn set_cur", out)
+
+    def test_browse_owner_gate_rejects_all_free_declaration_modifiers(self):
+        for declaration in (
+            "    pub(super) fn set_cur(i: usize) {}\n",
+            "async fn set_cur(i: usize) {}\n",
+            "const fn set_cur(i: usize) {}\n",
+            "unsafe extern \"C\" fn set_cur(i: usize) {}\n",
+        ):
+            with self.subTest(declaration=declaration):
+                r = self._prepend("browse/mod.rs", "\n" + declaration)
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("browse-owner:", r.stdout + r.stderr)
+
+    def test_browse_owner_gate_rejects_attributes_and_split_free_declarations(self):
+        for declaration in (
+            "#[inline] pub(super) const fn set_cur(i: usize) {}\n",
+            "#[inline]\npub(super)\nconst fn\nset_cur(i: usize) {}\n",
+        ):
+            with self.subTest(declaration=declaration):
+                r = self._prepend("browse/mod.rs", "\n" + declaration)
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, out)
+                self.assertIn("browse-owner:", out)
+                self.assertIn("set_cur", out)
+
+    def test_browse_owner_gate_is_nonvacuous_for_indented_free_declarations(self):
+        r = self._prepend("browse/mod.rs", "\n    pub fn set_cur(i: usize) {}\n")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("browse/mod.rs", r.stdout + r.stderr)
+
+    def test_browse_owner_gate_ignores_normal_string_braces_before_a_free_const_fn(self):
+        """Compiling counterexample for the old raw brace counter: the `{` belongs to LABEL,
+        so the indented const fn after it is still a module-level retired facade and must fail."""
+        r = self._prepend(
+            "browse/mod.rs",
+            '\nconst LABEL: &str = "{";\n    pub(crate) const fn set_cur(i: usize) {}\n',
         )
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
-        self.assertIn("mutators-visibility:", out)
-        self.assertIn("browse/mod.rs: fn set_cur", out)
+        self.assertIn("browse-owner:", out)
+        self.assertIn("const fn set_cur", out)
 
-    def test_mutators_visibility_gate_ignores_pub_super_in_section_hubs(self):
-        """`browse::section_hubs`'s five mutators are `pub(super)`, genuinely tighter than
-        private-to-crate-root since section_hubs's parent is `browse`, a real module — the gate's
-        own regex matches a bare `pub`/`pub(crate)` only. GREEN: confirm the real declaration is
-        `pub(super)` today (so this test cannot pass by coincidence) and that the gate is
-        satisfied by it, unmutated."""
-        target = os.path.join(self.ROOT, "rust-modules", "src", "browse", "section_hubs.rs")
-        with open(target, encoding="utf-8") as f:
-            content = f.read()
-        self.assertIn("pub(super) fn kick(sec: usize) {", content)
-        r = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
+    def test_browse_owner_gate_ignores_every_rust_noncode_brace_before_a_free_fn(self):
+        fixtures = (
+            '// {\n',
+            '/* outer { /* nested { */ */\n',
+            'const RAW_SCOPE: &str = r###"{"###;\n',
+            'const BYTE_SCOPE: &[u8] = b"{";\n',
+            'const RAW_BYTE_SCOPE: &[u8] = br##"{"##;\n',
+            "const CHAR_SCOPE: char = '{';\n",
+            "const BYTE_CHAR_SCOPE: u8 = b'{';\n",
+            'const ESCAPED_SCOPE: &str = "\\\\\\\"{";\n',
+            "const ESCAPED_CHAR_SCOPE: char = '\\\'';\nconst LABEL_SCOPE: &str = \"{\";\n",
+        )
+        for prefix in fixtures:
+            with self.subTest(prefix=prefix):
+                r = self._prepend(
+                    "browse/mod.rs",
+                    "\n" + prefix + "    pub(super) unsafe extern \"C\" fn set_cur(i: usize) {}\n",
+                )
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("browse-owner:", r.stdout + r.stderr)
+
+    def test_browse_owner_gate_ignores_noncode_closing_braces_inside_an_impl(self):
+        """A compiling impl fixture remains receiver-bound even when every Rust literal/comment
+        form contains `}`. The old counter escaped the impl and falsely reported `cur`."""
+        fixture = r'''
+struct BrowseScopeFixture;
+impl BrowseScopeFixture {
+    // }
+    /* outer } /* nested } */ } */
+    const NORMAL: &'static str = "}\\\"";
+    const RAW: &'static str = r###"}"###;
+    const BYTES: &'static [u8] = b"}";
+    const RAW_BYTES: &'static [u8] = br##"}"##;
+    const CHAR: char = '}';
+    const BYTE_CHAR: u8 = b'}';
+    const ESCAPED_CHAR: char = '\'';
+    pub(crate) fn cur(&self) -> usize { 0 }
+}
+'''
+        r = self._prepend("browse/mod.rs", fixture)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("ok — mutators-visibility", r.stdout)
+        self.assertIn("ok — browse-owner", r.stdout)
+
+    def test_browse_owner_gate_rejects_retired_transport_declarations(self):
+        for relpath, declaration in (
+            ("browse/mod.rs", "    pub(crate) static LEGACY_ADAPTER: () = ();\n"),
+            ("stores/browse.rs", "    pub(super) static ACTIVE: () = ();\n"),
+            ("browse/mod.rs", "    static mut RETIRED_BROWSE: Option<BrowseState> = None;\n"),
+        ):
+            with self.subTest(declaration=declaration):
+                r = self._prepend(relpath, "\n" + declaration)
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("browse-owner:", r.stdout + r.stderr)
+
+    def test_browse_owner_gate_rejects_retired_thread_local_selectors(self):
+        for relpath, selector in (
+            ("browse/mod.rs", "LEGACY_ADAPTER"),
+            ("stores/browse.rs", "ACTIVE"),
+        ):
+            with self.subTest(selector=selector):
+                r = self._prepend(
+                    relpath,
+                    f"\nthread_local! {{\n    static {selector}: () = ();\n}}\n",
+                )
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, out)
+                self.assertIn("browse-owner:", out)
+                self.assertIn(f"static {selector}", out)
+
+    def test_browse_owner_gate_accepts_unrelated_thread_local_state(self):
+        r = self._prepend(
+            "browse/mod.rs",
+            "\nthread_local! {\n    static UNRELATED_CACHE: () = ();\n}\n",
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok — browse-owner", r.stdout)
+
+    def test_browse_owner_gate_fails_closed_when_a_scanner_input_is_missing(self):
+        target = os.path.join(self.ROOT, "rust-modules", "src", "browse", "view.rs")
+        hidden = target + ".check-deps-selftest"
+        self.assertTrue(os.path.exists(target), f"missing scanner fixture {target}")
+        self.assertFalse(os.path.exists(hidden), f"stale self-test artifact at {hidden}")
+        try:
+            os.replace(target, hidden)
+            r = subprocess.run(
+                [os.path.join(self.ROOT, "ci", "check-deps.sh")],
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            if os.path.exists(hidden):
+                os.replace(hidden, target)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("browse declaration scanner failed", out)
+        self.assertIn("browse-owner:", out)
+
+    def test_browse_owner_gate_accepts_receiver_bound_owned_methods(self):
+        """A BrowseState selector is safe when it requires an explicit receiver. GREEN:
+        temporarily widen the owned `cur(&self)` method to `pub`; the gate must still pass,
+        proving it rejects free/global facades rather than all methods with those names."""
+        r = self._mutate(
+            os.path.join("browse", "mod.rs"),
+            "    pub(crate) fn cur(&self) -> usize {",
+            "    pub fn cur(&self) -> usize {",
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok — browse-owner", r.stdout)
 
     def test_threads_gate_catches_a_bare_thread_spawn_after_use_std_thread(self):
         """The gate used to match only the fully-qualified `std::thread::spawn(` spelling, so a

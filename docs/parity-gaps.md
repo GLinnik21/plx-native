@@ -116,9 +116,10 @@ still take focus, and LEFT/RIGHT still walks between them, so the control looks 
 
 **A. Watched state is half-modelled.** `Episode` (`metadata.rs:64`) carries `resume_ms` but **no
 `view_count`** — the field is on the wire and never read. So a fully-watched episode is
-indistinguishable from one never started, posters carry no checkmark badge, related/grid tiles carry
-no state, and the grid goes stale after playback because nothing refreshes the browse store. The one
-watched toggle we do have (`detail.rs:1157`) acts on `metadata::current()`, which on a show page is the
+indistinguishable from one never started, posters carry no checkmark badge, and related/grid tiles
+carry no watched state. Playback does invalidate each owner's shelves through that owner's retained
+Browse publication; the remaining gap is the absent episode/season state to publish. The one watched
+toggle we do have (`detail.rs:1157`) acts on `metadata::current()`, which on a show page is the
 **show** — so it scrobbles every leaf. There is no per-episode or per-season mark.
 
 **B. The detail page is a show page wearing an episode's clothes.** `draw_hero` always renders the
@@ -848,11 +849,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* `plex/params.rs` (`type_id: i64` on `SectionQuery`) + `plex/library.rs::section_items_query` (`opt_int("type", …)`), `browse.rs` (a `type_idx` on `SecState`, re-query on change; note the grid tile aspect must switch to landscape for episodes), `ui/library.rs` (a third toolbar chip + its menu, and a landscape `RowStyle` for episode listings).  
   *Verified:* CONFIRMED. plex/params.rs:39-56 `SectionQuery` = section_key/sort/filters/start/size/include_meta — no `type`. plex/library.rs:31-45 `section_items_query` emits only includeMeta/sort/filters/X-Plex-Container-Start/Size. browse.rs:566-575 constructs the query with no type. `BrowseSection.is_show` (browse.rs:35) is used in exactly two places, both confirmed by rg: browse.rs:554 (picks `unwatchedLeaves` vs `unwatched`) and ui/library.rs:910-914 (the "shows"/"films" count noun). docs/pms-api.md:115-116 documents `?type=1|2|3|4` working. Effort note: the auditor is right that the landscape-tile wor
 
-- **The grid's watched/progress state goes stale after playback — nothing ever refreshes the browse store** — `minor` / `small`  
-  Play a movie from the Library grid, finish it, press BACK: the poster still shows the amber unwatched angle and no resume bar, because the browse store is only ever rebuilt on a profile switch. The official client's grid reflects watched state the moment you return. Home doesn't have this bug — it refetches its hub catalog on player exit and on a watched toggle — the Library grid was simply left out of that ritual.  
-  *Where:* `browse.rs` (a `refresh_current()` that bumps `GEN` and clears only the item store while keeping sorts/genres/letters/focus/scroll — essentially `requery()` at browse.rs:160-168 minus the focus reset), called from `app.rs:2109`'s post-playback ritual and `ui/detail.rs:1172`'s watched toggle. Alternatively re-fetch just the touched item via the existing `plex::Client::metadata`.  
-  *Verified:* Still open. Post-playback now requests the Home refresh asynchronously, but the
-  Library item store remains independent and is not invalidated or refreshed by that request.
+- **The grid's watched/progress state goes stale after playback — its per-owner retained listing publication is not refreshed** — `minor` / `small`
+  Play a movie from the Library grid, finish it, press BACK: the poster can still show the amber unwatched angle and no resume bar because playback invalidates the Bridge-owned section-hub shelves, not that owner's retained listing publication. The official client's grid reflects watched state the moment you return.
+  *Where:* add an explicit owner operation that refreshes only the current listing while retaining its sort/genre/letter/focus state, then call it from the post-playback and watched-toggle paths. Alternatively re-fetch just the touched item via the existing `plex::Client::metadata`.
+  *Verified:* Still open. `app/run.rs` calls `Bridge::browse_run(BrowseCmd::HubsInvalidateAll)` after playback, which invalidates every owned section-hub shelf; it does not replace the `ListingView` in that Bridge's retained `BrowsePublications`.
 
 - **No context menu on a grid poster (mark watched/unwatched, play, go to show)** — `minor` / `medium`  
   On the official client, holding OK (or the options button) on a grid poster opens a context menu — Play, Mark as Played/Unplayed, Go to Show, Add to Watchlist. Ours has exactly one activation: OK opens the detail page. The long-press machinery exists and is measured, but nothing in the app ever asks for it.  
@@ -870,7 +870,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* CONFIRMED. `Stores::browse` gives each Bridge its own `BrowseState`, but that state
   is in memory only; `BrowseCmd::Reset` clears it on an account/profile switch, and no Browse
   persistence path restores sort, direction, genre or unwatched state after a process restart.
-  The compatibility publication is only a temporary read view of that owner, not persistence. I
+  The retained per-owner publication is a read snapshot, not persistence. I
   checked the crate's on-disk write surface: `rg -n "fs::write|File::create|write_all|serde_json::to_string"`
   finds the auth/session store plus test-harness writes, but no Browse state serialization.
 

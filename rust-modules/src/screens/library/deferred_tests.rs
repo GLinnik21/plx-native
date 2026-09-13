@@ -5,6 +5,7 @@ use crate::ui::fixture::{FixtureArg, FixtureMeasure};
 use crate::ui::machine::{Host, InputOwner, Stamped, Tick};
 
 struct TestHost;
+
 #[derive(Clone, Copy)]
 struct Views<'a> {
     listing: crate::stores::browse::ListingView<'a>,
@@ -32,6 +33,7 @@ impl LibraryLike for TestHost {
     }
 }
 struct Fixture {
+    stores: crate::stores::Stores,
     listing: crate::stores::browse::ListingSnapshot,
     directory: crate::stores::browse::DirectorySnapshot,
     hubs: crate::stores::browse::HubsSnapshot,
@@ -42,7 +44,6 @@ impl Fixture {
     fn new() -> Self {
         let session = crate::plex::session::TempSession::new("library-deferred-ports");
         session.watching("u-library-deferred-ports");
-        crate::stores::browse::apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let own =
             crate::plex::register_for_test("deferred-own", "127.0.0.1", 9, "synthetic", "fixture");
@@ -54,9 +55,10 @@ impl Fixture {
             "fixture",
         );
         let mut fixture = Self {
-            listing: crate::stores::browse::listing_snapshot(),
+            stores: crate::stores::Stores::default(),
+            listing: crate::stores::browse::ListingSnapshot::empty_for_test(),
             directory: Default::default(),
-            hubs: crate::stores::browse::hubs_snapshot(),
+            hubs: crate::stores::browse::HubsSnapshot::empty_for_test(),
             sids: [own, shared],
             _session: session,
         };
@@ -64,18 +66,18 @@ impl Fixture {
         fixture
     }
     fn rebuild(&mut self) {
-        crate::stores::browse::apply(BrowseCmd::Reset);
-        crate::browse::seed_registered_table_for_test(self.sids);
-        self.directory.capture();
-        crate::stores::browse::apply(BrowseCmd::SetCur(0));
-        crate::browse::seed_items_for_test(12);
+        self.stores.browse_run(BrowseCmd::Reset);
+        self.stores.browse.borrow_mut().seed_registered_table_for_test(self.sids);
+        self.stores.capture_browse(&mut self.directory);
+        self.stores.browse_run(BrowseCmd::SetCur(0));
+        self.stores.browse.borrow_mut().seed_items_for_test(12);
         self.capture();
         assert_eq!(self.directory.view().current(), Some(0));
     }
     fn capture(&mut self) {
-        self.directory.capture();
-        self.listing = crate::stores::browse::listing_snapshot();
-        self.hubs = crate::stores::browse::hubs_snapshot();
+        let publication = self.stores.capture_browse(&mut self.directory);
+        self.listing = publication.listing;
+        self.hubs = publication.section_hubs;
     }
     fn cx(&self) -> Cx<'_, TestHost> {
         Cx {
@@ -124,7 +126,7 @@ impl Fixture {
             page,
             ScreenEvent::WillLeave(crate::ui::machine::Leave::Deeper),
         );
-        let results = apply(out);
+        let results = apply(&self.stores, out);
         self.capture();
         assert!(
             page.pending.section().is_none() && page.pending.grid().is_none(),
@@ -135,15 +137,17 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        crate::stores::browse::apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 }
-fn apply(out: Vec<Stamped<TestHost>>) -> Vec<bool> {
+fn apply(stores: &crate::stores::Stores, out: Vec<Stamped<TestHost>>) -> Vec<bool> {
     // Pump the real synchronous StoreCmd drain; no asynchronous worker is needed to grade
     // selection/query acceptance. The retained fixture views refresh only after this drain.
     out.into_iter()
         .filter_map(|effect| match effect.fx {
+            Fx::App(AppFx::Store(_, StoreCmd::Browse(command))) => {
+                Some(stores.browse_run(command))
+            }
             Fx::App(AppFx::Store(_, command)) => Some(crate::stores::apply(command).changed),
             _ => None,
         })
@@ -245,8 +249,8 @@ fn a_target_that_moves_after_the_press_is_refused_at_the_store_drain() {
             edit: QueryEdit::Unwatched(true),
         }),
     );
-    crate::stores::browse::apply(BrowseCmd::SetCur(2));
-    crate::browse::seed_items_for_test(12);
+    fixture.stores.browse_run(BrowseCmd::SetCur(2));
+    fixture.stores.browse.borrow_mut().seed_items_for_test(12);
     fixture.capture();
     assert_eq!(fixture.directory.view().current(), Some(2));
     assert_eq!(

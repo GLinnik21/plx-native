@@ -80,6 +80,20 @@ fn is_first_run_consent(a: &AppArg) -> bool {
     matches!(a, AppArg::FirstRunConsent(_))
 }
 
+/// Core-side shape of the Chrome refresh boundary. The retained directory is explicit so Chrome
+/// always reads this Bridge's captured Browse publication.
+fn refresh_chrome(
+    chrome: &mut super::chrome::ChromeSnapshot,
+    measure: &dyn Measure,
+    directory: crate::stores::browse::DirectoryView<'_>,
+    captured: Option<(&crate::plex::session::CurrentProfile, &crate::plex::session::Session)>,
+) {
+    match captured {
+        Some(captured) => chrome.refresh_with_profile(measure, directory, Some(captured)),
+        None => chrome.refresh(measure, directory),
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct AppViews<'a> {
     pub(crate) auth: crate::auth::SessionRead<'a>,
@@ -387,14 +401,17 @@ impl Bridge {
         init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: crate::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter) -> Self {
+        let stores = crate::stores::Stores::default();
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
-        directory.capture();
-        Self::with_publications(measure, now_us, init, session_adapter, consent, consent_adapter,
+        let browse = stores.capture_browse(&mut directory);
+        let search = crate::stores::search::snapshot_with_directory(browse.directory.view());
+        Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
+            consent_adapter,
             StorePublications {
-            hubs: crate::pms::hubs_snapshot(), listing: crate::stores::browse::listing_snapshot(),
-            directory, section_hubs: crate::stores::browse::hubs_snapshot(),
-            search: crate::stores::search::snapshot(),
-        })
+            hubs: crate::pms::hubs_snapshot(), listing: browse.listing,
+            directory: browse.directory, section_hubs: browse.section_hubs,
+            search,
+        }, stores)
     }
 
     #[cfg(test)]
@@ -443,6 +460,15 @@ impl Bridge {
         consent: crate::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications) -> Self {
+        Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
+            consent_adapter, reads, Default::default())
+    }
+
+    fn with_publications_and_stores(measure: &'static dyn Measure, now_us: fn() -> u64,
+        init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+        consent: crate::telemetry::consent::Consent,
+        consent_adapter: super::adapters::consent::ConsentAdapter,
+        reads: StorePublications, stores: crate::stores::Stores) -> Self {
         Self {
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
@@ -451,7 +477,7 @@ impl Bridge {
             session_adapter,
             session_ready: None,
             consent_adapter,
-            stores: Default::default(),
+            stores,
             mounter: AppMounter::default(),
             playback: crate::route::PlaybackSession::IDLE,
             playback_live: false,
@@ -673,10 +699,10 @@ impl Bridge {
         if matches!(route, AppArg::Home | AppArg::Library) || search {
             d.nav.tabs.strip_fallback = Some(if search { crate::ui::dispatch::STRIP_BASE + 3 } else { crate::screens::home::STRIP_HOME_ELEM });
             if let Some(io) = &self.home_io {
-                self.chrome.refresh_with_profile(&self.measure,
+                refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(),
                     Some((&io.profile, &io.preferences)));
             } else {
-                self.chrome.refresh(&self.measure);
+                refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(), None);
             }
             self.chrome_selection = if *route == AppArg::Library {
                 self.directory.view().current().map(|i| self.chrome.library_selection(self.directory.view().sections()[i].kind)).unwrap_or(0)
@@ -691,25 +717,25 @@ impl Bridge {
 
     /// Return Browse/Search publication changes so the frame can coalesce them with notices.
     fn capture_views(&mut self, d: &mut Dispatcher<AppHost>) -> (bool, bool) {
-        self.stores.activate();
-        let search = if self.home_io.is_some() { self.search.clone() } else { crate::stores::search::snapshot() };
-        let search_changed = !self.search.same_publication(&search);
-        if search_changed {
-            self.search = search;
-        }
         let directory_before = self.directory.clone();
         let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision());
-        self.stores.browse.borrow_mut().capture_directory(&mut self.directory);
-        // Directory capture resolves profile pins and may repoint the active section. Both
-        // content snapshots must name the resulting section, not opposite sides of that repoint.
-        if self.home_io.is_none() { self.section_hubs = self.stores.browse.borrow_mut().hubs_snapshot(); }
-        let listing = if self.home_io.is_some() { self.listing.clone() }
-            else { self.stores.browse.borrow_mut().listing_snapshot() };
+        // One owner borrow, in the load-bearing order: directory capture resolves profile pins
+        // and may repoint the current section, so listing and shelves are captured only after it.
+        let owned = self.stores.capture_browse(&mut self.directory);
+        if self.home_io.is_none() { self.section_hubs = owned.section_hubs; }
+        let listing = if self.home_io.is_some() { self.listing.clone() } else { owned.listing };
         let listing_changed = !self.listing.view().same_items(listing.view())
             || self.listing.view().fetch() != listing.view().fetch();
         self.listing = listing;
         let browse_changed = listing_changed || !self.directory.same_publication(&directory_before)
             || hubs_before != (self.section_hubs.view().id(), self.section_hubs.view().revision());
+        let search = if self.home_io.is_some() { self.search.clone() } else {
+            crate::stores::search::snapshot_with_directory(self.directory.view())
+        };
+        let search_changed = !self.search.same_publication(&search);
+        if search_changed {
+            self.search = search;
+        }
         let before = (self.hubs.view().generation, self.hubs.view().state);
         self.hubs = crate::pms::hubs_snapshot();
         let after = (self.hubs.view().generation, self.hubs.view().state);
@@ -942,6 +968,57 @@ impl Drop for Bridge {
 }
 
 impl Bridge {
+    /// Synchronous application boundary for callers whose answer is consumed in the same turn.
+    /// This borrows the one store owned by this Bridge.
+    pub(crate) fn browse_run(&mut self, cmd: crate::stores::browse::BrowseCmd) -> bool {
+        self.stores.browse_run(cmd)
+    }
+
+    pub(crate) fn browse_discover_pump(&mut self) -> crate::stores::StoreOutcome {
+        self.stores.browse_discover_pump()
+    }
+
+    pub(crate) fn viewstate_run(&self, cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
+        if matches!(&cmd, crate::stores::viewstate::ViewStateCmd::Reset) {
+            return self.stores.viewstate_run(cmd);
+        }
+        let directory = self.directory.view();
+        crate::stores::viewstate::run_with_owners(
+            cmd,
+            &mut |browse| self.stores.browse_run(browse),
+            &mut |hubs| crate::stores::hubs::apply_with_directory(hubs, directory),
+        )
+    }
+
+    pub(crate) fn viewstate_pump(&self) -> crate::stores::EndpointRefreshSet {
+        self.stores.viewstate_pump(self.directory.view())
+    }
+
+    /// Search commands snapshot their initial favourite-library ranking from the same retained
+    /// directory the screen read when it emitted the command.
+    pub(crate) fn search_run(&self, cmd: crate::stores::search::SearchCmd) -> bool {
+        crate::stores::search::run_with_directory(cmd, self.directory.view())
+    }
+
+    pub(crate) fn browse_directory(&self) -> crate::stores::browse::DirectoryView<'_> {
+        self.directory.view()
+    }
+
+    /// Refresh only the retained directory at synchronous application boundaries that must make
+    /// a routing decision before the next dispatcher frame.
+    pub(crate) fn refresh_browse_directory(&mut self) {
+        self.stores.browse.borrow_mut().capture_directory(&mut self.directory);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_registered_browse_for_test(
+        &mut self,
+        sids: [crate::plex::ServerId; 2],
+    ) {
+        self.stores.browse.borrow_mut().seed_registered_table_for_test(sids);
+        self.refresh_browse_directory();
+    }
+
     pub(crate) fn bind_primary(&mut self, recorded: u32) -> Result<(), &'static str> {
         let resource = crate::plex::client_opt().ok_or("missing controlled primary")?;
         if resource.instance_gen() != recorded || resource.id().raw() != 0 {
@@ -1039,7 +1116,6 @@ impl Rig<AppHost> for Bridge {
         Some(crate::ui::popover::host::live())
     }
     fn split(&mut self) -> Split<'_, AppHost> {
-        self.stores.activate();
         Split {
             mounter: &mut self.mounter,
             views: AppViews { auth: self.session.read(),
@@ -1052,7 +1128,6 @@ impl Rig<AppHost> for Bridge {
         }
     }
     fn deliver(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
-        self.stores.activate();
         if let AppMsg::Consent(command) = msg {
             if to != MachineId::Consent { return Handled::No; }
             match command {
@@ -1102,7 +1177,7 @@ impl Rig<AppHost> for Bridge {
         if let Some(io) = &mut self.home_io {
             match msg {
                 AppMsg::Store(StoreCmd::Hubs(cmd)) => {
-                    io.hubs(Some(cmd.clone()), 0.0).endpoints.emit(fx);
+                    io.hubs_with_directory(Some(cmd.clone()), 0.0, self.directory.view()).endpoints.emit(fx);
                     return Handled::Yes;
                 }
                 AppMsg::Store(StoreCmd::Browse(crate::stores::browse::BrowseCmd::Discovery(result))) => {
@@ -1110,15 +1185,21 @@ impl Rig<AppHost> for Bridge {
                     let outcome = self.stores.browse.borrow_mut()
                         .apply_discovery(result, &io.preferences);
                     endpoints.merge(outcome.endpoints);
+                    // Results are ingested after the frame's ordinary publication capture. Make
+                    // the retained directory visible to Onboard's Tick in this same dispatcher
+                    // turn instead of leaving the newly discovered rows one frame behind.
+                    if outcome.changed {
+                        self.stores.browse.borrow_mut().capture_directory(&mut self.directory);
+                    }
                     endpoints.emit(fx);
                     return Handled::Yes;
                 }
                 AppMsg::StoreWork(crate::stores::StoreWork::Hubs) => {
-                    io.hubs(None, parts.tick.dt()).endpoints.emit(fx);
+                    io.hubs_with_directory(None, parts.tick.dt(), self.directory.view()).endpoints.emit(fx);
                     return Handled::Yes;
                 }
                 AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery) => {
-                    io.discovery();
+                    io.discovery_owned(&self.stores);
                     return Handled::Yes;
                 }
                 _ => {}
@@ -1134,13 +1215,29 @@ impl Rig<AppHost> for Bridge {
             AppMsg::Store(StoreCmd::Browse(c)) => {
                 self.stores.browse.borrow_mut().step(&StoreEv::Cmd(c.clone()), &cx, fx)
             }
+            AppMsg::Store(StoreCmd::Search(c)) => {
+                self.search_run(c.clone());
+                Handled::Yes
+            }
+            AppMsg::Store(StoreCmd::Hubs(c)) => {
+                crate::stores::hubs::apply_with_directory(c.clone(), self.directory.view())
+                    .endpoints.emit(fx);
+                Handled::Yes
+            }
+            AppMsg::Store(StoreCmd::ViewState(c)) => {
+                self.viewstate_run(c.clone());
+                Handled::Yes
+            }
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
             AppMsg::HubsResult(result) => {
-                crate::stores::hubs::land(result).endpoints.emit(fx);
+                crate::stores::hubs::land_with_directory(result, self.directory.view())
+                    .endpoints.emit(fx);
                 Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Hubs) => {
-                crate::stores::hubs::HubsStore.step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
+                crate::stores::hubs::tick_with_directory(parts.tick.dt(), self.directory.view())
+                    .endpoints.emit(fx);
+                Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery) => {
                 self.stores.browse.borrow_mut().discover_pump().endpoints.emit(fx);
@@ -1151,7 +1248,9 @@ impl Rig<AppHost> for Bridge {
                     .step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us }) => {
-                crate::stores::search::SearchStore.step(&crate::stores::StoreEv::Pump { dt: *dt_us as f32 / 1_000_000.0 }, &cx, fx)
+                crate::stores::search::pump_with_directory(
+                    *dt_us as f32 / 1_000_000.0, self.directory.view());
+                Handled::Yes
             }
             _ => Handled::No,
         }
@@ -1330,14 +1429,14 @@ impl Bridge {
 }
 
 fn step_store(cmd: &StoreCmd, cx: &Cx<'_, AppHost>, fx: &mut Effects<'_, AppHost>) -> Handled {
-    use crate::stores::{hubs, metadata, person, search, viewstate};
+    use crate::stores::{metadata, person};
     match cmd {
         StoreCmd::Browse(_) => unreachable!("Browse is stepped by Bridge's owned store"),
-        StoreCmd::Hubs(c) => hubs::HubsStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::Hubs(_) => unreachable!("Hubs is stepped by Bridge with its Browse directory"),
         StoreCmd::Metadata(c) => metadata::MetadataStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
-        StoreCmd::Search(c) => search::SearchStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::Search(_) => unreachable!("Search is stepped by Bridge with its Browse directory"),
         StoreCmd::Person(c) => person::PersonStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
-        StoreCmd::ViewState(c) => viewstate::ViewStateStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::ViewState(_) => unreachable!("ViewState is stepped by Bridge with its Browse owner"),
     }
 }
 
@@ -1450,7 +1549,14 @@ fn frame_ingest(
 ) -> (&'static str, FrameReport) {
     #[cfg(test)]
     crate::testlock::assert_held("the store pump behind an app::bridge frame");
-    rig.stores.activate();
+    // Library used to be the only route that pumped Browse. Onboard schedules the roster-only
+    // owner work from its Tick, but Tick runs after views are captured; land the roster first so
+    // a discovery result and the directory publication are observed in one frame. Controlled
+    // execution instead recaptures at its addressed result delivery above, preserving recording.
+    if rig.home_io.is_none() {
+        let outcome = rig.stores.browse_discover_pump();
+        execute_endpoint_outcomes(d, outcome.endpoints);
+    }
     let (browse_changed, search_changed) = rig.capture_views(d);
     rig.capture_chrome(d);
     rig.deliver_home_commands(d);
@@ -1465,8 +1571,8 @@ fn frame_ingest(
     if browse_changed && !browse_notified {
         d.store_changed(StoreId::Browse.ord(), rig.stores.gen(StoreId::Browse));
     }
-    // A publication can change through a legacy producer without a store notice. Announce
-    // that captured change, but do not double-deliver an ordinary queued Search notice.
+    // Search can still change through a producer outside the dispatcher queue. Announce that
+    // captured change, but do not double-deliver an ordinary queued Search notice.
     if search_changed && !search_notified {
         d.store_changed(StoreId::Search.ord(), crate::stores::gen(StoreId::Search));
     }
@@ -1504,7 +1610,8 @@ fn frame_ingest(
     // `DrawFrame` (`ui::popover`'s panel and scrim, the profile chip's redraw, the glass track's
     // settled test, the navblur prototype). One writer, immediately after the container's own
     // frame, from the container's own transition — see `ui::nav`'s module doc.
-    let tab = d.nav.tabs.stack.pending_dest().and_then(pill_of_arg);
+    let tab = d.nav.tabs.stack.pending_dest()
+        .and_then(|arg| pill_of_arg(arg, rig.directory.view()));
     crate::ui::nav::publish(d.nav.tabs.stack.page_alpha(), d.nav.tabs.stack.chrome_alpha(), tab);
     // **The heartbeat's `route=` word IS the top page's own name** (§15.2). It used to be
     // `route_word(app.route)` with this line asserting the two agreed every frame; there is one
@@ -2071,17 +2178,14 @@ pub(crate) fn nav_push_with_return(
 /// The Library's pill is its TYPE, and the argument carries none (which library the grid shows is
 /// the `browse` store's business): the answer is the section the store is pointing at, which
 /// `nav_tab`'s `LibraryCmd::Enter` has already aimed.
-fn pill_of_arg(arg: &AppArg) -> Option<usize> {
+fn pill_of_arg(arg: &AppArg, directory: crate::stores::browse::DirectoryView<'_>) -> Option<usize> {
     use crate::app::chrome::{pill_of, Pill};
     match arg {
-        AppArg::Home => pill_of(Pill::Home),
-        AppArg::Search => pill_of(Pill::Search),
+        AppArg::Home => pill_of(directory, Pill::Home),
+        AppArg::Search => pill_of(directory, Pill::Search),
         AppArg::Library => {
-            let mut d = crate::stores::browse::DirectorySnapshot::default();
-            d.capture();
-            let view = d.view();
-            let kind = view.current().map(|i| view.sections()[i].kind)?;
-            pill_of(Pill::Section(kind))
+            let kind = directory.current().map(|i| directory.sections()[i].kind)?;
+            pill_of(directory, Pill::Section(kind))
         }
         _ => None,
     }
@@ -2110,7 +2214,7 @@ pub(crate) fn nav_tab(
             // Keep the pill the user was standing on under focus. An IDENTITY, not an index: a
             // pill can appear or disappear while the dip runs, and `HomeCmd::FocusStrip` is
             // delivered when Home MOUNTS, not now.
-            if let Some(pill) = focus_pill.filter(|pill| crate::app::chrome::pill_of(*pill).is_some()) {
+            if let Some(pill) = focus_pill.filter(|pill| crate::app::chrome::pill_of(rig.directory.view(), *pill).is_some()) {
                 let want = match pill {
                     Pill::Home => HomeTab::Home,
                     Pill::Search => HomeTab::Search,
@@ -2695,17 +2799,15 @@ mod tests {
     #[test]
     fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
         let _guard = crate::testlock::serial();
-        crate::stores::browse::reset_bootstrap_for_test();
         let session = crate::plex::session::TempSession::new("bridge-browse-tabs");
         session.watching("u-bridge-browse-tabs");
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let own = crate::plex::register_for_test(
             "bridge-tabs-own", "127.0.0.1", 9, "synthetic", "fixture");
         let shared = crate::plex::register_for_test(
             "bridge-tabs-shared", "127.0.0.1", 10, "synthetic", "fixture");
-        crate::browse::seed_registered_table_for_test([own, shared]);
         let mut rig = Bridge::for_test(|| 0);
+        rig.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
         let mut pages = Dispatcher::<AppHost>::new();
         rig.capture_views(&mut pages);
         rig.capture_chrome(&mut pages);
@@ -2727,7 +2829,6 @@ mod tests {
         assert_eq!(rig.chrome.labels().generation, changed_gen,
             "capturing again must not republish the owner's old tab generation");
         assert!(!rig.chrome.labels().labels.iter().any(|label| label == "TV Shows"));
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 
@@ -2735,10 +2836,8 @@ mod tests {
     fn production_bridges_do_not_share_browse_state_or_landings() {
         use std::io::{Read, Write};
         let _guard = crate::testlock::serial();
-        crate::stores::browse::reset_bootstrap_for_test();
         let session = crate::plex::session::TempSession::new("bridge-browse-owners");
         session.watching("u-bridge-browse-owners");
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback bind");
         let port = listener.local_addr().unwrap().port();
@@ -2770,9 +2869,9 @@ mod tests {
             "bridge-browse-own", "127.0.0.1", 9, "synthetic", "fixture");
         let shared = crate::plex::register_for_test(
             "bridge-browse-shared", "127.0.0.1", port as i32, "synthetic", "fixture");
-        crate::browse::seed_registered_table_for_test([own, shared]);
         let mut first = Bridge::for_test(|| 0);
         let mut second = Bridge::for_test(|| 0);
+        first.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
         first.stores.browse.borrow_mut().prepare_page_for_test(shared);
         let mut pages = Dispatcher::<AppHost>::new();
         frame(&mut pages, &mut first, AppArg::Library, tick(0), vec![]);
@@ -2788,7 +2887,6 @@ mod tests {
         server.join().unwrap();
         assert!(!second.stores.browse.borrow().has_page_result_for_test(),
             "the origin worker must not write the other Bridge's adapter");
-        first.stores.activate();
         let mut page_landed = false;
         for _ in 0..100_000 {
             if first.stores.browse.borrow_mut().pump().changed {
@@ -2819,7 +2917,6 @@ mod tests {
         assert_eq!(notices.0, 1,
             "capture publication and notice drain must coalesce one page into one StoreChanged");
         assert!(first.stores.take_notices().is_empty());
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 
@@ -3195,7 +3292,6 @@ mod tests {
         let _g = crate::testlock::serial();
         let _session = crate::plex::session::TempSession::new("endpoint-edges");
         crate::plex::reset_servers_for_test();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
         let a = crate::plex::register_for_test("endpoint-a", "127.0.0.1", 9, "synthetic", "cid");
         let b = crate::plex::register_for_test("endpoint-b", "127.0.0.1", 10, "synthetic", "cid");
@@ -3263,7 +3359,8 @@ mod tests {
                 crate::auth::SessionCmd::RequestEndpoint { sid })) if sid == b));
             crate::browse::with_refused_discovery_for_test(|| {
                 let client = crate::plex::client_for(a).unwrap();
-                crate::browse::queue_discovery_for_test(client, client.token_gen(), false);
+                rig.stores.browse.borrow_mut().queue_discovery_for_test(
+                    client, client.token_gen(), false);
                 let mut out = Vec::new();
                 let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Browse.ord()), &mut present);
                 rig.deliver(MachineId::Store(StoreId::Browse.ord()),
@@ -3272,7 +3369,7 @@ mod tests {
                 assert_eq!(out.len(), 1);
                 assert!(matches!(out[0].fx, Fx::App(AppFx::Session(
                     crate::auth::SessionCmd::RequestEndpoint { sid })) if sid == a));
-                let endpoints = crate::app::boot::activate_server();
+                let endpoints = crate::app::boot::activate_server_owned(&mut rig);
                 let mut boot_executed = Vec::new();
                 execute_endpoint_outcomes_with(endpoints, |command| {
                     let crate::auth::SessionCmd::RequestEndpoint { sid } = command
@@ -3282,7 +3379,6 @@ mod tests {
                 assert_eq!(boot_executed, expected);
             });
         });
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
         crate::plex::reset_servers_for_test();
     }
@@ -3349,7 +3445,6 @@ mod tests {
                 (2, 2, true, false, 1, 2, "3"),
                 (1, 2, false, true, 1, 2, "1"),
             ] {
-                crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
                 crate::pms::seed_grid_for_test(3, 4);
                 let mut d = Dispatcher::<AppHost>::new();
                 let mut rig = Bridge::for_test(|| 0);
@@ -3391,7 +3486,6 @@ mod tests {
     fn mounted_home_navigation_stays_inside_a_full_or_oversized_catalog() {
         let _guard = crate::testlock::serial();
         for offered in [crate::pms::MAX_SHELVES, crate::pms::MAX_SHELVES + 5] {
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             crate::pms::seed_grid_for_test(offered, 3);
             let mut d = Dispatcher::<AppHost>::new();
             let mut rig = Bridge::for_test(|| 0);
@@ -3425,7 +3519,6 @@ mod tests {
     #[test]
     fn hero_edge_keys_page_without_seating_a_pager_or_leaving_the_control() {
         let _guard = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
@@ -3462,7 +3555,6 @@ mod tests {
     #[test]
     fn a_removed_home_type_tab_recovers_to_home_not_the_profile_chip() {
         let _guard = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
@@ -3484,7 +3576,6 @@ mod tests {
     fn home_return_restores_the_offscreen_item_and_viewport_after_retention_or_eviction() {
         let _guard = crate::testlock::serial();
         for (evict, reorder) in [(true, false), (false, false), (true, true), (false, true)] {
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             crate::pms::seed_grid_for_test(6, 24);
             let mut d = Dispatcher::<AppHost>::new();
             let mut rig = Bridge::for_test(|| 0);
@@ -3548,25 +3639,22 @@ mod tests {
         let _guard = crate::testlock::serial();
         struct RegistryCleanup;
         impl Drop for RegistryCleanup {
-            fn drop(&mut self) { crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset); crate::plex::reset_servers_for_test(); }
+            fn drop(&mut self) { crate::plex::reset_servers_for_test(); }
         }
         let _cleanup = RegistryCleanup;
         let session = crate::plex::session::TempSession::new("owned-library-return");
         session.watching("u-owned-library-return");
         for evict in [false, true] {
-            crate::stores::browse::reset_bootstrap_for_test();
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
             let sid = crate::plex::register_for_test("library-return-own", "127.0.0.1", 9, "synthetic", "fixture");
             let shared = crate::plex::register_for_test("library-return-shared", "127.0.0.1", 10, "synthetic", "fixture");
             crate::plex::set_current(sid);
-            crate::browse::seed_registered_table_for_test([sid, shared]);
-            let mut directory = crate::stores::browse::DirectorySnapshot::default();
-            directory.capture();
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
-            crate::browse::seed_items_for_test(120);
             let mut d = Dispatcher::<AppHost>::new();
             let mut rig = Bridge::for_test(|| 0);
+            rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
+            rig.refresh_browse_directory();
+            rig.browse_run(crate::stores::browse::BrowseCmd::SetCur(0));
+            rig.stores.browse.borrow_mut().seed_items_for_test(120);
             frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
             d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
             Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 });
@@ -3598,51 +3686,52 @@ mod tests {
                     "return geometry changed: {before:?} -> {after:?}, evicted={evict}, frame={i}");
             }
         }
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     #[test]
     fn library_publishes_the_actual_container_strip() {
         let _guard = crate::testlock::serial();
-        crate::stores::browse::reset_bootstrap_for_test();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-        crate::browse::seed_two_source_table_for_test();
         let mut dispatcher = Dispatcher::<AppHost>::new();
         let mut bridge = Bridge::for_test(|| 0);
+        bridge.stores.browse.borrow_mut().seed_two_source_table_for_test();
+        bridge.refresh_browse_directory();
         super::show_page(&mut dispatcher, AppArg::Library);
         bridge.capture_chrome(&mut dispatcher);
         let base = crate::ui::dispatch::STRIP_BASE;
         assert_eq!(dispatcher.nav.tabs.strip.iter().map(|member| member.elem).collect::<Vec<_>>(),
             vec![base + 4, base, base + 1, base + 2, base + 3]);
         assert_eq!(dispatcher.nav.tabs.strip_fallback, Some(base));
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 
     #[test]
     fn all_splits_in_one_frame_keep_the_same_library_listing() {
         use crate::ui::dispatch::Rig;
         let _guard = crate::testlock::serial();
-        crate::stores::browse::reset_bootstrap_for_test();
-        crate::browse::seed_two_source_table_for_test();
-        crate::browse::seed_items_for_test(3);
-        crate::browse::section_hubs::seed_shelves_for_test(crate::browse::cur(), &["shelves"], 3);
         let mut rig = super::Bridge::for_test(|| 0);
+        {
+            let mut browse = rig.stores.browse.borrow_mut();
+            browse.seed_two_source_table_for_test();
+            browse.seed_items_for_test(3);
+            browse.seed_shelves_for_test(0, &["shelves"], 3);
+        }
+        let mut dispatcher = Dispatcher::<AppHost>::new();
+        rig.capture_views(&mut dispatcher);
         let id = rig.split().views.listing.id();
         {
             let split = rig.split();
             assert_eq!(split.views.listing.total(), 3);
             assert_eq!(split.views.directory.sections().len(), 4);
             assert_eq!(split.views.section_hubs.shelves()[0].items.len(), 3);
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-            assert!(split.views.listing.item(2).is_some());
-            assert_eq!(split.views.section_hubs.shelves()[0].items.len(), 3);
-            assert_eq!(split.views.directory.sections().len(), 4);
         }
+        let retained = (rig.listing.clone(), rig.directory.clone(), rig.section_hubs.clone());
+        rig.browse_run(crate::stores::browse::BrowseCmd::Reset);
+        assert!(retained.0.view().item(2).is_some());
+        assert_eq!(retained.2.view().shelves()[0].items.len(), 3);
+        assert_eq!(retained.1.view().sections().len(), 4);
         assert_eq!(rig.split().views.listing.id(), id);
         assert_eq!(rig.split().views.listing.total(), 3);
         assert_eq!(rig.split().views.section_hubs.shelves()[0].items.len(), 3);
         assert_eq!(rig.split().views.directory.sections().len(), 4);
-        let mut dispatcher = Dispatcher::<AppHost>::new();
         rig.capture_views(&mut dispatcher);
         assert!(rig.split().views.listing.id().is_none());
         assert_eq!(rig.split().views.listing.total(), -1);
@@ -3672,7 +3761,6 @@ mod tests {
     #[test]
     fn removing_the_pressed_home_item_cancels_instead_of_activating_its_replacement() {
         let _guard = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
@@ -3696,7 +3784,6 @@ mod tests {
     #[test]
     fn a_midframe_reorder_keeps_painted_keys_matched_and_a_click_activates_the_seen_item() {
         let _guard = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
@@ -3742,7 +3829,6 @@ mod tests {
             }
         }
         let _guard = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
@@ -3772,7 +3858,6 @@ mod tests {
     #[test]
     fn supplied_home_results_use_the_dispatcher_without_consuming_live_arrivals() {
         let _guard = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
         crate::pms::queue_test_landing(Some(5));
         let captured = take_hubs_results().pop().unwrap();
@@ -3798,7 +3883,6 @@ mod tests {
     fn store_work_is_addressed_and_idle_polling_does_not_invent_a_change() {
         use crate::stores::StoreWork;
         let _guard = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::pms::seed_for_test(0, crate::pms::HubState::Ready);
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
@@ -3818,6 +3902,68 @@ mod tests {
                 &AppMsg::StoreWork(work), &parts, &mut fx), Handled::No);
         }
         crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+    }
+
+    #[test]
+    fn onboard_frame_lands_owned_discovery_before_capturing_its_directory() {
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test(
+            "onboard-same-tick", "127.0.0.1", 9, "synthetic", "fixture");
+        let client = crate::plex::client_for(sid).unwrap();
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        rig.stores.browse.borrow_mut().queue_discovery_for_test(
+            client, client.token_gen(), true);
+
+        assert!(rig.browse_directory().sources().is_empty(),
+            "the queued result has not been published before the frame");
+        frame(&mut d, &mut rig, AppArg::Onboard, tick(0), vec![]);
+
+        assert_eq!(rig.browse_directory().sources().len(), 1,
+            "the pre-capture owner pump publishes discovery to Onboard in the same tick");
+        assert_eq!(rig.browse_directory().sources()[0].0, sid);
+        assert_eq!(rig.browse_directory().discovery(), crate::browse::SecFetch::Ready);
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn controlled_discovery_recaptures_the_directory_in_its_delivery_turn() {
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let mut rig = Bridge::for_test(|| 0);
+        let sid = crate::plex::register_for_test(
+            "same-turn-discovery", "127.0.0.1", 9, "synthetic", "fixture");
+        let client = crate::plex::client_for(sid).unwrap();
+        rig.stores.browse.borrow_mut().queue_discovery_for_test(
+            client, client.token_gen(), true);
+        let result = rig.stores.browse.borrow_mut().take_discovery().unwrap();
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
+        rig.home_io = Some(crate::app::HomeIo {
+            replay: false,
+            preferences: Default::default(),
+            requests: Vec::new(),
+            admissions: Default::default(),
+            failure: None,
+            profile: publisher.snapshot(),
+        });
+        assert!(rig.browse_directory().sources().is_empty());
+        let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
+            owner: InputOwner::Entry(EntryId(0)) };
+        let mut present = Present::new();
+        let mut effects = Vec::new();
+        let mut fx = Effects::new(
+            &mut effects, MachineId::Store(StoreId::Browse.ord()), &mut present);
+
+        assert_eq!(rig.deliver(MachineId::Store(StoreId::Browse.ord()),
+            &AppMsg::Store(StoreCmd::Browse(crate::stores::browse::BrowseCmd::Discovery(result))),
+            &parts, &mut fx), Handled::Yes);
+        drop(fx);
+
+        assert_eq!(rig.browse_directory().sources().len(), 1,
+            "the result is visible to the following screen Tick, not the next frame capture");
+        crate::plex::reset_servers_for_test();
     }
 
     use super::*;
@@ -4694,12 +4840,10 @@ mod tests {
     #[test]
     fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() {
         let _guard = crate::testlock::serial();
-        crate::stores::browse::reset_bootstrap_for_test();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-        crate::browse::seed_two_source_table_for_test();
-
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
+        rig.stores.browse.borrow_mut().seed_two_source_table_for_test();
+        rig.refresh_browse_directory();
 
         // A synthetic, artificially wide vocabulary — nothing to do with Search's real labels —
         // whose reveal target for its last entry sits well past the real strip's viewport, so
@@ -4736,7 +4880,263 @@ mod tests {
             "the strip's published rect must travel to its target once Search steps it each frame \
              (stale={stale_gap}, settled after 1s={settled_gap}) — losing the Search chrome arm \
              again silently reproduces the frozen capsule / stale pointer targets this pins");
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    }
+
+    fn directory_policy_fixture(
+        own: crate::plex::ServerId,
+        hidden: crate::plex::ServerId,
+    ) -> crate::stores::browse::DirectorySnapshot {
+        let section = |sid, key, section, title: &str, pinned| {
+            crate::stores::browse::SectionView {
+                borrowed: false,
+                sid: Some(sid),
+                key,
+                kind: crate::stores::browse::SecKind::Movie,
+                row: crate::stores::browse::SrcRow {
+                    section,
+                    title: title.into(),
+                    pinned,
+                    current: section == 0,
+                    ..Default::default()
+                },
+            }
+        };
+        crate::stores::browse::DirectorySnapshot::fixture(41, 0, vec![
+            section(own, 1, 0, "Retained Movies", true),
+            section(hidden, 2, 1, "Hidden Movies", false),
+        ])
+    }
+
+    struct DirectoryPolicyCleanup;
+
+    impl Drop for DirectoryPolicyCleanup {
+        fn drop(&mut self) {
+            crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
+            crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+            crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+            crate::plex::reset_servers_for_test();
+            let _ = crate::stores::take_notices();
+        }
+    }
+
+    #[test]
+    fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test(
+            "bridge-viewstate-directory", "127.0.0.1", 9, "synthetic", "fixture");
+        let _cleanup = DirectoryPolicyCleanup;
+        let mut rig = Bridge::for_test(|| 0);
+        rig.directory = directory_policy_fixture(sid, sid);
+        crate::pms::seed_two_library_home_for_test(sid, rig.directory.view());
+        crate::viewstate::hold_inflight_for_test(sid, "held");
+        let _ = rig.stores.take_notices();
+
+        assert!(rig.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+            sid,
+            rk: "alpha".into(),
+            write: crate::viewstate::Write::Watched,
+            detail: None,
+            guid: String::new(),
+        }));
+
+        let snapshot = crate::pms::hubs_snapshot();
+        let hub = snapshot.view().hub(0).expect("the pinned library's shelf");
+        assert_eq!(hub.items.iter().map(|item| item.rk.as_str()).collect::<Vec<_>>(), ["alpha"],
+            "the optimistic callback cannot restore the unpinned sibling library");
+        assert!(hub.items[0].watched);
+        let notices = rig.stores.take_notices();
+        for store in [StoreId::Browse, StoreId::Hubs, StoreId::ViewState] {
+            assert_eq!(notices.iter().filter(|(id, _)| *id == store).count(), 1,
+                "the synchronous edit preserves one notice for {}", store.name());
+        }
+    }
+
+    /// Detail owns the press decision, but the Bridge owns the retained Browse directory needed
+    /// by ViewState's optimistic Hubs edit. Keep both halves on the production dispatcher path:
+    /// a direct screen-side `viewstate::apply` passes under `cfg(test)` and panics in production.
+    #[test]
+    fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_frame() {
+        use crate::ui::dispatch::Tap;
+
+        struct ViewStateDispatch {
+            sid: crate::plex::ServerId,
+            app_effects: usize,
+            store_deliveries: usize,
+        }
+
+        impl Tap<AppHost> for ViewStateDispatch {
+            fn effect(&mut self, _: u64, stamped: &crate::ui::machine::Stamped<AppHost>) {
+                match &stamped.fx {
+                    Fx::App(AppFx::Store(StoreId::ViewState,
+                        StoreCmd::ViewState(crate::stores::viewstate::ViewStateCmd::Request {
+                            sid, rk, write, detail, guid,
+                        }))) => {
+                        assert_eq!((*sid, rk.as_str(), *write, detail.as_deref(), guid.as_str()),
+                            (self.sid, "movie", crate::viewstate::Write::Watched,
+                                Some(""), "plex://movie"));
+                        self.app_effects += 1;
+                    }
+                    Fx::Deliver(MachineId::Store(ord), Delivery::Machine(AppMsg::Store(
+                        StoreCmd::ViewState(crate::stores::viewstate::ViewStateCmd::Request {
+                            sid, rk, write, detail, guid,
+                        })))) => {
+                        assert_eq!(*ord, StoreId::ViewState.ord());
+                        assert_eq!((*sid, rk.as_str(), *write, detail.as_deref(), guid.as_str()),
+                            (self.sid, "movie", crate::viewstate::Write::Watched,
+                                Some(""), "plex://movie"));
+                        self.store_deliveries += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test(
+            "bridge-detail-viewstate", "127.0.0.1", 9, "synthetic", "fixture");
+        let _cleanup = DirectoryPolicyCleanup;
+        let route = AppArg::Content(ContentArg::Detail { sid, rk: "movie".into() });
+        let mut dispatcher = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        dispatcher.request(MachineId::Nav, NavOp::Root(route));
+        dispatcher.frame_with(&mut rig, tick(0), Vec::new(), Vec::new(), &mut NoTap, false);
+
+        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+            sid,
+            rk: "movie".into(),
+            kind: "movie".into(),
+            watched: false,
+            guid: "plex://movie".into(),
+            ..Default::default()
+        }));
+        dispatcher.frame_with(&mut rig, tick(1), Vec::new(), Vec::new(), &mut NoTap, false);
+        let play = dispatcher.focus().expect("Detail seats its Play control");
+        dispatcher.frame_with(&mut rig, tick(2), script_key(Key::Right, tick(2)), Vec::new(),
+            &mut NoTap, false);
+        let watch = dispatcher.focus().expect("RIGHT reaches the watch control");
+        assert_ne!(watch.elem, play.elem);
+
+        crate::viewstate::hold_inflight_for_test(sid, "held");
+        let instance = dispatcher.nav.top_page().and_then(|entry| entry.inst.as_ref())
+            .expect("the Detail page is mounted").id;
+        dispatcher.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+            Delivery::Screen(ScreenEvent::Activate(watch.elem))));
+        let mut tap = ViewStateDispatch { sid, app_effects: 0, store_deliveries: 0 };
+        dispatcher.frame_with(&mut rig, tick(3), Vec::new(), Vec::new(), &mut tap, false);
+
+        assert_eq!((tap.app_effects, tap.store_deliveries), (1, 1),
+            "the Detail effect must cross the addressed Bridge store delivery exactly once");
+        assert!(crate::metadata::current().is_some_and(|detail| detail.watched),
+            "the owning Bridge applies the optimistic edit before the press frame ends");
+        assert_ne!(dispatcher.focus().expect("the watch control remains focused").elem, watch.elem,
+            "same-frame reconciliation follows the watch control to its new identity");
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+    }
+
+    #[test]
+    fn hubs_land_and_tick_keep_the_frame_directory_policy() {
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let own = crate::plex::register_for_test(
+            "bridge-hubs-own", "127.0.0.1", 9, "synthetic", "fixture");
+        let hidden = crate::plex::register_for_test(
+            "bridge-hubs-hidden", "127.0.0.1", 10, "synthetic", "fixture");
+        let _cleanup = DirectoryPolicyCleanup;
+        let mut rig = Bridge::for_test(|| 0);
+        rig.directory = directory_policy_fixture(own, hidden);
+        let directory = rig.directory.clone();
+
+        crate::pms::with_refused_fetches_for_test(|| {
+            let _ = crate::stores::hubs::apply_with_directory(
+                crate::stores::hubs::HubsCmd::Reset, directory.view());
+            let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
+                owner: InputOwner::Entry(EntryId(0)) };
+            let mut present = Present::new();
+            let mut effects = Vec::new();
+            let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);
+            assert_eq!(rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
+                &AppMsg::Store(StoreCmd::Hubs(crate::stores::hubs::HubsCmd::RefetchHubs)),
+                &parts, &mut fx), Handled::Yes);
+            drop(fx);
+            assert_eq!(effects.iter().map(|effect| match &effect.fx {
+                Fx::App(AppFx::Session(crate::auth::SessionCmd::RequestEndpoint { sid })) => *sid,
+                _ => panic!("Hubs recovery was not preserved as a Session effect"),
+            }).collect::<Vec<_>>(), [own],
+                "the command must use the retained directory before landing or ticking");
+            effects.clear();
+            let _ = crate::stores::take_notices();
+
+            crate::pms::queue_test_landing(Some(1));
+            let result = crate::stores::hubs::take_results().pop().unwrap();
+            let generation_before_landing = crate::stores::gen(StoreId::Hubs);
+            let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);
+            assert_eq!(rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
+                &AppMsg::HubsResult(result), &parts, &mut fx), Handled::Yes);
+            drop(fx);
+            assert!(effects.is_empty());
+            let generation = crate::stores::gen(StoreId::Hubs);
+            assert_eq!(generation, generation_before_landing + 1);
+            assert_eq!(crate::stores::take_notices(), [(StoreId::Hubs, generation)],
+                "one changed landing owes exactly one Hubs notice");
+            let sources_after_land = crate::stores::hubs::apply_with_directory(
+                crate::stores::hubs::HubsCmd::Retry, directory.view());
+            assert_eq!(sources_after_land.endpoints.iter().map(|request| request.sid).collect::<Vec<_>>(), [own],
+                "landing must keep the retained frame directory");
+
+            let _ = crate::stores::hubs::apply_with_directory(
+                crate::stores::hubs::HubsCmd::Reset, directory.view());
+            let _ = crate::stores::hubs::apply_with_directory(
+                crate::stores::hubs::HubsCmd::RefetchHubs, directory.view());
+            let _ = crate::stores::take_notices();
+            effects.clear();
+            let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);
+            assert_eq!(rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
+                &AppMsg::StoreWork(crate::stores::StoreWork::Hubs), &parts, &mut fx), Handled::Yes);
+            drop(fx);
+            assert!(effects.is_empty(),
+                "tick must not admit the source excluded by this frame's retained directory");
+            assert!(crate::stores::take_notices().is_empty(),
+                "an idle retained-directory tick invents no Hubs notice");
+        });
+    }
+
+    #[test]
+    fn search_capture_and_pump_keep_the_frame_directory_policy() {
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let own = crate::plex::register_for_test(
+            "bridge-search-own", "127.0.0.1", 9, "synthetic", "fixture");
+        let hidden = crate::plex::register_for_test(
+            "bridge-search-hidden", "127.0.0.1", 10, "synthetic", "fixture");
+        let _cleanup = DirectoryPolicyCleanup;
+        let mut rig = Bridge::for_test(|| 0);
+        rig.search_run(crate::stores::search::SearchCmd::Reset);
+
+        let mut pages = Dispatcher::<AppHost>::new();
+        rig.capture_views(&mut pages);
+        assert!(rig.directory.view().sections().is_empty(),
+            "a fresh Bridge owner starts empty");
+        assert!(rig.search.view().scope().sources().iter().all(|source| source.libraries.is_empty()),
+            "Search capture must describe the same retained directory as the rest of the frame");
+
+        let directory = directory_policy_fixture(own, hidden);
+        rig.directory = directory.clone();
+        rig.search_run(crate::stores::search::SearchCmd::SetQuery("same frame".into()));
+        let query_generation = crate::search::query_gen();
+        let _ = crate::stores::take_notices();
+        let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
+            owner: InputOwner::Entry(EntryId(0)) };
+        let mut present = Present::new();
+        let mut effects = Vec::new();
+        let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Search.ord()), &mut present);
+        assert_eq!(rig.deliver(MachineId::Store(StoreId::Search.ord()),
+            &AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us: 0 }), &parts, &mut fx), Handled::Yes);
+        assert_eq!(crate::search::query_gen(), query_generation,
+            "the pump must not supersede against a different directory in the same frame");
+        assert!(crate::stores::take_notices().is_empty(),
+            "an idle retained-directory Search pump invents no notice");
     }
 
     /// The account-menu lift is a second PAINT of this bridge's captured chrome, not a second

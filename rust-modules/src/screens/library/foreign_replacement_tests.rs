@@ -5,6 +5,7 @@ use crate::ui::focus::{FocusEngine, Outcome};
 use crate::ui::machine::{Host, InputOwner, Tick};
 
 struct TestHost;
+
 #[derive(Clone, Copy)]
 struct Views<'a> {
     listing: crate::stores::browse::ListingView<'a>,
@@ -41,17 +42,20 @@ struct Publication {
     hubs: crate::stores::browse::HubsSnapshot,
 }
 impl Publication {
-    fn replace(sids: [crate::plex::ServerId; 2], current: usize) -> Self {
-        crate::stores::browse::apply(BrowseCmd::Reset);
-        crate::browse::seed_registered_table_for_test(sids);
+    fn replace(
+        stores: &crate::stores::Stores,
+        sids: [crate::plex::ServerId; 2],
+        current: usize,
+    ) -> Self {
+        stores.browse.borrow_mut().seed_registered_table_for_test(sids);
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
-        directory.capture(); // Resolve profile pins before choosing the intended section.
-        crate::stores::browse::apply(BrowseCmd::ApplyPins(vec![(0, true), (2, true)]));
-        crate::stores::browse::apply(BrowseCmd::SetCur(current));
-        crate::browse::seed_items_for_test(120);
-        directory.capture();
-        let listing = crate::stores::browse::listing_snapshot();
-        let hubs = crate::stores::browse::hubs_snapshot();
+        stores.capture_browse(&mut directory); // Resolve profile pins before choosing the intended section.
+        stores.browse_run(BrowseCmd::ApplyPins(vec![(0, true), (2, true)]));
+        stores.browse_run(BrowseCmd::SetCur(current));
+        stores.browse.borrow_mut().seed_items_for_test(120);
+        let publication = stores.capture_browse(&mut directory);
+        let listing = publication.listing;
+        let hubs = publication.section_hubs;
         let id = listing.view().id().unwrap();
         let hub_id = hubs.view().id().unwrap();
         assert_eq!(directory.view().current(), Some(current));
@@ -150,18 +154,17 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::stores::browse::apply(BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
-    crate::stores::browse::apply(BrowseCmd::Reset);
     crate::plex::reset_servers_for_test();
     let own = crate::plex::register_for_test("foreign-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared =
         crate::plex::register_for_test("foreign-shared", "127.0.0.1", 10, "synthetic", "fixture");
     for incoming_index in [0, 2] {
-        let outgoing = Publication::replace([own, shared], 0);
+        let stores = crate::stores::Stores::default();
+        let outgoing = Publication::replace(&stores, [own, shared], 0);
         let old_id = outgoing.listing.view().id().unwrap();
         let mut engine = FocusEngine::new();
         let mut page = LibraryScreen::new(ENTRY, INSTANCE, SecKind::Movie);
@@ -210,7 +213,7 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
         assert!(!page.page_fade.is_swapping());
         assert!(page.pending.grid().is_some());
 
-        let incoming = Publication::replace([own, shared], incoming_index);
+        let incoming = Publication::replace(&stores, [own, shared], incoming_index);
         let id = incoming.listing.view().id().unwrap();
         assert_ne!(id.epoch, old_id.epoch);
         assert_eq!(id.sid, if incoming_index == 0 { own } else { shared });

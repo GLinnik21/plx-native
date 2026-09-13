@@ -230,12 +230,37 @@ pub(crate) fn is_busy() -> bool {
 /// than a degraded one: the worker looks it up. It is what a watched write FANS OUT on, so that a
 /// title held by more than one source ends up watched on all of them (module doc). It is ignored
 /// for [`Write::RemoveFromDeck`], which stays on the server it was pressed on.
+#[allow(dead_code)] // Compatibility helper while callers migrate to the owner-aware store path.
 fn request(
     sid: ServerId,
     rk: &str,
     w: Write,
     detail: Option<String>,
     guid: &str,
+) -> bool {
+    request_with_browse(sid, rk, w, detail, guid, &mut |_| false)
+}
+
+fn request_with_browse(
+    sid: ServerId,
+    rk: &str,
+    w: Write,
+    detail: Option<String>,
+    guid: &str,
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+) -> bool {
+    request_with_owners(sid, rk, w, detail, guid, browse,
+        &mut |cmd| crate::stores::hubs::apply(cmd))
+}
+
+fn request_with_owners(
+    sid: ServerId,
+    rk: &str,
+    w: Write,
+    detail: Option<String>,
+    guid: &str,
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+    hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
 ) -> bool {
     // `client_for`, never `client()`: the item may live on a share, and a scrobble sent to the wrong
     // machine marks a DIFFERENT film watched there (both servers number their items from 1). None is
@@ -252,7 +277,7 @@ fn request(
     // OPTIMISTIC, before the request: the press must land on the panel now, not one WAN round trip
     // from now. Only THIS copy — the other sources' keys are not known until the fan-out resolves
     // them, which is what [`pump`] finishes the job with.
-    edit_local(sid, rk, w);
+    edit_local_with_owners(sid, rk, w, browse, hubs);
     coalesce(sid, rk, w);
     queue().push(Req {
         sid,
@@ -274,7 +299,24 @@ fn request(
 /// Called from two places, for one reason. [`request`] calls it optimistically for the copy the
 /// user pressed, and [`pump`] calls it for each OTHER source's copy the fan-out reached — which
 /// cannot be known any earlier than that, because discovering them is the round trip.
+#[allow(dead_code)] // Compatibility helper retained for legacy direct tests/callers.
 fn edit_local(sid: ServerId, rk: &str, w: Write) {
+    edit_local_with_browse(sid, rk, w, &mut |_| false);
+}
+
+fn edit_local_with_browse(sid: ServerId, rk: &str, w: Write,
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool) {
+    edit_local_with_owners(sid, rk, w, browse,
+        &mut |cmd| crate::stores::hubs::apply(cmd));
+}
+
+fn edit_local_with_owners(
+    sid: ServerId,
+    rk: &str,
+    w: Write,
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+    hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
+) {
     match w {
         Write::Watched | Write::Unwatched => {
             let on = w == Write::Watched;
@@ -295,7 +337,7 @@ fn edit_local(sid: ServerId, rk: &str, w: Write) {
             // Through the store VOCABULARY (`crate::stores`, restructure phase 4) rather than the
             // data modules directly, so every store a press flips raises its own notice and a
             // migrated screen hears the optimistic edit the same way it hears a landing.
-            crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::EditItem {
+            hubs(crate::stores::hubs::HubsCmd::EditItem {
                 sid,
                 rk: rk.to_string(),
                 edit: crate::pms::LocalEdit::Watched(on),
@@ -305,7 +347,7 @@ fn edit_local(sid: ServerId, rk: &str, w: Write) {
                 rk: rk.to_string(),
                 on,
             });
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetWatchedLocal {
+            browse(crate::stores::browse::BrowseCmd::SetWatchedLocal {
                 sid,
                 rk: rk.to_string(),
                 on,
@@ -324,7 +366,7 @@ fn edit_local(sid: ServerId, rk: &str, w: Write) {
         // The one edit that can be stated with certainty: the server hides the item from the deck
         // and keeps everything else about it (`plex::Client::remove_from_continue_watching`).
         Write::RemoveFromDeck => {
-            crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::EditItem {
+            hubs(crate::stores::hubs::HubsCmd::EditItem {
                 sid,
                 rk: rk.to_string(),
                 edit: crate::pms::LocalEdit::LeftTheDeck,
@@ -332,7 +374,7 @@ fn edit_local(sid: ServerId, rk: &str, w: Write) {
             // …and the LIBRARY's own deck, which is a different shelf on a different screen and is
             // where this row is now reachable from at all (the Library's section Continue Watching
             // shelf, 2026-09-05).
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::LeftTheDeck {
+            browse(crate::stores::browse::BrowseCmd::LeftTheDeck {
                 sid,
                 rk: rk.to_string(),
             });
@@ -427,6 +469,16 @@ fn kick() {
 /// mounted, because the user can walk off Home (or off the detail page) between the press and the
 /// answer, and the refresh is owed either way.
 pub(crate) fn pump() -> crate::stores::EndpointRefreshSet {
+    pump_with_owners(
+        &mut |_| false,
+        &mut |cmd| crate::stores::hubs::apply(cmd),
+    )
+}
+
+pub(crate) fn pump_with_owners(
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+    hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
+) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     let due = retry_tick();
     // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay the server's answer is taken
@@ -448,7 +500,7 @@ pub(crate) fn pump() -> crate::stores::EndpointRefreshSet {
             // the ones their server took. A press that reached no other source does nothing here,
             // which is every press on a one-server install.
             for (osid, ork) in &done.also {
-                edit_local(*osid, ork, r.w);
+                edit_local_with_owners(*osid, ork, r.w, browse, hubs);
             }
             // The refresh is owed whether or not the server took it: on success it is the reconcile,
             // and on failure it is what puts the optimistic edit back to whatever the server really
@@ -468,12 +520,12 @@ pub(crate) fn pump() -> crate::stores::EndpointRefreshSet {
     if is_busy() {
         return endpoints; // a burst still has writes to send — one refresh at the end of it, not per write
     }
-    let hubs = unsafe { std::mem::take(&mut *addr_of_mut!(WANT_HUBS)) };
-    if hubs {
-        endpoints.merge(crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints);
+    let refresh_hubs = unsafe { std::mem::take(&mut *addr_of_mut!(WANT_HUBS)) };
+    if refresh_hubs {
+        endpoints.merge(hubs(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints);
         // the same staleness, one screen over: a library's own shelves carry watch state and its
         // own Continue Watching row, so the burst that made Home's hubs stale made these stale too
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
+        browse(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
         crate::ui::idle::invalidate();
     }
     endpoints
@@ -483,6 +535,20 @@ pub(crate) fn pump() -> crate::stores::EndpointRefreshSet {
 pub(crate) fn owe_hubs_refresh_for_test() {
     crate::testlock::assert_held("viewstate refresh fixture");
     unsafe { *addr_of_mut!(WANT_HUBS) = true; }
+}
+
+#[cfg(test)]
+pub(crate) fn hold_inflight_for_test(sid: ServerId, rk: &str) {
+    crate::testlock::assert_held("the viewstate inflight fixture");
+    unsafe {
+        *addr_of_mut!(SENT) = Some(Req {
+            sid,
+            rk: rk.into(),
+            w: Write::Watched,
+            detail: None,
+            guid: String::new(),
+        });
+    }
 }
 
 /// The owning application addresses the refresh to the mounted entry after the write burst.
@@ -656,10 +722,23 @@ fn reset() {
 /// `stores/viewstate.rs::run`, calling `request`/`reset` across the module boundary. Relocating
 /// it here is what lets those two go private.
 pub(crate) fn run(cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
+    run_with_browse(cmd, &mut |_| false)
+}
+
+pub(crate) fn run_with_browse(cmd: crate::stores::viewstate::ViewStateCmd,
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool) -> bool {
+    run_with_owners(cmd, browse, &mut |cmd| crate::stores::hubs::apply(cmd))
+}
+
+pub(crate) fn run_with_owners(
+    cmd: crate::stores::viewstate::ViewStateCmd,
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+    hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
+) -> bool {
     use crate::stores::viewstate::ViewStateCmd;
     match cmd {
         ViewStateCmd::Request { sid, rk, write, detail, guid } => {
-            request(sid, &rk, write, detail, &guid)
+            request_with_owners(sid, &rk, write, detail, &guid, browse, hubs)
         }
         ViewStateCmd::Reset => {
             reset();
@@ -672,12 +751,116 @@ pub(crate) fn run(cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn owner_callback_receives_the_optimistic_browse_edit_before_run_returns() {
+        let _g = crate::testlock::serial();
+        reset();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test(
+            "viewstate-owner", "127.0.0.1", 9, "synthetic", "fixture");
+        unsafe { *addr_of_mut!(SENT) = Some(req("held", Write::Watched, None)) };
+        let mut browse = Vec::new();
+        let mut hubs = Vec::new();
+
+        assert!(run_with_owners(
+            crate::stores::viewstate::ViewStateCmd::Request {
+                sid,
+                rk: "7".into(),
+                write: Write::Watched,
+                detail: None,
+                guid: String::new(),
+            },
+            &mut |cmd| { browse.push(cmd); true },
+            &mut |cmd| {
+                hubs.push(cmd);
+                crate::stores::StoreOutcome::default()
+            },
+        ));
+
+        assert!(matches!(hubs.as_slice(), [crate::stores::hubs::HubsCmd::EditItem {
+            sid: seen, rk, edit: crate::pms::LocalEdit::Watched(true)
+        }] if *seen == sid && rk == "7"));
+        assert!(matches!(browse.as_slice(), [crate::stores::browse::BrowseCmd::SetWatchedLocal {
+            sid: seen, rk, on: true
+        }] if *seen == sid && rk == "7"));
+        reset();
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn stores_route_the_optimistic_edit_to_the_addressed_browse_owner() {
+        let _g = crate::testlock::serial();
+        reset();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test(
+            "viewstate-stores-owner", "127.0.0.1", 9, "synthetic", "fixture");
+        let selected = crate::stores::Stores::default();
+        selected.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
+        selected.browse.borrow_mut().seed_items_for_test(1);
+        let decoy = crate::stores::Stores::default();
+        unsafe { *addr_of_mut!(SENT) = Some(req("held", Write::Watched, None)) };
+
+        assert!(selected.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+            sid,
+            rk: "1".into(),
+            write: Write::Watched,
+            detail: None,
+            guid: String::new(),
+        }));
+
+        assert!(!selected.browse.borrow_mut().listing_snapshot().view().item(0).unwrap().unwatched,
+            "the selected owner changes before the command returns");
+        assert!(decoy.browse.borrow_mut().listing_snapshot().view().item(0).is_none(),
+            "the unaddressed decoy is not used by the owner-aware callback");
+        reset();
+        drop((selected, decoy));
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn owner_callback_receives_fanout_edits_and_the_terminal_hubs_invalidation() {
+        let _g = crate::testlock::serial();
+        reset();
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+        let origin = ServerId::from_raw(0);
+        let other = ServerId::from_raw(1);
+        unsafe { *addr_of_mut!(SENT) = Some(Req {
+            sid: origin, rk: "7".into(), w: Write::Watched,
+            detail: None, guid: "plex://movie/7".into(),
+        }) };
+        *MAIL.lock().unwrap_or_else(|e| e.into_inner()) = Some(Done {
+            ok: true,
+            also: vec![(other, "70".into())],
+        });
+        let mut browse = Vec::new();
+        let mut hubs = Vec::new();
+
+        let _ = pump_with_owners(
+            &mut |cmd| { browse.push(cmd); true },
+            &mut |cmd| {
+                hubs.push(cmd);
+                crate::stores::StoreOutcome::default()
+            },
+        );
+
+        assert!(matches!(&hubs[0], crate::stores::hubs::HubsCmd::EditItem {
+            sid, rk, edit: crate::pms::LocalEdit::Watched(true)
+        } if *sid == other && rk == "70"));
+        assert!(matches!(hubs[1], crate::stores::hubs::HubsCmd::RefetchHubs),
+            "the fan-out edit lands before the terminal reconcile request");
+        assert!(matches!(&browse[0], crate::stores::browse::BrowseCmd::SetWatchedLocal {
+            sid, rk, on: true
+        } if *sid == other && rk == "70"));
+        assert!(matches!(browse[1], crate::stores::browse::BrowseCmd::HubsInvalidateAll));
+        reset();
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+    }
+
+    #[test]
     fn endpoint_outcomes_survive_the_viewstate_refetch_pump() {
         let _g = crate::testlock::serial();
         let _session = crate::plex::session::TempSession::new("endpoint-viewstate");
         reset();
         crate::plex::reset_servers_for_test();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
         let sid = crate::plex::register_for_test("endpoint-viewstate", "127.0.0.1", 9, "synthetic", "cid");
         unsafe { *addr_of_mut!(WANT_HUBS) = true; }
@@ -686,7 +869,6 @@ mod tests {
         assert_eq!(crate::stores::viewstate::pump().iter().count(), 0, "refetch is consumed once");
         reset();
         crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
     use super::*;
