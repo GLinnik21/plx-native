@@ -184,7 +184,7 @@ impl<'a> HubsView<'a> {
 }
 
 /// One section's shelves and the two axes' state. A field on [`super::SecState`].
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SecHubs {
     /// The set the current layout was built from. Empty and `committed == false` is "nothing
     /// published yet"; empty and `committed == true` is the answer "this library has no shelves",
@@ -200,8 +200,8 @@ pub(crate) struct SecHubs {
     /// Has [`kick`] ever been called for this section? Nothing here ticks or fetches until it has.
     armed: bool,
     /// **A fetch is WANTED and has not been claimed yet.** The per-section half of the
-    /// single-flight, and it exists because the claim itself is global (one mailbox, one flag —
-    /// this is a television with one screen, not a reason for N mailboxes).
+    /// single-flight, and it exists because the claim is shared by all sections in one Browse
+    /// adapter (one mailbox and flag per store, not one pair per section).
     ///
     /// Without it a refresh is silently lost, which is what a Codex review found on 2026-09-05:
     /// [`invalidate`] called [`spawn`] once, [`spawn`] returned early because another section held
@@ -218,7 +218,22 @@ pub(crate) struct SecHubs {
     retry_left: u32,
 }
 
+pub(super) struct HubAdapter {
+    pub(super) result: Mutex<Option<HubResult>>,
+    pub(super) fetching: AtomicBool,
+}
+
+impl Default for HubAdapter {
+    fn default() -> Self {
+        Self { result: Mutex::new(None), fetching: AtomicBool::new(false) }
+    }
+}
+
 impl SecHubs {
+    pub(super) fn needs_tick(&self) -> bool {
+        self.armed && (self.retry_left > 0 || (!self.published && self.first_paint_left > 0)
+            || (self.owed && self.retry_left == 0))
+    }
     fn revised(&mut self) {
         self.revision = self
             .revision
@@ -342,7 +357,7 @@ impl SecHubs {
 /// Arm a section's shelves and let the first fetch happen. Idempotent; call it every frame the
 /// screen wants shelves. **This is the only thing in the module that issues a request.**
 impl super::BrowseState {
-    pub(super) fn hubs_kick(&mut self, sec: usize) {
+    pub(super) fn hubs_kick(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>) {
         let Some(st) = self.state_mut(sec) else {
             return;
         };
@@ -356,11 +371,11 @@ impl super::BrowseState {
         if st.hubs.fails > 0 && !st.hubs.published {
             st.hubs.owed = true;
         }
-        self.hubs_pump_spawns();
+        self.hubs_pump_spawns(adapter);
     }
 
-    fn hubs_pump_spawns(&mut self) {
-        if HUB_FETCHING.load(Ordering::SeqCst) {
+    fn hubs_pump_spawns(&mut self, adapter: &Arc<super::BrowseAdapter>) {
+        if adapter.hubs.fetching.load(Ordering::SeqCst) {
             return;
         }
         let want = self
@@ -368,11 +383,11 @@ impl super::BrowseState {
             .iter()
             .position(|st| st.hubs.armed && st.hubs.owed && st.hubs.retry_left == 0);
         if let Some(sec) = want {
-            self.hubs_spawn(sec);
+            self.hubs_spawn(sec, adapter);
         }
     }
 
-    fn hubs_spawn(&mut self, sec: usize) {
+    fn hubs_spawn(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>) {
         let Some(key) = self.sections().get(sec).map(|s| s.key) else {
             return;
         };
@@ -383,17 +398,18 @@ impl super::BrowseState {
             return;
         };
         let token_gen = client.token_gen();
-        if HUB_FETCHING.swap(true, Ordering::SeqCst) {
+        if adapter.hubs.fetching.swap(true, Ordering::SeqCst) {
             return;
         }
         let epoch = self.table_epoch();
+        let worker_adapter = Arc::clone(&adapter);
         let spawned = crate::task::spawn_small("libhubs", move || {
             let shelves = catch_unwind(|| {
                 let mc = client.library_hubs(key, HUB_FETCH_COUNT)?;
                 Some(parse_hubs(&mc, sid))
             })
             .unwrap_or(None);
-            *HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(HubResult {
+            *worker_adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(HubResult {
                 epoch,
                 sec,
                 client,
@@ -406,18 +422,18 @@ impl super::BrowseState {
                 st.hubs.owed = false;
             }
         } else {
-            HUB_FETCHING.store(false, Ordering::SeqCst);
+            adapter.hubs.fetching.store(false, Ordering::SeqCst);
         }
     }
 
-    pub(crate) fn hubs_land(&mut self) -> bool {
+    pub(crate) fn hubs_land(&mut self, adapter: &Arc<super::BrowseAdapter>) -> bool {
         let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
-            HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()
+            adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some(result) = taken else {
             return false;
         };
-        HUB_FETCHING.store(false, Ordering::SeqCst);
+        adapter.hubs.fetching.store(false, Ordering::SeqCst);
         if result.epoch != self.table_epoch() {
             return false;
         }
@@ -460,7 +476,7 @@ impl super::BrowseState {
         true
     }
 
-    fn hubs_invalidate(&mut self, sec: usize) {
+    fn hubs_invalidate(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>) {
         if let Some(st) = self.state_mut(sec) {
             if st.hubs.armed {
                 st.hubs.fails = 0;
@@ -468,15 +484,15 @@ impl super::BrowseState {
                 st.hubs.owed = true;
             }
         }
-        self.hubs_pump_spawns();
+        self.hubs_pump_spawns(adapter);
     }
 
-    pub(crate) fn hubs_tick_all(&mut self) -> bool {
+    pub(crate) fn hubs_tick_all(&mut self, adapter: &Arc<super::BrowseAdapter>) -> bool {
         let mut moved = false;
         for st in self.states_mut() {
             moved |= st.hubs.tick();
         }
-        self.hubs_pump_spawns();
+        self.hubs_pump_spawns(adapter);
         moved
     }
 
@@ -550,10 +566,11 @@ impl super::BrowseState {
         hit
     }
 
-    pub(super) fn hubs_invalidate_all(&mut self) {
+    pub(super) fn hubs_invalidate_all(&mut self, adapter: &Arc<super::BrowseAdapter>) {
         for sec in 0..self.sections().len() {
-            self.hubs_invalidate(sec);
+            self.hubs_invalidate(sec, adapter);
         }
+        self.hubs_pump_spawns(adapter);
     }
 }
 
@@ -599,7 +616,7 @@ fn drop_from_deck(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str) -> boo
 }
 
 pub(super) fn kick(sec: usize) {
-    super::legacy_mut().hubs_kick(sec);
+    super::legacy_mut().hubs_kick(sec, &super::legacy_adapter());
 }
 
 /// Start ONE fetch for whichever armed section is owed one, if the single flight is free.
@@ -610,7 +627,7 @@ pub(super) fn kick(sec: usize) {
 /// alike. `tick_all` calls it every frame, so a section blocked by another's fetch is picked up on
 /// the frame that one lands.
 fn pump_spawns() {
-    super::legacy_mut().hubs_pump_spawns();
+    super::legacy_mut().hubs_pump_spawns(&super::legacy_adapter());
 }
 
 /// Mark a section's shelves stale — after playback, and after a view-state write. Home already
@@ -618,14 +635,14 @@ fn pump_spawns() {
 /// Continue Watching row needs the matching invalidation. The answer arrives as `Staged`, so a
 /// refresh never moves the grid under the eye.
 fn invalidate(sec: usize) {
-    super::legacy_mut().hubs_invalidate(sec);
+    super::legacy_mut().hubs_invalidate(sec, &super::legacy_adapter());
 }
 
 /// Advance every armed section by one frame. Called from [`super::pump`]; returns whether any
 /// section published something, which is a repaint. A section nobody has [`kick`]ed is inert here,
 /// which is what keeps this module dormant while it is wired in.
 pub(crate) fn tick_all() -> bool {
-    super::legacy_mut().hubs_tick_all()
+    super::legacy_mut().hubs_tick_all(&super::legacy_adapter())
 }
 
 /// The accessors a screen uses. Absent section = no shelves and `Fetching`, which is the same
@@ -731,7 +748,7 @@ pub(super) fn left_the_deck(sid: ServerId, rk: &str) -> bool {
 /// Marks rather than fetches: `owed` is spent by [`pump_spawns`] under the single-flight, so a
 /// twelve-library table costs one request at a time rather than twelve at once.
 pub(super) fn invalidate_all() {
-    super::legacy_mut().hubs_invalidate_all();
+    super::legacy_mut().hubs_invalidate_all(&super::legacy_adapter());
 }
 
 // ---- the fetch ------------------------------------------------------------------------------
@@ -739,7 +756,7 @@ pub(super) fn invalidate_all() {
 /// One section's shelves, in flight. Same shape as [`super::DirectoryResult`] and for the same
 /// reasons: the landing gate is the CLIENT LIFECYCLE and not just a generation, because `EPOCH`
 /// does not move when a slot is re-pointed or retokened.
-struct HubResult {
+pub(super) struct HubResult {
     epoch: u32,
     sec: usize,
     client: &'static crate::plex::Client,
@@ -749,18 +766,13 @@ struct HubResult {
     shelves: Option<Vec<Shelf>>,
 }
 
-static HUB_RESULT: Mutex<Option<HubResult>> = Mutex::new(None);
-/// The single-flight claim. **Released when a refused `spawn_small` returns false** as well as by
-/// the landing — miss either and this section never fetches shelves again for the session.
-pub(super) static HUB_FETCHING: AtomicBool = AtomicBool::new(false);
-
 fn spawn(sec: usize) {
-    super::legacy_mut().hubs_spawn(sec);
+    super::legacy_mut().hubs_spawn(sec, &super::legacy_adapter());
 }
 
 /// Take the mailbox and apply it. Called from [`super::pump`].
 pub(crate) fn land() -> bool {
-    super::legacy_mut().hubs_land()
+    super::legacy_mut().hubs_land(&super::legacy_adapter())
 }
 
 // ---- the pure half --------------------------------------------------------------------------
@@ -882,7 +894,7 @@ mod tests {
         first.set_cur(1);
         first.want(60, 120);
         first.bump_gen();
-        first.sections_gen = first.sections_gen.wrapping_add(1);
+        first.bump_sections_gen();
         first.src_facts_gen = first.src_facts_gen.wrapping_add(1);
         first
             .remembered

@@ -1,8 +1,8 @@
 //! **Stores as machines** (restructure spec §2.1/§2.2, phase 4; `docs/stores-as-machines.md`).
 //!
-//! Six data modules own the application's server-derived state — `browse`, `pms` (the Home
-//! hubs), `metadata`, `search`, `person`, `viewstate` — and every one is still the `static mut`
-//! + mailbox + `pump()` shape it was born with. This layer puts ONE entrance in front of each:
+//! Six data modules provide the application's server-derived state — `browse`, `pms` (the Home
+//! hubs), `metadata`, `search`, `person`, `viewstate`. Browse is physically owned by [`Stores`];
+//! the other five retain the compatibility global + mailbox shape. This layer puts ONE entrance in front of each:
 //! a [`StoreCmd`] is the complete, enumerated vocabulary of mutations, a store's `Machine::step`
 //! is the one place a legacy mutator is called, and every applied command or changed landing
 //! raises the store's NOTICE (a generation the shadow dispatcher delivers to every live
@@ -14,8 +14,8 @@
 //! the design note's §3 says why the shim is not a deferred queue in this phase. Either way the
 //! mutator has one caller and the notice is raised once.
 //!
-//! What lives here is the VOCABULARY and the machine; the data stays in the legacy modules until
-//! each screen's phase moves it (§14). This module names data crates, `ui::machine` and — since
+//! What lives here is the vocabulary and machine plus Browse's first production aggregate; the
+//! remaining data stays in the legacy modules until its ownership slice (§14). This module names data crates, `ui::machine` and — since
 //! phase 11's landing schedule — `ui::landgate`, and nothing else (spec §2.1's layer rule;
 //! `ci/check-deps.sh`'s `mutators` gate refuses the old spelling outside `stores/` and the data
 //! modules).
@@ -79,6 +79,50 @@ pub(crate) mod metadata;
 pub(crate) mod person;
 pub(crate) mod search;
 pub(crate) mod viewstate;
+
+/// Production store aggregate. Browse is the first physical owner to move here; the remaining
+/// stores retain their compatibility owners until their corresponding ownership slices land.
+pub(crate) struct Stores {
+    pub(crate) browse: std::rc::Rc<std::cell::RefCell<browse::BrowseStore>>,
+}
+
+impl Default for Stores {
+    fn default() -> Self {
+        let browse = std::rc::Rc::new(std::cell::RefCell::new(browse::BrowseStore::default()));
+        browse::activate(&browse);
+        Self { browse }
+    }
+}
+
+impl Stores {
+    #[cfg(test)]
+    pub(crate) fn production_bootstrap_for_test() -> Self {
+        let browse = std::rc::Rc::new(std::cell::RefCell::new(
+            browse::BrowseStore::production_bootstrap_for_test()));
+        browse::activate(&browse);
+        Self { browse }
+    }
+
+    pub(crate) fn activate(&mut self) {
+        browse::activate(&self.browse);
+    }
+
+    pub(crate) fn gen(&self, id: StoreId) -> u32 {
+        match id {
+            StoreId::Browse => self.browse.borrow().gen(),
+            _ => gen(id),
+        }
+    }
+
+    pub(crate) fn take_notices(&self) -> Vec<(StoreId, u32)> {
+        let mut notices = take_notices();
+        notices.retain(|(id, _)| *id != StoreId::Browse);
+        if let Some(generation) = self.browse.borrow().take_notice() {
+            notices.insert(0, (StoreId::Browse, generation));
+        }
+        notices
+    }
+}
 
 /// The application's stores, in the library's ordinal order (`StoreOrd`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -194,8 +238,9 @@ pub(crate) fn apply(cmd: StoreCmd) -> StoreOutcome {
 }
 
 // ---------------------------------------------------------------------------------------------
-// the notice: one generation per store, marked dirty by every applied command and every
-// changed landing, drained once a frame into the shadow dispatcher
+// the compatibility notices for the five not-yet-owned stores plus pre-Bridge Browse calls.
+// BrowseStore carries its production notice in the aggregate and drains the pre-Bridge notice once.
+// An owned aggregate thereafter discards any retired compatibility Browse generation.
 // ---------------------------------------------------------------------------------------------
 
 struct Notice {
@@ -208,6 +253,11 @@ const fn notice() -> Notice {
         gen: AtomicU32::new(0),
         dirty: AtomicBool::new(false),
     }
+}
+
+pub(crate) fn take_browse_notice_seed() -> (u32, bool) {
+    let notice = &NOTICES[StoreId::Browse as usize];
+    (notice.gen.load(Ordering::Relaxed), notice.dirty.swap(false, Ordering::Relaxed))
 }
 
 /// Atomics rather than `static mut`: they are read and written on the main thread only, but an

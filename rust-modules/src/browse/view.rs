@@ -339,6 +339,35 @@ impl Default for DirectorySnapshot {
 }
 
 impl DirectorySnapshot {
+    pub(crate) fn capture_from(&mut self, state: &mut super::BrowseState) {
+        let stamp = (
+            state.table_epoch(),
+            state.source_list_gen(),
+            state.cur(),
+            state.sources().len(),
+        );
+        if self.stamp != Some(stamp) {
+            self.data = Arc::new(DirectoryData {
+                sources: state.sources().iter().map(|s| s.sid)
+                    .zip(state.source_groups()).collect(),
+                sections: state.sections().iter().zip(state.all_source_rows())
+                    .map(|(section, row)| SectionView {
+                        borrowed: state.section_sid_is_borrowed(row.section),
+                        sid: state.sources().get(section.src).map(|source| source.sid),
+                        key: section.key, kind: section.kind, row,
+                    }).collect(),
+            });
+            self.stamp = Some(stamp);
+        }
+        self.source = state.cur_source_idx();
+        self.source_fetch = state.cur_source_state();
+        self.discovery = state.discovery_state();
+        for (i, kind) in [super::SecKind::Movie, super::SecKind::Show].into_iter().enumerate() {
+            self.preferred[i] = state.tab_of_kind(kind).and_then(|tab| state.tab_section(tab));
+            self.kind_fetch[i] = state.kind_state(kind);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn fixture_source(
         epoch: u32,

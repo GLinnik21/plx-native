@@ -246,6 +246,7 @@ pub(crate) struct Bridge {
     session_adapter: super::adapters::session::SessionAdapter,
     session_ready: Option<(u64, crate::auth::owner::ProfileScope, crate::plex::session::ServerRef, String, crate::auth::owner::ReadyInstall)>,
     consent_adapter: super::adapters::consent::ConsentAdapter,
+    stores: crate::stores::Stores,
     mounter: AppMounter,
     /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
     /// [`Bridge::publish_playback`] from the loop, once per iteration.
@@ -450,6 +451,7 @@ impl Bridge {
             session_adapter,
             session_ready: None,
             consent_adapter,
+            stores: Default::default(),
             mounter: AppMounter::default(),
             playback: crate::route::PlaybackSession::IDLE,
             playback_live: false,
@@ -687,8 +689,9 @@ impl Bridge {
         }
     }
 
-    /// Return Search's publication change so the frame can coalesce it with queued notices.
-    fn capture_views(&mut self, d: &mut Dispatcher<AppHost>) -> bool {
+    /// Return Browse/Search publication changes so the frame can coalesce them with notices.
+    fn capture_views(&mut self, d: &mut Dispatcher<AppHost>) -> (bool, bool) {
+        self.stores.activate();
         let search = if self.home_io.is_some() { self.search.clone() } else { crate::stores::search::snapshot() };
         let search_changed = !self.search.same_publication(&search);
         if search_changed {
@@ -696,19 +699,17 @@ impl Bridge {
         }
         let directory_before = self.directory.clone();
         let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision());
-        self.directory.capture();
+        self.stores.browse.borrow_mut().capture_directory(&mut self.directory);
         // Directory capture resolves profile pins and may repoint the active section. Both
         // content snapshots must name the resulting section, not opposite sides of that repoint.
-        if self.home_io.is_none() { self.section_hubs = crate::stores::browse::hubs_snapshot(); }
-        let listing = if self.home_io.is_some() { self.listing.clone() } else { crate::stores::browse::listing_snapshot() };
+        if self.home_io.is_none() { self.section_hubs = self.stores.browse.borrow_mut().hubs_snapshot(); }
+        let listing = if self.home_io.is_some() { self.listing.clone() }
+            else { self.stores.browse.borrow_mut().listing_snapshot() };
         let listing_changed = !self.listing.view().same_items(listing.view())
             || self.listing.view().fetch() != listing.view().fetch();
         self.listing = listing;
-        if listing_changed || !self.directory.same_publication(&directory_before)
-            || hubs_before != (self.section_hubs.view().id(), self.section_hubs.view().revision()) {
-            // Bring Library's key projection up to the captured frame before any input uses it.
-            d.store_changed(StoreId::Browse.ord(), crate::stores::gen(StoreId::Browse));
-        }
+        let browse_changed = listing_changed || !self.directory.same_publication(&directory_before)
+            || hubs_before != (self.section_hubs.view().id(), self.section_hubs.view().revision());
         let before = (self.hubs.view().generation, self.hubs.view().state);
         self.hubs = crate::pms::hubs_snapshot();
         let after = (self.hubs.view().generation, self.hubs.view().state);
@@ -718,7 +719,7 @@ impl Bridge {
             // landings which the legacy pump's catalog-generation notice cannot see.
             d.store_changed(StoreId::Hubs.ord(), after.0);
         }
-        search_changed
+        (browse_changed, search_changed)
     }
 
     pub(crate) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>,
@@ -1038,6 +1039,7 @@ impl Rig<AppHost> for Bridge {
         Some(crate::ui::popover::host::live())
     }
     fn split(&mut self) -> Split<'_, AppHost> {
+        self.stores.activate();
         Split {
             mounter: &mut self.mounter,
             views: AppViews { auth: self.session.read(),
@@ -1050,6 +1052,7 @@ impl Rig<AppHost> for Bridge {
         }
     }
     fn deliver(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
+        self.stores.activate();
         if let AppMsg::Consent(command) = msg {
             if to != MachineId::Consent { return Handled::No; }
             match command {
@@ -1104,9 +1107,9 @@ impl Rig<AppHost> for Bridge {
                 }
                 AppMsg::Store(StoreCmd::Browse(crate::stores::browse::BrowseCmd::Discovery(result))) => {
                     let mut endpoints = crate::stores::EndpointRefreshSet::default();
-                    if let Some(request) = crate::browse::record::apply(result, Some(&io.preferences)) {
-                        endpoints.insert(request);
-                    }
+                    let outcome = self.stores.browse.borrow_mut()
+                        .apply_discovery(result, &io.preferences);
+                    endpoints.merge(outcome.endpoints);
                     endpoints.emit(fx);
                     return Handled::Yes;
                 }
@@ -1128,6 +1131,9 @@ impl Rig<AppHost> for Bridge {
             section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
         }, &self.measure);
         match msg {
+            AppMsg::Store(StoreCmd::Browse(c)) => {
+                self.stores.browse.borrow_mut().step(&StoreEv::Cmd(c.clone()), &cx, fx)
+            }
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
             AppMsg::HubsResult(result) => {
                 crate::stores::hubs::land(result).endpoints.emit(fx);
@@ -1137,11 +1143,12 @@ impl Rig<AppHost> for Bridge {
                 crate::stores::hubs::HubsStore.step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
             }
             AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery) => {
-                crate::stores::browse::discover_pump().emit(fx);
+                self.stores.browse.borrow_mut().discover_pump().endpoints.emit(fx);
                 Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Browse) => {
-                crate::stores::browse::BrowseStore.step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
+                self.stores.browse.borrow_mut()
+                    .step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us }) => {
                 crate::stores::search::SearchStore.step(&crate::stores::StoreEv::Pump { dt: *dt_us as f32 / 1_000_000.0 }, &cx, fx)
@@ -1323,9 +1330,9 @@ impl Bridge {
 }
 
 fn step_store(cmd: &StoreCmd, cx: &Cx<'_, AppHost>, fx: &mut Effects<'_, AppHost>) -> Handled {
-    use crate::stores::{browse, hubs, metadata, person, search, viewstate};
+    use crate::stores::{hubs, metadata, person, search, viewstate};
     match cmd {
-        StoreCmd::Browse(c) => browse::BrowseStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::Browse(_) => unreachable!("Browse is stepped by Bridge's owned store"),
         StoreCmd::Hubs(c) => hubs::HubsStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
         StoreCmd::Metadata(c) => metadata::MetadataStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
         StoreCmd::Search(c) => search::SearchStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
@@ -1395,7 +1402,8 @@ impl Bridge {
             .collect();
         results.extend(take_hubs_results());
         if self.home_io.is_some() {
-            if let Some(result) = crate::ui::landgate::take(StoreId::Browse.ord(), crate::browse::record::take) {
+            if let Some(result) = crate::ui::landgate::take(StoreId::Browse.ord(),
+                || self.stores.browse.borrow_mut().take_discovery()) {
                 results.push((crate::ui::machine::Addr {
                     to: MachineId::Store(StoreId::Browse.ord()),
                     req: crate::ui::machine::RequestId(result.request_id()),
@@ -1413,8 +1421,8 @@ impl Bridge {
 /// **The trunk every app frame passes through, so it is where the test-only lock rule is
 /// ENFORCED** — the rule stated in prose below
 /// `route_flips_preserve_content_and_player_origin_entries` and broken from another module
-/// anyway. A frame is not a walk of a nav tree: it drains `crate::stores::take_notices()`, a
-/// process-global dirty queue, and it pumps every store — and `browse`'s pump ends in
+/// anyway. A frame is not a walk of a nav tree: it drains the aggregate's Browse notice plus the
+/// remaining stores' compatibility notices, and it pumps every store — and `browse`'s pump ends in
 /// `sync_roster`, which calls `browse::reset()` the moment the section table holds a source the
 /// live registry does not. Every `browse` fixture in the suite leaves it holding exactly that
 /// (`ServerId::UNSET` sources), so an unguarded frame ANYWHERE empties another module's seeded
@@ -1442,14 +1450,20 @@ fn frame_ingest(
 ) -> (&'static str, FrameReport) {
     #[cfg(test)]
     crate::testlock::assert_held("the store pump behind an app::bridge frame");
-    let search_changed = rig.capture_views(d);
+    rig.stores.activate();
+    let (browse_changed, search_changed) = rig.capture_views(d);
     rig.capture_chrome(d);
     rig.deliver_home_commands(d);
     rig.deliver_library_commands(d);
     let mut search_notified = false;
-    for (id, gen) in crate::stores::take_notices() {
+    let mut browse_notified = false;
+    for (id, gen) in rig.stores.take_notices() {
         search_notified |= id == StoreId::Search;
+        browse_notified |= id == StoreId::Browse;
         d.store_changed(id.ord(), gen);
+    }
+    if browse_changed && !browse_notified {
+        d.store_changed(StoreId::Browse.ord(), rig.stores.gen(StoreId::Browse));
     }
     // A publication can change through a legacy producer without a store notice. Announce
     // that captured change, but do not double-deliver an ordinary queued Search notice.
@@ -2679,6 +2693,137 @@ mod session_stored_home_tests;
 #[cfg(test)]
 mod tests {
     #[test]
+    fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
+        let _guard = crate::testlock::serial();
+        crate::stores::browse::reset_bootstrap_for_test();
+        let session = crate::plex::session::TempSession::new("bridge-browse-tabs");
+        session.watching("u-bridge-browse-tabs");
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        crate::plex::reset_servers_for_test();
+        let own = crate::plex::register_for_test(
+            "bridge-tabs-own", "127.0.0.1", 9, "synthetic", "fixture");
+        let shared = crate::plex::register_for_test(
+            "bridge-tabs-shared", "127.0.0.1", 10, "synthetic", "fixture");
+        crate::browse::seed_registered_table_for_test([own, shared]);
+        let mut rig = Bridge::for_test(|| 0);
+        let mut pages = Dispatcher::<AppHost>::new();
+        rig.capture_views(&mut pages);
+        rig.capture_chrome(&mut pages);
+        let before = rig.chrome.labels();
+        assert!(before.labels.iter().any(|label| label == "TV Shows"));
+        let before_gen = before.generation;
+
+        rig.stores.browse.borrow_mut().run(
+            crate::stores::browse::BrowseCmd::ApplyPins(vec![(1, false)]));
+        rig.capture_views(&mut pages);
+        rig.capture_chrome(&mut pages);
+        let changed = rig.chrome.labels();
+        assert!(changed.generation > before_gen);
+        assert!(!changed.labels.iter().any(|label| label == "TV Shows"));
+        let changed_gen = changed.generation;
+
+        rig.capture_views(&mut pages);
+        rig.capture_chrome(&mut pages);
+        assert_eq!(rig.chrome.labels().generation, changed_gen,
+            "capturing again must not republish the owner's old tab generation");
+        assert!(!rig.chrome.labels().labels.iter().any(|label| label == "TV Shows"));
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn production_bridges_do_not_share_browse_state_or_landings() {
+        use std::io::{Read, Write};
+        let _guard = crate::testlock::serial();
+        crate::stores::browse::reset_bootstrap_for_test();
+        let session = crate::plex::session::TempSession::new("bridge-browse-owners");
+        session.watching("u-bridge-browse-owners");
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        crate::plex::reset_servers_for_test();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback bind");
+        let port = listener.local_addr().unwrap().port();
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::sync_channel(0);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("page request");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let n = socket.read(&mut chunk).expect("read request");
+                assert!(n > 0, "request closed before headers");
+                request.extend_from_slice(&chunk[..n]);
+            }
+            let request = String::from_utf8_lossy(&request);
+            assert!(request.contains("GET /library/sections/1/all?"));
+            assert!(request.contains("X-Plex-Container-Start=0"));
+            assert!(request.contains("X-Plex-Container-Size=60"));
+            accepted_tx.send(()).unwrap();
+            release_rx.recv().expect("release held response");
+            let body = br#"{"MediaContainer":{"totalSize":1,"Metadata":[{"ratingKey":"1","type":"movie","title":"first-owner-only"}]}}"#;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len());
+            socket.write_all(head.as_bytes()).unwrap();
+            socket.write_all(body).unwrap();
+        });
+        let own = crate::plex::register_for_test(
+            "bridge-browse-own", "127.0.0.1", 9, "synthetic", "fixture");
+        let shared = crate::plex::register_for_test(
+            "bridge-browse-shared", "127.0.0.1", port as i32, "synthetic", "fixture");
+        crate::browse::seed_registered_table_for_test([own, shared]);
+        let mut first = Bridge::for_test(|| 0);
+        let mut second = Bridge::for_test(|| 0);
+        first.stores.browse.borrow_mut().prepare_page_for_test(shared);
+        let mut pages = Dispatcher::<AppHost>::new();
+        frame(&mut pages, &mut first, AppArg::Library, tick(0), vec![]);
+        let _ = first.stores.browse.borrow_mut().pump();
+        accepted_rx.recv_timeout(std::time::Duration::from_secs(2))
+            .expect("production page request reached loopback");
+        let _ = first.stores.take_notices();
+        let before = first.stores.gen(StoreId::Browse);
+        second.capture_views(&mut pages);
+        assert_eq!(second.directory.view().current(), None,
+            "a command and its later worker landings belong only to the addressed Bridge store");
+        release_tx.send(()).unwrap();
+        server.join().unwrap();
+        assert!(!second.stores.browse.borrow().has_page_result_for_test(),
+            "the origin worker must not write the other Bridge's adapter");
+        first.stores.activate();
+        let mut page_landed = false;
+        for _ in 0..100_000 {
+            if first.stores.browse.borrow_mut().pump().changed {
+                page_landed = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(page_landed, "page result did not land");
+        assert_eq!(first.stores.gen(StoreId::Browse), before + 1,
+            "one parsed page landing advances exactly one owned generation");
+        assert_eq!(first.stores.browse.borrow_mut().listing_snapshot().view().item(0)
+            .map(|item| item.title.as_str()), Some("first-owner-only"));
+        assert!(second.stores.browse.borrow_mut().listing_snapshot().view().item(0).is_none());
+
+        struct BrowseNotices(usize);
+        impl crate::ui::dispatch::Tap<AppHost> for BrowseNotices {
+            fn effect(&mut self, _: u64, stamped: &crate::ui::machine::Stamped<AppHost>) {
+                if matches!(&stamped.fx, Fx::Deliver(_, Delivery::Screen(
+                    ScreenEvent::StoreChanged(ord, _))) if *ord == StoreId::Browse.ord()) {
+                    self.0 += 1;
+                }
+            }
+        }
+        let mut notices = BrowseNotices(0);
+        frame_with_results(&mut pages, &mut first, AppArg::Library, tick(1), vec![],
+            || Vec::new(), &mut notices);
+        assert_eq!(notices.0, 1,
+            "capture publication and notice drain must coalesce one page into one StoreChanged");
+        assert!(first.stores.take_notices().is_empty());
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
     fn session_boot_picker_publishes_captured_profile_without_ready_handoff() {
         let stored = crate::plex::session::Session {
             client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
@@ -3409,6 +3554,7 @@ mod tests {
         let session = crate::plex::session::TempSession::new("owned-library-return");
         session.watching("u-owned-library-return");
         for evict in [false, true] {
+            crate::stores::browse::reset_bootstrap_for_test();
             crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
             let sid = crate::plex::register_for_test("library-return-own", "127.0.0.1", 9, "synthetic", "fixture");
@@ -3458,6 +3604,7 @@ mod tests {
     #[test]
     fn library_publishes_the_actual_container_strip() {
         let _guard = crate::testlock::serial();
+        crate::stores::browse::reset_bootstrap_for_test();
         crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::browse::seed_two_source_table_for_test();
         let mut dispatcher = Dispatcher::<AppHost>::new();
@@ -3475,6 +3622,7 @@ mod tests {
     fn all_splits_in_one_frame_keep_the_same_library_listing() {
         use crate::ui::dispatch::Rig;
         let _guard = crate::testlock::serial();
+        crate::stores::browse::reset_bootstrap_for_test();
         crate::browse::seed_two_source_table_for_test();
         crate::browse::seed_items_for_test(3);
         crate::browse::section_hubs::seed_shelves_for_test(crate::browse::cur(), &["shelves"], 3);
@@ -4546,6 +4694,7 @@ mod tests {
     #[test]
     fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() {
         let _guard = crate::testlock::serial();
+        crate::stores::browse::reset_bootstrap_for_test();
         crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::browse::seed_two_source_table_for_test();
 
