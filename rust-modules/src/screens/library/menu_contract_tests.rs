@@ -11,14 +11,19 @@ fn menu_arg(kind: LibraryMenuKind, anchor: [u32; 4]) -> LibraryMenuArg {
     }
 }
 
+fn run_browse(cmd: crate::stores::browse::BrowseCmd) {
+    let stores = crate::stores::Stores::default();
+    stores.browse_run(cmd);
+}
+
 fn anchor_bits(rect: Rect) -> [u32; 3] {
     [rect.x.to_bits(), rect.y.to_bits(), rect.w.to_bits()]
 }
 
 fn source_cx<'a>(
-    listing: &'a crate::browse::view::ListingSnapshot,
+    listing: &'a crate::stores::browse::ListingSnapshot,
     directory: &'a crate::stores::browse::DirectorySnapshot,
-    hubs: &'a crate::browse::section_hubs::HubsSnapshot,
+    hubs: &'a crate::stores::browse::HubsSnapshot,
     measure: &'a FixtureMeasure,
     tick: Tick,
 ) -> Cx<'a, HostFixture> {
@@ -42,7 +47,7 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     let session = crate::plex::session::TempSession::new("menu-anchor-contract");
     session.watching("u-menu-anchor-contract");
     crate::browse::seed_two_source_table_for_test();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
+    run_browse(crate::stores::browse::BrowseCmd::SetCur(0));
     let listing = crate::stores::browse::listing_snapshot();
     let hubs = crate::stores::browse::hubs_snapshot();
     let measure = FixtureMeasure;
@@ -88,7 +93,7 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     fresh.groups(&cx_changed, &mut fresh_groups);
     assert_ne!(anchor_bits(fresh_groups[0].extent), anchor_bits(old_extent), "a new open releases the old anchor");
     assert_eq!(fresh_groups[0].extent.x, 760.0);
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    run_browse(crate::stores::browse::BrowseCmd::Reset);
 }
 
 #[test]
@@ -217,7 +222,7 @@ fn open_sources_refreshes_metadata_once_then_settles() {
     let session = crate::plex::session::TempSession::new("menu-refresh-contract");
     session.watching("u-menu-refresh-contract");
     crate::browse::seed_two_source_table_for_test();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
+    run_browse(crate::stores::browse::BrowseCmd::SetCur(0));
     let listing = crate::stores::browse::listing_snapshot();
     let hubs = crate::stores::browse::hubs_snapshot();
     let measure = FixtureMeasure;
@@ -261,5 +266,5 @@ fn open_sources_refreshes_metadata_once_then_settles() {
     assert_eq!(menu.rows[0].key, first_key);
     assert_eq!(menu.table.sel, first_selection);
     assert_eq!(menu.draft_rebuilds, 2);
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    run_browse(crate::stores::browse::BrowseCmd::Reset);
 }

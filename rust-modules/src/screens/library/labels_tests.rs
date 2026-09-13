@@ -6,7 +6,7 @@ use crate::ui::fixture::FixtureMeasure;
 use crate::ui::machine::{EntryId, InstanceId};
 use crate::ui::{Painter, Rect};
 use std::os::raw::c_int;
-use crate::browse::SecKind;
+use crate::stores::browse::SecKind;
 use super::draw::shelf_label;
 use super::layout::{self, Layout, shelf_pitch, COLS, CONTENT_TOP, GRID_RIGHT, MAX_LETTERS,
     RAIL_CAP_PAD, RAIL_TRACK_W, GRID_PITCH as PITCH};

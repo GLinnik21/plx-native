@@ -5,6 +5,11 @@ use crate::ui::focus::FocusEngine;
 use crate::ui::machine::{Host, InputOwner, PressId, PressRead, Tick};
 
 struct TestHost;
+fn run_browse(cmd: crate::stores::browse::BrowseCmd) {
+    let stores = crate::stores::Stores::default();
+    stores.browse_run(cmd);
+}
+
 #[derive(Clone, Copy)]
 struct Views<'a> {
     listing: crate::stores::browse::ListingView<'a>,
@@ -40,15 +45,15 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::stores::browse::apply(BrowseCmd::Reset);
+            run_browse(BrowseCmd::Reset);
         }
     }
     let _cleanup = Cleanup;
-    crate::stores::browse::apply(BrowseCmd::Reset);
+    run_browse(BrowseCmd::Reset);
     crate::browse::seed_two_source_table_for_test();
     let mut directory = crate::stores::browse::DirectorySnapshot::default();
     directory.capture();
-    crate::stores::browse::apply(BrowseCmd::SetCur(0));
+    run_browse(BrowseCmd::SetCur(0));
     crate::browse::seed_items_for_test(12);
     crate::browse::section_hubs::seed_shelves_for_test(
         0,
