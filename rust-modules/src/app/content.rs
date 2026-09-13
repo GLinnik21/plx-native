@@ -418,6 +418,89 @@ mod library_publication_tests {
         assert!(!detail_refresh_matches(&later, &target),
             "landing after navigation must still address the Detail that emitted the write");
     }
+
+    #[test]
+    fn a_covered_detail_refresh_waits_until_its_page_owns_metadata_again() {
+        let _guard = crate::testlock::serial();
+        let sid = crate::plex::ServerId::UNSET;
+        let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
+        let b = AppArg::Content(ContentArg::Detail { sid, rk: "detail-b".into() });
+        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+        let mut frame = |pages: &mut crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+                         rig: &mut bridge::Bridge| {
+            let (_, report) = bridge::frame(pages, rig, crate::ui::machine::Tick {
+                ms: frame_no * 16,
+                dt_us: 16_000,
+            }, Vec::new());
+            frame_no += 1;
+            pages.prune(&report.unmounted);
+        };
+
+        bridge::show_page(&mut pages, a.clone());
+        frame(&mut pages, &mut rig);
+        let a_entry = pages.nav.top_page().expect("Detail A mounted").id;
+        bridge::nav_push(&mut pages, b.clone());
+        frame(&mut pages, &mut rig);
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == b));
+
+        // Retire the constructors' real worker requests, then hold B in the same global metadata
+        // slot the product uses while A's ViewState completion arrives.
+        for _ in 0..100 {
+            crate::stores::metadata::pump_detail();
+            std::thread::yield_now();
+        }
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+            sid,
+            rk: "detail-b".into(),
+            title: "Visible B".into(),
+            ..Default::default()
+        }));
+        let b_request = crate::metadata::begin_detail_for_test(sid, "detail-b");
+
+        refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
+            sid,
+            rk: "detail-a".into(),
+            keep: Some("episode-a".into()),
+        });
+        frame(&mut pages, &mut rig);
+
+        assert_eq!(crate::metadata::current().map(|detail| detail.rk.as_str()), Some("detail-b"),
+            "the visible Detail keeps its loaded metadata");
+        assert_eq!(crate::metadata::detail_request_status(sid, "detail-b"), Some(true),
+            "covered A must not supersede B's in-flight request");
+        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), None,
+            "A's fetch stays deferred while B owns the shared slot");
+        let mut a_probe = String::new();
+        pages.nav.entry(a_entry).and_then(|entry| entry.inst.as_ref())
+            .expect("covered Detail A stays mounted").screen.state().probe(&mut a_probe);
+        assert!(a_probe.contains("restore=true"),
+            "A retains the ViewState refresh/episode restoration intent while covered: {a_probe}");
+
+        assert!(crate::metadata::land_detail_for_test(sid, "detail-b", b_request,
+            Some(crate::metadata::Detail {
+                sid,
+                rk: "detail-b".into(),
+                title: "Visible B".into(),
+                ..Default::default()
+            })));
+        let ret = pages.return_state();
+        bridge::nav_pop_with_return(&mut pages, ret);
+        frame(&mut pages, &mut rig);
+
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
+        assert!(crate::metadata::detail_request_status(sid, "detail-a").is_some(),
+            "A starts its deferred metadata refresh only after Back uncovers it");
+
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(None);
+        for _ in 0..100 {
+            crate::stores::metadata::pump_detail();
+            std::thread::yield_now();
+        }
+    }
 }
 
 fn home_menu_from_deck(ret: &ReturnState<u32, PageMemory>) -> bool {
@@ -475,25 +558,33 @@ pub(crate) fn restore_played_entry(app: &mut App) {
 }
 
 pub(crate) fn refresh_content(
-    app: &mut App,
+    pages: &mut crate::ui::dispatch::Dispatcher<bridge::AppHost>,
     target: crate::stores::viewstate::DetailRefresh,
 ) {
-    // A write may finish after Person has covered its Detail origin. That origin still
-    // owns the metadata and must hear the reconciliation before Back uncovers it.
-    let Some(entry) = app.pages.nav.tabs.stack.entries.iter().rev()
+    // A write may finish after another Detail has covered its origin. The covered instance must
+    // retain the addressed restore intent, but the ONE Metadata slot belongs to the top page: an
+    // eager fetch here would supersede that visible Detail's load. When Back uncovers this entry,
+    // Detail's ordinary Enter(Restored) path starts its request after it owns the slot again.
+    let Some(entry) = pages.nav.tabs.stack.entries.iter().rev()
         .find(|e| detail_refresh_matches(&e.arg, &target)) else { return };
     let AppArg::Content(ContentArg::Detail { sid, rk }) = &entry.arg else { return };
     let Some(instance) = entry.inst.as_ref().map(|i| i.id) else { return };
-    let memory = if app.pages.nav.top_page().is_some_and(|top| top.id == entry.id) {
-        app.pages.return_state().memory
+    let owns_metadata = pages.nav.top_page().is_some_and(|top| top.id == entry.id);
+    let memory = if owns_metadata {
+        pages.return_state().memory
     } else { entry.ret.memory.clone() };
     let PageMemory::Detail(spot) = memory else { return };
     let spot = spot.spot;
-    let cmd = crate::stores::metadata::MetadataCmd::RequestDetail { sid: *sid, rk: rk.clone() };
-    app.pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+    let request = owns_metadata.then(|| crate::stores::metadata::MetadataCmd::RequestDetail {
+        sid: *sid,
+        rk: rk.clone(),
+    });
+    pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
         Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore { spot, episode: target.keep }))));
-    app.pages.emit(MachineId::Nav, Fx::App(crate::screens::registry::AppFx::Store(
-        crate::stores::StoreId::Metadata, crate::stores::StoreCmd::Metadata(cmd))));
+    if let Some(cmd) = request {
+        pages.emit(MachineId::Nav, Fx::App(crate::screens::registry::AppFx::Store(
+            crate::stores::StoreId::Metadata, crate::stores::StoreCmd::Metadata(cmd))));
+    }
 }
 
 fn detail_refresh_matches(arg: &AppArg, target: &crate::stores::viewstate::DetailRefresh) -> bool {
