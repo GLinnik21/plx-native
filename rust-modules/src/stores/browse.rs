@@ -25,6 +25,20 @@ pub(crate) use crate::browse::view::{
     DirectorySnapshot, DirectoryView, ListingId, ListingSnapshot, ListingView, SectionView,
 };
 
+/// Owner-aware first-run gate shared by boot and login. The retained directory is the granted
+/// Browse publication for this Bridge; the compatibility screen wrapper remains until its lane
+/// migrates.
+pub(crate) mod onboard {
+    #[allow(dead_code)] // Wave 0.5 contract; the app lane owns the routing caller.
+    pub(crate) fn asks(directory: super::DirectoryView<'_>) -> bool {
+        let session = crate::plex::session::peek();
+        crate::plex::pins::asks(
+            directory.sources().len(),
+            session.pins_for(&crate::plex::session::current_profile_key()),
+        )
+    }
+}
+
 /// One frame's retained Browse publication. The directory is captured first because resolving
 /// profile pins may repoint the current section; listing and section hubs are captured only after
 /// that decision, so all three views describe one owner state.
@@ -391,6 +405,7 @@ impl BrowseStore {
     }
 }
 
+#[allow(dead_code)] // Compatibility active-owner path retained until the UI consumer wave.
 pub(crate) fn controlled_discover_active(
     launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool,
 ) -> bool {
@@ -883,6 +898,38 @@ mod contract_tests {
             "an empty-to-empty machine identity must not invalidate the settled frame");
 
         drop(stores);
+        apply(BrowseCmd::Reset);
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn direct_controlled_discovery_never_selects_the_active_compatibility_owner() {
+        let _guard = crate::testlock::serial();
+        reset_bootstrap_for_test();
+        apply(BrowseCmd::Reset);
+        crate::plex::reset_servers_for_test();
+        let selected = crate::stores::Stores::default();
+        let decoy = crate::stores::Stores::default();
+        let selected_before = selected.browse.borrow().source_list_gen_for_test();
+        let decoy_before = decoy.browse.borrow().source_list_gen_for_test();
+        crate::plex::register_for_test(
+            "", "127.0.0.1", 9, "synthetic", "fixture");
+
+        let mut launches = 0;
+        selected.browse_controlled_discover(&mut |_| {
+            launches += 1;
+            false
+        });
+
+        assert_eq!(launches, 1);
+        assert_ne!(selected.browse.borrow().source_list_gen_for_test(), selected_before,
+            "the explicitly addressed owner must admit the discovery request");
+        assert_eq!(decoy.browse.borrow().source_list_gen_for_test(), decoy_before,
+            "the ACTIVE compatibility owner is not part of the direct contract");
+        assert_eq!(selected.take_notices().len(), 1);
+        assert!(decoy.take_notices().is_empty());
+
+        drop((selected, decoy));
         apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }

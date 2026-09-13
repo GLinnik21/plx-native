@@ -50,6 +50,20 @@ pub(super) fn run(cmd: SearchCmd) -> bool {
     answer
 }
 
+/// Synchronous command path with the Browse owner publication captured by the application.
+/// Query admission snapshots its favourite-library ranking from this directory, not from the
+/// temporary active-owner selector.
+pub(crate) fn run_with_directory(
+    cmd: SearchCmd,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> bool {
+    #[cfg(test)]
+    crate::testlock::assert_held("the search store (owned apply)");
+    let answer = crate::search::run_with_directory(cmd, directory);
+    super::bump(StoreId::Search);
+    answer
+}
+
 /// The screen's once-a-frame pass: the debounce, the spawns, the landings.
 pub(crate) fn pump(dt: f32) -> bool {
     note(StoreId::Search, crate::search::pump(dt))

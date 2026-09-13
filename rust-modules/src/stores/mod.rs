@@ -120,6 +120,27 @@ impl Stores {
         self.browse.borrow_mut().discover_pump()
     }
 
+    /// Controlled discovery against this aggregate's Browse owner. Unlike the temporary
+    /// compatibility entry point, this never consults the process/thread-local active selector.
+    pub(crate) fn browse_controlled_discover(
+        &self,
+        launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool,
+    ) {
+        self.browse.borrow_mut().controlled_discover(launch);
+    }
+
+    /// ViewState's synchronous command path, with every Browse side effect addressed back to this
+    /// aggregate. The callback is invoked inline, preserving the press-frame optimistic edit.
+    pub(crate) fn viewstate_run(&self, cmd: viewstate::ViewStateCmd) -> bool {
+        viewstate::run_with_browse(cmd, &mut |browse| self.browse_run(browse))
+    }
+
+    /// ViewState's route-unconditional landing pass. Fan-out edits and the terminal section-hubs
+    /// invalidation are applied to this aggregate's Browse owner before the pump returns.
+    pub(crate) fn viewstate_pump(&self) -> EndpointRefreshSet {
+        viewstate::pump_with_browse(&mut |browse| self.browse_run(browse))
+    }
+
     /// Capture all three retained Browse publications from one owner borrow. Directory capture
     /// runs first because resolving profile pins may repoint the current section.
     pub(crate) fn capture_browse(&self, directory: &mut browse::DirectorySnapshot)
