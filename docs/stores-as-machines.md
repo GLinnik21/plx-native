@@ -1,9 +1,10 @@
 # Stores as machines — restructure phase 4
 
-R2B-E endpoint recovery: `stores::apply` returns a `StoreOutcome` containing the existing
-`changed` verdict and a bounded, deduplicated set of endpoint requests in first-observation
-order. Hubs failure/refetch/retry, Browse discovery and ViewState's hub refetch propagate that
-set to their callers. Generic store steps use the layer-neutral `StoreEffectHost`; Bridge and
+R2B-E endpoint recovery: the generic `stores::apply` path returns a `StoreOutcome` containing the
+existing `changed` verdict and a bounded, deduplicated set of endpoint requests in
+first-observation order. Hubs failure/refetch/retry and ViewState's hub refetch propagate that set
+to their callers; Browse uses its explicit owner paths. Generic store steps use the layer-neutral
+`StoreEffectHost`; Bridge and
 Onboard translate requests to `AppFx::Session(RequestEndpoint)`. Boot/run accumulate outcomes
 locally and share the temporary app-side Session command executor with Bridge. Data modules
 no longer execute auth recovery directly. Physical Session ownership remains the next R2B
@@ -19,7 +20,8 @@ Browse retirement Wave 2 completed the destination contract:
 `Stores::{browse_run,browse_discover_pump}` plus the matching Bridge methods are explicit,
 synchronous owner paths. There is no active selector, bootstrap-adoption token, global Browse
 publication, legacy adapter or free mutation/read facade. `ci/check-deps.sh` enforces that zero
-surface directly; the migration allowlist was deleted when its count reached zero.
+surface directly; its deleted Browse migration allowlist is distinct from the retained, general
+`ci/allow/mutators.txt` gate allowlist (currently empty).
 
 ## 1. What a store is, today
 
@@ -141,13 +143,14 @@ about to establish. That fact is what decides §3 below.
 ## 3. The decision the spec's §14 sentence hides: explicit owner calls apply NOW
 
 §14 says a legacy mutator becomes "a pure synchronous validation plus `queue(StoreCmd)`, so legacy
-and migrated callers land in the same drain". Browse still has answers consumed in the same turn:
-owned Library and Onboard screens emit `AppFx::Store`, `app/bridge.rs` delivers the command to the
-owning `BrowseStore`, and synchronous boot/input boundaries call `Stores::browse_run` on the owner
-they already hold. Both paths step on the main thread before the frame presents, and the aggregate
-drain delivers that owner's notice to its live screens. Preserving that timing requires no global
-selector or adapter; the other five stores retain their older compatibility arrangement until
-their ownership slices land.
+and migrated callers land in the same drain". That temporary legacy-apply guidance explicitly
+excludes Browse. Browse still has answers consumed in the same turn: owned Library and Onboard
+screens emit `AppFx::Store`, `app/bridge.rs` delivers the command to the owning `BrowseStore`, and
+synchronous boot/input boundaries call `Stores::browse_run` on the owner they already hold. Both
+paths step on the main thread before the frame presents, and the aggregate drain delivers that
+owner's notice to its live screens. Preserving that timing requires no global selector or adapter;
+the other five stores retain their older compatibility arrangement until their ownership slices
+land.
 
 ## 4. What is NOT in phase 4, and why
 
@@ -184,7 +187,8 @@ their ownership slices land.
 ## 5. How to add a mutation after this phase
 
 Add a variant to the store's `Cmd` enum, apply it in that store's `step`, and emit
-`AppFx::Store(StoreId, StoreCmd::…)` from an owned screen. A legacy caller may use the temporary
-`stores::<store>::apply(Cmd::…)` shim. Do not add a `pub(crate) fn` to the data module that a
+`AppFx::Store(StoreId, StoreCmd::…)` from an owned screen. A legacy caller for a not-yet-owned
+store may use the temporary `stores::<store>::apply(Cmd::…)` shim; Browse is excluded and requires
+its concrete `BrowseStore`/`Stores` owner. Do not add a `pub(crate) fn` to the data module that a
 screen calls: `check-deps` will refuse it, and the point of the vocabulary is that the mutation
 set is one `match` a reviewer can read.
