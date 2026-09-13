@@ -6,13 +6,13 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+            run_browse_for_test(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
     for row in 0..2 {
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        run_browse_for_test(crate::stores::browse::BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let own =
             crate::plex::register_for_test("shelf-own", "127.0.0.1", 9, "synthetic", "fixture");
@@ -22,7 +22,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         crate::browse::seed_registered_table_for_test([own, shared]);
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
         directory.capture();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
+        run_browse_for_test(crate::stores::browse::BrowseCmd::SetCur(0));
         crate::browse::seed_items_for_test(12);
         crate::browse::section_hubs::seed_shelves_for_test(
             0,

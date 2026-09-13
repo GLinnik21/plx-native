@@ -1,3 +1,8 @@
+fn run_browse(cmd: crate::stores::browse::BrowseCmd) {
+    let stores = crate::stores::Stores::default();
+    stores.browse_run(cmd);
+}
+
 #[test]
 fn query_reset_intent_and_observed_query_are_canonical_in_return_memory() {
     let _guard = crate::testlock::serial();
@@ -40,22 +45,22 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
             let mut fixture = Fixture::new();
             crate::browse::seed_two_source_table_for_test();
             fixture.directory.capture();
-            crate::stores::browse::apply(BrowseCmd::SetCur(0));
+            run_browse(BrowseCmd::SetCur(0));
             crate::browse::seed_items_for_test(120);
             crate::browse::seed_query_choices_for_test(
                 vec![
-                    crate::browse::SortEntry {
+                    crate::stores::browse::SortEntry {
                         key: "titleSort".into(),
                         title: "Title".into(),
                         default_desc: false,
                     },
-                    crate::browse::SortEntry {
+                    crate::stores::browse::SortEntry {
                         key: "year".into(),
                         title: "Year".into(),
                         default_desc: false,
                     },
                 ],
-                vec![crate::browse::GenreEntry {
+                vec![crate::stores::browse::GenreEntry {
                     id: "g1".into(),
                     title: "Drama".into(),
                 }],
@@ -241,5 +246,5 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
             assert!((page.scroll_target - page.target_layout.row_reveal(0)).abs() < 0.01);
         }
     }
-    crate::stores::browse::apply(BrowseCmd::Reset);
+    run_browse(BrowseCmd::Reset);
 }
