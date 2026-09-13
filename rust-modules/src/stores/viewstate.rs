@@ -43,12 +43,34 @@ pub(super) fn run(cmd: ViewStateCmd) -> bool {
     answer
 }
 
+/// Owner-aware command path. `browse` is synchronous because the optimistic edit is part of the
+/// command's same-frame answer, not deferred work.
+pub(crate) fn run_with_browse(cmd: ViewStateCmd,
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool) -> bool {
+    #[cfg(test)]
+    crate::testlock::assert_held("the viewstate store (owned apply)");
+    let answer = crate::viewstate::run_with_browse(cmd, browse);
+    super::bump(StoreId::ViewState);
+    answer
+}
+
 /// The route-unconditional landing the loop runs every frame.
 pub(crate) fn pump() -> super::EndpointRefreshSet {
     let busy = crate::viewstate::is_busy();
     let endpoints = crate::viewstate::pump();
     // a landing is what turns "busy" off; the refresh it owes is raised through the stores it
     // touches (hubs, the detail re-read), so the notice here is the queue's own state
+    super::note(StoreId::ViewState, busy != crate::viewstate::is_busy());
+    endpoints
+}
+
+/// Owner-aware landing pass. The callback receives both delayed fan-out edits and the section-hub
+/// invalidation owed at the end of a write burst.
+pub(crate) fn pump_with_browse(
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+) -> super::EndpointRefreshSet {
+    let busy = crate::viewstate::is_busy();
+    let endpoints = crate::viewstate::pump_with_browse(browse);
     super::note(StoreId::ViewState, busy != crate::viewstate::is_busy());
     endpoints
 }

@@ -382,6 +382,17 @@ pub(crate) fn sanitize_query(q: &str) -> std::borrow::Cow<'_, str> {
 
 /// Replace the query. Idempotent on an unchanged string, so a caller may hand it every frame.
 fn set_query(q: &str) {
+    set_query_with_directory(q, None);
+}
+
+fn set_query_from_directory(q: &str, directory: crate::stores::browse::DirectoryView<'_>) {
+    set_query_with_directory(q, Some(directory));
+}
+
+fn set_query_with_directory(
+    q: &str,
+    directory: Option<crate::stores::browse::DirectoryView<'_>>,
+) {
     let q = &*sanitize_query(q);
     // Two different changes, and only one of them is news for the SERVER: the field draws the raw
     // string (so a typed space must repaint), while the fetch is addressed to the trimmed one (so
@@ -403,7 +414,10 @@ fn set_query(q: &str) {
     if restart {
         // A new query invalidates the old answer immediately. Leaving the previous shelves up
         // while the next lands would show results for a string that is no longer on screen.
-        supersede();
+        match directory {
+            Some(directory) => supersede_from_directory(directory),
+            None => supersede(),
+        }
         unsafe {
             *addr_of_mut!(SHELVES) = None;
             *addr_of_mut!(STATE) = if real_query {
@@ -574,6 +588,11 @@ fn snapshot_favs() {
     *FAVS.lock().unwrap_or_else(|e| e.into_inner()) = crate::browse::favorite_sections();
 }
 
+fn snapshot_favs_from_directory(directory: crate::stores::browse::DirectoryView<'_>) {
+    FAV_GEN.store(directory.sections_gen(), Ordering::SeqCst);
+    *FAVS.lock().unwrap_or_else(|e| e.into_inner()) = directory.favorite_sections().to_vec();
+}
+
 /// The snapshot, for the merge and for a worker about to be spawned.
 fn favs() -> Vec<(ServerId, i64, bool)> {
     FAVS.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -733,11 +752,22 @@ fn land(i: usize, gen: u32, what: Option<Projection>) {
 /// and "never asked" has exactly one spelling. The ONE place those move together, and what a
 /// keystroke calls. It does NOT stop the workers; see [`IN_FLIGHT`] for what that costs.
 fn supersede() {
+    supersede_with_directory(None);
+}
+
+fn supersede_from_directory(directory: crate::stores::browse::DirectoryView<'_>) {
+    supersede_with_directory(Some(directory));
+}
+
+fn supersede_with_directory(directory: Option<crate::stores::browse::DirectoryView<'_>>) {
     GEN.fetch_add(1, Ordering::SeqCst);
     // A fresh favourite snapshot belongs to the fresh generation, and taking it HERE is what makes
     // the staleness rule need no second mailbox field: a landing projected under the old table
     // carries the old `gen`, and `pump` already discards those. One rejection rule, not two.
-    snapshot_favs();
+    match directory {
+        Some(directory) => snapshot_favs_from_directory(directory),
+        None => snapshot_favs(),
+    }
     for i in 0..NSRC {
         *SLOT[i].lock().unwrap_or_else(|e| e.into_inner()) = None;
         IN_FLIGHT[i].store(false, Ordering::SeqCst);
@@ -1228,15 +1258,35 @@ fn reset() {
 /// go private; `RememberRecent`/`ClearRecents`/`SetQueryScoped` still address `search::recents`
 /// and `search::scope`, which stay `pub(crate)` (out of this package's scope, per the census).
 pub(crate) fn run(cmd: crate::stores::search::SearchCmd) -> bool {
+    run_with_optional_directory(cmd, None)
+}
+
+pub(crate) fn run_with_directory(
+    cmd: crate::stores::search::SearchCmd,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> bool {
+    run_with_optional_directory(cmd, Some(directory))
+}
+
+fn run_with_optional_directory(
+    cmd: crate::stores::search::SearchCmd,
+    directory: Option<crate::stores::browse::DirectoryView<'_>>,
+) -> bool {
     use crate::stores::search::SearchCmd;
     match cmd {
         SearchCmd::SetQuery(q) => {
-            set_query(&q);
+            match directory {
+                Some(directory) => set_query_from_directory(&q, directory),
+                None => set_query(&q),
+            }
             true
         }
         SearchCmd::SetQueryScoped { profile_generation, query } => {
             if profile_generation != crate::plex::session::current_gen() { return false; }
-            set_query(&query);
+            match directory {
+                Some(directory) => set_query_from_directory(&query, directory),
+                None => set_query(&query),
+            }
             true
         }
         SearchCmd::RememberRecent { profile_generation, term } => {
@@ -1262,6 +1312,36 @@ mod tests {
     /// favourite — so every test below that does not care about ranking grades the round-robin
     /// merge exactly as it did before favourites existed. The ranking tests build their own table.
     const NO_FAVS: &[(ServerId, i64, bool)] = &[];
+
+    #[test]
+    fn initial_query_scope_comes_from_the_retained_directory() {
+        let _guard = crate::testlock::serial();
+        reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        let sid = ServerId::from_raw(3);
+        let directory = crate::stores::browse::DirectorySnapshot::fixture(9, 0, vec![
+            crate::stores::browse::SectionView {
+                borrowed: false,
+                sid: Some(sid),
+                key: 41,
+                kind: crate::stores::browse::SecKind::Movie,
+                row: crate::stores::browse::SrcRow {
+                    section: 0, title: "Retained".into(), pinned: true, current: true,
+                    ..Default::default()
+                },
+            },
+        ]);
+
+        run_with_directory(
+            crate::stores::search::SearchCmd::SetQuery("wallace".into()),
+            directory.view(),
+        );
+
+        assert_eq!(FAV_GEN.load(Ordering::SeqCst), directory.view().sections_gen());
+        assert_eq!(favs(), directory.view().favorite_sections());
+        reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    }
 
     /// [`merge`] with no favourite table, for the tests whose subject is the merge itself.
     fn merge_favs(sources: &[Source]) -> Vec<Shelf> {

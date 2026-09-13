@@ -39,6 +39,7 @@ fn tick(dt: f32) -> super::StoreOutcome {
 }
 
 /// Same mutation and notice rules as run/tick, with an application-owned resource executor.
+#[allow(dead_code)] // Compatibility controlled path without an explicit retained directory.
 pub(crate) fn controlled(cmd: Option<HubsCmd>, dt: f32,
     launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
     #[cfg(test)]
@@ -47,6 +48,20 @@ pub(crate) fn controlled(cmd: Option<HubsCmd>, dt: f32,
     let outcome = crate::pms::controlled_work(cmd,dt,launch);
     if command { super::bump(StoreId::Hubs); }
     else { super::note(StoreId::Hubs,outcome.changed); }
+    outcome
+}
+
+/// Controlled Home work scoped by the Bridge's retained Browse directory. The retained view is
+/// the decision input for this frame; no active-owner selector is consulted.
+pub(crate) fn controlled_with_directory(cmd: Option<HubsCmd>, dt: f32,
+    directory: crate::stores::browse::DirectoryView<'_>,
+    launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
+    #[cfg(test)]
+    crate::testlock::assert_held("controlled hubs store with Browse owner");
+    let command = cmd.is_some();
+    let outcome = crate::pms::controlled_work_with_directory(cmd, dt, directory, launch);
+    if command { super::bump(StoreId::Hubs); }
+    else { super::note(StoreId::Hubs, outcome.changed); }
     outcome
 }
 
@@ -81,5 +96,55 @@ impl<H: super::StoreEffectHost> Machine<H> for HubsStore {
         };
         outcome.endpoints.emit(fx);
         Handled::Yes
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    fn section(sid: crate::plex::ServerId, section: usize, pinned: bool)
+        -> crate::stores::browse::SectionView {
+        crate::stores::browse::SectionView {
+            borrowed: false,
+            sid: Some(sid),
+            key: section as i64 + 1,
+            kind: crate::stores::browse::SecKind::Movie,
+            row: crate::stores::browse::SrcRow {
+                section,
+                title: format!("Library {section}"),
+                pinned,
+                current: section == 0,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn controlled_hubs_uses_the_supplied_directory_instead_of_active_browse() {
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        let own = crate::plex::register_for_test(
+            "hubs-owned", "127.0.0.1", 9, "synthetic", "fixture");
+        let hidden = crate::plex::register_for_test(
+            "hubs-hidden", "127.0.0.1", 10, "synthetic", "fixture");
+        let directory = crate::stores::browse::DirectorySnapshot::fixture(
+            7, 0, vec![section(own, 0, true), section(hidden, 1, false)]);
+        let mut ignored = |_| false;
+        let _ = controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &mut ignored);
+        let mut launched = Vec::new();
+
+        let _ = controlled_with_directory(Some(HubsCmd::RefetchHubs), 0.0, directory.view(),
+            &mut |request| {
+                launched.push(request.descriptor().2);
+                false
+            });
+
+        assert_eq!(launched, [own.raw()],
+            "the retained pin table excludes the unpinned source even when compatibility Browse is empty");
+        let _ = controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &mut ignored);
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+        crate::plex::reset_servers_for_test();
     }
 }
