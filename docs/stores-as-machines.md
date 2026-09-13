@@ -13,6 +13,15 @@ The design note for spec v4 (`ui-plxnative-structured-phoenix.md`) phase 4, writ
 code rather than from the spec's sentence, because the sentence hides four decisions the tree
 forces. Read `rust-modules/src/stores/mod.rs` for the vocabulary; this is the reasoning.
 
+Browse retirement Wave 0 adds the destination contract before consumers move:
+`BrowsePublications` is the retained directory/listing/section-hubs aggregate,
+`Stores::capture_browse` captures it from one owner borrow in directory-first order, and
+`Stores::{browse_run,browse_discover_pump}` plus the matching Bridge methods are explicit,
+synchronous owner paths; `Bridge::browse_publications` exposes its retained frame value. The old
+active selector and global publication remain compile scaffolding
+for the disjoint consumer waves only. `ci/allow/browse-ownership-migration.txt` is their exact
+non-growth ledger; each wave deletes rows with the symbols it retires, ending at `# count: 0`.
+
 ## 1. What a store is, today
 
 Six data modules own the application's server-derived state: `browse` (the Library table and its

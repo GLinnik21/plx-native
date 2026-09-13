@@ -387,14 +387,16 @@ impl Bridge {
         init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: crate::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter) -> Self {
+        let stores = crate::stores::Stores::default();
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
-        directory.capture();
-        Self::with_publications(measure, now_us, init, session_adapter, consent, consent_adapter,
+        let browse = stores.capture_browse(&mut directory);
+        Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
+            consent_adapter,
             StorePublications {
-            hubs: crate::pms::hubs_snapshot(), listing: crate::stores::browse::listing_snapshot(),
-            directory, section_hubs: crate::stores::browse::hubs_snapshot(),
+            hubs: crate::pms::hubs_snapshot(), listing: browse.listing,
+            directory: browse.directory, section_hubs: browse.section_hubs,
             search: crate::stores::search::snapshot(),
-        })
+        }, stores)
     }
 
     #[cfg(test)]
@@ -443,6 +445,15 @@ impl Bridge {
         consent: crate::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications) -> Self {
+        Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
+            consent_adapter, reads, Default::default())
+    }
+
+    fn with_publications_and_stores(measure: &'static dyn Measure, now_us: fn() -> u64,
+        init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
+        consent: crate::telemetry::consent::Consent,
+        consent_adapter: super::adapters::consent::ConsentAdapter,
+        reads: StorePublications, stores: crate::stores::Stores) -> Self {
         Self {
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
@@ -451,7 +462,7 @@ impl Bridge {
             session_adapter,
             session_ready: None,
             consent_adapter,
-            stores: Default::default(),
+            stores,
             mounter: AppMounter::default(),
             playback: crate::route::PlaybackSession::IDLE,
             playback_live: false,
@@ -699,12 +710,11 @@ impl Bridge {
         }
         let directory_before = self.directory.clone();
         let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision());
-        self.stores.browse.borrow_mut().capture_directory(&mut self.directory);
-        // Directory capture resolves profile pins and may repoint the active section. Both
-        // content snapshots must name the resulting section, not opposite sides of that repoint.
-        if self.home_io.is_none() { self.section_hubs = self.stores.browse.borrow_mut().hubs_snapshot(); }
-        let listing = if self.home_io.is_some() { self.listing.clone() }
-            else { self.stores.browse.borrow_mut().listing_snapshot() };
+        // One owner borrow, in the load-bearing order: directory capture resolves profile pins
+        // and may repoint the current section, so listing and shelves are captured only after it.
+        let owned = self.stores.capture_browse(&mut self.directory);
+        if self.home_io.is_none() { self.section_hubs = owned.section_hubs; }
+        let listing = if self.home_io.is_some() { self.listing.clone() } else { owned.listing };
         let listing_changed = !self.listing.view().same_items(listing.view())
             || self.listing.view().fetch() != listing.view().fetch();
         self.listing = listing;
@@ -942,6 +952,32 @@ impl Drop for Bridge {
 }
 
 impl Bridge {
+    /// Synchronous application boundary for callers whose answer is consumed in the same turn.
+    /// This borrows the one store owned by this Bridge; it is not a selector or publication shim.
+    #[allow(dead_code)] // Wave 0 contract; consumer lanes replace compatibility calls.
+    pub(crate) fn browse_run(&mut self, cmd: crate::stores::browse::BrowseCmd) -> bool {
+        self.stores.browse_run(cmd)
+    }
+
+    #[allow(dead_code)] // Wave 0 contract; consumer lanes replace compatibility calls.
+    pub(crate) fn browse_discover_pump(&mut self) -> crate::stores::StoreOutcome {
+        self.stores.browse_discover_pump()
+    }
+
+    #[allow(dead_code)] // Wave 0 contract; consumer lanes replace compatibility reads.
+    pub(crate) fn browse_directory(&self) -> crate::stores::browse::DirectoryView<'_> {
+        self.directory.view()
+    }
+
+    #[allow(dead_code)] // Wave 0 contract; consumer lanes replace compatibility snapshots.
+    pub(crate) fn browse_publications(&self) -> crate::stores::browse::BrowsePublications {
+        crate::stores::browse::BrowsePublications {
+            listing: self.listing.clone(),
+            directory: self.directory.clone(),
+            section_hubs: self.section_hubs.clone(),
+        }
+    }
+
     pub(crate) fn bind_primary(&mut self, recorded: u32) -> Result<(), &'static str> {
         let resource = crate::plex::client_opt().ok_or("missing controlled primary")?;
         if resource.instance_gen() != recorded || resource.id().raw() != 0 {

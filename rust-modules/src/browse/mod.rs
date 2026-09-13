@@ -1060,6 +1060,30 @@ impl BrowseState {
     fn pinned_count(&self) -> usize {
         self.sections.iter().filter(|s| s.pinned).count()
     }
+    fn library_pins(&self) -> Vec<(usize, i64, bool)> {
+        let mut out: Vec<(usize, i64, bool)> = self.sections
+            .iter()
+            .map(|s| (s.src, s.key, s.pinned))
+            .collect();
+        let Some(rec) = self.recorded.as_ref() else { return out };
+        for (si, src) in self.sources.iter().enumerate() {
+            if src.machine_id.is_empty() || self.sections.iter().any(|s| s.src == si) {
+                continue;
+            }
+            for (lib, on) in rec.on.iter().map(|lib| (lib, true))
+                .chain(rec.off.iter().map(|lib| (lib, false))) {
+                if lib.machine_id == src.machine_id {
+                    out.push((si, lib.key, on));
+                }
+            }
+        }
+        out
+    }
+    fn favorite_sections(&self) -> Vec<(ServerId, i64, bool)> {
+        self.library_pins().into_iter().filter_map(|(source, key, favorite)| {
+            self.sources.get(source).map(|row| (row.sid, key, favorite))
+        }).collect()
+    }
     fn tab_has_favorite(&self, kind: SecKind) -> bool {
         self.sections.iter().any(|s| s.kind == kind && s.pinned)
     }

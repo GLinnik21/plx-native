@@ -12,8 +12,8 @@
 //! Two callers, one vocabulary. An owned screen emits `AppFx::Store(id, cmd)` and
 //! `app/bridge.rs` delivers it to the owning machine; a legacy caller uses the store's
 //! `apply(cmd)` shim, which steps the same Browse machine IMMEDIATELY on the main thread and
-//! returns the store's own answer. The design note's §3 says why the shim is not a deferred queue
-//! in this phase. Either way the mutation has one command path and the notice is raised once.
+//! returns the store's own answer. Wave 0 also exposes explicit aggregate methods so each
+//! compatibility caller can migrate without inventing another selector.
 //!
 //! What lives here is the vocabulary and machine plus Browse's production aggregate; the remaining
 //! data stays in the legacy modules until its ownership slice (§14). This module names data crates, `ui::machine` and — since
@@ -106,6 +106,31 @@ impl Stores {
 
     pub(crate) fn activate(&mut self) {
         browse::activate(&self.browse);
+    }
+
+    /// Explicit synchronous Browse command path for application boundaries migrating off the
+    /// compatibility selector. The answer is available before this call returns.
+    #[allow(dead_code)] // Wave 0 contract; consumer lanes replace compatibility calls.
+    pub(crate) fn browse_run(&self, cmd: browse::BrowseCmd) -> bool {
+        self.browse.borrow_mut().run(cmd)
+    }
+
+    #[allow(dead_code)] // Wave 0 contract; consumer lanes replace compatibility calls.
+    pub(crate) fn browse_discover_pump(&self) -> StoreOutcome {
+        self.browse.borrow_mut().discover_pump()
+    }
+
+    /// Capture all three retained Browse publications from one owner borrow. Directory capture
+    /// runs first because resolving profile pins may repoint the current section.
+    pub(crate) fn capture_browse(&self, directory: &mut browse::DirectorySnapshot)
+        -> browse::BrowsePublications {
+        let mut browse = self.browse.borrow_mut();
+        browse.capture_directory(directory);
+        browse::BrowsePublications {
+            listing: browse.listing_snapshot(),
+            directory: directory.clone(),
+            section_hubs: browse.hubs_snapshot(),
+        }
     }
 
     pub(crate) fn gen(&self, id: StoreId) -> u32 {
