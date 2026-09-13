@@ -4451,6 +4451,72 @@ class DepGates(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("browse/mod.rs", r.stdout + r.stderr)
 
+    def test_browse_owner_gate_ignores_normal_string_braces_before_a_free_const_fn(self):
+        """Compiling counterexample for the old raw brace counter: the `{` belongs to LABEL,
+        so the indented const fn after it is still a module-level retired facade and must fail."""
+        r = self._prepend(
+            "browse/mod.rs",
+            '\nconst LABEL: &str = "{";\n    pub(crate) const fn set_cur(i: usize) {}\n',
+        )
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("browse-owner:", out)
+        self.assertIn("const fn set_cur", out)
+
+    def test_browse_owner_gate_ignores_every_rust_noncode_brace_before_a_free_fn(self):
+        fixtures = (
+            '// {\n',
+            '/* outer { /* nested { */ */\n',
+            'const RAW_SCOPE: &str = r###"{"###;\n',
+            'const BYTE_SCOPE: &[u8] = b"{";\n',
+            'const RAW_BYTE_SCOPE: &[u8] = br##"{"##;\n',
+            "const CHAR_SCOPE: char = '{';\n",
+            "const BYTE_CHAR_SCOPE: u8 = b'{';\n",
+            'const ESCAPED_SCOPE: &str = "\\\\\\\"{";\n',
+            "const ESCAPED_CHAR_SCOPE: char = '\\\'';\nconst LABEL_SCOPE: &str = \"{\";\n",
+        )
+        for prefix in fixtures:
+            with self.subTest(prefix=prefix):
+                r = self._prepend(
+                    "browse/mod.rs",
+                    "\n" + prefix + "    pub(super) unsafe extern \"C\" fn set_cur(i: usize) {}\n",
+                )
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("browse-owner:", r.stdout + r.stderr)
+
+    def test_browse_owner_gate_ignores_noncode_closing_braces_inside_an_impl(self):
+        """A compiling impl fixture remains receiver-bound even when every Rust literal/comment
+        form contains `}`. The old counter escaped the impl and falsely reported `cur`."""
+        fixture = r'''
+struct BrowseScopeFixture;
+impl BrowseScopeFixture {
+    // }
+    /* outer } /* nested } */ } */
+    const NORMAL: &'static str = "}\\\"";
+    const RAW: &'static str = r###"}"###;
+    const BYTES: &'static [u8] = b"}";
+    const RAW_BYTES: &'static [u8] = br##"}"##;
+    const CHAR: char = '}';
+    const BYTE_CHAR: u8 = b'}';
+    const ESCAPED_CHAR: char = '\'';
+    pub(crate) fn cur(&self) -> usize { 0 }
+}
+'''
+        r = self._prepend("browse/mod.rs", fixture)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok — browse-owner", r.stdout)
+
+    def test_browse_owner_gate_rejects_retired_transport_declarations(self):
+        for relpath, declaration in (
+            ("browse/mod.rs", "    pub(crate) static LEGACY_ADAPTER: () = ();\n"),
+            ("stores/browse.rs", "    pub(super) static ACTIVE: () = ();\n"),
+            ("browse/mod.rs", "    static mut RETIRED_BROWSE: Option<BrowseState> = None;\n"),
+        ):
+            with self.subTest(declaration=declaration):
+                r = self._prepend(relpath, "\n" + declaration)
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("browse-owner:", r.stdout + r.stderr)
+
     def test_browse_owner_gate_accepts_receiver_bound_owned_methods(self):
         """A BrowseState selector is safe when it requires an explicit receiver. GREEN:
         temporarily widen the owned `cur(&self)` method to `pub`; the gate must still pass,

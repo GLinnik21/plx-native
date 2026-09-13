@@ -206,29 +206,119 @@ browse_hub_facades='pump_spawns|invalidate|tick_all|shelves|publication|snapshot
 browse_store_facades='hubs_snapshot|listing_snapshot|reset_bootstrap_for_test|take_bootstrap_token|with_active|active_owner|activate|with_activation|controlled_discover_active|seed_items_active_for_test|queue_discovery_active_for_test|apply|pump|discover_pump'
 # Scan only module-level declarations. A plain grep cannot tell a retired free facade from a
 # receiver method with the same word (and historically also missed indentation and modifiers).
-browse_free_declarations() {
+# Scope is counted from Rust tokens, not raw braces: comments (including nested block comments),
+# strings (ordinary, raw and byte) and character literals may all contain brace-shaped data.
+browse_declarations() {
   local names="$1" file
   shift
   for file in "$@"; do
     awk -v names="$names" '
-      function braces(s, n) { n=gsub(/\{/, "{", s); n-=gsub(/\}/, "}", s); return n }
+      function blanks(n, s) { s=""; while (n-- > 0) s=s " "; return s }
+      function hashes(n, s) { s=""; while (n-- > 0) s=s "#"; return s }
+
+      # Return the raw-string hash count at s[pos], or -1 when prefix does not begin one.
+      function raw_start(s, pos, prefix, i, count) {
+        if (substr(s, pos, length(prefix)) != prefix) return -1
+        i=pos+length(prefix); count=0
+        while (substr(s, i, 1) == "#") { count++; i++ }
+        return substr(s, i, 1) == "\"" ? count : -1
+      }
+
+      # Rust lifetimes also begin with apostrophe. Recognize only a complete one-codepoint or
+      # escaped character literal, leaving lifetimes and labels as code.
+      function char_end(s, quote, i, c) {
+        i=quote+1
+        c=substr(s, i, 1)
+        if (c == "" || c == "\n" || c == "\r" || c == "\047") return 0
+        if (c == "\\") {
+          i++
+          c=substr(s, i, 1)
+          if (c == "u" && substr(s, i+1, 1) == "{") {
+            i+=2
+            while (i <= length(s) && substr(s, i, 1) != "}") i++
+            if (substr(s, i, 1) != "}") return 0
+            i++
+          } else if (c == "x") {
+            i+=3
+          } else if (c != "") {
+            i++
+          } else return 0
+        } else i++
+        return substr(s, i, 1) == "\047" ? i : 0
+      }
+
+      BEGIN { raw=-1 }
       {
-        # Rust declarations in this surface are single-line signatures; depth 0 is the module.
-        if (depth == 0 && $0 ~ "^[[:space:]]*((pub([[:space:]]*\\([^)]*\\))?|const|async|unsafe|extern([[:space:]]*\\\"[^\\\"]*\\\")?)[[:space:]]+)*fn[[:space:]]+(" names ")([<[:space:](])")
+        original=$0; code=""; delta=0; before=depth; i=1; n=length(original)
+        while (i <= n) {
+          c=substr(original, i, 1); two=substr(original, i, 2)
+          if (block > 0) {
+            if (two == "/*") { block++; code=code "  "; i+=2; continue }
+            if (two == "*/") { block--; code=code "  "; i+=2; continue }
+            code=code " "; i++; continue
+          }
+          if (raw >= 0) {
+            raw_close="\"" hashes(raw)
+            if (substr(original, i, length(raw_close)) == raw_close) {
+              code=code blanks(length(raw_close)); i+=length(raw_close); raw=-1; continue
+            }
+            code=code " "; i++; continue
+          }
+          if (string) {
+            if (c == "\\") { code=code "  "; i+=2; continue }
+            code=code " "; i++
+            if (c == "\"") string=0
+            continue
+          }
+          if (two == "//") break
+          if (two == "/*") { block=1; code=code "  "; i+=2; continue }
+
+          rh=raw_start(original, i, "br")
+          if (rh < 0) rh=raw_start(original, i, "rb")
+          if (rh >= 0) {
+            opener=2+rh+1; raw=rh; code=code blanks(opener); i+=opener; continue
+          }
+          rh=raw_start(original, i, "r")
+          if (rh >= 0) {
+            opener=1+rh+1; raw=rh; code=code blanks(opener); i+=opener; continue
+          }
+          if (two == "b\"") { string=1; code=code "  "; i+=2; continue }
+          if (c == "\"") { string=1; code=code " "; i++; continue }
+
+          if (c == "b" && substr(original, i+1, 1) == "\047") {
+            end=char_end(original, i+1)
+            if (end) { code=code blanks(end-i+1); i=end+1; continue }
+          }
+          if (c == "\047") {
+            end=char_end(original, i)
+            if (end) { code=code blanks(end-i+1); i=end+1; continue }
+          }
+
+          code=code c
+          if (c == "{") delta++
+          else if (c == "}") delta--
+          i++
+        }
+
+        # Declarations in this retired surface have single-line signatures. Leading whitespace
+        # is formatting, not nesting; only token brace depth distinguishes a free fn from a method.
+        fn_re="^[[:space:]]*((pub([[:space:]]*\\([^)]*\\))?|const|async|unsafe|extern)[[:space:]]+)*fn[[:space:]]+(" names ")([<[:space:](])"
+        static_prefix="^[[:space:]]*(pub([[:space:]]*\\([^)]*\\))?[[:space:]]+)?static[[:space:]]+(mut[[:space:]]+)?"
+        if (before == 0 && (code ~ fn_re ||
+            code ~ (static_prefix "[A-Z][A-Z_0-9]*[[:space:]]*:.*(BrowseState|BrowseAdapter|BrowseStore)") ||
+            code ~ (static_prefix "(ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE)([[:space:]]|:)")))
           print FILENAME ":" NR ":" $0
-        depth += braces($0)
+        depth += delta
         if (depth < 0) depth = 0
       }
-    ' "$file"
+    ' "$file" || echo "$file:0:browse declaration scanner failed"
   done
 }
 browse_owner_matches=$({
-  grep -nE '^[[:space:]]*static (mut )?[A-Z][A-Z_0-9]*:.*(BrowseState|BrowseAdapter|BrowseStore)|static (ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE)' \
-    "$SRC/browse/mod.rs" "$SRC/stores/browse.rs" 2>/dev/null || true
-  browse_free_declarations "$browse_facades" "$SRC/browse/mod.rs"
-  browse_free_declarations "$browse_hub_facades" "$SRC/browse/section_hubs.rs"
-  browse_free_declarations 'snapshot' "$SRC/browse/view.rs"
-  browse_free_declarations "$browse_store_facades" "$SRC/stores/browse.rs"
+  browse_declarations "$browse_facades" "$SRC/browse/mod.rs"
+  browse_declarations "$browse_hub_facades" "$SRC/browse/section_hubs.rs"
+  browse_declarations 'snapshot' "$SRC/browse/view.rs"
+  browse_declarations "$browse_store_facades" "$SRC/stores/browse.rs"
   grep_code "(crate::browse|crate::stores::browse|stores::browse)::($browse_facades|$browse_store_facades)\(" "$SRC"
 } | sort -u)
 if [ -z "$browse_owner_matches" ]; then
