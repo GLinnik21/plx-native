@@ -47,19 +47,26 @@ impl Drop for Guard {
     }
 }
 
-/// Bring the capture backend into line with the currently published consent decision.
-///
-/// Boot imports pending envelopes before calling this. A withdrawal first restores the C crash
-/// tracer that Sentry found installed ahead of it, then removes both native directories.
-pub(crate) fn sync(c: &super::consent::Consent) -> Guard {
+/// Main-thread half of cold boot after [`prepare_boot`] has completed every explicit local purge
+/// and pending-envelope import on the persistence worker. SDK start/stop remains here because the
+/// native capture backend is process lifecycle state, not storage adapter work.
+pub(crate) fn sync_prepared(c: &super::consent::Consent) -> Guard {
     let wanted = c.answered() && c.errors && super::sender::sentry_dsn().is_some();
     if wanted {
         start();
     } else {
         stop();
-        purge_all();
     }
     Guard
+}
+
+pub(crate) fn prepare_boot(consent: &super::consent::Consent) -> Vec<CrashKey> {
+    if consent.errors && super::sender::sentry_dsn().is_some() {
+        import_pending_for(consent)
+    } else {
+        let _ = purge_all();
+        Vec::new()
+    }
 }
 
 /// Apply a consent change without manufacturing a second lifetime guard.
@@ -67,15 +74,19 @@ pub(crate) fn sync(c: &super::consent::Consent) -> Guard {
 /// A change that leaves the backend running (say, product analytics toggled while crash reports
 /// stay on) still re-applies the crash-report id to the scope: `start` returns early once active,
 /// and the id it set at init is the one the daemon would otherwise keep.
-pub(crate) fn sync_change(c: &super::consent::Consent) {
+pub(crate) fn sync_change(c: &super::consent::Consent) -> bool {
     let wanted = c.answered() && c.errors && super::sender::sentry_dsn().is_some();
     if wanted {
-        let _ = import_pending();
+        let _ = import_pending_for(c);
         start();
         set_user(c.errors_id.as_deref());
+        // The SDK exposes no status for an already-active backend or scope flush. This return only
+        // proves local cleanup on the off path; callers must use the effective consent gate as the
+        // authority rather than infer capture availability here.
+        true
     } else {
         stop();
-        purge_all();
+        purge_all()
     }
 }
 
@@ -87,13 +98,25 @@ fn pending_dir() -> PathBuf {
     crate::paths::in_runtime_dir(PENDING_DIR)
 }
 
-fn remove_database() {
-    let _ = std::fs::remove_dir_all(database_dir());
+fn remove_tree(path: PathBuf) -> bool {
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => path
+            .parent()
+            .and_then(|parent| std::fs::File::open(parent).ok())
+            .is_some_and(|parent| parent.sync_all().is_ok()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    }
 }
 
-fn purge_all() {
-    remove_database();
-    let _ = std::fs::remove_dir_all(pending_dir());
+fn remove_database() -> bool {
+    remove_tree(database_dir())
+}
+
+fn purge_all() -> bool {
+    let database = remove_database();
+    let pending = remove_tree(pending_dir());
+    database && pending
 }
 
 /// Is this the UUID-shaped filename the SDK gives an external event envelope?
@@ -634,8 +657,8 @@ fn event_from_envelope(bytes: &[u8]) -> Option<(String, Vec<u8>, Option<CrashKey
 }
 
 /// Import every complete native envelope, deleting it only after the durable spool accepted it.
-pub(crate) fn import_pending() -> Vec<CrashKey> {
-    if !super::consent::allows_errors() || super::sender::sentry_dsn().is_none() {
+pub(crate) fn import_pending_for(consent: &super::consent::Consent) -> Vec<CrashKey> {
+    if !consent.errors || super::sender::sentry_dsn().is_none() {
         return Vec::new();
     }
     let Ok(entries) = std::fs::read_dir(pending_dir()) else {
@@ -905,6 +928,25 @@ pub(crate) fn record_window(observation: super::window::Observation) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_purge_reports_real_removal_failure() {
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-native-purge-result-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("tree")).unwrap();
+        std::fs::write(dir.join("tree/event"), b"pending").unwrap();
+        assert!(remove_tree(dir.join("tree")));
+        assert!(!dir.join("tree").exists());
+        let regular = dir.join("not-a-directory");
+        std::fs::write(&regular, b"keep").unwrap();
+        assert!(!remove_tree(regular.clone()));
+        assert!(regular.exists());
+        let _ = std::fs::remove_file(regular);
+        let _ = std::fs::remove_dir(dir);
+    }
 
     fn assert_keys(value: &serde_json::Value, pointer: &str, allowed: &[&str]) {
         let object = value

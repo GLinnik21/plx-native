@@ -234,8 +234,10 @@ fn macos_bundle_resources(_exe: &Path) -> Option<PathBuf> {
 /// Support/PlxNative`.
 ///
 /// The default runtime root is `/tmp`, which is right on the television and wrong for a Mac app
-/// somebody was sent: `auth.json` lives in this root (see [`session_candidates`]), and `/tmp` is
-/// swept, so the friend would re-do the QR sign-in every few days without ever learning why. The
+/// somebody was sent: legacy `auth.json` migration inputs live in this root (see
+/// [`session_candidates`]), and `/tmp` is swept, so a pre-canonical install could re-do the QR
+/// sign-in every few days without ever learning why. The canonical record now lives under the
+/// persistent app state root. The
 /// app bundle itself is not an option either — it may sit in a read-only `/Applications`, and on a
 /// signed bundle writing inside `Contents/` invalidates the signature.
 ///
@@ -301,6 +303,67 @@ pub(crate) fn runtime_dir() -> &'static Path {
         ensure_runtime_dir(&d);
         d
     })
+}
+
+/// Legacy JSON/host-simulator persistence root. Shipping television state is helper-owned DB8;
+/// this path exists for old-record migration and for host tests that must never touch the checkout.
+pub(crate) fn persistent_state_root() -> PathBuf {
+    #[cfg(test)]
+    if let Some(root) = TEST_PERSISTENT_STATE_ROOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        return root;
+    }
+    if ENV_STEERABLE {
+        runtime_dir().join("state")
+    } else {
+        app_dir().join("state")
+    }
+}
+
+#[cfg(test)]
+static TEST_PERSISTENT_STATE_ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn redirect_persistent_state_root_for_test(root: Option<PathBuf>) {
+    if let Some(root) = &root {
+        let _ = std::fs::create_dir_all(root);
+    }
+    *TEST_PERSISTENT_STATE_ROOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = root;
+}
+
+/// Prepare the hostsim-only state root without following a pre-existing symlink. Television code
+/// may inspect an existing directory as a migration source but never creates it as an authority.
+pub(crate) fn ensure_persistent_state_root() -> std::io::Result<()> {
+    if !ENV_STEERABLE {
+        return Ok(());
+    }
+    let root = persistent_state_root();
+    match std::fs::symlink_metadata(&root) {
+        Ok(meta) if meta.file_type().is_dir() => Ok(()),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "persistent state root is not a directory",
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                let mut builder = std::fs::DirBuilder::new();
+                builder.mode(0o700);
+                builder.create(&root)
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::create_dir(&root)
+            }
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Create the runtime root if it is not `/tmp` itself, and make it world-writable + sticky.
@@ -445,6 +508,12 @@ pub(crate) fn in_runtime_dir(name: &str) -> PathBuf {
     runtime_dir().join(name)
 }
 
+/// A persistent file under the package's pre-created, group-writable `state` directory.
+/// The directory is part of the IPK; callers create only owner-mode files inside it.
+pub(crate) fn in_state_dir(name: &str) -> PathBuf {
+    in_app_dir("state").join(name)
+}
+
 /// **Which jail-visible tier one [`session_candidates`] entry is**, carried beside the path rather
 /// than re-derived from it by prefix matching.
 ///
@@ -462,22 +531,16 @@ pub(crate) enum SessionTier {
     Developer,
     /// `/media/internal/.<id>-auth.json` — the retail-jail writable fallback.
     Internal,
-    /// Inside the app install directory — `in_app_dir("auth.json")`, or the legacy migration path.
+    /// Inside the app install directory; this tier names only a legacy migration path.
     AppDir,
 }
 
-/// Candidate locations for the persisted session, best first, each with the [`SessionTier`] it is.
+/// Legacy candidate locations for the persisted session, best first, each with the
+/// [`SessionTier`] it is. They are migration inputs; television output goes to private DB8.
 ///
-/// Ordering rationale — the first entry must stay first: `/media/developer/<id>-auth.json` is
-/// deliberately OUTSIDE the app directory because appinstalld replaces that directory wholesale on
-/// every (re)install, which silently signed the user out. It is writable in the Developer Mode
-/// jail and it survives a reinstall, so it remains the preferred home.
-///
-/// Under the production jail that path does not exist, and the app dir itself is `root:5000 0755`
-/// — not writable by the jailed uid. `/media/internal` is `mount rw` in that profile and is the
-/// only persistent writable location there, so it is the second candidate. The app dir is third
-/// on the theory that a future layout may make it writable; the legacy in-app-dir path is last and
-/// is read-only in practice (migration).
+/// The two established external locations remain first for compatibility with existing sessions.
+/// The old app-root file remains last as a migration source. Hostsim uses its private state root;
+/// no shipping television path here is a live fallback.
 pub(crate) fn session_candidates() -> Vec<(PathBuf, SessionTier)> {
     let mut v = Vec::new();
     // A steerable build gets its own identity, first. Without this every concurrent simulator
@@ -507,11 +570,12 @@ pub(crate) fn session_candidates() -> Vec<(PathBuf, SessionTier)> {
             PathBuf::from(format!("/media/internal/.{id}-auth.json")),
             SessionTier::Internal,
         ),
+        (in_state_dir("auth.json"), SessionTier::AppDir),
         (in_app_dir("auth.json"), SessionTier::AppDir),
     ]);
     // The legacy in-app-dir path is a MIGRATION source and it names the SHIPPED install's directory
     // by literal, so only the shipped install may offer it. `session::load` takes the first
-    // candidate that EXISTS — so on a flavoured install, whose own three files are all absent on
+    // candidate that EXISTS — so on a flavoured install, whose own candidates are all absent on
     // first boot, this entry would hand a developer build the other install's account token, every
     // per-(user, server) PMS token and the Plex Home roster, which it would then write back under
     // its own name. Exactly the sharing the three lines above exist to prevent, arriving through
@@ -525,33 +589,14 @@ pub(crate) fn session_candidates() -> Vec<(PathBuf, SessionTier)> {
     v
 }
 
-/// Candidate locations for the telemetry decision, best first — **the same tier as the session**,
-/// and that choice has a consequence worth stating rather than discovering.
-///
-/// It goes here, not in [`runtime_dir`], because the runtime root on a television is `/tmp` and
-/// `/tmp` is cleared by a reboot: a consent decision that evaporated overnight would re-ask a
-/// person who had already answered, which is both worse for them and the exact pattern that makes
-/// a consent prompt feel like nagging rather than a choice.
-///
-/// **So it outlives an uninstall** — webOS gives a native app no uninstall hook, so nothing can
-/// clear this on the way out — **but not a sign-out**: the decision belongs to the account that
-/// gave it, and `auth::forget_account` unlinks every candidate here (through `telemetry::forget`)
-/// when that account signs out, so a change of owner IS a fresh question. That is also why the
-/// file holds a DECISION and, only after opt-in, one random identifier PER CHANNEL (the
-/// crash-report id and the analytics id, each owned by its own switch) — and why withdrawing a
-/// channel DELETES its identifier rather than merely disabling it. Recorded in `PRIVACY.md`,
-/// because a user cannot audit a file they cannot reach.
-///
-/// Outside the `plxnative-` trigger namespace by construction, since it is not in the runtime root
-/// at all — so it cannot suppress the who's-watching picker the way anything in `/tmp` would.
-/// The spool, beside the decision that authorised it.
-///
-/// **Same directories, same search order, different file** — and not merged into
-/// `telemetry.json` for one reason: the decision is small, rewritten rarely and must survive
-/// anything, while the spool is up to half a megabyte rewritten after every flush. Sharing one file
-/// would put the consent record itself at risk on every single upload, which is the one piece of
-/// state whose loss changes what the app is allowed to do.
+/// Disposable bounded telemetry storage. On TV this shares `/tmp`'s reboot lifecycle with the
+/// crash log; it never imports queues from the old persistent directories.
 pub(crate) fn telemetry_spool_candidates() -> Vec<PathBuf> {
+    vec![in_runtime_dir("telemetry-spool.bin")]
+}
+
+/// Old queues are cleanup targets only, never read or migrated into the active spool.
+pub(crate) fn telemetry_legacy_spool_candidates() -> Vec<PathBuf> {
     telemetry_candidates()
         .into_iter()
         .map(|p| {
@@ -566,34 +611,15 @@ pub(crate) fn telemetry_spool_candidates() -> Vec<PathBuf> {
         .collect()
 }
 
-/// How much of the append-only crash log has already been reported, beside the spool.
-///
-/// **A watermark rather than a truncation, and that is the whole reason this file exists.**
-/// `plxnative-crash.log` is append-only and survives a relaunch BY DESIGN — `docs/agent-reference.md` names it the
-/// thing to read after a crash-and-restart and `tools/crash-report.sh` parses it — so the telemetry
-/// reader may not consume it. Recording a byte offset lets a human and this module read the same
-/// file without either disturbing the other.
-///
-/// Not in the runtime root with the log it points into, deliberately. The runtime root is `/tmp` on
-/// this television: a watermark that vanished with a reboot would re-report every crash still in
-/// the log, and the one thing worse than losing a crash report is sending it four times. It lives
-/// beside the decision that authorised sending it, which is also the directory that survives a
-/// reinstall.
+/// The crash cutoff has exactly the same reboot lifecycle as the log it describes. Legacy
+/// persistent byte offsets are never imported: they cannot identify the runtime log's generation.
 pub(crate) fn telemetry_crashmark_candidates() -> Vec<PathBuf> {
-    telemetry_candidates()
-        .into_iter()
-        .map(|p| {
-            p.with_file_name(p.file_name().map_or_else(
-                || "telemetry-crashmark.json".into(),
-                |n| {
-                    n.to_string_lossy()
-                        .replace("telemetry.json", "telemetry-crashmark.json")
-                },
-            ))
-        })
-        .collect()
+    vec![in_runtime_dir("telemetry-crashmark.json")]
 }
 
+/// Legacy consent JSON candidates, best first. The shipping persistence adapter owns durable
+/// consent through DB8; these locations remain migration and cleanup inputs. Unlike the runtime
+/// spool, the consent decision must survive a reboot so the app does not ask again each morning.
 pub(crate) fn telemetry_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     // A steerable build keeps its own, for exactly the reason the session file does: several
@@ -605,6 +631,7 @@ pub(crate) fn telemetry_candidates() -> Vec<PathBuf> {
     v.extend([
         PathBuf::from(format!("/media/developer/{id}-telemetry.json")),
         PathBuf::from(format!("/media/internal/.{id}-telemetry.json")),
+        in_state_dir("telemetry.json"),
         in_app_dir("telemetry.json"),
     ]);
     // No legacy/migration entry, and no `flavour().is_none()` arm: there is no older location, and
@@ -855,8 +882,10 @@ mod tests {
             "{a:?} and {b:?} share a session file"
         );
         // …and the real list really is built that way, whichever install this binary is.
-        let real: Vec<std::path::PathBuf> =
-            super::session_candidates().into_iter().map(|(p, _)| p).collect();
+        let real: Vec<std::path::PathBuf> = super::session_candidates()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
         assert!(
             real.iter()
                 .any(|p| p.to_string_lossy().contains(super::app_id())),
@@ -879,12 +908,14 @@ mod tests {
         }
     }
 
-    /// The preferred session path must stay OUTSIDE the app directory: appinstalld replaces the
-    /// app dir wholesale on reinstall, and a session stored inside it is a silent sign-out.
+    /// The legacy search order stays stable so existing files can be migrated deterministically;
+    /// none of these paths is the shipping DB8 destination.
     #[test]
     fn preferred_session_path_survives_a_reinstall() {
-        let c: Vec<std::path::PathBuf> =
-            super::session_candidates().into_iter().map(|(p, _)| p).collect();
+        let c: Vec<std::path::PathBuf> = super::session_candidates()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
         assert!(
             c.len() >= 2,
             "a single hardcoded path is the bug this list exists to fix"
@@ -920,5 +951,48 @@ mod tests {
             };
             assert_eq!(tier, expect, "{s} is labelled {tier:?}");
         }
+    }
+
+    #[test]
+    fn packaged_state_legacy_candidate_follows_both_external_tiers() {
+        let paths: Vec<_> = super::session_candidates()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        let developer = paths
+            .iter()
+            .position(|p| p.starts_with("/media/developer"))
+            .unwrap();
+        let internal = paths
+            .iter()
+            .position(|p| p.starts_with("/media/internal"))
+            .unwrap();
+        let state = paths
+            .iter()
+            .position(|p| p == &super::app_dir().join("state/auth.json"))
+            .expect("packaged state/auth.json migration candidate");
+        assert!(developer < internal && internal < state);
+        assert_eq!(
+            super::session_candidates()[state].1,
+            super::SessionTier::AppDir
+        );
+    }
+
+    #[test]
+    fn telemetry_runtime_files_do_not_follow_persistent_consent_candidates() {
+        let decision = super::app_dir().join("state/telemetry.json");
+        let index = super::telemetry_candidates()
+            .iter()
+            .position(|p| p == &decision)
+            .expect("packaged telemetry decision fallback");
+        assert_eq!(
+            super::telemetry_legacy_spool_candidates()[index],
+            super::app_dir().join("state/telemetry-spool.bin")
+        );
+        assert_eq!(
+            super::telemetry_crashmark_candidates(),
+            vec![super::in_runtime_dir("telemetry-crashmark.json")]
+        );
+        assert_eq!(super::telemetry_spool_candidates(), vec![super::in_runtime_dir("telemetry-spool.bin")]);
     }
 }

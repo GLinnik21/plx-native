@@ -198,7 +198,7 @@ fn cached(g: &mut Option<Store>) -> &mut Store {
         // Keyed on the PROFILE, not the account: the cache generation already moves on a Plex
         // Home switch, and this is the read that has to answer differently when it does.
         let who = crate::plex::session::current_profile_key();
-        let terms = sanitize(crate::plex::session::peek().recents_for(&who).to_vec());
+        let terms = sanitize(crate::plex::session::snapshot().recents_for(&who).to_vec());
         *g = Some(Store {
             gen,
             terms,
@@ -375,6 +375,7 @@ pub(crate) fn clear() {
 /// to do.
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 
+#[derive(Clone, PartialEq, Eq)]
 struct Pending {
     /// Whose list this is, captured at COMMIT time. [`merged`] used to ask
     /// `session::current_profile_key()` itself, which was exact while it ran inline on the SDL
@@ -416,57 +417,53 @@ fn merged(
     Some(next)
 }
 
-/// Queue the current list for the session file and hand the write to a worker.
+/// Queue the current list and admit its immutable Session snapshot to the shared persistence
+/// worker. Admission is a short in-memory operation; disk work stays off the SDL thread.
 ///
-/// **The SDL event thread must never touch this file.** One write is `peek` (4–5 `PathBuf`s, an
-/// `fs::read` and a `serde_json` parse of the whole credentials file) followed by `to_vec_pretty`
-/// and an `O_TRUNC` write — on a 32-bit ARM television's flash. It ran inline on every committed
-/// term: the ▼ handoff into the results (the most common gesture on this screen), every ▲ back to
-/// the strip, every pointer click off the field, every recents pick and Clear. Nothing on screen
-/// waits for it — [`STORE`] is the source of truth for the draw and is already updated — so the
-/// write is genuinely fire-and-forget.
+/// **The SDL event thread never touches the file.** It only snapshots the already-loaded Session,
+/// assigns a revision and attempts a bounded enqueue. Serialization, keymanager and atomic disk
+/// commit run later on the shared worker. [`STORE`] remains the source of truth for the draw.
 ///
 /// Both halves of the payload are read HERE, on the SDL thread: the profile key because it must be
 /// the one that was searching (see [`Pending::who`]), and the terms because [`STORE`]'s lock is
 /// main-thread-only — a worker that reached in for them could be holding it while the next frame
 /// wants to draw, and could find [`cached`] doing a file read under it.
 ///
-/// A refused spawn is a return value (`task.rs`), and this caller's answer is to leave the list in
-/// [`PENDING`] and let `task.rs`'s own log stand. Deliberately NOT a fall-back to writing inline:
-/// the refusal means the device is out of threads or address space, which is the worst possible
-/// moment to park the event loop on flash — and the change is deferred rather than lost, since the
-/// next commit's worker takes the pending list, which by then is the newer one anyway. Only a run
-/// that ends with no further commit drops it, and it was never on screen.
+/// A refused bounded enqueue leaves the exact pending list in [`PENDING`] for the next commit.
+/// There is no inline fallback and therefore no flash/keymanager work on the event thread.
 fn persist() {
     let who = crate::plex::session::current_profile_key();
     let terms = with_terms(|t| t.to_vec());
     *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { who, terms });
-    let _ = crate::task::spawn_small("recents-save", flush);
+    flush();
 }
 
 /// The worker: take whatever is pending and write it.
 ///
-/// Re-reads the session FILE rather than carrying one — the snapshot this module holds is only the
-/// terms, and everything else in that file (a roster refresh, a profile pick) may have moved since.
-/// Same read-modify-write `auth.rs` does for the roster, and now through the same door.
+/// Reads the coordinator's current in-memory Session snapshot rather than carrying one — this
+/// module holds only the terms, and everything else (a roster refresh, a profile pick) may have
+/// moved since. Same read-modify-write `auth.rs` does for the roster, through the same door.
 ///
 /// **The lock is `session`'s, not ours.** This module kept a `WRITING` mutex of its own, which
 /// serialized recents against recents and against nothing else — so the two writers that actually
 /// contend, this one and `auth`'s roster refresh, could still interleave a lost update or a torn
-/// file between them. [`crate::plex::session::update`] is the one authority now (its doc has the
-/// two failures), and the pending list is taken INSIDE it, which keeps the ordering property this
-/// worker has always had: whichever worker reaches the file first writes the newest state, and the
-/// second finds nothing to do. The second now pays a file read to discover that (`update` reads
-/// before it calls the closure) — a worker's read, on a path that runs once per committed term.
+/// file between them. [`crate::plex::session::update_ordinary`] is the one authority now. The exact
+/// pending snapshot is retired only after admission; a newer pending list or a refused bounded
+/// queue remains for a later flush instead of disappearing before persistence was accepted.
 ///
 /// It touches [`PENDING`] and nothing else of this module's: not [`STORE`], not the glyph cache,
 /// not the profile key. That is the whole seam — everything it needs was read on the SDL thread by
 /// [`persist`].
 fn flush() {
-    crate::plex::session::update(|s| {
-        let p = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take()?;
-        merged(s, &p.who, &p.terms)
-    });
+    let Some(pending) = PENDING.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        return;
+    };
+    if crate::plex::session::update_ordinary(|s| merged(s, &pending.who, &pending.terms)) {
+        let mut slot = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.as_ref() == Some(&pending) {
+            *slot = None;
+        }
+    }
 }
 
 // ---- The drawing ------------------------------------------------------------------------------

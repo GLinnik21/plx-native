@@ -20,8 +20,8 @@
 //! travel together: a person who consented to two purposes did not consent to having them joined,
 //! and one shared handle is precisely the join. Withdrawing one channel destroys ITS id and leaves
 //! the other untouched. **Signing out destroys both and the decision with them**
-//! (`telemetry::forget`, behind `auth::forget_account`): consent belongs to the account that gave
-//! it, and the next account to sign in is asked afresh.
+//! (`telemetry::forget_with_receipt`, behind `auth::forget_account`): consent belongs to the
+//! account that gave it, and the next account to sign in is asked afresh.
 //!
 //! **Two switches, because they are two questions.** Error reports and usage statistics are judged
 //! differently by the people who care — when Audacity retreated it dropped usage analytics and kept
@@ -46,11 +46,13 @@
 //!
 //! # The four `#[allow(dead_code)]`s are gone
 //!
-//! [`POLICY_VERSION`], [`should_ask`], [`apply`] and `telemetry::record` carried one between them,
+//! [`POLICY_VERSION`], [`should_ask`], [`apply`] and `telemetry::record_with_receipt` carried one between them,
 //! each naming the consent SCREEN as the missing caller. `ui::consent` is that screen, and the
 //! attributes were deleted by the commit that added it rather than left behind — which was the
 //! stated plan and is worth having actually happened, because a stale allowance is how a genuinely
 //! dead function later hides in plain sight.
+use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::RwLock;
 
@@ -260,7 +262,7 @@ pub(crate) fn reask_note(previous: u32) -> Option<&'static str> {
 
 /// The stored decision. Serde-serialised to the telemetry file; every field is read and written, so
 /// none of them is dead even while only one accessor has a caller.
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Consent {
     /// The [`POLICY_VERSION`] this decision was made against. `0` means never asked — which is
     /// what a fresh install has, and is deliberately distinguishable from "asked, and said no to
@@ -317,6 +319,106 @@ pub(crate) struct Consent {
     /// [`Self::errors_declined_scope`]'s twin for Product analytics.
     #[serde(default)]
     pub usage_declined_scope: u32,
+    /// Opaque fields from newer clients are preserved through typed migrations, but omitted from
+    /// debug output because their values may contain identifiers or credentials.
+    #[serde(flatten, default)]
+    pub(crate) extensions: BTreeMap<String, serde_json::Value>,
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalDecision {
+    asked_version: u32,
+    errors: bool,
+    usage: bool,
+    errors_declined_scope: u32,
+    usage_declined_scope: u32,
+    extensions: BTreeMap<String, serde_json::Value>,
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalScopes {
+    errors: u32,
+    usage: u32,
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalIds {
+    analytics: Option<String>,
+    errors: Option<String>,
+}
+
+/// Split consent into the three DB8-public slots the canonical state clears atomically on logout.
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+pub(crate) fn split_canonical(
+    consent: &Consent,
+) -> Result<crate::storage::state::ConsentPayload, ()> {
+    Ok(crate::storage::state::ConsentPayload {
+        consent: serde_json::to_value(CanonicalDecision {
+            asked_version: consent.asked_version,
+            errors: consent.errors,
+            usage: consent.usage,
+            errors_declined_scope: consent.errors_declined_scope,
+            usage_declined_scope: consent.usage_declined_scope,
+            extensions: consent.extensions.clone(),
+        })
+        .map_err(|_| ())?,
+        scopes: serde_json::to_value(CanonicalScopes {
+            errors: consent.errors_scope,
+            usage: consent.usage_scope,
+        })
+        .map_err(|_| ())?,
+        ids: serde_json::to_value(CanonicalIds {
+            analytics: consent.install_id.clone(),
+            errors: consent.errors_id.clone(),
+        })
+        .map_err(|_| ())?,
+    })
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+pub(crate) fn join_canonical(
+    payload: &crate::storage::state::ConsentPayload,
+) -> Result<Consent, ()> {
+    let decision: CanonicalDecision =
+        serde_json::from_value(payload.consent.clone()).map_err(|_| ())?;
+    let scopes: CanonicalScopes =
+        serde_json::from_value(payload.scopes.clone()).map_err(|_| ())?;
+    let ids: CanonicalIds = serde_json::from_value(payload.ids.clone()).map_err(|_| ())?;
+    Ok(Consent {
+        asked_version: decision.asked_version,
+        errors: decision.errors,
+        usage: decision.usage,
+        install_id: ids.analytics,
+        errors_id: ids.errors,
+        errors_scope: scopes.errors,
+        usage_scope: scopes.usage,
+        errors_declined_scope: decision.errors_declined_scope,
+        usage_declined_scope: decision.usage_declined_scope,
+        extensions: decision.extensions,
+    })
+}
+
+impl fmt::Debug for Consent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Consent")
+            .field("asked_version", &self.asked_version)
+            .field("errors", &self.errors)
+            .field("usage", &self.usage)
+            .field("install_id", &self.install_id.as_ref().map(|_| "<redacted>"))
+            .field("errors_id", &self.errors_id.as_ref().map(|_| "<redacted>"))
+            .field("errors_scope", &self.errors_scope)
+            .field("usage_scope", &self.usage_scope)
+            .field("errors_declined_scope", &self.errors_declined_scope)
+            .field("usage_declined_scope", &self.usage_declined_scope)
+            .field("extensions", &format_args!("<{} opaque fields>", self.extensions.len()))
+            .finish()
+    }
 }
 
 impl Consent {
@@ -535,6 +637,7 @@ pub(crate) fn apply(
         usage_scope,
         errors_declined_scope,
         usage_declined_scope,
+        extensions: prev.extensions.clone(),
     }
 }
 
@@ -619,30 +722,121 @@ pub(crate) fn apply_extension(
 
 // ---- the cached snapshot, and the disk under it ------------------------------------------------
 
-/// What [`allows_usage`] reads. Published by [`install`]; never a disk read on the event path.
-static CURRENT: RwLock<Option<Consent>> = RwLock::new(None);
+#[derive(Clone, Default)]
+struct Published {
+    /// The choice Settings must show, including an enable whose prospective cutoff is still
+    /// running on the persistence worker.
+    requested: Option<Consent>,
+    /// The authority used by producers and senders. Withdrawals reach this immediately; an
+    /// enable reaches it only after its cutoff has completed and its revision is still current.
+    effective: Option<Consent>,
+}
+
+/// Published snapshots only. No path holding this lock may touch disk or the native SDK.
+static CURRENT: RwLock<Published> = RwLock::new(Published {
+    requested: None,
+    effective: None,
+});
 /// Monotone process-local decision revision. A sender captures it before reading the spool and
 /// abandons that batch if *any* decision changes, so records from an old opt-in cannot become
 /// eligible again after a quick off→on cycle. It is never stored or sent.
 static REVISION: AtomicU32 = AtomicU32::new(0);
 
-/// Make `c` the decision every later [`allows_usage`] sees. Called after a load or a save.
+/// Make `c` both requested and effective. Cold boot and tests use this synchronous installation;
+/// asynchronous saves use [`request`] followed by [`publish_effective`].
 pub(crate) fn install(c: Consent) {
     if let Ok(mut g) = CURRENT.write() {
-        *g = Some(c);
+        g.requested = Some(c.clone());
+        g.effective = Some(c);
         REVISION.fetch_add(1, Ordering::SeqCst);
     }
+}
+
+/// Publish a requested asynchronous change while applying every withdrawal immediately.
+/// Returns whether Errors is an effective off-to-on transition that still needs its prospective
+/// cutoff before [`publish_effective`] may authorize it.
+pub(super) fn request(c: Consent) -> (bool, bool) {
+    let Ok(mut g) = CURRENT.write() else {
+        return (false, false);
+    };
+    let previous = g.effective.clone().unwrap_or_default();
+    let enabling_errors = c.errors && !previous.errors;
+    let enabling_usage = c.usage && !previous.usage;
+    let mut effective = c.clone();
+    if c.errors && !previous.errors {
+        effective.errors = false;
+        effective.errors_id = None;
+        effective.errors_scope = 0;
+    } else if c.errors {
+        effective.errors_id = previous.errors_id.clone();
+        effective.errors_scope = effective.errors_scope.min(previous.errors_scope);
+    }
+    if c.usage && !previous.usage {
+        effective.usage = false;
+        effective.install_id = None;
+        effective.usage_scope = 0;
+    } else if c.usage {
+        effective.install_id = previous.install_id.clone();
+        effective.usage_scope = effective.usage_scope.min(previous.usage_scope);
+    }
+    g.requested = Some(c);
+    g.effective = Some(effective);
+    REVISION.fetch_add(1, Ordering::SeqCst);
+    (enabling_errors, enabling_usage)
+}
+
+#[cfg(test)]
+pub(crate) fn request_for_test(c: Consent) {
+    let _ = request(c);
+}
+
+/// Complete the effective half of a request after its worker-side cutoff. The persistence
+/// coordinator proves the revision is current before calling this; keeping the setter separate
+/// keeps that coordinator lock out of every hot-path consent read.
+pub(super) fn publish_effective(c: Consent) {
+    if let Ok(mut g) = CURRENT.write() {
+        g.effective = Some(c);
+    }
+}
+
+pub(crate) fn effective() -> Option<Consent> {
+    CURRENT.read().ok().and_then(|g| g.effective.clone())
+}
+
+pub(crate) fn usage_enable_pending() -> bool {
+    CURRENT
+        .read()
+        .map(|g| {
+            g.requested.as_ref().is_some_and(|c| c.usage)
+                && !g.effective.as_ref().is_some_and(|c| c.usage)
+        })
+        .unwrap_or(false)
+}
+
+pub(crate) fn errors_scope_enable_pending(scope: u32) -> bool {
+    CURRENT
+        .read()
+        .map(|g| {
+            g.requested
+                .as_ref()
+                .is_some_and(|c| c.errors && c.errors_scope >= scope)
+                && !g
+                    .effective
+                    .as_ref()
+                    .is_some_and(|c| c.errors && c.errors_scope >= scope)
+        })
+        .unwrap_or(false)
 }
 
 pub(crate) fn revision() -> u32 {
     REVISION.load(Ordering::SeqCst)
 }
 
-/// The decision as last published, if one has been. `None` means nothing has been loaded yet —
-/// distinct from "a decision that allows nothing", which is what a refusal looks like, and the
-/// consent screen needs to tell those apart to seed itself honestly.
+/// The most recently requested decision, if one has been. Settings must reflect the person's
+/// choice while an enable cutoff is pending; producers use the effective accessors below. `None`
+/// means nothing has been loaded yet, distinct from an explicit refusal.
 pub(crate) fn current() -> Option<Consent> {
-    CURRENT.read().ok().and_then(|g| g.clone())
+    CURRENT.read().ok().and_then(|g| g.requested.clone())
 }
 
 /// May a USAGE event be reported? Read from the snapshot, so this is safe to call per event.
@@ -659,7 +853,7 @@ pub(crate) fn current() -> Option<Consent> {
 pub(crate) fn allows_usage() -> bool {
     CURRENT
         .read()
-        .map(|g| g.as_ref().is_some_and(|c| c.usage))
+        .map(|g| g.effective.as_ref().is_some_and(|c| c.usage))
         .unwrap_or(false)
 }
 
@@ -671,7 +865,7 @@ pub(crate) fn allows_usage() -> bool {
 pub(crate) fn allows_errors() -> bool {
     CURRENT
         .read()
-        .map(|g| g.as_ref().is_some_and(|c| c.errors))
+        .map(|g| g.effective.as_ref().is_some_and(|c| c.errors))
         .unwrap_or(false)
 }
 
@@ -683,7 +877,11 @@ pub(crate) fn allows_errors() -> bool {
 pub(crate) fn allows_errors_at(scope: u32) -> bool {
     CURRENT
         .read()
-        .map(|g| g.as_ref().is_some_and(|c| c.errors && c.errors_scope >= scope))
+        .map(|g| {
+            g.effective
+                .as_ref()
+                .is_some_and(|c| c.errors && c.errors_scope >= scope)
+        })
         .unwrap_or(false)
 }
 
@@ -692,7 +890,11 @@ pub(crate) fn allows_errors_at(scope: u32) -> bool {
 pub(crate) fn allows_usage_at(scope: u32) -> bool {
     CURRENT
         .read()
-        .map(|g| g.as_ref().is_some_and(|c| c.usage && c.usage_scope >= scope))
+        .map(|g| {
+            g.effective
+                .as_ref()
+                .is_some_and(|c| c.usage && c.usage_scope >= scope)
+        })
         .unwrap_or(false)
 }
 
@@ -705,12 +907,51 @@ pub(crate) fn errors_id() -> Option<String> {
     CURRENT
         .read()
         .ok()
-        .and_then(|g| g.as_ref().filter(|c| c.errors).and_then(|c| c.errors_id.clone()))
+        .and_then(|g| {
+            g.effective
+                .as_ref()
+                .filter(|c| c.errors)
+                .and_then(|c| c.errors_id.clone())
+        })
+}
+
+/// The analytics identifier under current effective authority. Settings reads [`current`] to show
+/// the requested choice; event construction must use this accessor so a pending enable cannot
+/// attach an identifier early.
+pub(crate) fn install_id() -> Option<String> {
+    CURRENT.read().ok().and_then(|g| {
+        g.effective
+            .as_ref()
+            .filter(|c| c.usage)
+            .and_then(|c| c.install_id.clone())
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_consent_slots_roundtrip_every_policy_field_and_identifier() {
+        let original = Consent {
+            asked_version: 9,
+            errors: true,
+            usage: true,
+            install_id: Some("analytics-fixture".into()),
+            errors_id: Some("errors-fixture".into()),
+            errors_scope: 7,
+            usage_scope: 8,
+            errors_declined_scope: 5,
+            usage_declined_scope: 6,
+            extensions: [("future".into(), serde_json::json!({"enabled":true}))]
+                .into_iter()
+                .collect(),
+        };
+        let slots = split_canonical(&original).unwrap();
+        assert_eq!(join_canonical(&slots).unwrap(), original);
+        assert!(slots.ids.to_string().contains("analytics-fixture"));
+        assert!(!slots.consent.to_string().contains("analytics-fixture"));
+    }
 
     /// The default is OFF, for both, and unanswered — not "off because someone said no".
     #[test]
@@ -975,7 +1216,7 @@ mod tests {
     #[test]
     fn the_errors_id_accessor_fails_closed_on_the_flag_not_on_scope_staleness() {
         let _g = crate::testlock::serial();
-        let saved = CURRENT.read().ok().and_then(|g| g.clone());
+        let saved = CURRENT.read().ok().map(|g| g.clone());
         install(Consent {
             asked_version: 4,
             errors: true,
@@ -1002,7 +1243,7 @@ mod tests {
             errors_id().is_none(),
             "the analytics id is not the crash-report id"
         );
-        if let Ok(mut g) = CURRENT.write() {
+        if let (Some(saved), Ok(mut g)) = (saved, CURRENT.write()) {
             *g = saved;
         }
     }
@@ -1178,7 +1419,7 @@ mod tests {
     #[test]
     fn a_pending_extension_still_sends_baseline_reports_but_withholds_the_new_field() {
         let _g = crate::testlock::serial();
-        let saved = CURRENT.read().ok().and_then(|g| g.clone());
+        let saved = CURRENT.read().ok().map(|g| g.clone());
         let stale = Consent {
             asked_version: 4,
             errors: true,
@@ -1195,7 +1436,7 @@ mod tests {
         let yes = apply_extension(&stale, Category::Errors, true, || Some("e2".repeat(16)));
         install(yes);
         assert!(allows_errors_at(6), "accepting the extension unlocks it");
-        if let Ok(mut g) = CURRENT.write() {
+        if let (Some(saved), Ok(mut g)) = (saved, CURRENT.write()) {
             *g = saved;
         }
     }
@@ -1206,7 +1447,7 @@ mod tests {
     #[test]
     fn a_declined_errors_extension_still_sends_baseline_reports_but_withholds_the_new_field() {
         let _g = crate::testlock::serial();
-        let saved = CURRENT.read().ok().and_then(|g| g.clone());
+        let saved = CURRENT.read().ok().map(|g| g.clone());
         let stale = Consent {
             asked_version: 4,
             errors: true,
@@ -1223,7 +1464,7 @@ mod tests {
             !allows_errors_at(6),
             "the StorageError field stays withheld — that is exactly what was declined"
         );
-        if let Ok(mut g) = CURRENT.write() {
+        if let (Some(saved), Ok(mut g)) = (saved, CURRENT.write()) {
             *g = saved;
         }
     }
@@ -1233,7 +1474,7 @@ mod tests {
     #[test]
     fn a_declined_usage_extension_still_sends_baseline_events_but_withholds_the_new_field() {
         let _g = crate::testlock::serial();
-        let saved = CURRENT.read().ok().and_then(|g| g.clone());
+        let saved = CURRENT.read().ok().map(|g| g.clone());
         let stale = Consent {
             asked_version: 4,
             usage: true,
@@ -1256,7 +1497,7 @@ mod tests {
         let yes = apply_extension(&stale, Category::Usage, true, || Some("u2".repeat(16)));
         install(yes);
         assert!(allows_usage_at(6), "accepting it afterwards unlocks the field");
-        if let Ok(mut g) = CURRENT.write() {
+        if let (Some(saved), Ok(mut g)) = (saved, CURRENT.write()) {
             *g = saved;
         }
     }
@@ -1403,7 +1644,7 @@ mod tests {
     #[test]
     fn the_event_path_fails_closed() {
         let _g = crate::testlock::serial();
-        let saved = CURRENT.read().ok().and_then(|g| g.clone());
+        let saved = CURRENT.read().ok().map(|g| g.clone());
 
         install(Consent::default());
         assert!(!allows_usage(), "a default decision allows nothing");
@@ -1423,7 +1664,53 @@ mod tests {
             "consenting to ERRORS does not consent to usage"
         );
 
-        if let Ok(mut g) = CURRENT.write() {
+        if let (Some(saved), Ok(mut g)) = (saved, CURRENT.write()) {
+            *g = saved;
+        }
+    }
+
+    #[test]
+    fn pending_enable_is_distinct_from_a_stored_no_for_bounded_deferral() {
+        let _g = crate::testlock::serial();
+        let saved = CURRENT.read().ok().map(|g| g.clone());
+        install(Consent {
+            asked_version: POLICY_VERSION,
+            ..Default::default()
+        });
+        let usage_yes = Consent {
+            asked_version: POLICY_VERSION,
+            usage: true,
+            usage_scope: USAGE_SCOPE,
+            install_id: Some("u".repeat(32)),
+            ..Default::default()
+        };
+        request(usage_yes.clone());
+        assert!(usage_enable_pending());
+        assert!(!allows_usage());
+        publish_effective(usage_yes);
+        assert!(!usage_enable_pending());
+
+        let accepted_errors = Consent {
+            asked_version: POLICY_VERSION,
+            errors: true,
+            errors_scope: 4,
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        };
+        install(accepted_errors.clone());
+        let mut extension_yes = accepted_errors;
+        extension_yes.errors_scope = ERRORS_SCOPE;
+        request(extension_yes);
+        assert!(errors_scope_enable_pending(ERRORS_SCOPE));
+        assert!(allows_errors_at(4));
+        assert!(!allows_errors_at(ERRORS_SCOPE));
+        request(Consent {
+            asked_version: POLICY_VERSION,
+            ..Default::default()
+        });
+        assert!(!usage_enable_pending());
+        assert!(!errors_scope_enable_pending(ERRORS_SCOPE));
+        if let (Some(saved), Ok(mut g)) = (saved, CURRENT.write()) {
             *g = saved;
         }
     }
@@ -1494,7 +1781,7 @@ mod tests {
     #[test]
     fn every_published_decision_invalidates_an_in_flight_sender_batch() {
         let _g = crate::testlock::serial();
-        let saved = CURRENT.read().ok().and_then(|g| g.clone());
+        let saved = CURRENT.read().ok().map(|g| g.clone());
         let before = revision();
         install(Consent {
             asked_version: POLICY_VERSION,
@@ -1506,7 +1793,7 @@ mod tests {
             before,
             "the sender would keep using its stale decision"
         );
-        if let Ok(mut g) = CURRENT.write() {
+        if let (Some(saved), Ok(mut g)) = (saved, CURRENT.write()) {
             *g = saved;
         }
     }

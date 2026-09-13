@@ -40,7 +40,8 @@
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 21] = [
+const DIAG: [&str; 22] = [
+    "plxnative-storage-diagnostics",
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -129,6 +130,50 @@ macro_rules! latched_flag {
     };
 }
 pub(crate) use latched_flag;
+
+/// One boot-time diagnostic injection, using seven fixed payload-free scenarios. The trigger
+/// selects a closed scenario or `all`; up to 64 bytes are read and arbitrary strings are rejected.
+/// The real telemetry producer still checks Errors consent. No helper/storage call is made.
+#[cfg(all(
+    feature = "devtriggers",
+    target_os = "linux",
+    target_arch = "arm",
+    not(feature = "hostsim")
+))]
+pub(crate) fn run_storage_diagnostics() {
+    use std::io::Read;
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let Ok(file) = std::fs::File::open(path("storage-diagnostics")) else {
+            return;
+        };
+        let mut input = String::new();
+        if file.take(64).read_to_string(&mut input).is_err() || input.len() >= 64 {
+            return;
+        }
+        let input = input.trim();
+        if input == "all" {
+            for scenario in [
+                "unavailable",
+                "timeout",
+                "service-rejected",
+                "invalid-response",
+                "readback-repair",
+                "strict",
+                "strict-pending",
+            ] {
+                crate::telemetry::storage::inject_keymanager_scenario(scenario);
+            }
+        } else {
+            crate::telemetry::storage::inject_keymanager_scenario(input);
+        }
+    });
+}
+#[cfg(all(
+    feature = "devtriggers",
+    not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim")))
+))]
+pub(crate) fn run_storage_diagnostics() {}
 
 /// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.
 ///
@@ -1005,10 +1050,8 @@ mod tests {
         // Per PROCESS, not a fixed name: the runtime dir is the host's /tmp here, shared with every
         // other `cargo test` on this Mac, and two suites running at once (a second checkout's
         // `make check`) removed each other's entry between the create and the read_dir.
-        let d = crate::paths::in_runtime_dir(&format!(
-            "plxnative-notatrigger-{}",
-            std::process::id()
-        ));
+        let d =
+            crate::paths::in_runtime_dir(&format!("plxnative-notatrigger-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let entry = std::fs::read_dir(d.parent().unwrap())

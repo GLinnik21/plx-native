@@ -231,6 +231,10 @@ jobs:
             echo '```'
             ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data \
               --min-release 4.4.2 pkg/plxnative
+            echo
+            echo 'Storage helper:'
+            ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data \
+              --min-release 4.4.2 pkg/plxnative-storage
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 

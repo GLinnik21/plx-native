@@ -21,7 +21,7 @@ answers what a QA pass would find.
 | Ship via **LG Content Store**? | **Submittable — this was a "no" here until 2026-08-23 and the "no" was wrong.** Seller Lounge parses this project's ipk as **File Type: Native** and asks for the native SDK version, chipset and resolution. The old verdict rested on a `develop/*` **web-runtime** page (*"Only `web` is allowed currently"*), which is not authority over a native app. What remains is a QA problem, not a permission problem — §2, and `docs/lg-self-checklist.md` for the four items that genuinely fail. |
 | Runs on **newer webOS**? | 32-bit armv7 is *not* the problem — it stays the native userland through webOS 26. **ACB is the problem**: `libAcbAPI` exists on webOS 4.x only. Today's binary does not reach `main()` on 5.0+. |
 | Is **private data** in the repo? | Git history is clean of credentials. Release CI has no `config.local.h`, remaps host paths, compiles out the trigger/FIFO/capture surfaces, and verifies the shipped bytes. Runtime logs are mode 0600 and scrub tokens, server addresses, household names and media text before writing; §4 records the remaining diagnostic surface. |
-| Needs a **rooted** TV? | **No** — the unprivileged Dev Mode jail is device-proven in §3.5. Homebrew and retail layouts now use probed writable paths; Key Manager permission is capability-tested and denial keeps the mode-0600 fallback. A real LG Content Store entitlement/install is still an acceptance test, not something the rooted development set can prove. |
+| Needs a **rooted** TV? | **No** — the unprivileged Dev Mode jail is device-proven in §3.5. Canonical state uses a packaged helper's private DB8 kind. New/unknown webOS attempts Keymanager3 first and uses explicit DB8 ACL-only auth if crypto fails; the policy selects ACL-only directly for reported majors 1–4, with runtime evidence currently limited to 4.10.2. A real LG Content Store entitlement/install remains an acceptance test. |
 | **Licensing** clear? | Font blocker **CLEARED 2026-08-01** — Inter (OFL 1.1) replaced Monotype Arial. FFmpeg/LGPL is fine. The repo still has **no LICENSE file at all**. |
 | **Trademarks**? | Plex itself is fine (their guidelines have an explicit permitted formula). **Rotten Tomatoes marks have no licensing route that exists**, and the TMDB logo ships without its mandatory attribution. |
 
@@ -394,9 +394,11 @@ worth having and this section is wrong.
 ### 3.5 Root is NOT required — but the install *prefix* is the live bug
 
 This section proves the native app runs without privilege under LG's stock **Dev Mode** jail. It
-does not by itself prove an LG Content Store entitlement. Key Manager access is therefore probed at
-runtime; denial on a retail/store install falls back to the app-owned 0600 session file and does
-not turn root into a requirement.
+does not by itself prove an LG Content Store entitlement. Current canonical persistence is a
+private helper-owned DB8 object. New/unknown firmware attempts Keymanager3 first and falls back to
+an explicit private-DB8 ACL-only envelope on a fresh auth write if crypto fails; this does not turn
+root into a requirement. The policy selects ACL-only directly for reported webOS majors 1–4;
+runtime evidence currently covers webOS 4.10.2 only.
 
 **Device-proven 2026-08-01 on the 49SM9000PLA.** The running app is `Uid: 6910`, `Gid: 5000`,
 `CapEff: 0`, chrooted to `/var/palm/jail/com.beb.plxnative`, with `libplayerAPIs`, `libAcbAPI`,
@@ -431,7 +433,9 @@ Corroboration: Kodi's `MediaPipelineWebOS.cpp` drives `mediaTransportType: "BUFF
 to 'root' your TV to install Kodi."* Moonlight's backend (`mariotaku/ss4s`) runs the identical
 Starfish feed + full ACB bind. Both list **Root: Not required** on repo.webosbrew.org.
 
-**But there are two jail profiles, chosen by install prefix, and we only work under one:**
+**Historical root cause before the DB8 backend.** There are two jail profiles chosen by install
+prefix. The path analysis below explains issue #76 and the legacy files the migration reader still
+recognizes; it is not the current write path:
 
 | | `jail_native_devmode.conf` (`/media/developer/apps/…`) | `jail_native.conf` (`/media/cryptofs/apps/…` — the Homebrew Channel) |
 | --- | --- | --- |
@@ -460,7 +464,7 @@ So a **Homebrew-Channel install breaks two things**:
 between the profiles), `text.rs` builds the font paths from it, and `capture.rs` now shares the
 same resolver instead of open-coding it.
 
-The session file became a **probed search order**, because there is no single writable persistent
+Before DB8, the session file became a **probed search order**, because there is no single writable persistent
 directory common to both layouts: `/media/developer/<id>-auth.json` (Dev Mode, survives a
 reinstall) → `/media/internal/.<id>-auth.json` (the production jail's only rw persistent location)
 → `<appdir>/auth.json` → the legacy path, read-only, for migration. `peek()` takes the first plain
@@ -472,8 +476,9 @@ live credentials;
 **logs** when every candidate fails, turning an unexplainable infinite login loop into a
 reportable bug. The DroidSans fallback logs once per boot for the same reason.
 
-Verified on device: `appdir: /media/developer/apps/… (from /proc/self/exe)`, no `FONT FALLBACK`
-line, real fonts rendering, and the session file rewritten `0600` under the app's own uid.
+That intermediate file backend was device-verified, but is now migration-only. The current
+packaged service/private DB8 path has separately been verified across a process restart on the
+webOS 4.10.2 development television.
 
 ### 3.6 What the unrooted path costs the user
 

@@ -78,7 +78,7 @@ fn root_content_visible(child: f32) -> bool {
     child < 0.995
 }
 fn signed_in() -> bool {
-    crate::plex::session::load()
+    crate::plex::session::snapshot()
         .account(crate::plex::session::current().as_ref())
         .signed_in
 }

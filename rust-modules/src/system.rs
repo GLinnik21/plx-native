@@ -48,14 +48,32 @@ pub(crate) struct WindowActivity {
 }
 
 impl WindowActivity {
-    pub(crate) const fn new() -> Self { Self { active: true, first_frame: true } }
+    pub(crate) const fn new() -> Self {
+        Self {
+            active: true,
+            first_frame: true,
+        }
+    }
 
     pub(crate) fn event(&mut self, event: u32) {
         match event {
             0x103 | 0x104 => self.active = false,
-            0x106 => { self.active = true; self.first_frame = true; }
+            0x106 => {
+                self.active = true;
+                self.first_frame = true;
+            }
             _ => {} // WILL foreground does not yet authorize rendering.
         }
+    }
+
+    /// Native crash capture became active after asynchronous local-state preparation. A pending
+    /// boot may already have presented while collection correctly failed closed; re-arm its first
+    /// reportable frame without changing whether SDL has actually foregrounded the window.
+    pub(crate) fn telemetry_activated(&mut self) -> bool {
+        if self.active {
+            self.first_frame = true;
+        }
+        self.active
     }
 
     pub(crate) fn allow_present(&self, requested: bool) -> bool {
@@ -533,6 +551,25 @@ mod wayland_tests {
         // Some platforms send only DID background. It must be sufficient on its own.
         window.event(0x104);
         assert!(!window.allow_present(true));
+    }
+
+    #[test]
+    fn telemetry_activation_rearms_only_a_real_foreground_window() {
+        let mut foreground = WindowActivity::new();
+        foreground.presented(false);
+        assert!(!foreground.first_frame);
+        assert!(foreground.telemetry_activated());
+        assert!(foreground.first_frame);
+
+        let mut background = WindowActivity::new();
+        background.event(0x104);
+        background.first_frame = false;
+        assert!(!background.telemetry_activated());
+        assert!(!background.first_frame);
+        assert!(!background.allow_present(true));
+        background.event(0x106);
+        assert!(background.allow_present(true));
+        assert!(background.first_frame);
     }
 
     #[test]

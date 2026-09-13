@@ -982,8 +982,10 @@ mod tests {
             "version": 1,
             "sealed": sealed,
         });
-        std::fs::write(&file, serde_json::to_vec(&envelope).unwrap()).unwrap();
-        crate::plex::session::redirect_for_test(Some(file));
+        crate::plex::session::redirect_for_test(Some(file.clone()));
+        assert!(crate::plex::session::commit_canonical_payload_for_test(
+            serde_json::to_string(&envelope).unwrap(),
+        ));
         // The cross-launch marker needs evidence a service actually answered (issue #76 review) —
         // arm a real refusal reply rather than leaving the key manager unscripted, which now
         // stands only for a registration/timeout that never reached a service at all.

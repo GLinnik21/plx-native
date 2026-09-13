@@ -1140,11 +1140,11 @@ fn maybe_spawn(i: usize) {
 /// WORKER THREAD: the blocking plex.tv biography request. The identity it presents is the persisted
 /// login session's — the same `client_id` (+ account token when signed in) every other plex.tv call
 /// in the app carries, via the same [`AccountClient`](crate::plex::account::AccountClient). Reading
-/// the session here rather than passing it in keeps this off the main thread's critical path; it is
-/// one small file read per person page.
+/// the already-published Session snapshot here rather than passing it in keeps identity capture at
+/// the worker spawn boundary without another disk/keymanager read.
 #[cfg(not(test))]
 fn fetch_profile(guid: &str) -> Option<crate::plex::discover::PersonProfile> {
-    let s = crate::plex::session::load();
+    let s = crate::plex::session::snapshot();
     let tok = (!s.account_token.is_empty()).then_some(s.account_token.as_str());
     crate::plex::account::AccountClient::new(&s.client_id, tok).person_profile(guid)
 }

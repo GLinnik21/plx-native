@@ -45,21 +45,33 @@ looking at:
   developer-trigger build can allow that lab path, and it logs the exception without the URL.
   Anything that disables, downgrades or bypasses these rules is in scope; so is any path where a
   failure to *set* a security option results in a request going out anyway.
-- **The session file.** `<id>-auth.json` holds one access token per server your account can reach.
-  It is encrypted with the firmware's authenticated Key Manager where
-  `com.webos.service.keymanager3` is available and permitted, with a 0600 plaintext compatibility
-  fallback otherwise. The legacy `com.palm.keymanager` AES-CFB interface is not used because it
-  provides no authenticated-encryption operation. The file is always created 0600 through
-  `open(2)`'s own mode argument, and every open of it (and of the telemetry decision file, the
-  telemetry spool, and every marker/probe file beside them) repairs the mode back to 0600 in place
+- **The canonical session record.** A packaged native helper owns one private DB8 kind and one
+  fixed-ID object containing typed Session, Consent and operation-ledger state as an opaque JSON
+  string. The app/helper socket is mode 0600 and requires matching kernel peer credentials. On new
+  and unknown webOS a fresh auth write attempts authenticated Keymanager3 first, then may use an
+  explicit private-DB8 ACL-only envelope if crypto fails; that downgrade must emit closed,
+  consent-gated diagnostics. Public settings/routine refreshes never downgrade existing healthy
+  ciphertext. The policy selects ACL-only directly for reported webOS majors 1–4; runtime evidence
+  currently covers webOS 4.10.2 only.
+  Keymanager removal deletes the service's DB8 key blob; exact 11.2 firmware does not establish
+  irreversible hardware revocation or protection against a root-level restoration of old DB8
+  storage.
+  Routine encrypted auth replacement is two-phase: the prior envelope remains active while a
+  bounded pending candidate is persisted and authenticated, and only a second exact-revision CAS
+  promotes it. A helper exit between those phases therefore leaves the prior sign-in readable.
+  The legacy `com.palm.keymanager` AES-CFB interface is not used. Legacy `<id>-auth.json`,
+  `state/auth.json`, `state/session.json` and consent files are read only as migration sources.
+  Every active read of those legacy session/consent files and of the runtime telemetry spool and
+  crashmark repairs the mode back to 0600 in place
   if it has grown group/other bits, rather than refusing to read or append to a file this install
   still owns. **Repairing the mode is not the same claim as trusting the content it protected while
   it was wide open**: a mode widened only to add a group/other READ bit is a disclosure problem and
   the content still loads, but any group/other WRITE bit means another uid could have rewritten the
   bytes, so that content is never trusted — the session and consent files are discarded rather than
-  parsed, a marker or probe file is ignored and deleted, and the telemetry spool is truncated rather
-  than appended onto. **A write-widened SESSION file is QUARANTINED rather than deleted**: it is
-  renamed to `<id>-auth.json.untrusted` beside itself, still 0600, and never parsed or opened again
+  parsed, a marker or probe file is ignored and deleted, and the active runtime telemetry spool is
+  truncated rather than appended onto. Persistent legacy telemetry queues are cleanup-only: their
+  records are never opened or imported. **A write-widened SESSION file is QUARANTINED rather than deleted**: it is
+  renamed to the source name with `.untrusted` beside itself, still 0600, and never parsed or opened again
   by anything in the app — it is kept for the television's owner to inspect, those bytes being the
   only record of what was tampered with. **Only the most recent one is kept**: a later tampering
   replaces that file rather than accumulating a series beside the session. Signing out and Delete
@@ -70,8 +82,12 @@ looking at:
   is that it must not still be at the name the next launch reads. The consent file and the telemetry spool are deliberately
   unchanged: a discarded decision and a truncated spool leave nothing worth keeping. A downgrade of an existing encrypted file, a way to read it from another
   process, or a way to make the app write it somewhere world-readable is in scope.
+- **The packaged storage service.** The IPK carries the native helper and package/service metadata,
+  but no writable canonical state directory or runtime record. DB8 owns durability; the helper's
+  transient `/tmp/<appid>.storage-runtime` contains only a private rendezvous/socket and a
+  payload-free failure stage. Normal uninstall removes the private kind; package updates retain it.
 - **The Developer Mode shared-namespace exposure, and why it is not the same claim as the above.**
-  A **sideloaded** (Developer Mode / Homebrew) install runs under `jail_native_devmode.conf`, which
+  A **sideloaded Developer Mode** install runs under `jail_native_devmode.conf`, which
   mounts `/media/developer` **read-write for the whole directory**, measured `drwxrwxrwx` root:root
   — every homebrew app has its own uid but shares one gid, so **mode is the entire boundary** a file
   there can draw against a sibling app, and a peer that cannot read a 0600 file can still `unlink`
@@ -89,15 +105,12 @@ looking at:
   document, not a guarantee any of them make; it is pinned by a test
   (`plex::session::tests::a_replayed_older_valid_session_file_is_indistinguishable_from_current`,
   and its consent-file twin) precisely so it stays documented rather than silently assumed away.
-  **This is a property of Developer Mode itself, not a bug in this app**, and it does not apply to a
-  **retail** install: `jail_native.conf` gives a store-distributed app `mountappdir` — only its own
-  directory in the mount namespace, nothing else on the device visible to it at all. A report
-  describing this exposure (substitution OR replay) on a retail install (were one ever to exist) is
-  in scope; the same exposure on a sideloaded install, reachable only by another process the user
-  chose to sideload beside this one, is disclosed here rather than treated as a vulnerability of
-  this app, and is not itself something to report. A storage error report may name which of these
-  tiers (`developer`/`internal`/`app_dir`/`runtime`/`other`) a candidate session file was found or
-  rejected at — a category word, never the path itself.
+  **This paragraph is limited to the measured Developer Mode namespace.** It is a property of that
+  profile, not a claim about every webOS installation mode. This document does not assert the
+  `mountappdir` layout or cross-app isolation of a retail/Homebrew jail because that behavior has
+  not been verified in this environment. A storage error report may name which candidate tier
+  (`developer`/`internal`/`app_dir`/`runtime`/`other`) was found or rejected — a category word, never
+  the path itself.
 - **The bundled FFmpeg.** Built from unmodified FFmpeg 9.0 with demuxers, parsers and subtitle
   decoders only — it is fed untrusted bytes from the network, so parser bugs reachable through
   `ff.rs` are in scope. Report FFmpeg's own bugs upstream as well.
@@ -120,8 +133,11 @@ No account of its own, no server, no payment path, and no user-generated content
 **It does have telemetry, and that hedge used to say it did not.** A release binary carries a Sentry
 DSN and a PostHog project key — both **write-only ingest credentials**, publishable by design, which
 permit sending to a project and grant no read of anything in it. First run asks about crash reports
-and product analytics separately. The first answer remains a draft; answering the second records
-both choices, and only a **Share** answer enables that category and permits its POSTs to
+and product analytics separately. The first answer remains a draft; answering the second publishes
+both requested choices and queues their record on the bounded persistence worker. A withdrawal
+closes its runtime gate and removes its identifier immediately; an enable becomes effective only
+after its prospective local cutoff completes. The UI does not call Pending saved and reports a
+failed or uncertain write. Only a **Share** answer enables that category and permits its POSTs to
 `ingest.de.sentry.io` or `eu.i.posthog.com`. The one deliberate exception is the sign-in screen's
 one-off "Send report" press: it is its own consent, POSTs to Sentry under no standing answer
 either way, and carries no identifier — a researcher can tell it apart from the consent gate

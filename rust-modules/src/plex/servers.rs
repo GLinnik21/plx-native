@@ -738,12 +738,10 @@ pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerI
 /// points are kept only for callers that genuinely have nothing but an address.
 pub fn register_origin(machine_id: &str, origin: &Origin, token: &str) -> ServerId {
     // The playback identity (`X-Plex-Client-Identifier`) is the persisted login identity, so it
-    // comes from the session file — read LAZILY, i.e. only when a `Client` is actually built.
-    // `session::load` can WRITE (it mints + persists the uuid when there is none), and the
-    // commonest call here by far is the profile switch, which only swaps a token; the singleton
-    // this replaced read the file exactly once, and so does this.
+    // comes from the cold-boot-published Session snapshot. App activation is gated on that load,
+    // so building a Client never turns this fallback into a disk/keymanager operation.
     let id = register_lazy(machine_id, origin, token, &|| {
-        super::session::load().client_id
+        super::session::snapshot().client_id
     });
     // Every server the app actually talks to arrives through THIS function (the `_with_client_id`
     // seam below is the test one and deliberately does not), so it is the single place that keeps

@@ -59,6 +59,8 @@ mod search; // Search data layer: /hubs/search fanned out across every source, m
 #[cfg(feature = "hostsim")]
 mod shot; // simulator screenshots: read the frame back and write a PNG (see the module doc)
 mod stream;
+mod storage; // versioned records and the replaceable persistence backend
+mod storage_worker; // ordered off-thread persistence; never holds a state read lock across I/O
 mod surface; // what we are actually drawing into — drawable vs the 1920x1080 logical canvas
 mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 mod system;

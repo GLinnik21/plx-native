@@ -856,6 +856,153 @@ impl RouteLayout {
     }
 }
 
+/// One global, revision-scoped notice for ordinary Session preferences. It reuses the same
+/// decision-alert and modal-admission machinery as consent persistence: failures remain retained
+/// while another modal owns the screen, never stack, and retry snapshots the current Session only
+/// if the failed revision is still current.
+pub(crate) mod session_persistence {
+    use crate::plex::session::async_persistence::{Failure, LatestStatus};
+    use crate::ui::decision_alert::{Choice, DecisionAlert, Tone};
+    use std::ptr::{addr_of, addr_of_mut};
+
+    const FAILED_TITLE: &core::ffi::CStr = c"Local change couldn’t be saved";
+    const FAILED_BODY: &str = "The change is active for this session, but it may be lost after you close the app.";
+    const UNCERTAIN_TITLE: &core::ffi::CStr = c"Local change may not be saved";
+    const UNCERTAIN_BODY: &str = "The television wrote the change but could not confirm that it will survive a restart.";
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        Failed,
+        Uncertain,
+    }
+
+    #[derive(Clone, Copy)]
+    struct Notice {
+        revision: u64,
+        kind: Kind,
+    }
+
+    static mut ALERT: DecisionAlert = DecisionAlert::new();
+    static mut NOTICE: Option<Notice> = None;
+    static DISMISSED_REVISION: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    fn alert() -> &'static mut DecisionAlert {
+        unsafe { &mut *addr_of_mut!(ALERT) }
+    }
+
+    fn clear_obsolete() {
+        unsafe { addr_of_mut!(NOTICE).write(None) };
+        alert().close();
+    }
+
+    pub(crate) fn poll(can_admit: bool) {
+        let status = crate::plex::session::poll_ordinary_persistence();
+        let revision = crate::plex::session::ordinary_persistence_revision();
+        if revision == 0 || status.latest_revision != revision {
+            clear_obsolete();
+            return;
+        }
+        let kind = match status.latest {
+            Some(LatestStatus::Uncertain { .. }) => Some(Kind::Uncertain),
+            Some(LatestStatus::Failed(Failure::Superseded)) => None,
+            Some(LatestStatus::Failed(_)) => Some(Kind::Failed),
+            Some(LatestStatus::Pending | LatestStatus::Durable) | None => None,
+        };
+        let Some(kind) = kind else {
+            clear_obsolete();
+            return;
+        };
+        if DISMISSED_REVISION.load(std::sync::atomic::Ordering::Acquire) == revision {
+            return;
+        }
+        let already = unsafe {
+            (*addr_of!(NOTICE)).is_some_and(|notice| {
+                notice.revision == revision && notice.kind == kind
+            })
+        };
+        if !already {
+            unsafe { addr_of_mut!(NOTICE).write(Some(Notice { revision, kind })) };
+            alert().close();
+        }
+        if can_admit && !crate::ui::popover::any_open() && !alert().visible() {
+            let (title, body) = match kind {
+                Kind::Failed => (FAILED_TITLE, FAILED_BODY),
+                Kind::Uncertain => (UNCERTAIN_TITLE, UNCERTAIN_BODY),
+            };
+            alert().set_tone(Tone::Neutral);
+            alert().open_with_body(title, body);
+        }
+    }
+
+    pub(crate) fn visible() -> bool {
+        alert().visible()
+    }
+
+    fn dismiss() {
+        if let Some(notice) = unsafe { *addr_of!(NOTICE) } {
+            DISMISSED_REVISION.store(notice.revision, std::sync::atomic::Ordering::Release);
+        }
+        alert().dismiss();
+    }
+
+    fn retry() {
+        let Some(notice) = (unsafe { *addr_of!(NOTICE) }) else {
+            return dismiss();
+        };
+        alert().dismiss();
+        let _ = crate::plex::session::retry_ordinary_persistence(notice.revision);
+    }
+
+    pub(crate) fn key(sym: u32, wcode: u32) {
+        if !alert().is_open() {
+            return;
+        }
+        if crate::ui::consts::is_back(sym, wcode) {
+            dismiss();
+        } else if sym == crate::ui::consts::SDLK_LEFT {
+            alert().move_focus(-1);
+        } else if sym == crate::ui::consts::SDLK_RIGHT {
+            alert().move_focus(1);
+        } else if crate::ui::consts::is_ok(sym) {
+            if alert().choice() == Choice::Destructive {
+                retry();
+            } else {
+                dismiss();
+            }
+        }
+    }
+
+    pub(crate) fn pointer_focus(mx: f32, my: f32) {
+        if alert().is_open() && alert().settled() {
+            let _ = alert().press_at(mx, my);
+        }
+    }
+
+    pub(crate) fn press_at(mx: f32, my: f32) {
+        if !alert().is_open() || !alert().settled() || !alert().press_at(mx, my) {
+            return;
+        }
+        if alert().choice() == Choice::Destructive {
+            retry();
+        } else {
+            dismiss();
+        }
+    }
+
+    pub(crate) fn draw() {
+        alert().draw_scrim();
+        alert().draw(c"Close", c"Try again");
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset_for_test() {
+        unsafe { addr_of_mut!(NOTICE).write(None) };
+        DISMISSED_REVISION.store(0, std::sync::atomic::Ordering::Release);
+        alert().close();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1401,5 +1548,79 @@ mod tests {
         ground.latch_target([[1.0, 0.0, 0.0, 1.0]; 4]);
         assert_eq!(ground.palette(), palette);
         assert!(ground.is_latched());
+    }
+
+    #[test]
+    fn ordinary_session_failure_without_a_later_edit_stays_visible_and_clear_invalidates_it() {
+        let _serial = crate::testlock::serial();
+        session_persistence::reset_for_test();
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-session-notice-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::plex::session::redirect_for_test(Some(dir.join("auth.json")));
+        crate::keymanager::disarm_for_test();
+        crate::plex::session::save(&crate::plex::session::Session {
+            client_id: "notice-client".into(),
+            ..Default::default()
+        });
+        crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::Write);
+        assert!(crate::plex::session::update_ordinary(|session| {
+            let mut next = session.clone();
+            next.user.title = "still-live".into();
+            Some(next)
+        }));
+        crate::storage_worker::drain_for_test();
+        session_persistence::poll(true);
+        assert!(session_persistence::visible());
+        session_persistence::key(crate::ui::consts::SDLK_ESCAPE, 0);
+        session_persistence::poll(true);
+        assert!(
+            session_persistence::visible(),
+            "the acknowledged alert may finish its fade but must not reopen"
+        );
+
+        let _ = crate::plex::session::clear_with_receipt();
+        session_persistence::poll(true);
+        assert!(!session_persistence::visible(), "revocation retires the old-tenure notice");
+        crate::storage_worker::drain_for_test();
+        session_persistence::reset_for_test();
+        crate::plex::session::redirect_for_test(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ordinary_retry_refuses_a_stale_revision_and_keeps_the_newer_snapshot() {
+        let _serial = crate::testlock::serial();
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-session-retry-guard-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::plex::session::redirect_for_test(Some(dir.join("auth.json")));
+        crate::keymanager::disarm_for_test();
+        crate::plex::session::save(&crate::plex::session::Session {
+            client_id: "retry-client".into(),
+            ..Default::default()
+        });
+        assert!(crate::plex::session::update_ordinary(|session| {
+            let mut next = session.clone();
+            next.user.title = "older".into();
+            Some(next)
+        }));
+        let old_revision = crate::plex::session::ordinary_persistence_revision();
+        assert!(crate::plex::session::update_ordinary(|session| {
+            let mut next = session.clone();
+            next.user.title = "newer".into();
+            Some(next)
+        }));
+        assert!(!crate::plex::session::retry_ordinary_persistence(old_revision));
+        assert_eq!(crate::plex::session::snapshot().user.title, "newer");
+        crate::storage_worker::drain_for_test();
+        crate::plex::session::redirect_for_test(None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -19,6 +19,7 @@ pub(crate) mod crashreport;
 pub(crate) mod native;
 pub(crate) mod window;
 pub(crate) mod oneoff;
+pub(crate) mod persistence;
 pub(crate) mod playback;
 pub(crate) mod posthog;
 pub(crate) mod queue;
@@ -30,13 +31,113 @@ pub(crate) mod storage;
 
 use consent::Consent;
 
-/// Load the stored decision and publish it for the event path.
-///
-/// Called once at boot, before anything can report. A missing or unparsable file is the DEFAULT
-/// decision — everything off, unanswered — which is the only safe reading: a file we cannot
-/// understand is not consent.
-pub(crate) fn boot() -> native::Guard {
-    let c = load();
+#[derive(Clone)]
+pub(crate) struct BootReady {
+    consent: Consent,
+}
+
+#[derive(Clone)]
+pub(crate) enum BootPoll {
+    Pending,
+    Ready(BootReady),
+    Failed,
+}
+
+pub(crate) struct BootReceipt {
+    ticket: Option<crate::storage_worker::TypedTicket<BootReady>>,
+    resolved: Option<BootPoll>,
+}
+
+impl BootReceipt {
+    pub(crate) fn poll(&mut self) -> BootPoll {
+        if let Some(result) = self.resolved.clone() {
+            return result;
+        }
+        let Some(ticket) = self.ticket.as_ref() else {
+            return BootPoll::Failed;
+        };
+        match ticket.try_recv() {
+            Ok(ready) => {
+                let result = BootPoll::Ready(ready);
+                self.ticket = None;
+                self.resolved = Some(result.clone());
+                result
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => BootPoll::Pending,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.ticket = None;
+                self.resolved = Some(BootPoll::Failed);
+                BootPoll::Failed
+            }
+        }
+    }
+}
+
+fn load_boot() -> BootReady {
+    let consent = load();
+    // These are all filesystem/spool operations. They precede publication so diagnostics from a
+    // prior process are queued under the stored decision without ever blocking the SDL thread.
+    let native_crashes = native::prepare_boot(&consent);
+    crashreport::report_pending_for(&consent, &native_crashes);
+    BootReady { consent }
+}
+
+pub(crate) fn start_boot() -> Result<BootReceipt, crate::storage_worker::SubmitError> {
+    crate::storage_worker::submit(load_boot).map(|ticket| BootReceipt {
+        ticket: Some(ticket),
+        resolved: None,
+    })
+}
+
+#[derive(Clone)]
+pub(crate) struct Activated {
+    consent: Consent,
+}
+
+#[derive(Clone)]
+pub(crate) enum ActivationPoll {
+    Pending,
+    Ready(Activated),
+    Failed,
+}
+
+pub(crate) struct ActivationReceipt {
+    ticket: Option<crate::storage_worker::TypedTicket<Result<Activated, ()>>>,
+    resolved: Option<ActivationPoll>,
+}
+
+impl ActivationReceipt {
+    pub(crate) fn poll(&mut self) -> ActivationPoll {
+        if let Some(result) = self.resolved.clone() {
+            return result;
+        }
+        let Some(ticket) = self.ticket.as_ref() else {
+            return ActivationPoll::Failed;
+        };
+        match ticket.try_recv() {
+            Ok(Ok(ready)) => {
+                let result = ActivationPoll::Ready(ready);
+                self.ticket = None;
+                self.resolved = Some(result.clone());
+                result
+            }
+            Ok(Err(())) => {
+                self.ticket = None;
+                self.resolved = Some(ActivationPoll::Failed);
+                ActivationPoll::Failed
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ActivationPoll::Pending,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.ticket = None;
+                self.resolved = Some(ActivationPoll::Failed);
+                ActivationPoll::Failed
+            }
+        }
+    }
+}
+
+fn activate_boot(ready: BootReady) -> Activated {
+    let c = ready.consent;
     // Logged because the alternative is a silent behavioural difference between two televisions.
     // No identifier in the line: it is the one field here worth not putting in a log that gets
     // pasted into issue threads, and its PRESENCE is the only fact worth stating anyway.
@@ -64,26 +165,49 @@ pub(crate) fn boot() -> native::Guard {
         if sender::has_sentry() { "yes" } else { "no" },
         if sender::has_posthog() { "yes" } else { "no" }
     ));
-    // **After the install, and before anything in this process can fault.** The records being read
-    // were written by a process that no longer exists — that is the whole reason the crash log is
-    // on disk — so this is the only moment they can be turned into reports. It queues; it does not
-    // send. The flush is spawned later, after `net::global_init`, which is a separate ordering
-    // constraint that has already been got wrong once: a boot flush ahead of it logged
-    // `holding 5 records` directly above `net: bound libcurl`.
-    // Queue a completed out-of-process event first. The local C/panic log may describe the same
-    // crash; report_pending consumes the native keys so one process death remains one Sentry event.
-    let native_crashes = native::import_pending();
-    crashreport::report_pending(&native_crashes);
-    // The SDK capture backend starts only after consent is published and old fallback records are
-    // safely queued. Its guard lives for the whole app and restores the C tracer on clean exit.
-    native::sync(&c)
+    // Session's cold read ran behind the consent read on the same FIFO. Any storage/sign-in report
+    // it found therefore deferred while consent was unpublished; resolve that bounded batch now,
+    // on this worker, before the app leaves its boot gate.
+    crate::diag::replay_deferred();
+    storage::replay_deferred();
+    #[cfg(feature = "devtriggers")]
+    crate::dev::run_storage_diagnostics();
+    Activated { consent: c }
+}
+
+pub(crate) fn start_activation(
+    ready: BootReady,
+) -> Result<ActivationReceipt, crate::storage_worker::SubmitError> {
+    crate::storage_worker::submit(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| activate_boot(ready))).map_err(
+            |_| {
+                // Publication precedes deferred replay so its normal gates can run. If that replay
+                // panics, close authority again before reporting activation failure to the UI.
+                consent::install(Consent::default());
+                crate::log("telemetry: boot activation failed; reporting remains off");
+            },
+        )
+    })
+    .map(|ticket| ActivationReceipt {
+        ticket: Some(ticket),
+        resolved: None,
+    })
+}
+
+/// Configure only the native process-lifecycle backend on the main thread. Disk migration,
+/// crash import, deferred replay and spool work have already completed on the shared worker.
+pub(crate) fn finish_boot(ready: Activated) -> native::Guard {
+    let c = ready.consent;
+    // The SDK starts only after the worker has safely queued old fallback records. Its guard lives
+    // for the whole app and restores the C tracer on clean exit.
+    native::sync_prepared(&c)
 }
 
 /// The first candidate that exists and parses. Same search-order shape as the session file, and
 /// for the same reason: which of the two `/media` directories is writable depends on the jail
 /// profile, so the answer cannot be a literal.
 fn load() -> Consent {
-    load_from(&candidates())
+    persistence::load(&candidates())
 }
 
 /// Where the decision lives: `paths::telemetry_candidates()`, until a test redirects it to a file
@@ -96,12 +220,12 @@ fn candidates() -> Vec<std::path::PathBuf> {
 }
 
 #[cfg(test)]
-static TEST_FILE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+static TEST_FILE: std::sync::Mutex<Option<Vec<std::path::PathBuf>>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 fn candidates() -> Vec<std::path::PathBuf> {
     match TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-        Some(p) => vec![p],
+        Some(paths) => paths,
         None => crate::paths::telemetry_candidates(),
     }
 }
@@ -110,92 +234,508 @@ fn candidates() -> Vec<std::path::PathBuf> {
 /// caller holds `crate::testlock::serial()` for the whole test: this is a crate global.
 #[cfg(test)]
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
-    *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    crate::storage_worker::drain_for_test();
+    let root = p.as_ref().and_then(|path| path.parent()).map(std::path::Path::to_path_buf);
+    *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p.map(|p| vec![p]);
+    persistence::redirect_root_for_test(root);
 }
 
-fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
-    for p in candidates {
-        let Some((bytes, trust)) = crate::plex::session::read_owned_regular_trusted(p) else {
-            continue;
-        };
-        if !trust.content_trusted() {
-            // Write-widened: another uid could have rewritten this file, so a stored `usage: true`
-            // or `errors: true` here is not provably this person's decision, and its ids are not
-            // provably ours either — a forged consent file must not silently stand in for one. Both
-            // categories go back to unanswered (the question is asked again on the next
-            // opportunity, same as a fresh install), the identifiers are discarded with it, and the
-            // reset state is written back at 0600 so the next boot does not repeat this discovery.
-            crate::log(
-                "telemetry: consent file was writable by others — content is untrusted, resetting",
-            );
-            let reset = Consent::default();
-            if let Ok(json) = serde_json::to_vec_pretty(&reset) {
-                let _ = crate::plex::session::write_atomic(p, &json);
-            }
-            // Every other path that revokes a decision purges the spool of records queued under
-            // it (`record`'s own call, right below) — a forged consent file is exactly such a
-            // revocation, and without this a record queued under the untrusted decision would
-            // still leave the device under it (review finding, 2026-09-10).
-            spool::purge_withdrawn(&reset);
-            return reset;
-        }
-        if let Ok(c) = serde_json::from_slice::<Consent>(&bytes) {
-            return consent::migrate_loaded(c);
-        }
-    }
-    Consent::default()
-}
-
-/// Record a decision: write it, then publish it. **Write first** — a decision that took effect but
-/// did not persist would silently re-ask on the next boot while having already acted on itself.
-///
-/// A total write failure is logged and still applied to this session. The alternative is refusing
-/// to honour something a person just chose because a disk is full, which is worse in both
-/// directions: it ignores a "no", and it ignores a "yes".
-pub(crate) fn record(c: Consent) {
-    let enabling_errors = newly_enables_errors(consent::current().as_ref(), &c);
-    let Ok(json) = serde_json::to_vec_pretty(&c) else {
-        return;
-    };
-    let stored = candidates()
+#[cfg(test)]
+fn redirect_for_test_multi(paths: Vec<std::path::PathBuf>) {
+    crate::storage_worker::drain_for_test();
+    let root = paths
         .iter()
-        .any(|p| crate::plex::session::write_atomic(p, &json));
-    if !stored {
-        crate::log("telemetry: could not persist the decision to ANY candidate path");
+        .filter_map(|path| path.parent())
+        .find(|path| path.exists())
+        .map(std::path::Path::to_path_buf);
+    *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(paths);
+    persistence::redirect_root_for_test(root);
+}
+
+#[cfg(test)]
+fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
+    crate::storage_worker::drain_for_test();
+    let root = candidates
+        .iter()
+        .filter_map(|path| path.parent())
+        .find(|path| path.exists())
+        .map(std::path::Path::to_path_buf);
+    persistence::redirect_root_for_test(root);
+    persistence::load(candidates)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PersistenceState {
+    Pending,
+    Delegated,
+    Durable,
+    Uncertain,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QueueFailure {
+    Full,
+    Stopped,
+    StartFailed,
+    Disconnected,
+    OperationPanicked,
+    CutoffFailed,
+    CanonicalWriteFailed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RevisionStatus {
+    pub(crate) revision: u64,
+    pub(crate) write: PersistenceState,
+    pub(crate) cleanup: persistence::CleanupResult,
+    pub(crate) failure: Option<QueueFailure>,
+}
+
+impl RevisionStatus {
+    pub(crate) fn cleanup_failed(self) -> bool {
+        self.cleanup == persistence::CleanupResult::Failed
     }
-    // Consent is prospective: crash diagnostics accumulated while this switch was off stay local.
-    // Do this before publishing `c`, so there is no interval in which an old record can be read as
-    // newly authorised.
-    if enabling_errors {
-        crashreport::discard_pending_before_opt_in();
-        // Issue #76 review (should-fix): a stage `plex::session::report_once` genuinely DROPPED
-        // (a real "No", not merely "not asked yet") must get its one attempt back the moment this
-        // same process turns Errors on — see `retry_dropped_stages`'s own doc.
+
+    const fn pending(revision: u64) -> Self {
+        Self {
+            revision,
+            write: PersistenceState::Pending,
+            cleanup: persistence::CleanupResult::NotAttempted,
+            failure: None,
+        }
+    }
+
+    const fn failed(revision: u64, failure: QueueFailure) -> Self {
+        Self {
+            revision,
+            write: PersistenceState::Failed,
+            cleanup: persistence::CleanupResult::NotAttempted,
+            failure: Some(failure),
+        }
+    }
+}
+
+struct Coordinator {
+    next_revision: u64,
+    latest_revision: u64,
+    latest: Option<std::sync::Arc<std::sync::Mutex<RevisionStatus>>>,
+    /// A refused Forget cannot run its disk/native purge. The next accepted enable carries this
+    /// generation into its prospective cutoff, so stale native envelopes cannot cross tenures.
+    tenure_cleanup: Option<u64>,
+}
+
+static PERSISTENCE: std::sync::Mutex<Coordinator> = std::sync::Mutex::new(Coordinator {
+    next_revision: 0,
+    latest_revision: 0,
+    latest: None,
+    tenure_cleanup: None,
+});
+
+pub(crate) struct ConsentReceipt {
+    revision: u64,
+    ticket: Option<crate::storage_worker::TypedTicket<RevisionStatus>>,
+    resolved: Option<RevisionStatus>,
+    status: std::sync::Arc<std::sync::Mutex<RevisionStatus>>,
+}
+
+impl ConsentReceipt {
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Poll one operation without waiting for the disk worker. A disconnected ticket is a failed
+    /// operation, never a Pending state that survives forever.
+    pub(crate) fn poll(&mut self) -> RevisionStatus {
+        if let Some(status) = self.resolved {
+            return status;
+        }
+        let Some(ticket) = self.ticket.as_ref() else {
+            return RevisionStatus::failed(self.revision, QueueFailure::Disconnected);
+        };
+        match ticket.try_recv() {
+            Ok(status) => {
+                self.ticket = None;
+                self.resolved = Some(status);
+                status
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => RevisionStatus::pending(self.revision),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                let status = RevisionStatus::failed(self.revision, QueueFailure::Disconnected);
+                *self.status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+                self.ticket = None;
+                self.resolved = Some(status);
+                status
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn wait_blocking(mut self) -> RevisionStatus {
+        if let Some(status) = self.resolved {
+            return status;
+        }
+        let status = match self.ticket.take().expect("an unresolved receipt has a ticket").wait_blocking() {
+            Ok(status) => status,
+            Err(_) => RevisionStatus::failed(self.revision, QueueFailure::Disconnected),
+        };
+        *self.status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+        self.resolved = Some(status);
+        status
+    }
+}
+
+pub(crate) fn latest_persistence_status() -> RevisionStatus {
+    let latest = PERSISTENCE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .latest
+        .clone();
+    latest
+        .map(|status| *status.lock().unwrap_or_else(|e| e.into_inner()))
+        .unwrap_or(RevisionStatus {
+            revision: 0,
+            write: PersistenceState::Failed,
+            cleanup: persistence::CleanupResult::NotAttempted,
+            failure: None,
+        })
+}
+
+struct CompletionGuard {
+    status: std::sync::Arc<std::sync::Mutex<RevisionStatus>>,
+    complete: bool,
+}
+
+impl CompletionGuard {
+    fn finish(mut self, status: RevisionStatus) -> RevisionStatus {
+        *self.status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+        self.complete = true;
+        status
+    }
+}
+
+impl Drop for CompletionGuard {
+    fn drop(&mut self) {
+        if self.complete {
+            return;
+        }
+        let revision = self
+            .status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .revision;
+        *self.status.lock().unwrap_or_else(|e| e.into_inner()) =
+            RevisionStatus::failed(revision, QueueFailure::Disconnected);
+    }
+}
+
+#[derive(Clone)]
+enum Operation {
+    Record {
+        decision: Consent,
+        enabling_errors: bool,
+        enabling_usage: bool,
+        tenure_cleanup: Option<u64>,
+    },
+    Forget,
+}
+
+type PersistJob = Box<dyn FnOnce() -> persistence::PersistOutcome + Send + 'static>;
+type WorkerJob = Box<dyn FnOnce() -> RevisionStatus + Send + 'static>;
+
+fn submit_operation(
+    decision: Consent,
+    forgetting: bool,
+    persist: PersistJob,
+    submit: impl FnOnce(
+        WorkerJob,
+    ) -> Result<crate::storage_worker::TypedTicket<RevisionStatus>, crate::storage_worker::SubmitError>,
+) -> ConsentReceipt {
+    submit_operation_expected(None, decision, forgetting, persist, submit)
+        .expect("an unconditional operation is always admitted to the domain coordinator")
+}
+
+fn submit_operation_expected(
+    expected_revision: Option<u64>,
+    decision: Consent,
+    forgetting: bool,
+    persist: PersistJob,
+    submit: impl FnOnce(
+        WorkerJob,
+    ) -> Result<crate::storage_worker::TypedTicket<RevisionStatus>, crate::storage_worker::SubmitError>,
+) -> Option<ConsentReceipt> {
+    let mut coordinator = PERSISTENCE.lock().unwrap_or_else(|e| e.into_inner());
+    if expected_revision.is_some_and(|expected| coordinator.latest_revision != expected) {
+        return None;
+    }
+    let Some(revision) = coordinator.next_revision.checked_add(1) else {
+        let status = RevisionStatus::failed(u64::MAX, QueueFailure::Stopped);
+        let cell = std::sync::Arc::new(std::sync::Mutex::new(status));
+        coordinator.latest_revision = status.revision;
+        coordinator.latest = Some(cell.clone());
+        return Some(ConsentReceipt {
+            revision: status.revision,
+            ticket: None,
+            resolved: Some(status),
+            status: cell,
+        });
+    };
+    coordinator.next_revision = revision;
+    let (enabling_errors, enabling_usage) = consent::request(decision.clone());
+    if forgetting {
+        coordinator.tenure_cleanup = Some(revision);
+    }
+    let operation = if forgetting {
+        Operation::Forget
+    } else {
+        Operation::Record {
+            decision,
+            enabling_errors,
+            enabling_usage,
+            tenure_cleanup: coordinator.tenure_cleanup,
+        }
+    };
+    let status = std::sync::Arc::new(std::sync::Mutex::new(RevisionStatus::pending(revision)));
+    coordinator.latest_revision = revision;
+    coordinator.latest = Some(status.clone());
+    let guard = CompletionGuard {
+        status: status.clone(),
+        complete: false,
+    };
+    let job: WorkerJob = Box::new(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if !apply_worker_cutoff(&operation) {
+                return RevisionStatus {
+                    revision,
+                    write: PersistenceState::Failed,
+                    cleanup: persistence::CleanupResult::Failed,
+                    failure: Some(QueueFailure::CutoffFailed),
+                };
+            }
+            let outcome = persist();
+            let cleanup = apply_worker_effects(revision, &operation);
+            status_from_outcome(revision, outcome, cleanup)
+        }));
+        let status = result.unwrap_or_else(|_| {
+            RevisionStatus::failed(revision, QueueFailure::OperationPanicked)
+        });
+        guard.finish(status)
+    });
+    let receipt = match submit(job) {
+        Ok(ticket) => ConsentReceipt {
+            revision,
+            ticket: Some(ticket),
+            resolved: None,
+            status,
+        },
+        Err(error) => {
+            let failure = match error {
+                crate::storage_worker::SubmitError::Full => QueueFailure::Full,
+                crate::storage_worker::SubmitError::Stopped => QueueFailure::Stopped,
+                crate::storage_worker::SubmitError::StartFailed => QueueFailure::StartFailed,
+            };
+            let status = RevisionStatus::failed(revision, failure);
+            *coordinator
+                .latest
+                .as_ref()
+                .expect("admission installed a status")
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = status;
+            ConsentReceipt {
+                revision,
+                ticket: None,
+                resolved: Some(status),
+                status: coordinator
+                    .latest
+                    .as_ref()
+                    .expect("admission installed a status")
+                    .clone(),
+            }
+        }
+    };
+    Some(receipt)
+}
+
+fn status_from_outcome(
+    revision: u64,
+    outcome: persistence::PersistOutcome,
+    operation_cleanup: bool,
+) -> RevisionStatus {
+    let write = match outcome.write {
+        persistence::PersistResult::Delegated => PersistenceState::Delegated,
+        persistence::PersistResult::Durable => PersistenceState::Durable,
+        persistence::PersistResult::Uncertain => PersistenceState::Uncertain,
+        persistence::PersistResult::Failed | persistence::PersistResult::NotAttempted => {
+            PersistenceState::Failed
+        }
+    };
+    RevisionStatus {
+        revision,
+        write,
+        cleanup: if operation_cleanup {
+            outcome.cleanup
+        } else {
+            persistence::CleanupResult::Failed
+        },
+        failure: (write == PersistenceState::Failed).then_some(QueueFailure::CanonicalWriteFailed),
+    }
+}
+
+/// Called on the persistence worker after the shared account tombstone is durable.
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+pub(crate) fn cleanup_after_account_clear() -> bool {
+    persistence::cleanup_after_combined_clear(&candidates())
+        != persistence::CleanupResult::Failed
+}
+
+fn is_latest(revision: u64) -> bool {
+    PERSISTENCE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .latest_revision
+        == revision
+}
+
+fn publish_effective_if_latest(revision: u64, decision: &Consent) -> bool {
+    let coordinator = PERSISTENCE.lock().unwrap_or_else(|e| e.into_inner());
+    if coordinator.latest_revision != revision {
+        return false;
+    }
+    consent::publish_effective(decision.clone());
+    true
+}
+
+fn clear_tenure_cleanup(generation: u64) {
+    let mut coordinator = PERSISTENCE.lock().unwrap_or_else(|e| e.into_inner());
+    if coordinator.tenure_cleanup == Some(generation) {
+        coordinator.tenure_cleanup = None;
+    }
+}
+
+fn sync_native_if_latest(revision: u64, decision: &Consent) -> bool {
+    if !is_latest(revision) {
+        return true;
+    }
+    let mut complete = native::sync_change(decision);
+    // Native reconfiguration must not hold the coordinator. A No can therefore race the call,
+    // but its effective runtime gate is already closed. Reconcile once after the call so a rejected
+    // No cannot leave a stale enable active indefinitely; an accepted No also follows in FIFO.
+    if !is_latest(revision) {
+        let effective = consent::effective().unwrap_or_default();
+        if !effective.errors {
+            complete &= native::sync_change(&effective);
+        }
+    }
+    complete
+}
+
+/// Prospective enable cutoff. This must finish before the Yes record is committed: after a crash,
+/// boot trusts that durable record immediately and imports old diagnostics under it.
+fn apply_worker_cutoff(operation: &Operation) -> bool {
+    let Operation::Record {
+        enabling_errors,
+        enabling_usage,
+        tenure_cleanup,
+        ..
+    } = operation
+    else {
+        return true;
+    };
+    if !*enabling_errors && !*enabling_usage {
+        return true;
+    }
+    let mut complete = if tenure_cleanup.is_some() {
+        spool::purge_runtime_all() & native::sync_change(&Consent::default())
+    } else {
+        let cutoff = Consent {
+            errors: !*enabling_errors,
+            usage: !*enabling_usage,
+            ..Default::default()
+        };
+        spool::purge_before_opt_in(&cutoff)
+    };
+    if *enabling_errors {
+        complete &= crashreport::discard_pending_before_opt_in();
+        complete &= native::sync_change(&Consent::default());
+    }
+    if !complete {
+        crate::log("telemetry: prospective consent cutoff failed; enable remains inactive");
+        return false;
+    }
+    if let Some(generation) = tenure_cleanup {
+        clear_tenure_cleanup(*generation);
+    }
+    if *enabling_errors {
         crate::plex::session::retry_dropped_stages();
-        // Its twin for the sign-in save's own report, which is deduped on a (save outcome,
-        // preserve reason) pair rather than on a stage — see `storage::report_sign_in_not_persisted`.
         storage::retry_dropped_sign_in();
     }
-    consent::install(c.clone());
-    // Issue #75: replay whatever sign-in funnel `diag::event` had to hold back because the consent
-    // question was still unanswered when it happened. Unconditional — a "yes" lets the replay
-    // through the normal gate, a "no" hits that same gate and drops, and either way the queue must
-    // not survive to be misread by the next decision.
-    crate::diag::replay_deferred();
-    // Issue #76: the storage-error report's own twin — a locked/refused read found before the
-    // Errors channel's consent question (or its scope-6 extension) was answered waits here rather
-    // than being dropped for good. Same unconditional shape: a "yes" sends it through the normal
-    // gate, a "no" hits that gate and drops, and the queue empties either way.
-    storage::replay_deferred();
+    true
+}
+
+fn apply_worker_effects(revision: u64, operation: &Operation) -> bool {
+    match operation {
+        Operation::Record {
+            decision,
+            enabling_errors: _,
+            enabling_usage: _,
+            tenure_cleanup: _,
+        } => {
+            // A withdrawal's purge is ordered even when a later decision has already arrived.
+            let mut complete = spool::purge_withdrawn(decision);
+            if publish_effective_if_latest(revision, decision) {
+                crate::diag::replay_deferred();
+                storage::replay_deferred();
+                complete &= sync_native_if_latest(revision, decision);
+                flush_soon();
+            }
+            complete
+        }
+        Operation::Forget => {
+            let complete = spool::purge_all_local() & native::sync_change(&Consent::default());
+            if complete {
+                clear_tenure_cleanup(revision);
+            }
+            complete
+        }
+    }
+}
+
+/// Queue a decision without ever turning Pending into a durability claim. Requested state is
+/// visible to Settings immediately; withdrawals are effective immediately, while enables wait for
+/// their prospective cutoff on the shared bounded worker.
+pub(crate) fn record_with_receipt(c: Consent) -> ConsentReceipt {
+    let legacy = candidates();
+    let root = persistence::operation_root();
+    let persisted = c.clone();
+    let receipt = submit_operation(
+        c.clone(),
+        false,
+        Box::new(move || persistence::record_at(&persisted, &legacy, root)),
+        |job| crate::storage_worker::submit(job),
+    );
     if !c.errors {
         crate::player::report::clear_error_trace();
     }
-    // Install first, then purge. A record queued between the two would be one the new decision
-    // already governs, so it is caught by the next flush's per-record check; the other order leaves
-    // a window in which a record of a just-withdrawn category is written by a path still reading
-    // the old consent and then never looked at again.
-    spool::purge_withdrawn(&c);
-    native::sync_change(&c);
+    receipt
+}
+
+/// Retry a UI decision only while it is still the coordinator's latest operation. A sign-out or
+/// newer choice invalidates the old alert atomically with admission, so it cannot restore a
+/// departed account's consent or identifiers.
+pub(crate) fn retry_record_with_receipt(
+    expected_revision: u64,
+    c: Consent,
+) -> Option<ConsentReceipt> {
+    let legacy = candidates();
+    let root = persistence::operation_root();
+    let persisted = c.clone();
+    submit_operation_expected(
+        Some(expected_revision),
+        c,
+        false,
+        Box::new(move || persistence::record_at(&persisted, &legacy, root)),
+        |job| crate::storage_worker::submit(job),
+    )
 }
 
 /// **End the signed-in account's tenure over telemetry.** The decision returns to *unanswered*
@@ -206,14 +746,13 @@ pub(crate) fn record(c: Consent) {
 /// out — the check-to-POST gap has no cancellation — and the policy says exactly that, no more.
 /// The one-off sign-in report is not a standing producer and answers no gate at all; what actually
 /// removes it here is the purge below, same as everything else queued. Then both identifiers are
-/// gone with it, the consent file
-/// is unlinked from every candidate location — a candidate that cannot be unlinked is overwritten
-/// with the default decision, and one that refuses both is logged: that disk is also refusing the
-/// session's own clear, the same failure sign-out already has for the credentials — every queued
-/// record, standing or one-off, is purged (`spool::purge_all_local`), and the native capture
-/// backend is stopped with its pending envelopes removed.
-/// Nothing is written otherwise: a missing file IS "never asked", which is what Delete all local
-/// data needs the name to mean.
+/// gone with it, and the canonical consent record receives a durable cleared state. Legacy
+/// candidates and queued records are cleaned up on a best-effort basis; a cleanup failure is
+/// retained as an explicit persistence outcome, not treated as proof that the record was absent.
+/// The worker attempts to purge every queued record, standing or one-off
+/// (`spool::purge_all_local`), and to stop the native capture backend and remove its pending
+/// envelopes. The receipt reports cleanup independently from the cleared record's durability. A
+/// missing legacy file is not interpreted as "never asked" once a canonical cleared record exists.
 ///
 /// ONE mechanism with two consumers, both behind `auth::forget_account`: the two Sign out doors
 /// (account menu, who's-watching pill) and Delete all local data.
@@ -223,16 +762,24 @@ pub(crate) fn record(c: Consent) {
 /// decision and both identifiers deliberately outlived the sign-in ("so that a decision you have
 /// already made is not put to you again"), which meant account B was never asked and every report
 /// B caused went out under A's consent and A's identifiers. A managed-profile switch is not a
-/// sign-out and keeps the decision; an uninstall keeps the sign-in, so it keeps the decision too.
+/// sign-out and keeps the decision. An external candidate may survive uninstall; app-local state
+/// is removed with the app.
 ///
 /// The crash MARK (`paths::telemetry_crashmark_candidates`) is deliberately left alone: it records
 /// how much of the crash log has been read — a fact about the log, not about anybody — and the
 /// next opt-in watermarks the log again through `crashreport::discard_pending_before_opt_in`.
-pub(crate) fn forget() {
+pub(crate) fn forget_with_receipt() -> ConsentReceipt {
     let c = Consent::default();
-    // Install first — then the files, then the purge: the same order and the same reason as
-    // `record`, and here also the moment the sender stops starting requests.
-    consent::install(c.clone());
+    let legacy = candidates();
+    let root = persistence::operation_root();
+    let receipt = submit_operation(
+        c,
+        true,
+        Box::new(move || persistence::forget_at(&legacy, root)),
+        |job| crate::storage_worker::submit(job),
+    );
+    // These are memory-only and belong to the departing tenure. Disk, spool and native work stay
+    // on the persistence worker; the effective consent snapshot above has already closed gates.
     crate::player::report::clear_error_trace();
     // Issue #76's report lane: what the signed-out account's own sign-in save did with its session
     // file is a fact ABOUT that account, and belongs to it — the same lifetime the consent decision
@@ -240,29 +787,10 @@ pub(crate) fn forget() {
     signin::forget_storage_outcome();
     oneoff::forget();
     storage::forget();
-    for p in candidates() {
-        match std::fs::remove_file(&p) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                // A file that will not go must at least stop saying yes.
-                let overwritten = serde_json::to_vec_pretty(&c)
-                    .map(|json| crate::plex::session::write_atomic(&p, &json))
-                    .unwrap_or(false);
-                crate::log(&format!(
-                    "telemetry: sign-out could not unlink the decision ({e}); overwritten={overwritten}"
-                ));
-            }
-        }
-    }
-    // Not `purge_withdrawn` — a queued `Category::OneOff` record survives THAT on purpose (see its
-    // doc), but sign-out and Delete all local data are an erasure of this television's local
-    // state, not a withdrawal of the single press that queued a one-off report, and PRIVACY.md
-    // promises both remove "any queued report".
-    spool::purge_all_local();
-    native::sync_change(&c);
+    receipt
 }
 
+#[cfg(test)]
 fn newly_enables_errors(previous: Option<&Consent>, next: &Consent) -> bool {
     let effectively_allows_errors = |c: &Consent| c.answered() && c.errors;
     effectively_allows_errors(next) && previous.is_none_or(|c| !effectively_allows_errors(c))
@@ -294,6 +822,8 @@ pub(crate) fn flush_soon() {
     // exercise `flush_now` synchronously where needed; never launch a background sender against a
     // movable test path. Shipping builds retain the asynchronous flush behavior below.
     if cfg!(test) {
+        #[cfg(test)]
+        TEST_FLUSH_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return;
     }
 
@@ -302,7 +832,7 @@ pub(crate) fn flush_soon() {
         return; // nothing in this build to send to — see `sender`'s module doc
     }
     // A decision must EXIST — nothing loaded means nothing consented.
-    let Some(c) = consent::current() else { return };
+    let Some(c) = consent::effective() else { return };
     // …but deliberately no `if !c.any() { return }`. A withdrawal is exactly when the spool most
     // needs draining: `flush_now` retires a record whose category is now off without sending it,
     // so the purge rides the same path instead of needing one of its own. Returning early here
@@ -337,6 +867,10 @@ pub(crate) fn flush_soon() {
         FLUSHING.store(false, Ordering::Release);
     }
 }
+
+#[cfg(test)]
+static TEST_FLUSH_REQUESTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// The flush itself, on the worker.
 fn flush_now(c: &consent::Consent, decision_revision: u32) -> Option<u64> {
@@ -465,6 +999,457 @@ pub(crate) fn is_minted_id(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cold_boot_receipt_is_pending_while_worker_storage_is_delayed_then_ready() {
+        let executor = crate::storage_worker::Executor::start(1).unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let ticket = executor
+            .submit(move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                BootReady {
+                    consent: Consent::default(),
+                }
+            })
+            .unwrap();
+        entered_rx.recv().unwrap();
+        let mut receipt = BootReceipt {
+            ticket: Some(ticket),
+            resolved: None,
+        };
+        assert!(matches!(receipt.poll(), BootPoll::Pending));
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match receipt.poll() {
+                BootPoll::Pending => {
+                    assert!(std::time::Instant::now() < deadline, "boot receipt stayed pending");
+                    std::thread::yield_now();
+                }
+                BootPoll::Ready(_) => break,
+                BootPoll::Failed => panic!("accepted cold boot disconnected"),
+            }
+        }
+    }
+
+    #[test]
+    fn saved_opt_in_replays_a_session_storage_error_before_boot_activation_is_ready() {
+        let _g = crate::testlock::serial();
+        crate::storage_worker::drain_for_test();
+        let saved = consent::current();
+        storage::forget();
+        consent::install(Consent::default());
+        let report = storage::report_error_with_candidate_reads(
+            storage::StorageErrorContext {
+                stage: storage::StorageStage::Unreachable,
+                service_error_code: None,
+                class: storage::SessionStorageClass::SecureUnavailable,
+                refused_marker: false,
+                key_outcome: None,
+                registered_with_app_id: false,
+                registered_with_name: false,
+                sealed_identity: None,
+            },
+            Some("app_dir:open_failed:5".into()),
+        );
+        assert_eq!(report, storage::ReportOutcome::Deferred);
+        assert_eq!(storage::deferred_len_for_test(), 1);
+        let opted_in = Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: true,
+            errors_scope: consent::ERRORS_SCOPE,
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        };
+        let mut receipt = start_activation(BootReady { consent: opted_in }).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match receipt.poll() {
+                ActivationPoll::Pending => {
+                    assert!(std::time::Instant::now() < deadline, "activation stayed pending");
+                    std::thread::yield_now();
+                }
+                ActivationPoll::Ready(_) => break,
+                ActivationPoll::Failed => panic!("activation worker disconnected"),
+            }
+        }
+        assert_eq!(storage::deferred_len_for_test(), 0);
+        assert!(consent::allows_errors_at(consent::ERRORS_SCOPE));
+        storage::forget();
+        consent::install(saved.unwrap_or_default());
+    }
+
+    fn outcome(
+        write: persistence::PersistResult,
+        cleanup: persistence::CleanupResult,
+    ) -> persistence::PersistOutcome {
+        persistence::PersistOutcome { write, cleanup }
+    }
+
+    fn usage_decision(on: bool, id: char) -> Consent {
+        Consent {
+            asked_version: consent::POLICY_VERSION,
+            usage: on,
+            usage_scope: if on { consent::USAGE_SCOPE } else { 0 },
+            install_id: on.then(|| id.to_string().repeat(32)),
+            ..Default::default()
+        }
+    }
+
+    struct AsyncReset {
+        dir: std::path::PathBuf,
+        saved: Option<Consent>,
+    }
+
+    impl AsyncReset {
+        fn new(name: &str) -> Self {
+            crate::storage_worker::drain_for_test();
+            let dir = std::env::temp_dir().join(format!(
+                "plxnative-consent-async-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            spool::set_test_path(Some(dir.join("spool.bin")));
+            *crashreport::TEST_ROOT.lock().unwrap() = Some(dir.clone());
+            Self {
+                dir,
+                saved: consent::current(),
+            }
+        }
+    }
+
+    impl Drop for AsyncReset {
+        fn drop(&mut self) {
+            crate::storage_worker::drain_for_test();
+            spool::set_test_path(None);
+            *spool::TEST_LEGACY.lock().unwrap() = None;
+            *crashreport::TEST_ROOT.lock().unwrap() = None;
+            redirect_for_test(None);
+            consent::install(self.saved.take().unwrap_or_default());
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn caller_returns_pending_while_persistence_is_blocked() {
+        let _g = crate::testlock::serial();
+        let _reset = AsyncReset::new("nonblocking");
+        consent::install(Consent::default());
+        let flushes_before = TEST_FLUSH_REQUESTS.load(std::sync::atomic::Ordering::Relaxed);
+        let executor = crate::storage_worker::Executor::start(2).unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mut receipt = submit_operation(
+            usage_decision(true, 'a'),
+            false,
+            Box::new(move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                outcome(
+                    persistence::PersistResult::Durable,
+                    persistence::CleanupResult::Complete,
+                )
+            }),
+            |job| executor.submit(job),
+        );
+        entered_rx.recv().unwrap();
+        assert!(consent::current().is_some_and(|c| c.usage));
+        assert!(!consent::allows_usage(), "enable became effective before its cutoff/write");
+        assert_eq!(receipt.poll().write, PersistenceState::Pending);
+        assert_eq!(latest_persistence_status().write, PersistenceState::Pending);
+        release_tx.send(()).unwrap();
+        let status = receipt.wait_blocking();
+        assert_eq!(status.write, PersistenceState::Durable);
+        assert!(consent::allows_usage());
+        assert!(
+            TEST_FLUSH_REQUESTS.load(std::sync::atomic::Ordering::Relaxed) > flushes_before,
+            "effective publication did not schedule the deferred-record flush"
+        );
+    }
+
+    #[test]
+    fn a_newer_withdrawal_stays_effective_after_an_older_enable_completes() {
+        let _g = crate::testlock::serial();
+        let _reset = AsyncReset::new("stale-enable");
+        consent::install(Consent::default());
+        let executor = crate::storage_worker::Executor::start(3).unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let first = submit_operation(
+            usage_decision(true, 'b'),
+            false,
+            Box::new(move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                outcome(
+                    persistence::PersistResult::Durable,
+                    persistence::CleanupResult::Complete,
+                )
+            }),
+            |job| executor.submit(job),
+        );
+        entered_rx.recv().unwrap();
+        let second = submit_operation(
+            usage_decision(false, 'x'),
+            false,
+            Box::new(|| {
+                outcome(
+                    persistence::PersistResult::Durable,
+                    persistence::CleanupResult::Complete,
+                )
+            }),
+            |job| executor.submit(job),
+        );
+        assert!(!consent::allows_usage(), "withdrawal did not close the runtime gate immediately");
+        release_tx.send(()).unwrap();
+        assert_eq!(first.wait_blocking().write, PersistenceState::Durable);
+        assert!(!consent::allows_usage(), "old enable published over the newer withdrawal");
+        let second_revision = second.revision();
+        assert_eq!(second.wait_blocking().write, PersistenceState::Durable);
+        assert!(!consent::allows_usage());
+        assert_eq!(latest_persistence_status().revision, second_revision);
+    }
+
+    #[test]
+    fn queue_full_is_a_visible_failure_and_never_runs_rejected_work() {
+        let _g = crate::testlock::serial();
+        let _reset = AsyncReset::new("full");
+        consent::install(Consent::default());
+        let executor = crate::storage_worker::Executor::start(1).unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let first = executor
+            .submit(move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+            .unwrap();
+        entered_rx.recv().unwrap();
+        let queued = executor.submit(|| ()).unwrap();
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran_job = ran.clone();
+        let mut rejected = submit_operation(
+            usage_decision(true, 'c'),
+            false,
+            Box::new(move || {
+                ran_job.store(true, std::sync::atomic::Ordering::Release);
+                outcome(
+                    persistence::PersistResult::Durable,
+                    persistence::CleanupResult::Complete,
+                )
+            }),
+            |job| executor.submit(job),
+        );
+        let status = rejected.poll();
+        assert_eq!(status.write, PersistenceState::Failed);
+        assert_eq!(status.failure, Some(QueueFailure::Full));
+        assert_eq!(latest_persistence_status(), status);
+        assert!(!ran.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!consent::allows_usage(), "a rejected enable acquired authority");
+        release_tx.send(()).unwrap();
+        first.wait_blocking().unwrap();
+        queued.wait_blocking().unwrap();
+    }
+
+    #[test]
+    fn failed_prospective_cutoff_withholds_enable_and_skips_the_yes_write() {
+        let _g = crate::testlock::serial();
+        let reset = AsyncReset::new("cutoff-failure");
+        consent::install(Consent::default());
+        spool::set_test_path(Some(reset.dir.join("missing-parent/spool.bin")));
+        let executor = crate::storage_worker::Executor::start(1).unwrap();
+        let wrote_yes = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let wrote_yes_job = wrote_yes.clone();
+        let status = submit_operation(
+            usage_decision(true, 'f'),
+            false,
+            Box::new(move || {
+                wrote_yes_job.store(true, std::sync::atomic::Ordering::Release);
+                outcome(
+                    persistence::PersistResult::Durable,
+                    persistence::CleanupResult::Complete,
+                )
+            }),
+            |job| executor.submit(job),
+        )
+        .wait_blocking();
+        assert_eq!(status.write, PersistenceState::Failed);
+        assert_eq!(status.failure, Some(QueueFailure::CutoffFailed));
+        assert!(!wrote_yes.load(std::sync::atomic::Ordering::Acquire));
+        assert!(consent::current().is_some_and(|c| c.usage));
+        assert!(!consent::allows_usage());
+    }
+
+    #[test]
+    fn enabling_error_reports_does_not_depend_on_legacy_spool_storage() {
+        let _g = crate::testlock::serial();
+        let reset = AsyncReset::new("errors-without-legacy-spool");
+        consent::install(Consent::default());
+        // A regular file used as the parent deterministically models an inaccessible legacy
+        // directory, including when tests run as root. The runtime queue remains writable.
+        let blocked = reset.dir.join("legacy-parent");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        *spool::TEST_LEGACY.lock().unwrap() = Some(vec![blocked.join("spool.bin")]);
+        assert!(spool::append(&queue::Record {
+            category: queue::Category::Errors,
+            dest: queue::Dest::Sentry,
+            event_id: "pre-consent-error".into(),
+            body: b"{}".to_vec(),
+        }));
+        let executor = crate::storage_worker::Executor::start(1).unwrap();
+        let wrote_db8_consent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let wrote_db8_consent_job = wrote_db8_consent.clone();
+        let decision = Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: true,
+            errors_scope: consent::ERRORS_SCOPE,
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        };
+
+        let status = submit_operation(
+            decision,
+            false,
+            Box::new(move || {
+                wrote_db8_consent_job.store(true, std::sync::atomic::Ordering::Release);
+                outcome(
+                    persistence::PersistResult::Durable,
+                    persistence::CleanupResult::Complete,
+                )
+            }),
+            |job| executor.submit(job),
+        )
+        .wait_blocking();
+
+        assert_eq!(status.failure, None);
+        assert!(wrote_db8_consent.load(std::sync::atomic::Ordering::Acquire));
+        assert!(consent::allows_errors());
+        assert_eq!(status.write, PersistenceState::Durable);
+        assert_eq!(status.cleanup, persistence::CleanupResult::Complete,
+            "an inert legacy queue must not surface as a failed current consent action");
+        assert!(spool::read().iter().all(|record| record.event_id != "pre-consent-error"),
+            "publishing prospective consent must not revive an old active-queue record");
+    }
+
+    #[test]
+    fn persistence_failure_is_not_confused_with_pending_and_cleanup_is_independent() {
+        let _g = crate::testlock::serial();
+        let _reset = AsyncReset::new("outcomes");
+        consent::install(Consent::default());
+        let executor = crate::storage_worker::Executor::start(2).unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mut failed = submit_operation(
+            usage_decision(false, 'x'),
+            false,
+            Box::new(move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                outcome(
+                    persistence::PersistResult::Failed,
+                    persistence::CleanupResult::NotAttempted,
+                )
+            }),
+            |job| executor.submit(job),
+        );
+        entered_rx.recv().unwrap();
+        assert_eq!(failed.poll().write, PersistenceState::Pending);
+        release_tx.send(()).unwrap();
+        assert_eq!(failed.wait_blocking().write, PersistenceState::Failed);
+
+        let cleanup_failed = submit_operation(
+            usage_decision(false, 'x'),
+            false,
+            Box::new(|| {
+                outcome(
+                    persistence::PersistResult::Durable,
+                    persistence::CleanupResult::Failed,
+                )
+            }),
+            |job| executor.submit(job),
+        )
+        .wait_blocking();
+        assert_eq!(cleanup_failed.write, PersistenceState::Durable);
+        assert_eq!(cleanup_failed.cleanup, persistence::CleanupResult::Failed);
+
+        let uncertain = submit_operation(
+            usage_decision(false, 'x'),
+            false,
+            Box::new(|| {
+                outcome(
+                    persistence::PersistResult::Uncertain,
+                    persistence::CleanupResult::NotAttempted,
+                )
+            }),
+            |job| executor.submit(job),
+        )
+        .wait_blocking();
+        assert_eq!(uncertain.write, PersistenceState::Uncertain);
+        assert_eq!(uncertain.cleanup, persistence::CleanupResult::NotAttempted);
+    }
+
+    #[test]
+    fn queued_disconnect_marks_latest_failed_even_while_admission_mutex_is_contended() {
+        let _g = crate::testlock::serial();
+        let _reset = AsyncReset::new("disconnect");
+        consent::install(Consent::default());
+        let executor = crate::storage_worker::Executor::start(1).unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let doomed_worker = executor
+            .submit(move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                panic!("injected worker death");
+            })
+            .unwrap();
+        entered_rx.recv().unwrap();
+        let receipt = submit_operation(
+            usage_decision(false, 'x'),
+            false,
+            Box::new(|| {
+                outcome(
+                    persistence::PersistResult::Durable,
+                    persistence::CleanupResult::Complete,
+                )
+            }),
+            |job| executor.submit(job),
+        );
+        let coordinator = PERSISTENCE.lock().unwrap_or_else(|e| e.into_inner());
+        release_tx.send(()).unwrap();
+        assert!(doomed_worker.wait_blocking().is_err());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            let status = *receipt.status.lock().unwrap_or_else(|e| e.into_inner());
+            if status.write == PersistenceState::Failed {
+                assert_eq!(status.failure, Some(QueueFailure::Disconnected));
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "dropped job stayed Pending");
+            std::thread::yield_now();
+        }
+        drop(coordinator);
+        assert_eq!(latest_persistence_status().write, PersistenceState::Failed);
+    }
+
+    #[test]
+    fn ordered_yes_no_yes_is_durable_on_reopen() {
+        let _g = crate::testlock::serial();
+        let reset = AsyncReset::new("ordered-reopen");
+        consent::install(Consent::default());
+        let legacy = reset.dir.join("telemetry.json");
+        redirect_for_test(Some(legacy.clone()));
+        let yes_a = usage_decision(true, 'd');
+        let no = usage_decision(false, 'x');
+        let yes_b = usage_decision(true, 'e');
+        assert_eq!(record_with_receipt(yes_a).wait_blocking().write, PersistenceState::Durable);
+        assert_eq!(record_with_receipt(no).wait_blocking().write, PersistenceState::Durable);
+        assert_eq!(record_with_receipt(yes_b.clone()).wait_blocking().write, PersistenceState::Durable);
+        assert_eq!(load_from(&[legacy]), yes_b);
+    }
 
     #[test]
     fn only_an_errors_off_to_on_transition_discards_preconsent_crashes() {
@@ -698,19 +1683,190 @@ mod tests {
             saved: consent::current(),
         };
         let file = dir.join("telemetry.json");
+        let canonical = dir.join("consent.json");
         redirect_for_test(Some(file.clone()));
         spool::set_test_path(Some(dir.join("spool.jsonl")));
-        record(consent::apply(&Consent::default(), true, true, || {
-            Some("f".repeat(32))
-        }));
-        assert!(file.exists());
+        assert_eq!(
+            record_with_receipt(consent::apply(&Consent::default(), true, true, || {
+                Some("f".repeat(32))
+            }))
+            .wait_blocking()
+            .write,
+            PersistenceState::Durable
+        );
+        assert!(canonical.exists());
         assert!(consent::errors_id().is_some() && consent::allows_usage());
-        forget();
+        assert_eq!(
+            forget_with_receipt().wait_blocking().write,
+            PersistenceState::Durable
+        );
         let after = consent::current().expect("a default decision is published, not none");
         assert!(!after.any() && !after.answered());
         assert!(after.install_id.is_none() && after.errors_id.is_none());
         assert!(consent::errors_id().is_none() && !consent::allows_errors());
-        assert!(!file.exists(), "the decision file survived");
+        assert!(canonical.exists(), "the canonical cleared tombstone was removed");
+    }
+
+    #[test]
+    fn consent_falls_back_to_packaged_state_and_forget_removes_every_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        struct Reset {
+            dir: std::path::PathBuf,
+            saved: Option<Consent>,
+        }
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                spool::set_test_path(None);
+                redirect_for_test(None);
+                if let Some(c) = self.saved.take() { consent::install(c); }
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-consent-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = dir.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let external = dir.join("missing-parent/telemetry.json");
+        let state_decision = state.join("telemetry.json");
+        let canonical = state.join("consent.json");
+        let state_spool = state.join("telemetry-spool.bin");
+        let _reset = Reset { dir: dir.clone(), saved: consent::current() };
+        redirect_for_test_multi(vec![external.clone(), state_decision.clone()]);
+        spool::set_test_path(Some(state_spool.clone()));
+
+        let chosen = consent::apply(&Consent::default(), true, true, || Some("s".repeat(32)));
+        assert_eq!(
+            record_with_receipt(chosen.clone()).wait_blocking().write,
+            PersistenceState::Durable
+        );
+        assert!(!external.exists(), "legacy candidates are not write targets");
+        assert_eq!(load_from(&[external.clone(), state_decision.clone()]), chosen);
+        assert_eq!(
+            std::fs::metadata(&canonical).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(spool::append(&queue::Record {
+            category: queue::Category::OneOff,
+            dest: queue::Dest::Sentry,
+            event_id: "state-oneoff".into(),
+            body: b"{}".to_vec(),
+        }));
+
+        // A second candidate copy must be erased too, not only the winner used by `record`.
+        std::fs::create_dir_all(external.parent().unwrap()).unwrap();
+        std::fs::write(&external, serde_json::to_vec(&chosen).unwrap()).unwrap();
+        assert_eq!(
+            forget_with_receipt().wait_blocking().write,
+            PersistenceState::Durable
+        );
+        assert!(!external.exists() && canonical.exists());
+        assert!(spool::read().is_empty());
+
+    }
+
+    #[test]
+    fn conflicting_trusted_consent_candidates_fail_closed() {
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-consent-conflict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let higher = dir.join("higher.json");
+        let lower = dir.join("lower.json");
+        let yes = consent::apply(&Consent::default(), true, true, || Some("y".repeat(32)));
+        let no = consent::apply(&Consent::default(), false, false, || Some("n".repeat(32)));
+        std::fs::write(&higher, serde_json::to_vec(&yes).unwrap()).unwrap();
+        std::fs::write(&lower, serde_json::to_vec(&no).unwrap()).unwrap();
+        let loaded = load_from(&[higher, lower]);
+        assert!(!loaded.any() && !loaded.answered());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn identical_trusted_consent_duplicates_are_accepted() {
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-consent-identical-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.json");
+        let b = dir.join("b.json");
+        let yes = consent::apply(&Consent::default(), true, true, || Some("i".repeat(32)));
+        let bytes = serde_json::to_vec(&yes).unwrap();
+        std::fs::write(&a, &bytes).unwrap();
+        std::fs::write(&b, &bytes).unwrap();
+        assert_eq!(load_from(&[a, b]), yes);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fallback_no_cannot_be_overridden_by_a_readonly_higher_yes() {
+        use std::os::unix::fs::PermissionsExt;
+        struct Reset(std::path::PathBuf, Option<Consent>);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+                redirect_for_test(None);
+                if let Some(c) = self.1.take() { consent::install(c); }
+                let _ = std::fs::remove_dir_all(self.0.parent().unwrap());
+            }
+        }
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-consent-readonly-{}", std::process::id()));
+        let higher_dir = dir.join("higher");
+        let state = dir.join("state/telemetry.json");
+        std::fs::create_dir_all(&higher_dir).unwrap();
+        std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+        let higher = higher_dir.join("telemetry.json");
+        let yes = consent::apply(&Consent::default(), true, true, || Some("h".repeat(32)));
+        std::fs::write(&higher, serde_json::to_vec(&yes).unwrap()).unwrap();
+        std::fs::set_permissions(&higher, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&higher_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let _reset = Reset(higher_dir.clone(), consent::current());
+        redirect_for_test_multi(vec![higher.clone(), state.clone()]);
+        persistence::redirect_root_for_test(Some(state.parent().unwrap().to_path_buf()));
+        let no = consent::apply(&Consent::default(), false, false, || Some("n".repeat(32)));
+        assert_eq!(
+            record_with_receipt(no).wait_blocking().write,
+            PersistenceState::Durable
+        );
+        std::fs::set_permissions(&higher_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let canonical = state.parent().unwrap().join("consent.json");
+        assert!(higher.exists() && canonical.exists(), "the legacy source or canonical decision vanished");
+        persistence::redirect_root_for_test(Some(state.parent().unwrap().to_path_buf()));
+        let loaded = persistence::load(&[higher, state]);
+        assert!(!loaded.any() && loaded.answered(), "old Yes was re-enabled: {loaded:?}");
+    }
+
+    #[test]
+    fn a_successful_decision_write_sweeps_an_owned_lower_duplicate() {
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-consent-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let higher = dir.join("higher.json");
+        let lower = dir.join("lower.json");
+        std::fs::write(&lower, b"{}").unwrap();
+        let saved = consent::current();
+        redirect_for_test_multi(vec![higher.clone(), lower.clone()]);
+        assert_eq!(
+            record_with_receipt(consent::apply(&Consent::default(), false, false, || {
+                Some("s".repeat(32))
+            }))
+            .wait_blocking()
+            .write,
+            PersistenceState::Durable
+        );
+        assert!(dir.join("consent.json").exists());
+        assert!(!lower.exists(), "a durable canonical write should clean stale legacy sources");
+        redirect_for_test(None);
+        if let Some(c) = saved { consent::install(c); }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// An unreadable or corrupt file is the DEFAULT decision, never a partial one — a file we
@@ -786,10 +1942,9 @@ mod tests {
             "a forged file's identifiers are not ours and must be discarded with it"
         );
 
-        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "the reset decision must still be written 0600: {mode:o}");
-        let on_disk: Consent = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-        assert!(!on_disk.answered() && !on_disk.any(), "the reset state must be persisted");
+        let mode = std::fs::metadata(dir.join("consent.json")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the cleared barrier must be private: {mode:o}");
+        assert!(file.exists(), "the untrusted legacy source remains stale and ignored");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -815,19 +1970,13 @@ mod tests {
         let loaded = load_from(&[file.clone()]);
         assert!(loaded.errors && !loaded.usage && loaded.answered());
 
-        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(dir.join("consent.json")).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the widened mode was not repaired: {mode:o}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **Same known limitation as `plex::session`'s replay test.** Ownership + mode checks (and the
-    /// trust-vs-repair split) tell a forged consent file apart from ours; they cannot tell a
-    /// STALE-but-genuine one apart from the current one. A peer with rename rights in the shared
-    /// namespace can move this install's own, currently-valid, correctly-0600 consent file aside,
-    /// let a later decision overwrite it, and move the old bytes back. This test PINS that as
-    /// expected (green) behavior, not a bug to fix: the replayed older decision loads as though it
-    /// were current.
+    /// A canonical record is terminal: replaying a stale legacy candidate cannot override it.
     #[test]
     fn a_replayed_older_valid_consent_file_is_accepted() {
         let _g = crate::testlock::serial();
@@ -855,10 +2004,7 @@ mod tests {
         std::fs::write(&file, &old_bytes).unwrap();
 
         let replayed = load_from(&[file.clone()]);
-        assert!(
-            !replayed.errors && !replayed.usage,
-            "the replayed OLDER decision is indistinguishable from a current one — known limitation"
-        );
+        assert!(replayed.errors && replayed.usage);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

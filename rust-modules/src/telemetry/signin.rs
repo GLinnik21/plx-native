@@ -397,7 +397,7 @@ fn storage_outcome() -> StorageOutcome {
     outcome
 }
 
-/// Cleared on sign-out, through the existing forget path (`telemetry::forget`, behind
+/// Cleared on sign-out, through the existing forget path (`telemetry::forget_with_receipt`, behind
 /// `auth::forget_account`) — the same lifetime every other per-account telemetry fact in this
 /// corner of the app has: consent belongs to the account that gave it, and so does the record of
 /// what its own sign-in save did.
@@ -1361,12 +1361,15 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("a writable temp dir");
         crate::plex::session::redirect_for_test(Some(dir.join("gone").join("auth.json")));
         forget_storage_outcome();
+        crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::Write);
 
         crate::auth::arm_ready_for_test(crate::plex::session::Session {
             client_id: "cid-for-test".to_string(),
             account_token: "tok-for-test".to_string(),
             ..Default::default()
         });
+        assert!(crate::auth::take_ready().is_none(), "save admission never waits inline");
+        crate::storage_worker::drain_for_test();
         assert!(crate::auth::take_ready().is_some());
 
         let one_off: Value = serde_json::from_slice(&event_body_with_storage_outcome(
@@ -1410,7 +1413,7 @@ mod tests {
         // `forget_storage_outcome` that wipes it. Without the lock it raced the integration test
         // above (which drives a real `take_ready` and then reads the same global back) and made it
         // flake roughly one run in four. `testlock::serial`, not a local mutex: the global is also
-        // reached from `auth` and from `telemetry::forget`.
+        // reached from `auth` and from `telemetry::forget_with_receipt`.
         let _g = crate::testlock::serial();
         crate::plex::session::reset_report_state_for_test();
         note_storage_outcome(
