@@ -1002,6 +1002,15 @@ impl Bridge {
         self.stores.browse.borrow_mut().capture_directory(&mut self.directory);
     }
 
+    #[cfg(test)]
+    pub(crate) fn seed_registered_browse_for_test(
+        &mut self,
+        sids: [crate::plex::ServerId; 2],
+    ) {
+        self.stores.browse.borrow_mut().seed_registered_table_for_test(sids);
+        self.refresh_browse_directory();
+    }
+
     pub(crate) fn bind_primary(&mut self, recorded: u32) -> Result<(), &'static str> {
         let resource = crate::plex::client_opt().ok_or("missing controlled primary")?;
         if resource.instance_gen() != recorded || resource.id().raw() != 0 {
