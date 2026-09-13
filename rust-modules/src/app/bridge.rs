@@ -4952,6 +4952,89 @@ mod tests {
         }
     }
 
+    /// Detail owns the press decision, but the Bridge owns the retained Browse directory needed
+    /// by ViewState's optimistic Hubs edit. Keep both halves on the production dispatcher path:
+    /// a direct screen-side `viewstate::apply` passes under `cfg(test)` and panics in production.
+    #[test]
+    fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_frame() {
+        use crate::ui::dispatch::Tap;
+
+        struct ViewStateDispatch {
+            sid: crate::plex::ServerId,
+            app_effects: usize,
+            store_deliveries: usize,
+        }
+
+        impl Tap<AppHost> for ViewStateDispatch {
+            fn effect(&mut self, _: u64, stamped: &crate::ui::machine::Stamped<AppHost>) {
+                match &stamped.fx {
+                    Fx::App(AppFx::Store(StoreId::ViewState,
+                        StoreCmd::ViewState(crate::stores::viewstate::ViewStateCmd::Request {
+                            sid, rk, write, detail, guid,
+                        }))) => {
+                        assert_eq!((*sid, rk.as_str(), *write, detail.as_deref(), guid.as_str()),
+                            (self.sid, "movie", crate::viewstate::Write::Watched,
+                                Some(""), "plex://movie"));
+                        self.app_effects += 1;
+                    }
+                    Fx::Deliver(MachineId::Store(ord), Delivery::Machine(AppMsg::Store(
+                        StoreCmd::ViewState(crate::stores::viewstate::ViewStateCmd::Request {
+                            sid, rk, write, detail, guid,
+                        })))) => {
+                        assert_eq!(*ord, StoreId::ViewState.ord());
+                        assert_eq!((*sid, rk.as_str(), *write, detail.as_deref(), guid.as_str()),
+                            (self.sid, "movie", crate::viewstate::Write::Watched,
+                                Some(""), "plex://movie"));
+                        self.store_deliveries += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test(
+            "bridge-detail-viewstate", "127.0.0.1", 9, "synthetic", "fixture");
+        let _cleanup = DirectoryPolicyCleanup;
+        let route = AppArg::Content(ContentArg::Detail { sid, rk: "movie".into() });
+        let mut dispatcher = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        dispatcher.request(MachineId::Nav, NavOp::Root(route));
+        dispatcher.frame_with(&mut rig, tick(0), Vec::new(), Vec::new(), &mut NoTap, false);
+
+        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+            sid,
+            rk: "movie".into(),
+            kind: "movie".into(),
+            watched: false,
+            guid: "plex://movie".into(),
+            ..Default::default()
+        }));
+        dispatcher.frame_with(&mut rig, tick(1), Vec::new(), Vec::new(), &mut NoTap, false);
+        let play = dispatcher.focus().expect("Detail seats its Play control");
+        dispatcher.frame_with(&mut rig, tick(2), script_key(Key::Right, tick(2)), Vec::new(),
+            &mut NoTap, false);
+        let watch = dispatcher.focus().expect("RIGHT reaches the watch control");
+        assert_ne!(watch.elem, play.elem);
+
+        crate::viewstate::hold_inflight_for_test(sid, "held");
+        let instance = dispatcher.nav.top_page().and_then(|entry| entry.inst.as_ref())
+            .expect("the Detail page is mounted").id;
+        dispatcher.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+            Delivery::Screen(ScreenEvent::Activate(watch.elem))));
+        let mut tap = ViewStateDispatch { sid, app_effects: 0, store_deliveries: 0 };
+        dispatcher.frame_with(&mut rig, tick(3), Vec::new(), Vec::new(), &mut tap, false);
+
+        assert_eq!((tap.app_effects, tap.store_deliveries), (1, 1),
+            "the Detail effect must cross the addressed Bridge store delivery exactly once");
+        assert!(crate::metadata::current().is_some_and(|detail| detail.watched),
+            "the owning Bridge applies the optimistic edit before the press frame ends");
+        assert_ne!(dispatcher.focus().expect("the watch control remains focused").elem, watch.elem,
+            "same-frame reconciliation follows the watch control to its new identity");
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+    }
+
     #[test]
     fn hubs_land_and_tick_keep_the_frame_directory_policy() {
         let _guard = crate::testlock::serial();
