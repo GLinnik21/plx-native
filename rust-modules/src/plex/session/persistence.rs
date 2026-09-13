@@ -18,9 +18,17 @@ use crate::storage::{
 
 pub(crate) enum CanonicalRead {
     Missing,
+    /// Raw file-record payload; it has not crossed the protected/public schema boundary.
     Data {
         revision: u64,
         payload: String,
+    },
+    /// Authenticated helper result. Consume this Session directly: serializing it into the
+    /// flattened legacy file format would collide with opaque v1 extensions whose names became
+    /// recognized Session fields in a newer client. Neither schema nor stored bytes change here.
+    Opened {
+        revision: u64,
+        session: super::Session,
     },
     Cleared {
         revision: u64,
@@ -220,16 +228,10 @@ pub(crate) fn load_helper_with(transport: &mut dyn client::Transport) -> Canonic
             match snapshot.auth {
                 AuthLoad::Plaintext { payload } => {
                     match super::join_canonical(&snapshot.state.public, &payload.0) {
-                        Ok(session) => {
-                            let payload = match serde_json::to_string(&session) {
-                                Ok(payload) => payload,
-                                Err(_) => return CanonicalRead::Blocked(StoreError::InvalidSchema),
-                            };
-                            CanonicalRead::Data {
-                                revision: snapshot.state.revision,
-                                payload,
-                            }
-                        }
+                        Ok(session) => CanonicalRead::Opened {
+                            revision: snapshot.state.revision,
+                            session,
+                        },
                         Err(()) => CanonicalRead::Blocked(StoreError::InvalidSchema),
                     }
                 }
@@ -287,6 +289,7 @@ pub(crate) fn commit_data(payload: String) -> CanonicalCommit {
     {
         let revision = match load() {
             CanonicalRead::Data { revision, .. }
+            | CanonicalRead::Opened { revision, .. }
             | CanonicalRead::Cleared { revision }
             | CanonicalRead::Locked { revision, .. }
             | CanonicalRead::Pending { revision, .. } => match revision.checked_add(1) {
@@ -319,6 +322,7 @@ pub(crate) fn commit_cleared() -> CanonicalCommit {
     {
         let revision = match load() {
             CanonicalRead::Data { revision, .. }
+            | CanonicalRead::Opened { revision, .. }
             | CanonicalRead::Cleared { revision }
             | CanonicalRead::Locked { revision, .. }
             | CanonicalRead::Pending { revision, .. } => match revision.checked_add(1) {
@@ -1013,6 +1017,13 @@ pub(crate) fn bootstrap_with(
     }
 }
 
+/// Compare each schema half without flattening opaque protected extensions into Session fields.
+fn same_session_contents(expected: &super::Session, actual: &super::Session) -> bool {
+    super::protected_fields_equal(expected, actual)
+        && matches!((super::split_public(expected), super::split_public(actual)),
+            (Ok(expected), Ok(actual)) if expected == actual)
+}
+
 fn finish_import(
     store: &mut dyn MigrationStore,
     legacy: LegacySession,
@@ -1025,13 +1036,16 @@ fn finish_import(
     let readback = store.load();
     let exact = match (&legacy, &readback) {
         (LegacySession::Cleared, CanonicalRead::Cleared { .. }) => true,
+        (
+            LegacySession::Data(expected),
+            CanonicalRead::Opened {
+                session: actual, ..
+            },
+        ) => same_session_contents(expected, actual),
         (LegacySession::Data(expected), CanonicalRead::Data { payload, .. }) => {
             serde_json::from_str::<super::Session>(payload)
                 .ok()
-                .is_some_and(|actual| {
-                    matches!((serde_json::to_value(expected),serde_json::to_value(actual)),
-                        (Ok(expected),Ok(actual)) if expected == actual)
-                })
+                .is_some_and(|actual| same_session_contents(expected, &actual))
         }
         _ => false,
     };

@@ -660,11 +660,14 @@ fn production_client_coordinator_and_helper_backend_reconcile_committed_lost_rep
         ),
         "lost reply must reconcile using the helper ledger"
     );
-    let CanonicalRead::Data { payload, .. } = persistence::load_helper_with(&mut transport) else {
+    let CanonicalRead::Opened {
+        session: reopened, ..
+    } = persistence::load_helper_with(&mut transport)
+    else {
         panic!("reopened helper state")
     };
     assert_eq!(
-        serde_json::to_value(serde_json::from_str::<Session>(&payload).unwrap()).unwrap(),
+        serde_json::to_value(reopened).unwrap(),
         serde_json::to_value(&session).unwrap()
     );
     let client::Load::Present(before) = client::load_with(&mut transport).unwrap() else {
@@ -760,4 +763,154 @@ fn pending_import_retries_only_its_recorded_envelope_and_never_another_legacy_fi
         source.path.exists(),
         "unrelated input is not a verified migration source"
     );
+}
+
+fn check_v1_extension_bootstrap_roundtrip(keys: &[String]) {
+    let expected = Session {
+        profiles: Vec::new(),
+        ..fixture()
+    };
+    let (public, protected) = v1(&expected);
+    let mut auth: Value = serde_json::from_str(&protected).unwrap();
+    for key in keys {
+        auth["extensions"][key] = if key == "profiles" {
+            serde_json::json!([{"uuid":"opaque-owner","user":{"uuid":"opaque-owner","token":"never-active"}}])
+        } else {
+            serde_json::json!({"opaque":key,"value":"synthetic-future-secret"})
+        };
+    }
+    let extensions = auth["extensions"].clone();
+    let protected = serde_json::to_string_pretty(&auth).unwrap();
+    let mut backend = crate::storage::backend::Backend::new(
+        Db8::default(),
+        state::Flavor::Stable,
+        "com.beb.plxnative.storage".into(),
+    );
+    let mut transport = |request| Ok(backend.dispatch(request));
+    assert!(matches!(
+        client::commit_with(
+            &mut transport,
+            None,
+            state::Generation([9; 16]),
+            WireMutation::ReplaceAuth {
+                public: serde_json::to_value(&public).unwrap(),
+                payload: SecretString(protected.clone()),
+                protection: ProtectionRequest::Db8AclOnlyExplicit,
+            }
+        ),
+        Ok(Response::Commit {
+            status: CommitStatus::Committed,
+            verified: true,
+            ..
+        })
+    ));
+    let client::Load::Present(before) = client::load_with(&mut transport).unwrap() else {
+        panic!("seeded v1")
+    };
+    let mut session = match persistence::load_helper_with(&mut transport) {
+        CanonicalRead::Opened {session,..} => session,
+        CanonicalRead::Data {payload,..} => serde_json::from_str::<Session>(&payload)
+            .expect("helper bootstrap must reopen without flattening opaque fields into known Session fields"),
+        _ => panic!("opened Session bootstrap"),
+    };
+    assert!(session.profiles.is_empty());
+    assert_eq!(
+        serde_json::to_value(&session.extensions).unwrap(),
+        extensions
+    );
+    assert_eq!(
+        serde_json::to_value(super::split_public(&session).unwrap()).unwrap(),
+        serde_json::to_value(&public).unwrap()
+    );
+    let bootstrap = persistence::bootstrap_with(
+        &mut persistence::HelperMigration {
+            transport: &mut transport,
+            major: 4,
+        },
+        &mut opener(),
+        &[],
+    );
+    assert!(bootstrap.migration.is_none());
+    assert!(!bootstrap.cleanup_failed);
+    let CanonicalRead::Opened { session: ready, .. } = bootstrap.state else {
+        panic!("typed ready bootstrap")
+    };
+    assert!(ready.profiles.is_empty());
+    assert_eq!(serde_json::to_value(&ready.extensions).unwrap(), extensions);
+    session = ready;
+    session.auto_sign_in = !session.auto_sign_in;
+    assert!(matches!(
+        persistence::commit_session_with(
+            &session,
+            false,
+            SaveAuthority::Routine,
+            4,
+            &mut transport
+        ),
+        persistence::CanonicalCommit::Durable { verified: true, .. }
+    ));
+    let client::Load::Present(after) = client::load_with(&mut transport).unwrap() else {
+        panic!("public edit")
+    };
+    assert_eq!(before.state.auth_envelope, after.state.auth_envelope);
+    assert_eq!(before.state.auth_generation, after.state.auth_generation);
+    assert!(matches!(&after.auth, AuthLoad::Plaintext {payload} if payload.0 == protected));
+    assert_eq!(
+        backend.rpc.puts, 2,
+        "bootstrap must not write or upgrade v1"
+    );
+}
+
+#[test]
+fn v1_opaque_profiles_survive_helper_bootstrap_without_becoming_active() {
+    check_v1_extension_bootstrap_roundtrip(&["profiles".into()]);
+}
+
+#[test]
+fn v1_opaque_extensions_cannot_collide_with_any_recognized_session_field() {
+    let known = serde_json::to_value(Session::default()).unwrap();
+    for key in known.as_object().unwrap().keys() {
+        check_v1_extension_bootstrap_roundtrip(std::slice::from_ref(key));
+    }
+}
+
+#[test]
+fn helper_migration_keeps_opened_session_typed_through_exact_readback() {
+    let expected = fixture();
+    let source = LegacyFile::new(
+        "typed-helper-readback",
+        &serde_json::to_value(&expected).unwrap(),
+    );
+    let mut backend = crate::storage::backend::Backend::new(
+        Db8::default(),
+        state::Flavor::Stable,
+        "com.beb.plxnative.storage".into(),
+    );
+    let mut transport = |request| Ok(backend.dispatch(request));
+    let result = persistence::bootstrap_with(
+        &mut persistence::HelperMigration {
+            transport: &mut transport,
+            major: 4,
+        },
+        &mut opener(),
+        std::slice::from_ref(&source.path),
+    );
+    assert!(matches!(
+        result.migration,
+        Some(persistence::CanonicalCommit::Durable { verified: true, .. })
+    ));
+    let CanonicalRead::Opened { session, .. } = result.state else {
+        panic!("typed migrated Session")
+    };
+    assert!(super::protected_fields_equal(&session, &expected));
+    assert_eq!(
+        serde_json::to_value(super::split_public(&session).unwrap()).unwrap(),
+        serde_json::to_value(super::split_public(&expected).unwrap()).unwrap()
+    );
+    assert!(!result.cleanup_failed);
+    assert!(
+        !source.path.exists(),
+        "exact typed readback must authorize retirement of this source"
+    );
+    assert_eq!(backend.rpc.puts, 1);
 }

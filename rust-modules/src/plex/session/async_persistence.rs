@@ -474,35 +474,6 @@ impl Coordinator {
         }
     }
 
-    fn replace(
-        &self,
-        executor: &dyn Submitter,
-        snapshot: Session,
-        authority: SaveAuthority,
-        persist: impl FnOnce(Session, SaveAuthority) -> DiskOutcome + Send + 'static,
-    ) -> Result<Receipt, AdmissionError> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.requires_fresh
-            && (authority != SaveAuthority::FreshReauthentication
-                || snapshot.account_token.is_empty())
-        {
-            return Err(AdmissionError {
-                revision: None,
-                failure: AdmissionFailure::Revoked,
-            });
-        }
-        let revision = next_revision(&mut state)?;
-        let published = snapshot.clone();
-        let receipt = self.submit_locked(&mut state, revision, executor, move || {
-            persist(snapshot, authority)
-        })?;
-        if authority == SaveAuthority::FreshReauthentication {
-            state.requires_fresh = false;
-        }
-        *CACHE.write().unwrap_or_else(|e| e.into_inner()) = Some(published);
-        Ok(receipt)
-    }
-
     fn retry_ordinary(&self, expected_revision: u64, executor: &dyn Submitter) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.revision != expected_revision || state.requires_fresh {
@@ -778,13 +749,6 @@ pub(crate) fn retry_ordinary(expected_revision: u64) -> bool {
     coordinator().retry_ordinary(expected_revision, &EXECUTOR)
 }
 
-pub(crate) fn replace(
-    snapshot: Session,
-    authority: SaveAuthority,
-) -> Result<Receipt, AdmissionError> {
-    coordinator().replace(&EXECUTOR, snapshot, authority, execute_write)
-}
-
 pub(crate) fn clear() -> Result<Receipt, AdmissionError> {
     clear_after(|| true)
 }
@@ -879,6 +843,21 @@ mod tests {
     use super::*;
     use crate::storage_worker::{SubmitErrorGeneric, Writer};
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    impl Coordinator {
+        /// Lifecycle fixtures submit a complete synthetic value through the production guards.
+        /// No production snapshot-replacement API exists beside permit-and-merge admission.
+        fn admit_snapshot(
+            &self,
+            executor: &dyn Submitter,
+            snapshot: Session,
+            authority: SaveAuthority,
+            persist: impl FnOnce(Session, SaveAuthority) -> DiskOutcome + Send + 'static,
+        ) -> Result<Receipt, AdmissionError> {
+            self.admit_with(executor, authority, |_| Ok(Some(snapshot)), persist)
+                .map(|receipt| receipt.expect("fixture always proposes a change"))
+        }
+    }
 
     struct WriterExecutor {
         writer: Writer<Job, ()>,
@@ -1095,7 +1074,7 @@ mod tests {
         let (release_tx, release_rx) = mpsc::channel();
         let first_order = order.clone();
         let first = coordinator
-            .replace(
+            .admit_snapshot(
                 &executor,
                 session("old-write"),
                 SaveAuthority::Routine,
@@ -1137,7 +1116,7 @@ mod tests {
         let mut fresh_snapshot = session("fresh");
         fresh_snapshot.account_token = "fresh-account".into();
         let fresh = coordinator
-            .replace(
+            .admit_snapshot(
                 &executor,
                 fresh_snapshot,
                 SaveAuthority::FreshReauthentication,
@@ -1203,7 +1182,7 @@ mod tests {
         assert!(snapshot().unwrap_or_default().client_id.is_empty());
         assert_eq!(coordinator.status().durable_revision, None);
         assert!(matches!(
-            coordinator.replace(
+            coordinator.admit_snapshot(
                 &Refusing(SubmitError::Full),
                 session("stale"),
                 SaveAuthority::Routine,
@@ -1224,7 +1203,7 @@ mod tests {
         let executor = WriterExecutor::start(2);
         let clear = coordinator.clear(&executor, durable_clear).unwrap();
         let error = coordinator
-            .replace(
+            .admit_snapshot(
                 &executor,
                 session("empty-fresh"),
                 SaveAuthority::FreshReauthentication,
@@ -1248,7 +1227,7 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let running = coordinator
-            .replace(
+            .admit_snapshot(
                 &executor,
                 session("already-running"),
                 SaveAuthority::Routine,
@@ -1263,7 +1242,7 @@ mod tests {
         let queued_ran = Arc::new(AtomicBool::new(false));
         let queued_ran_job = queued_ran.clone();
         let queued = coordinator
-            .replace(
+            .admit_snapshot(
                 &executor,
                 session("queued"),
                 SaveAuthority::Routine,
@@ -1319,7 +1298,7 @@ mod tests {
             sent: Mutex::new(Some(tx)),
         };
         let receipt = coordinator
-            .replace(
+            .admit_snapshot(
                 &executor,
                 session("accepted"),
                 SaveAuthority::Routine,
@@ -1349,7 +1328,7 @@ mod tests {
         let ran = Arc::new(AtomicBool::new(false));
         let ran_job = ran.clone();
         let receipt = coordinator
-            .replace(
+            .admit_snapshot(
                 &SharedExecutor,
                 session("shared-worker"),
                 SaveAuthority::Routine,
@@ -1431,5 +1410,30 @@ mod tests {
         ));
         assert_eq!(coordinator.status().latest_revision, 0);
         assert_eq!(snapshot().unwrap().client_id, "permitted-snapshot");
+    }
+    #[test]
+    fn snapshot_admission_cannot_bypass_public_only_or_locked_auth_guards() {
+        let _serial = crate::testlock::serial();
+        for authority in [SaveAuthority::PublicOnly, SaveAuthority::Routine] {
+            install(session("before"));
+            LOCKED_STATE.store(
+                u8::from(authority == SaveAuthority::Routine),
+                Ordering::Release,
+            );
+            let coordinator = Coordinator::new();
+            let mut changed = session("before");
+            changed.account_token = "unauthorized-change".into();
+            let executor = WriterExecutor::start(1);
+            let result = coordinator.admit_snapshot(&executor, changed, authority, durable);
+            assert!(matches!(
+                result,
+                Err(AdmissionError {
+                    failure: AdmissionFailure::Locked,
+                    ..
+                })
+            ));
+            assert_eq!(coordinator.status().latest_revision, 0);
+            assert!(snapshot().unwrap().account_token.is_empty());
+        }
     }
 }
