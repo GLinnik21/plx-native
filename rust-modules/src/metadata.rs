@@ -2128,6 +2128,11 @@ pub(crate) fn begin_detail_for_test(sid: crate::plex::ServerId, rk: &str) -> u32
 }
 
 #[cfg(test)]
+pub(crate) fn detail_generation_for_test() -> u32 {
+    DETAIL_GEN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(test)]
 pub(crate) fn land_detail_for_test(sid: crate::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
     crate::testlock::assert_held("the detail store (land_detail_for_test)");
     land_detail(sid, rk, gen, detail);

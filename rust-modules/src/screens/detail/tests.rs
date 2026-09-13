@@ -206,6 +206,9 @@ fn logical_hash_names_the_full_restore_target() {
     a.restore_episode(&left, Some("e1"));
     b.restore_episode(&right, Some("e2"));
     assert_ne!(a.hash(), b.hash());
+    let settled = b.hash();
+    b.restore_intent.as_mut().unwrap().refresh = DetailRefreshPhase::Deferred;
+    assert_ne!(settled, b.hash(), "a future reconciliation request is logical state");
 }
 
 #[test]
@@ -673,6 +676,7 @@ fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_
         },
         episode: Some("e3".into()),
         season_requested: true,
+        refresh: DetailRefreshPhase::None,
     });
     screen.pump_restore();
     assert!(

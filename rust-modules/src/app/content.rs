@@ -361,6 +361,71 @@ fn library_publication_command(
 mod library_publication_tests {
     use super::*;
 
+    fn frame(
+        pages: &mut crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+        rig: &mut bridge::Bridge,
+        frame_no: &mut u32,
+    ) {
+        let (_, report) = bridge::frame(pages, rig, crate::ui::machine::Tick {
+            ms: *frame_no * 16,
+            dt_us: 16_000,
+        }, Vec::new());
+        *frame_no += 1;
+        pages.prune(&report.unmounted);
+    }
+
+    fn seed_detail_return(
+        pages: &mut crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+        entry: EntryId,
+        sid: crate::plex::ServerId,
+        episode: &str,
+    ) -> (crate::metadata::Spot, crate::ui::machine::FocusKey<u32>) {
+        let spot = crate::metadata::Spot {
+            section: 2,
+            col: 3,
+            ep_text: true,
+            saved_col: [0, 1, 3, 0, 0, 0],
+            season: Some(2),
+        };
+        let focus = crate::ui::machine::FocusKey { entry, elem: 3003 };
+        let retained = pages.nav.entry_mut(entry).expect("Detail A remains on the stack");
+        retained.ret.focus = Some(focus);
+        retained.ret.memory = PageMemory::Detail(crate::screens::registry::DetailMemory {
+            spot: spot.clone(),
+            keys: vec![crate::screens::registry::DetailKey {
+                identity: crate::screens::registry::DetailIdentity::Episode {
+                    sid,
+                    rk: episode.into(),
+                    text: true,
+                },
+                elem: focus.elem,
+            }],
+            next_elem: focus.elem + 1,
+        });
+        (spot, focus)
+    }
+
+    fn detail_restore_target(
+        pages: &crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+        entry: EntryId,
+    ) -> Option<(
+        crate::metadata::Spot,
+        Option<String>,
+        crate::screens::registry::DetailRefreshPhase,
+    )> {
+        pages.nav.entry(entry).and_then(|entry| entry.inst.as_ref())
+            .and_then(|instance| instance.screen.as_any())
+            .and_then(|screen| screen.downcast_ref::<crate::screens::detail::DetailScreen>())
+            .and_then(crate::screens::detail::DetailScreen::restore_target_for_test)
+    }
+
+    fn drain_detail_workers() {
+        for _ in 0..100 {
+            crate::stores::metadata::pump_detail();
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn home_tab_validation_reads_the_supplied_directory() {
         let sid = crate::plex::ServerId::from_raw(3);
@@ -428,29 +493,18 @@ mod library_publication_tests {
         let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let mut rig = bridge::Bridge::for_test(|| 0);
         let mut frame_no = 0;
-        let mut frame = |pages: &mut crate::ui::dispatch::Dispatcher<bridge::AppHost>,
-                         rig: &mut bridge::Bridge| {
-            let (_, report) = bridge::frame(pages, rig, crate::ui::machine::Tick {
-                ms: frame_no * 16,
-                dt_us: 16_000,
-            }, Vec::new());
-            frame_no += 1;
-            pages.prune(&report.unmounted);
-        };
 
         bridge::show_page(&mut pages, a.clone());
-        frame(&mut pages, &mut rig);
+        frame(&mut pages, &mut rig, &mut frame_no);
         let a_entry = pages.nav.top_page().expect("Detail A mounted").id;
         bridge::nav_push(&mut pages, b.clone());
-        frame(&mut pages, &mut rig);
+        frame(&mut pages, &mut rig, &mut frame_no);
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == b));
+        let (spot, focus) = seed_detail_return(&mut pages, a_entry, sid, "episode-a");
 
         // Retire the constructors' real worker requests, then hold B in the same global metadata
         // slot the product uses while A's ViewState completion arrives.
-        for _ in 0..100 {
-            crate::stores::metadata::pump_detail();
-            std::thread::yield_now();
-        }
+        drain_detail_workers();
         crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
         crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
             sid,
@@ -465,7 +519,7 @@ mod library_publication_tests {
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
         });
-        frame(&mut pages, &mut rig);
+        frame(&mut pages, &mut rig, &mut frame_no);
 
         assert_eq!(crate::metadata::current().map(|detail| detail.rk.as_str()), Some("detail-b"),
             "the visible Detail keeps its loaded metadata");
@@ -473,11 +527,10 @@ mod library_publication_tests {
             "covered A must not supersede B's in-flight request");
         assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), None,
             "A's fetch stays deferred while B owns the shared slot");
-        let mut a_probe = String::new();
-        pages.nav.entry(a_entry).and_then(|entry| entry.inst.as_ref())
-            .expect("covered Detail A stays mounted").screen.state().probe(&mut a_probe);
-        assert!(a_probe.contains("restore=true"),
-            "A retains the ViewState refresh/episode restoration intent while covered: {a_probe}");
+        assert_eq!(detail_restore_target(&pages, a_entry),
+            Some((spot.clone(), Some("episode-a".into()),
+                crate::screens::registry::DetailRefreshPhase::Deferred)),
+            "covered A retains the addressed episode and focus spot");
 
         assert!(crate::metadata::land_detail_for_test(sid, "detail-b", b_request,
             Some(crate::metadata::Detail {
@@ -486,20 +539,102 @@ mod library_publication_tests {
                 title: "Visible B".into(),
                 ..Default::default()
             })));
+        let generation = crate::metadata::detail_generation_for_test();
         let ret = pages.return_state();
         bridge::nav_pop_with_return(&mut pages, ret);
-        frame(&mut pages, &mut rig);
+        frame(&mut pages, &mut rig, &mut frame_no);
 
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
         assert!(crate::metadata::detail_request_status(sid, "detail-a").is_some(),
             "A starts its deferred metadata refresh only after Back uncovers it");
+        assert_eq!(crate::metadata::detail_generation_for_test(), generation + 2,
+            "B closes its request and A starts exactly one replacement request");
+        assert_eq!(detail_restore_target(&pages, a_entry),
+            Some((spot, Some("episode-a".into()),
+                crate::screens::registry::DetailRefreshPhase::Requested)),
+            "RestoreMemory must not overwrite the addressed episode/focus intent");
+        assert_eq!(pages.focus(), Some(focus),
+            "the restored engine focus remains on the addressed episode row");
+        let generation = crate::metadata::detail_generation_for_test();
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert_eq!(crate::metadata::detail_generation_for_test(), generation,
+            "the deferred refresh is consumed once");
 
         crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
         crate::metadata::set_current_for_test(None);
-        for _ in 0..100 {
-            crate::stores::metadata::pump_detail();
-            std::thread::yield_now();
-        }
+        drain_detail_workers();
+    }
+
+    #[test]
+    fn a_detail_covered_by_person_refreshes_even_when_its_metadata_is_still_loaded() {
+        let _guard = crate::testlock::serial();
+        let sid = crate::plex::ServerId::UNSET;
+        let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
+        let person = AppArg::Content(ContentArg::Person {
+            sid,
+            key: "person".into(),
+            guid: "person-guid".into(),
+            name: "Person".into(),
+            thumb: String::new(),
+        });
+        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+
+        bridge::show_page(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let a_entry = pages.nav.top_page().expect("Detail A mounted").id;
+        bridge::nav_push(&mut pages, person.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == person));
+        let (spot, focus) = seed_detail_return(&mut pages, a_entry, sid, "episode-a");
+
+        drain_detail_workers();
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+            sid,
+            rk: "detail-a".into(),
+            title: "Covered A".into(),
+            ..Default::default()
+        }));
+        let generation = crate::metadata::detail_generation_for_test();
+
+        refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
+            sid,
+            rk: "detail-a".into(),
+            keep: Some("episode-a".into()),
+        });
+        frame(&mut pages, &mut rig, &mut frame_no);
+
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == person));
+        assert_eq!(crate::metadata::current().map(|detail| detail.rk.as_str()), Some("detail-a"),
+            "the covered Detail's stale-but-visible slot is not displaced under Person");
+        assert_eq!(crate::metadata::detail_generation_for_test(), generation,
+            "A must not refresh while Person owns the visible page");
+        assert_eq!(detail_restore_target(&pages, a_entry),
+            Some((spot.clone(), Some("episode-a".into()),
+                crate::screens::registry::DetailRefreshPhase::Deferred)));
+
+        let ret = pages.return_state();
+        bridge::nav_pop_with_return(&mut pages, ret);
+        frame(&mut pages, &mut rig, &mut frame_no);
+
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
+        assert_eq!(crate::metadata::detail_generation_for_test(), generation + 1,
+            "uncovered A forces exactly one refresh despite matching loaded metadata");
+        assert_eq!(detail_restore_target(&pages, a_entry),
+            Some((spot, Some("episode-a".into()),
+                crate::screens::registry::DetailRefreshPhase::Requested)),
+            "RestoreMemory preserves the ViewState episode/focus intent");
+        assert_eq!(pages.focus(), Some(focus));
+        let generation = crate::metadata::detail_generation_for_test();
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert_eq!(crate::metadata::detail_generation_for_test(), generation,
+            "the explicit pending refresh is consumed after one request");
+
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(None);
+        drain_detail_workers();
     }
 }
 
@@ -553,7 +688,11 @@ pub(crate) fn restore_played_entry(app: &mut App) {
         .map(|n| { spot.season = Some(n.season); crate::route::cur_rk(&app.player.session) });
     if episode.is_some() {
         app.pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
-            Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore { spot, episode }))));
+            Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore {
+                spot,
+                episode,
+                refresh: crate::screens::registry::DetailRefreshPhase::None,
+            }))));
     }
 }
 
@@ -580,7 +719,15 @@ pub(crate) fn refresh_content(
         rk: rk.clone(),
     });
     pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
-        Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore { spot, episode: target.keep }))));
+        Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore {
+            spot,
+            episode: target.keep,
+            refresh: if owns_metadata {
+                crate::screens::registry::DetailRefreshPhase::Requested
+            } else {
+                crate::screens::registry::DetailRefreshPhase::Deferred
+            },
+        }))));
     if let Some(cmd) = request {
         pages.emit(MachineId::Nav, Fx::App(crate::screens::registry::AppFx::Store(
             crate::stores::StoreId::Metadata, crate::stores::StoreCmd::Metadata(cmd))));

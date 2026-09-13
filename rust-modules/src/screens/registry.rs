@@ -856,6 +856,13 @@ pub(crate) trait AuthLike: AppLike + Sized {
 }
 
 /// The application's messages (spec §3.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DetailRefreshPhase {
+    None,
+    Deferred,
+    Requested,
+}
+
 pub(crate) enum AppMsg {
     Session(crate::auth::owner::SessionEvent),
     Consent(ConsentCmd),
@@ -869,7 +876,12 @@ pub(crate) enum AppMsg {
     Library(LibraryCmd),
     LibraryEdit { target: crate::stores::browse::SectionAddress, edit: crate::stores::browse::QueryEdit },
     LibrarySelect(crate::stores::browse::SectionAddress),
-    DetailRestore { spot: crate::metadata::Spot, episode: Option<String> },
+    DetailRestore {
+        spot: crate::metadata::Spot,
+        episode: Option<String>,
+        /// Whether an addressed ViewState reconciliation is deferred or already requested.
+        refresh: DetailRefreshPhase,
+    },
     /// The *Also available* surface committed a row: open that copy's own page. The SURFACE names
     /// the destination and the PAGE navigates, which is `LibraryMenu`'s shape (`LibrarySelect`) and
     /// what keeps "what a press means on the Detail page" in one place instead of two.
@@ -1773,10 +1785,15 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// changed is the SHAPE STRING, which is what a shape pin is for: the fixtures are re-recorded
 /// because their header names the shape, not because their frames disagree.
 ///
+/// **Detail's deferred ViewState refresh** (`0xb7cc_e355_9fd5_f0f9` → this): the restore intent now
+/// records whether its addressed reconciliation is waiting for visibility or already requested.
+/// That state decides a future Metadata request, so omitting it would let two replay-identical
+/// covered pages diverge when Back uncovers them.
+///
 /// `#[cfg(test)]` because the pin is an ASSERTION about the array above and never a value the
 /// app reads — `state_fp()` hashes [`SCREEN_SHAPES`] itself.
 #[cfg(test)]
-const SCREEN_SHAPES_PIN: u64 = 0xb7cc_e355_9fd5_f0f9;
+const SCREEN_SHAPES_PIN: u64 = 0x8249_16e7_058b_2ada;
 
 #[cfg(test)]
 mod arg_tests {

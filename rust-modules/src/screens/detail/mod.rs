@@ -44,7 +44,7 @@ use crate::ui::widgets::{
 use crate::ui::{hero_alpha, theme, Env, Painter, Rect, Spring, View};
 use std::borrow::Cow;
 
-use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel};
+use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel, DetailRefreshPhase};
 
 const FIRST_ITEM_ELEM: u32 = 2048;
 
@@ -55,7 +55,7 @@ const EP_SCALE_MAX: usize = 40;
 const K_SCROLL: f32 = crate::ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
 
-pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;6],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
+pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;6],season:opt<u64>},episode:opt<str>,season_requested:bool,refresh:u32}>}";
 
 const _: () = assert!(hero::HERO_ELEM_RANGE_END == season::SEASON_ELEM_RANGE_START);
 const _: () = assert!(season::SEASON_ELEM_RANGE_END == episodes::EPISODES_ELEM_RANGE_START);
@@ -69,6 +69,7 @@ struct RestoreIntent {
     spot: Spot,
     episode: Option<String>,
     season_requested: bool,
+    refresh: DetailRefreshPhase,
 }
 
 pub(crate) struct DetailScreen {
@@ -169,7 +170,14 @@ impl DetailScreen {
         }
         self.next_elem = self.next_elem.max(memory.next_elem).max(FIRST_ITEM_ELEM).max(
             self.keys.iter().map(|key| key.elem).max().and_then(|n| n.checked_add(1)).unwrap_or(FIRST_ITEM_ELEM));
+        let refresh = self.restore_intent.take()
+            .filter(|intent| intent.refresh != DetailRefreshPhase::None);
         self.restore(&memory.spot);
+        if let Some(refresh) = refresh {
+            // The entry memory is the request-time navigation snapshot. A ViewState completion
+            // delivered while covered is newer and carries the episode whose write just settled.
+            self.restore_intent = Some(refresh);
+        }
         self.return_pending = true;
         self.sync_keys();
     }
@@ -243,12 +251,22 @@ impl DetailScreen {
     }
 
     pub(crate) fn restore_episode(&mut self, spot: &Spot, episode: Option<&str>) {
+        self.restore_episode_with_refresh(spot, episode, DetailRefreshPhase::None);
+    }
+
+    fn restore_episode_with_refresh(
+        &mut self,
+        spot: &Spot,
+        episode: Option<&str>,
+        refresh: DetailRefreshPhase,
+    ) {
         self.sync_keys();
         self.return_pending = false;
         self.restore_intent = Some(RestoreIntent {
             spot: spot.clone(),
             episode: episode.map(str::to_owned),
             season_requested: false,
+            refresh,
         });
         self.scroll_target = 0.0;
     }
@@ -1024,11 +1042,18 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 Handled::Yes
             }
             ScreenEvent::Enter(_) => {
-                if self.detail().is_none() && crate::metadata::detail_request_status(self.sid, &self.rk) != Some(true) {
+                let refresh = self.restore_intent.as_ref()
+                    .map_or(DetailRefreshPhase::None, |intent| intent.refresh);
+                if (refresh == DetailRefreshPhase::Deferred || self.detail().is_none())
+                    && crate::metadata::detail_request_status(self.sid, &self.rk) != Some(true) {
                     apply_metadata(MetadataCmd::RequestDetail {
                         sid: self.sid,
                         rk: self.rk.clone(),
                     });
+                }
+                if refresh == DetailRefreshPhase::Deferred {
+                    self.restore_intent.as_mut().expect("pending refresh has an intent")
+                        .refresh = DetailRefreshPhase::Requested;
                 }
                 self.reveal_focus(cx.focus.current, cx.measure);
                 fx.invalidate(Provenance::Input);
@@ -1147,8 +1172,8 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 }
                 Handled::No
             }
-            ScreenEvent::App(AppMsg::DetailRestore { spot, episode }) => {
-                self.restore_episode(spot, episode.as_deref());
+            ScreenEvent::App(AppMsg::DetailRestore { spot, episode, refresh }) => {
+                self.restore_episode_with_refresh(spot, episode.as_deref(), *refresh);
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
             }
@@ -1334,6 +1359,15 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
 }
 
 impl DetailScreen {
+    #[cfg(test)]
+    pub(crate) fn restore_target_for_test(&self) -> Option<(Spot, Option<String>, DetailRefreshPhase)> {
+        self.restore_intent.as_ref().map(|intent| (
+            intent.spot.clone(),
+            intent.episode.clone(),
+            intent.refresh,
+        ))
+    }
+
     fn art_identity(&self, d: Option<&Detail>) -> (ServerId, String, String) {
         if let Some(d) = d {
             let path = if d.is_show {
@@ -1894,6 +1928,11 @@ impl LogicalState for DetailScreen {
                     }
                 }
                 w.bool(intent.season_requested);
+                w.u32(match intent.refresh {
+                    DetailRefreshPhase::None => 0,
+                    DetailRefreshPhase::Deferred => 1,
+                    DetailRefreshPhase::Requested => 2,
+                });
             }
             None => {
                 w.bool(false);
@@ -1908,7 +1947,7 @@ impl LogicalState for DetailScreen {
 
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "detail sid={} pending_season={} settle_us={} restore={} restore_season_sent={}",
+            "detail sid={} pending_season={} settle_us={} restore={} restore_season_sent={} refresh={:?}",
             self.sid.raw(),
             self.pending_season
                 .map(|index| index.to_string())
@@ -1921,6 +1960,9 @@ impl LogicalState for DetailScreen {
             self.restore_intent
                 .as_ref()
                 .is_some_and(|intent| intent.season_requested),
+            self.restore_intent
+                .as_ref()
+                .map_or(DetailRefreshPhase::None, |intent| intent.refresh),
         ));
     }
 }
@@ -1937,12 +1979,22 @@ impl DetailScreen {
 
     fn return_waiting(&self) -> bool {
         self.return_pending && self.restore_intent.as_ref().is_some_and(|intent| {
-            self.detail().is_none() || season::restore_step(self.detail(), intent.spot.season,
+            intent.refresh != DetailRefreshPhase::None || self.detail().is_none()
+                || season::restore_step(self.detail(), intent.spot.season,
                 intent.season_requested, crate::metadata::season_loading()) != season::RestoreStep::Ready
         })
     }
 
     fn pump_restore(&mut self) {
+        if let Some(intent) = self.restore_intent.as_mut() {
+            match (intent.refresh, crate::metadata::detail_request_status(self.sid, &self.rk)) {
+                (DetailRefreshPhase::Deferred, _) | (DetailRefreshPhase::Requested, None | Some(true)) => return,
+                (DetailRefreshPhase::Requested, Some(false)) => {
+                    intent.refresh = DetailRefreshPhase::None;
+                }
+                (DetailRefreshPhase::None, _) => {}
+            }
+        }
         if self.detail().is_none() && crate::metadata::detail_request_status(self.sid, &self.rk) == Some(false) {
             self.restore_intent = None;
             self.return_pending = false;
