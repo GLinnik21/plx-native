@@ -1049,10 +1049,11 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 // it was armed only after the ViewState write completed. Always supersede that
                 // pre-write generation when the page becomes visible. Requested normally reuses
                 // its live reconciliation, but another Detail may have superseded that shared
-                // request while this page was covered; retry when no matching request remains.
+                // request while this page was covered; that is the None case. Some(false) is a
+                // completed reconciliation for pump_restore to consume, not a request to repeat.
                 // Ordinary enters still reuse an in-flight request instead of duplicating it.
                 let request = refresh == DetailRefreshPhase::Deferred
-                    || refresh == DetailRefreshPhase::Requested && request_status != Some(true)
+                    || refresh == DetailRefreshPhase::Requested && request_status.is_none()
                     || self.detail().is_none()
                         && request_status != Some(true);
                 if request {
@@ -1376,6 +1377,11 @@ impl DetailScreen {
             intent.episode.clone(),
             intent.refresh,
         ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn return_waiting_for_test(&self) -> bool {
+        self.return_waiting()
     }
 
     fn art_identity(&self, d: Option<&Detail>) -> (ServerId, String, String) {
