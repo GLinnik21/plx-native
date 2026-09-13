@@ -38,6 +38,12 @@ use crate::screens::registry::HomeCmd;
 use crate::ui::machine::{Key, Tick};
 use std::os::raw::c_int;
 
+// The UI retirement lane removes the compatibility implementation. Keep this lane independently
+// lintable without reading it after the last application consumer moved to `DirectoryView`.
+#[used]
+static LEGACY_CHROME_PILL_LINK: fn(usize) -> crate::app::chrome::Pill =
+    crate::app::chrome::pill_at;
+
 /// The dev triggers read ONCE at boot and consulted by the loop every frame after (each is
 /// documented where it is READ, below). Formerly `App::dev: DevFlags`; unchanged in shape.
 pub(crate) struct DevFlags {
@@ -1279,8 +1285,9 @@ pub(crate) fn nav_osc_tick(app: &mut App, now: u32) {
                 }
             }
             AppArg::Library => {
-                let origin = crate::app::chrome::pill_at(
-                    app.bridge.browse_directory(), 1);
+                let origin = app.bridge.browse_directory().tab_kind(0)
+                    .map(crate::app::chrome::Pill::Section)
+                    .unwrap_or(crate::app::chrome::Pill::Home);
                 crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge,
                     HomeTab::Home, Some(origin), None);
             }
