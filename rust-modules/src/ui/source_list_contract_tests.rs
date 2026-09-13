@@ -1,4 +1,4 @@
-fn two_sources() -> (Vec<SrcGroup>, Vec<crate::browse::SrcRow>) {
+fn two_sources() -> (Vec<SrcGroup>, Vec<crate::stores::browse::SrcRow>) {
     (
         vec![
             group(SourceState::Reachable, None, ""),
@@ -17,8 +17,8 @@ fn two_sources() -> (Vec<SrcGroup>, Vec<crate::browse::SrcRow>) {
     )
 }
 
-fn lib(src: usize, section: usize, title: &str, pinned: bool, last: bool, current: bool) -> crate::browse::SrcRow {
-    crate::browse::SrcRow {
+fn lib(src: usize, section: usize, title: &str, pinned: bool, last: bool, current: bool) -> crate::stores::browse::SrcRow {
+    crate::stores::browse::SrcRow {
         src,
         section,
         title: title.into(),
