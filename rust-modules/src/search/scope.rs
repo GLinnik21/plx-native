@@ -3,7 +3,8 @@
 //! The Search screen searches the granted server roster, not the favourite-library projection.
 //! This module snapshots the small source description that an owned screen needs while keeping
 //! the registry and browse tables off the render path. The cache is main-thread state, just like
-//! the other Search publications; its key is fixed-size and allocation-free.
+//! the other Search publications. Registry counters are the cheap first gate; the cached exact
+//! Browse projection distinguishes independent owners whose local generations happen to match.
 
 use crate::plex::{ServerId, MAX_SERVERS};
 use std::ptr::addr_of_mut;
@@ -64,7 +65,48 @@ struct Key {
 
 struct Cache {
     key: Key,
+    directory: Option<DirectoryInput>,
     publication: SourceScopeSnapshot,
+}
+
+/// Exact Browse semantics consumed by [`build_with_directory`]. Owner-local counters are only an
+/// inexpensive first gate: two independent Browse stores legitimately begin at the same values.
+/// Keeping the small source/library projection here prevents one owner's retained publication
+/// from being returned for another without introducing a process-global owner identity.
+#[derive(PartialEq, Eq)]
+struct DirectoryInput {
+    sources: Vec<(ServerId, bool)>,
+    libraries: Vec<(ServerId, String)>,
+}
+
+impl DirectoryInput {
+    fn capture(directory: crate::stores::browse::DirectoryView<'_>) -> Self {
+        Self {
+            sources: directory.sources().iter()
+                .map(|(sid, source)| (*sid, source.reachable()))
+                .collect(),
+            libraries: directory.sections().iter().filter_map(|section| {
+                Some((section.sid?, section.row.title.clone()))
+            }).collect(),
+        }
+    }
+
+    fn matches(&self, directory: crate::stores::browse::DirectoryView<'_>) -> bool {
+        self.sources.len() == directory.sources().len()
+            && self.sources.iter().zip(directory.sources()).all(
+                |((cached_sid, cached_live), (sid, source))| {
+                    cached_sid == sid && *cached_live == source.reachable()
+                })
+            && self.libraries.len() == directory.sections().iter()
+                .filter(|section| section.sid.is_some()).count()
+            && self.libraries.iter().zip(
+                directory.sections().iter().filter_map(|section| {
+                    Some((section.sid?, section.row.title.as_str()))
+                })
+            ).all(|((cached_sid, cached_title), (sid, title))| {
+                *cached_sid == sid && cached_title == title
+            })
+    }
 }
 
 static mut CACHE: Option<Cache> = None;
@@ -126,9 +168,13 @@ pub(crate) fn snapshot() -> SourceScopeSnapshot {
     // SAFETY: called by the main-thread Search publication boundary. The retained Arc keeps old
     // source facts alive after this cache replaces its current publication.
     let cache = unsafe { &mut *addr_of_mut!(CACHE) };
-    if cache.as_ref().map(|c| c.key != key).unwrap_or(true) {
+    let matches = cache.as_ref().is_some_and(|cached| {
+        cached.key == key && cached.directory.is_none()
+    });
+    if !matches {
         *cache = Some(Cache {
             key,
+            directory: None,
             publication: build(),
         });
     }
@@ -144,9 +190,14 @@ pub(crate) fn snapshot_with_directory(
 ) -> SourceScopeSnapshot {
     let key = read_key_with_directory(directory);
     let cache = unsafe { &mut *addr_of_mut!(CACHE) };
-    if cache.as_ref().map(|c| c.key != key).unwrap_or(true) {
+    let matches = cache.as_ref().is_some_and(|cached| {
+        cached.key == key
+            && cached.directory.as_ref().is_some_and(|input| input.matches(directory))
+    });
+    if !matches {
         *cache = Some(Cache {
             key,
+            directory: Some(DirectoryInput::capture(directory)),
             publication: build_with_directory(directory),
         });
     }
@@ -232,6 +283,44 @@ mod tests {
         let scope = snapshot_with_directory(directory.view());
 
         assert_eq!(scope.sources()[0].libraries, ["Retained Library"]);
+    }
+
+    #[test]
+    fn equal_generation_browse_owners_publish_their_own_search_scope() {
+        let _serial = crate::testlock::serial();
+        let _reset = Reset;
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test(
+            "equal-generation-scope", "127.0.0.1", 9, "synthetic", "scope");
+        let directory = |title: &str| crate::stores::browse::DirectorySnapshot::fixture(
+            7,
+            0,
+            vec![crate::stores::browse::SectionView {
+                borrowed: false,
+                sid: Some(sid),
+                key: 12,
+                kind: crate::stores::browse::SecKind::Movie,
+                row: crate::stores::browse::SrcRow {
+                    section: 0,
+                    title: title.into(),
+                    pinned: true,
+                    current: true,
+                    ..Default::default()
+                },
+            }],
+        );
+        let alpha = directory("Alpha");
+        let beta = directory("Beta");
+        assert!(read_key_with_directory(alpha.view()) == read_key_with_directory(beta.view()),
+            "the regression requires equal owner-local generations");
+
+        let first = snapshot_with_directory(alpha.view());
+        let second = snapshot_with_directory(beta.view());
+
+        assert_eq!(first.sources()[0].libraries, ["Alpha"]);
+        assert_eq!(second.sources()[0].libraries, ["Beta"],
+            "an independent owner cannot reuse another owner's publication");
+        assert!(!first.same_publication(&second));
     }
 
     struct Reset;

@@ -45,10 +45,26 @@ pub(super) fn run(cmd: ViewStateCmd) -> bool {
 
 /// Owner-aware command path. `browse` is synchronous because the optimistic edit is part of the
 /// command's same-frame answer, not deferred work.
-pub(crate) fn run_with_browse(cmd: ViewStateCmd,
-    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool) -> bool {
+pub(crate) fn run_with_owners(
+    cmd: ViewStateCmd,
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+    hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
+) -> bool {
     #[cfg(test)]
     crate::testlock::assert_held("the viewstate store (owned apply)");
+    let answer = crate::viewstate::run_with_owners(cmd, browse, hubs);
+    super::bump(StoreId::ViewState);
+    answer
+}
+
+/// Test/compatibility owner path without a retained Home directory. Production Bridge delivery
+/// uses [`run_with_owners`] so every Hubs edit carries the frame's directory policy.
+pub(crate) fn run_with_browse(
+    cmd: ViewStateCmd,
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+) -> bool {
+    #[cfg(test)]
+    crate::testlock::assert_held("the viewstate store (compatibility apply)");
     let answer = crate::viewstate::run_with_browse(cmd, browse);
     super::bump(StoreId::ViewState);
     answer
