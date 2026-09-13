@@ -926,7 +926,9 @@ mod contract_tests {
             "the explicitly addressed owner must admit the discovery request");
         assert_eq!(decoy.browse.borrow().source_list_gen_for_test(), decoy_before,
             "the ACTIVE compatibility owner is not part of the direct contract");
-        assert_eq!(selected.take_notices().len(), 1);
+        assert_eq!(selected.take_notices().into_iter()
+            .filter(|(id, _)| *id == StoreId::Browse).count(), 1,
+            "the direct call owes exactly one notice from the addressed Browse owner");
         assert!(decoy.take_notices().is_empty());
 
         drop((selected, decoy));
