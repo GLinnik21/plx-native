@@ -453,6 +453,7 @@ pub(crate) fn commit_track(
 }
 
 pub(crate) fn player_requests(
+    repair: &mut crate::player::machine::RepairAttempt,
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     reqs: Vec<crate::screens::registry::PlayerReq>,
@@ -467,6 +468,13 @@ pub(crate) fn player_requests(
     use crate::screens::registry::PlayerReq;
     for req in reqs {
         match req {
+            PlayerReq::RepairSandbox => {
+                if ps.jail_load_blocked {
+                    pa.repair_sandbox(repair, crate::webos::jail_blocks_native_video());
+                    ps.repair_status = repair.state();
+                    crate::ui::idle::invalidate();
+                }
+            }
             PlayerReq::ExtendHud(ms) => {
                 if let Some(player) = super::bridge::player_mut(pages) {
                     player.hud.extend(now, ms);

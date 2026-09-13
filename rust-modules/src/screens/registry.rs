@@ -105,6 +105,8 @@ pub(crate) struct ItemMenuReq {
 /// So the panel decides and the loop performs, exactly as `LibraryReq` does for the Library.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum PlayerReq {
+    /// Accepted only after the owned player confirmation. Never emitted by boot or Play.
+    RepairSandbox,
     /// A transport key FELL THROUGH the panel (§ `overlay_transport_key_tests`): a viewer holding
     /// the track menu, the Info card or the Chapters strip open still expects PAUSE/PLAY to work,
     /// and the panel stays up. `true` = the key was PLAY, `false` = PAUSE; a PLAYPAUSE toggle is
@@ -1796,7 +1798,7 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// `#[cfg(test)]` because the pin is an ASSERTION about the array above and never a value the
 /// app reads — `state_fp()` hashes [`SCREEN_SHAPES`] itself.
 #[cfg(test)]
-const SCREEN_SHAPES_PIN: u64 = 0x3c0b_74a7_7a48_169c;
+const SCREEN_SHAPES_PIN: u64 = 0xb41d_c126_50a2_45b7;
 
 #[cfg(test)]
 mod arg_tests {

@@ -170,6 +170,10 @@ pub(crate) unsafe fn run(app: &mut App) {
         // **Publish the playback session into the tree** (spec §2.3) before the dispatcher's frame
         // and the draw that follows it, so every owned screen in one frame reads one consistent
         // picture. Only while something that reads it is mounted — see `Bridge::publish_playback`.
+        if app.adapters.player.poll_repair(&mut app.player.repair) {
+            crate::ui::idle::invalidate();
+        }
+        app.player.session.repair_status = app.player.repair.state();
         app.bridge.publish_playback(&app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
         // then the owned screens' inputs, ticks, timers and effects. `app/bridge.rs` is the seam.
@@ -3479,6 +3483,7 @@ mod lifecycle_regression_tests {
         assert!(!rig.app.adapters.player.is_live());
 
         player_requests(
+            &mut rig.app.player.repair,
             &mut rig.app.player.session,
             &mut rig.app.adapters.player,
             vec![crate::screens::registry::PlayerReq::Exit],
