@@ -11,7 +11,7 @@ pub(crate) struct SendPtr<T>(pub *mut T);
 unsafe impl<T> Send for SendPtr<T> {}
 
 /// media/load thread: construct + Load (uid=NULL). The library owns its own
-/// GMainContext + loop, so Load returns quickly and callbacks arrive on its thread.
+/// GMainContext + loop. Load can block in native initialization; callbacks arrive on its thread.
 pub(crate) fn load_thread(
     payload: SendPtr<c_char>,
     native_epoch: u32,
@@ -20,6 +20,19 @@ pub(crate) fn load_thread(
     super::log("SMP: calling Load (uid=NULL)");
     let ok = unsafe { super::ffi::sf_load(payload.0, native_epoch) };
     super::log(&format!("SMP: Load returned ok={ok}"));
+    // Diagnostic hold after C returns: this exercises the Rust wait, not a hung native Load.
+    #[cfg(all(feature = "devtriggers", not(test)))]
+    if let Some(raw) = crate::dev::read("holdload") {
+        let ms = raw.parse::<u64>().unwrap_or(30_000);
+        super::log(&format!("holdload: holding the Load-returned flag for {ms}ms"));
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+    // Publish the epoch-scoped boundary before the route ticket result. A stale load
+    // worker cannot open a newer session's dispatch gate.
+    if let Some(elapsed) = SHARED.mark_native_load_returned(native_epoch) {
+        let elapsed_ms = elapsed.as_millis() as u64;
+        super::log(&format!("native: Load returned after {elapsed_ms}ms"));
+    }
     if let Some(ticket) = route_start {
         crate::route::publish_route_start_result(
             ticket,
@@ -34,9 +47,7 @@ pub(crate) fn load_thread(
         // Publish it. This used to be logged and discarded, so a refused payload was
         // indistinguishable from a slow one and the pump waited on a `loadCompleted` that could
         // never come.
-        super::SHARED
-            .load_failed
-            .store(true, std::sync::atomic::Ordering::Release);
+        SHARED.publish_native_load_failure(native_epoch);
     }
 }
 

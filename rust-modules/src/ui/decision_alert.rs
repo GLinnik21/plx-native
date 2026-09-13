@@ -16,9 +16,9 @@
 //!
 //! **Focus and hit-testing are the owning screen's, not this type's** (restructure phase 12):
 //! `DecisionAlert` used to carry its own `move_focus`/`press_at` ladder, driven by a caller that
-//! translated a raw key or pointer event into a call here. The only remaining caller
-//! (`screens::consent::ConsentPage`) is an `Engine` screen: it registers the alert's two answers
-//! as ordinary focus-group elements through [`DecisionAlert::frames`] and moves this type's
+//! translated a raw key or pointer event into a call here. The owned callers
+//! (`screens::consent::ConsentPage` and `screens::player::PlayerScreen`) are `Engine` screens: they register the alert's two answers
+//! as ordinary focus-group elements through [`DecisionAlert::frames`] and move this type's
 //! selection with [`DecisionAlert::set_choice`], exactly as it would any other control — so the
 //! two SDL-keysym-shaped methods had no caller left and are gone.
 //!
@@ -36,10 +36,10 @@
 //! leaving. A
 //! caller that tears its OWN host down synchronously under the alert (as that same confirm arm
 //! still does, to the Settings screen behind it) may keep doing so; the alert's fade then simply
-//! runs over whatever the app shows next, exactly like a dismissed profile / card menu
+//! runs over whatever the app shows next, exactly like a dismissed `account_menu`/`item_menu`
 //! fading over the host it returned to.
 
-use crate::ui::label::{HAlign, Label};
+use crate::ui::label::HAlign;
 use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::{Button, ControlStyle, CtlPop, StatusOverlay};
@@ -58,11 +58,25 @@ const BODY_GAP: f32 = theme::space::SM;
 pub(crate) const BODY_W: f32 = PANEL_W - 2.0 * PAD_X;
 const BUTTON_W: f32 = 260.0;
 const BUTTON_GAP: f32 = 20.0;
+const TEXT_ALIGN: HAlign = HAlign::Left;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Choice {
     Cancel,
     Destructive,
+}
+
+/// Which face the second answer wears. **Not every two-choice question ends something** — issue
+/// #75's one-off "Send report" needed a second button beside "Not now", and the alert's only look
+/// until then was [`ControlStyle::Danger`] for that slot. Shipping "Send report" in the same red
+/// [`theme::DANGER`] face `ui::consent`'s *Delete all local data* uses would say the press is
+/// destructive when it is the opposite — a report leaves, nothing is lost. `Destructive` is the
+/// default and the delete alert's own look is unchanged by this existing at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Tone {
+    Destructive,
+    /// Both answers are ordinary controls — no danger tint on either.
+    Neutral,
 }
 
 #[derive(Clone, Copy)]
@@ -119,12 +133,19 @@ pub(crate) struct DecisionAlert {
     pop: Popover,
     choice: Choice,
     controls: CtlPop<2>,
+    /// Stored with the body so draw and pointer hit-testing use the same measured wrapping even on
+    /// the first frame after open.
+    question: &'static str,
     /// The optional paragraph under the question, held on the ALERT rather than passed to
     /// [`draw`](Self::draw). It has to be here because the body changes where the buttons are, and
-    /// [`frames`](Self::frames) must report the same panel as the last draw did. A body passed
+    /// [`frames`](Self::frames) must compute the same panel as the last draw did. A body passed
     /// per-frame would be correct for drawing and wrong for the first hit test after an open, which
     /// is precisely the frame a fast click lands on.
     body: Option<&'static str>,
+    /// Which face the destructive-slot answer wears — see [`Tone`]. Defaults to
+    /// [`Tone::Destructive`], so every alert built before this field existed looks exactly as it
+    /// did.
+    tone: Tone,
 }
 
 impl DecisionAlert {
@@ -139,21 +160,29 @@ impl DecisionAlert {
             pop: Popover::new().caching_host(),
             choice: Choice::Cancel,
             controls: CtlPop::new(),
+            question: "",
             body: None,
+            tone: Tone::Destructive,
         }
+    }
+    /// Set the second answer's face. Called once, outside the draw loop — a tone is a property of
+    /// what the alert is FOR, not something that changes frame to frame.
+    pub(crate) fn set_tone(&mut self, tone: Tone) {
+        self.tone = tone;
     }
     pub(crate) fn is_open(&self) -> bool {
         self.pop.is_open()
     }
-    /// **Has the sheet finished arriving?** A key acts on the logical state, but a POINTER hit
-    /// tests FINAL coordinates ([`Self::frames`]) while the sheet is still drawn through the
-    /// entrance painter — so an immediate click lands on a control that is displaced and nearly
-    /// invisible. Every pointer caller gates on this (`ui::route_screen`'s rule 11).
+    /// **Has the sheet finished arriving?** A key acts on the logical state, but a POINTER hit is
+    /// positional and [`Self::frames`] tests FINAL coordinates while the sheet is still drawn
+    /// through the entrance painter — so an immediate click lands on a control that is displaced
+    /// and nearly invisible. Every pointer caller gates on this (`ui::route_screen`'s rule 11).
     pub(crate) fn settled(&self) -> bool {
         self.pop.appear_settled()
     }
     /// Ask the question alone.
-    pub(crate) fn open(&mut self) {
+    pub(crate) fn open(&mut self, question: &'static core::ffi::CStr) {
+        self.question = question.to_str().unwrap_or("");
         self.body = None;
         self.open_inner();
     }
@@ -161,9 +190,13 @@ impl DecisionAlert {
     /// by its verb. The destructive delete is the case: "Delete all local data" is accurate about
     /// what it removes and silent about what it CANNOT reach, and the confirmation is the last
     /// moment that difference can be stated.
-    pub(crate) fn open_with_body(&mut self, body: &'static str) {
+    pub(crate) fn open_with_body(
+        &mut self,
+        question: &'static core::ffi::CStr,
+        body: &'static str,
+    ) {
+        self.open(question);
         self.body = Some(body);
-        self.open_inner();
     }
     fn open_inner(&mut self) {
         self.choice = Choice::Cancel;
@@ -173,22 +206,29 @@ impl DecisionAlert {
     /// The panel as last drawn. **Not callable from a host test** — `text_height` and `measure_h`
     /// both reach SDL2_ttf; the pure half is [`layout`].
     fn measured(&self) -> Layout {
-        let qh = crate::text::text_height(theme::size::TITLE, 1);
+        let qh = Self::question_view(self.question).measure_h(BODY_W);
         let bh = self
             .body
             .map_or(0.0, |b| Self::body_view(b).measure_h(BODY_W));
         layout(qh, bh)
     }
-    /// The two answers' frames as drawn (Cancel, Delete) — the hit stops an owned screen
-    /// registers for them (restructure phase 5b). Measures text, so draw-time only.
+    /// Final measured answer frames, shared by draw and the owning screen's hit registration.
     pub(crate) fn frames(&self) -> (Rect, Rect) {
         let l = self.measured();
         (l.cancel, l.destructive)
     }
-    fn body_view(text: &str) -> TextView<'_> {
+    /// Confirmation disclosures must be complete, never silently capped. The panel grows from
+    /// this same measured view; both static callers are checked visually to fit the viewport.
+    /// A character-count budget cannot prove wrapping: the richer report disclosure fit that
+    /// budget but exceeded the former eight-line cap and lost its final privacy sentence.
+    pub(crate) fn body_view(text: &str) -> TextView<'_> {
         TextView::new(text, theme::size::BODY, theme::TEXT_READING)
-            .h(HAlign::Center)
-            .max_lines(4)
+            .h(TEXT_ALIGN)
+    }
+    pub(crate) fn question_view(text: &str) -> TextView<'_> {
+        TextView::new(text, theme::size::TITLE, theme::TEXT_PRIMARY)
+            .bold()
+            .h(TEXT_ALIGN)
     }
     /// Instant hide — see [`Popover::close`]. Interactive answers take [`dismiss`](Self::dismiss).
     pub(crate) fn close(&mut self) {
@@ -236,7 +276,6 @@ impl DecisionAlert {
     }
     pub(crate) fn draw(
         &mut self,
-        question: &core::ffi::CStr,
         cancel: &core::ffi::CStr,
         destructive: &core::ffi::CStr,
     ) {
@@ -249,10 +288,7 @@ impl DecisionAlert {
         let p = self.pop.content_painter(Popover::RISE);
         crate::ui::profile::phase("da.panel", || self.pop.panel(p, l.panel, theme::ALERT_PANEL_RAD));
         crate::ui::profile::phase("da.text", || {
-            Label::new(question.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
-                .bold()
-                .h(HAlign::Center)
-                .draw(p, l.question);
+            Self::question_view(self.question).draw(p, l.question);
             if let Some(body) = self.body {
                 Self::body_view(body).draw(p, l.body);
             }
@@ -263,8 +299,12 @@ impl DecisionAlert {
             .focused(self.choice == Choice::Cancel)
             .scale(self.controls.scale(0))
             .draw(&env, p);
+        let destructive_style = match self.tone {
+            Tone::Destructive => ControlStyle::Danger,
+            Tone::Neutral => ControlStyle::Accent,
+        };
         Button::new(destructive.as_ptr(), theme::size::BODY, l.destructive)
-            .style(ControlStyle::Danger)
+            .style(destructive_style)
             .focused(self.choice == Choice::Destructive)
             .scale(self.controls.scale(1))
             .draw(&env, p);
@@ -321,6 +361,16 @@ mod tests {
         assert!(with.cancel.y > with.body.y + with.body.h);
     }
 
+    /// **The tone defaults to `Destructive`**, so a caller that never touches it — every alert
+    /// this app shipped before issue #75 — looks exactly as it always did.
+    #[test]
+    fn tone_defaults_to_destructive_and_the_setter_changes_it() {
+        let mut a = DecisionAlert::new();
+        assert_eq!(a.tone, Tone::Destructive);
+        a.set_tone(Tone::Neutral);
+        assert_eq!(a.tone, Tone::Neutral);
+    }
+
     #[test]
     fn two_actions_share_one_measured_row_and_cancel_is_first() {
         let l = layout(40.0, 0.0);
@@ -328,5 +378,33 @@ mod tests {
         assert_eq!(l.cancel.y, l.destructive.y);
         assert!(l.cancel.x < l.destructive.x);
         assert!(l.question.y + l.question.h < l.cancel.y);
+    }
+
+    #[test]
+    fn a_wrapped_question_grows_the_panel_and_keeps_hit_geometry_below_it() {
+        let short = layout(48.0, 0.0);
+        let long = layout(96.0, 0.0);
+
+        assert!(matches!(TEXT_ALIGN, HAlign::Left));
+        assert!(long.question.h > short.question.h, "the long title must wrap, never overflow");
+        let growth = long.question.h - short.question.h;
+        assert_eq!(long.panel.h - short.panel.h, growth);
+        assert_eq!(
+            (long.cancel.y - long.panel.y) - (short.cancel.y - short.panel.y),
+            growth,
+            "draw and pointer hit rectangles move by the measured wrap height"
+        );
+    }
+
+    #[test]
+    fn reopening_with_a_question_alone_clears_the_previous_body() {
+        let _serial = crate::testlock::serial();
+        let mut alert = DecisionAlert::new();
+        alert.open_with_body(c"First question?", "Consequences of the first question.");
+        assert!(alert.body.is_some());
+        alert.open(c"Second question?");
+        assert_eq!(alert.question, "Second question?");
+        assert!(alert.body.is_none());
+        alert.close();
     }
 }

@@ -494,7 +494,7 @@ pub(crate) fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState
     // that owns `pb_state` never runs. Deriving it in the one reader keeps a single writer — the
     // alternative is poking `Error` into the player's state from the frame loop. It sits BELOW the
     // resolve check because a fresh resolve is the thing that retires the last verdict.
-    if crate::route::play_refused(ps) || crate::route::play_resolution_failed(ps) {
+    if ps.jail_load_blocked || crate::route::play_refused(ps) || crate::route::play_resolution_failed(ps) {
         return shared::PlaybackState::Error;
     }
     shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
@@ -589,6 +589,16 @@ pub(crate) enum FailureKind {
     TvPipeline,
     /// Historical telemetry only: the retired exclusive Original experiment lost its HLS rollback.
     OriginalRollback,
+    /// This device's jail is missing `/dev/rtkmem` on a SoC where that is a known cause of
+    /// native A/V crashes — the Load was never attempted. Community-tier finding: see
+    /// [`crate::webos::jail_blocks_native_video`]'s doc.
+    JailMissingRtkmem,
+    /// Issue #74 D.1.4's `NATIVE_LOAD_BUDGET` fired — either the native `Load` call never
+    /// returned, or it returned but `loadCompleted` never arrived. Distinct from
+    /// [`TvPipeline`](Self::TvPipeline), which is a firmware refusal the pipeline actually
+    /// reported: this is a HANG, and conflating the two made a k5lp-style stall indistinguishable
+    /// from an ordinary rejection on the wire.
+    LoadTimeout,
     /// Everything else. Honest rather than tidy — see the type's doc.
     Unspecified,
 }
@@ -605,6 +615,8 @@ impl FailureKind {
             FailureKind::PlaybackInterrupted => "playback_interrupted",
             FailureKind::TvPipeline => "tv_pipeline",
             FailureKind::OriginalRollback => "original_rollback",
+            FailureKind::JailMissingRtkmem => "jail_missing_rtkmem",
+            FailureKind::LoadTimeout => "load_timeout",
             FailureKind::Unspecified => "unspecified",
         }
     }
@@ -665,12 +677,26 @@ enum RuntimeFailure {
     PlaybackInterrupted,
     /// Starfish refused the Load declaration, so no decoder session could start.
     TvPipeline,
+    /// Issue #74 D.1.4's `NATIVE_LOAD_BUDGET` fired — a hang, not a firmware refusal. See
+    /// [`FailureKind::LoadTimeout`].
+    LoadTimeout,
 }
 
-/// PURE: turn the three terminal worker signals into one cause. More specific downstream evidence
+/// PURE: turn the four terminal worker signals into one cause. More specific downstream evidence
 /// wins over the generic producer flag when concurrent teardown makes more than one bit visible.
-fn runtime_failure(demux_failed: bool, io_failed: bool, load_failed: bool) -> RuntimeFailure {
-    if load_failed {
+/// `load_timed_out` is checked FIRST and independently of `load_failed`, even though `pump.rs`
+/// always sets both together on a budget expiry: the distinction this function exists to make is
+/// "did the pipeline refuse this, or did it never answer at all", and only the timed-out signal
+/// can tell the two apart.
+fn runtime_failure(
+    demux_failed: bool,
+    io_failed: bool,
+    load_failed: bool,
+    load_timed_out: bool,
+) -> RuntimeFailure {
+    if load_timed_out {
+        RuntimeFailure::LoadTimeout
+    } else if load_failed {
         RuntimeFailure::TvPipeline
     } else if io_failed {
         RuntimeFailure::PlaybackInterrupted
@@ -678,6 +704,19 @@ fn runtime_failure(demux_failed: bool, io_failed: bool, load_failed: bool) -> Ru
         RuntimeFailure::MediaSource
     } else {
         RuntimeFailure::Unknown
+    }
+}
+
+fn jail_error_shape() -> ErrorShape {
+    ErrorShape {
+        kind: FailureKind::JailMissingRtkmem,
+        caption: c"Playback failed — this TV's sandbox blocks native video",
+        panel: "this install's sandbox blocks access to /dev/rtkmem; PlxNative can offer a confirmed repair through rooted Homebrew Channel access",
+        readout: "This set's sandbox does not give the app /dev/rtkmem",
+        detail: std::borrow::Cow::Borrowed(
+            "Repair requires a rooted TV and Homebrew Channel access. See github.com/GLinnik21/plx-native/issues/74 for help.",
+        ),
+        no_pass: false,
     }
 }
 
@@ -764,6 +803,17 @@ fn error_shape(
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
+        // Same reader-facing wording as `TvPipeline` — a viewer sees the same failure either way
+        // (playback never started) — but a DIFFERENT `kind`, so a hang (issue #74 D.1.4's budget)
+        // is distinguishable from an ordinary firmware refusal on the telemetry wire.
+        RuntimeFailure::LoadTimeout => ErrorShape {
+            kind: FailureKind::LoadTimeout,
+            caption: c"Playback failed — the TV rejected the stream",
+            panel: "the television media pipeline rejected the stream",
+            readout: "This TV could not start the video stream",
+            detail: std::borrow::Cow::Borrowed(""),
+            no_pass: false,
+        },
         RuntimeFailure::Unknown => ErrorShape {
             kind: FailureKind::Unspecified,
             caption: c"Playback failed",
@@ -799,6 +849,7 @@ pub(crate) fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
     if let Some(arm) = failtest_arm(ps) {
         return arm;
     }
+    if ps.jail_load_blocked { return jail_error_shape(); }
     let demux_failed = SHARED
         .demux_failed
         .load(std::sync::atomic::Ordering::Acquire);
@@ -814,6 +865,7 @@ pub(crate) fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
             demux_failed,
             demux_io_failed,
             SHARED.load_failed.load(Relaxed),
+            SHARED.load_timed_out.load(Relaxed),
         ),
     )
 }
@@ -854,6 +906,8 @@ fn failtest_arm(ps: &crate::route::PlaybackSession) -> Option<ErrorShape> {
         "stream" => error_shape(false, false, sub, None, RuntimeFailure::MediaSource),
         "connection" => error_shape(false, false, sub, None, RuntimeFailure::PlaybackInterrupted),
         "tv" => error_shape(false, false, sub, None, RuntimeFailure::TvPipeline),
+        "load_timeout" => error_shape(false, false, sub, None, RuntimeFailure::LoadTimeout),
+        "jail" => jail_error_shape(),
         "none" => error_shape(false, false, sub, None, RuntimeFailure::Unknown),
         _ => error_shape(
             false,
@@ -2336,7 +2390,7 @@ mod tests {
             ),
         ];
         for ((demux, io, load), want, kind, code, words) in cases {
-            let cause = runtime_failure(demux, io, load);
+            let cause = runtime_failure(demux, io, load, false);
             assert_eq!(
                 cause, want,
                 "the flags must resolve to the subsystem that stopped"
@@ -2359,7 +2413,7 @@ mod tests {
             );
         }
         assert_eq!(
-            runtime_failure(true, true, true),
+            runtime_failure(true, true, true, false),
             RuntimeFailure::TvPipeline,
             "the most specific downstream signal must win if teardown exposes all three",
         );
@@ -2636,5 +2690,44 @@ mod tests {
         // (shared.rs), so a test that leaves it selected changes what the NEXT one sees
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(-1, Relaxed);
+    }
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+mod native_failure_regressions {
+    use super::*;
+    struct JailGuard;
+    impl Drop for JailGuard {
+        fn drop(&mut self) { crate::webos::FORCE_JAIL_BLOCKED.store(false, Relaxed); }
+    }
+    #[test]
+    fn jail_refusal_enters_error_without_engine_and_retires_on_exit() {
+        let _serial = crate::testlock::serial();
+        let _guard = JailGuard;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::reset_player_control_for_test(&ps);
+        SHARED.reset_session();
+        let mut pa = adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() });
+        crate::webos::FORCE_JAIL_BLOCKED.store(true, Relaxed);
+        assert!(start_bufferfeed(&mut ps, &mut pa));
+        assert!(!pa.is_live());
+        assert_eq!(state(&ps), PlaybackState::Error);
+        assert_eq!(error_now(&ps).kind, FailureKind::JailMissingRtkmem);
+        crate::route::cancel_play(&mut ps);
+        assert!(!ps.jail_load_blocked);
+        assert_ne!(state(&ps), PlaybackState::Error);
+        assert!(matches!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Failed));
+        assert!(ps.jail_load_blocked);
+        assert!(!pa.is_live());
+        crate::route::cancel_play(&mut ps);
+    }
+    #[test]
+    fn timeout_is_distinct_from_pipeline_refusal_and_resets_per_session() {
+        let _serial = crate::testlock::serial();
+        assert_eq!(runtime_failure(true, true, true, true), RuntimeFailure::LoadTimeout);
+        assert_eq!(runtime_failure(false, false, true, false), RuntimeFailure::TvPipeline);
+        SHARED.load_timed_out.store(true, Relaxed);
+        SHARED.reset_session();
+        assert!(!SHARED.load_timed_out.load(Relaxed));
     }
 }

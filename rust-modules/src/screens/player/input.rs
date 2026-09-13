@@ -354,7 +354,7 @@ pub(crate) fn scrub_press(hud_vis: bool, focus: i32, seekable: bool) -> ScrubPre
 /// What a key does while the player is showing its terminal failure read-out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum FailedKeyAction {
-    /// OK opens the shared quality picker — the read-out's own recovery path.
+    /// Request the primary recovery action. PlayerScreen substitutes sandbox Repair when needed.
     ChooseQuality,
     /// BACK leaves the failed playback (or closes whatever panel is over it).
     Return,

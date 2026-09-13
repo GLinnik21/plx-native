@@ -27,6 +27,8 @@ use crate::route::PlaybackSession;
 
 /// The playback state `App` owns (§2.2).
 pub(crate) struct Player {
+    /// One accepted sandbox repair for the entire app lifetime, including screen recreation.
+    pub(crate) repair: RepairAttempt,
     /// The resolved route, the stream URL, the transcode session, the HUD strings and the Up Next
     /// queue — what `route::decision::SESSION` was.
     pub(crate) session: PlaybackSession,
@@ -57,7 +59,7 @@ pub(crate) struct Player {
 impl Player {
     pub(crate) fn new() -> Self {
         Self {
-            session: PlaybackSession::IDLE,
+            repair: RepairAttempt::new(),            session: PlaybackSession::IDLE,
             lifecycle: crate::app::lifecycle::ForegroundLifecycle::IDLE,
             now_ms: 0,
             video_plane_bound: false,
@@ -121,5 +123,60 @@ impl Player {
 impl Default for Player {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Logical repair authority; resource handles live in PlayerAdapter. No reset-on-playback API.
+pub(crate) struct RepairAttempt {
+    state: crate::webos::jail_repair::State,
+}
+impl RepairAttempt {
+    pub(crate) const fn new() -> Self { Self { state: crate::webos::jail_repair::State::Idle } }
+    pub(crate) fn state(&self) -> crate::webos::jail_repair::State { self.state }
+    pub(crate) fn begin(&mut self, supported: bool) -> Option<u64> {
+        use crate::webos::jail_repair::{State, Failure};
+        if self.state != State::Idle { return None; }
+        if !supported { self.state = State::Failed(Failure::Unsupported); return None; }
+        self.state = State::Running;
+        Some(1)
+    }
+    /// The single issued token can land only once. Wrong/duplicate completions cannot rewrite it.
+    pub(crate) fn complete(&mut self, token: u64, result: Result<(), crate::webos::jail_repair::Failure>) -> bool {
+        use crate::webos::jail_repair::State;
+        if token != 1 || self.state != State::Running { return false; }
+        self.state = match result { Ok(()) => State::Repaired, Err(e) => State::Failed(e) };
+        true
+    }
+}
+
+#[cfg(test)]
+mod repair_tests {
+    use super::*;
+    use crate::webos::jail_repair::{Failure, State};
+    #[test]
+    fn repair_survives_screen_and_session_recreation_and_rejects_stale_completions() {
+        let mut player = Player::new();
+        let token = player.repair.begin(true).unwrap();
+        assert!(!player.repair.complete(token + 1, Ok(())));
+        player.session = PlaybackSession::IDLE;
+        let _replacement = crate::screens::player::PlayerScreen::new(crate::ui::machine::EntryId(9));
+        assert_eq!(player.repair.state(), State::Running);
+        assert_eq!(player.repair.begin(true), None);
+        assert!(player.repair.complete(token, Err(Failure::Timeout)));
+        assert!(!player.repair.complete(token, Ok(())));
+        assert_eq!(player.repair.state(), State::Failed(Failure::Timeout));
+        assert_eq!(player.repair.begin(true), None);
+    }
+    #[test]
+    fn every_terminal_result_spends_the_process_attempt() {
+        for result in [Ok(()), Err(Failure::StartFailed), Err(Failure::HbcUnavailable), Err(Failure::NotRoot), Err(Failure::CommandFailed), Err(Failure::Timeout), Err(Failure::Unreadable)] {
+            let mut owner = RepairAttempt::new();
+            let token = owner.begin(true).unwrap();
+            assert!(owner.complete(token, result));
+            assert_eq!(owner.begin(true), None);
+        }
+        let mut owner = RepairAttempt::new();
+        assert_eq!(owner.begin(false), None);
+        assert_eq!(owner.begin(true), None);
     }
 }
