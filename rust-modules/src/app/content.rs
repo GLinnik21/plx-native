@@ -426,6 +426,37 @@ mod library_publication_tests {
         }
     }
 
+    fn detail_with_episode(
+        sid: crate::plex::ServerId,
+        rk: &str,
+        title: &str,
+        watched: bool,
+    ) -> crate::metadata::Detail {
+        crate::metadata::Detail {
+            sid,
+            rk: rk.into(),
+            title: title.into(),
+            watched,
+            is_show: true,
+            kind: "show".into(),
+            seasons: vec![crate::metadata::Season {
+                rk: "season-2".into(),
+                index: 2,
+                title: "Season 2".into(),
+                leaf_count: 1,
+                viewed_leaf_count: 0,
+            }],
+            episodes: vec![crate::metadata::Episode {
+                rk: "episode-a".into(),
+                index: 1,
+                season: 2,
+                title: "Episode A".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn home_tab_validation_reads_the_supplied_directory() {
         let sid = crate::plex::ServerId::from_raw(3);
@@ -650,6 +681,114 @@ mod library_publication_tests {
         frame(&mut pages, &mut rig, &mut frame_no);
         assert_eq!(crate::metadata::detail_generation_for_test(), generation,
             "the explicit pending refresh is consumed after one request");
+
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(None);
+        drain_detail_workers();
+    }
+
+    #[test]
+    fn a_requested_detail_refresh_retries_after_a_child_supersedes_its_request() {
+        let _guard = crate::testlock::serial();
+        let sid = crate::plex::ServerId::UNSET;
+        let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
+        let b = AppArg::Content(ContentArg::Detail { sid, rk: "detail-b".into() });
+        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+
+        bridge::show_page(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let a_entry = pages.nav.top_page().expect("Detail A mounted").id;
+
+        drain_detail_workers();
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(Some(detail_with_episode(
+            sid, "detail-a", "Old A", true,
+        )));
+        pages.store_changed(crate::stores::StoreId::Metadata.ord(), 1);
+        frame(&mut pages, &mut rig, &mut frame_no);
+
+        let PageMemory::Detail(memory) = pages.return_state().memory else {
+            panic!("Detail A publishes Detail memory");
+        };
+        let focus = crate::ui::machine::FocusKey {
+            entry: a_entry,
+            elem: memory.keys.iter().find_map(|key| matches!(&key.identity,
+                crate::screens::registry::DetailIdentity::Episode { rk, text: true, .. }
+                if rk == "episode-a").then_some(key.elem))
+                .expect("the loaded episode text row has a stable key"),
+        };
+        pages.set_focus(Some(focus));
+        let PageMemory::Detail(memory) = pages.return_state().memory else { unreachable!() };
+        let spot = memory.spot;
+        assert_eq!((spot.section, spot.col, spot.ep_text, spot.season), (2, 0, true, Some(2)));
+
+        let pre_refresh = crate::metadata::begin_detail_for_test(sid, "detail-a");
+        refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
+            sid,
+            rk: "detail-a".into(),
+            keep: Some("episode-a".into()),
+        });
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let stale_a = crate::metadata::detail_generation_for_test();
+        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(true));
+        assert_eq!(detail_restore_target(&pages, a_entry),
+            Some((spot.clone(), Some("episode-a".into()),
+                crate::screens::registry::DetailRefreshPhase::Requested)));
+
+        bridge::nav_push(&mut pages, b.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let stale_b = crate::metadata::detail_generation_for_test();
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == b));
+        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), None,
+            "opening B supersedes A's requested reconciliation");
+        assert_eq!(crate::metadata::detail_request_status(sid, "detail-b"), Some(true));
+
+        let ret = pages.return_state();
+        bridge::nav_pop_with_return(&mut pages, ret);
+        frame(&mut pages, &mut rig, &mut frame_no);
+
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
+        assert_eq!(crate::metadata::detail_generation_for_test(), stale_b + 1,
+            "Back starts one replacement for the requested reconciliation B superseded");
+        let reconciliation = crate::metadata::detail_generation_for_test();
+        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(true));
+        assert_eq!(detail_restore_target(&pages, a_entry),
+            Some((spot.clone(), Some("episode-a".into()),
+                crate::screens::registry::DetailRefreshPhase::Requested)),
+            "the retry preserves the episode and focus intent");
+        assert_eq!(pages.focus(), Some(focus));
+
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert_eq!(crate::metadata::detail_generation_for_test(), reconciliation,
+            "the outstanding requested reconciliation is not duplicated");
+
+        assert!(!crate::metadata::land_detail_for_test(sid, "detail-a", stale_a,
+            Some(detail_with_episode(sid, "detail-a", "Stale A", false))),
+            "A's superseded reconciliation cannot land");
+        assert!(!crate::metadata::land_detail_for_test(sid, "detail-a", pre_refresh, None),
+            "the pre-refresh request was superseded before its completion");
+        assert!(!crate::metadata::land_detail_for_test(sid, "detail-b", stale_b,
+            Some(crate::metadata::Detail {
+                sid,
+                rk: "detail-b".into(),
+                title: "Stale B".into(),
+                ..Default::default()
+            })), "B's stale landing cannot replace restored A");
+        assert!(crate::metadata::current().is_some_and(|detail|
+            detail.rk == "detail-a" && detail.title == "Old A" && detail.watched));
+
+        drain_detail_workers();
+        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(false));
+        pages.store_changed(crate::stores::StoreId::Metadata.ord(), reconciliation);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert_eq!(pages.focus(), Some(focus));
+        assert_eq!(detail_restore_target(&pages, a_entry), None,
+            "the settled reconciliation releases restoration");
+        assert_eq!(crate::metadata::detail_generation_for_test(), reconciliation,
+            "settling restoration cannot start a duplicate request");
 
         crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
         crate::metadata::set_current_for_test(None);
