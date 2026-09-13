@@ -868,3 +868,78 @@ mod tests {
         assert!(c.iter().all(|p| p.is_absolute()));
     }
 }
+
+/// Legacy JSON/host-simulator persistence root. The canonical ARM adapter uses helper-owned DB8;
+/// this path exists for old-record migration and for host tests that must never touch the checkout.
+#[allow(dead_code)] // Stage A storage root; connected by Session/Consent integration.
+pub(crate) fn persistent_state_root() -> PathBuf {
+    #[cfg(test)]
+    if let Some(root) = TEST_PERSISTENT_STATE_ROOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        return root;
+    }
+    if ENV_STEERABLE {
+        runtime_dir().join("state")
+    } else {
+        app_dir().join("state")
+    }
+}
+
+#[cfg(test)]
+static TEST_PERSISTENT_STATE_ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+#[allow(dead_code)] // Stage A storage root; connected by Session/Consent integration.
+pub(crate) fn redirect_persistent_state_root_for_test(root: Option<PathBuf>) {
+    if let Some(root) = &root {
+        let _ = std::fs::create_dir_all(root);
+    }
+    *TEST_PERSISTENT_STATE_ROOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = root;
+}
+
+/// Prepare the hostsim-only state root without following a pre-existing symlink. Television code
+/// may inspect an existing directory as a migration source but never creates it as an authority.
+#[allow(dead_code)] // Stage A storage root; connected by Session/Consent integration.
+pub(crate) fn ensure_persistent_state_root() -> std::io::Result<()> {
+    if !ENV_STEERABLE {
+        return Ok(());
+    }
+    let root = persistent_state_root();
+    match std::fs::symlink_metadata(&root) {
+        Ok(meta) if meta.file_type().is_dir() => Ok(()),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "persistent state root is not a directory",
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                let mut builder = std::fs::DirBuilder::new();
+                builder.mode(0o700);
+                builder.create(&root)
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::create_dir(&root)
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+
+/// Final legacy migration order, independent of the temporary synchronous caller API.
+#[allow(dead_code)]
+pub(crate) fn session_migration_candidates() -> Vec<PathBuf> {
+    let mut candidates = session_candidates();
+    let app = in_app_dir("auth.json");
+    let index = candidates.iter().position(|path| path == &app).unwrap_or(candidates.len());
+    candidates.insert(index, in_app_dir("state").join("auth.json"));
+    candidates
+}

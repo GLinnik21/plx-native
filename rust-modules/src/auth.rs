@@ -206,6 +206,7 @@ impl UserTile {
             thumb: self.thumb.clone(),
             protected: self.protected,
             admin: self.admin,
+            extensions: Default::default(),
         }
     }
 }
@@ -375,6 +376,7 @@ fn remember_unprotected_active(sess: &mut Session) {
         server: sess.server.clone(),
         sources: sess.sources.clone(),
         pin: None,
+        extensions: Default::default(),
     });
 }
 
@@ -1888,6 +1890,7 @@ fn resolve_roster_using(
                     // origin so boot can restore the same playback policy without guessing from
                     // an address.
                     tier: Some(c.location),
+                    extensions: Default::default(),
                 };
                 // **`origin.log_form()`, not just `describe()`.** `SourceRef::describe` prints the
                 // diagnostic `address:port`, and both candidates of one connection carry the SAME
@@ -2016,6 +2019,7 @@ fn source_from_reach(
         port: c.port,
         token: plan.token.clone(),
         tier: Some(c.location),
+        extensions: Default::default(),
     })
 }
 
@@ -2108,6 +2112,7 @@ fn discover_and_store(ac: &AccountClient, epoch: u64, output: &dyn owner::Observ
         // Carried across from the roster entry, so the primary and its `sources` twin can never
         // disagree about where the same server is. `reconcile_primary` keeps them together later.
         origin_url: p.origin_url.clone(),
+        extensions: Default::default(),
     };
     log(&format!(
         "auth: {} server(s) reached, primary '{}'",
@@ -2239,6 +2244,7 @@ fn server_ref(source: &SourceRef) -> ServerRef {
         token: source.token.clone(),
         tier: source.tier,
         origin_url: source.origin_url.clone(),
+        extensions: source.extensions.clone(),
     }
 }
 
@@ -2361,6 +2367,7 @@ fn apply_refreshed_endpoint(
         name: source.name.clone(),
         shared_by: source.shared_by.clone(),
         owned: source.owned,
+        extensions: source.extensions.clone(),
     };
     let changed = source.address != next.address
         || source.port != next.port
@@ -2915,6 +2922,7 @@ pub(crate) fn profile_switch_worker_with_io(
         title: user.title,
         thumb: tile.thumb,
         token: primary.token.clone(),
+        extensions: Default::default(),
     };
     if !output.live() { return; }
     let cache = ProfileCreds {
@@ -2926,6 +2934,7 @@ pub(crate) fn profile_switch_worker_with_io(
             .as_deref()
             .filter(|value| !value.is_empty())
             .map(session::PinVerifier::new),
+        extensions: Default::default(),
     };
     let next_identity = SessionIdentity {
         client_id: expected.client_id.clone(),
@@ -4286,6 +4295,7 @@ mod tests {
             server: s.server.clone(),
             sources: s.sources.clone(),
             pin: protected_pin.map(session::PinVerifier::new),
+            extensions: Default::default(),
         });
         s.remember_profile(ProfileCreds {
             uuid: "u-kid".into(),
@@ -4303,6 +4313,7 @@ mod tests {
             },
             sources: vec![source("ours", true, "kid-token")],
             pin: None,
+            extensions: Default::default(),
         });
         s
     }
@@ -5308,6 +5319,7 @@ mod tests {
         current.recent_searches.push(session::RecentSearches {
             user: "u-adult".into(),
             terms: vec!["newer preference".into()],
+            extensions: Default::default(),
         });
         let next = signed_in_as("u-kid");
         merge_profile_delta(
@@ -5574,5 +5586,45 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod storage_extension_regressions {
+    use super::*;
+
+    fn stored_source() -> SourceRef {
+        serde_json::from_value(serde_json::json!({
+            "machine_id":"synthetic-machine", "address":"old.example.invalid", "port":32400,
+            "token":"synthetic-profile-token", "future":{"protected":"synthetic-future"}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn rebuilding_primary_preserves_the_sources_opaque_fields() {
+        let source = stored_source();
+        assert_eq!(server_ref(&source).extensions, source.extensions);
+    }
+
+    #[test]
+    fn endpoint_refresh_preserves_opaque_fields_and_profile_credentials() {
+        let source = stored_source();
+        let mut session = Session {
+            sources: vec![source.clone()],
+            ..Default::default()
+        };
+        let fresh = SourceRef {
+            address: "new.example.invalid".into(),
+            port: 32400,
+            token: "different-account-token".into(),
+            ..Default::default()
+        };
+        let (updated, changed) =
+            apply_refreshed_endpoint(&mut session, "synthetic-machine", &fresh).unwrap();
+        assert!(changed);
+        assert_eq!(updated.extensions, source.extensions);
+        assert_eq!(session.sources[0].extensions, source.extensions);
+        assert_eq!(updated.token, "synthetic-profile-token");
     }
 }

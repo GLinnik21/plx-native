@@ -562,7 +562,7 @@ SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
 ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
-  $(shell mkdir -p pkg && printf '%s' '$(RUST_CFG)' > $(RUST_STAMP) && rm -f pkg/plxnative \
+  $(shell mkdir -p pkg && printf '%s' '$(RUST_CFG)' > $(RUST_STAMP) && rm -f pkg/plxnative pkg/plxnative-storage \
           vendor/ffmpeg-prefix/include/libavformat/avformat.h pkg/lib*-plx.so.* pkg/.ffabi-ok)
 endif
 endif
@@ -574,7 +574,7 @@ RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/release/libplxnative_modu
 SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c)) src/compat/getauxval.c
 OBJS = $(SRCS:.c=.o)
 
-all: pkg/plxnative
+all: pkg/plxnative pkg/plxnative-storage
 
 # per-file compile; each object depends on ALL headers so a header edit rebuilds all
 src/%.o: src/%.c $(wildcard src/*.h) Makefile
@@ -672,7 +672,21 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo +$(RUST_NIGHTLY) build --release --target $(RUST_TARGET) \
-	    --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)
+	    --lib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)
+
+# The helper is an independent executable: it has its own auxv implementation and must never
+# link app getauxval.o. The project linker wrapper attests its map, trace and ELF bytes too.
+STORAGE_BIN = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/release/plxnative-storage
+pkg/plxnative-storage: LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs Makefile ci/arm-cc.py ci/check-link-evidence.py
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
+	  CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER='$(CC)' \
+	  cargo +$(RUST_NIGHTLY) rustc --release --target $(RUST_TARGET) \
+	    --bin plxnative-storage --target-dir $(RUST_TDIR) --no-default-features -- \
+	    -C link-arg=--sysroot=$(SYSROOT) -L native=$(SYSROOT)/usr/lib \
+	    -C link-arg=-Wl,-rpath-link,$(SYSROOT)/usr/lib -C link-arg=-Wl,--build-id=sha1
+	cp $(STORAGE_BIN) $@
+	chmod 755 $@
+	python3 ci/stage-link-evidence.py $(STORAGE_BIN) $@
 
 # link C objects + the Rust staticlib. gcc pulls in libgcc_s (the ARM-EHABI
 # unwinder Rust's panic_unwind std references) + libc/pthread/dl/m/rt itself.
@@ -1017,7 +1031,7 @@ kill: tv-lock-require
 	$(SSH) '$(CLOSE_SH) echo closed $(APPID)'
 
 clean:
-	rm -f src/*.o pkg/plxnative
+	rm -f src/*.o pkg/plxnative pkg/plxnative-storage
 
 test: deploy run
 
@@ -1191,6 +1205,8 @@ check: lint
 	python3 ci/test_deploy_manifest.py
 	python3 ci/test_verify_deploy.py
 	python3 ci/test_link_evidence.py
+	python3 ci/test_storage_service_package.py
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test --bin plxnative-storage
 	python3 ci/test_packaged_elf.py
 	python3 ci/test_check_elf.py
 	python3 ci/test_build_gc.py
@@ -1285,8 +1301,8 @@ sentry-symbols: symbols
 	@SENTRY_ORG='$(SENTRY_ORG)' SENTRY_PROJECT='$(SENTRY_PROJECT)' \
 	  $(SENTRY_CLI) debug-files upload --include-sources pkg/plxnative.debug pkg/plxnative
 
-ipk: pkg/plxnative $(APPINFO) release-guard
-	python3 ci/check-link-evidence.py pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED)
+ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
+	python3 ci/check-link-evidence.py pkg/plxnative pkg/plxnative-storage $(SENTRY_HANDLER) $(FFMPEG_STAGED)
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
 	rm -rf ipkroot/data/usr && mkdir -p $(STAGE)/licenses
 	cp $(APP_FILES) $(STAGE)/
@@ -1306,6 +1322,8 @@ ipk: pkg/plxnative $(APPINFO) release-guard
 	@# Only THIS flavour's artifact — packaging one must never delete the other's.
 	rm -f pkg/$(APPID)_*_arm.ipk
 	FLAVOR=$(FLAVOR) python3 ci/mkipk.py
+	python3 ci/stage-link-evidence.py pkg/plxnative-storage ipkroot/data/usr/palm/services/$(APPID).storage/plxnative-storage \
+	  --evidence-base pkg/link-evidence/$(FLAVOR)/plxnative-storage
 	@# Emitted from INSIDE pkg/ so the line carries the bare filename. With the `pkg/` prefix
 	@# in it, `shasum -a 256 -c ipk.sha256` fails for everyone who downloads the two release
 	@# assets side by side — which is every user, and is what shipped through v0.2.1.

@@ -1404,6 +1404,7 @@ impl SessionMachine {
                             name: candidate.name.clone(), shared_by: candidate.credit.clone(), owned: candidate.owned,
                             origin_url: candidate.origin.base(), address: candidate.address.clone(),
                             port: i64::from(candidate.origin.port()), tier: Some(candidate.location),
+                            extensions: Default::default(),
                         }, ipv6: candidate.ipv6,
                     },
                     super::RegistryProgress::Settled { probe, .. } => RegistryPlan::Probe(probe.clone()),

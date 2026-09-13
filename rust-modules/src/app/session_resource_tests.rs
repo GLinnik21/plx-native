@@ -197,6 +197,7 @@ mod tests {
                     next.recent_searches = vec![session::RecentSearches {
                         user: "kid".into(),
                         terms: vec!["preference after handoff".into()],
+                        extensions: Default::default(),
                     }];
                     Some(next)
                 });
@@ -310,6 +311,7 @@ mod tests {
                 server,
                 sources: vec![source],
                 pin: None,
+                extensions: Default::default(),
             }],
             ..Default::default()
         }
@@ -528,6 +530,7 @@ mod tests {
                     next.recent_searches = vec![session::RecentSearches {
                         user: "kid".into(),
                         terms: vec![format!("newer preference {address}")],
+                        extensions: Default::default(),
                     }];
                     Some(next)
                 });
