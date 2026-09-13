@@ -36,57 +36,98 @@ struct ListingData {
 }
 
 impl ListingSnapshot {
-    pub(crate) fn empty() -> Self { Self { data: None } }
+    pub(crate) fn empty() -> Self {
+        Self { data: None }
+    }
     #[cfg(test)]
-    pub(crate) fn empty_for_test() -> Self { Self::empty() }
+    pub(crate) fn empty_for_test() -> Self {
+        Self::empty()
+    }
 
     #[cfg(test)]
     pub(crate) fn with_cursor(mut self, cursor: super::Cursor) -> Self {
-        if let Some(data) = &mut self.data { data.cursor = Some(Arc::new(cursor)); }
+        if let Some(data) = &mut self.data {
+            data.cursor = Some(Arc::new(cursor));
+        }
         self
     }
     #[cfg(test)]
     pub(crate) fn with_fetch(mut self, fetch: SecFetch, total: i64) -> Self {
-        if let Some(data) = &mut self.data { data.fetch = fetch; data.total = total; }
+        if let Some(data) = &mut self.data {
+            data.fetch = fetch;
+            data.total = total;
+        }
         self
     }
 
     #[cfg(test)]
     pub(crate) fn with_section(mut self, epoch: u32, section: i64) -> Self {
-        if let Some(data) = &mut self.data { data.id.epoch = epoch; data.id.section = section; }
+        if let Some(data) = &mut self.data {
+            data.id.epoch = epoch;
+            data.id.section = section;
+        }
         self
     }
 
     #[cfg(test)]
     pub(crate) fn with_total(mut self, total: usize) -> Self {
-        if let Some(data) = &mut self.data { data.total = total as i64; data.items.resize(total); }
+        if let Some(data) = &mut self.data {
+            data.total = total as i64;
+            data.items.resize(total);
+        }
         self
     }
 
     #[cfg(test)]
     pub(crate) fn with_page(mut self, start: usize, items: Vec<crate::pms::PmsMovie>) -> Self {
         if let Some(data) = &mut self.data {
-            for (offset, item) in items.into_iter().enumerate() { data.items.set(start + offset, item); }
+            for (offset, item) in items.into_iter().enumerate() {
+                data.items.set(start + offset, item);
+            }
         }
         self
     }
 
     #[cfg(test)]
-    pub(crate) fn absent() -> Self { Self { data: None } }
+    pub(crate) fn absent() -> Self {
+        Self { data: None }
+    }
 
     pub(crate) fn view(&self) -> ListingView<'_> {
         ListingView(self)
     }
 
     #[cfg(test)]
-    pub(crate) fn fixture(sid: ServerId, items: Vec<Option<crate::pms::PmsMovie>>, letters: Vec<(String, i64)>) -> Self {
-        Self { data: Some(ListingData {
-            id: ListingId { epoch: 1, query: 1, sid, section: 1 }, total: items.len() as i64,
-            fetch: SecFetch::Ready, items: SecItems::from_vec(items),
-            sorts: Arc::new(vec![SortEntry { key: "titleSort".into(), title: "Title".into(), default_desc: false }]),
-            genres: Arc::new(Vec::new()), letters: Arc::new(letters), sort_idx: 0, sort_desc: false,
-            genre: None, unwatched: false, cursor: None,
-        }) }
+    pub(crate) fn fixture(
+        sid: ServerId,
+        items: Vec<Option<crate::pms::PmsMovie>>,
+        letters: Vec<(String, i64)>,
+    ) -> Self {
+        Self {
+            data: Some(ListingData {
+                id: ListingId {
+                    epoch: 1,
+                    query: 1,
+                    sid,
+                    section: 1,
+                },
+                total: items.len() as i64,
+                fetch: SecFetch::Ready,
+                items: SecItems::from_vec(items),
+                sorts: Arc::new(vec![SortEntry {
+                    key: "titleSort".into(),
+                    title: "Title".into(),
+                    default_desc: false,
+                }]),
+                genres: Arc::new(Vec::new()),
+                letters: Arc::new(letters),
+                sort_idx: 0,
+                sort_desc: false,
+                genre: None,
+                unwatched: false,
+                cursor: None,
+            }),
+        }
     }
 }
 
@@ -94,7 +135,9 @@ impl ListingSnapshot {
 pub(crate) struct ListingView<'a>(&'a ListingSnapshot);
 
 impl<'a> ListingView<'a> {
-    pub(crate) fn retain(self) -> ListingSnapshot { self.0.clone() }
+    pub(crate) fn retain(self) -> ListingSnapshot {
+        self.0.clone()
+    }
 
     /// Immutable tier-three bookmark; a live entry's engine memory takes precedence.
     pub(crate) fn cursor(self) -> Option<&'a super::Cursor> {
@@ -104,21 +147,28 @@ impl<'a> ListingView<'a> {
     /// Placement keys need rebuilding only when item membership or listing identity changes.
     pub(crate) fn same_items(self, other: ListingView<'_>) -> bool {
         match (&self.0.data, &other.0.data) {
-            (Some(a), Some(b)) => a.id == b.id && a.total == b.total
-                && Arc::ptr_eq(&a.items.pages, &b.items.pages),
+            (Some(a), Some(b)) => {
+                a.id == b.id && a.total == b.total && Arc::ptr_eq(&a.items.pages, &b.items.pages)
+            }
             (None, None) => true,
             _ => false,
         }
     }
     /// Changed immutable page handles for the same listing identity and total. Comparing the
     /// table is O(total / PAGE); visiting the returned ranges is O(changed page slots).
-    pub(crate) fn changed_page_ranges<'b>(self, other: ListingView<'b>)
-        -> Option<ChangedPageRanges<'a, 'b>> {
+    pub(crate) fn changed_page_ranges<'b>(
+        self,
+        other: ListingView<'b>,
+    ) -> Option<ChangedPageRanges<'a, 'b>> {
         let (current, previous) = (self.0.data.as_ref()?, other.0.data.as_ref()?);
-        (current.id == previous.id && current.total == previous.total).then_some(ChangedPageRanges {
-            current: &current.items, previous: &previous.items, page: 0,
-            total: current.total.max(0) as usize,
-        })
+        (current.id == previous.id && current.total == previous.total).then_some(
+            ChangedPageRanges {
+                current: &current.items,
+                previous: &previous.items,
+                page: 0,
+                total: current.total.max(0) as usize,
+            },
+        )
     }
     pub(crate) fn id(self) -> Option<ListingId> {
         self.0.data.as_ref().map(|s| s.id)
@@ -207,33 +257,41 @@ impl Iterator for ChangedPageRanges<'_, '_> {
 }
 
 /// Main-thread capture, once per frame. O(1), including arbitrarily large loaded listings.
-pub(crate) fn snapshot() -> ListingSnapshot {
-    let sec = super::cur();
-    let id = super::sections().get(sec).and_then(|section| {
-        Some(ListingId {
-            epoch: super::table_epoch(),
-            query: super::query_gen(),
-            sid: super::section_sid(sec)?,
-            section: section.key,
-        })
-    });
-    ListingSnapshot {
-        // No empty Arc allocations on Login or before discovery has produced a section.
-        data: id.zip(super::states().get(sec)).map(|(id, s)| ListingData {
-            id,
-            total: s.total,
-            fetch: s.fetch,
-            items: s.items.clone(),
-            sorts: s.sorts.clone(),
-            genres: s.genres.clone(),
-            letters: s.letters.clone(),
-            sort_idx: s.sort_idx,
-            sort_desc: s.sort_desc,
-            genre: s.genre.clone(),
-            unwatched: s.unwatched,
-            cursor: s.cursor.clone(),
-        }),
+impl super::BrowseState {
+    pub(crate) fn listing_snapshot(&self) -> ListingSnapshot {
+        let sec = self.cur();
+        let id = self.sections().get(sec).and_then(|section| {
+            Some(ListingId {
+                epoch: self.table_epoch(),
+                query: self.query_gen(),
+                sid: self.section_sid(sec)?,
+                section: section.key,
+            })
+        });
+        ListingSnapshot {
+            // No empty Arc allocations on Login or before discovery has produced a section.
+            data: id
+                .zip(self.states().get(sec))
+                .map(|(id, state)| ListingData {
+                    id,
+                    total: state.total,
+                    fetch: state.fetch,
+                    items: state.items.clone(),
+                    sorts: state.sorts.clone(),
+                    genres: state.genres.clone(),
+                    letters: state.letters.clone(),
+                    sort_idx: state.sort_idx,
+                    sort_desc: state.sort_desc,
+                    genre: state.genre.clone(),
+                    unwatched: state.unwatched,
+                    cursor: state.cursor.clone(),
+                }),
+        }
     }
+}
+
+pub(crate) fn snapshot() -> ListingSnapshot {
+    super::legacy().listing_snapshot()
 }
 
 /// The source/section table in registration order. Section indices are meaningful only
@@ -269,7 +327,8 @@ pub(crate) struct DirectorySnapshot {
 impl Default for DirectorySnapshot {
     fn default() -> Self {
         Self {
-            preferred: [None; 2], kind_fetch: [SecFetch::Loading; 2],
+            preferred: [None; 2],
+            kind_fetch: [SecFetch::Loading; 2],
             stamp: None,
             data: Arc::default(),
             source: None,
@@ -281,22 +340,50 @@ impl Default for DirectorySnapshot {
 
 impl DirectorySnapshot {
     #[cfg(test)]
-    pub(crate) fn fixture_source(epoch: u32, sid: ServerId, source: super::SrcGroup, fetch: SecFetch) -> Self {
-        Self { preferred: [None; 2], kind_fetch: [fetch; 2], stamp: Some((epoch, 0, 0, 1)),
-            data: Arc::new(DirectoryData { sources: vec![(sid, source)], sections: Vec::new() }),
-            source: Some(0), source_fetch: fetch, discovery: fetch }
+    pub(crate) fn fixture_source(
+        epoch: u32,
+        sid: ServerId,
+        source: super::SrcGroup,
+        fetch: SecFetch,
+    ) -> Self {
+        Self {
+            preferred: [None; 2],
+            kind_fetch: [fetch; 2],
+            stamp: Some((epoch, 0, 0, 1)),
+            data: Arc::new(DirectoryData {
+                sources: vec![(sid, source)],
+                sections: Vec::new(),
+            }),
+            source: Some(0),
+            source_fetch: fetch,
+            discovery: fetch,
+        }
     }
 
     pub(crate) fn same_publication(&self, other: &Self) -> bool {
-        self.stamp == other.stamp && self.source == other.source
-            && self.source_fetch == other.source_fetch && self.discovery == other.discovery
-            && self.preferred == other.preferred && self.kind_fetch == other.kind_fetch
+        self.stamp == other.stamp
+            && self.source == other.source
+            && self.source_fetch == other.source_fetch
+            && self.discovery == other.discovery
+            && self.preferred == other.preferred
+            && self.kind_fetch == other.kind_fetch
     }
     #[cfg(test)]
     pub(crate) fn fixture(epoch: u32, current: usize, sections: Vec<SectionView>) -> Self {
-        let preferred = [super::SecKind::Movie, super::SecKind::Show].map(|kind| sections.iter().position(|s| s.kind == kind && s.row.pinned));
-        Self { preferred, kind_fetch: [SecFetch::Ready; 2], stamp: Some((epoch, 0, current, 0)), data: Arc::new(DirectoryData { sources: Vec::new(), sections }),
-            source: None, source_fetch: SecFetch::Ready, discovery: SecFetch::Ready }
+        let preferred = [super::SecKind::Movie, super::SecKind::Show]
+            .map(|kind| sections.iter().position(|s| s.kind == kind && s.row.pinned));
+        Self {
+            preferred,
+            kind_fetch: [SecFetch::Ready; 2],
+            stamp: Some((epoch, 0, current, 0)),
+            data: Arc::new(DirectoryData {
+                sources: Vec::new(),
+                sections,
+            }),
+            source: None,
+            source_fetch: SecFetch::Ready,
+            discovery: SecFetch::Ready,
+        }
     }
     /// Main-thread capture. The existing source-list generation covers names, reachability,
     /// counts and pins. Current section is separate because its tick can move without a landing;
@@ -333,7 +420,10 @@ impl DirectorySnapshot {
         self.source = super::cur_source_idx();
         self.source_fetch = super::cur_source_state();
         self.discovery = super::discovery_state();
-        for (i, kind) in [super::SecKind::Movie, super::SecKind::Show].into_iter().enumerate() {
+        for (i, kind) in [super::SecKind::Movie, super::SecKind::Show]
+            .into_iter()
+            .enumerate()
+        {
             self.preferred[i] = super::tab_of_kind(kind).and_then(super::tab_section);
             self.kind_fetch[i] = super::kind_state(kind);
         }
@@ -349,10 +439,16 @@ pub(crate) struct DirectoryView<'a>(&'a DirectorySnapshot);
 
 impl<'a> DirectoryView<'a> {
     pub(crate) fn preferred(self, kind: super::SecKind) -> Option<usize> {
-        self.0.preferred[match kind { super::SecKind::Movie => 0, super::SecKind::Show => 1 }]
+        self.0.preferred[match kind {
+            super::SecKind::Movie => 0,
+            super::SecKind::Show => 1,
+        }]
     }
     pub(crate) fn kind_fetch(self, kind: super::SecKind) -> SecFetch {
-        self.0.kind_fetch[match kind { super::SecKind::Movie => 0, super::SecKind::Show => 1 }]
+        self.0.kind_fetch[match kind {
+            super::SecKind::Movie => 0,
+            super::SecKind::Show => 1,
+        }]
     }
     pub(crate) fn epoch(self) -> Option<u32> {
         self.0.stamp.map(|s| s.0)
@@ -392,7 +488,8 @@ impl<'a> DirectoryView<'a> {
         self,
         section: usize,
     ) -> impl Iterator<Item = (usize, &'a SectionView)> {
-        self.rows_for(section).filter_map(move |row| self.sections().get(row.section).map(|s| (row.section, s)))
+        self.rows_for(section)
+            .filter_map(move |row| self.sections().get(row.section).map(|s| (row.section, s)))
     }
 }
 
@@ -403,15 +500,37 @@ mod tests {
     #[test]
     fn listing_page_delta_names_only_the_replaced_immutable_page() {
         let sid = ServerId::from_raw(0);
-        let movie = |i| crate::pms::PmsMovie { sid, rk: format!("{i}"), ..Default::default() };
-        let first = ListingSnapshot::fixture(sid,
-            (0..super::super::PAGE).map(|i| Some(movie(i))).collect(), Vec::new())
-            .with_total(10_000);
-        let second = first.clone().with_page(super::super::PAGE,
-            (super::super::PAGE..super::super::PAGE * 2).map(movie).collect());
-        assert_eq!(second.view().changed_page_ranges(first.view()).unwrap().collect::<Vec<_>>(),
-            vec![super::super::PAGE..super::super::PAGE * 2]);
-        assert!(second.view().changed_page_ranges(second.view()).unwrap().next().is_none());
+        let movie = |i| crate::pms::PmsMovie {
+            sid,
+            rk: format!("{i}"),
+            ..Default::default()
+        };
+        let first = ListingSnapshot::fixture(
+            sid,
+            (0..super::super::PAGE).map(|i| Some(movie(i))).collect(),
+            Vec::new(),
+        )
+        .with_total(10_000);
+        let second = first.clone().with_page(
+            super::super::PAGE,
+            (super::super::PAGE..super::super::PAGE * 2)
+                .map(movie)
+                .collect(),
+        );
+        assert_eq!(
+            second
+                .view()
+                .changed_page_ranges(first.view())
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![super::super::PAGE..super::super::PAGE * 2]
+        );
+        assert!(second
+            .view()
+            .changed_page_ranges(second.view())
+            .unwrap()
+            .next()
+            .is_none());
     }
 
     #[test]
@@ -444,7 +563,7 @@ mod tests {
         );
         assert_eq!(view.rows_for(999).count(), 0);
         super::super::source_mut(0).unwrap().name = "Changed".into();
-        super::super::SRC_FACTS_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        super::super::legacy_mut().bump_source_facts_gen();
         directory.capture();
         assert_eq!(directory.view().sources()[0].1.name, "Changed");
         assert_ne!(old.view().sources()[0].1.name, "Changed");

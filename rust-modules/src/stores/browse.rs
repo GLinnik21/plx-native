@@ -7,8 +7,10 @@ use crate::ui::machine::{Cx, Effects, Handled, Machine};
 
 use super::{note, StoreEv, StoreId};
 
-pub(crate) use crate::browse::view::{DirectorySnapshot, DirectoryView, ListingSnapshot, ListingView};
 pub(crate) use crate::browse::section_hubs::{HubsSnapshot, HubsView};
+pub(crate) use crate::browse::view::{
+    DirectorySnapshot, DirectoryView, ListingSnapshot, ListingView,
+};
 
 pub(crate) fn hubs_snapshot() -> HubsSnapshot {
     crate::browse::section_hubs::snapshot(crate::browse::cur())
@@ -23,9 +25,15 @@ pub(crate) fn listing_snapshot() -> ListingSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) enum BrowseCmd {
     Discovery(crate::browse::record::Result),
-    RetrySource { epoch: u32, sid: ServerId },
+    RetrySource {
+        epoch: u32,
+        sid: ServerId,
+    },
     /// Execute deferred Library work against the source and table epoch captured by the screen.
-    Addressed { target: SectionAddress, work: LibraryWork },
+    Addressed {
+        target: SectionAddress,
+        work: LibraryWork,
+    },
     /// Point the listing at section `i` (a pill or library-row press, committed at the fade floor).
     #[cfg(test)]
     SetCur(usize),
@@ -37,10 +45,20 @@ pub(crate) enum BrowseCmd {
     Reset,
     HubsInvalidateAll,
     /// The optimistic half of a view-state write, on the grid and the shelves.
-    SetWatchedLocal { sid: ServerId, rk: String, on: bool },
-    LeftTheDeck { sid: ServerId, rk: String },
+    SetWatchedLocal {
+        sid: ServerId,
+        rk: String,
+        on: bool,
+    },
+    LeftTheDeck {
+        sid: ServerId,
+        rk: String,
+    },
 }
 
+/// Compatibility machine until the production bridge takes physical ownership of
+/// [`crate::browse::BrowseState`]. The state value itself is independently instantiable now; this
+/// zero-sized adapter preserves the existing `BrowseStore.step(..)` call sites for this slice.
 pub(crate) struct BrowseStore;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,13 +77,25 @@ pub(crate) enum QueryEdit {
 
 #[derive(Clone, Debug)]
 pub(crate) enum LibraryWork {
-    SaveCursor { query: u32, cursor: crate::browse::Cursor },
+    SaveCursor {
+        query: u32,
+        cursor: crate::browse::Cursor,
+    },
     /// Selection and query coexist and commit in this order, inside one store delivery.
-    Commit { select: bool, choice: bool, query: Option<QueryEdit> },
-    Want { lo: usize, hi: usize },
+    Commit {
+        select: bool,
+        choice: bool,
+        query: Option<QueryEdit>,
+    },
+    Want {
+        lo: usize,
+        hi: usize,
+    },
     Letters,
     Genres,
-    Hubs { may_publish: bool },
+    Hubs {
+        may_publish: bool,
+    },
     Retry,
 }
 
@@ -80,7 +110,7 @@ pub(crate) fn apply(cmd: BrowseCmd) -> bool {
 /// bump-vs-note bookkeeping this function used to do inline moved with it (see `browse::run`'s
 /// own doc for why that needed no help from `note`, which is private to this module).
 pub(super) fn run(cmd: BrowseCmd) -> bool {
-    // `crate::browse`'s statics are a crate global reached from both `apply` above and
+    // `crate::browse`'s temporary holder is reached from both `apply` above and
     // `crate::stores::apply(StoreCmd::Browse(..))` directly (some fixtures deliver a `StoreCmd`
     // without going through this module's `apply`) — guard the one point both funnel through. See
     // `lib.rs::testlock` and D5.
@@ -137,38 +167,100 @@ mod contract_tests {
         let _cleanup = Cleanup;
         apply(BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
-        let own = crate::plex::register_for_test("switch-own", "127.0.0.1", 9, "synthetic", "fixture");
-        let shared = crate::plex::register_for_test("switch-shared", "127.0.0.1", 10, "synthetic", "fixture");
+        let own =
+            crate::plex::register_for_test("switch-own", "127.0.0.1", 9, "synthetic", "fixture");
+        let shared = crate::plex::register_for_test(
+            "switch-shared",
+            "127.0.0.1",
+            10,
+            "synthetic",
+            "fixture",
+        );
         crate::browse::seed_registered_table_for_test([own, shared]);
         apply(BrowseCmd::SetCur(0));
-        let a = SectionAddress { epoch: crate::browse::table_epoch(), sid: own, section: 1 };
+        let a = SectionAddress {
+            epoch: crate::browse::table_epoch(),
+            sid: own,
+            section: 1,
+        };
         let b = SectionAddress { sid: shared, ..a };
-        assert_eq!(crate::browse::resolve_section(b.epoch, b.sid, b.section), Some(2));
-        let commit = |target, select, choice| apply(BrowseCmd::Addressed {
-            target, work: LibraryWork::Commit { select, choice, query: None },
-        });
-        let observe = |target, select, choice| crate::diag::test_events::capture(|| commit(target, select, choice));
+        assert_eq!(
+            crate::browse::resolve_section(b.epoch, b.sid, b.section),
+            Some(2)
+        );
+        let commit = |target, select, choice| {
+            apply(BrowseCmd::Addressed {
+                target,
+                work: LibraryWork::Commit {
+                    select,
+                    choice,
+                    query: None,
+                },
+            })
+        };
+        let observe = |target, select, choice| {
+            crate::diag::test_events::capture(|| commit(target, select, choice))
+        };
         let switched = crate::diag::schema::DiagEvent::FeatureUsed {
             feature: crate::diag::schema::Feature::LibrarySwitch,
         };
 
         // Same-current includes the final A commit after a pending A→B→A was superseded.
         assert_eq!(observe(a, true, true), (true, vec![]));
-        assert_eq!(observe(SectionAddress { section: 999, ..b }, true, true), (false, vec![]));
-        assert_eq!(observe(SectionAddress { epoch: b.epoch.wrapping_add(1), ..b }, true, true), (false, vec![]));
-        assert_eq!(observe(b, false, true), (false, vec![]), "foreign work without selection cannot count");
+        assert_eq!(
+            observe(SectionAddress { section: 999, ..b }, true, true),
+            (false, vec![])
+        );
+        assert_eq!(
+            observe(
+                SectionAddress {
+                    epoch: b.epoch.wrapping_add(1),
+                    ..b
+                },
+                true,
+                true
+            ),
+            (false, vec![])
+        );
+        assert_eq!(
+            observe(b, false, true),
+            (false, vec![]),
+            "foreign work without selection cannot count"
+        );
         assert_eq!(crate::browse::cur(), 0);
-        assert_eq!(observe(b, true, false), (true, vec![]), "boot/repoint is not a viewer choice");
+        assert_eq!(
+            observe(b, true, false),
+            (true, vec![]),
+            "boot/repoint is not a viewer choice"
+        );
         assert_eq!(crate::browse::cur(), 2);
-        assert_eq!(observe(b, true, true), (true, vec![]), "choosing the current library is quiet");
+        assert_eq!(
+            observe(b, true, true),
+            (true, vec![]),
+            "choosing the current library is quiet"
+        );
         assert_eq!(observe(a, true, true), (true, vec![switched]));
         assert_eq!(crate::browse::cur(), 0);
-        assert_eq!(observe(a, true, true), (true, vec![]), "repeated delivery cannot count twice");
-        assert_eq!(observe(b, true, true), (true, vec![switched]), "a later real switch counts once");
-        let (accepted, events) = crate::diag::test_events::capture(|| apply(BrowseCmd::Addressed {
-            target: b, work: LibraryWork::Commit { select: false, choice: false,
-                query: Some(QueryEdit::Unwatched(true)) },
-        }));
+        assert_eq!(
+            observe(a, true, true),
+            (true, vec![]),
+            "repeated delivery cannot count twice"
+        );
+        assert_eq!(
+            observe(b, true, true),
+            (true, vec![switched]),
+            "a later real switch counts once"
+        );
+        let (accepted, events) = crate::diag::test_events::capture(|| {
+            apply(BrowseCmd::Addressed {
+                target: b,
+                work: LibraryWork::Commit {
+                    select: false,
+                    choice: false,
+                    query: Some(QueryEdit::Unwatched(true)),
+                },
+            })
+        });
         assert!(accepted);
         assert!(events.is_empty(), "query changes are not library switches");
     }
