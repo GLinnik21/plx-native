@@ -204,13 +204,31 @@ echo "== check-deps =="
 browse_facades='legacy_adapter|adapter|take_legacy_adapter|legacy|legacy_mut|publish_legacy|clone_legacy_state|take_legacy_state|sections|sources|source_mut|states|state_mut|cur_state|bump_gen|requery|reset|sections_gen|table_epoch|source_list_gen|query_gen|sync_roster|append_sections|section_count|library_titles|section_title|section_kind|section_sid|cur|handle_of|set_cur|tabs_gen|tab_has_favorite|tab_kinds|tab_count|tab_title|tab_kind|tab_of_kind|tab_section|section_of_kind|remembered_section|load_remembered|lib_refs|resolve_pins|resolve_pins_from|record_pins|first_run_asks|retry_discovery|discovery_state|pinned|pinned_count|is_last_pinned|toggle_pin|apply_pins|repoint_cur|section_sid_is_borrowed|favorite_sections|library_pins|source_groups|cur_kind|source_rows|kind_position|source_rows_for|all_source_rows|rows_where|recheck_shares|total|set_watched_local|fetch_state|loading_initial|cur_source_state|seed_sources_for_test|set_pinned_for_test|land_pin_for_test|seed_pins_for_test|retry_source|cur_source_idx|sorts|set_sort_by_key|set_unwatched|set_genre_by_id|genres|land_directory|rail_available|resolve_section|maybe_discover|maybe_discover_with|queue_discovery_for_test|discovery_spawn_refused|land_discovery|apply_discovery|addressed|run|discover_pump|controlled_discover|pump|maybe_spawn|seed_two_source_table_for_test|seed_registered_table_for_test|seed_items_for_test|seed_letter_counts_for_test|seed_query_choices_for_test|append_section_for_test'
 browse_hub_facades='pump_spawns|invalidate|tick_all|shelves|publication|snapshot|seed_shelves_for_test|seed_landscape_for_test|spawn|land'
 browse_store_facades='hubs_snapshot|listing_snapshot|reset_bootstrap_for_test|take_bootstrap_token|with_active|active_owner|activate|with_activation|controlled_discover_active|seed_items_active_for_test|queue_discovery_active_for_test|apply|pump|discover_pump'
+# Scan only module-level declarations. A plain grep cannot tell a retired free facade from a
+# receiver method with the same word (and historically also missed indentation and modifiers).
+browse_free_declarations() {
+  local names="$1" file
+  shift
+  for file in "$@"; do
+    awk -v names="$names" '
+      function braces(s, n) { n=gsub(/\{/, "{", s); n-=gsub(/\}/, "}", s); return n }
+      {
+        # Rust declarations in this surface are single-line signatures; depth 0 is the module.
+        if (depth == 0 && $0 ~ "^[[:space:]]*((pub([[:space:]]*\\([^)]*\\))?|const|async|unsafe|extern([[:space:]]*\\\"[^\\\"]*\\\")?)[[:space:]]+)*fn[[:space:]]+(" names ")([<[:space:](])")
+          print FILENAME ":" NR ":" $0
+        depth += braces($0)
+        if (depth < 0) depth = 0
+      }
+    ' "$file"
+  done
+}
 browse_owner_matches=$({
   grep -nE '^[[:space:]]*static (mut )?[A-Z][A-Z_0-9]*:.*(BrowseState|BrowseAdapter|BrowseStore)|static (ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE)' \
     "$SRC/browse/mod.rs" "$SRC/stores/browse.rs" 2>/dev/null || true
-  grep -nE "^(pub\(crate\) |pub )?fn ($browse_facades)(<|\()" "$SRC/browse/mod.rs" 2>/dev/null || true
-  grep -nE "^(pub\(crate\) |pub )?fn ($browse_hub_facades)(<|\()" "$SRC/browse/section_hubs.rs" 2>/dev/null || true
-  grep -nE '^pub\(crate\) fn snapshot\(' "$SRC/browse/view.rs" 2>/dev/null || true
-  grep -nE "^(pub\(crate\) |pub )?fn ($browse_store_facades)(<|\()" "$SRC/stores/browse.rs" 2>/dev/null || true
+  browse_free_declarations "$browse_facades" "$SRC/browse/mod.rs"
+  browse_free_declarations "$browse_hub_facades" "$SRC/browse/section_hubs.rs"
+  browse_free_declarations 'snapshot' "$SRC/browse/view.rs"
+  browse_free_declarations "$browse_store_facades" "$SRC/stores/browse.rs"
   grep_code "(crate::browse|crate::stores::browse|stores::browse)::($browse_facades|$browse_store_facades)\(" "$SRC"
 } | sort -u)
 if [ -z "$browse_owner_matches" ]; then
