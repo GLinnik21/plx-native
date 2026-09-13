@@ -80,13 +80,6 @@ fn is_first_run_consent(a: &AppArg) -> bool {
     matches!(a, AppArg::FirstRunConsent(_))
 }
 
-/// Keeps the screen-owned compatibility gate linked until that lane switches its own callers to
-/// the retained directory contract. Application routing uses `stores::browse::onboard::asks`.
-#[allow(dead_code)]
-fn compatibility_onboard_asks() -> bool {
-    crate::screens::onboard::asks()
-}
-
 /// Core-side shape of the Chrome refresh boundary. The retained directory is explicit here now;
 /// the UI consumer lane can replace the compatibility call without changing Bridge again.
 fn refresh_chrome(
@@ -95,12 +88,9 @@ fn refresh_chrome(
     directory: crate::stores::browse::DirectoryView<'_>,
     captured: Option<(&crate::plex::session::CurrentProfile, &crate::plex::session::Session)>,
 ) {
-    // Chrome still owns its compatibility read until the consumer wave. Taking the publication
-    // here prevents another Bridge call site from being added without the owner input.
-    let _ = directory;
     match captured {
-        Some(captured) => chrome.refresh_with_profile(measure, Some(captured)),
-        None => chrome.refresh(measure),
+        Some(captured) => chrome.refresh_with_profile(measure, directory, Some(captured)),
+        None => chrome.refresh(measure, directory),
     }
 }
 
@@ -1616,7 +1606,8 @@ fn frame_ingest(
     // `DrawFrame` (`ui::popover`'s panel and scrim, the profile chip's redraw, the glass track's
     // settled test, the navblur prototype). One writer, immediately after the container's own
     // frame, from the container's own transition — see `ui::nav`'s module doc.
-    let tab = d.nav.tabs.stack.pending_dest().and_then(pill_of_arg);
+    let tab = d.nav.tabs.stack.pending_dest()
+        .and_then(|arg| pill_of_arg(arg, rig.directory.view()));
     crate::ui::nav::publish(d.nav.tabs.stack.page_alpha(), d.nav.tabs.stack.chrome_alpha(), tab);
     // **The heartbeat's `route=` word IS the top page's own name** (§15.2). It used to be
     // `route_word(app.route)` with this line asserting the two agreed every frame; there is one
@@ -2183,17 +2174,14 @@ pub(crate) fn nav_push_with_return(
 /// The Library's pill is its TYPE, and the argument carries none (which library the grid shows is
 /// the `browse` store's business): the answer is the section the store is pointing at, which
 /// `nav_tab`'s `LibraryCmd::Enter` has already aimed.
-fn pill_of_arg(arg: &AppArg) -> Option<usize> {
+fn pill_of_arg(arg: &AppArg, directory: crate::stores::browse::DirectoryView<'_>) -> Option<usize> {
     use crate::app::chrome::{pill_of, Pill};
     match arg {
-        AppArg::Home => pill_of(Pill::Home),
-        AppArg::Search => pill_of(Pill::Search),
+        AppArg::Home => pill_of(directory, Pill::Home),
+        AppArg::Search => pill_of(directory, Pill::Search),
         AppArg::Library => {
-            let mut d = crate::stores::browse::DirectorySnapshot::default();
-            d.capture();
-            let view = d.view();
-            let kind = view.current().map(|i| view.sections()[i].kind)?;
-            pill_of(Pill::Section(kind))
+            let kind = directory.current().map(|i| directory.sections()[i].kind)?;
+            pill_of(directory, Pill::Section(kind))
         }
         _ => None,
     }
@@ -2222,7 +2210,7 @@ pub(crate) fn nav_tab(
             // Keep the pill the user was standing on under focus. An IDENTITY, not an index: a
             // pill can appear or disappear while the dip runs, and `HomeCmd::FocusStrip` is
             // delivered when Home MOUNTS, not now.
-            if let Some(pill) = focus_pill.filter(|pill| crate::app::chrome::pill_of(*pill).is_some()) {
+            if let Some(pill) = focus_pill.filter(|pill| crate::app::chrome::pill_of(rig.directory.view(), *pill).is_some()) {
                 let want = match pill {
                     Pill::Home => HomeTab::Home,
                     Pill::Search => HomeTab::Search,
