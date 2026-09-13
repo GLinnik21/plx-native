@@ -196,6 +196,30 @@ gate() {
 }
 
 echo "== check-deps =="
+
+# browse-owner: the exact temporary compatibility surface. Wave 0 supplies the direct owned API;
+# consumer waves delete rows from this file together with the symbols they retire. New or stale
+# rows both fail, and the final retirement changes this allowlist to `# count: 0`.
+browse_owner_allow=ci/allow/browse-ownership-migration.txt
+browse_owner_matches=$({
+  grep -nE '^static mut [A-Za-z_][A-Za-z_0-9]*: BrowseState|static ACTIVE: RefCell<Weak<RefCell<BrowseStore>>>|static LEGACY_ADAPTER|static BOOTSTRAP_AVAILABLE' \
+    "$SRC/browse/mod.rs" "$SRC/stores/browse.rs" 2>/dev/null || true
+  grep -nE '^(pub\(crate\) )?fn (legacy(_mut)?|publish_legacy|clone_legacy_state|take_legacy_state|legacy_adapter|take_legacy_adapter|with_active|active_owner|activate|with_activation|take_bootstrap_token|apply|discover_pump|controlled_discover_active|seed_items_active_for_test|queue_discovery_active_for_test)(<|\()' \
+    "$SRC/browse/mod.rs" "$SRC/stores/browse.rs" 2>/dev/null || true
+} | sed -E 's/^([^:]+):[0-9]+:.*static mut[[:space:]]+([A-Za-z_][A-Za-z_0-9]*)[[:space:]]*:.*/\1\t\2/; s/^([^:]+):[0-9]+:.*static (ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE).*/\1\t\2/; s/^([^:]+):[0-9]+:(pub\(crate\) )?fn ([A-Za-z_][A-Za-z_0-9]*).*/\1\t\3/' | sort -u)
+browse_owner_expected=$(grep -v '^#' "$browse_owner_allow" | sed '/^[[:space:]]*$/d' | sort -u)
+browse_owner_declared=$(sed -nE 's/^# count: ([0-9]+)$/\1/p' "$browse_owner_allow")
+browse_owner_count=$(grep -v '^#' "$browse_owner_allow" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+if [ "$browse_owner_declared" != "$browse_owner_count" ]; then
+  fail "browse-owner: allowlist says $browse_owner_declared but contains $browse_owner_count rows"
+elif [ "$browse_owner_matches" = "$browse_owner_expected" ]; then
+  ok "browse-owner: $browse_owner_count compatibility symbol(s), exact and non-growing"
+else
+  echo "    current:"; echo "$browse_owner_matches" | sed 's/^/      /'
+  echo "    allowlist:"; echo "$browse_owner_expected" | sed 's/^/      /'
+  fail "browse-owner: compatibility surface changed without retiring its exact allowlist row"
+fi
+
 # libm: the method-call spelling, OUTSIDE ui/motion.rs (which owns the integrators and their
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
 libm_lines=$(grep_code '\.(exp|ln|log|powf|powi|cbrt|sin|cos|tan|atan2|hypot|mul_add|sin_cos)\(' "$SRC" \
