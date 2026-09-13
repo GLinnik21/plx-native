@@ -1316,6 +1316,7 @@ mod tests {
 
     #[test]
     fn only_the_exact_monotone_request_identity_can_retire_a_flight() {
+        let _guard = crate::testlock::serial();
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
         let first = req(&mut state, "before-reset", Write::Watched, None);
@@ -1342,6 +1343,7 @@ mod tests {
 
     #[test]
     fn deferred_detail_refresh_keeps_the_originating_page_address() {
+        let _guard = crate::testlock::serial();
         let target = crate::stores::viewstate::DetailRefresh {
             sid: SRV_B,
             rk: "origin-show".into(),
