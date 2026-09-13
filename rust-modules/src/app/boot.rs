@@ -271,6 +271,7 @@ fn captured_dev_sources(servers: &[crate::dev::DevServer]) -> Vec<crate::plex::s
     // EVERY store below is keyed to whichever server was current when it was filled, and none
     // of them carries a server in its keys, so leaving one behind means server A's ratingKeys
     // being fetched from server B: the same catalog index opening a different film.
+#[cfg(test)]
 pub(crate) fn activate_server() -> crate::stores::EndpointRefreshSet {
         // the browse store must never carry the previous user's (or server's) cached grid,
         // watched-state angles, or section tabs forward
@@ -295,6 +296,24 @@ pub(crate) fn activate_server() -> crate::stores::EndpointRefreshSet {
         endpoints
 }
 
+fn activate_server_owned(
+    bridge: &mut super::bridge::Bridge,
+) -> crate::stores::EndpointRefreshSet {
+    bridge.browse_run(crate::stores::browse::BrowseCmd::Reset);
+    bridge.refresh_browse_directory();
+    bridge.search_run(crate::stores::search::SearchCmd::Reset);
+    let directory = bridge.browse_directory();
+    let _ = crate::stores::hubs::apply_with_directory(
+        crate::stores::hubs::HubsCmd::Reset, directory).changed;
+    crate::stores::person::apply(crate::stores::person::PersonCmd::Reset);
+    bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Reset);
+    let mut endpoints = crate::stores::hubs::apply_with_directory(
+        crate::stores::hubs::HubsCmd::RefetchHubs, directory).endpoints;
+    endpoints.merge(bridge.browse_discover_pump().endpoints);
+    log("pms: catalog activation queued");
+    endpoints
+}
+
     // Install the PMS client (the read layer AND the playback path) as the CURRENT server,
     // then fetch the catalog. Used by the boot gate and again when a login resolves; a later
     // call for the same address just swaps the token (profile switch).
@@ -302,6 +321,8 @@ pub(crate) fn activate_server() -> crate::stores::EndpointRefreshSet {
     // a certificate is issued for is the `plex.direct` NAME rather than the address behind it
     // (`plex::origin`). Discovery and persisted sessions may supply either scheme; the client
     // routes control and media requests through the matching transport.
+#[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn install_pms(
     origin: &crate::plex::Origin,
     token: &str,
@@ -315,6 +336,20 @@ pub(crate) fn install_pms(
     // Dev activation already installed its captured primary/extras under the acknowledged
     // owner permit. Never reinstall them or reread developer grants after that boundary.
     activate_server()
+}
+
+pub(super) fn install_pms_owned(
+    bridge: &mut super::bridge::Bridge,
+    origin: &crate::plex::Origin,
+    token: &str,
+    tier: Option<crate::plex::probe::Location>,
+    pin: Option<&crate::plex::ResolvePin>,
+    install: &crate::auth::owner::ReadyInstall,
+) -> crate::stores::EndpointRefreshSet {
+    if let crate::auth::owner::ReadyInstall::PrimaryAndExtras(extras) = install {
+        crate::auth::install_captured_registry(origin, token, tier, pin, extras, None);
+    }
+    activate_server_owned(bridge)
 }
 /// Everything before the loop: SDL and the window, GL, text, the poster workers, the boot gate
 /// (login / token / session / picker), every dev trigger read once, and the `App` literal —
@@ -708,7 +743,8 @@ pub(crate) unsafe fn construct(
                 pages.emit(MachineId::Nav, Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
                 pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(), rec, false);
             } else {
-                let endpoints = install_pms(&ready.origin, &ready.token, ready.tier, ready.pin.as_ref(), &ready.install);
+                let endpoints = install_pms_owned(bridge, &ready.origin, &ready.token,
+                    ready.tier, ready.pin.as_ref(), &ready.install);
                 super::bridge::execute_endpoint_outcomes(pages, endpoints);
             }
             BootTo::Home
@@ -734,7 +770,8 @@ pub(crate) unsafe fn construct(
             pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
                 rec, false);
             if let Some(ready) = bridge.take_session_ready() {
-                let endpoints = install_pms(&ready.origin, &ready.token, ready.tier, ready.pin.as_ref(), &ready.install);
+                let endpoints = install_pms_owned(bridge, &ready.origin, &ready.token,
+                    ready.tier, ready.pin.as_ref(), &ready.install);
                 super::bridge::execute_endpoint_outcomes(pages, endpoints);
                 // Refresh only AFTER installing the captured primary, so a fast accepted
                 // endpoint observation cannot be overwritten by that older boot snapshot.
