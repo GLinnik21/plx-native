@@ -236,17 +236,16 @@ fn controlled_hubs_commands_preserve_normal_store_notice_bookkeeping() {
 fn controlled_admission_records_real_discovery_spawn_refusal() {
     let _serial = crate::testlock::serial();
     crate::plex::reset_servers_for_test();
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     let sid = crate::plex::register_for_test("s00000001", "127.0.0.1", 9, "s00000002", "s00000003");
     assert!(crate::plex::set_current(sid));
     let mt = unsafe { crate::task::MainThread::assume() };
     let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
     let mut io = HomeIo { replay:false,preferences:Default::default(),requests:Vec::new(),admissions:Default::default(),
         failure:None,profile:publisher.snapshot() };
-    crate::browse::with_refused_discovery_for_test(|| io.discovery());
+    let stores = crate::stores::Stores::default();
+    io.discovery_owned_with(&stores, &mut |_| false);
     assert_eq!(io.requests.len(), 1);
     assert_eq!(io.requests[0]["admitted"], serde_json::json!(false), "real refusal must be recorded");
-    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     crate::plex::reset_servers_for_test();
 }
 

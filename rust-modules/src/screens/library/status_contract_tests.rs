@@ -1,5 +1,5 @@
 use super::super::{readout, LibraryScreen, Readout, FILTER, LIBRARY_GROUP, RETRY, SORT, STATUS_GROUP, TOOLBAR_GROUP};
-use crate::browse::{SecFetch, SecKind, SrcGroup, SourceState, SrcRow};
+use crate::stores::browse::{SecFetch, SecKind, SrcGroup, SourceState, SrcRow};
 use crate::screens::registry::{LibraryLike, PageMemory};
 use crate::ui::fixture::FixtureMeasure;
 use crate::ui::consts::SCR_W;
@@ -73,11 +73,11 @@ impl Fixture {
             Self::section(0, 1, "Cinema", true),
             Self::section(1, 2, "Television", false),
         ]);
-        Self { listing, directory, hubs: crate::stores::browse::hubs_snapshot(), measure: FixtureMeasure }
+        Self { listing, directory, hubs: crate::stores::browse::HubsSnapshot::empty(), measure: FixtureMeasure }
     }
 
-    fn section(section: usize, key: i64, title: &str, current: bool) -> crate::browse::view::SectionView {
-        crate::browse::view::SectionView {
+    fn section(section: usize, key: i64, title: &str, current: bool) -> crate::stores::browse::SectionView {
+        crate::stores::browse::SectionView {
             borrowed: false,
             sid: Some(crate::plex::ServerId::from_raw(0)),
             key,
