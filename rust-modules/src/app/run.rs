@@ -2044,8 +2044,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         let endpoints = app.bridge.viewstate_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
         crate::stores::person::pump();
-        if let Some(keep) = crate::stores::viewstate::take_detail_refresh() {
-            refresh_content(app, keep);
+        if let Some(target) = app.bridge.take_detail_refresh() {
+            refresh_content(app, target);
         }
         // …and the cross-source resolve it kicked off. Route-unconditional for the same reason,
         // and separate because it lands one round trip per source LATER than the page does —

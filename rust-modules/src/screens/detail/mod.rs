@@ -2290,7 +2290,11 @@ impl DetailScreen {
                             } else {
                                 crate::viewstate::Write::Unwatched
                             },
-                            detail: Some(String::new()),
+                            detail: Some(crate::stores::viewstate::DetailRefresh {
+                                sid: d.sid,
+                                rk: d.rk.clone(),
+                                keep: None,
+                            }),
                             guid: d.guid.clone(),
                         }),
                     )));

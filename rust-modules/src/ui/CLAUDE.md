@@ -584,16 +584,18 @@ rule), and `Dispatcher::state_hash` is folded into the recorder frame as the `tr
 for 5b.
 
 **Phase 4 (2026-09-07) put the STORES behind one vocabulary and one step — `rust-modules/src/stores/`,
-designed in `docs/stores-as-machines.md`.** Browse is now the first physical owner: each
-`app::bridge::Bridge` owns a `Stores::browse` `BrowseStore` with per-instance state, worker
-adapter and notice. Its PAGE/GENRE/LETTER/SRC/HUB mailboxes and single-flight flags are fields of
-that adapter, not process-wide state. `stores::StoreCmd` remains the complete mutation vocabulary;
-owned screens emit `AppFx::Store`, and `app/bridge.rs` delivers Browse commands to the owning
-machine. Browse retirement Wave 2 removed the active selector, global publication, bootstrap
+designed in `docs/stores-as-machines.md`.** Browse and ViewState are now physical owners: each
+`app::bridge::Bridge` owns a `Stores` aggregate containing a `BrowseStore` and `ViewStateStore`,
+each with per-instance state, worker adapter and notice. Browse's PAGE/GENRE/LETTER/SRC/HUB
+mailboxes and ViewState's queue/flight/retry/refresh/mailbox state are fields of those owners, not
+process-wide state. Both rotate their adapter on reset so a late old worker cannot enter the new
+identity; ViewState additionally lands only an exact monotone request ID. `stores::StoreCmd`
+remains the complete mutation vocabulary; owned screens emit `AppFx::Store`, and `app/bridge.rs`
+delivers Browse and ViewState commands to the owning machines. Browse retirement Wave 2 removed the active selector, global publication, bootstrap
 handoff and free read/mutation shims: screens read per-owner retained `DirectoryView`/`ListingView`/
 `HubsView` publications, and fixtures that seed Browse own a `BrowseStore` or `Stores` before
 capturing those publications. Synchronous app boundaries call that explicit owner directly.
-`app/bridge.rs` drains the aggregate Browse notice
+`app/bridge.rs` drains both owned notices
 and the other stores' compatibility notices once per frame into `Dispatcher::store_changed`, so
 a migrated screen hears `StoreChanged` for its own effect and for a changed landing. Store state
 is NOT in the recorder's hash yet (the phase-2 anchor fixture pins `state_fp`).

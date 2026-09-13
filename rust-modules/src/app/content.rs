@@ -402,6 +402,22 @@ mod library_publication_tests {
         dispatcher.input.press.cancel();
         assert!(allowed(&dispatcher, false, true));
     }
+
+    #[test]
+    fn deferred_viewstate_refresh_cannot_retarget_the_page_navigated_to_later() {
+        let sid = crate::plex::ServerId::from_raw(2);
+        let target = crate::stores::viewstate::DetailRefresh {
+            sid,
+            rk: "origin".into(),
+            keep: Some("episode".into()),
+        };
+        let origin = AppArg::Content(ContentArg::Detail { sid, rk: "origin".into() });
+        let later = AppArg::Content(ContentArg::Detail { sid, rk: "later".into() });
+
+        assert!(detail_refresh_matches(&origin, &target));
+        assert!(!detail_refresh_matches(&later, &target),
+            "landing after navigation must still address the Detail that emitted the write");
+    }
 }
 
 fn home_menu_from_deck(ret: &ReturnState<u32, PageMemory>) -> bool {
@@ -458,14 +474,14 @@ pub(crate) fn restore_played_entry(app: &mut App) {
     }
 }
 
-pub(crate) fn refresh_content(app: &mut App, keep: String) {
-    let Some(loaded) = crate::metadata::current() else { return };
+pub(crate) fn refresh_content(
+    app: &mut App,
+    target: crate::stores::viewstate::DetailRefresh,
+) {
     // A write may finish after Person has covered its Detail origin. That origin still
     // owns the metadata and must hear the reconciliation before Back uncovers it.
-    let Some(entry) = app.pages.nav.tabs.stack.entries.iter().rev().find(|e| {
-        matches!(&e.arg, AppArg::Content(ContentArg::Detail { sid, rk })
-            if *sid == loaded.sid && *rk == loaded.rk)
-    }) else { return };
+    let Some(entry) = app.pages.nav.tabs.stack.entries.iter().rev()
+        .find(|e| detail_refresh_matches(&e.arg, &target)) else { return };
     let AppArg::Content(ContentArg::Detail { sid, rk }) = &entry.arg else { return };
     let Some(instance) = entry.inst.as_ref().map(|i| i.id) else { return };
     let memory = if app.pages.nav.top_page().is_some_and(|top| top.id == entry.id) {
@@ -475,7 +491,12 @@ pub(crate) fn refresh_content(app: &mut App, keep: String) {
     let spot = spot.spot;
     let cmd = crate::stores::metadata::MetadataCmd::RequestDetail { sid: *sid, rk: rk.clone() };
     app.pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
-        Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore { spot, episode: (!keep.is_empty()).then_some(keep) }))));
+        Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore { spot, episode: target.keep }))));
     app.pages.emit(MachineId::Nav, Fx::App(crate::screens::registry::AppFx::Store(
         crate::stores::StoreId::Metadata, crate::stores::StoreCmd::Metadata(cmd))));
+}
+
+fn detail_refresh_matches(arg: &AppArg, target: &crate::stores::viewstate::DetailRefresh) -> bool {
+    matches!(arg, AppArg::Content(ContentArg::Detail { sid, rk })
+        if *sid == target.sid && *rk == target.rk)
 }

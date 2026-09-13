@@ -1,117 +1,135 @@
-//! The view-state WRITE queue, as a machine over `crate::viewstate` (`docs/stores-as-machines.md`).
+//! The physically owned view-state write queue (`docs/stores-as-machines.md`). Each production
+//! `Bridge` owns one [`ViewStateStore`]: main-thread state, an `Arc` worker adapter, and notice.
 
 use crate::plex::ServerId;
-use crate::ui::machine::{Cx, Effects, Handled, Machine};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
-use super::{StoreEv, StoreId};
+/// The exact Detail page a completed burst must reconcile. `keep` is the episode whose filmstrip
+/// position survives the reload; `None` is the page hero's own watch toggle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DetailRefresh {
+    pub(crate) sid: ServerId,
+    pub(crate) rk: String,
+    pub(crate) keep: Option<String>,
+}
 
-#[derive(Clone, Debug)]
+/// Every mutation of the view-state write store.
+#[derive(Clone)]
 pub(crate) enum ViewStateCmd {
-    /// Ask the item's server to change `(sid, rk)`'s view state; every local surface flips at
-    /// once. Answers `false` when the write never left (an unregistered server slot).
     Request {
         sid: ServerId,
         rk: String,
         write: crate::viewstate::Write,
-        /// What to re-read when it lands — see `viewstate::request`.
-        detail: Option<String>,
+        /// The originating Detail page, if this press should reconcile one after the burst.
+        detail: Option<DetailRefresh>,
+        /// Portable item identity when the caller has the exact item's guid; empty asks the worker
+        /// to resolve it from `(sid, rk)`.
         guid: String,
     },
-    /// The profile/account switch.
     Reset,
 }
 
-pub(crate) struct ViewStateStore;
-
-/// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
-#[cfg_attr(not(test), allow(dead_code))] // Compatibility facade retained for the next ownership stage.
-pub(crate) fn apply(cmd: ViewStateCmd) -> bool {
-    super::apply(super::StoreCmd::ViewState(cmd)).changed
+/// One ViewState owner. Reset rotates `adapter` before clearing `state`, so a detached old worker
+/// can only complete into the retired mailbox it captured.
+pub(crate) struct ViewStateStore {
+    state: crate::viewstate::ViewStateState,
+    adapter: Arc<crate::viewstate::ViewStateAdapter>,
+    notice_gen: AtomicU32,
+    notice_dirty: AtomicBool,
 }
 
-/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
-/// `viewstate::run` — its arms called `pub(crate)` mutators (`request`, `reset`) across this
-/// module boundary; those two are private to `viewstate.rs` now and this is their only door.
-pub(super) fn run(cmd: ViewStateCmd) -> bool {
-    // `crate::viewstate`'s statics are a crate global reached from both `apply` above and
-    // `crate::stores::apply(StoreCmd::ViewState(..))` directly (some fixtures deliver a
-    // `StoreCmd` without going through this module's `apply`) — guard the one point both funnel
-    // through. See `lib.rs::testlock` and D5.
-    #[cfg(test)]
-    crate::testlock::assert_held("the viewstate store (apply)");
-    let answer = crate::viewstate::run(cmd);
-    super::bump(StoreId::ViewState);
-    answer
-}
-
-/// Owner-aware command path. `browse` is synchronous because the optimistic edit is part of the
-/// command's same-frame answer, not deferred work.
-pub(crate) fn run_with_owners(
-    cmd: ViewStateCmd,
-    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
-    hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
-) -> bool {
-    #[cfg(test)]
-    crate::testlock::assert_held("the viewstate store (owned apply)");
-    let answer = crate::viewstate::run_with_owners(cmd, browse, hubs);
-    super::bump(StoreId::ViewState);
-    answer
-}
-
-/// Test/compatibility owner path without a retained Home directory. Production Bridge delivery
-/// uses [`run_with_owners`] so every Hubs edit carries the frame's directory policy.
-pub(crate) fn run_with_browse(
-    cmd: ViewStateCmd,
-    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
-) -> bool {
-    #[cfg(test)]
-    crate::testlock::assert_held("the viewstate store (compatibility apply)");
-    let answer = crate::viewstate::run_with_browse(cmd, browse);
-    super::bump(StoreId::ViewState);
-    answer
-}
-
-/// The route-unconditional landing the loop runs every frame.
-pub(crate) fn pump() -> super::EndpointRefreshSet {
-    let busy = crate::viewstate::is_busy();
-    let endpoints = crate::viewstate::pump();
-    // a landing is what turns "busy" off; the refresh it owes is raised through the stores it
-    // touches (hubs, the detail re-read), so the notice here is the queue's own state
-    super::note(StoreId::ViewState, busy != crate::viewstate::is_busy());
-    endpoints
-}
-
-/// Owner-aware landing pass. Browse receives delayed fan-out edits and section-hub invalidation;
-/// Home's refetch is scoped by the same retained directory at the application boundary.
-pub(crate) fn pump_with_owners(
-    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
-    hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
-) -> super::EndpointRefreshSet {
-    let busy = crate::viewstate::is_busy();
-    let endpoints = crate::viewstate::pump_with_owners(browse, hubs);
-    super::note(StoreId::ViewState, busy != crate::viewstate::is_busy());
-    endpoints
-}
-
-/// `crate::viewstate::take_detail_refresh`'s door (D3): the frame loop used to call that
-/// `pub(crate)` fn directly, naming `crate::viewstate::` rather than going through this store —
-/// the one confirmed production bypass the D3 census found. The drain itself stays in
-/// `viewstate.rs` (it only reads state [`pump`] above already owns, on the main thread, once a
-/// frame — a landing-adjacent door, not a screen-facing mutator); this is just the sanctioned
-/// path to it.
-pub(crate) fn take_detail_refresh() -> Option<String> {
-    crate::viewstate::take_detail_refresh()
-}
-
-impl<H: super::StoreEffectHost> Machine<H> for ViewStateStore {
-    type Ev = StoreEv<ViewStateCmd>;
-    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        match ev {
-            StoreEv::Cmd(c) => {
-                run(c.clone());
-            }
-            StoreEv::Pump { .. } => pump().emit(fx),
+impl Default for ViewStateStore {
+    fn default() -> Self {
+        Self {
+            state: Default::default(),
+            adapter: Arc::new(Default::default()),
+            notice_gen: AtomicU32::new(0),
+            notice_dirty: AtomicBool::new(false),
         }
-        Handled::Yes
+    }
+}
+
+impl ViewStateStore {
+    fn bump(&self) -> u32 {
+        self.notice_dirty.store(true, Ordering::Relaxed);
+        self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub(crate) fn gen(&self) -> u32 {
+        self.notice_gen.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn take_notice(&self) -> Option<u32> {
+        self.notice_dirty.swap(false, Ordering::Relaxed).then(|| self.gen())
+    }
+
+    /// Synchronous command path. Optimistic edits reach every supplied owner before this returns.
+    pub(crate) fn run(
+        &mut self,
+        cmd: ViewStateCmd,
+        browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+        hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
+    ) -> bool {
+        if matches!(&cmd, ViewStateCmd::Reset) {
+            self.adapter = Arc::new(Default::default());
+        }
+        let answer = self.state.run(&self.adapter, cmd, browse, hubs);
+        self.bump();
+        answer
+    }
+
+    /// Route-unconditional landing pass for this owner's adapter.
+    pub(crate) fn pump(
+        &mut self,
+        browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+        hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
+    ) -> super::EndpointRefreshSet {
+        let busy = self.state.is_busy();
+        let endpoints = self.state.pump(&self.adapter, browse, hubs);
+        if busy != self.state.is_busy() {
+            self.bump();
+        }
+        endpoints
+    }
+
+    pub(crate) fn take_detail_refresh(&mut self) -> Option<DetailRefresh> {
+        self.state.take_detail_refresh()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_inflight_for_test(&mut self, sid: ServerId, rk: &str) {
+        self.state.hold_inflight_for_test(sid, rk);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owe_hubs_refresh_for_test(&mut self) {
+        self.state.owe_hubs_refresh_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_ownership_fixture_for_test(&mut self) {
+        self.state.seed_ownership_fixture(&self.adapter);
+        self.bump();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ownership_fixture_for_test(&self) -> crate::viewstate::OwnershipFixture {
+        self.state.ownership_fixture(&self.adapter)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn late_completion_for_test(&self) -> Box<dyn FnOnce()> {
+        self.state.late_completion(&self.adapter)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_post_reset_flight_for_test(&mut self) {
+        self.state.seed_post_reset_flight();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn adapter_for_test(&self) -> Arc<crate::viewstate::ViewStateAdapter> {
+        Arc::clone(&self.adapter)
     }
 }

@@ -4584,6 +4584,44 @@ impl BrowseScopeFixture {
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok — browse-owner", r.stdout)
 
+    def test_viewstate_owner_gate_rejects_a_republished_free_state_facade(self):
+        """A free pump can only reach process state; the owned spelling requires a receiver."""
+        for declaration in (
+            "pub(crate) fn pump() {}\n",
+            "#[inline]\npub(super)\nconst fn\nis_busy() -> bool { false }\n",
+        ):
+            with self.subTest(declaration=declaration):
+                r = self._prepend("viewstate.rs", "\n" + declaration)
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, out)
+                self.assertIn("viewstate-owner:", out)
+
+    def test_viewstate_owner_gate_rejects_storage_transport_and_selector_statics(self):
+        fixtures = (
+            ("viewstate.rs", "static mut QUEUE: Vec<()> = Vec::new();\n"),
+            ("viewstate.rs", "static MAIL: std::sync::Mutex<Option<()>> = std::sync::Mutex::new(None);\n"),
+            ("stores/viewstate.rs", "static RETIRED: Option<ViewStateStore> = None;\n"),
+            ("stores/viewstate.rs", "thread_local! {\n    static ACTIVE: () = ();\n}\n"),
+        )
+        for relpath, declaration in fixtures:
+            with self.subTest(declaration=declaration):
+                r = self._prepend(relpath, "\n" + declaration)
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, out)
+                self.assertIn("viewstate-owner:", out)
+
+    def test_viewstate_owner_gate_accepts_receiver_bound_owned_methods(self):
+        fixture = """
+struct ViewStateOwnerGateFixture;
+impl ViewStateOwnerGateFixture {
+    pub(crate) fn pump(&mut self) {}
+    pub(crate) fn is_busy(&self) -> bool { false }
+}
+"""
+        r = self._prepend("viewstate.rs", fixture)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok — viewstate-owner", r.stdout)
+
     def test_threads_gate_catches_a_bare_thread_spawn_after_use_std_thread(self):
         """The gate used to match only the fully-qualified `std::thread::spawn(` spelling, so a
         file that does `use std::thread;` and then calls the bare `thread::spawn(` — exactly the

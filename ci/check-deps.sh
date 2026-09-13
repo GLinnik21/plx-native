@@ -208,11 +208,11 @@ browse_store_facades='hubs_snapshot|listing_snapshot|reset_bootstrap_for_test|ta
 # receiver method with the same word (and historically also missed indentation and modifiers).
 # Scope is counted from Rust tokens, not raw braces: comments (including nested block comments),
 # strings (ordinary, raw and byte) and character literals may all contain brace-shaped data.
-browse_declarations() {
-  local names="$1" file
-  shift
+owner_declarations() {
+  local names="$1" selectors="$2" types="$3" file
+  shift 3
   for file in "$@"; do
-    awk -v names="$names" '
+    awk -v names="$names" -v selectors="$selectors" -v types="$types" '
       function blanks(n, s) { s=""; while (n-- > 0) s=s " "; return s }
       function hashes(n, s) { s=""; while (n-- > 0) s=s "#"; return s }
 
@@ -254,13 +254,13 @@ browse_declarations() {
 
       function selector_static(s, prefix) {
         prefix="(^|[^[:alnum:]_])static[[:space:]]+(mut[[:space:]]+)?"
-        return s ~ (prefix "(ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE)([^[:alnum:]_]|$)")
+        return s ~ (prefix "(" selectors ")([^[:alnum:]_]|$)")
       }
 
       function retired_module_decl(s, prefix) {
         prefix="(^|[^[:alnum:]_])static[[:space:]]+(mut[[:space:]]+)?"
         return retired_fn(s) || selector_static(s) ||
-          s ~ (prefix "[A-Z][A-Z_0-9]*[[:space:]]*:.*(BrowseState|BrowseAdapter|BrowseStore)")
+          s ~ (prefix "[A-Z][A-Z_0-9]*[[:space:]]*:.*(" types ")")
       }
 
       function opens_thread_local(s) {
@@ -368,10 +368,14 @@ browse_declarations() {
   done
 }
 browse_owner_matches=$({
-  browse_declarations "$browse_facades" "$SRC/browse/mod.rs"
-  browse_declarations "$browse_hub_facades" "$SRC/browse/section_hubs.rs"
-  browse_declarations 'snapshot' "$SRC/browse/view.rs"
-  browse_declarations "$browse_store_facades" "$SRC/stores/browse.rs"
+  owner_declarations "$browse_facades" 'ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE' \
+    'BrowseState|BrowseAdapter|BrowseStore' "$SRC/browse/mod.rs"
+  owner_declarations "$browse_hub_facades" 'ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE' \
+    'BrowseState|BrowseAdapter|BrowseStore' "$SRC/browse/section_hubs.rs"
+  owner_declarations 'snapshot' 'ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE' \
+    'BrowseState|BrowseAdapter|BrowseStore' "$SRC/browse/view.rs"
+  owner_declarations "$browse_store_facades" 'ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE' \
+    'BrowseState|BrowseAdapter|BrowseStore' "$SRC/stores/browse.rs"
   grep_code "(crate::browse|crate::stores::browse|stores::browse)::($browse_facades|$browse_store_facades)\(" "$SRC"
 } | sort -u)
 if [ -z "$browse_owner_matches" ]; then
@@ -379,6 +383,24 @@ if [ -z "$browse_owner_matches" ]; then
 else
   echo "$browse_owner_matches" | sed 's/^/    /'
   fail "browse-owner: retired Browse compatibility surface returned"
+fi
+
+# viewstate-owner: ViewState's physical state, Arc transport and notice live on ViewStateStore.
+# Zero tolerance, no allowlist: a free facade or storage/transport static can only select process
+# state, which would silently reconnect separate Bridges and let a retired worker cross reset.
+viewstate_facades='apply|run|run_with_browse|run_with_owners|pump|pump_with_owners|is_busy|take_detail_refresh|request|request_with_browse|request_with_owners|reset|hold_inflight_for_test|owe_hubs_refresh_for_test|seed_ownership_fixture_for_test|ownership_fixture_for_test|late_completion_for_test|seed_post_reset_flight_for_test'
+viewstate_selectors='ACTIVE|OWNER|QUEUE|SENT|RETRY_CD|WANT_HUBS|WANT_DETAIL|MAIL|VIEWSTATE|VIEW_STATE|LEGACY_ADAPTER'
+viewstate_owner_matches=$({
+  owner_declarations "$viewstate_facades" "$viewstate_selectors" \
+    'ViewStateState|ViewStateAdapter|ViewStateStore|Req|Completion|Done' \
+    "$SRC/viewstate.rs" "$SRC/stores/viewstate.rs"
+  grep_code "(crate::viewstate|crate::stores::viewstate|stores::viewstate)::($viewstate_facades)\(" "$SRC"
+} | sort -u)
+if [ -z "$viewstate_owner_matches" ]; then
+  ok "viewstate-owner: zero global storage, transport, selectors, and free facades"
+else
+  echo "$viewstate_owner_matches" | sed 's/^/    /'
+  fail "viewstate-owner: retired ViewState compatibility surface returned"
 fi
 
 # libm: the method-call spelling, OUTSIDE ui/motion.rs (which owns the integrators and their

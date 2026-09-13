@@ -1029,10 +1029,13 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
         Fx::App(AppFx::Store(StoreId::ViewState,
             crate::stores::StoreCmd::ViewState(ViewStateCmd::Request {
                 sid, rk, write, detail, guid,
-            }))) => Some((*sid, rk.as_str(), *write, detail.as_deref(), guid.as_str())),
+            }))) => Some((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str())),
         _ => None,
     }).collect();
-    assert_eq!(addressed, [(sid, "movie", crate::viewstate::Write::Watched, Some(""), "")],
+    assert_eq!(addressed, [(sid, "movie", crate::viewstate::Write::Watched,
+        Some(&crate::stores::viewstate::DetailRefresh {
+            sid, rk: "movie".into(), keep: None,
+        }), "")],
         "Detail must address the typed ViewState command to its owning Bridge");
     assert!(!crate::metadata::current().unwrap().watched,
         "the screen must not call the process-global compatibility facade itself");
