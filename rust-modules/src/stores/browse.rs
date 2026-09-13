@@ -8,7 +8,9 @@ use crate::ui::machine::{Cx, Effects, Handled, Machine};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
-use super::{StoreEv, StoreId};
+use super::StoreEv;
+#[cfg(test)]
+use super::StoreId;
 
 #[allow(unused_imports)] // Shared owner vocabulary; some members are feature/test specific.
 pub(crate) use crate::browse::{
