@@ -590,9 +590,10 @@ adapter and notice. Its PAGE/GENRE/LETTER/SRC/HUB mailboxes and single-flight fl
 that adapter, not process-wide state. `stores::StoreCmd` remains the complete mutation vocabulary;
 owned screens emit `AppFx::Store`, and `app/bridge.rs` delivers Browse commands to the owning
 machine. Browse retirement Wave 2 removed the active selector, global publication, bootstrap
-handoff and free read/mutation shims: screens read retained `DirectoryView`/`ListingView`/
-`HubsView` values, and fixtures that seed Browse own a `BrowseStore` or `Stores`. Synchronous app
-boundaries call that explicit owner directly. `app/bridge.rs` drains the aggregate Browse notice
+handoff and free read/mutation shims: screens read per-owner retained `DirectoryView`/`ListingView`/
+`HubsView` publications, and fixtures that seed Browse own a `BrowseStore` or `Stores` before
+capturing those publications. Synchronous app boundaries call that explicit owner directly.
+`app/bridge.rs` drains the aggregate Browse notice
 and the other stores' compatibility notices once per frame into `Dispatcher::store_changed`, so
 a migrated screen hears `StoreChanged` for its own effect and for a changed landing. Store state
 is NOT in the recorder's hash yet (the phase-2 anchor fixture pins `state_fp`).

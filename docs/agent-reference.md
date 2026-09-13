@@ -501,11 +501,12 @@ which the linking section explains is load-bearing rather than tidy.
   `Bridge` by `Stores::browse` (`BrowseStore`), including its `BrowseState`, worker adapter and
   notice; the former PAGE/GENRE/LETTER/SRC/HUB worker state is no longer process-global. Owned
   screens emit `AppFx::Store`, and `app/bridge.rs` delivers it to the owning machine. A command
-  that changes observable state raises the store's notice. The old
-  `crate::browse::*` reads are temporary compatibility views over the active owner's publication,
-  while `stores::browse::apply(Cmd)` remains a synchronous compatibility shim for legacy callers
-  and tests. The aggregate notice drain in `app/bridge.rs` delivers `StoreChanged` to live pages;
-  the other stores still retain their compatibility global/mailbox implementations.
+  that changes observable state raises the store's notice. Browse has no active-owner compatibility
+  reads and no `stores::browse::apply(Cmd)` shim: consumers receive per-owner retained
+  `DirectoryView`/`ListingView`/`HubsView` publications, and fixtures own a `BrowseStore` or
+  `Stores` before capturing those publications. The aggregate notice drain in `app/bridge.rs`
+  delivers `StoreChanged` to live pages; the other stores still retain their compatibility
+  global/mailbox implementations.
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Four** callers in a lab build and three in every other, each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
@@ -1075,15 +1076,14 @@ you get without waking a television. What it covers today, by module:
   mailboxes contend across modules — a per-module mutex cannot see that, because the season
   generation also moves under `pump_detail`), and `pms`'s compatibility catalog statics are still
   shared. Browse is the exception: a production `Bridge` owns its own `BrowseStore`, adapter and
-  notice, so separate owners do not share Browse state or landings; tests that touch the legacy
-  compatibility publication still use the crate-wide lock. Those locks are load-bearing, not
-  incidental — hold one for anything that touches the shared registry, compatibility state or the
-  app frame.
+  notice, so separate owners do not share Browse state or landings; Browse fixtures use their own
+  `BrowseStore`/`Stores` and retained publications. Those locks are load-bearing, not incidental
+  — hold one for anything that touches the shared registry, compatibility state or the app frame.
   **Since 2026-09-10 the lock also records WHICH THREAD holds it, and the stores ASSERT it.** A
   mutex nobody is obliged to take is a convention, and a convention broken by one test in two
   thousand does not fail — it hands some other module's test a wiped store, at a rate that reads
-  as flakiness. Browse's owned reset path (`BrowseCmd::Reset`), the compatibility publication
-  helpers, `plex::servers::reset_for_test` and the whole app frame
+  as flakiness. Browse's owned reset path (`BrowseCmd::Reset`), `plex::servers::reset_for_test`
+  and the whole app frame
   (`app::bridge::frame_with_results`, which drains the aggregate notices and pumps every store)
   call `testlock::assert_held`, so an unguarded write is now a deterministic panic in
   the culprit rather than an intermittent failure in a bystander. That is how
