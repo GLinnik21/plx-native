@@ -860,16 +860,24 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* CONFIRMED. ui/press.rs:144 `pub fn is_long(now: u32) -> bool` has ZERO call sites — `rg -n is_long` returns only the definition, the module doc at ui/press.rs:5, and the ui/CLAUDE.md mention. Activation map: ui/library.rs:442-473 `on_ok()` returns a bare `Action::Card` for `Area::Grid` (and `click()` at :718-720 does the same), app.rs:2284/1746 routes it to `open_library_card` (app.rs:641-649) which always opens Detail. ui/library.rs:75-81 `enum Action { None, GoHome, Card }` — no third verb. There is also no OPTIONS/context key to bind: ui/consts.rs:44-51 defines only CH▲/CH▼ (33/34) and PAUS
 
 - **Sort/filter selections are not persisted across app restarts** — `minor` / `small`  
-  The official client remembers each library's sort and filter between sessions. Ours keeps them in a process-lifetime static: quit the app (or switch profile and back) and every section is back to titleSort ascending, no genre, unwatched off.  
-  *Where:* `browse.rs` (serialize `{section_key → (sort key, desc, unwatched, genre id)}` on change,
+  The official client remembers each library's sort and filter between sessions. Ours keeps them only
+  in the Bridge-owned BrowseStore's in-memory state: quit the app (or switch profile and back) and
+  every section is back to titleSort ascending, no genre, unwatched off.
+  *Where:* `rust-modules/src/stores/browse.rs` and `rust-modules/src/browse/mod.rs` (serialize
+  `{section_key → (sort key, desc, unwatched, genre id)}` on change,
   restore it when asynchronous section discovery lands), reusing the existing atomic JSON
   persistence pattern.
-  *Verified:* CONFIRMED. browse.rs:98-99 `static mut SECTIONS` / `static mut STATES` are plain process statics; every discovered section gets a fresh `SecState::default()` at browse.rs:226 (sort_idx 0, sort_desc false, unwatched false, genre None — browse.rs:78-96), and `reset()` (browse.rs:176-193) drops the whole table on every `install_pms` (app.rs:352). No serialization anywhere in browse.rs. I checked the crate's entire on-disk write surface: `rg -n "fs::write|File::create|write_all|serde_json::to_string"` finds only plex/session.rs:130-147 (the auth.json session store) plus two test-harness writes in 
+  *Verified:* CONFIRMED. `Stores::browse` gives each Bridge its own `BrowseState`, but that state
+  is in memory only; `BrowseCmd::Reset` clears it on an account/profile switch, and no Browse
+  persistence path restores sort, direction, genre or unwatched state after a process restart.
+  The compatibility publication is only a temporary read view of that owner, not persistence. I
+  checked the crate's on-disk write surface: `rg -n "fs::write|File::create|write_all|serde_json::to_string"`
+  finds the auth/session store plus test-harness writes, but no Browse state serialization.
 
 - **No way to enter the grid with a preset query (a hub's "See All")** — `minor` / `medium`  
-  In the official client every hub row has a "See All" that opens the library grid pre-sorted/pre-filtered to that hub (Recently Added → the grid sorted by addedAt desc). Our grid can only ever be entered at whatever query the section last remembered — `enter()` takes a section index and nothing else, and neither the sort nor the filter can be set programmatically from outside the screen.  
-  *Where:* `browse.rs` (an `enter_with(section, sort_key, filters)` that stages a query by KEY rather than by menu index, applied before the first page fetch), `ui/library.rs::enter`, and the hub-heading activation in `ui/home.rs`/`app.rs`.  
-  *Verified:* CONFIRMED. `pub(crate) fn enter(sec: usize)` at ui/library.rs:178 is the sole entry point, called from app.rs:912, app.rs:1720 and app.rs:1849 — section index only, and it deliberately restores the REMEMBERED view (`restore_view()`, :185/193-203). browse.rs's query mutators are `set_sort(idx)` (:301), `set_genre(Option<usize>)` (:339) and `toggle_unwatched()` (:321) — the first two index into `st.sorts`/`st.genres`, which are empty until the server menus land (browse.rs:543-549 sends an EMPTY sort until then), so there is no by-key staging path at all. `rg -ni "see all|see_all|seeall"` over th
+  In the official client every hub row has a "See All" that opens the library grid pre-sorted/pre-filtered to that hub (Recently Added → the grid sorted by addedAt desc). Our grid can only ever be entered at whatever query the section last remembered — the owned Library uses a `SectionAddress` and `BrowseCmd::Addressed` for its own controls, but no external hub action supplies a preset query.
+  *Where:* `rust-modules/src/stores/browse.rs` (`SectionAddress`/`LibraryWork::Commit`), `rust-modules/src/screens/library/`, and the missing hub-heading activation in the owned Home/app path.
+  *Verified:* CONFIRMED. The Browse command vocabulary can apply sort/filter edits emitted by the Library itself, but no `See All` effect or preset-query entry point exists from a hub. The retained per-Bridge state restores only what that BrowseStore already remembered during its lifetime; it does not provide a hub-specific preset. A tree-wide search finds no `See All` implementation.
 
 - **Grid posters carry a title/year only while focused** — `polish` / `small`  
   The reference grid labels every poster with an ellipsized title and the year underneath. Ours draws bare posters and puts the title + year only under the single focused card, so scanning an unfamiliar library means walking focus cell by cell — noticeably worse for shows whose posters don't carry the name.  

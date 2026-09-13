@@ -311,8 +311,9 @@ struct DirectoryData {
     sections: Vec<SectionView>,
 }
 
-/// Owned by the frame bridge (later BrowseStore), never a new global. Source prose is rebuilt
-/// only when the table, source facts or chosen section changes, not at every prepare/draw split.
+/// Retained by the Bridge-owned `BrowseStore` and captured from its `BrowseState`, never a new
+/// process-global owner. Source prose is rebuilt only when the table, source facts or chosen
+/// section changes, not at every prepare/draw split.
 #[derive(Clone)]
 pub(crate) struct DirectorySnapshot {
     preferred: [Option<usize>; 2],

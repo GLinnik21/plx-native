@@ -567,7 +567,8 @@ static FAVS: Mutex<Vec<(ServerId, i64, bool)>> = Mutex::new(Vec::new());
 static FAV_GEN: AtomicU32 = AtomicU32::new(0);
 
 /// Take the favourite snapshot and publish the generation it belongs to. Main thread only — it
-/// reads `browse`'s statics.
+/// reads Browse's compatibility publication; `app/bridge.rs` activates the current Bridge-owned
+/// BrowseStore before this store pumps.
 fn snapshot_favs() {
     FAV_GEN.store(crate::browse::sections_gen(), Ordering::SeqCst);
     *FAVS.lock().unwrap_or_else(|e| e.into_inner()) = crate::browse::favorite_sections();
@@ -1208,7 +1209,7 @@ fn tag_hit(t: &crate::plex::Tag, sid: ServerId, favs: &[(ServerId, i64, bool)]) 
 }
 
 /// Drop everything — the account changed, so both the query and the results belong to someone
-/// else. Called beside `browse::reset()`.
+/// else. Called beside the Browse `BrowseCmd::Reset` command.
 fn reset() {
     supersede();
     VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);

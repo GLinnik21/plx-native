@@ -1,7 +1,7 @@
 //! The Library table and its per-section listing, as a machine over `crate::browse`
-//! (`docs/stores-as-machines.md`). The vocabulary is [`BrowseCmd`]; [`BrowseStore`] owns the
-//! main-thread state, worker adapter and notice while `crate::browse` retains the implementation
-//! and the compatibility read publication.
+//! (`docs/stores-as-machines.md`). The vocabulary is [`BrowseCmd`]; each [`BrowseStore`] owns its
+//! main-thread state, worker adapter and notice while `crate::browse` retains the core
+//! implementation and a compatibility read publication for legacy callers.
 
 use crate::plex::ServerId;
 use crate::ui::machine::{Cx, Effects, Handled, Machine};
@@ -425,11 +425,11 @@ pub(crate) fn apply(cmd: BrowseCmd) -> bool {
     super::apply(super::StoreCmd::Browse(cmd)).changed
 }
 
-/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself
+/// The compatibility entry point for the store's command runner. D3 moved the match itself
 /// (`addressed` included) into `browse::run` — it called `pub(crate)` mutators across this
-/// module boundary; those are private to `browse/mod.rs` now and this is their only door. The
-/// bump-vs-note bookkeeping this function used to do inline moved with it (see `browse::run`'s
-/// own doc for why that needed no help from `note`, which is private to this module).
+/// module boundary; those are private to `browse/mod.rs` now and this is their compatibility door.
+/// The production `Bridge` path reaches the owning [`BrowseStore`] through `Machine::step`; this
+/// shim remains for legacy callers and tests.
 pub(super) fn run(cmd: BrowseCmd) -> bool {
     // `crate::browse`'s temporary holder is reached from both `apply` above and
     // `crate::stores::apply(StoreCmd::Browse(..))` directly (some fixtures deliver a `StoreCmd`
@@ -449,8 +449,9 @@ pub(super) fn run(cmd: BrowseCmd) -> bool {
     })
 }
 
-/// The landing pass the Library screen runs once a frame while it is up: pages, menu data, the
-/// roster, the shelves. Answers `true` when the store changed.
+/// Compatibility entry point for the landing pass: pages, menu data, the roster and shelves.
+/// Production Library work reaches the per-Bridge store through `app/bridge.rs`; this remains for
+/// legacy callers and tests. Answers `true` when the store changed.
 #[cfg(test)]
 pub(crate) fn pump() -> super::StoreOutcome {
     with_active(BrowseStore::pump).unwrap_or_else(|| {
@@ -460,8 +461,9 @@ pub(crate) fn pump() -> super::StoreOutcome {
     })
 }
 
-/// The roster half alone — what Home and Search run to learn about a friend's libraries without
-/// fetching any page.
+/// Compatibility entry point for the roster half alone — what Onboard, Home and Search run to
+/// learn about a friend's libraries without fetching any page. Production Browse work still
+/// resolves to the active Bridge-owned store rather than a second global owner.
 pub(crate) fn discover_pump() -> super::EndpointRefreshSet {
     with_active(BrowseStore::discover_pump)
         .map(|outcome| outcome.endpoints).unwrap_or_else(crate::browse::discover_pump)

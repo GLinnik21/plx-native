@@ -621,11 +621,11 @@ pub(super) fn kick(sec: usize) {
 
 /// Start ONE fetch for whichever armed section is owed one, if the single flight is free.
 ///
-/// This is where the global claim and the per-section `owed` bit meet, and having it in one place
-/// is what makes "a refresh cannot be dropped" checkable: every path that wants a fetch sets
-/// `owed` and calls here, and `owed` survives a busy flight, a refused `spawn_small` and a backoff
-/// alike. `tick_all` calls it every frame, so a section blocked by another's fetch is picked up on
-/// the frame that one lands.
+/// This is where the per-BrowseStore adapter claim and the per-section `owed` bit meet, and having
+/// it in one place is what makes "a refresh cannot be dropped" checkable: every path that wants a
+/// fetch sets `owed` and calls here, and `owed` survives a busy flight, a refused `spawn_small`
+/// and a backoff alike. `tick_all` calls it every frame, so a section blocked by another's fetch is
+/// picked up on the frame that one lands.
 fn pump_spawns() {
     super::legacy_mut().hubs_pump_spawns(&super::legacy_adapter());
 }
@@ -645,9 +645,10 @@ pub(crate) fn tick_all() -> bool {
     super::legacy_mut().hubs_tick_all(&super::legacy_adapter())
 }
 
-/// The accessors a screen uses. Absent section = no shelves and `Fetching`, which is the same
-/// answer a section that has never been armed gives, and is the safe one: a layout built from it
-/// commits no geometry.
+/// Compatibility accessors for the legacy publication. Production screens use the retained
+/// snapshots exposed by the active Bridge-owned `BrowseStore`. Absent section = no shelves and
+/// `Fetching`, which is the same answer a section that has never been armed gives, and is the safe
+/// one: a layout built from it commits no geometry.
 pub(crate) fn shelves(sec: usize) -> &'static [Shelf] {
     super::legacy().hubs_shelves(sec)
 }
@@ -1725,7 +1726,7 @@ mod tests {
     }
 
     /// **A refresh blocked behind another section's fetch is not LOST.** The single flight is one
-    /// global claim (one television, one screen), so `spawn` returns early while somebody else is
+    /// BrowseStore-wide claim, so `spawn` returns early while another section in the same owner is
     /// out — and before 2026-09-05 nothing recorded that this section still wanted one, after which
     /// `kick` also returned early because the section WAS published and had no failures. Its
     /// Continue Watching row then stayed stale for the rest of the session.

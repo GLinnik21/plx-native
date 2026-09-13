@@ -1,5 +1,9 @@
 //! browse — the Library screen's per-section paged catalog.
 //!
+//! Production ownership is in `stores::browse::BrowseStore`, one instance per app Bridge. This
+//! module supplies the core state transitions plus temporary compatibility views and shims for
+//! callers that have not moved to the owned path.
+//!
 //! Sibling of `pms.rs`'s hub catalog, which stays hub-only (256-cap, rebuilt wholesale by
 //! `pms`'s worker-driven hub catalog); this store pages arbitrarily large sections without blocking the
 //! main loop. Data model: one [`SecItems`] per section — a PAGE-CHUNKED table sized to the
@@ -529,6 +533,8 @@ impl BrowseAdapter {
     }
 }
 
+// Compatibility-only worker transport used when the legacy facade is active. Production workers
+// capture the adapter belonging to their Bridge-owned BrowseStore.
 thread_local! {
     static LEGACY_ADAPTER: std::cell::RefCell<Arc<BrowseAdapter>> =
         std::cell::RefCell::new(Arc::new(BrowseAdapter::default()));
@@ -1806,6 +1812,9 @@ fn legacy_mut() -> &'static mut BrowseState {
     unsafe { &mut *addr_of_mut!(LEGACY) }
 }
 
+// Compatibility publication only: production reads come from the active Bridge-owned store's
+// retained snapshots. These helpers remain so legacy callers can observe a coherent copy while
+// the ownership migration finishes.
 pub(crate) fn publish_legacy(state: &BrowseState) {
     let publication = state.clone();
     *legacy_mut() = publication;
@@ -1922,13 +1931,13 @@ fn requery() {
 
 // ---- public surface: sections ---------------------------------------------------------------
 
-/// Wipe the whole store (sections, states, caches) and supersede everything in flight.
-/// Called on every `install_pms` — a profile/account switch must never show the previous
-/// user's cached grid, watched-state angles, or section tabs (pms.rs's hub catalog is
-/// rebuilt wholesale on the same event; this is the browse twin).
+/// Compatibility implementation of [`crate::stores::browse::BrowseCmd::Reset`]. The production
+/// path runs the same reset through the owning `BrowseStore`; a profile/account switch must never
+/// show the previous user's cached grid, watched-state angles, or section tabs (pms.rs's hub
+/// catalog is rebuilt wholesale on the same event; this is the browse twin).
 fn reset() {
-    // The section table is a crate global, and emptying it under another module's test is exactly
-    // the pollution `testlock` exists to stop — see `lib.rs::testlock`.
+    // This compatibility publication is shared by legacy readers, and emptying it under another
+    // module's test is exactly the pollution `testlock` exists to stop — see `lib.rs::testlock`.
     #[cfg(test)]
     crate::testlock::assert_held("browse's section table (reset)");
     let adapter = adapter();
@@ -2009,9 +2018,9 @@ fn sync_roster() {
         // the existing whole-store reset is the safe removal primitive and supersedes landings.
         reset();
     }
-    // One borrow of the consolidated compatibility value for the whole reconciliation. Before
-    // BrowseState these were independent statics; re-borrowing LEGACY while holding one source's
-    // `&mut` would alias the whole value even when the next write is only a generation field.
+    // One borrow of the consolidated compatibility value for the whole reconciliation. Production
+    // callers reconcile their own BrowseState; this fallback keeps the legacy publication's source
+    // table internally consistent.
     let store = legacy_mut();
     let known = store.sources.len();
     for sid in live {
@@ -3557,7 +3566,7 @@ pub(crate) fn rail_available() -> bool {
 }
 // ---- remembered view ------------------------------------------------------------------------
 
-/// Resolve an addressed Library command without leaking a borrowed global section table.
+/// Resolve an addressed Library command without leaking a borrow of the compatibility publication.
 #[cfg(test)]
 pub(crate) fn resolve_section(epoch: u32, sid: ServerId, key: i64) -> Option<usize> {
     legacy().resolve_section(epoch, sid, key)
@@ -3565,8 +3574,9 @@ pub(crate) fn resolve_section(epoch: u32, sid: ServerId, key: i64) -> Option<usi
 
 // ---- source discovery, off the main thread ---------------------------------------------------
 
-/// What a discovery worker is being asked for. Two phases per source, one worker at a time
-/// process-wide: the roster is a handful of servers and none of it is on a user's critical path.
+/// What a discovery worker is being asked for. Two phases per source, one worker at a time within
+/// the owning BrowseStore: the roster is a handful of servers and none of it is on a user's
+/// critical path.
 enum SrcJob {
     /// its section list
     Sections,
@@ -5568,11 +5578,11 @@ mod tests {
 
     // ---- the three-state fetch machine ---------------------------------------------------------
     //
-    // These drive `pump`, which reports to `ui::idle`'s process-global flag — the exact obligation
-    // `ui/xfade.rs` inherited when its `tick` started doing the same — so they take the CRATE-wide
-    // serial lock, not a module-local one. They also leave no section table behind them: with
-    // `STATES` seeded and `SECTIONS` empty, `maybe_spawn` returns before it can reach the network,
-    // so nothing here spawns a worker.
+    // These drive the compatibility `pump`, which reports to `ui::idle`'s process-global flag —
+    // the exact obligation `ui/xfade.rs` inherited when its `tick` started doing the same — so
+    // they take the CRATE-wide serial lock, not a module-local one. They also leave no
+    // compatibility section table behind them: with one default state and no sections,
+    // `maybe_spawn` returns before it can reach the network, so nothing here spawns a worker.
 
     /// One default state with no section table, used by store-only tests that never land a page.
     fn seed_one_section() {

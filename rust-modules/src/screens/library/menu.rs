@@ -947,7 +947,7 @@ mod tests {
 
     #[test]
     fn sources_keep_server_identity_and_align_recheck_after_separator() {
-        // with_cx retains a snapshot of the process-global browse store.
+        // with_cx retains a snapshot of the active Bridge-owned BrowseStore's compatibility view.
         let _guard = crate::testlock::serial();
         let (groups, sections) = source_sections();
         let draft = source_draft(11, 0, &groups, &sections);
