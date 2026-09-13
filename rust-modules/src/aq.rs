@@ -108,6 +108,58 @@ pub(crate) fn aq_push(
     key: c_int,
     es: c_int,
 ) -> c_int {
+    aq_push_park(q, data, len, pts, key, es, None)
+}
+
+/// [`aq_push`] that runs `drain` whenever the queue is full.
+///
+/// Original playback parks on this path on the same thread as AVIO. The drain keeps the media
+/// socket's TCP window from collapsing to zero while the consumer holds the cap.
+///
+/// `drain` returns whether another short poll is useful: `true` means bounce still has room so
+/// the peer may still fill; `false` means cap/abort/I/O failure, so this waits on `not_full`
+/// instead of waking every 10 ms.
+pub(crate) fn aq_push_with_drain(
+    q: *mut AuQueue,
+    data: *const c_uchar,
+    len: c_int,
+    pts: i64,
+    key: c_int,
+    es: c_int,
+    mut drain: impl FnMut() -> bool,
+) -> c_int {
+    aq_push_park(q, data, len, pts, key, es, Some(&mut drain))
+}
+
+fn aq_park_deadline() -> libc::timespec {
+    let mut tv = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
+    unsafe {
+        libc::gettimeofday(&mut tv, ptr::null_mut());
+    }
+    let mut nsec = i64::from(tv.tv_usec) * 1000 + 10_000_000;
+    let mut sec = tv.tv_sec;
+    if nsec >= 1_000_000_000 {
+        sec += 1;
+        nsec -= 1_000_000_000;
+    }
+    libc::timespec {
+        tv_sec: sec,
+        tv_nsec: nsec as libc::c_long,
+    }
+}
+
+fn aq_push_park(
+    q: *mut AuQueue,
+    data: *const c_uchar,
+    len: c_int,
+    pts: i64,
+    key: c_int,
+    es: c_int,
+    mut drain: Option<&mut dyn FnMut() -> bool>,
+) -> c_int {
     if q.is_null() || len < 0 {
         return -1;
     }
@@ -126,7 +178,31 @@ pub(crate) fn aq_push(
         }
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
         while (*q).queued_bytes > (*q).max_bytes && (*q).abort == 0 {
-            libc::pthread_cond_wait(ptr::addr_of_mut!((*q).not_full), ptr::addr_of_mut!((*q).m));
+            if let Some(drain) = drain.as_mut() {
+                libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+                let keep_polling = drain();
+                libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+                if (*q).queued_bytes > (*q).max_bytes && (*q).abort == 0 {
+                    if keep_polling {
+                        let ts = aq_park_deadline();
+                        libc::pthread_cond_timedwait(
+                            ptr::addr_of_mut!((*q).not_full),
+                            ptr::addr_of_mut!((*q).m),
+                            &ts,
+                        );
+                    } else {
+                        libc::pthread_cond_wait(
+                            ptr::addr_of_mut!((*q).not_full),
+                            ptr::addr_of_mut!((*q).m),
+                        );
+                    }
+                }
+            } else {
+                libc::pthread_cond_wait(
+                    ptr::addr_of_mut!((*q).not_full),
+                    ptr::addr_of_mut!((*q).m),
+                );
+            }
         }
         if (*q).abort != 0 {
             libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
@@ -292,6 +368,111 @@ mod tests {
 
         aq_abort(&mut *q);
         assert!(unsafe { aq_is_aborted(&*q) });
+        aq_destroy(&mut *q);
+    }
+
+    #[test]
+    fn timed_push_invokes_drain_while_the_consumer_holds_the_queue_full() {
+        use std::sync::atomic::AtomicUsize;
+        let mut q = aq_new(8);
+        let q_addr = (&mut *q as *mut AuQueue) as usize;
+        let data = [1u8; 16];
+        assert_eq!(aq_push(&mut *q, data.as_ptr(), 16, 0, 1, 1), 0);
+        let drained = Arc::new(AtomicUsize::new(0));
+        let drained_worker = Arc::clone(&drained);
+        let worker = std::thread::spawn(move || {
+            aq_push_with_drain(q_addr as *mut AuQueue, data.as_ptr(), 16, 0, 1, 1, || {
+                drained_worker.fetch_add(1, Ordering::AcqRel);
+                true
+            })
+        });
+        let started = std::time::Instant::now();
+        while drained.load(Ordering::Acquire) == 0
+            && started.elapsed() < std::time::Duration::from_secs(1)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            drained.load(Ordering::Acquire) > 0,
+            "a full queue must run drain between timed waits"
+        );
+        let n = aq_pop(&mut *q, ptr::null_mut());
+        assert!(!n.is_null());
+        unsafe { libc::free(n as *mut c_void) };
+        assert_eq!(worker.join().unwrap(), 0);
+        aq_destroy(&mut *q);
+    }
+
+    #[test]
+    fn abort_still_tears_down_a_draining_push() {
+        let mut q = aq_new(8);
+        let q_addr = (&mut *q as *mut AuQueue) as usize;
+        let data = [1u8; 16];
+        assert_eq!(aq_push(&mut *q, data.as_ptr(), 16, 0, 1, 1), 0);
+        let worker = std::thread::spawn(move || {
+            aq_push_with_drain(q_addr as *mut AuQueue, data.as_ptr(), 16, 0, 1, 1, || false)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        aq_abort(&mut *q);
+        assert_eq!(worker.join().unwrap(), -1);
+        aq_destroy(&mut *q);
+    }
+
+    #[test]
+    fn a_full_bounce_does_not_spin_the_drain_at_ten_ms() {
+        use std::sync::atomic::AtomicUsize;
+        let mut q = aq_new(8);
+        let q_addr = (&mut *q as *mut AuQueue) as usize;
+        let data = [1u8; 16];
+        assert_eq!(aq_push(&mut *q, data.as_ptr(), 16, 0, 1, 1), 0);
+        let drained = Arc::new(AtomicUsize::new(0));
+        let drained_worker = Arc::clone(&drained);
+        let worker = std::thread::spawn(move || {
+            aq_push_with_drain(q_addr as *mut AuQueue, data.as_ptr(), 16, 0, 1, 1, || {
+                drained_worker.fetch_add(1, Ordering::AcqRel);
+                false
+            })
+        });
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let calls = drained.load(Ordering::Acquire);
+        aq_abort(&mut *q);
+        assert_eq!(worker.join().unwrap(), -1);
+        assert!(
+            calls <= 2,
+            "drain returning false must cond_wait, not wake at 10 ms; got {calls} calls"
+        );
+        aq_destroy(&mut *q);
+    }
+
+    #[test]
+    fn a_drain_that_still_has_room_is_called_more_than_once_before_the_consumer_pops() {
+        use std::sync::atomic::AtomicUsize;
+        let mut q = aq_new(8);
+        let q_addr = (&mut *q as *mut AuQueue) as usize;
+        let data = [1u8; 16];
+        assert_eq!(aq_push(&mut *q, data.as_ptr(), 16, 0, 1, 1), 0);
+        let drained = Arc::new(AtomicUsize::new(0));
+        let drained_worker = Arc::clone(&drained);
+        let worker = std::thread::spawn(move || {
+            aq_push_with_drain(q_addr as *mut AuQueue, data.as_ptr(), 16, 0, 1, 1, || {
+                drained_worker.fetch_add(1, Ordering::AcqRel);
+                true
+            })
+        });
+        let started = std::time::Instant::now();
+        while drained.load(Ordering::Acquire) < 2
+            && started.elapsed() < std::time::Duration::from_secs(1)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            drained.load(Ordering::Acquire) >= 2,
+            "a drain that reports room must be polled again before the consumer pops"
+        );
+        let n = aq_pop(&mut *q, ptr::null_mut());
+        assert!(!n.is_null());
+        unsafe { libc::free(n as *mut c_void) };
+        assert_eq!(worker.join().unwrap(), 0);
         aq_destroy(&mut *q);
     }
 }

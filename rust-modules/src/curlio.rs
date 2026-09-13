@@ -716,6 +716,42 @@ impl CurlSource {
         Ok(src)
     }
 
+    /// Start a new GET on this source's existing `CURLM`. HLS playlist and segment URLs share one
+    /// multi handle so libcurl can keep the TLS session; a fresh easy handle still carries the URL.
+    /// Does not publish a second [`OpenReservation`] — abort stays the handle already registered.
+    pub(crate) fn reopen_until(
+        &mut self,
+        url: &str,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), OpenErr> {
+        if self.abort.is_set() {
+            return Err(OpenErr::Aborted);
+        }
+        if !media_url_allowed(url) {
+            return Err(OpenErr::Local);
+        }
+        let (origin, _) = crate::plex::origin::split(url);
+        let resolve_entry = crate::net::resolve::entry_for(origin.host(), origin.port());
+        if resolve_entry.is_none()
+            && crate::net::refuse_name(origin.host(), crate::net::API.connect_s)
+        {
+            return Err(OpenErr::Local);
+        }
+        self.resolve_entry = resolve_entry
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| OpenErr::Local)?;
+        self.url = CString::new(url).map_err(|_| OpenErr::Local)?;
+        self.off = 0;
+        self.size = -1;
+        self.poisoned = false;
+        {
+            let mut act = lock_active();
+            *act = Some(Arc::clone(&self.abort));
+        }
+        self.start_range_until(0, None, deadline)
+    }
+
     /// Attach a fresh easy handle at byte `at` and pump until its headers are complete.
     fn start(&mut self, at: i64) -> Result<(), OpenErr> {
         self.start_until(at, None)
@@ -938,7 +974,10 @@ impl CurlSource {
                 _ => {}
             }
         }
-        self.validate(at, setup_timeout_at)?;
+        self.validate(at, setup_timeout_at).map_err(|e| {
+            self.stop();
+            e
+        })?;
         if deadline.is_some() {
             // `CURLOPT_TIMEOUT_MS` is a TOTAL request timeout. We use it above only to make the
             // DNS/TLS/header phase obey the caller's open snapshot; leaving it armed would let
@@ -1176,6 +1215,51 @@ impl CurlSource {
         }
     }
 
+    /// Copy bytes already waiting in the multi handle, or readable without blocking.
+    /// Used while Original playback is parked in `aq_push` so TCP's window does not collapse.
+    pub(crate) fn drain_available(&mut self, dst: &mut [u8]) -> c_int {
+        if dst.is_empty() {
+            return 0;
+        }
+        if self.abort.is_set() {
+            return -1;
+        }
+        if self.poisoned || !self.readable {
+            return 0;
+        }
+        for _ in 0..2 {
+            if self.xfer.pending() > 0 {
+                let n = std::cmp::min(dst.len(), self.xfer.pending());
+                dst[..n].copy_from_slice(&self.xfer.buf[self.xfer.pos..self.xfer.pos + n]);
+                self.xfer.pos += n;
+                if self.xfer.pos == self.xfer.buf.len() {
+                    self.xfer.buf.clear();
+                    self.xfer.pos = 0;
+                }
+                self.off += n as i64;
+                return n as c_int;
+            }
+            if self.done {
+                return 0;
+            }
+            if self.perform().is_err() {
+                return -1;
+            }
+            if self.xfer.pending() > 0 {
+                continue;
+            }
+            match multi_wait(self.multi, &self.abort, 0) {
+                Wait::Woken if self.abort.is_set() => return -1,
+                Wait::Failed(rc) => {
+                    self.fail_multi_wait(rc);
+                    return -1;
+                }
+                _ => {}
+            }
+        }
+        0
+    }
+
     /// Record a multi-wait failure as a terminal transport error.
     ///
     /// `curl_multi_wait` returns immediately on error. Treating that as a timeout spins at 100%
@@ -1227,6 +1311,11 @@ impl CurlSource {
     /// The last response's HTTP status — the diagnostics read-out's `dg_http_status`.
     pub(crate) fn status(&self) -> c_int {
         self.xfer.status
+    }
+
+    /// Body fully received and already copied out of the multi buffer.
+    pub(crate) fn body_complete(&self) -> bool {
+        self.done && self.xfer.pending() == 0
     }
 
     /// Signal teardown on THIS source. `player::engine` uses [`abort_active`] instead, since it
@@ -1676,13 +1765,9 @@ mod tests {
     /// A loopback file server that speaks enough HTTP/1.1 for a byte-range pull, and counts BOTH
     /// connections accepted AND requests served.
     ///
-    /// **Two counters, because one of them stopped being enough.** The socket transport sends
-    /// `Connection: close` and reopens per seek, so "did it go back to the server" is exactly the
-    /// accept count. libcurl keeps the connection in the multi handle's cache and REUSES it, which
-    /// is the right behaviour for a media stream — it saves a whole TLS handshake on every seek —
-    /// and it means a successful seek makes no new connection at all. Grading a curl seek on
-    /// accepts alone would therefore assert nothing: refused and succeeded look identical. The
-    /// request count is what moves.
+    /// The socket transport used to send `Connection: close` and reopen per seek. Sequential
+    /// GETs now reuse the fd; a Range seek still closes first, so "did this seek dial" remains
+    /// the accept count. libcurl keeps the connection in the multi handle's cache and REUSES it.
     ///
     /// Keep-alive is likewise not a test convenience: a stand-in that closed after one request
     /// would make our own connection reuse untestable, and a real PMS speaks HTTP/1.1.
@@ -1990,6 +2075,37 @@ mod tests {
                 "…on at most two connections — one is the reuse we want, two is a client that \
                  chose not to; both are correct, three would mean a leak"
             );
+        });
+    }
+
+    #[test]
+    fn reopen_until_reuses_the_multi_for_a_second_get() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Honour, |port, accepts, requests| {
+            let url = format!("http://127.0.0.1:{port}/f.mkv");
+            let mut src = CurlSource::open(&url, 0).expect("open");
+            assert_eq!(read_all(&mut src), BODY);
+            src.reopen_until(&url, None).expect("reopen");
+            assert_eq!(read_all(&mut src), BODY);
+            assert_eq!(requests.load(Ordering::Acquire), 2);
+            assert_eq!(
+                accepts.load(Ordering::Acquire),
+                1,
+                "the second GET must stay on the cached connection"
+            );
+        });
+    }
+
+    #[test]
+    fn reopen_until_does_not_start_a_request_after_abort() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Honour, |port, _, requests| {
+            let url = format!("http://127.0.0.1:{port}/f.mkv");
+            let mut src = CurlSource::open(&url, 0).expect("open");
+            assert_eq!(read_all(&mut src), BODY);
+            src.abort();
+            assert_eq!(src.reopen_until(&url, None), Err(OpenErr::Aborted));
+            assert_eq!(requests.load(Ordering::Acquire), 1);
         });
     }
 

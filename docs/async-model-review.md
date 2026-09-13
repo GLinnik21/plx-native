@@ -53,8 +53,9 @@ Per keypress, in order:
 synchronously when opening the detail page"* (`metadata.rs:470-471`).
 
 Every one of these bottoms out in `plex/client.rs:100/116/121` → `stream.rs`'s blocking raw
-socket, and **each opens a brand-new TCP connection** — `Connection: close` (`stream.rs:233`).
-There is no keep-alive and no pooling, so every round trip pays a fresh handshake.
+socket, and **each control-plane request opens a brand-new TCP connection** (`crate::http`
+allocates a fresh `HttpStream` and `http_close`s it). Media sequential GETs reuse the demux
+socket; that keep-alive is not this main-thread freeze.
 
 **Measured bounds from the code's own constants:** typical direct-play MKV is ~4 serial round
 trips (**≈300 ms–2 s**); the transcode path ~6; the Home→show→season arm ~9-11. When PMS is
