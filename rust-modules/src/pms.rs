@@ -1831,19 +1831,49 @@ fn build_test(n: usize) -> SourceBuild {
 #[cfg(test)]
 pub(crate) fn seed_for_test(items: usize, state: HubState) {
     crate::testlock::assert_held("the pms hub catalog (seed_for_test)");
-    reset();
-    let mut s = Src::new(ServerId::UNSET, String::new());
+    seed_with_scope_for_test(ServerId::UNSET, items, state, &BrowseScope::standalone());
+}
+
+/// Seed a Hubs source that belongs to a real retained Browse directory. Full Bridge fixtures use
+/// this instead of installing an `UNSET` source that owner-scoped roster reconciliation must drop.
+#[cfg(test)]
+pub(crate) fn seed_for_directory_test(
+    sid: ServerId,
+    items: usize,
+    state: HubState,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) {
+    crate::testlock::assert_held("the pms hub catalog (seed_for_directory_test)");
+    assert!(directory.sections().iter().any(|section| section.sid == Some(sid)),
+        "a directory-scoped Hubs fixture requires its server in the retained Browse directory");
+    seed_with_scope_for_test(sid, items, state, &BrowseScope::retained(directory));
+}
+
+#[cfg(test)]
+fn seed_with_scope_for_test(sid: ServerId, items: usize, state: HubState, scope: &BrowseScope) {
+    reset_with_sections_gen(scope.sections_gen);
+    let handle = crate::plex::server_facts(sid)
+        .map(|facts| facts.handle.clone())
+        .unwrap_or_default();
+    let mut s = Src::new(sid, handle);
     s.state = state;
     if items > 0 {
-        s.last = Some(build_test(items));
+        let mut build = build_test(items);
+        for shelf in &mut build.shelves {
+            for item in &mut shelf.items {
+                item.sid = sid;
+            }
+        }
+        s.last = Some(build);
     }
     let srcs = vec![s];
-    let build = merge(&srcs);
+    let build = merge_with_scope(&srcs, scope);
     *lock_srcs() = srcs;
-    // leave `sync_roster` believing it is up to date — otherwise the next `pump` would replace this
-    // synthetic source with whatever the (empty, in a host test) registry holds. BOTH halves of the
-    // fingerprint, or the facts epoch alone reads as a change and rebuilds anyway.
-    SEEN.store(roster_key(), Ordering::Relaxed);
+    // Leave `sync_roster` believing this exact scope is up to date. For a standalone fixture that
+    // preserves the synthetic source against an empty registry; for an owner-bound fixture it
+    // preserves the source whose sid and retained directory were supplied together. BOTH halves
+    // of the fingerprint matter, or the facts epoch alone reads as a change and rebuilds anyway.
+    SEEN.store(roster_key_with_scope(scope), Ordering::Relaxed);
     SEEN_FACTS.store(facts_key(), Ordering::Relaxed);
     commit(build);
 }
@@ -1954,6 +1984,15 @@ pub(crate) fn remove_test_item(rk: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "requires its server in the retained Browse directory")]
+    fn a_directory_scoped_hubs_fixture_refuses_an_empty_browse_publication() {
+        let _guard = crate::testlock::serial();
+        let directory = crate::stores::browse::DirectorySnapshot::default();
+        seed_for_directory_test(
+            ServerId::from_raw(0), 1, HubState::Ready, directory.view());
+    }
 
     // NB every test that touches the catalog statics holds the crate-wide serial lock: they are
     // read from other modules' tests too, which a module-local mutex cannot see. `reset()` doubles
