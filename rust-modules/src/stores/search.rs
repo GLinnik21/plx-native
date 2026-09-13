@@ -1,15 +1,13 @@
-//! The Search data layer, as a machine over `crate::search` (`docs/stores-as-machines.md`).
+//! The Search store boundary over `crate::search` (`docs/stores-as-machines.md`).
 
-use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
-
-use super::{note, StoreEv, StoreId};
+use super::{note, StoreId};
 
 pub(crate) use crate::search::view::SearchSnapshot;
 
 /// Capture the store publication at the dispatcher frame boundary, not during paint.
+#[cfg(test)]
 pub(crate) fn snapshot() -> SearchSnapshot { crate::search::view::snapshot() }
 
-#[allow(dead_code)] // Owner contract consumed when the core dispatcher lane is integrated.
 pub(crate) fn snapshot_with_directory(
     directory: crate::stores::browse::DirectoryView<'_>,
 ) -> SearchSnapshot {
@@ -31,8 +29,6 @@ pub(crate) enum SearchCmd {
     /// The optimistic half of a view-state write, on the result shelves.
     SetWatchedLocal { sid: crate::plex::ServerId, rk: String, on: bool },
 }
-
-pub(crate) struct SearchStore;
 
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
 pub(crate) fn apply(cmd: SearchCmd) -> bool {
@@ -71,30 +67,9 @@ pub(crate) fn run_with_directory(
     answer
 }
 
-/// The screen's once-a-frame pass: the debounce, the spawns, the landings.
-pub(crate) fn pump(dt: f32) -> bool {
-    note(StoreId::Search, crate::search::pump(dt))
-}
-
-#[allow(dead_code)] // Owner contract consumed when the core dispatcher lane is integrated.
 pub(crate) fn pump_with_directory(
     dt: f32,
     directory: crate::stores::browse::DirectoryView<'_>,
 ) -> bool {
     note(StoreId::Search, crate::search::pump_with_directory(dt, directory))
-}
-
-impl<H: Host> Machine<H> for SearchStore {
-    type Ev = StoreEv<SearchCmd>;
-    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
-        match ev {
-            StoreEv::Cmd(c) => {
-                run(c.clone());
-            }
-            StoreEv::Pump { dt } => {
-                pump(*dt);
-            }
-        }
-        Handled::Yes
-    }
 }
