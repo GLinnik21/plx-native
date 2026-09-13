@@ -271,32 +271,7 @@ fn captured_dev_sources(servers: &[crate::dev::DevServer]) -> Vec<crate::plex::s
     // EVERY store below is keyed to whichever server was current when it was filled, and none
     // of them carries a server in its keys, so leaving one behind means server A's ratingKeys
     // being fetched from server B: the same catalog index opening a different film.
-#[cfg(test)]
-pub(crate) fn activate_server() -> crate::stores::EndpointRefreshSet {
-        // the browse store must never carry the previous user's (or server's) cached grid,
-        // watched-state angles, or section tabs forward
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
-        // …and the search store, for the same reason: a query, its results and the recent
-        // terms are all one person's.
-        crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
-        // …and the hub twin: a FAILED fetch now keeps the catalog it already had (so one
-        // wifi hiccup can't blank a populated Home), which makes this the one place that
-        // must still wipe it — otherwise a profile switch whose fetch fails would leave the
-        // previous user's shelves on screen.
-        let _ = crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
-        crate::stores::person::apply(crate::stores::person::PersonCmd::Reset); // ditto for an open person page's shelves
-                                // …and any view-state write still queued or owed a refresh. It belongs to the account
-                                // that pressed it, and the refresh it owes would land on shelves this reset just wiped.
-        crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
-        // Catalog activation is request-only. Home and section discovery both use their
-        // existing worker/mailbox pumps, so a remote endpoint cannot park the SDL loop here.
-        let mut endpoints = crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints;
-        endpoints.merge(crate::stores::browse::discover_pump());
-        log("pms: catalog activation queued");
-        endpoints
-}
-
-fn activate_server_owned(
+pub(super) fn activate_server_owned(
     bridge: &mut super::bridge::Bridge,
 ) -> crate::stores::EndpointRefreshSet {
     bridge.browse_run(crate::stores::browse::BrowseCmd::Reset);
@@ -321,23 +296,6 @@ fn activate_server_owned(
     // a certificate is issued for is the `plex.direct` NAME rather than the address behind it
     // (`plex::origin`). Discovery and persisted sessions may supply either scheme; the client
     // routes control and media requests through the matching transport.
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn install_pms(
-    origin: &crate::plex::Origin,
-    token: &str,
-    tier: Option<crate::plex::probe::Location>,
-    pin: Option<&crate::plex::ResolvePin>,
-    install: &crate::auth::owner::ReadyInstall,
-) -> crate::stores::EndpointRefreshSet {
-    if let crate::auth::owner::ReadyInstall::PrimaryAndExtras(extras) = install {
-        crate::auth::install_captured_registry(origin, token, tier, pin, extras, None);
-    }
-    // Dev activation already installed its captured primary/extras under the acknowledged
-    // owner permit. Never reinstall them or reread developer grants after that boundary.
-    activate_server()
-}
-
 pub(super) fn install_pms_owned(
     bridge: &mut super::bridge::Bridge,
     origin: &crate::plex::Origin,

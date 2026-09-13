@@ -299,7 +299,7 @@ impl SecHubs {
     /// arriving through the one path that did not ask. Whether the ground may move is the SCREEN's
     /// answer and it is already computed every frame, so the first paint goes through
     /// [`SecHubs::commit_staged`] like every later one. At the head — where a page four seconds old
-    /// almost always is — `browse::pump` lands and the screen commits in the SAME frame, so
+    /// almost always is — `BrowseStore::pump` lands and the screen commits in the SAME frame, so
     /// nothing waits.
     fn land_ok(&mut self, shelves: Vec<Shelf>) {
         self.fails = 0;
@@ -615,67 +615,19 @@ fn drop_from_deck(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str) -> boo
     hit
 }
 
-pub(super) fn kick(sec: usize) {
-    super::legacy_mut().hubs_kick(sec, &super::legacy_adapter());
-}
-
-/// Start ONE fetch for whichever armed section is owed one, if the single flight is free.
-///
-/// This is where the per-BrowseStore adapter claim and the per-section `owed` bit meet, and having
-/// it in one place is what makes "a refresh cannot be dropped" checkable: every path that wants a
-/// fetch sets `owed` and calls here, and `owed` survives a busy flight, a refused `spawn_small`
-/// and a backoff alike. `tick_all` calls it every frame, so a section blocked by another's fetch is
-/// picked up on the frame that one lands.
-fn pump_spawns() {
-    super::legacy_mut().hubs_pump_spawns(&super::legacy_adapter());
-}
-
-/// Mark a section's shelves stale — after playback, and after a view-state write. Home already
-/// refetches its hubs for this reason (Continue Watching goes stale otherwise) and a per-section
-/// Continue Watching row needs the matching invalidation. The answer arrives as `Staged`, so a
-/// refresh never moves the grid under the eye.
-fn invalidate(sec: usize) {
-    super::legacy_mut().hubs_invalidate(sec, &super::legacy_adapter());
-}
-
-/// Advance every armed section by one frame. Called from [`super::pump`]; returns whether any
-/// section published something, which is a repaint. A section nobody has [`kick`]ed is inert here,
-/// which is what keeps this module dormant while it is wired in.
-pub(crate) fn tick_all() -> bool {
-    super::legacy_mut().hubs_tick_all(&super::legacy_adapter())
-}
-
-/// Compatibility accessors for the legacy publication. Production screens use the retained
-/// snapshots exposed by the active Bridge-owned `BrowseStore`. Absent section = no shelves and
-/// `Fetching`, which is the same answer a section that has never been armed gives, and is the safe
-/// one: a layout built from it commits no geometry.
-pub(crate) fn shelves(sec: usize) -> &'static [Shelf] {
-    super::legacy().hubs_shelves(sec)
-}
-pub(crate) fn publication(sec: usize) -> Publication {
-    super::legacy().hubs_publication(sec)
-}
-
-/// Capture one section's published shelves and identity in O(1), independent of the loaded item
-/// count. The returned owner remains valid across every later store mutation and reset.
-pub(crate) fn snapshot(sec: usize) -> HubsSnapshot {
-    super::legacy().hubs_snapshot(sec)
-}
-/// Publish `sec`'s staged shelves if the caller says the ground may move. See
-/// [`SecHubs::commit_staged`]; the caller owes a focus re-resolve when this returns `true`.
-pub(super) fn commit_staged(sec: usize, may_move: bool) -> bool {
-    super::legacy_mut().hubs_commit_staged(sec, may_move)
-}
-
 /// Publish a section's shelves directly, for the screen tests that need a document with a shelf
 /// run above the grid. Not a fetch and not a landing: no worker, no gate, no ladder — the shape
 /// only, which is all a geometry or focus-walk assertion is about.
 #[cfg(test)]
-pub(crate) fn seed_shelves_for_test(sec: usize, titles: &[&str], per_row: usize) {
-    let Some(st) = super::state_mut(sec) else {
+pub(crate) fn seed_shelves_for_owner_test(
+    state: &mut super::BrowseState,
+    sec: usize,
+    titles: &[&str],
+    per_row: usize,
+) {
+    let Some(st) = state.state_mut(sec) else {
         return;
     };
-    // Seeding replaces contents within the same section identity, like a normal publication.
     st.hubs = SecHubs {
         revision: st.hubs.revision,
         ..Default::default()
@@ -684,23 +636,21 @@ pub(crate) fn seed_shelves_for_test(sec: usize, titles: &[&str], per_row: usize)
     st.hubs.land_ok(
         titles
             .iter()
-            .map(|t| Shelf {
-                id: (*t).into(),
-                title: (*t).into(),
-                is_continue: shelf_is_continue(t, ""),
-                landscape: false, // poster rows: a geometry test wants the shape it can name
+            .map(|title| Shelf {
+                id: (*title).into(),
+                title: (*title).into(),
+                is_continue: shelf_is_continue(title, ""),
+                landscape: false,
                 items: (0..per_row)
-                    .map(|k| PmsMovie {
-                        rk: format!("{t}-{k}"),
-                        title: format!("{t} {k}"),
+                    .map(|index| PmsMovie {
+                        rk: format!("{title}-{index}"),
+                        title: format!("{title} {index}"),
                         ..Default::default()
                     })
                     .collect(),
             })
             .collect(),
     );
-    // …and PUBLISH it: a landing only stages now, and a seeder exists to give a test a library
-    // that is already composed, not one mid-first-paint.
     st.hubs.commit_staged(true);
 }
 
@@ -708,17 +658,21 @@ pub(crate) fn seed_shelves_for_test(sec: usize, titles: &[&str], per_row: usize)
 /// a show behind them. The half [`seed_shelves_for_test`] deliberately does not do, because a
 /// geometry test wants the poster shape it can name; a test about the episode TILE wants this.
 #[cfg(test)]
-pub(crate) fn seed_landscape_for_test(sec: usize, show: &str) {
-    let Some(st) = super::state_mut(sec) else {
+pub(crate) fn seed_landscape_for_owner_test(
+    state: &mut super::BrowseState,
+    sec: usize,
+    show: &str,
+) {
+    let Some(st) = state.state_mut(sec) else {
         return;
     };
-    for sh in Arc::make_mut(&mut st.hubs.committed).iter_mut() {
-        sh.landscape = true;
-        for m in sh.items.iter_mut() {
-            m.kind = 3;
-            m.show_title = show.into();
-            m.season_index = 1;
-            m.ep_index = 1;
+    for shelf in Arc::make_mut(&mut st.hubs.committed).iter_mut() {
+        shelf.landscape = true;
+        for item in &mut shelf.items {
+            item.kind = 3;
+            item.show_title = show.into();
+            item.season_index = 1;
+            item.ep_index = 1;
         }
     }
     st.hubs.revised();
@@ -731,27 +685,6 @@ pub(crate) fn seed_landscape_for_test(sec: usize, show: &str) {
 ///
 /// This was the sixth store and it was not on the list; `viewstate::edit_local`'s five calls
 /// predate the Library growing shelves of its own.
-pub(super) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
-    super::legacy_mut().hubs_set_watched_local(sid, rk, on)
-}
-
-/// The item has left Continue Watching: drop it from every SECTION DECK that holds it, and nowhere
-/// else. A `*.inprogress.*` row is the only shelf that endpoint changes the membership of.
-pub(super) fn left_the_deck(sid: ServerId, rk: &str) -> bool {
-    super::legacy_mut().hubs_left_the_deck(sid, rk)
-}
-
-/// **Every section's shelves are stale.** The whole-store twin of [`invalidate`], for the two
-/// moments the app already declares Home's hubs stale — a completed playback and a settled burst of
-/// view-state writes. Continue Watching and watch state are exactly what those change, and a
-/// section deck goes stale for the same reason the global one does.
-///
-/// Marks rather than fetches: `owed` is spent by [`pump_spawns`] under the single-flight, so a
-/// twelve-library table costs one request at a time rather than twelve at once.
-pub(super) fn invalidate_all() {
-    super::legacy_mut().hubs_invalidate_all(&super::legacy_adapter());
-}
-
 // ---- the fetch ------------------------------------------------------------------------------
 
 /// One section's shelves, in flight. Same shape as [`super::DirectoryResult`] and for the same
@@ -765,15 +698,6 @@ pub(super) struct HubResult {
     /// `None` is a FAILED fetch — kept distinguishable from a successful answer that happens to be
     /// empty, which on this endpoint is a common and legitimate reply.
     shelves: Option<Vec<Shelf>>,
-}
-
-fn spawn(sec: usize) {
-    super::legacy_mut().hubs_spawn(sec, &super::legacy_adapter());
-}
-
-/// Take the mailbox and apply it. Called from [`super::pump`].
-pub(crate) fn land() -> bool {
-    super::legacy_mut().hubs_land(&super::legacy_adapter())
 }
 
 // ---- the pure half --------------------------------------------------------------------------
@@ -1233,27 +1157,27 @@ mod tests {
         }
     }
 
-    fn seeded_section() -> usize {
-        crate::browse::reset();
-        crate::browse::seed_two_source_table_for_test();
-        let sec = crate::browse::cur();
-        seed_shelves_for_test(sec, &["published"], 3);
-        sec
+    fn seeded_section() -> (super::super::BrowseState, usize) {
+        let mut state = super::super::BrowseState::default();
+        super::super::seed_two_source_table_for_owner_test(&mut state);
+        let sec = state.cur();
+        seed_shelves_for_owner_test(&mut state, sec, &["published"], 3);
+        (state, sec)
     }
 
     #[test]
     fn publication_revision_observes_in_place_deck_removal() {
         let _g = crate::testlock::serial();
-        let sec = seeded_section();
-        seed_shelves_for_test(sec, &["movie.inprogress.1"], 3);
-        let before = snapshot(sec);
+        let (mut state, sec) = seeded_section();
+        seed_shelves_for_owner_test(&mut state, sec, &["movie.inprogress.1"], 3);
+        let before = state.hubs_snapshot(sec);
         let revision = before.view().revision();
         let allocation = Arc::as_ptr(before.data.as_ref().unwrap());
         let item = &before.view().shelves()[0].items[1];
         let (sid, rk) = (item.sid, item.rk.clone());
         drop(before); // No retained reader: the store can mutate the same allocation.
-        assert!(left_the_deck(sid, &rk));
-        let after = snapshot(sec);
+        assert!(state.hubs_left_the_deck(sid, &rk));
+        let after = state.hubs_snapshot(sec);
         assert_eq!(Arc::as_ptr(after.data.as_ref().unwrap()), allocation);
         assert_eq!(after.view().shelves()[0].items.len(), 2);
         assert_ne!(
@@ -1261,45 +1185,43 @@ mod tests {
             revision,
             "pointer equality cannot detect this edit"
         );
-        crate::browse::reset();
     }
 
     #[test]
     fn publication_revision_tracks_commits_not_staging_or_snapshot_reads() {
         let _g = crate::testlock::serial();
-        let sec = seeded_section();
-        let before = snapshot(sec);
+        let (mut state, sec) = seeded_section();
+        let before = state.hubs_snapshot(sec);
         let revision = before.view().revision();
         assert!(revision.is_some());
-        assert_eq!(snapshot(sec).view().revision(), revision);
-        super::super::state_mut(sec)
+        assert_eq!(state.hubs_snapshot(sec).view().revision(), revision);
+        state.state_mut(sec)
             .unwrap()
             .hubs
             .land_ok(vec![row("next")]);
-        assert_eq!(snapshot(sec).view().revision(), revision);
-        assert!(!commit_staged(sec, false));
-        assert_eq!(snapshot(sec).view().revision(), revision);
-        assert!(commit_staged(sec, true));
-        assert_ne!(snapshot(sec).view().revision(), revision);
+        assert_eq!(state.hubs_snapshot(sec).view().revision(), revision);
+        assert!(!state.hubs_commit_staged(sec, false));
+        assert_eq!(state.hubs_snapshot(sec).view().revision(), revision);
+        assert!(state.hubs_commit_staged(sec, true));
+        assert_ne!(state.hubs_snapshot(sec).view().revision(), revision);
         assert_eq!(before.view().revision(), revision);
         assert_eq!(before.view().shelves()[0].title, "published");
-        assert!(!commit_staged(sec, true));
-        assert_eq!(snapshot(usize::MAX).view().revision(), None);
-        crate::browse::reset();
+        assert!(!state.hubs_commit_staged(sec, true));
+        assert_eq!(state.hubs_snapshot(usize::MAX).view().revision(), None);
     }
 
     #[test]
     fn publication_revision_changes_for_visible_watch_edits_but_not_staged_only_edits() {
         let _g = crate::testlock::serial();
-        let sec = seeded_section();
-        let before = snapshot(sec);
+        let (mut state, sec) = seeded_section();
+        let before = state.hubs_snapshot(sec);
         let revision = before.view().revision();
         let item = &before.view().shelves()[0].items[0];
         let (sid, rk) = (item.sid, item.rk.clone());
-        assert!(!set_watched_local(sid, "absent-item", true));
-        assert_eq!(snapshot(sec).view().revision(), revision);
-        assert!(set_watched_local(sid, &rk, true));
-        let edited = snapshot(sec);
+        assert!(!state.hubs_set_watched_local(sid, "absent-item", true));
+        assert_eq!(state.hubs_snapshot(sec).view().revision(), revision);
+        assert!(state.hubs_set_watched_local(sid, &rk, true));
+        let edited = state.hubs_snapshot(sec);
         assert_ne!(edited.view().revision(), revision);
         assert!(!before.view().shelves()[0].items[0].watched);
         assert!(edited.view().shelves()[0].items[0].watched);
@@ -1311,17 +1233,16 @@ mod tests {
             }],
             ..row("staged")
         };
-        super::super::state_mut(sec)
+        state.state_mut(sec)
             .unwrap()
             .hubs
             .land_ok(vec![staged]);
-        assert!(!set_watched_local(sid, "staged-only", true));
-        assert_eq!(snapshot(sec).view().revision(), edited.view().revision());
-        assert!(commit_staged(sec, true));
-        let published = snapshot(sec);
+        assert!(!state.hubs_set_watched_local(sid, "staged-only", true));
+        assert_eq!(state.hubs_snapshot(sec).view().revision(), edited.view().revision());
+        assert!(state.hubs_commit_staged(sec, true));
+        let published = state.hubs_snapshot(sec);
         assert!(published.view().shelves()[0].items[0].watched);
         assert_ne!(published.view().revision(), edited.view().revision());
-        crate::browse::reset();
     }
 
     #[test]
@@ -1341,12 +1262,12 @@ mod tests {
     #[test]
     fn snapshot_acquisition_shares_the_publication_and_captures_its_real_identity() {
         let _g = crate::testlock::serial();
-        let sec = seeded_section();
-        let sid = crate::browse::section_sid(sec).unwrap();
-        let section = crate::browse::sections()[sec].key;
+        let (state, sec) = seeded_section();
+        let sid = state.section_sid(sec).unwrap();
+        let section = state.sections()[sec].key;
 
-        let first = snapshot(sec);
-        let same = snapshot(sec);
+        let first = state.hubs_snapshot(sec);
+        let same = state.hubs_snapshot(sec);
         assert!(
             Arc::ptr_eq(first.data.as_ref().unwrap(), same.data.as_ref().unwrap()),
             "capturing a frame view must not clone shelves or items"
@@ -1358,13 +1279,13 @@ mod tests {
         assert_eq!(
             copied.id(),
             Some(HubsId {
-                epoch: crate::browse::table_epoch(),
+                epoch: state.table_epoch(),
                 sid,
                 section,
             })
         );
 
-        let missing_snapshot = snapshot(usize::MAX);
+        let missing_snapshot = state.hubs_snapshot(usize::MAX);
         let missing = missing_snapshot.view();
         assert_eq!(
             missing.id(),
@@ -1373,25 +1294,24 @@ mod tests {
         );
         assert!(missing.shelves().is_empty());
         assert_eq!(missing.publication(), Publication::Fetching);
-        crate::browse::reset();
     }
 
     #[test]
     fn a_retained_snapshot_survives_commit_staged() {
         let _g = crate::testlock::serial();
-        let sec = seeded_section();
-        crate::browse::state_mut(sec)
+        let (mut state, sec) = seeded_section();
+        state.state_mut(sec)
             .unwrap()
             .hubs
             .land_ok(vec![row("replacement")]);
 
-        let retained = snapshot(sec);
+        let retained = state.hubs_snapshot(sec);
         let old = retained.view();
         assert_eq!(old.publication(), Publication::Staged);
         assert_eq!(old.shelves()[0].title, "published");
-        assert!(commit_staged(sec, true));
+        assert!(state.hubs_commit_staged(sec, true));
 
-        let current = snapshot(sec);
+        let current = state.hubs_snapshot(sec);
         assert!(!Arc::ptr_eq(
             retained.data.as_ref().unwrap(),
             current.data.as_ref().unwrap()
@@ -1403,38 +1323,37 @@ mod tests {
             "published",
             "the old frame stays valid"
         );
-        crate::browse::reset();
     }
 
     #[test]
     fn watched_edits_are_copy_on_write_and_an_unmatched_edit_copies_nothing() {
         let _g = crate::testlock::serial();
-        let sec = seeded_section();
+        let (mut state, sec) = seeded_section();
         let (sid, rk) = {
-            let state = crate::browse::state_mut(sec).unwrap();
-            state.hubs.staged = Some(state.hubs.committed.clone());
-            let item = &state.hubs.committed[0].items[1];
+            let section = state.state_mut(sec).unwrap();
+            section.hubs.staged = Some(section.hubs.committed.clone());
+            let item = &section.hubs.committed[0].items[1];
             (item.sid, item.rk.clone())
         };
 
-        let retained = snapshot(sec);
+        let retained = state.hubs_snapshot(sec);
         let old = retained.view();
-        let staged_before = crate::browse::state_mut(sec)
+        let staged_before = state.state_mut(sec)
             .unwrap()
             .hubs
             .staged
             .as_ref()
             .unwrap()
             .clone();
-        assert!(!set_watched_local(sid, "not-present", true));
-        let after_miss = snapshot(sec);
+        assert!(!state.hubs_set_watched_local(sid, "not-present", true));
+        let after_miss = state.hubs_snapshot(sec);
         assert!(Arc::ptr_eq(
             retained.data.as_ref().unwrap(),
             after_miss.data.as_ref().unwrap()
         ));
         assert!(Arc::ptr_eq(
             &staged_before,
-            crate::browse::state_mut(sec)
+            state.state_mut(sec)
                 .unwrap()
                 .hubs
                 .staged
@@ -1442,8 +1361,8 @@ mod tests {
                 .unwrap()
         ));
 
-        assert!(set_watched_local(sid, &rk, true));
-        let edited = snapshot(sec);
+        assert!(state.hubs_set_watched_local(sid, &rk, true));
+        let edited = state.hubs_snapshot(sec);
         assert!(!Arc::ptr_eq(
             retained.data.as_ref().unwrap(),
             edited.data.as_ref().unwrap()
@@ -1453,31 +1372,29 @@ mod tests {
             "retained data is immutable"
         );
         assert!(edited.view().shelves()[0].items[1].watched);
-        assert!(commit_staged(sec, true));
+        assert!(state.hubs_commit_staged(sec, true));
         assert!(
-            snapshot(sec).view().shelves()[0].items[1].watched,
+            state.hubs_snapshot(sec).view().shelves()[0].items[1].watched,
             "held data was edited too"
         );
-        crate::browse::reset();
     }
 
     #[test]
     fn a_retained_snapshot_survives_reset_and_the_reused_index_gets_a_new_identity() {
         let _g = crate::testlock::serial();
-        let sec = seeded_section();
-        let retained = snapshot(sec);
+        let (mut state, sec) = seeded_section();
+        let retained = state.hubs_snapshot(sec);
         let old = retained.view();
         let old_id = old.id().unwrap();
 
-        crate::browse::reset();
-        assert_eq!(snapshot(sec).view().id(), None);
-        crate::browse::seed_two_source_table_for_test();
-        let replacement_snapshot = snapshot(sec);
+        state.reset();
+        assert_eq!(state.hubs_snapshot(sec).view().id(), None);
+        super::super::seed_two_source_table_for_owner_test(&mut state);
+        let replacement_snapshot = state.hubs_snapshot(sec);
         let replacement = replacement_snapshot.view();
         assert_ne!(replacement.id().unwrap().epoch, old_id.epoch);
         assert_eq!(old.shelves()[0].title, "published");
         assert_eq!(old.id(), Some(old_id));
-        crate::browse::reset();
     }
 
     /// **The first-paint window expiring publishes ZERO shelves**, and the page becomes usable at
@@ -1612,29 +1529,29 @@ mod tests {
         let _g = crate::testlock::serial();
         let _t = crate::plex::session::TempSession::new("deckstage");
         _t.watching("u-deckstage");
-        crate::browse::reset();
-        crate::browse::seed_two_source_table_for_test();
-        let sec = crate::browse::cur();
+        let mut state = super::super::BrowseState::default();
+        super::super::seed_two_source_table_for_owner_test(&mut state);
+        let sec = state.cur();
 
         // a committed deck…
-        seed_shelves_for_test(sec, &["movie.inprogress.1"], 3);
+        seed_shelves_for_owner_test(&mut state, sec, &["movie.inprogress.1"], 3);
         let (sid, rk) = {
-            let st = crate::browse::state_mut(sec).expect("a seeded section");
+            let st = state.state_mut(sec).expect("a seeded section");
             let m = &st.hubs.committed[0].items[1];
             (m.sid, m.rk.clone())
         };
 
         // …and an older refresh held behind it, carrying the same item
         {
-            let st = crate::browse::state_mut(sec).expect("a seeded section");
+            let st = state.state_mut(sec).expect("a seeded section");
             st.hubs.staged = Some(st.hubs.committed.clone());
         }
 
-        let retained = snapshot(sec);
+        let retained = state.hubs_snapshot(sec);
         let old = retained.view();
 
-        assert!(left_the_deck(sid, &rk), "the visible deck loses the row");
-        let edited = snapshot(sec);
+        assert!(state.hubs_left_the_deck(sid, &rk), "the visible deck loses the row");
+        let edited = state.hubs_snapshot(sec);
         assert!(!Arc::ptr_eq(
             retained.data.as_ref().unwrap(),
             edited.data.as_ref().unwrap()
@@ -1646,14 +1563,14 @@ mod tests {
         );
         assert_eq!(edited.view().shelves()[0].items.len(), 2);
         {
-            let st = crate::browse::state_mut(sec).unwrap();
+            let st = state.state_mut(sec).unwrap();
             assert!(st.hubs.committed[0].items.iter().all(|m| m.rk != rk));
         }
 
         // publishing the held answer must not bring it back
-        assert!(commit_staged(sec, true));
+        assert!(state.hubs_commit_staged(sec, true));
         {
-            let st = crate::browse::state_mut(sec).unwrap();
+            let st = state.state_mut(sec).unwrap();
             assert!(
                 st.hubs
                     .committed
@@ -1663,7 +1580,6 @@ mod tests {
                 "the staged set resurrected a row the user removed"
             );
         }
-        crate::browse::reset();
     }
 
     /// **A landing rejected on the client's LIFECYCLE leaves the section still owed a fetch.**

@@ -1630,7 +1630,6 @@ mod root_back_tests {
     #[test]
     fn onboard_back_request_mounts_the_owned_profiles_screen() {
         let _guard = crate::testlock::serial();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         let mut d = crate::ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
         let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
         crate::app::bridge::nav_root(&mut d, crate::screens::registry::AppArg::Onboard);
@@ -1655,6 +1654,5 @@ mod root_back_tests {
         assert!(matches!(d.top_arg(), Some(crate::screens::registry::AppArg::Profiles)));
         assert_eq!(d.top_screen().unwrap().name(), "profiles");
         assert_ne!(d.nav.instance_of(d.nav.top_page().unwrap().id), Some(onboard_instance));
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     }
 }

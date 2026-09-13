@@ -1229,15 +1229,22 @@ mod tests {
     // site inside `cx` below.
     static MEASURE: FixtureMeasure = FixtureMeasure;
 
-    fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, InnerHost> {
+    fn cx_with<'a>(
+        focus: Option<FocusKey<u32>>,
+        directory: crate::stores::browse::DirectoryView<'a>,
+    ) -> Cx<'a, InnerHost> {
         Cx {
-            views: (),
+            views: directory,
             tick: Tick::default(),
             measure: &MEASURE,
             press: PressRead::default(),
             focus: FocusRead { current: focus , ..Default::default() },
             owner: InputOwner::Entry(EntryId(0)),
         }
+    }
+
+    fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, InnerHost> {
+        cx_with(focus, crate::stores::browse::DirectoryView::empty_for_test())
     }
 
     /// Step the surface once and return what it emitted, the way `RouteSurface::forward` would
@@ -2313,15 +2320,30 @@ mod tests {
         struct SurfaceRig {
             mounter: SurfaceMounter,
             measure: FixtureMeasure,
+            stores: crate::stores::Stores,
+            directory: crate::stores::browse::DirectorySnapshot,
             /// How many times BACK reached the root of the ROOT stack (the platform's Home).
             roots: u32,
         }
 
+        impl SurfaceRig {
+            fn new() -> Self {
+                Self {
+                    mounter: SurfaceMounter,
+                    measure: FixtureMeasure,
+                    stores: crate::stores::Stores::default(),
+                    directory: Default::default(),
+                    roots: 0,
+                }
+            }
+        }
+
         impl Rig<InnerHost> for SurfaceRig {
             fn split(&mut self) -> Split<'_, InnerHost> {
+                self.stores.capture_browse(&mut self.directory);
                 Split {
                     mounter: &mut self.mounter,
-                    views: (),
+                    views: self.directory.view(),
                     measure: &self.measure,
                 }
             }
@@ -2382,11 +2404,7 @@ mod tests {
         /// and the surface's entry id.
         fn opened() -> (Dispatcher<InnerHost>, SurfaceRig, EntryId) {
             let mut d: Dispatcher<InnerHost> = Dispatcher::new();
-            let mut rig = SurfaceRig {
-                mounter: SurfaceMounter,
-                measure: FixtureMeasure,
-                roots: 0,
-            };
+            let mut rig = SurfaceRig::new();
             d.request(MachineId::Nav, NavOp::Root(SettingsPage::About));
             frame(&mut d, &mut rig, 0, vec![]);
             d.nav.next_style = Style::Opaque { snapshot: true };
@@ -2428,8 +2446,14 @@ mod tests {
         }
 
         fn consent_opened(page: SettingsPage) -> (Dispatcher<InnerHost>, SurfaceRig, EntryId) {
+            consent_opened_on(page, SurfaceRig::new())
+        }
+
+        fn consent_opened_on(
+            page: SettingsPage,
+            mut rig: SurfaceRig,
+        ) -> (Dispatcher<InnerHost>, SurfaceRig, EntryId) {
             let mut d = Dispatcher::new();
-            let mut rig = SurfaceRig { mounter: SurfaceMounter, measure: FixtureMeasure, roots: 0 };
             d.request(MachineId::Nav, NavOp::Root(SettingsPage::About));
             frame(&mut d, &mut rig, 0, vec![]);
             d.nav.next_style = Style::Opaque { snapshot: true };
@@ -2526,7 +2550,6 @@ mod tests {
             struct ResetSources;
             impl Drop for ResetSources {
                 fn drop(&mut self) {
-                    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
                     crate::plex::reset_servers_for_test();
                 }
             }
@@ -2536,16 +2559,18 @@ mod tests {
             let b = crate::plex::register_for_test("focus-b", "127.0.0.1", 9, "synthetic", "focus-test");
             // The existing fixture pins client identities and marks sections/counts complete:
             // the real Onboard Tick can poll discovery without spawning network work.
-            crate::browse::seed_registered_table_for_test([a, b]);
-            let pins = crate::browse::favorite_sections();
-            let (mut d, mut rig, id) = consent_opened(SettingsPage::Favourites);
+            let mut rig = SurfaceRig::new();
+            rig.stores.browse.borrow_mut().seed_registered_table_for_test([a, b]);
+            rig.stores.capture_browse(&mut rig.directory);
+            let pins = rig.directory.view().favorite_sections().to_vec();
+            let (mut d, mut rig, id) = consent_opened_on(SettingsPage::Favourites, rig);
             seat(&mut d, id, 0);
             frame(&mut d, &mut rig, 32, vec![key(Key::Ok, tick(32))]); // local draft only
             for (round, direction) in [Key::Left, Key::Down].into_iter().enumerate() {
                 let ms = 48 + round as u32 * 32;
                 let screen = &d.nav.entry(id).unwrap().inst.as_ref().unwrap().screen;
                 let mut groups = Vec::new();
-                screen.groups(&cx(None), &mut groups);
+                screen.groups(&cx_with(None, rig.directory.view()), &mut groups);
                 let table = groups.iter().find(|g| g.id == GroupId(0)).unwrap();
                 assert!(table.len > 0, "actual Favourites rows must exist");
                 assert!(groups.iter().any(|g| g.id == GroupId(1) && g.len == 1), "draft offers Done");
@@ -2555,7 +2580,9 @@ mod tests {
                 frame(&mut d, &mut rig, ms + 16, vec![]);
                 assert_eq!(d.focus().unwrap().elem, registry::BAND);
             }
-            assert_eq!(crate::browse::favorite_sections(), pins, "draft navigation cannot persist pins");
+            rig.stores.capture_browse(&mut rig.directory);
+            assert_eq!(rig.directory.view().favorite_sections(), pins,
+                "draft navigation cannot persist pins");
             assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)));
         }
 

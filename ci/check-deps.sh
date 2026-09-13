@@ -194,27 +194,27 @@ gate() {
 
 echo "== check-deps =="
 
-# browse-owner: the exact temporary compatibility surface. Wave 0 supplies the direct owned API;
-# consumer waves delete rows from this file together with the symbols they retire. New or stale
-# rows both fail, and the final retirement changes this allowlist to `# count: 0`.
-browse_owner_allow=ci/allow/browse-ownership-migration.txt
+# browse-owner: Browse has one physical owner per `Stores`; the migration allowlist ended at zero
+# and is deliberately gone. Reject both the old storage/selector machinery and every free
+# state-shaped facade it exposed. Methods on `BrowseState`/`BrowseStore` are intentionally outside
+# this spelling: they require an explicit receiver and therefore cannot select process state.
+browse_facades='legacy_adapter|adapter|take_legacy_adapter|legacy|legacy_mut|publish_legacy|clone_legacy_state|take_legacy_state|sections|sources|source_mut|states|state_mut|cur_state|bump_gen|requery|reset|sections_gen|table_epoch|source_list_gen|query_gen|sync_roster|append_sections|section_count|library_titles|section_title|section_kind|section_sid|cur|handle_of|set_cur|tabs_gen|tab_has_favorite|tab_kinds|tab_count|tab_title|tab_kind|tab_of_kind|tab_section|section_of_kind|remembered_section|load_remembered|lib_refs|resolve_pins|resolve_pins_from|record_pins|first_run_asks|retry_discovery|discovery_state|pinned|pinned_count|is_last_pinned|toggle_pin|apply_pins|repoint_cur|section_sid_is_borrowed|favorite_sections|library_pins|source_groups|cur_kind|source_rows|kind_position|source_rows_for|all_source_rows|rows_where|recheck_shares|total|set_watched_local|fetch_state|loading_initial|cur_source_state|seed_sources_for_test|set_pinned_for_test|land_pin_for_test|seed_pins_for_test|retry_source|cur_source_idx|sorts|set_sort_by_key|set_unwatched|set_genre_by_id|genres|land_directory|rail_available|resolve_section|maybe_discover|maybe_discover_with|queue_discovery_for_test|discovery_spawn_refused|land_discovery|apply_discovery|addressed|run|discover_pump|controlled_discover|pump|maybe_spawn|seed_two_source_table_for_test|seed_registered_table_for_test|seed_items_for_test|seed_letter_counts_for_test|seed_query_choices_for_test|append_section_for_test'
+browse_hub_facades='pump_spawns|invalidate|tick_all|shelves|publication|snapshot|seed_shelves_for_test|seed_landscape_for_test|spawn|land'
+browse_store_facades='hubs_snapshot|listing_snapshot|reset_bootstrap_for_test|take_bootstrap_token|with_active|active_owner|activate|with_activation|controlled_discover_active|seed_items_active_for_test|queue_discovery_active_for_test|apply|pump|discover_pump'
 browse_owner_matches=$({
-  grep -nE '^static mut [A-Za-z_][A-Za-z_0-9]*: BrowseState|static ACTIVE: RefCell<Weak<RefCell<BrowseStore>>>|static LEGACY_ADAPTER|static BOOTSTRAP_AVAILABLE' \
+  grep -nE '^[[:space:]]*static (mut )?[A-Z][A-Z_0-9]*:.*(BrowseState|BrowseAdapter|BrowseStore)|static (ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE)' \
     "$SRC/browse/mod.rs" "$SRC/stores/browse.rs" 2>/dev/null || true
-  grep -nE '^(pub\(crate\) )?fn (legacy(_mut)?|publish_legacy|clone_legacy_state|take_legacy_state|legacy_adapter|take_legacy_adapter|with_active|active_owner|activate|with_activation|take_bootstrap_token|apply|discover_pump|controlled_discover_active|seed_items_active_for_test|queue_discovery_active_for_test)(<|\()' \
-    "$SRC/browse/mod.rs" "$SRC/stores/browse.rs" 2>/dev/null || true
-} | sed -E 's/^([^:]+):[0-9]+:.*static mut[[:space:]]+([A-Za-z_][A-Za-z_0-9]*)[[:space:]]*:.*/\1\t\2/; s/^([^:]+):[0-9]+:.*static (ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE).*/\1\t\2/; s/^([^:]+):[0-9]+:(pub\(crate\) )?fn ([A-Za-z_][A-Za-z_0-9]*).*/\1\t\3/' | sort -u)
-browse_owner_expected=$(grep -v '^#' "$browse_owner_allow" | sed '/^[[:space:]]*$/d' | sort -u)
-browse_owner_declared=$(sed -nE 's/^# count: ([0-9]+)$/\1/p' "$browse_owner_allow")
-browse_owner_count=$(grep -v '^#' "$browse_owner_allow" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
-if [ "$browse_owner_declared" != "$browse_owner_count" ]; then
-  fail "browse-owner: allowlist says $browse_owner_declared but contains $browse_owner_count rows"
-elif [ "$browse_owner_matches" = "$browse_owner_expected" ]; then
-  ok "browse-owner: $browse_owner_count compatibility symbol(s), exact and non-growing"
+  grep -nE "^(pub\(crate\) |pub )?fn ($browse_facades)(<|\()" "$SRC/browse/mod.rs" 2>/dev/null || true
+  grep -nE "^(pub\(crate\) |pub )?fn ($browse_hub_facades)(<|\()" "$SRC/browse/section_hubs.rs" 2>/dev/null || true
+  grep -nE '^pub\(crate\) fn snapshot\(' "$SRC/browse/view.rs" 2>/dev/null || true
+  grep -nE "^(pub\(crate\) |pub )?fn ($browse_store_facades)(<|\()" "$SRC/stores/browse.rs" 2>/dev/null || true
+  grep_code "(crate::browse|crate::stores::browse|stores::browse)::($browse_facades|$browse_store_facades)\(" "$SRC"
+} | sort -u)
+if [ -z "$browse_owner_matches" ]; then
+  ok "browse-owner: zero global state, selectors, adapters, and free facades"
 else
-  echo "    current:"; echo "$browse_owner_matches" | sed 's/^/      /'
-  echo "    allowlist:"; echo "$browse_owner_expected" | sed 's/^/      /'
-  fail "browse-owner: compatibility surface changed without retiring its exact allowlist row"
+  echo "$browse_owner_matches" | sed 's/^/    /'
+  fail "browse-owner: retired Browse compatibility surface returned"
 fi
 
 # libm: the method-call spelling, OUTSIDE ui/motion.rs (which owns the integrators and their

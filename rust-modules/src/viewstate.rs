@@ -238,7 +238,7 @@ fn request(
     detail: Option<String>,
     guid: &str,
 ) -> bool {
-    request_with_browse(sid, rk, w, detail, guid, &mut crate::stores::browse::apply)
+    request_with_browse(sid, rk, w, detail, guid, &mut |_| false)
 }
 
 fn request_with_browse(
@@ -288,7 +288,7 @@ fn request_with_browse(
 /// cannot be known any earlier than that, because discovering them is the round trip.
 #[allow(dead_code)] // Compatibility helper retained for legacy direct tests/callers.
 fn edit_local(sid: ServerId, rk: &str, w: Write) {
-    edit_local_with_browse(sid, rk, w, &mut crate::stores::browse::apply);
+    edit_local_with_browse(sid, rk, w, &mut |_| false);
 }
 
 fn edit_local_with_browse(sid: ServerId, rk: &str, w: Write,
@@ -445,11 +445,15 @@ fn kick() {
 /// mounted, because the user can walk off Home (or off the detail page) between the press and the
 /// answer, and the refresh is owed either way.
 pub(crate) fn pump() -> crate::stores::EndpointRefreshSet {
-    pump_with_browse(&mut crate::stores::browse::apply)
+    pump_with_owners(
+        &mut |_| false,
+        &mut |cmd| crate::stores::hubs::apply(cmd),
+    )
 }
 
-pub(crate) fn pump_with_browse(
+pub(crate) fn pump_with_owners(
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+    hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
 ) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     let due = retry_tick();
@@ -492,9 +496,9 @@ pub(crate) fn pump_with_browse(
     if is_busy() {
         return endpoints; // a burst still has writes to send — one refresh at the end of it, not per write
     }
-    let hubs = unsafe { std::mem::take(&mut *addr_of_mut!(WANT_HUBS)) };
-    if hubs {
-        endpoints.merge(crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints);
+    let refresh_hubs = unsafe { std::mem::take(&mut *addr_of_mut!(WANT_HUBS)) };
+    if refresh_hubs {
+        endpoints.merge(hubs(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints);
         // the same staleness, one screen over: a library's own shelves carry watch state and its
         // own Continue Watching row, so the burst that made Home's hubs stale made these stale too
         browse(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
@@ -680,7 +684,7 @@ fn reset() {
 /// `stores/viewstate.rs::run`, calling `request`/`reset` across the module boundary. Relocating
 /// it here is what lets those two go private.
 pub(crate) fn run(cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
-    run_with_browse(cmd, &mut crate::stores::browse::apply)
+    run_with_browse(cmd, &mut |_| false)
 }
 
 pub(crate) fn run_with_browse(cmd: crate::stores::viewstate::ViewStateCmd,
@@ -732,14 +736,12 @@ mod tests {
     fn stores_route_the_optimistic_edit_to_the_addressed_browse_owner() {
         let _g = crate::testlock::serial();
         reset();
-        crate::stores::browse::reset_bootstrap_for_test();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "viewstate-stores-owner", "127.0.0.1", 9, "synthetic", "fixture");
-        crate::browse::seed_registered_table_for_test([sid, sid]);
-        let selected = crate::stores::Stores::production_bootstrap_for_test();
-        crate::browse::seed_items_for_test(1);
+        let selected = crate::stores::Stores::default();
+        selected.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
+        selected.browse.borrow_mut().seed_items_for_test(1);
         let decoy = crate::stores::Stores::default();
         unsafe { *addr_of_mut!(SENT) = Some(req("held", Write::Watched, None)) };
 
@@ -754,10 +756,9 @@ mod tests {
         assert!(!selected.browse.borrow_mut().listing_snapshot().view().item(0).unwrap().unwatched,
             "the selected owner changes before the command returns");
         assert!(decoy.browse.borrow_mut().listing_snapshot().view().item(0).is_none(),
-            "the ACTIVE decoy is not used by the owner-aware callback");
+            "the unaddressed decoy is not used by the owner-aware callback");
         reset();
         drop((selected, decoy));
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
 
@@ -778,7 +779,10 @@ mod tests {
         });
         let mut browse = Vec::new();
 
-        let _ = pump_with_browse(&mut |cmd| { browse.push(cmd); true });
+        let _ = pump_with_owners(
+            &mut |cmd| { browse.push(cmd); true },
+            &mut |cmd| crate::stores::hubs::apply(cmd),
+        );
 
         assert!(matches!(&browse[0], crate::stores::browse::BrowseCmd::SetWatchedLocal {
             sid, rk, on: true
@@ -794,7 +798,6 @@ mod tests {
         let _session = crate::plex::session::TempSession::new("endpoint-viewstate");
         reset();
         crate::plex::reset_servers_for_test();
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
         let sid = crate::plex::register_for_test("endpoint-viewstate", "127.0.0.1", 9, "synthetic", "cid");
         unsafe { *addr_of_mut!(WANT_HUBS) = true; }
@@ -803,7 +806,6 @@ mod tests {
         assert_eq!(crate::stores::viewstate::pump().iter().count(), 0, "refetch is consumed once");
         reset();
         crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
-        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         crate::plex::reset_servers_for_test();
     }
     use super::*;

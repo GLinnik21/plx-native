@@ -5,10 +5,6 @@ use crate::ui::focus::{FocusEngine, Outcome};
 use crate::ui::machine::{Host, InputOwner, Tick};
 
 struct TestHost;
-fn run_browse(cmd: crate::stores::browse::BrowseCmd) {
-    let stores = crate::stores::Stores::default();
-    stores.browse_run(cmd);
-}
 
 #[derive(Clone, Copy)]
 struct Views<'a> {
@@ -39,6 +35,7 @@ impl LibraryLike for TestHost {
 const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 struct Fixture {
+    _stores: crate::stores::Stores,
     listing: crate::stores::browse::ListingSnapshot,
     directory: crate::stores::browse::DirectorySnapshot,
     hubs: crate::stores::browse::HubsSnapshot,
@@ -47,17 +44,17 @@ struct Fixture {
 }
 impl Fixture {
     fn new(libraries: usize, items: usize, shelves: usize) -> Self {
-        run_browse(BrowseCmd::Reset);
-        crate::browse::seed_two_source_table_for_test();
-        run_browse(BrowseCmd::SetCur(0));
+        let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_two_source_table_for_test();
+        stores.browse_run(BrowseCmd::SetCur(0));
         let titles: Vec<_> = (0..shelves)
             .map(|i| format!("Synthetic shelf {i}"))
             .collect();
         let titles: Vec<_> = titles.iter().map(String::as_str).collect();
         if shelves > 0 {
-            crate::browse::section_hubs::seed_shelves_for_test(0, &titles, 4);
+            stores.browse.borrow_mut().seed_shelves_for_test(0, &titles, 4);
         }
-        let epoch = crate::browse::table_epoch();
+        let epoch = stores.browse.borrow().table_epoch_for_test();
         let sid = crate::plex::ServerId::UNSET;
         let sections = (0..libraries)
             .map(|i| crate::stores::browse::SectionView {
@@ -74,10 +71,13 @@ impl Fixture {
                 },
             })
             .collect();
+        let listing = stores.browse.borrow_mut().listing_snapshot();
+        let hubs = stores.browse.borrow_mut().hubs_snapshot();
         let mut fixture = Self {
-            listing: crate::stores::browse::listing_snapshot(),
+            listing,
             directory: Default::default(),
-            hubs: crate::stores::browse::hubs_snapshot(),
+            hubs,
+            _stores: stores,
             sections,
             epoch,
         };
@@ -182,12 +182,6 @@ impl Fixture {
         }
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        run_browse(BrowseCmd::Reset);
-    }
-}
-
 #[test]
 fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_movie_listing() {
     let _guard = crate::testlock::serial();

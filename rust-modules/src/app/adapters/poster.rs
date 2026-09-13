@@ -914,8 +914,8 @@ mod tests {
         "https%3A%2F%2Fmetadata-static.plex.tv%2Fa%2Fpeople%2F0123456789abcdef0123456789abcdef.jpg";
 
     /// A registry holding exactly one server, emptied again on the way out. The reset on DROP is
-    /// the load-bearing half: `browse::pump` adopts every registered slot as a source and spawns a
-    /// discovery worker for it, so a server left behind here would have another module's tests
+    /// the load-bearing half: an owned `BrowseStore::pump` adopts every registered slot as a source
+    /// and spawns a discovery worker for it, so a server left behind here would have another module's tests
     /// dialling a dead loopback port on a background thread.
     struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
     impl Drop for Fresh {
