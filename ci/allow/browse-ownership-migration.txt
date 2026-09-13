@@ -1,0 +1,23 @@
+# count: 22
+rust-modules/src/browse/mod.rs	LEGACY_ADAPTER
+rust-modules/src/browse/mod.rs	LEGACY
+rust-modules/src/browse/mod.rs	legacy_adapter
+rust-modules/src/browse/mod.rs	take_legacy_adapter
+rust-modules/src/browse/mod.rs	legacy
+rust-modules/src/browse/mod.rs	legacy_mut
+rust-modules/src/browse/mod.rs	publish_legacy
+rust-modules/src/browse/mod.rs	clone_legacy_state
+rust-modules/src/browse/mod.rs	take_legacy_state
+rust-modules/src/browse/mod.rs	discover_pump
+rust-modules/src/stores/browse.rs	ACTIVE
+rust-modules/src/stores/browse.rs	BOOTSTRAP_AVAILABLE
+rust-modules/src/stores/browse.rs	take_bootstrap_token
+rust-modules/src/stores/browse.rs	with_active
+rust-modules/src/stores/browse.rs	active_owner
+rust-modules/src/stores/browse.rs	activate
+rust-modules/src/stores/browse.rs	with_activation
+rust-modules/src/stores/browse.rs	controlled_discover_active
+rust-modules/src/stores/browse.rs	seed_items_active_for_test
+rust-modules/src/stores/browse.rs	queue_discovery_active_for_test
+rust-modules/src/stores/browse.rs	apply
+rust-modules/src/stores/browse.rs	discover_pump

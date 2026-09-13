@@ -1,7 +1,7 @@
 //! The Library table and its per-section listing, as a machine over `crate::browse`
 //! (`docs/stores-as-machines.md`). The vocabulary is [`BrowseCmd`]; each [`BrowseStore`] owns its
 //! main-thread state, worker adapter and notice while `crate::browse` retains the core
-//! implementation and a compatibility read publication for legacy callers.
+//! implementation and a temporary compatibility read publication for unmigrated callers.
 
 use crate::plex::ServerId;
 use crate::ui::machine::{Cx, Effects, Handled, Machine};
@@ -14,11 +14,39 @@ use super::{StoreEv, StoreId};
 #[cfg(test)]
 use super::note;
 
-pub(crate) use crate::browse::section_hubs::{HubsSnapshot, HubsView};
+#[allow(unused_imports)] // Wave 0 type surface; consumer lanes switch imports onto it.
+pub(crate) use crate::browse::{
+    Cursor, CursorAt, GenreEntry, SecFetch, SecKind, SortEntry, SourceState, SrcGroup, SrcRow,
+};
+#[allow(unused_imports)] // Wave 0 type surface; consumer lanes switch imports onto it.
+pub(crate) use crate::browse::section_hubs::{HubsId, HubsSnapshot, HubsView, Publication};
+#[allow(unused_imports)] // Wave 0 type surface; consumer lanes switch imports onto it.
 pub(crate) use crate::browse::view::{
-    DirectorySnapshot, DirectoryView, ListingSnapshot, ListingView,
+    DirectorySnapshot, DirectoryView, ListingId, ListingSnapshot, ListingView, SectionView,
 };
 
+/// One frame's retained Browse publication. The directory is captured first because resolving
+/// profile pins may repoint the current section; listing and section hubs are captured only after
+/// that decision, so all three views describe one owner state.
+#[derive(Clone)]
+pub(crate) struct BrowsePublications {
+    pub(crate) listing: ListingSnapshot,
+    pub(crate) directory: DirectorySnapshot,
+    pub(crate) section_hubs: HubsSnapshot,
+}
+
+impl BrowsePublications {
+    #[allow(dead_code)] // Fixture/controlled constructor for the Wave 1 publication API.
+    pub(crate) fn empty() -> Self {
+        Self {
+            listing: ListingSnapshot::empty(),
+            directory: DirectorySnapshot::default(),
+            section_hubs: HubsSnapshot::empty(),
+        }
+    }
+}
+
+#[allow(dead_code)] // Temporary compatibility fixture path during consumer migration.
 pub(crate) fn hubs_snapshot() -> HubsSnapshot {
     with_active(|store| store.hubs_snapshot()).unwrap_or_else(|| {
         crate::browse::section_hubs::snapshot(crate::browse::cur())
@@ -26,6 +54,7 @@ pub(crate) fn hubs_snapshot() -> HubsSnapshot {
 }
 
 /// Retain the current listing for one dispatcher frame, without copying its items.
+#[allow(dead_code)] // Temporary compatibility fixture path during consumer migration.
 pub(crate) fn listing_snapshot() -> ListingSnapshot {
     with_active(|store| store.listing_snapshot()).unwrap_or_else(crate::browse::view::snapshot)
 }
@@ -284,7 +313,7 @@ impl BrowseStore {
         sync.changed
     }
 
-    fn controlled_discover(
+    pub(crate) fn controlled_discover(
         &mut self,
         launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool,
     ) {
@@ -487,6 +516,44 @@ impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+
+    #[test]
+    fn explicit_store_commands_answer_now_and_capture_one_consistent_publication() {
+        let _guard = crate::testlock::serial();
+        reset_bootstrap_for_test();
+        apply(BrowseCmd::Reset);
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(3);
+
+        let stores = crate::stores::Stores::production_bootstrap_for_test();
+        let mut directory = DirectorySnapshot::default();
+        let publication = stores.capture_browse(&mut directory);
+        let view = publication.directory.view();
+        assert_eq!(view.section_count(), 4);
+        assert_eq!(view.tab_count(), 2);
+        assert_eq!(view.tab_kind(0), Some(crate::browse::SecKind::Movie));
+        assert_eq!(view.tab_of_kind(crate::browse::SecKind::Show), Some(1));
+        assert_eq!(view.pinned_count(), 2);
+        assert_eq!(view.favorite_sections().len(), 4);
+        assert_eq!(publication.listing.view().total(), 3);
+        assert_eq!(publication.section_hubs.view().id().unwrap().section,
+            view.sections()[view.current().unwrap()].key);
+
+        assert!(stores.browse_run(BrowseCmd::SetCur(2)),
+            "the direct command returns the store's answer synchronously");
+        let publication = stores.capture_browse(&mut directory);
+        let view = publication.directory.view();
+        let current = view.current().unwrap();
+        let id = publication.listing.view().id().unwrap();
+        assert_eq!(current, 2);
+        assert_eq!(id.section, view.sections()[current].key,
+            "listing capture must follow directory's possible current-section repoint");
+        assert_eq!(publication.section_hubs.view().id().unwrap().section, id.section,
+            "section hubs and listing must describe the same post-directory section");
+
+        drop(stores);
+        apply(BrowseCmd::Reset);
+    }
 
     #[test]
     fn bootstrap_adoption_is_permanently_one_shot_even_after_the_owner_drops() {
