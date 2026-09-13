@@ -1044,8 +1044,14 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
             ScreenEvent::Enter(_) => {
                 let refresh = self.restore_intent.as_ref()
                     .map_or(DetailRefreshPhase::None, |intent| intent.refresh);
-                if (refresh == DetailRefreshPhase::Deferred || self.detail().is_none())
-                    && crate::metadata::detail_request_status(self.sid, &self.rk) != Some(true) {
+                // Deferred is newer than every request that could already occupy this address:
+                // it was armed only after the ViewState write completed. Always supersede that
+                // pre-write generation when the page becomes visible. Ordinary enters still
+                // reuse an in-flight request instead of duplicating it.
+                let request = refresh == DetailRefreshPhase::Deferred
+                    || self.detail().is_none()
+                        && crate::metadata::detail_request_status(self.sid, &self.rk) != Some(true);
+                if request {
                     apply_metadata(MetadataCmd::RequestDetail {
                         sid: self.sid,
                         rk: self.rk.clone(),

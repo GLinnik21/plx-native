@@ -595,9 +595,12 @@ mod library_publication_tests {
             sid,
             rk: "detail-a".into(),
             title: "Covered A".into(),
+            watched: true,
             ..Default::default()
         }));
+        let stale_request = crate::metadata::begin_detail_for_test(sid, "detail-a");
         let generation = crate::metadata::detail_generation_for_test();
+        assert_eq!(generation, stale_request);
 
         refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
             sid,
@@ -611,6 +614,8 @@ mod library_publication_tests {
             "the covered Detail's stale-but-visible slot is not displaced under Person");
         assert_eq!(crate::metadata::detail_generation_for_test(), generation,
             "A must not refresh while Person owns the visible page");
+        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(true),
+            "the pre-write A fetch remains in flight while its page is covered");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot.clone(), Some("episode-a".into()),
                 crate::screens::registry::DetailRefreshPhase::Deferred)));
@@ -621,7 +626,21 @@ mod library_publication_tests {
 
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
         assert_eq!(crate::metadata::detail_generation_for_test(), generation + 1,
-            "uncovered A forces exactly one refresh despite matching loaded metadata");
+            "uncovered A supersedes the pre-write fetch with exactly one reconciliation");
+        let reconciliation = crate::metadata::detail_generation_for_test();
+        assert!(!crate::metadata::land_detail_for_test(sid, "detail-a", stale_request,
+            Some(crate::metadata::Detail {
+                sid,
+                rk: "detail-a".into(),
+                title: "Stale pre-write A".into(),
+                watched: false,
+                ..Default::default()
+            })), "the superseded pre-write landing must be rejected");
+        assert!(crate::metadata::current().is_some_and(|detail|
+            detail.rk == "detail-a" && detail.watched),
+            "the stale landing cannot undo A's optimistic watched state");
+        assert_eq!(crate::metadata::detail_generation_for_test(), reconciliation,
+            "rejecting the stale landing cannot replace the reconciliation generation");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
                 crate::screens::registry::DetailRefreshPhase::Requested)),
