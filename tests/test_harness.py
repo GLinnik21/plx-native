@@ -4446,6 +4446,18 @@ class DepGates(unittest.TestCase):
                 self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertIn("browse-owner:", r.stdout + r.stderr)
 
+    def test_browse_owner_gate_rejects_attributes_and_split_free_declarations(self):
+        for declaration in (
+            "#[inline] pub(super) const fn set_cur(i: usize) {}\n",
+            "#[inline]\npub(super)\nconst fn\nset_cur(i: usize) {}\n",
+        ):
+            with self.subTest(declaration=declaration):
+                r = self._prepend("browse/mod.rs", "\n" + declaration)
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, out)
+                self.assertIn("browse-owner:", out)
+                self.assertIn("set_cur", out)
+
     def test_browse_owner_gate_is_nonvacuous_for_indented_free_declarations(self):
         r = self._prepend("browse/mod.rs", "\n    pub fn set_cur(i: usize) {}\n")
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -4516,6 +4528,49 @@ impl BrowseScopeFixture {
                 r = self._prepend(relpath, "\n" + declaration)
                 self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertIn("browse-owner:", r.stdout + r.stderr)
+
+    def test_browse_owner_gate_rejects_retired_thread_local_selectors(self):
+        for relpath, selector in (
+            ("browse/mod.rs", "LEGACY_ADAPTER"),
+            ("stores/browse.rs", "ACTIVE"),
+        ):
+            with self.subTest(selector=selector):
+                r = self._prepend(
+                    relpath,
+                    f"\nthread_local! {{\n    static {selector}: () = ();\n}}\n",
+                )
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, out)
+                self.assertIn("browse-owner:", out)
+                self.assertIn(f"static {selector}", out)
+
+    def test_browse_owner_gate_accepts_unrelated_thread_local_state(self):
+        r = self._prepend(
+            "browse/mod.rs",
+            "\nthread_local! {\n    static UNRELATED_CACHE: () = ();\n}\n",
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok — browse-owner", r.stdout)
+
+    def test_browse_owner_gate_fails_closed_when_a_scanner_input_is_missing(self):
+        target = os.path.join(self.ROOT, "rust-modules", "src", "browse", "view.rs")
+        hidden = target + ".check-deps-selftest"
+        self.assertTrue(os.path.exists(target), f"missing scanner fixture {target}")
+        self.assertFalse(os.path.exists(hidden), f"stale self-test artifact at {hidden}")
+        try:
+            os.replace(target, hidden)
+            r = subprocess.run(
+                [os.path.join(self.ROOT, "ci", "check-deps.sh")],
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            if os.path.exists(hidden):
+                os.replace(hidden, target)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("browse declaration scanner failed", out)
+        self.assertIn("browse-owner:", out)
 
     def test_browse_owner_gate_accepts_receiver_bound_owned_methods(self):
         """A BrowseState selector is safe when it requires an explicit receiver. GREEN:
