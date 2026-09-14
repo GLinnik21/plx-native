@@ -324,23 +324,32 @@ fn plaintext(
     body_policy: BodyPolicy,
 ) -> RequestOutcome {
     // The raw socket takes ONE `extra` blob, CRLF-terminated per line and CRLF-terminated at the
-    // end — it is spliced straight into the request head. An empty header list must produce a null
-    // pointer, not an empty string, so the head keeps the exact bytes it always had.
-    let extra = (!headers.is_empty()).then(|| {
+    // end — it is spliced straight into the request head. Control-plane is one-shot: send
+    // `Connection: close` so PMS does not wait for a second request on an fd we are about to
+    // `http_close`. Media sequential GETs call `stream::http_open` directly and omit the header
+    // so the demux socket can reuse. A caller that already named Connection keeps their spelling.
+    let extra = {
+        let has_connection = headers.iter().any(|h| {
+            h.split_once(':')
+                .is_some_and(|(name, _)| name.eq_ignore_ascii_case("connection"))
+        });
         let mut s = String::new();
+        if !has_connection {
+            s.push_str("Connection: close\r\n");
+        }
         for h in headers {
             s.push_str(h);
             s.push_str("\r\n");
         }
         s
-    });
+    };
     let Ok(host_c) = std::ffi::CString::new(origin.host()) else {
         return RequestOutcome::Transport;
     };
     let Ok(path_c) = std::ffi::CString::new(path) else {
         return RequestOutcome::Transport;
     };
-    let extra_c = extra.and_then(|e| std::ffi::CString::new(e).ok());
+    let extra_c = std::ffi::CString::new(extra).ok();
     let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
 
     let mut hs = crate::stream::http_stream_boxed();
@@ -790,7 +799,13 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().expect("accept");
             let mut request = [0u8; 1024];
-            let _ = socket.read(&mut request).expect("request");
+            let n = socket.read(&mut request).expect("request");
+            assert!(
+                request[..n]
+                    .windows(b"Connection: close".len())
+                    .any(|w| w.eq_ignore_ascii_case(b"connection: close")),
+                "control-plane plaintext still sends Connection: close"
+            );
             socket
                 .write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nabcde",

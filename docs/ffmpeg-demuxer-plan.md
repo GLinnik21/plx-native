@@ -337,7 +337,7 @@ stream there is exactly one audio track, so `av_find_best_stream` suffices. Star
 
 ### 3.1 Custom AVIO over `stream.rs` (Option A — recommended)
 
-Keep the proven raw-socket transport (numeric IP, no DNS, `Connection: close`, 15s `SO_RCVTIMEO`)
+Keep the proven raw-socket transport (numeric IP, no DNS, HTTP/1.1 keep-alive, 15s `SO_RCVTIMEO`)
 and give libavformat **seekability** so `av_seek_frame` and the matroska demuxer's own index work.
 
 ```rust
