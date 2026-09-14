@@ -26,6 +26,24 @@ impl PersistOutcome {
         self != Self::WriteFailed
     }
 }
+
+/// What a durable write is FOR. The caller uses this to refuse treating a background refresh as
+/// proof that a login was saved; it is carried on admission and on the completion so the owner
+/// never has to infer it from the outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum PersistencePurpose {
+    Discovery,
+    Final,
+    Profile,
+    Background,
+}
+
+impl PersistencePurpose {
+    /// A background refresh is maintenance, never evidence that credentials reached disk.
+    pub(crate) fn proves_saved_login(self) -> bool {
+        matches!(self, Self::Discovery | Self::Final | Self::Profile)
+    }
+}
 #[derive(Clone, Copy)]
 enum ClearDurability {
     Durable,
@@ -106,6 +124,7 @@ pub(crate) struct Completion {
 #[derive(Debug)]
 pub(crate) struct Receipt {
     revision: u64,
+    purpose: PersistencePurpose,
     result: Option<Receiver<Completion>>,
     resolved: Option<Completion>,
     status: Arc<Mutex<LatestStatus>>,
@@ -120,6 +139,23 @@ pub(crate) enum Poll {
 impl Receipt {
     pub(crate) fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub(crate) fn purpose(&self) -> PersistencePurpose {
+        self.purpose
+    }
+
+    /// Attach owner-side correlation to this receipt's resolved verdict. `None` until the worker
+    /// has actually answered, so a caller can never mistake pending for durable.
+    pub(crate) fn typed(&self, correlation: PersistenceCorrelation) -> Option<PersistenceCompletion> {
+        self.resolved.map(|completion| PersistenceCompletion {
+            req: correlation.req,
+            epoch: correlation.epoch,
+            arrival: correlation.arrival,
+            revision: self.revision,
+            purpose: self.purpose,
+            outcome: completion.outcome,
+        })
     }
 
     /// Poll this operation without waiting for persistence. Resolved outcomes remain readable.
@@ -190,6 +226,39 @@ pub(crate) struct Status {
     pub(crate) revocation_floor: Option<u64>,
 }
 
+/// Serializable projection of an [`AdmissionFailure`]. `SubmitError` belongs to the storage
+/// worker's transport vocabulary and is deliberately not serialized into owner state, so the
+/// owner-side typed rejection carries this closed, replay-safe enum instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum RejectionKind {
+    /// Bounded FIFO had no capacity, or the executor was stopped/failed to start.
+    Capacity,
+    /// The same edit was already admitted; nothing new was enqueued.
+    Duplicate,
+    /// Protected fields were locked by storage protection.
+    Locked,
+    /// A public-only edit tried to change protected credentials.
+    PublicOnly,
+    /// No loaded snapshot to edit.
+    Uninitialized,
+    /// The process tenure was revoked; a fresh authorization is required.
+    Revoked,
+    /// The revision counter cannot advance.
+    RevisionExhausted,
+}
+
+impl From<AdmissionFailure> for RejectionKind {
+    fn from(failure: AdmissionFailure) -> Self {
+        match failure {
+            AdmissionFailure::Queue(_) => Self::Capacity,
+            AdmissionFailure::Uninitialized => Self::Uninitialized,
+            AdmissionFailure::Locked => Self::Locked,
+            AdmissionFailure::Revoked => Self::Revoked,
+            AdmissionFailure::RevisionExhausted => Self::RevisionExhausted,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AdmissionFailure {
     Queue(SubmitError),
@@ -203,6 +272,71 @@ pub(crate) enum AdmissionFailure {
 pub(crate) struct AdmissionError {
     pub(crate) revision: Option<u64>,
     pub(crate) failure: AdmissionFailure,
+}
+
+/// Owner-side identity of one persistence decision. The completion repeats it so a late result
+/// can be fenced by request, epoch, arrival AND revision before it activates anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PersistenceCorrelation {
+    pub(crate) req: u32,
+    pub(crate) epoch: u64,
+    pub(crate) arrival: u64,
+}
+
+/// Typed answer to "was this authority current, and was durability even requested?". Replaces a
+/// boolean that conflated currency with persistence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PersistenceAdmission {
+    /// The permit was not current: wrong epoch, wrong request/arrival, or an endpoint lifecycle
+    /// that no longer matches. Nothing was written and no revision was consumed.
+    StaleAuthority,
+    /// Authority was current and the commit asked for no durable write (registry-only).
+    AcceptedRegistryOnly,
+    /// Authority was current and a durable write was admitted and enqueued. NOT yet durable.
+    Admitted { revision: u64, purpose: PersistencePurpose },
+    /// Authority was current but the queue/guards refused the write.
+    Rejected { revision: Option<u64>, failure: AdmissionFailure },
+}
+
+impl PersistenceAdmission {
+    pub(crate) fn accepted(self) -> bool {
+        !matches!(self, Self::StaleAuthority | Self::Rejected { .. })
+    }
+    pub(crate) fn admitted_revision(self) -> Option<u64> {
+        match self {
+            Self::Admitted { revision, .. } => Some(revision),
+            _ => None,
+        }
+    }
+}
+
+/// A typed durability verdict for one admitted revision, fenced by owner correlation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PersistenceCompletion {
+    pub(crate) req: u32,
+    pub(crate) epoch: u64,
+    pub(crate) arrival: u64,
+    pub(crate) revision: u64,
+    pub(crate) purpose: PersistencePurpose,
+    pub(crate) outcome: CompletionOutcome,
+}
+
+impl PersistenceCompletion {
+    /// True only when this completion still describes the current authority and revision. A stale
+    /// completion must not activate registry/profile, clear a newer error, or free another
+    /// request's admission credit.
+    pub(crate) fn acts_on(self, current: PersistenceCorrelation, latest_revision: u64) -> bool {
+        self.req == current.req
+            && self.epoch == current.epoch
+            && self.arrival == current.arrival
+            && self.revision == latest_revision
+    }
+    #[cfg(test)]
+    fn with_req(mut self, req: u32) -> Self { self.req = req; self }
+    #[cfg(test)]
+    fn with_epoch(mut self, epoch: u64) -> Self { self.epoch = epoch; self }
+    #[cfg(test)]
+    fn with_arrival(mut self, arrival: u64) -> Self { self.arrival = arrival; self }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -355,6 +489,7 @@ impl Coordinator {
         self.admit_with(
             executor,
             SaveAuthority::Routine,
+            PersistencePurpose::Background,
             |current| Ok(edit(current)),
             persist,
         )
@@ -364,6 +499,7 @@ impl Coordinator {
         &self,
         executor: &dyn Submitter,
         authority: SaveAuthority,
+        purpose: PersistencePurpose,
         edit: impl FnOnce(&Session) -> Result<Option<Session>, AdmissionFailure>,
         persist: impl FnOnce(Session, SaveAuthority) -> DiskOutcome + Send + 'static,
     ) -> Result<Option<Receipt>, AdmissionError> {
@@ -413,7 +549,7 @@ impl Coordinator {
         }
         let revision = next_revision(&mut state)?;
         let command_snapshot = next.clone();
-        let receipt = self.submit_locked(&mut state, revision, executor, move || {
+        let receipt = self.submit_locked(&mut state, revision, purpose, executor, move || {
             persist(command_snapshot, authority)
         })?;
         if authority == SaveAuthority::FreshReauthentication {
@@ -422,6 +558,36 @@ impl Coordinator {
         }
         *CACHE.write().unwrap_or_else(|e| e.into_inner()) = Some(next);
         Ok(Some(receipt))
+    }
+
+    /// ONE short consistent operation: check the caller's permit (the `edit` closure is the
+    /// owner's fenced patch application), merge against the LATEST in-memory snapshot, and enqueue.
+    /// No I/O and no recursion happen here; the worker performs durability.
+    fn admit_typed_with(
+        &self,
+        executor: &dyn Submitter,
+        authority: SaveAuthority,
+        purpose: PersistencePurpose,
+        writes_durable: bool,
+        edit: impl FnOnce(&Session) -> Result<Option<Session>, AdmissionFailure>,
+        persist: impl FnOnce(Session, SaveAuthority) -> DiskOutcome + Send + 'static,
+    ) -> PersistenceAdmission {
+        // A registry-only commit consumes no persistence revision and performs no durable write.
+        if !writes_durable {
+            return PersistenceAdmission::AcceptedRegistryOnly;
+        }
+        if let Err(error) = self.admit_with(executor, authority, purpose, edit, persist) {
+            // An authority refusal (not-current permit) is categorically different from capacity,
+            // duplicate, lock, or public-only refusal. Both used to be one `false`.
+            if matches!(error.failure, AdmissionFailure::Revoked) {
+                return PersistenceAdmission::StaleAuthority;
+            }
+            return PersistenceAdmission::Rejected {
+                revision: error.revision,
+                failure: error.failure,
+            };
+        }
+        PersistenceAdmission::Admitted { revision: self.status().latest_revision, purpose }
     }
 
     fn update_ordinary(
@@ -459,7 +625,8 @@ impl Coordinator {
         let authority = state.dirty_authority;
         *CACHE.write().unwrap_or_else(|e| e.into_inner()) = Some(next.clone());
         let command = next;
-        let receipt = self.submit_locked(&mut state, revision, executor, move || {
+        let receipt = self.submit_locked(&mut state, revision, PersistencePurpose::Background,
+            executor, move || {
             execute_write(command, authority)
         });
         match receipt {
@@ -486,7 +653,8 @@ impl Coordinator {
             return false;
         };
         let authority = state.dirty_authority;
-        let receipt = self.submit_locked(&mut state, revision, executor, move || {
+        let receipt = self.submit_locked(&mut state, revision, PersistencePurpose::Background,
+            executor, move || {
             execute_write(snapshot, authority)
         });
         match receipt {
@@ -514,13 +682,14 @@ impl Coordinator {
         install_ordinary_receipt(0, None);
         // Runtime revocation is immediate even when the bounded queue cannot accept durability.
         *CACHE.write().unwrap_or_else(|e| e.into_inner()) = Some(Session::default());
-        self.submit_locked(&mut state, revision, executor, persist)
+        self.submit_locked(&mut state, revision, PersistencePurpose::Background, executor, persist)
     }
 
     fn submit_locked(
         &self,
         state: &mut State,
         revision: u64,
+        purpose: PersistencePurpose,
         executor: &dyn Submitter,
         persist: impl FnOnce() -> DiskOutcome + Send + 'static,
     ) -> Result<Receipt, AdmissionError> {
@@ -551,6 +720,7 @@ impl Coordinator {
         }
         Ok(Receipt {
             revision,
+            purpose,
             result: Some(result),
             resolved: None,
             status,
@@ -702,7 +872,20 @@ pub(crate) fn admit(
     authority: SaveAuthority,
     permit_and_edit: impl FnOnce(&Session) -> Result<Option<Session>, AdmissionFailure>,
 ) -> Result<Option<Receipt>, AdmissionError> {
-    coordinator().admit_with(&EXECUTOR, authority, permit_and_edit, execute_write)
+    coordinator().admit_with(&EXECUTOR, authority, PersistencePurpose::Background,
+        permit_and_edit, execute_write)
+}
+
+/// Typed variant of [`admit`]. Reports whether the permit was current, whether durability was
+/// even requested, and — when it was — the admitted revision and purpose.
+pub(crate) fn admit_typed(
+    authority: SaveAuthority,
+    purpose: PersistencePurpose,
+    writes_durable: bool,
+    permit_and_edit: impl FnOnce(&Session) -> Result<Option<Session>, AdmissionFailure>,
+) -> PersistenceAdmission {
+    coordinator().admit_typed_with(&EXECUTOR, authority, purpose, writes_durable,
+        permit_and_edit, execute_write)
 }
 
 /// Admit a routine preference/roster edit and retain one receipt for explicit failure polling.
@@ -854,7 +1037,8 @@ mod tests {
             authority: SaveAuthority,
             persist: impl FnOnce(Session, SaveAuthority) -> DiskOutcome + Send + 'static,
         ) -> Result<Receipt, AdmissionError> {
-            self.admit_with(executor, authority, |_| Ok(Some(snapshot)), persist)
+            self.admit_with(executor, authority, PersistencePurpose::Final,
+                |_| Ok(Some(snapshot)), persist)
                 .map(|receipt| receipt.expect("fixture always proposes a change"))
         }
     }
@@ -1398,6 +1582,7 @@ mod tests {
         let result = coordinator.admit_with(
             &Refusing(SubmitError::Full),
             SaveAuthority::Routine,
+            PersistencePurpose::Final,
             |_| Err(AdmissionFailure::Revoked),
             durable,
         );
@@ -1411,6 +1596,190 @@ mod tests {
         assert_eq!(coordinator.status().latest_revision, 0);
         assert_eq!(snapshot().unwrap().client_id, "permitted-snapshot");
     }
+    /// ACCEPTANCE SPEC 1/5. An admission is authority currency, not durability, and the typed
+    /// admission must be able to say so. Registry-only commits request no durable write and must
+    /// therefore never be reported as an admitted persistence revision.
+    #[test]
+    fn typed_admission_separates_registry_only_from_a_durable_revision() {
+        let _serial = crate::testlock::serial();
+        install(session("client"));
+        let coordinator = Coordinator::new();
+        let executor = WriterExecutor::start(1);
+
+        // (a) authority current, no durable write requested -> NOT an admitted revision.
+        let registry_only = coordinator.admit_typed_with(
+            &executor,
+            SaveAuthority::Routine,
+            PersistencePurpose::Profile,
+            false,
+            |_| Ok(None),
+            durable,
+        );
+        assert_eq!(
+            registry_only,
+            PersistenceAdmission::AcceptedRegistryOnly,
+            "a registry-only commit must be typed as accepted without persistence"
+        );
+        assert_eq!(coordinator.status().durable_revision, None);
+        assert_eq!(
+            coordinator.status().latest_revision,
+            0,
+            "a registry-only commit consumes no persistence revision"
+        );
+
+        // (b) a durable write requested -> ADMITTED, still not durable. The write is gated so
+        // the verdict cannot race the assertion: admission must not imply durability.
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let admitted = coordinator.admit_typed_with(
+            &executor,
+            SaveAuthority::Routine,
+            PersistencePurpose::Final,
+            true,
+            |_| Ok(Some(session("durable-edit"))),
+            move |snapshot, authority| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                durable(snapshot, authority)
+            },
+        );
+        let PersistenceAdmission::Admitted { revision, purpose } = admitted else {
+            panic!("a requested durable write must be reported as admitted, got {admitted:?}");
+        };
+        assert_eq!(purpose, PersistencePurpose::Final, "the purpose must survive admission");
+        assert_eq!(revision, 1);
+        entered_rx.recv().unwrap();
+        assert_eq!(
+            coordinator.status().durable_revision, None,
+            "enqueue is not durability"
+        );
+        assert_eq!(
+            coordinator.status().latest, Some(LatestStatus::Pending),
+            "an admitted revision reports Pending, never Durable, before the worker answers"
+        );
+
+        // (c) a stale authority is its own typed answer, never a queue refusal.
+        let stale = coordinator.admit_typed_with(
+            &executor,
+            SaveAuthority::Routine,
+            PersistencePurpose::Final,
+            true,
+            |_| Err(AdmissionFailure::Revoked),
+            durable,
+        );
+        assert_eq!(stale, PersistenceAdmission::StaleAuthority);
+        assert_eq!(
+            coordinator.status().latest_revision,
+            1,
+            "a stale authority must not consume a revision"
+        );
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            coordinator.status().latest_revision,
+            1
+        ));
+
+        // (d) capacity refusal carries its own typed rejection.
+        let refused = Coordinator::new().admit_typed_with(
+            &Refusing(SubmitError::Full),
+            SaveAuthority::Routine,
+            PersistencePurpose::Background,
+            true,
+            |_| Ok(Some(session("refused"))),
+            durable,
+        );
+        assert_eq!(
+            refused,
+            PersistenceAdmission::Rejected {
+                revision: Some(1),
+                failure: AdmissionFailure::Queue(SubmitError::Full),
+            }
+        );
+    }
+
+    /// ACCEPTANCE SPEC 5. A stale completion must not be mistaken for the current operation's
+    /// durability verdict: the typed completion carries request/epoch/arrival/revision so the
+    /// owner can fence it before it activates anything.
+    #[test]
+    fn typed_completion_is_fenced_by_request_epoch_and_revision() {
+        let current = PersistenceCorrelation { req: 7, epoch: 3, arrival: 12 };
+        let completion = PersistenceCompletion {
+            req: 7,
+            epoch: 3,
+            arrival: 12,
+            revision: 4,
+            purpose: PersistencePurpose::Final,
+            outcome: CompletionOutcome::Durable(Operation::Write {
+                outcome: PersistOutcome::PersistedPlaintext,
+                verified: true,
+                protection: None,
+            }),
+        };
+        assert!(completion.acts_on(current, 4), "the current revision is actionable");
+        assert!(!completion.acts_on(current, 5), "a newer revision supersedes this completion");
+        assert!(
+            !completion
+                .with_arrival(11)
+                .acts_on(current, 4),
+            "a wrong arrival must not clear a newer error"
+        );
+        assert!(
+            !completion.with_epoch(4).acts_on(current, 4),
+            "a stale epoch must not activate registry or profile"
+        );
+        assert!(
+            !completion.with_req(8).acts_on(current, 4),
+            "a completion must not free another request's admission credit"
+        );
+    }
+
+    /// ACCEPTANCE SPEC 2. FreshReauthentication is the only key to a cleared/locked tenure and
+    /// must not be obtainable through an ordinary retry: the retry path re-writes at most the
+    /// dirty Routine/PublicOnly authority and can never mint fresh authority.
+    #[test]
+    fn ordinary_retry_can_never_acquire_fresh_reauthentication() {
+        let _serial = crate::testlock::serial();
+        install(session("signed-in"));
+        let coordinator = Coordinator::new();
+        let executor = WriterExecutor::start(3);
+        coordinator.update_ordinary(&executor, SaveAuthority::Routine, |current| {
+            let mut next = current.clone();
+            next.account_token = "dirty".into();
+            Some(next)
+        });
+        let dirty_authority = coordinator.state.lock().unwrap().dirty_authority;
+        assert_eq!(dirty_authority, SaveAuthority::Routine,
+            "an ordinary edit records Routine, never fresh authority");
+        // A clear revokes the process tenure and demands fresh authority.
+        let clear = coordinator.clear(&executor, durable_clear).unwrap();
+        clear.wait_blocking();
+        assert!(coordinator.state.lock().unwrap().requires_fresh);
+        let revision = {
+            let state = coordinator.state.lock().unwrap();
+            state.revision
+        };
+        // The ordinary retry path stays closed...
+        assert!(!coordinator.retry_ordinary(revision, &executor),
+            "a retry must not re-acquire fresh authority");
+        // ...and only an explicit fresh authorization is admitted.
+        let mut fresh = session("fresh");
+        fresh.account_token = "fresh-token".into();
+        assert!(coordinator
+            .admit_snapshot(&executor, fresh, SaveAuthority::FreshReauthentication, durable)
+            .is_ok());
+        assert!(!coordinator.state.lock().unwrap().requires_fresh);
+    }
+
+    /// ACCEPTANCE SPEC 3. A background refresh must never be usable as proof that a login was
+    /// saved; discovery/final/profile may be.
+    #[test]
+    fn background_purpose_cannot_prove_a_saved_login() {
+        assert!(!PersistencePurpose::Background.proves_saved_login());
+        assert!(PersistencePurpose::Discovery.proves_saved_login());
+        assert!(PersistencePurpose::Final.proves_saved_login());
+        assert!(PersistencePurpose::Profile.proves_saved_login());
+    }
+
     #[test]
     fn snapshot_admission_cannot_bypass_public_only_or_locked_auth_guards() {
         let _serial = crate::testlock::serial();

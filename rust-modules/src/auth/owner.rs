@@ -2,6 +2,7 @@
 //! application adapter; constructing or observing this value performs no external work.
 
 use super::{Phase, Picker, UserTile};
+use crate::plex::session::async_persistence::{PersistencePurpose, RejectionKind};
 use crate::plex::session::{Session as PersistedSession, UserRef};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -31,6 +32,15 @@ impl Receipt {
         w.u32(self.addr.req.0).u64(self.arrival).u64(self.key.epoch);
         write_op(w, self.key.op);
     }
+}
+
+pub(super) fn write_purpose(w: &mut Canon, purpose: PersistencePurpose) {
+    w.u8(match purpose {
+        PersistencePurpose::Discovery => 0,
+        PersistencePurpose::Final => 1,
+        PersistencePurpose::Profile => 2,
+        PersistencePurpose::Background => 3,
+    });
 }
 
 fn write_op(w: &mut Canon, op: SessionOp) {
@@ -178,6 +188,11 @@ pub(crate) struct CommitPlan {
     pub credentials: Option<CredentialPatch>,
     pub registry: Vec<RegistryPlan>,
     pub lifecycle: Option<ServerLifecycle>,
+    /// What a durable write would be FOR. The caller uses this to refuse treating a background
+    /// refresh as proof of a saved login, and the completion echoes it back.
+    pub purpose: PersistencePurpose,
+    /// Whether this commit asks storage for a durable write. Registry-only commits do not.
+    pub writes_durable: bool,
 }
 
 /// Only the changes whose side effects are awaiting acknowledgement. This is not a second
@@ -222,12 +237,46 @@ pub(crate) struct PendingCommit {
     pub delta: CommitDelta,
 }
 
+/// Owner-side durability state of one commit consumption. Replaces the old boolean that advertised
+/// `accepted` for a registry-only commit that never asked storage for anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CommitPhase {
+    /// Authority was current; a durable write was admitted and enqueued, not yet durable.
+    pub(crate) admitted: bool,
+}
+
+/// Typed result of consuming a commit permit. The four cases are deliberately distinct: treating
+/// "the authority was current" as "durable" is the defect this type exists to prevent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum CommitAdmission {
+    /// The permit was not current (wrong request/epoch/arrival/endpoint lifecycle). Nothing ran.
+    StaleAuthority,
+    /// Authority was current and the commit asked for no durable write (registry-only).
+    RegistryOnly,
+    /// Authority was current and a durable write was admitted and enqueued. NOT yet durable.
+    Admitted { revision: u64, purpose: PersistencePurpose },
+    /// Authority was current but capacity/duplicate/lock/public-only refused the write.
+    Rejected { revision: Option<u64>, rejection: RejectionKind },
+}
+
+impl CommitAdmission {
+    pub(crate) fn accepted(self) -> bool {
+        !matches!(self, Self::StaleAuthority | Self::Rejected { .. })
+    }
+    pub(crate) fn admitted_revision(self) -> Option<u64> {
+        match self {
+            Self::Admitted { revision, .. } => Some(revision),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct CommitReply {
     pub req: u32,
     pub epoch: u64,
     pub arrival: u64,
-    pub accepted: bool,
+    pub admission: CommitAdmission,
 }
 
 /// Execution-time permission borrowed from the sole owner. Not serialized state or an effect:
@@ -241,8 +290,8 @@ pub(crate) struct CommitPermit<'a> {
 
 impl CommitPermit<'_> {
     pub fn request(&self) -> u32 { self.req }
-    pub fn reply(self, accepted: bool) -> CommitReply {
-        CommitReply { req: self.req, epoch: self.epoch, arrival: self.arrival, accepted }
+    pub fn reply(self, admission: CommitAdmission) -> CommitReply {
+        CommitReply { req: self.req, epoch: self.epoch, arrival: self.arrival, admission }
     }
 }
 
@@ -432,6 +481,10 @@ pub(crate) struct SessionInit {
     pub next_req: u32,
     pub pending: BTreeMap<u32, Pending>,
     pub pending_commit: Option<PendingCommit>,
+    /// Purpose of the commit currently being resolved, if it asked for durability.
+    pub persistence_purpose: Option<PersistencePurpose>,
+    /// Durability state of the last consumed commit.
+    pub commit_phase: CommitPhase,
     /// One ordered erase awaiting resource completion: existing epoch and whether to sign in.
     pub pending_erase: Option<(u64, bool)>,
     pub inbox: VecDeque<SessionEnvelope>,
@@ -452,7 +505,8 @@ impl SessionInit {
             pin_code: String::new(), qr_png: Vec::new(), users: Vec::new(), error: String::new(),
             pin_denied: false, authorized_in_flow: false, signin_active: false, apply_pending: false,
             code_replaced: false, qr_gen: 0, next_qr: 0, epoch: 1, next_req: 0,
-            pending: BTreeMap::new(), pending_commit: None, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
+            pending: BTreeMap::new(), pending_commit: None, persistence_purpose: None,
+            commit_phase: CommitPhase { admitted: false }, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
             active_profile: None, profile_scope: ProfileScope(0),
             delete_leftovers: 0 }
     }
@@ -609,6 +663,8 @@ impl LogicalState for SessionInit {
                 CaptureIntent::Endpoint { sid } => { w.u8(2).u32(u32::from(*sid)); }
             });
         }
+        w.option(self.persistence_purpose, |w, purpose| { write_purpose(w, purpose); });
+        w.bool(self.commit_phase.admitted);
         w.option(self.pending_commit.as_ref(), |w, commit| {
             w.u32(commit.req).u64(commit.epoch).u64(commit.arrival).bool(commit.terminal)
                 .bool(commit.writes_credentials);
@@ -806,6 +862,16 @@ impl SessionMachine {
         })
     }
 
+    /// Bridge wiring hook for Stage B: the caller that owns the decision can name the purpose
+    /// explicitly instead of inheriting a default. The adapter reaches the plan's own purpose
+    /// through [`CommitPlan`], so this is not yet called inside this crate.
+    #[allow(dead_code)]
+    pub fn commit_permit_for(&self, req: u32, epoch: u64, arrival: u64) -> Option<CommitPermit<'_>> {
+        self.commit_is_current(req, epoch, arrival).then_some(CommitPermit {
+            req, epoch, arrival, owner: std::marker::PhantomData,
+        })
+    }
+
     fn begin_commit(&mut self, req: u32, arrival: u64, terminal: bool,
         plan: CommitPlan, delta: CommitDelta, emit: &mut impl FnMut(SessionFx)) -> bool {
         if self.state.pending_commit.is_some() { return false; }
@@ -814,7 +880,9 @@ impl SessionMachine {
         pending.last_arrival = Some(arrival);
         let epoch = pending.key.epoch;
         self.state.pending_commit = Some(PendingCommit { req, epoch, arrival, terminal,
-            writes_credentials: plan.credentials.is_some(), receipt: None, delta });
+            writes_credentials: plan.writes_durable && plan.credentials.is_some(),
+            receipt: None, delta });
+        self.state.persistence_purpose = Some(plan.purpose);
         emit(SessionFx::Commit { req, epoch, arrival, plan });
         true
     }
@@ -834,7 +902,8 @@ impl SessionMachine {
         let patch = CredentialPatch::of(&next);
         let plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
             credentials: Some(patch.clone()), lifecycle: None,
-            registry: vec![RegistryPlan::Install { sources: next.sources.clone(), primary: None, replace: false }] };
+            registry: vec![RegistryPlan::Install { sources: next.sources.clone(), primary: None, replace: false }],
+            purpose: PersistencePurpose::Final, writes_durable: true };
         self.begin_commit(req, 0, true, plan, CommitDelta {
             credentials: Some(patch), activate_profile: true, ready: Some(false),
             ..Default::default()
@@ -849,7 +918,8 @@ impl SessionMachine {
             client_id: self.state.persisted.client_id.clone() }];
         let Some(req) = self.allocate(SessionOp::DevBoundary, None) else { return false };
         self.begin_commit(req, 0, true, CommitPlan { expected_disk: self.state.disk_identity.clone(),
-            credentials: None, lifecycle: None, registry }, CommitDelta {
+            credentials: None, lifecycle: None, registry,
+            purpose: PersistencePurpose::Background, writes_durable: false }, CommitDelta {
                 dev: Some(DevCommitDelta::Activated), ..Default::default()
             }, emit)
     }
@@ -867,7 +937,8 @@ impl SessionMachine {
         let req = self.allocate(SessionOp::DevBoundary, None).expect("two-slot preflight");
         let login_req = self.allocate(SessionOp::Login, None).expect("two-slot preflight");
         self.begin_commit(req, 0, true, CommitPlan { expected_disk: self.state.disk_identity.clone(),
-            credentials: None, lifecycle: None, registry: vec![RegistryPlan::Revoke] }, CommitDelta {
+            credentials: None, lifecycle: None, registry: vec![RegistryPlan::Revoke],
+            purpose: PersistencePurpose::Background, writes_durable: false }, CommitDelta {
                 dev: Some(DevCommitDelta::StartAccount { login_req }), ..Default::default()
             }, emit);
         self.replace_publication();
@@ -890,7 +961,8 @@ impl SessionMachine {
         let plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
             credentials: None, lifecycle: None,
             registry: vec![RegistryPlan::Install { sources: self.state.persisted.sources.clone(),
-                primary: None, replace: false }] };
+                primary: None, replace: false }],
+            purpose: PersistencePurpose::Background, writes_durable: false };
         self.begin_commit(req, 0, true, plan, CommitDelta {
             phase: Some(Phase::Ready), activate_profile: true, ready: Some(false),
             ..Default::default()
@@ -900,7 +972,11 @@ impl SessionMachine {
     fn apply_commit_reply(&mut self, reply: CommitReply, emit: &mut impl FnMut(SessionFx)) -> bool {
         if !self.commit_is_current(reply.req, reply.epoch, reply.arrival) { return false; }
         let commit = self.state.pending_commit.take().unwrap();
-        if !reply.accepted {
+        self.state.commit_phase = CommitPhase {
+            admitted: reply.admission.admitted_revision().is_some(),
+        };
+        self.state.persistence_purpose = None;
+        if !reply.admission.accepted() {
             if let Some(DevCommitDelta::StartAccount { login_req }) = commit.delta.dev {
                 self.retire(login_req, emit);
             }
@@ -1183,7 +1259,8 @@ impl SessionMachine {
                 sources: self.state.persisted.sources.clone(), primary: None, replace: false,
             });
             let plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
-                credentials: None, lifecycle: None, registry };
+                credentials: None, lifecycle: None, registry,
+                purpose: PersistencePurpose::Background, writes_durable: false };
             self.begin_commit(req, 0, true, plan, CommitDelta {
                 activate_profile: initial_profile, ..Default::default()
             }, emit);
@@ -1374,8 +1451,16 @@ impl SessionMachine {
             return true;
         };
         let mut delta = CommitDelta::default();
+        // Purpose is decided by the op, not by whether the write happens to be a credential
+        // patch: a background authorisation refresh must never read as proof of a saved login.
+        let purpose = match pending.key.op {
+            SessionOp::Login | SessionOp::Rediscover => PersistencePurpose::Final,
+            SessionOp::ProfileSwitch => PersistencePurpose::Profile,
+            _ => PersistencePurpose::Background,
+        };
         let mut plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
-            credentials: None, registry: Vec::new(), lifecycle: pending.lifecycle };
+            credentials: None, registry: Vec::new(), lifecycle: pending.lifecycle,
+            purpose, writes_durable: false };
         match &**data {
             Observation::Login(super::LoginProgress::SignedIn { server, sources, users, .. }) => {
                 let mut next = self.state.persisted.clone();
@@ -1500,6 +1585,7 @@ impl SessionMachine {
                 plan.registry.push(RegistryPlan::Endpoint { expected: lifecycle, source });
             }
         }
+        plan.writes_durable = plan.credentials.is_some();
         self.begin_commit(req, envelope.arrival, envelope.terminal, plan, delta, emit)
     }
 
@@ -1840,6 +1926,64 @@ mod tests {
         SessionInit::captured(PersistedSession { client_id: "synthetic-client".into(), ..Default::default() })
     }
 
+    /// A session that can actually go local, so `resume_stored` can reach its registry-only
+    /// commit. Synthetic values only.
+    fn local_session() -> SessionInit {
+        let mut persisted = PersistedSession { client_id: "synthetic-client".into(),
+            account_token: "synthetic-account".into(), ..Default::default() };
+        persisted.server.address = "127.0.0.1".into();
+        persisted.server.port = 32400;
+        persisted.server.token = "synthetic-token".into();
+        persisted.user.token = "synthetic-token".into();
+        SessionInit::captured(persisted)
+    }
+
+    /// ACCEPTANCE SPEC 1/5. Consuming a commit returns a TYPED admission separating authority
+    /// currency from durability, and a stale completion settles nothing.
+    #[test]
+    fn commit_consumption_is_typed_and_a_stale_reply_settles_nothing() {
+        let mut owner = SessionMachine::from_init(local_session());
+        assert!(owner.resume_stored(&mut |_| {}));
+        let req = owner.state.next_req;
+        let epoch = owner.state.epoch;
+        assert!(owner.state.pending_commit.is_some());
+        // A registry-only commit asked storage for nothing and must not claim a revision.
+        let registry_only = CommitReply { req, epoch, arrival: 0,
+            admission: CommitAdmission::RegistryOnly };
+        let effects = step(&mut owner, SessionEvent::Commit(registry_only));
+        assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Retire { .. })));
+        assert_eq!(owner.state.commit_phase, CommitPhase { admitted: false });
+        assert!(owner.state.pending_commit.is_none());
+        assert_eq!(owner.state.persistence_purpose, None,
+            "a registry-only commit must not claim a persistence purpose");
+
+        // A stale completion (wrong epoch) must not settle or retire anything.
+        let mut owner = SessionMachine::from_init(local_session());
+        assert!(owner.resume_stored(&mut |_| {}));
+        let req = owner.state.next_req;
+        let before = owner.snapshot_init().hash();
+        let stale = CommitReply { req, epoch: owner.state.epoch + 9, arrival: 0,
+            admission: CommitAdmission::StaleAuthority };
+        assert!(step(&mut owner, SessionEvent::Commit(stale)).is_empty());
+        assert_eq!(owner.snapshot_init().hash(), before,
+            "a stale completion must change nothing");
+        assert!(owner.state.pending_commit.is_some());
+        assert_eq!(owner.state.commit_phase, CommitPhase { admitted: false },
+            "a stale completion must not report a durable admission");
+
+        // The committed purpose survives into the owner's state so the caller can refuse to
+        // treat a background refresh as proof of a saved login.
+        let mut owner = SessionMachine::from_init(local_session());
+        assert!(owner.resume_stored(&mut |_| {}));
+        let req = owner.state.next_req;
+        let durable = CommitReply { req, epoch: owner.state.epoch, arrival: 0,
+            admission: CommitAdmission::Admitted { revision: 3, purpose: PersistencePurpose::Final } };
+        assert!(owner.apply_commit_reply(durable, &mut |_| {}));
+        assert_eq!(owner.state.commit_phase, CommitPhase { admitted: true });
+        assert_eq!(owner.state.persistence_purpose, None,
+            "the purpose is cleared once the commit settles");
+    }
+
     #[test]
     fn disk_comparison_identity_is_not_a_worker_or_back_input() {
         let src = include_str!("owner.rs");
@@ -2109,7 +2253,8 @@ mod tests {
         assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Commit { .. })));
         assert!(step(&mut owner, SessionEvent::Result(terminal.clone())).is_empty());
         assert_eq!(owner.state.inbox.len(), 1);
-        let acked = step(&mut owner, SessionEvent::Commit(CommitReply { req, epoch, arrival: 1, accepted: true }));
+        let acked = step(&mut owner, SessionEvent::Commit(CommitReply { req, epoch, arrival: 1,
+            admission: CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Final } }));
         assert_eq!(owner.state.phase, Phase::Ready);
         assert_eq!(owner.state.persisted.user.uuid, "new-profile");
         assert!(owner.state.pending[&req].phase == StreamPhase::ProfileSeated);

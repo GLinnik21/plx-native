@@ -18,7 +18,7 @@ fn dev_fixture() -> Bridge {
 
 #[test]
 fn dev_revoke_resource_completes_before_carried_ack_and_stale_ack_after_erase_is_inert() {
-    use crate::auth::owner::{BootstrapAuthority, CommitReply, SessionEvent};
+    use crate::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, SessionEvent};
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     let mut witnessed = false;
     // Cut the normal dispatcher budget at each nearby step; require the precise post-resource,
@@ -45,7 +45,8 @@ fn dev_revoke_resource_completes_before_carried_ack_and_stale_ack_after_erase_is
         let restored: crate::auth::SessionInit = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
         assert_eq!(crate::auth::SessionMachine::from_init(restored).subhash(), rig.session.subhash(),
             "pending dev delta, reserved request and disk comparison survive init roundtrip");
-        let ack = CommitReply { req: commit.req, epoch: commit.epoch, arrival: commit.arrival, accepted: true };
+        let ack = CommitReply { req: commit.req, epoch: commit.epoch, arrival: commit.arrival,
+            admission: CommitAdmission::RegistryOnly };
         frame(&mut rig, &mut d);
         assert_eq!(ran.load(Ordering::Acquire), 1);
         assert!(matches!(rig.session.snapshot_init().authority, BootstrapAuthority::Account { .. }));
@@ -91,7 +92,8 @@ fn dev_login_preflights_both_request_slots_and_coalesces_pending_intent() {
 
 #[test]
 fn dev_erase_and_signout_retire_pending_boundaries_without_reinstalling_grants() {
-    use crate::auth::owner::{BootstrapAuthority, CommitReply, CoordinatorAction, SessionEvent, SessionWork};
+    use crate::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, CoordinatorAction,
+        SessionEvent, SessionWork};
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     for sign_out in [false, true] {
         for boundary in 0..3 {
@@ -127,7 +129,8 @@ fn dev_erase_and_signout_retire_pending_boundaries_without_reinstalling_grants()
             if boundary != 0 {
                 d.emit(MachineId::Session, Fx::Deliver(MachineId::Session,
                     Delivery::Machine(AppMsg::Session(SessionEvent::Commit(CommitReply {
-                        req: 1, epoch: u64::from(boundary), arrival: 0, accepted: true,
+                        req: 1, epoch: u64::from(boundary), arrival: 0,
+                        admission: CommitAdmission::RegistryOnly,
                     })))));
                 frame(&mut rig, &mut d);
                 assert_eq!(rig.session.subhash(), before);
@@ -164,7 +167,7 @@ fn carried_dev_ready_is_not_handed_off_after_erase() {
 
 #[test]
 fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
-    use crate::auth::owner::{BootstrapAuthority, CommitReply, SessionEvent, SessionWork};
+    use crate::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, SessionEvent, SessionWork};
     use crate::plex::session::{Session, ServerRef};
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
     let _lock = crate::testlock::serial();
@@ -185,7 +188,8 @@ fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
             // failure is claimed: this grades the ACK/UI protocol, not Revoke's infallible IO.
             d.emit(MachineId::Session, Fx::Deliver(MachineId::Session,
                 Delivery::Machine(AppMsg::Session(SessionEvent::Commit(CommitReply {
-                    req: state.next_req + 1, epoch, arrival: 0, accepted: false,
+                    req: state.next_req + 1, epoch, arrival: 0,
+                    admission: CommitAdmission::StaleAuthority,
                 })))));
             frame(&mut rig, &mut d);
             assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Error);

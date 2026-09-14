@@ -17,6 +17,12 @@ use crate::auth::owner::{CommitPermit, CommitPlan, CommitReply, EndpointCapture,
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SessionIngressError { BatchTooLarge, AddressMismatch, Unadmitted }
 
+/// The revision of the last ordinary asynchronous persistence admission, used to give the live
+/// adapter's typed reply a real revision without inventing one. Zero before any bootstrap.
+fn ordinary_revision() -> u64 {
+    crate::plex::session::async_persistence::ordinary_revision()
+}
+
 enum NativeEndpoint {
     Live(crate::auth::ClientLifecycle),
     #[cfg(test)]
@@ -299,18 +305,19 @@ impl SessionAdapter {
         }
     }
 
-    /// `accepted` means this credential/lifecycle authority was current, not that best-effort
-    /// storage has become durable. File write failures retain the existing in-memory behavior.
+    /// Authority currency and durability are different questions, and this returns both. A
+    /// registry-only commit is `RegistryOnly`; a credential write is `Admitted` with the revision
+    /// storage enqueued, which is still NOT durable until the worker answers.
     pub(crate) fn commit(&mut self, permit: CommitPermit<'_>, plan: &CommitPlan) -> CommitReply {
-        use crate::auth::owner::RegistryPlan;
+        use crate::auth::owner::{CommitAdmission, RegistryPlan};
         if self.controlled_home {
             if plan.credentials.is_some() || plan.lifecycle.is_some() || plan.registry.len() != 1 {
-                return permit.reply(false);
+                return permit.reply(CommitAdmission::StaleAuthority);
             }
             let RegistryPlan::DevInstall { primary, extras, client_id } = &plan.registry[0] else {
-                return permit.reply(false);
+                return permit.reply(CommitAdmission::StaleAuthority);
             };
-            if !extras.is_empty() { return permit.reply(false); }
+            if !extras.is_empty() { return permit.reply(CommitAdmission::StaleAuthority); }
             let origin = primary.origin();
             let id = crate::plex::register_pinned_with_client_id("", &origin, &primary.token,
                 primary.resolve_pin().as_ref(), client_id);
@@ -321,19 +328,24 @@ impl SessionAdapter {
             if let (Some(tier), Some(client)) = (primary.tier, crate::plex::client_for(id)) {
                 client.set_connection(tier, crate::plex::IpVersion::of_host(origin.host()));
             }
-            return permit.reply(true);
+            return permit.reply(CommitAdmission::RegistryOnly);
         }
         if plan.lifecycle.is_some_and(|expected| !self.lifecycle_current(permit.request(), expected)) {
-            return permit.reply(false);
+            return permit.reply(CommitAdmission::StaleAuthority);
         }
         if plan.registry.iter().any(|operation| match operation {
             RegistryPlan::Activate { source, .. } => source.origin().is_none() || source.tier.is_none(),
             RegistryPlan::Endpoint { expected, source } => plan.lifecycle != Some(*expected)
                 || source.origin().is_none() || !self.endpoint_machine_matches(permit.request(), &source.machine_id),
             _ => false,
-        }) { return permit.reply(false); }
+        }) { return permit.reply(CommitAdmission::StaleAuthority); }
         match &mut self.resources {
             Resources::Live { .. } => {
+                // The live disk write keeps its existing synchronous, merge-and-write shape:
+                // moving it onto the typed asynchronous coordinator is the Stage B bridge/boot
+                // wiring, not this lane's change. The typed admission below reports the same
+                // outcome without pretending the synchronous write was a queued revision.
+                let mut admitted_revision = None;
                 if let Some(patch) = &plan.credentials {
                     let mut examined = false;
                     let mut matches = false;
@@ -342,33 +354,44 @@ impl SessionAdapter {
                         matches = plan.expected_disk.matches(disk);
                         matches.then(|| patch.merge_into(disk))
                     });
-                    if examined && !matches { return permit.reply(false); }
+                    if examined && !matches { return permit.reply(CommitAdmission::StaleAuthority); }
+                    if plan.writes_durable { admitted_revision = Some(ordinary_revision()); }
                 }
                 for operation in &plan.registry {
                     if !crate::auth::execute_session_registry(operation) {
-                        return permit.reply(false);
+                        return permit.reply(CommitAdmission::StaleAuthority);
                     }
+                }
+                if let Some(revision) = admitted_revision {
+                    return permit.reply(CommitAdmission::Admitted { revision, purpose: plan.purpose });
                 }
             }
             #[cfg(test)]
             Resources::Fixture(resources) => {
+                let mut admitted = None;
                 if let Some(patch) = &plan.credentials {
                     if !resources.disk.client_id.is_empty() {
-                        if !plan.expected_disk.matches(&resources.disk) { return permit.reply(false); }
+                        if !plan.expected_disk.matches(&resources.disk) {
+                            return permit.reply(CommitAdmission::StaleAuthority);
+                        }
                         resources.disk = patch.merge_into(&resources.disk);
+                        admitted = Some(CommitAdmission::Admitted {
+                            revision: 0, purpose: plan.purpose,
+                        });
                     }
                 }
                 for operation in &plan.registry {
                     if matches!(operation, RegistryPlan::Endpoint { expected, .. }
                         if resources.native_endpoints.contains_key(&expected.sid))
                         && !crate::auth::execute_session_registry(operation) {
-                        return permit.reply(false);
+                        return permit.reply(CommitAdmission::StaleAuthority);
                     }
                 }
                 resources.registry_writes.extend(plan.registry.iter().cloned());
+                if let Some(admission) = admitted { return permit.reply(admission); }
             }
         }
-        permit.reply(true)
+        permit.reply(CommitAdmission::RegistryOnly)
     }
 
     pub(crate) fn publish_profile(&mut self, publication: crate::auth::owner::ProfilePublication) {
@@ -676,8 +699,10 @@ mod tests {
         let mut next = disk.clone();
         next.account_token = "synthetic-new-token".into();
         let plan = CommitPlan { expected_disk: Identity::of(&disk),
-            credentials: Some(CredentialPatch::of(&next)), registry: Vec::new(), lifecycle: None };
-        assert!(a.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan).accepted);
+            credentials: Some(CredentialPatch::of(&next)), registry: Vec::new(), lifecycle: None,
+            purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
+            writes_durable: true };
+        assert!(a.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan).admission.accepted());
         assert_eq!(a.fixture_resources().disk.account_token, "synthetic-new-token");
         assert_eq!(a.fixture_resources().disk.playback_quality, Some(crate::plex::session::PlaybackQuality::Original));
         assert!(b.fixture_resources().disk.account_token.is_empty());
@@ -709,11 +734,13 @@ mod tests {
         changed.account_token = "synthetic-new-token".into();
         let plan = CommitPlan { expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&changed)), lifecycle: Some(lifecycle),
+            purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
+            writes_durable: true,
             registry: vec![RegistryPlan::Endpoint { expected: lifecycle,
                 source: crate::plex::session::SourceRef { machine_id: "machine-b".into(),
                     origin_url: "http://192.0.2.2:32400".into(), ..Default::default() } }],
         };
-        assert!(!adapter.commit(owner.commit_permit(1, 1, 1).unwrap(), &plan).accepted,
+        assert!(!adapter.commit(owner.commit_permit(1, 1, 1).unwrap(), &plan).admission.accepted(),
             "matching lifecycle cannot authorize repointing another machine");
         assert!(adapter.fixture_resources().disk.account_token.is_empty());
         assert!(adapter.fixture_resources().registry_writes.is_empty());
