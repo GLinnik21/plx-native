@@ -7,6 +7,9 @@ pub(crate) const TEXT_BOTTOM: f32 = 692.0;
 pub(crate) const COL_W: f32 = 660.0;
 pub(crate) const KNEE_Y: f32 = 0.65 * SCR_H;
 pub(crate) const MID_WEIGHT: f32 = 0.55;
+/// How much a bound preview multiplies the hero scrim curve. The shape stays the wedge, the
+/// bottom ramp and the feathered corner. 1.35 is the video-bound row the legibility table grades.
+pub(crate) const PREVIEW_FIELD: f32 = 1.35;
 
 pub(crate) fn stack_top(title_h: f32, meta_h: f32, synopsis_h: f32) -> f32 {
     TEXT_BOTTOM - (title_h + theme::space::MD + meta_h + synopsis_h)

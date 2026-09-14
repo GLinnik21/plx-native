@@ -28,7 +28,7 @@ is the final verification for the fixes.
 | **HDR tone mapping** | HDR source that must re-encode on a free server | h264 8-bit without tone mapping → washed-out colors | documented; **cannot be fixed client-side.** Narrow in practice: this panel decodes HEVC/HDR natively, so only undecodable HDR (e.g. AV1 on this SoC) hits it |
 | **Plex Home (managed users)** | boot who's-watching picker | free account = roster of 1 → boot skips the picker (`Session::boot_shows_picker`); Automatically Sign In skips it on a multi-user roster too | graceful by construction |
 | **Video preview thumbnails (BIF)** | chapter card thumbnails (`chapters_panel.rs`) | `thumb` empty → placeholder card; chapters themselves (embedded) still work | graceful |
-| **Trailers / extras** | Trailer disc + Play Trailer menu row when PMS returns a playable trailer extra | server returns none → control hidden; extras shelf still not drawn | graceful |
+| **Trailers / extras** | Background hero autoplay, Play Trailer menu row, and an Extras shelf of the `/extras` rows | server returns none → no preview and no shelf | graceful |
 | Live TV / DVR, music (sonic analysis, lyrics), photos, downloads/sync | not in scope of this app | — | n/a |
 
 ## The pattern this audit exists to kill

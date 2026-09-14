@@ -35,6 +35,7 @@ pub(crate) mod document_reader;
 pub(crate) mod fixture; // RESTRUCTURE spike: `FixtureHost` — the bundle the generic library is tested against
 pub(crate) mod focus; // RESTRUCTURE (spec §7.3): the focus ENGINE — one owner of focus, the golden tables
 pub mod fmt; // shared duration/clock display formatters
+pub(crate) mod dwell; // raw dwell accumulator; notes Motion, never a Ramp
 pub(crate) mod frame; // RESTRUCTURE spike (spec §8.1): `Budget`, admission control for prepare work
 pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-transition prototype
 pub(crate) mod hit; // RESTRUCTURE (spec §7.6): the double-buffered hit map and the pointer gates

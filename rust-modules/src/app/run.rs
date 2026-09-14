@@ -1286,6 +1286,11 @@ fn playback_may_run(app: &App) -> bool {
 pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         if playback_may_run(app) && is_started() {
             crate::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
+            crate::player::preview::after_pump(
+                &mut app.player.session,
+                &mut app.adapters.player,
+                fr.now,
+            );
         }
         // **The ONE place the Player machine is asked whether the hardware video plane is bound**
         // (spec §9), immediately after the pump that advances the ACB bind transaction and BEFORE
@@ -2016,18 +2021,40 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     // every transport key and the EOS teardown are route-gated — so repair the
                     // invariant here rather than trust that no path can violate it. The one that
                     // could is cancelled above; this is the backstop, and it is the cheaper half.
-                    if resume_prepared
-                        && crate::player::start_bufferfeed(&mut app.player.session, &mut app.adapters.player)
-                        && !matches!(app.route(), AppArg::Player)
-                    {
-                        log("pump_play: engine started off-route → restoring AppArg::Player");
-                        // The page is being taken off screen by a LANDING, not by a navigation. It
-                        // carried a `forward_leave(app.route())` teardown here until phase 12; every
-                        // arm of that table was `None` and the pages it named are owned screens that
-                        // drop what they loaded on the container's own `Unmount` — including
-                        // Search's keyboard (`SearchScreen::step`), which is the case this line was
-                        // written for.
-                        super::bridge::show_page(&mut app.pages, AppArg::Player);
+                    // A preview is the exception: the detail page stays mounted, and an off-route
+                    // engine is the feature, not a violation.
+                    if resume_prepared {
+                        let started = crate::player::start_bufferfeed(
+                            &mut app.player.session,
+                            &mut app.adapters.player,
+                        );
+                        let preview = crate::route::is_preview(&app.player.session);
+                        if started && !matches!(app.route(), AppArg::Player) && !preview {
+                            log("pump_play: engine started off-route → restoring AppArg::Player");
+                            // The page is being taken off screen by a LANDING, not by a navigation. It
+                            // carried a `forward_leave(app.route())` teardown here until phase 12; every
+                            // arm of that table was `None` and the pages it named are owned screens that
+                            // drop what they loaded on the container's own `Unmount` — including
+                            // Search's keyboard (`SearchScreen::step`), which is the case this line was
+                            // written for.
+                            super::bridge::show_page(&mut app.pages, AppArg::Player);
+                        }
+                        if preview {
+                            // A host Load of 0 with the clock sink off is "no video path", not an
+                            // admitted slot. Counting it spends the cycle and the later failure
+                            // opens the breaker, so every later title is skipped.
+                            let seam_absent = cfg!(feature = "hostsim") && !crate::dev::flag("clocksink");
+                            if started && !seam_absent {
+                                crate::player::preview::note_admitted();
+                            } else if crate::route::url(&app.player.session).is_empty() {
+                                crate::player::preview::note_refused_direct(
+                                    crate::route::cur_sid(&app.player.session),
+                                    &crate::route::cur_rk(&app.player.session),
+                                );
+                            } else {
+                                crate::player::preview::note_admission_refused();
+                            }
+                        }
                     }
                 }
             },
@@ -2163,7 +2190,13 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // `Popover::prepare_present`, and decides whether the frozen-host
                         // snapshot still describes the page. Route-agnostic by construction —
                         // see `ui::popover::host::begin_frame`.
-                        crate::ui::popover::host::begin_frame(fr.underlay_moving);
+                        // A bound preview owns the plane the same way the player branch does: there
+                        // is no framebuffer to snapshot. Skip the door instead of tripping the
+                        // debug assertion. A popover from this page halts the preview first, so
+                        // this frame only skips while the picture is the intended ground.
+                        if !(app.player.video_plane_bound && crate::route::is_preview(&app.player.session)) {
+                            crate::ui::popover::host::begin_frame(fr.underlay_moving);
+                        }
                         // Resolve every glass owner BEFORE anything on this route draws — that is
                         // `Glass::prepare`'s contract, and the shared top tab track is an owner on
                         // every route that wears it.

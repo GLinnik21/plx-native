@@ -444,7 +444,7 @@ fn cached_trailer(sid: crate::plex::ServerId, m: &PmsMovie) -> Option<crate::met
     if !crate::plex::same_item((d.sid, d.rk.as_str()), (sid, m.rk.as_str())) {
         return None;
     }
-    d.trailer.clone().filter(|e| e.playable())
+    d.trailer().cloned().filter(|e| e.playable())
 }
 
 impl ItemMenuScreen {
@@ -1538,6 +1538,7 @@ mod tests {
             extra_type: 1,
             dur_ms: 120_000,
             bitrate: 2_500,
+            thumb: String::new(),
         }
     }
 
@@ -1607,7 +1608,7 @@ mod tests {
             sid: crate::plex::ServerId::UNSET,
             rk: "42".into(),
             kind: "movie".into(),
-            trailer: Some(extra()),
+            extras: vec![extra()],
             ..Default::default()
         }));
         let hit = cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None)).unwrap();

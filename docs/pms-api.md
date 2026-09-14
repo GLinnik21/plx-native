@@ -652,7 +652,10 @@ Episode container metadata also carries `grandparentTitle`/`grandparentThumb` at
 ### Extras / trailers (verified live 2026-09-12, PMS 1.43)
 
 Movie and show metadata can name a primary trailer and a list of extras. The Trailer control
-reads **one playable trailer** from that list; the extras shelf is still out of scope.
+reads **one playable trailer** from that list (`Detail::trailer()`). The detail page draws
+every extras row, trailer included, as an Extras shelf (`Detail.extras`). `trailer()` only
+picks which of those rows the background preview and Play Trailer use. The hero Trailer disc
+is not drawn.
 
 ```
 GET /library/metadata/{rk}?includeChapters=1&includeMarkers=1&includeOnDeck=1&includeExtras=1

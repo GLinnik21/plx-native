@@ -468,7 +468,7 @@ fn mount_page(
 /// census, as of 2026-09-07, one line per page kind, so the next reader can check it instead of
 /// trusting it:
 ///
-///  * `RootPage` → `RootState`: the selected row and the Automatically Sign In switch.
+///  * `RootPage` → `RootState`: the selected row, Automatically Sign In, and trailer autoplay.
 ///  * `ConsentPage` (Privacy & data, and each first-run stage) → `ConsentState`: the mode, both
 ///    halves of the draft decision, and whether the delete alert is up.
 ///  * `OnboardScreen` (Favorite libraries) → `OnboardState`: whether it is the Settings or the
@@ -927,6 +927,7 @@ enum Action {
     Privacy,
     Legal,
     AutoSignIn,
+    TrailerAutoplay,
     About,
 }
 
@@ -941,16 +942,17 @@ pub(crate) struct RootPage {
 struct RootState {
     sel: i32,
     auto_sign_in: bool,
+    trailer_autoplay: bool,
 }
 
 impl LogicalState for RootState {
     fn write(&self, w: &mut Canon) {
-        w.u32(self.sel as u32).bool(self.auto_sign_in);
+        w.u32(self.sel as u32).bool(self.auto_sign_in).bool(self.trailer_autoplay);
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "root sel={} auto_sign_in={}",
-            self.sel, self.auto_sign_in
+            "root sel={} auto_sign_in={} trailer_autoplay={}",
+            self.sel, self.auto_sign_in, self.trailer_autoplay
         ));
     }
 }
@@ -985,6 +987,7 @@ impl RootPage {
             state: RootState {
                 sel: 0,
                 auto_sign_in: false,
+                trailer_autoplay: true,
             },
         };
         s.rebuild(0, directory);
@@ -995,8 +998,10 @@ impl RootPage {
         let sess = crate::plex::session::peek();
         let signed_in = signed_in();
         let auto_sign_in = sess.auto_sign_in();
+        let trailer_autoplay = sess.trailer_autoplay();
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
+        self.state.trailer_autoplay = trailer_autoplay;
 
         let mut actions = Vec::new();
         let mut sections = Vec::new();
@@ -1041,6 +1046,14 @@ impl RootPage {
             );
             actions.push(Action::AutoSignIn);
         }
+        if signed_in {
+            system = system.row(
+                Row::new("Play trailers automatically")
+                    .detail("After a few seconds on a title, play its trailer in the background. This is also the sound control.")
+                    .toggle(trailer_autoplay),
+            );
+            actions.push(Action::TrailerAutoplay);
+        }
         system = system.row(
             Row::new("About PlxNative")
                 .detail("Version, copyright and project information.")
@@ -1077,6 +1090,10 @@ impl RootPage {
         match action {
             Action::AutoSignIn => {
                 crate::plex::session::set_auto_sign_in(!self.state.auto_sign_in);
+                self.rebuild(self.table.sel, directory);
+            }
+            Action::TrailerAutoplay => {
+                crate::plex::session::set_trailer_autoplay(!self.state.trailer_autoplay);
                 self.rebuild(self.table.sel, directory);
             }
             Action::Favourites => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Favourites))),

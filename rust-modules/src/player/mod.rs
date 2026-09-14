@@ -18,6 +18,7 @@
 pub(crate) mod adapter;
 pub(crate) mod engine;
 pub(crate) mod machine;
+pub(crate) mod preview;
 mod ffi;
 mod pump;
 pub(crate) mod report;

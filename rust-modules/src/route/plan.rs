@@ -550,6 +550,8 @@ pub(crate) struct ResolveEnv {
     pub src_kbps: i64,
     /// Trailer sessions omit `continuous=1` so EOS cannot Up-Next into a sibling extra.
     pub omit_queue_continuous: bool,
+    /// Hero preview. Skip the PlayQueue entirely, and refuse anything that is not a direct play.
+    pub preview: bool,
 }
 
 
@@ -613,9 +615,9 @@ pub(super) fn resolve_src_kbps(
         return 0;
     };
     if let Some(extra) = d
-        .trailer
-        .as_ref()
-        .filter(|e| crate::plex::same_item((d.sid, e.rk.as_str()), (sid, rk)))
+        .extras
+        .iter()
+        .find(|e| crate::plex::same_item((d.sid, e.rk.as_str()), (sid, rk)))
     {
         return extra.bitrate;
     }
@@ -774,7 +776,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // a PlayQueue so the server tracks this as a real player with a playQueueItemID.
     let session = new_sess(rk);
     plan.sess = session.clone();
-    if !rk.is_empty() {
+    if !rk.is_empty() && !env.preview {
         let q = resolve_playqueue(
             client,
             rk,
@@ -1139,6 +1141,11 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             env.quality.label(),
             env.src_kbps
         ));
+    }
+    if env.preview && !crate::player::preview::accepts_direct_play(directplay, !part.is_empty(), adaptive) {
+        crate::player::log("preview: refused — not a direct play");
+        plan.url.clear();
+        return plan;
     }
     if (directplay || rk.is_empty()) && !part.is_empty() {
         // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
@@ -2136,12 +2143,12 @@ mod tests {
                 bitrate: 40_000,
                 ..Default::default()
             }),
-            trailer: Some(crate::metadata::Extra {
+            extras: vec![crate::metadata::Extra {
                 rk: "9".into(),
                 bitrate: 2_500,
                 part: "/p".into(),
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
         };
         assert_eq!(resolve_src_kbps(Some(&movie), a, "7"), 40_000);

@@ -1,6 +1,6 @@
 //! Owned Detail page (restructure phase 7).
 //!
-//! The six focus groups are composed here; section modules own their geometry and paint. Focus and
+//! The focus groups are composed here; section modules own their geometry and paint. Focus and
 //! remembered group cursors belong exclusively to the input engine. This instance stores only
 //! content decisions (season debounce/restoration and server reconciliation) and render state
 //! (springs, metrics and caches). User input cancels restoration, never the reconciliation owed.
@@ -8,9 +8,11 @@
 mod about;
 mod cast;
 mod episodes;
+mod extras;
 mod hero;
 mod related;
 mod season;
+mod section;
 #[cfg(test)]
 mod tests;
 
@@ -40,7 +42,7 @@ use crate::ui::screen::{
     Step, Stop,
 };
 use crate::ui::widgets::{
-    AmbientWash, Button, CircleButton, ControlPalette, CtlPop, PosterMark, TabStrip,
+    AmbientWash, Button, CircleButton, ControlGround, ControlPalette, CtlPop, PosterMark, TabStrip,
 };
 use crate::ui::{hero_alpha, theme, Env, Painter, Rect, Spring, View};
 use std::borrow::Cow;
@@ -57,14 +59,15 @@ const EP_SCALE_MAX: usize = 40;
 const K_SCROLL: f32 = crate::ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
 
-pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,refresh:u32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;6],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
+pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,refresh:u32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;7],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
 
 const _: () = assert!(hero::HERO_ELEM_RANGE_END == season::SEASON_ELEM_RANGE_START);
 const _: () = assert!(season::SEASON_ELEM_RANGE_END == episodes::EPISODES_ELEM_RANGE_START);
 const _: () = assert!(episodes::EPISODES_ELEM_RANGE_END == related::RELATED_ELEM_RANGE_START);
 const _: () = assert!(related::RELATED_ELEM_RANGE_END == cast::CAST_ELEM_RANGE_START);
 const _: () = assert!(cast::CAST_ELEM_RANGE_END == about::ABOUT_ELEM_RANGE_START);
-const _: () = assert!(about::ABOUT_ELEM_RANGE_START < about::ABOUT_ELEM_RANGE_END);
+const _: () = assert!(about::ABOUT_ELEM_RANGE_END == extras::EXTRAS_ELEM_RANGE_START);
+const _: () = assert!(extras::EXTRAS_ELEM_RANGE_END <= FIRST_ITEM_ELEM);
 
 #[derive(Clone)]
 struct RestoreIntent {
@@ -93,6 +96,13 @@ pub(crate) struct DetailScreen {
     /// committed replay fixtures. The `tick` arm that advances it explains the fix that DID land —
     /// the dwell timer now reports `Motion`, which it never did before.
     season_settle: f32,
+    /// Presentation only. Not hashed: a `SHAPE` bump would invalidate every detail fixture for a
+    /// timer that is not a logical decision.
+    preview_dwell: f32,
+    preview_promoted: bool,
+    preview_art: f32,
+    preview_prose: f32,
+    preview_chrome: f32,
     /// Server reconciliation owed by this item, independent of cancellable focus restoration.
     /// Navigation memory cannot rewind it; only a new refresh or its terminal request changes it.
     refresh: DetailRefreshPhase,
@@ -105,6 +115,7 @@ pub(crate) struct DetailScreen {
     tab_scroll: Spring,
     episode_scale: [Spring; EP_SCALE_MAX],
     related: CardRow,
+    extras: CardRow,
     cast: CardRow,
     tabs: TabStrip,
     season_pop: CtlPop<1>,
@@ -131,8 +142,8 @@ struct LayoutCache {
     stamp: LayoutStamp,
     chain: crate::ui::detail_layout::HeroChain,
     content_top: f32,
-    top: [f32; 6],
-    block: [f32; 6],
+    top: [f32; section::SLOTS],
+    block: [f32; section::SLOTS],
     seen: u8,
     end: f32,
 }
@@ -151,6 +162,7 @@ struct LayoutStamp {
     ep_chars: u32,
     n_cast: u32,
     n_rel: u32,
+    n_extras: u32,
     n_sea: u32,
     flags: u8,
 }
@@ -184,6 +196,7 @@ impl LayoutStamp {
             ep_chars,
             n_cast: d.credits_len() as u32,
             n_rel: d.related.len() as u32,
+            n_extras: d.extras.len() as u32,
             n_sea: d.seasons.len() as u32,
             flags,
         }
@@ -213,6 +226,11 @@ impl DetailScreen {
             return_pending: false,
             pending_season: None,
             season_settle: 0.0,
+            preview_dwell: 0.0,
+            preview_promoted: false,
+            preview_art: 1.0,
+            preview_prose: 1.0,
+            preview_chrome: 1.0,
             refresh: DetailRefreshPhase::None,
             restore_intent: None,
             scroll: Spring::at(0.0),
@@ -221,6 +239,7 @@ impl DetailScreen {
             tab_scroll: Spring::at(0.0),
             episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
             related: CardRow::new(),
+            extras: CardRow::new(),
             cast: CardRow::new(),
             tabs: TabStrip::new(),
             season_pop: CtlPop::new(),
@@ -287,6 +306,11 @@ impl DetailScreen {
                     }
                 }
             }
+            for (i, extra) in d.extras.iter().enumerate().take(extras::EXTRAS_ELEM_RANGE_END.saturating_sub(extras::EXTRAS_ELEM_RANGE_START) as usize) {
+                if let Some(local) = extras::elem(i) {
+                    identities.push((local, DetailIdentity::Extra { sid: d.sid, rk: extra.rk.clone() }));
+                }
+            }
             for (i, related) in d.related.iter().enumerate() {
                 if let Some(local) = related::elem(i) {
                     identities.push((local, DetailIdentity::Related { sid: related.sid, rk: related.rk.clone() }));
@@ -305,7 +329,7 @@ impl DetailScreen {
         self.local_by_key.clear();
         for (local, identity) in identities {
             let identity = match &identity {
-                DetailIdentity::Season { rk, .. } | DetailIdentity::Episode { rk, .. } | DetailIdentity::Related { rk, .. } if rk.is_empty() => DetailIdentity::Slot(local),
+                DetailIdentity::Season { rk, .. } | DetailIdentity::Episode { rk, .. } | DetailIdentity::Related { rk, .. } | DetailIdentity::Extra { rk, .. } if rk.is_empty() => DetailIdentity::Slot(local),
                 _ => identity,
             };
             let elem = *interned.entry(identity.clone()).or_insert_with(|| {
@@ -364,7 +388,7 @@ impl DetailScreen {
             ep_text,
             // Engine-owned remembered group cursors ride ReturnState separately. These fields stay
             // for legacy focusprobe/trail serialization only and are not a second authority.
-            saved_col: [0; 6],
+            saved_col: [0; crate::metadata::SPOT_SECTION_SLOTS],
             season,
         }
     }
@@ -451,6 +475,15 @@ impl DetailScreen {
                 f.press.scale,
                 f.measure,
             ),
+            Some(Located::Extras(i)) => extras::draw_focused(
+                f.painter,
+                d,
+                &self.extras,
+                i,
+                self.section_top(6, d, measure) - self.scroll.pos,
+                f.press.scale,
+                f.measure,
+            ),
             _ => {}
         }
     }
@@ -510,6 +543,7 @@ impl DetailScreen {
             2 => episodes::block_h(d, measure),
             3 => related::block_h(),
             4 => cast::block_h(),
+            6 => extras::block_h(),
             _ => 0.0,
         }
     }
@@ -532,18 +566,18 @@ impl DetailScreen {
         let content_top = chain.btn_y + hero::CD + theme::space::XL;
         let (sections, n) = self.sections(Some(d));
         let live = &sections[..n];
-        let mut top = [0.0f32; 6];
-        let mut block = [0.0f32; 6];
+        let mut top = [0.0f32; section::SLOTS];
+        let mut block = [0.0f32; section::SLOTS];
         let mut seen = 0u8;
         let mut y = content_top;
         for (pos, &sec) in live.iter().enumerate().skip(1) {
             let si = sec as usize;
-            if si < 6 {
+            if si < section::SLOTS {
                 top[si] = y;
                 seen |= 1 << si;
             }
             let h = Self::section_block_h(sec, d, measure);
-            if si < 6 {
+            if si < section::SLOTS {
                 block[si] = h;
             }
             y += h + Self::section_gap(sec, live.get(pos + 1).copied());
@@ -567,27 +601,31 @@ impl DetailScreen {
         }
     }
 
-    fn sections(&self, d: Option<&Detail>) -> ([i32; 6], usize) {
-        let mut out = [0; 6];
+    fn sections(&self, d: Option<&Detail>) -> ([i32; section::SLOTS], usize) {
+        let mut out = [0; section::SLOTS];
         let mut n = 1;
         if let Some(d) = d {
             if d.is_show && !d.seasons.is_empty() {
-                out[n] = 1;
+                out[n] = section::SectionId::Season.raw();
                 n += 1;
             }
             if d.is_show && !d.episodes.is_empty() {
-                out[n] = 2;
+                out[n] = section::SectionId::Episode.raw();
+                n += 1;
+            }
+            if !d.extras.is_empty() {
+                out[n] = section::SectionId::Extras.raw();
                 n += 1;
             }
             if d.credits_len() > 0 {
-                out[n] = 4;
+                out[n] = section::SectionId::Cast.raw();
                 n += 1;
             }
             if !d.related.is_empty() {
-                out[n] = 3;
+                out[n] = section::SectionId::Related.raw();
                 n += 1;
             }
-            out[n] = 5;
+            out[n] = section::SectionId::About.raw();
             n += 1;
         }
         (out, n)
@@ -596,7 +634,7 @@ impl DetailScreen {
     fn section_top(&self, section: i32, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
         let c = self.ensure_layout(d, measure);
         let si = section as usize;
-        if (1..6).contains(&si) && c.seen & (1 << si) != 0 {
+        if (1..section::SLOTS).contains(&si) && c.seen & (1 << si) != 0 {
             return c.top[si];
         }
         c.end
@@ -605,7 +643,7 @@ impl DetailScreen {
     fn block_h(&self, section: i32, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
         let c = self.ensure_layout(d, measure);
         let si = section as usize;
-        if (1..6).contains(&si) && c.seen & (1 << si) != 0 {
+        if (1..section::SLOTS).contains(&si) && c.seen & (1 << si) != 0 {
             return c.block[si];
         }
         Self::section_block_h(section, d, measure)
@@ -638,6 +676,9 @@ impl DetailScreen {
         }
         if let Some(i) = related::locate(elem) {
             return Some(Located::Related(i));
+        }
+        if let Some(i) = extras::locate(elem) {
+            return Some(Located::Extras(i));
         }
         if let Some(i) = cast::locate(elem) {
             return Some(Located::Cast(i));
@@ -704,6 +745,7 @@ impl DetailScreen {
                 )
             }
             3 if !d.related.is_empty() => related::elem(clamp(intent.spot.col, d.related.len())),
+            6 if !d.extras.is_empty() => extras::elem(clamp(intent.spot.col, extras::len(d))),
             4 if d.credits_len() > 0 => cast::elem(clamp(intent.spot.col, d.credits_len())),
             5 => Some(
                 if intent.spot.col > 0 && self.tracks_available() {
@@ -789,6 +831,21 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                         self.block_h(2, d, measure),
                     ),
                     len: d.episodes.len().min(episodes::MAX_ITEMS) * 2,
+                    elem: ElemKind::Card,
+                }),
+                6 => out.push(GroupSpec {
+                    id: extras::EXTRAS_GROUP,
+                    kind: GroupKind::Row { wrap: false },
+                    seat: Seat::Remembered,
+                    reachable: AxisMask::BOTH,
+                    edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
+                    extent: Rect::new(
+                        crate::ui::consts::MARGIN_X,
+                        top,
+                        crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
+                        self.block_h(6, d, measure),
+                    ),
+                    len: extras::len(d),
                     elem: ElemKind::Card,
                 }),
                 3 => out.push(GroupSpec {
@@ -888,6 +945,10 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 row_move(i, self.detail().map(|d| d.related.len()).unwrap_or(0), dir)
                     .and_then(related::elem)
             }
+            Located::Extras(i) => {
+                row_move(i, self.detail().map(extras::len).unwrap_or(0), dir)
+                    .and_then(extras::elem)
+            }
             Located::Cast(i) => {
                 row_move(i, self.detail().map(|d| d.credits_len()).unwrap_or(0), dir)
                     .and_then(cast::elem)
@@ -975,6 +1036,14 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 (
                     related::rect(&self.related, i, top, at == At::Drawn),
                     related::rect(&self.related, i, top, false),
+                    Some(i as u32),
+                )
+            }
+            Located::Extras(i) => {
+                let top = self.section_top(6, d?, measure) - vertical;
+                (
+                    extras::rect(&self.extras, i, top, at == At::Drawn),
+                    extras::rect(&self.extras, i, top, false),
                     Some(i as u32),
                 )
             }
@@ -1087,6 +1156,18 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 episodes::Row::Still
             };
             episodes::elem(i, row).unwrap_or(episodes::EPISODES_ELEM_RANGE_START)
+        } else if group == extras::EXTRAS_GROUP {
+            let n = d.map(extras::len).unwrap_or(0);
+            extras::elem(card_row::column_near_x(
+                from.rect.cx(),
+                crate::ui::consts::MARGIN_X,
+                RowStyle::EPISODE.w + RowStyle::EPISODE.gap,
+                RowStyle::EPISODE.w,
+                self.extras.scroll_x(),
+                n,
+                from_i,
+            ))
+            .unwrap_or(extras::EXTRAS_ELEM_RANGE_START)
         } else if group == related::RELATED_GROUP {
             let n = d.map(|d| d.related.len()).unwrap_or(0).min(512);
             related::elem(card_row::column_near_x(
@@ -1133,6 +1214,7 @@ impl DetailScreen {
                 d.is_some_and(|d| i < d.episodes.len().min(episodes::MAX_ITEMS))
             }
             Located::Related(i) => d.is_some_and(|d| i < d.related.len().min(512)),
+            Located::Extras(i) => d.is_some_and(|d| i < extras::len(d)),
             Located::Cast(i) => d.is_some_and(|d| i < d.credits_len().min(512)),
             Located::About(0) => d.is_some(),
             Located::About(1) => d.is_some() && self.tracks_available(),
@@ -1319,7 +1401,28 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                         ..
                     }
                 ) {
+                    if self.preview_promoted {
+                        self.preview_promoted = false;
+                        fx.invalidate(Provenance::Input);
+                        return Handled::Yes;
+                    }
                     self.content(fx, ContentReq::Back);
+                    return Handled::Yes;
+                }
+                if matches!(
+                    input.kind,
+                    InputKind::Key {
+                        key: Key::Up,
+                        edge: Edge::Down,
+                        ..
+                    }
+                ) && crate::player::preview::view().picture
+                    && cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| self.locate(k.elem)).is_some_and(|located| matches!(located, Located::Hero(_)))
+                {
+                    // UP fades this page's chrome to zero. The page stays mounted. OK still
+                    // activates the focused control. There is no HUD.
+                    self.preview_promoted = true;
+                    fx.invalidate(Provenance::Input);
                     return Handled::Yes;
                 }
                 Handled::No
@@ -1347,6 +1450,9 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
                 self.pending_season = None;
                 self.season_settle = 0.0;
+                self.preview_dwell = 0.0;
+                self.preview_promoted = false;
+                self.content(fx, ContentReq::PreviewStop);
                 self.restore_intent = None;
                 self.refresh = DetailRefreshPhase::None;
                 self.return_pending = false;
@@ -1454,6 +1560,17 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                             .draw(&Env::inert(), p);
                         }
                     }
+                    6 => extras::draw(
+                        p,
+                        d,
+                        &self.extras,
+                        top,
+                        match focus {
+                            Some(Located::Extras(i)) => Some(i),
+                            _ => None,
+                        },
+                        f.measure,
+                    ),
                     3 => related::draw(
                         p,
                         d,
@@ -1577,7 +1694,7 @@ impl DetailScreen {
     fn draw_backdrop(&self, p: Painter, d: Option<&Detail>, measure: &dyn crate::ui::machine::Measure) {
         let sf = (self.scroll.pos / (self.content_top(measure) - crate::ui::detail_layout::TOP_MARGIN))
             .clamp(0.0, 1.0);
-        let art_alpha = 1.0 - sf;
+        let art_alpha = (1.0 - sf) * self.preview_art;
         let (sid, _, path) = self.art_identity(d);
         let (texture, width, height) = if art_alpha > 0.01 {
             crate::ui::widgets::resolve_tex_wh_on(sid, &path, 1920, 1080, 0)
@@ -1620,7 +1737,16 @@ impl DetailScreen {
                 )),
                 0.0,
             );
-            crate::ui::widgets::hero_scrim(p, visible, d.is_some_and(hero::has_people));
+            crate::ui::widgets::hero_scrim(
+                p,
+                visible * crate::player::preview::view().field,
+                d.is_some_and(hero::has_people),
+            );
+        }
+        if self.scroll.pos > 0.0 && crate::player::preview::view().picture {
+            let a = (self.scroll.pos / crate::player::preview::COVER_SCROLL).clamp(0.0, 1.0);
+            let cover = theme::with_a(theme::PLANE_COVER, a);
+            p.rect(Rect::FULL, 0.0, cover, cover, 0.0);
         }
     }
 
@@ -1633,9 +1759,11 @@ impl DetailScreen {
             .map(|d| d.title.as_str())
             .or_else(|| self.selected().map(|m| m.title.as_str()))
             .unwrap_or("Loading…");
+        let chrome = p.alpha(self.preview_chrome);
+        let prose = p.alpha(self.preview_chrome * self.preview_prose);
         let band = crate::ui::hero_logo::band_h(LogoRung::Hero);
         HeroLogo::new(self.sid, &rk, title, LogoRung::Hero).draw(
-            p,
+            chrome,
             Rect::new(
                 crate::ui::consts::MARGIN_X,
                 TITLE_BOTTOM - band,
@@ -1649,20 +1777,20 @@ impl DetailScreen {
         let synopsis_view = crate::ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
         let chain = self.hero_chain(measure);
         if let Some(d) = d {
-            self.draw_identity_line(p, d, chain.meta_y, cx.measure);
-            self.draw_ratings(p, d, chain.ratings_y, cx.measure);
+            self.draw_identity_line(prose, d, chain.meta_y, cx.measure);
+            self.draw_ratings(prose, d, chain.ratings_y, cx.measure);
         }
         if !synopsis.is_empty() {
             synopsis_view.draw(
-                p,
+                prose,
                 Rect::new(crate::ui::consts::MARGIN_X, chain.syn_y, HERO_TEXT_W, 0.0),
             );
         }
         if let Some(d) = d {
-            hero::draw_facts(p, d, chain.facts_y, cx.measure);
-            hero::draw_people(p, d, chain.btn_y, measure);
+            hero::draw_facts(prose, d, chain.facts_y, cx.measure);
+            hero::draw_people(prose, d, chain.btn_y, measure);
         }
-        self.draw_buttons(p, cx, chain.btn_y, nav_page_alpha);
+        self.draw_buttons(chrome, cx, chain.btn_y, nav_page_alpha);
     }
 
     fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -1776,10 +1904,20 @@ impl DetailScreen {
             last.x + last.w - crate::ui::consts::MARGIN_X,
             hero::CD,
         ];
-        let may_read = may_sample_control_ground(nav_page_alpha, hero_alpha(self.scroll.pos, HERO_FADE));
-        let palette = crate::gfx::sample_control_ground(row, may_read)
-            .map(ControlPalette::ambient)
-            .unwrap_or_default();
+        let picture = crate::player::preview::view().picture;
+        let may_read = !picture && may_sample_control_ground(nav_page_alpha, hero_alpha(self.scroll.pos, HERO_FADE));
+        let palette = if picture {
+            ControlPalette::default()
+        } else {
+            crate::gfx::sample_control_ground(row, may_read)
+                .map(ControlPalette::ambient)
+                .unwrap_or_default()
+        };
+        let ground = if picture {
+            ControlGround::Unkeyed
+        } else {
+            ControlGround::Keyed
+        };
         for (i, ctl) in controls[..n].iter().copied().enumerate() {
             let rect = hero::hero_btn_rect_at(set, i, y, widths);
             let focused = current == Some(ctl.elem());
@@ -1793,6 +1931,7 @@ impl DetailScreen {
                 .icon(crate::ui::icons::Icon::Play)
                 .focused(focused)
                 .palette(palette)
+                .ground(ground)
                 .scale(scale)
                 .draw(&Env::inert(), p),
                 hero::HeroCtl::Alt => {
@@ -1800,6 +1939,7 @@ impl DetailScreen {
                         .trailing_icon(crate::ui::icons::Icon::ChevronDown)
                         .focused(focused)
                         .palette(palette)
+                        .ground(ground)
                         .scale(scale)
                         .draw(&Env::inert(), p)
                 }
@@ -1816,6 +1956,7 @@ impl DetailScreen {
                         .frame(rect)
                         .focused(focused)
                         .palette(palette)
+                        .ground(ground)
                         .scale(scale);
                     if let Some((slot, label)) = hero::disc_verb(ctl, self.named_show()) {
                         button = button.label(label.as_ptr(), self.disc_unfurl[slot].pos);
@@ -1876,6 +2017,10 @@ impl DetailScreen {
                 }
             }
             elems.extend(
+                (0..extras::len(d))
+                    .filter_map(|i| extras::elem(i).map(|e| (e, Activate::Press))),
+            );
+            elems.extend(
                 (0..d.related.len().min(512))
                     .filter_map(|i| related::elem(i).map(|e| (e, Activate::Press))),
             );
@@ -1912,17 +2057,21 @@ impl DetailScreen {
 }
 
 fn compact_title_hide_pos(sections: &[i32], n: usize, is_show: bool) -> Option<usize> {
+    // Named hide anchors (Cast, Related, About), not `id >= 3`. Extras is not an anchor, so
+    // inserting it does not move the hide point. A movie hides at the second anchor, a show at
+    // the first — the same rule the position walk used when those three were the only ids >= 3.
     let wanted = usize::from(!is_show);
     let mut seen = 0;
     let mut first = None;
     for (position, &section) in sections[..n].iter().enumerate() {
-        if section >= 3 && position >= 1 {
-            first.get_or_insert(position);
-            if seen == wanted {
-                return Some(position);
-            }
-            seen += 1;
+        if position == 0 || !section::is_hide_anchor(section) {
+            continue;
         }
+        first.get_or_insert(position);
+        if seen == wanted {
+            return Some(position);
+        }
+        seen += 1;
     }
     first
 }
@@ -1944,6 +2093,13 @@ fn play_resume_ns(from_start: bool, resume_ms: i64, duration_ms: i64) -> i64 {
 /// several frames after the transition ends, on a real device screen this cannot be tested on.
 fn may_sample_control_ground(nav_page_alpha: f32, hero_alpha: f32) -> bool {
     nav_page_alpha >= 0.999 && hero_alpha > 0.99
+}
+
+fn ease(value: &mut f32, target: f32, dt: f32) -> bool {
+    let next = *value + (target - *value) * (dt / 0.35).clamp(0.0, 1.0);
+    let moved = (next - *value).abs() > 0.001;
+    *value = next;
+    moved
 }
 
 #[cfg(test)]
@@ -2021,6 +2177,7 @@ enum Located {
     Season(usize),
     Episode(usize, episodes::Row),
     Related(usize),
+    Extras(usize),
     Cast(usize),
     About(usize),
 }
@@ -2032,6 +2189,7 @@ impl Located {
             Self::Season(index) => season::elem(index),
             Self::Episode(index, row) => episodes::elem(index, row),
             Self::Related(index) => related::elem(index),
+            Self::Extras(index) => extras::elem(index),
             Self::Cast(index) => cast::elem(index),
             Self::About(0) => Some(about::CARD_ELEM),
             Self::About(_) => Some(about::LANGUAGES_ELEM),
@@ -2043,6 +2201,7 @@ impl Located {
             Self::Season(_) => 1,
             Self::Episode(_, _) => 2,
             Self::Related(_) => 3,
+            Self::Extras(_) => 6,
             Self::Cast(_) => 4,
             Self::About(_) => 5,
         }
@@ -2054,6 +2213,7 @@ impl Located {
             Self::Season(_) => season::SEASON_GROUP,
             Self::Episode(_, _) => episodes::EPISODES_GROUP,
             Self::Related(_) => related::RELATED_GROUP,
+            Self::Extras(_) => extras::EXTRAS_GROUP,
             Self::Cast(_) => cast::CAST_GROUP,
             Self::About(_) => about::ABOUT_GROUP,
         }
@@ -2062,7 +2222,7 @@ impl Located {
     fn index(self) -> usize {
         match self {
             Self::Hero(c) => c.elem() as usize,
-            Self::Season(i) | Self::Episode(i, _) | Self::Related(i) | Self::Cast(i) => i,
+            Self::Season(i) | Self::Episode(i, _) | Self::Related(i) | Self::Extras(i) | Self::Cast(i) => i,
             Self::About(0) => 0,
             // Legacy Spot/focusprobe vocabulary keeps the four visual About columns numbered
             // Card=0, Information=1, Languages=2, Accessibility=3 even though only two are stops.
@@ -2268,6 +2428,12 @@ impl DetailScreen {
             };
             self.related
                 .update(d.related.len(), related_focus, &RowStyle::HOME, dt);
+            let extras_focus = match focused {
+                Some(Located::Extras(i)) => Some(i),
+                _ => None,
+            };
+            self.extras
+                .update(extras::len(d), extras_focus, &RowStyle::EPISODE, dt);
             let cast_focus = match focused {
                 Some(Located::Cast(i)) => Some(i),
                 _ => None,
@@ -2322,8 +2488,11 @@ impl DetailScreen {
             // sequence that measurably diverges the hash (verified against the committed replay
             // fixtures). What WAS a real bug — this dwell timer never reported `Motion` — is
             // fixed by the explicit `note` below, with no change to the number itself.
-            self.season_settle = self.season_settle + dt;
-            fx.note(PresentEvent::Motion);
+            // The helper is the add plus the Motion note. It stays a raw f32 so the hashed
+            // sequence does not drift. See `ui/dwell.rs`.
+            crate::ui::dwell::accumulate(&mut self.season_settle, dt, &mut |event| {
+                fx.note(event);
+            });
             if self.season_settle >= season::SETTLE_S {
                 let index = self.pending_season.take().unwrap_or(0);
                 self.season_settle = 0.0;
@@ -2353,22 +2522,95 @@ impl DetailScreen {
         if moving || crate::metadata::season_loading() {
             fx.note(PresentEvent::Motion);
         }
+        self.preview_tick(dt, focused, fx);
+    }
+
+    fn preview_tick<H: ContentLike>(
+        &mut self,
+        dt: f32,
+        focused: Option<Located>,
+        fx: &mut Effects<'_, H>,
+    ) {
+        let hero = matches!(focused, Some(Located::Hero(_)));
+        let view = crate::player::preview::view();
+        let scrolled_off = self.scroll.pos >= crate::player::preview::COVER_SCROLL;
+        if crate::player::preview::occupies() && (!hero || scrolled_off) && !self.preview_promoted {
+            self.preview_dwell = 0.0;
+            self.content(fx, ContentReq::PreviewStop);
+        }
+        let blocked = crate::player::preview::blocked(self.sid, &self.rk);
+        let can_dwell = hero
+            && !scrolled_off
+            && !self.preview_promoted
+            && !view.playing
+            && !crate::player::preview::occupies()
+            && !blocked;
+        if can_dwell {
+            crate::ui::dwell::accumulate(&mut self.preview_dwell, dt, &mut |event| {
+                fx.note(event);
+            });
+            if self.preview_dwell >= crate::player::preview::DWELL_S {
+                self.preview_dwell = 0.0;
+                self.request_preview(fx);
+            }
+        } else if !view.playing {
+            self.preview_dwell = 0.0;
+        }
+        let chrome_target = if self.preview_promoted && view.picture {
+            0.0
+        } else {
+            1.0
+        };
+        if ease(&mut self.preview_art, view.art, dt)
+            | ease(&mut self.preview_prose, view.prose, dt)
+            | ease(&mut self.preview_chrome, chrome_target, dt)
+        {
+            fx.note(PresentEvent::Motion);
+        }
+        if !view.picture {
+            self.preview_promoted = false;
+        }
+    }
+
+    fn request_preview<H: ContentLike>(&self, fx: &mut Effects<'_, H>) {
+        let extra = self.detail().and_then(|d| d.trailer()).filter(|e| e.playable());
+        let (rk, part, vcodec, acodec, title) = match extra {
+            Some(e) => (
+                e.rk.clone(),
+                e.part.clone(),
+                e.vcodec.clone(),
+                e.acodec.clone(),
+                e.title.clone(),
+            ),
+            None => (self.rk.clone(), String::new(), String::new(), String::new(), String::new()),
+        };
+        self.content(
+            fx,
+            ContentReq::PreviewStart {
+                sid: self.sid,
+                rk,
+                part,
+                vcodec,
+                acodec,
+                title,
+            },
+        );
     }
 
     fn hero_set(&self) -> hero::HeroSet {
-        let (restart, mark, trailer) = self
+        let (restart, mark) = self
             .detail()
             .map(|d| {
                 (
                     hero::has_restart(hero::hero_resume_ns(d)),
                     hero::hero_mark(d),
-                    hero::trailer_play(d).is_some(),
                 )
             })
-            .unwrap_or((false, PosterMark::None, false));
+            .unwrap_or((false, PosterMark::None));
+        // The preview path replaced the disc. Play Trailer stays in the item menu.
         hero::HeroSet {
             restart,
-            trailer,
+            trailer: false,
             alt: self.alt_available(),
             mark,
         }
@@ -2443,6 +2685,11 @@ impl DetailScreen {
                 if let related::Action::OpenDetail(sid, rk) = action {
                     self.content(fx, ContentReq::Push(ContentArg::Detail { sid, rk }));
                 }
+            }
+            Some(Located::Extras(_)) => {
+                let Some(d) = self.detail() else { return };
+                let Some(play) = extras::play(d, local) else { return };
+                self.content(fx, ContentReq::Play { play, resume_ns: 0 });
             }
             Some(Located::Cast(_)) => {
                 let action = self

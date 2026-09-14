@@ -272,7 +272,7 @@ pub(crate) fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'stati
 /// The Trailer disc's play fields — extra identity and HUD title, always from start.
 /// `None` when the loaded item has no playable trailer (no button, no-op activate).
 pub(crate) fn trailer_play(d: &Detail) -> Option<(&Extra, &str)> {
-    let extra = d.trailer.as_ref().filter(|e| e.playable())?;
+    let extra = d.trailer().filter(|e| e.playable())?;
     Some((extra, extra.hud_title(d.title.as_str())))
 }
 
@@ -1574,6 +1574,7 @@ mod tests {
             extra_type: 1,
             dur_ms: 120_000,
             bitrate: 2_500,
+            thumb: String::new(),
         }
     }
 
@@ -1584,7 +1585,7 @@ mod tests {
             rk: "m".into(),
             title: "Movie".into(),
             part: "/library/parts/movie".into(),
-            trailer: Some(extra.clone()),
+            extras: vec![extra.clone()],
             ..Default::default()
         };
         let (got, title) = trailer_play(&movie).unwrap();
@@ -1601,7 +1602,7 @@ mod tests {
                 part: "/library/parts/ep".into(),
                 ..Default::default()
             }),
-            trailer: Some(extra),
+            extras: vec![extra],
             ..Default::default()
         };
         let (got, title) = trailer_play(&show).unwrap();
@@ -1612,7 +1613,7 @@ mod tests {
         assert!(trailer_play(&Detail::default()).is_none());
         assert!(
             trailer_play(&Detail {
-                trailer: Some(trailer_extra("", "/p", "T")),
+                extras: vec![trailer_extra("", "/p", "T")],
                 ..Default::default()
             })
             .is_none(),
@@ -1620,7 +1621,7 @@ mod tests {
         );
         assert!(
             trailer_play(&Detail {
-                trailer: Some(trailer_extra("9", "", "T")),
+                extras: vec![trailer_extra("9", "", "T")],
                 ..Default::default()
             })
             .is_none(),
@@ -1628,7 +1629,7 @@ mod tests {
         );
         let untitled = Detail {
             title: "Parent".into(),
-            trailer: Some(trailer_extra("9", "/p", "")),
+            extras: vec![trailer_extra("9", "/p", "")],
             ..Default::default()
         };
         assert_eq!(trailer_play(&untitled).unwrap().1, "Parent");

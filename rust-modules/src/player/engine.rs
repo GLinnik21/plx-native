@@ -213,6 +213,8 @@ pub(crate) struct Engine {
     pub load_th: Option<std::thread::JoinHandle<()>>,
     pub report_th: Option<std::thread::JoinHandle<()>>, // /:/timeline progress reporter
     pub report_stop: Option<std::sync::Arc<threads::ReportStop>>, // ITS stop signal, not SHARED's
+    /// Preview Load that must land unbound. The media join waits until the thread has returned.
+    pub preview_abandon: bool,
 }
 
 impl Engine {
@@ -1206,7 +1208,7 @@ fn start_bufferfeed_inner(
     // never reads route::Session: a stale lease stops at teardown, while active encoder changes
     // remain synchronized with the projection under PlayerControl.
     let report_stop = threads::ReportStop::new();
-    let report_th = if stream {
+    let report_th = if stream && !crate::route::is_preview(ps) {
         if let Some(lease) = crate::route::begin_timeline_reporting(ps) {
             // best-effort: refused, the only loss is that the resume point stops being posted
             let st = report_stop.clone();
@@ -1250,6 +1252,7 @@ fn start_bufferfeed_inner(
         load_th,
         report_th,
         report_stop: Some(report_stop),
+        preview_abandon: false,
     };
     // Re-arm the in-place-seek probe for this session. `feed_stream` clears it when
     // `sf_send_segment` can't reach the pipeline, and that is a fact about the StarfishMediaAPIs
@@ -1518,6 +1521,19 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             crate::route::finish_engine_teardown();
         }
         return;
+    }
+    // A preview Load that has not returned yet must not be joined on this frame. Bind is skipped
+    // while the flag is set, so the picture never reaches the plane. The next halt joins once
+    // the thread has already finished.
+    if crate::route::is_preview(ps) {
+        if let Some(eng) = pa.engine() {
+            let loading = eng.stage == Stage::Loading;
+            let finished = eng.load_th.as_ref().is_none_or(|t| t.is_finished());
+            if crate::player::preview::defer_media_join(loading, finished) {
+                eng.preview_abandon = true;
+                return;
+            }
+        }
     }
     // Revoke every worker ticket before asking those workers to stop. This is the synchronization
     // boundary that makes a late HLS candidate/fallback an ordinary stale event instead of a
@@ -2778,6 +2794,7 @@ mod prime_livelock_tests {
             load_th: None,
             report_th: None,
             report_stop: None,
+            preview_abandon: false,
         }
     }
 

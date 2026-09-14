@@ -454,6 +454,24 @@ fn open_failure_action(
     }
 }
 
+/// A preview is direct-play only. A failed original open must not become an HLS transcode, and
+/// it must not land on the player error read-out. On the host seam with no clock sink, `sf_load`
+/// returns 0 because there is no video path. That is not an admitted Starfish failure, so it
+/// must not open the preview breaker.
+fn finish_preview_open_failure(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+) {
+    let seam_absent = cfg!(feature = "hostsim") && !crate::dev::flag("clocksink");
+    super::engine::stop_bufferfeed(ps, pa);
+    if seam_absent {
+        crate::player::preview::note_admission_refused();
+    } else {
+        crate::player::preview::note_failed(601);
+    }
+    crate::route::clear_preview(ps);
+}
+
 /// Recover either kind of failed Original open and return the reload position in nanoseconds.
 /// Pending HLS rollback has priority; a failed rollback is terminal rather than silently starting
 /// a third transaction on route state whose encoder restore already failed.
@@ -556,6 +574,10 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
     // `sf_load == 0` may leave no callable object, so this must precede the sf_ready wait below;
     // otherwise the pump returns Connecting forever and never consumes the explicit failure.
     if SHARED.load_failed.load(Acquire) {
+        if crate::route::is_preview(ps) {
+            finish_preview_open_failure(ps, pa);
+            return;
+        }
         if let Some(rollback) = recover_failed_source_route(ps) {
             let started = settle_reload(
                 super::engine::reload_transcode(ps, pa, rollback.offset_ns),
@@ -604,6 +626,10 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
     // flag. Acquire is the matching hand-off; `error_now` can then report the transaction cause
     // instead of racing it into the generic producer bucket.
     if SHARED.demux_io_failed.load(Acquire) {
+        if crate::route::is_preview(ps) {
+            finish_preview_open_failure(ps, pa);
+            return;
+        }
         if let Some(rollback) = recover_failed_source_route(ps) {
             let started = settle_reload(
                 super::engine::reload_transcode(ps, pa, rollback.offset_ns),
@@ -617,6 +643,10 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
         return;
     }
     if SHARED.demux_failed.load(Acquire) && SHARED.frames.load(Relaxed) == 0 {
+        if crate::route::is_preview(ps) {
+            finish_preview_open_failure(ps, pa);
+            return;
+        }
         if let Some(rollback) = recover_failed_source_route(ps) {
             let started = settle_reload(
                 super::engine::reload_transcode(ps, pa, rollback.offset_ns),
@@ -1075,6 +1105,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
 
     // ---------- load -> Play (decode fed frames as soon as loaded) ----------
     if eng.stage == Stage::Loading
+        && !eng.preview_abandon
         && (SHARED.load_completed.load(Relaxed) || unsafe { ffi::sf_is_load_completed(mt) } != 0)
     {
         SHARED.load_completed.store(true, Relaxed);

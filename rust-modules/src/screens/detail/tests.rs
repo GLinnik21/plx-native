@@ -72,6 +72,11 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         local_by_key: Default::default(), return_pending: false,
         pending_season: None,
         season_settle: 0.0,
+        preview_dwell: 0.0,
+        preview_promoted: false,
+        preview_art: 1.0,
+        preview_prose: 1.0,
+        preview_chrome: 1.0,
         refresh: DetailRefreshPhase::None,
         restore_intent: None,
         scroll: Spring::at(0.0),
@@ -80,6 +85,7 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         tab_scroll: Spring::at(0.0),
         episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
         related: CardRow::new(),
+        extras: CardRow::new(),
         cast: CardRow::new(),
         tabs: TabStrip::new(),
         season_pop: CtlPop::new(),
@@ -200,7 +206,7 @@ fn logical_hash_names_the_full_restore_target() {
         section: 2,
         col: 1,
         ep_text: true,
-        saved_col: [0, 1, 2, 3, 4, 5],
+        saved_col: [0, 1, 2, 3, 4, 5, 0],
         season: Some(2),
     };
     let right = left.clone();
@@ -927,11 +933,16 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     crate::metadata::set_current_for_test(Some(Detail {
                         sid, rk: "hero-hit".into(), kind: "movie".into(), watched,
                         resume_ms: if restart { 30_000 } else { 0 }, dur_ms: 120_000,
-                        trailer: trailer.then(|| crate::metadata::Extra {
-                            rk: "trailer".into(),
-                            part: "/library/parts/trailer".into(),
-                            ..Default::default()
-                        }),
+                        extras: trailer
+                            .then(|| crate::metadata::Extra {
+                                rk: "trailer".into(),
+                                part: "/library/parts/trailer".into(),
+                                subtype: "trailer".into(),
+                                extra_type: 1,
+                                ..Default::default()
+                            })
+                            .into_iter()
+                            .collect(),
                         ..Default::default()
                     }));
                     // The *Also available* control's gate is the STORE, addressed by the page's own
@@ -951,9 +962,13 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     });
                     let mut screen = bare(&_guard, sid, "hero-hit");
                     let set = screen.hero_set();
-                    assert_eq!((set.restart, set.alt, set.trailer), (restart, alt, trailer));
+                    assert_eq!(
+                        (set.restart, set.alt, set.trailer),
+                        (restart, alt, false),
+                        "the preview path replaced the Trailer disc"
+                    );
                     let (controls, n) = hero::hero_ctls(set);
-                    assert_eq!(n, 2 + usize::from(restart) + usize::from(alt) + usize::from(trailer));
+                    assert_eq!(n, 2 + usize::from(restart) + usize::from(alt));
                     sizes.insert(n);
                     for unfurl in [
                         [0.0, 0.0, 0.0],
@@ -1007,7 +1022,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
             }
         }
     }
-    assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![2, 3, 4, 5]);
+    assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
     assert_eq!(cases, 192);
     clear();
     crate::plex::reset_servers_for_test();
@@ -1326,6 +1341,7 @@ fn trailer_extra() -> crate::metadata::Extra {
         extra_type: 1,
         dur_ms: 120_000,
         bitrate: 2_500,
+        thumb: String::new(),
     }
 }
 
@@ -1345,7 +1361,7 @@ fn a_movie_trailer_disc_plays_the_extra_from_the_start() {
         kind: "movie".into(),
         title: "Movie".into(),
         part: "/library/parts/movie".into(),
-        trailer: Some(extra.clone()),
+        extras: vec![extra.clone()],
         ..Default::default()
     });
     crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(
@@ -1364,7 +1380,7 @@ fn a_movie_trailer_disc_plays_the_extra_from_the_start() {
         },
     )));
     let mut screen = bare(&_guard, ServerId::UNSET, "movie");
-    assert!(screen.hero_set().trailer);
+    assert!(!screen.hero_set().trailer, "the preview path replaced the Trailer disc");
     let (_, effects) = step(
         &mut screen,
         &ScreenEvent::Activate(hero::ELEM_TRAILER),
@@ -1400,7 +1416,7 @@ fn a_movie_trailer_disc_plays_the_extra_from_the_start() {
 fn a_show_trailer_disc_plays_the_extra_not_the_on_deck_episode() {
     let extra = trailer_extra();
     let mut d = detail(ServerId::UNSET, "show");
-    d.trailer = Some(extra);
+    d.extras = vec![extra];
     d.on_deck = Some(crate::metadata::Episode {
         rk: "ep".into(),
         part: "/library/parts/ep".into(),
@@ -1497,7 +1513,7 @@ fn a_trailer_disc_requires_both_rk_and_part() {
             sid: ServerId::UNSET,
             rk: "movie".into(),
             kind: "movie".into(),
-            trailer: Some(extra),
+            extras: vec![extra],
             ..Default::default()
         }));
         let screen = bare(&_guard, ServerId::UNSET, "movie");
@@ -1526,7 +1542,7 @@ fn a_trailer_disc_requires_both_rk_and_part() {
 }
 
 #[test]
-fn extras_landing_grows_the_trailer_disc_without_moving_play_identity() {
+fn extras_landing_does_not_grow_a_trailer_disc_or_move_play_identity() {
     let sid = ServerId::UNSET;
     let _guard = install(Detail {
         sid,
@@ -1543,11 +1559,11 @@ fn extras_landing_grows_the_trailer_disc_without_moving_play_identity() {
         sid,
         rk: "movie".into(),
         kind: "movie".into(),
-        trailer: Some(trailer_extra()),
+        extras: vec![trailer_extra()],
         ..Default::default()
     }));
     let after = screen.hero_set();
-    assert!(after.trailer);
+    assert!(!after.trailer, "the preview path replaced the Trailer disc");
     assert_eq!(hero::index_of(after, hero::HeroCtl::Play), Some(0));
     assert_eq!(hero::HeroCtl::Play.elem(), play_elem);
     clear();
@@ -1806,6 +1822,84 @@ fn ticking_the_page_allows_layout_to_remeasure() {
         measure.widths.get() > after_first,
         "tick must drop the walk so the next present can remeasure"
     );
+    clear();
+}
+
+#[test]
+fn extras_sit_after_episodes_and_do_not_move_the_compact_title() {
+    let extra = crate::metadata::Extra {
+        rk: "9".into(),
+        part: "/p".into(),
+        title: "Clip".into(),
+        subtype: "behindTheScenes".into(),
+        extra_type: 5,
+        ..Default::default()
+    };
+    let mut show = detail(ServerId::UNSET, "show");
+    show.cast.push(crate::metadata::Cast {
+        tag: "Actor".into(),
+        role: "Lead".into(),
+        thumb: String::new(),
+        id: 1,
+        tag_key: String::new(),
+    });
+    show.related.push(Default::default());
+    show.extras = vec![extra.clone(), extra];
+    let _guard = install(show);
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    let loaded = screen.detail().expect("installed");
+    let (sections, n) = screen.sections(Some(loaded));
+    assert_eq!(
+        &sections[..n],
+        &[0, 1, 2, 6, 4, 3, 5],
+        "extras sits after the episode strip and before Cast"
+    );
+    let hide = super::compact_title_hide_pos(&sections, n, true).unwrap();
+    assert_eq!(sections[hide], 4, "a show still hides the compact title at Cast");
+
+    let mut spot = crate::metadata::Spot::default();
+    spot.section = 6;
+    spot.col = 1;
+    screen.restore(&spot);
+    let key = screen.restore_focus().expect("extras column restores");
+    assert!(matches!(screen.locate(key), Some(Located::Extras(1))));
+
+    let movie = Detail {
+        sid: ServerId::UNSET,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        extras: vec![
+            crate::metadata::Extra {
+                rk: "9".into(),
+                part: "/p".into(),
+                title: "Clip".into(),
+                subtype: "behindTheScenes".into(),
+                extra_type: 5,
+                ..Default::default()
+            },
+            crate::metadata::Extra {
+                rk: "8".into(),
+                part: "/q".into(),
+                title: "Trailer".into(),
+                subtype: "trailer".into(),
+                extra_type: 1,
+                ..Default::default()
+            },
+        ],
+        cast: vec![crate::metadata::Cast {
+            tag: "Actor".into(),
+            role: "Lead".into(),
+            thumb: String::new(),
+            id: 1,
+            tag_key: String::new(),
+        }],
+        related: vec![Default::default()],
+        ..Default::default()
+    };
+    let (sections, n) = screen.sections(Some(&movie));
+    assert_eq!(&sections[..n], &[0, 6, 4, 3, 5]);
+    let hide = super::compact_title_hide_pos(&sections, n, false).unwrap();
+    assert_eq!(sections[hide], 3, "a movie still hides the compact title at Related");
     clear();
 }
 

@@ -389,7 +389,7 @@ Corrections to the gap list, all verified live against the PMS on 2026-07-29 unl
 
 | Gap as filed | What the spec actually gives |
 |---|---|
-| "Extras — no endpoint, no DTO, nothing" | **`GET /library/metadata/{ids}/extras`** — verified: 18 rows on one movie item, each with a `subtype` (`trailer`, `behindTheScenes`) and a duration. That subtype *is* the reference shelf's "Behind the Scenes" caption. The gap is UI + DTO only. |
+| "Extras — no endpoint, no DTO, nothing" | **`GET /library/metadata/{ids}/extras`** — verified: 18 rows on one movie item, each with a `subtype` (`trailer`, `behindTheScenes`) and a duration. That subtype is the shelf caption. The shelf and the DTO landed 2026-09-14 (`Detail.extras`). |
 | "No collections call" | **`GET /library/sections/{id}/collections`**, **`GET /library/collections/{id}/items`**, plus full create/add/remove/move |
 | "The filter menu exposes 1 facet out of the server's ~27" | **`GET /library/sections/{id}/filters`** — verified: **exactly 27** (`genre, year, decade, contentRating, collection, director, actor, writer, producer, country, studio, resolution, hdr, dovi, atmos, unwatched, inProgress, unmatched, videoCodec, audioCodec, subtitleCodec, audioLayout, audioLanguage, subtitleLanguage, editionTitle, label, location`) |
 | "No Categories browse" | **`GET /library/sections/{id}/categories`**, plus `GET /library/tags?type=` and the per-axis `fastKey` links |
@@ -631,10 +631,12 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* ui/detail.rs `draw_hero` (append a `fmt::time_left(d.dur_ms - d.resume_ms)` chip via ui/widgets.rs `badge()`), no data change — `Detail.resume_ms` is already populated (metadata.rs:328).  
   *Verified:* CONFIRMED. fmt::time_left (ui/fmt.rs:29) has exactly one call site in the whole crate: ui/home.rs:606 (the Continue-Watching card). ui/detail.rs:794-806 builds the hero's date/runtime line from pretty_date + fmt::dur_long and nothing else. Detail.resume_ms IS populated (metadata.rs:328, resume_ms: it.view_offset) and is read only by set_resume (ui/detail.rs:1191-1193) — never drawn. Episodes do draw a resume BAR (ui/detail.rs:963-969) but no text. minor/small confirmed — genuinely a data-free change.
 
-- **No Extras / trailers shelf** — `minor` / `medium`  
-  The official movie and show detail pages carry an "Extras" row (trailers, behind the scenes, featurettes) from `/library/metadata/{rk}/extras`. The Trailer disc / Play Trailer row landed 2026-09-12 (picker keeps one `Detail.trailer`); this gap is the **shelf** of the rest of the extras. Related and Cast still have no extras neighbour.  
-  *Where:* metadata.rs (`Detail` would keep a vec, not only the picker winner), ui/detail.rs (a sixth section id + a `draw_strip` shelf — the CardRow plumbing is already generic). The wire is already there: `plex/library.rs` `extras(rating_key)` and `Metadata.subtype` / `Extras`.  
-  *Verified:* UPDATED 2026-09-12. `/extras` and the clip DTO exist; the page still has no extras block. minor/medium confirmed for the shelf.
+- ~~**No Extras / trailers shelf**~~ — **closed 2026-09-14.** Movie and show detail pages
+  draw an Extras shelf of the `/extras` rows (trailers, behind the scenes, featurettes) after the
+  episode strip and before Cast. Tiles are 16:9, captioned by subtype, and OK plays a playable
+  extra. The Trailer disc is gone; a playable trailer autoplays in the hero after a dwell, and
+  Play Trailer stays in the item menu. `Detail.extras` holds the rows; `Detail::trailer()` is
+  the picker winner the preview and the menu both use.
 
 - **Cast headshots are inert — no actor filmography** — `minor` / `large`  
   In the official client a Credits tile opens that person's page (their other titles). Ours explicitly does nothing on OK, and `Cast` carries no tag id to query with.  
@@ -649,7 +651,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 - **No Share button and no "Activity by You" row (adjacent-catalog / social)** — `polish` / `large`  
   The reference has a Share (↥) action and an "Activity by You" row showing the user's avatar and their review/watch activity. Both are Plex's social/Discover graph, not PMS. Nothing of the sort exists here. Flagged as adjacent-catalog, not a library feature.  
   *Where:* a new plex/discover.rs social client + a new section id and `draw_*` block in ui/detail.rs.  
-  *Verified:* CONFIRMED. No share/activity/review/social UI or client code anywhere in rust-modules/src; ui/detail.rs sections() (163-191) enumerates hero(0)/tabs(1)/episodes(2)/cast(4)/related(3)/about(5) only, and adding an id means widening the fixed [c_int; 6] arrays noted in gap 15. polish/large confirmed, and correctly flagged as adjacent-catalog rather than a library feature — this is the lowest-value item in the whole list for a LAN PMS client and should be sequenced last, if at all.
+  *Verified:* CONFIRMED. No share/activity/review/social UI or client code anywhere in rust-modules/src. Section ids already include extras (6); the saved-column array is 7, indexed by section id. A Share row would still be a new section past that, and it is the lowest-value item in the whole list for a LAN PMS client.
 
 - **Related posters show no watched/unwatched or progress state** — `polish` / `small` — **CLOSED 2026-08-21.** Both marks now draw. The audit below was right that the bar was "one argument away", and right that the disc was `Art::Poster`-only — but it read the shortfall as a missing FEATURE when it was a missing PARSE: `/related` returns the same wire DTO as every other listing, and `fetch_related` copied `{rk,title,thumb}` out and dropped `viewCount`/`viewOffset`/`duration`/`type`. So the fix was not to teach `Art::Thumb` the badges (which this entry and §699 both proposed, and which would have put a second, row-less mark path in `card()`); it was to make `metadata::Related` a real `pms::PmsMovie` through the shared `pms::parse_item`, after which `draw_related` passes `Art::Poster` + `resume_frac()` and inherits the ONE state language unchanged. It also closed the press-and-hold gap on the same shelf for free — see §5a. Duplicate entry at §699 below, closed with it.  
   Home shelves and the Library grid draw the shared progress language (since 2026-08-13: amber corner disc = watched, amber bar = in progress, nothing = never started — it was an amber angle marking *unwatched* when this was written); the detail page's Related row draws bare thumbnails, so the same title looks different on two screens.  
@@ -665,10 +667,11 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 *Already implemented here: 17 reference features.*
 
-- **Extras shelf (trailers, behind-the-scenes, deleted scenes, featurettes)** — `major` / `medium`  
-  The official page carries an "Extras" shelf of 16:9 clip thumbnails that play in-app. The Trailer **control** landed 2026-09-12 (`GET …/extras` in parallel with `/related`, one `Detail.trailer`). The shelf of the other extras is still not drawn: no section id, no strip.  
-  *Where:* rust-modules/src/metadata.rs (keep more than the picker winner), rust-modules/src/ui/detail.rs (new section id + block_h + draw_extras, reusing the episode-still geometry and route::request_play for the clip part). Endpoint + DTO are already in plex/library.rs `extras()` / plex/models.rs `subtype` + `Extras`.  
-  *Verified:* UPDATED 2026-09-12. Endpoint, DTO, and Trailer control exist. The extras **shelf** is still absent from `sections()` / `draw_child`.
+- ~~**Extras shelf (trailers, behind-the-scenes, deleted scenes, featurettes)**~~ — **closed 2026-09-14.**
+  The detail page draws the shelf from `Detail.extras`. OK plays a playable extra through
+  `request_play` with `continuous` omitted. A missing thumb is the card placeholder. The hero
+  Trailer disc is gone: a playable trailer autoplays in the hero after a dwell, and Play Trailer
+  stays in the item menu. Autoplay is direct-play only and does not write watch state.
 
 - **Cast members are not actionable — no person page / filmography** — `major` / `large`  
   In the official client a cast headshot is a link to that person's page (their filmography across your libraries). Ours is focusable and animates, but OK does nothing.  
@@ -725,7 +728,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 - **The related response's multiple hubs are flattened into one nameless 20-item strip** — `minor` / `medium`  
   PMS's /related returns SEVERAL titled hubs ("More with <actor>", "Similar Movies", "From the same director"…). The official client shows each as its own shelf under its own heading. We concatenate them into a single row labelled "Related" and discard every hub title.  
   *Where:* rust-modules/src/metadata.rs:86 and :599 (group into Vec<(String, Vec<Related>)>), rust-modules/src/ui/detail.rs:163 + :205 + :1053 (one ScrollColumn child per hub, one CardRow each). No new endpoint.  
-  *Verified:* Confirmed line for line. metadata.rs:599-622 fetch_related loops `for h in &mc.hub { for x in &h.metadata { … } }`, dedupes by rating_key into ONE flat Vec, never reads h.title, and returns early at 20 items (:616-618). metadata.rs:86-90 struct Related is {rk,title,thumb} with no grouping. ui/detail.rs:1064 hard-codes `c"Related"`. Hub.title IS parsed (plex/models.rs:108) and pms.rs already groups home hubs by it, so the pattern exists. Effort correction: 'medium' is if anything light — the section id space is a fixed `[c_int; 6]` across sections()/n_items()/block_h()/draw_child()/saved_col, s
+  *Verified:* Confirmed line for line. metadata.rs fetch_related loops the hubs, dedupes by rating_key into ONE flat Vec, never reads hub titles, and caps the strip. Effort correction: a new hub shelf needs a section id past extras (6). The fixed array is already 7 (`SPOT_SECTION_SLOTS`), indexed by section id, not visual order.
 
 - **Related posters carry no watch state — no unwatched mark, no resume bar** — `minor` / `small` — **CLOSED 2026-08-21; this is the same gap as the one above, audited twice.** Both marks draw now. See that entry for why the proposed fix here ("let the `Thumb` arm take the same badges") is the one that was *not* taken: the row, not the art variant, was what was missing.  
   Everywhere else in the app a poster shows the amber unwatched corner or the amber resume bar. On the Related shelf the same posters are bare, so you cannot tell what you have already seen in the row the official client uses to keep you browsing.  
@@ -949,15 +952,16 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* plex/ (a new syncplay.rs: POST /playQueues + the plex.tv SyncPlay rooms API, plus a websocket/notification listener the app currently has no transport for), player/ for clock slaving, ui/item_menu.rs for the row.  
   *Verified:* CONFIRMED. grep for syncplay/watch together over rust-modules/src returns nothing; plex/timeline.rs only creates a per-item local PlayQueue (:52-68) and posts /:/timeline. One nuance on the transport claim: the app does ship a WebSocket implementation, but it is in the HOST-side tools (tools/stream-screen.py's /ws + tools/jsmpeg.min.js consuming the capture stream) — the Rust side has no WebSocket client at all, so the auditor's point stands unchanged. Also correct that plex/client.rs:62-72's playback_identity headers are the only identity registration; there is no /player command endpoint or 
 
-- ~~**No Play Trailer / Extras**~~ — **button/menu CLOSED 2026-09-12.** Movie and show detail
-  heroes grow a Trailer disc, and the item menu offers Play Trailer, when PMS returns a playable
-  trailer extra. Playback reuses `request_play` with the extra's rk/part, `resume_ns = 0`, HUD
-  context `"Trailer"`, and `continuous` omitted so EOS cannot Up-Next into a sibling extra.
-  `metadata::current()` stays the parent. The extras **shelf** (behind-the-scenes, featurettes)
-  remains open — see "No Extras / trailers shelf" / "Extras shelf" above.
-  *Where (shelf remainder):* `screens/detail` sections still have no extras block; `Detail` keeps
-  one `trailer: Option<Extra>`, not the extras vector. Item menu Play Trailer is cache-only from
-  the loaded parent.
+- ~~**No Play Trailer / Extras**~~ — **button/menu CLOSED 2026-09-12, shelf CLOSED 2026-09-14.**
+  Movie and show detail pages autoplay a playable trailer in the hero after a dwell. The item
+  menu still offers Play Trailer. The hero Trailer disc is gone. Playback of a menu or shelf
+  extra reuses `request_play` with the extra's rk/part, `resume_ns = 0`, HUD context `"Trailer"`
+  (or `"Extra"` for a non-trailer clip), and `continuous` omitted. The background preview uses
+  the same direct-play-only path and writes no watch state. `continuous` is omitted so EOS
+  cannot Up-Next into a sibling extra. `metadata::current()` stays the parent.
+  The extras shelf is `screens/detail/extras.rs`. `Detail.extras` holds every row;
+  `Detail::trailer()` is the picker winner. Item menu Play Trailer is still cache-only from the
+  loaded parent.
 
 - **The in-player action set is scattered across three controls with no single "More" list, and no Settings entry** — `minor` / `medium`  
   The official player's More menu is one list: Subtitle Track, Audio Track, Settings, Go to Show, Watch Together, Shuffle Season, Delete. Ours splits the two track pickers onto right-edge discs and buries Go to Show inside the Info card's button column; there is no consolidated list, and no Settings row at all (no playback-quality, subtitle-appearance, or player-preferences screen exists anywhere in the app).  

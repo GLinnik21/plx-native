@@ -231,6 +231,10 @@ impl Client {
     /// The direct-play stream target: the raw part `key` GET, carrying the per-playback
     /// session id + identity so PMS keys the /status/sessions entry by session (not a
     /// token= fallback), keeping the timeline correlation consistent.
+    ///
+    /// `part_key` may already contain a query. Library parts do not; IVA extras do
+    /// (`/services/iva/assets?…`). [`QueryBuilder`] joins onto that query instead of
+    /// writing a second `?`.
     pub fn direct_play_url(&self, part_key: &str, session: &str) -> StreamUrl {
         let q = QueryBuilder::new(part_key).str("X-Plex-Session-Identifier", session);
         let path = self.playback_identity(q).build();

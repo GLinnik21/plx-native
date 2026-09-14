@@ -1111,13 +1111,13 @@ mod focus_tests {
             kind: "show".into(),
             is_show: true,
             title: "Show".into(),
-            trailer: Some(crate::metadata::Extra {
+            extras: vec![crate::metadata::Extra {
                 rk: "9".into(),
                 title: "Official Trailer".into(),
                 dur_ms: 120_000,
                 part: "/p".into(),
                 ..Default::default()
-            }),
+            }],
             ..Default::default()
         }));
         crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(
