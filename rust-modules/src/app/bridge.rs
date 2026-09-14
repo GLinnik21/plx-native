@@ -1356,6 +1356,13 @@ impl Bridge {
                 if let Some(permit) = self.session.commit_permit(req, epoch, arrival) {
                     let reply = self.session_adapter.commit(permit, &plan);
                     deliver(SessionEvent::Commit(reply));
+                    // The live writer is synchronous, so its real durability verdict is already
+                    // known. Deliver it as a typed completion on the ordinary effect path; the
+                    // owner fences it before it may stand as saved-login evidence. A verdict that
+                    // the owner has already superseded is dropped by that fence, not here.
+                    if let Some(completion) = self.session_adapter.take_live_completion() {
+                        deliver(SessionEvent::Persistence(completion));
+                    }
                 }
             }
             SessionFx::Pump => deliver(SessionEvent::Pump),

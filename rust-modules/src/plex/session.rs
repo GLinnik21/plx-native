@@ -1881,17 +1881,43 @@ fn prepare_load(read: ReadState, mint: impl FnOnce() -> String) -> (Session, boo
 /// no session on disk simply keeps its change in memory for the run, which is what both of today's
 /// callers already wanted.
 pub fn update(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
+    update_with_outcome(edit).is_some()
+}
+
+/// [`update`], but reporting what the durable write actually did.
+///
+/// The live adapter writes synchronously, so durability is already decided by the time the call
+/// returns. Callers that must not conflate "the write was attempted" with "the write reached disk"
+/// use this; the typed persistence completion is built from this real outcome rather than assumed.
+pub(crate) fn update_with_outcome(
+    edit: impl FnOnce(&Session) -> Option<Session>,
+) -> Option<crate::plex::session::async_persistence::PersistOutcome> {
     let _io = io();
     let cur = peek_locked();
     if cur.client_id.is_empty() {
-        return false;
+        return None;
     }
     match edit(&cur) {
-        Some(next) => {
-            save_locked(&next);
-            true
-        }
-        None => false,
+        Some(next) => Some(save_locked_outcome(&next)),
+        None => None,
+    }
+}
+
+/// The outcome of the sealed/plaintext write attempts, without changing any caller's behavior.
+fn save_locked_outcome(s: &Session) -> async_persistence::PersistOutcome {
+    use async_persistence::PersistOutcome;
+    save_locked(s);
+    // The write is synchronous and self-reporting only through these two observable facts: whether
+    // a protected envelope exists now, and whether the session is still readable. A refusal to
+    // downgrade or a failed write both leave the previous bytes intact, which is NOT durability.
+    let sealed_now = has_secure_locked();
+    let written = matches!(read_locked(), ReadState::Ready { session, .. } if session.client_id == s.client_id);
+    if !written {
+        PersistOutcome::WriteFailed
+    } else if sealed_now {
+        PersistOutcome::PersistedSealed
+    } else {
+        PersistOutcome::PersistedPlaintext
     }
 }
 

@@ -22,7 +22,7 @@ pub(crate) enum PersistOutcome {
     WriteFailed,
 }
 impl PersistOutcome {
-    fn persisted(self) -> bool {
+    pub(crate) fn persisted(self) -> bool {
         self != Self::WriteFailed
     }
 }
