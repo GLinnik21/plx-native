@@ -101,7 +101,7 @@ impl Frame {
 pub(crate) unsafe fn run(app: &mut App) {
     while app.running {
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
-        let host_frame_start = std::time::Instant::now();
+        let wslg_frame_budget = app.wslg_frame_pacing.then(crate::system::WslgFrameBudget::begin);
         // Resolve the control row ONCE per iteration, before the event pump, and pass this
         // value to input, update and draw alike. `player_hud::slot()` reads `playpos_ns`, which
         // LG's media thread writes and `player::pump` advances mid-iteration — deriving it per
@@ -246,7 +246,7 @@ pub(crate) unsafe fn run(app: &mut App) {
             app,
             fr,
             #[cfg(all(feature = "hostsim", target_os = "linux"))]
-            host_frame_start,
+            wslg_frame_budget,
         );
         report(app, fr);
         heartbeat(app, fr);
@@ -439,7 +439,8 @@ pub(crate) fn rig_clear_opaque_region() {
 unsafe fn present_and_swap(
     app: &mut App,
     fr: &mut Frame,
-    #[cfg(all(feature = "hostsim", target_os = "linux"))] host_frame_start: std::time::Instant,
+    #[cfg(all(feature = "hostsim", target_os = "linux"))]
+    wslg_frame_budget: Option<crate::system::WslgFrameBudget>,
 ) {
     if fr.present {
         // the glyph cache's frame serial (phase 11, text.rs's hot window): a drawn frame
@@ -483,12 +484,8 @@ unsafe fn present_and_swap(
         crate::gfx::blur_frame_end();
         crate::ui::idle::note_present(fr.now);
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
-        if app.wslg_frame_pacing {
-            if let Some(remaining) = std::time::Duration::from_nanos(16_666_667)
-                .checked_sub(host_frame_start.elapsed())
-            {
-                std::thread::sleep(remaining);
-            }
+        if let Some(budget) = wslg_frame_budget {
+            budget.finish();
         }
     } else {
         // Device and macOS presented frames block in swap; WSLg/X11 presented frames use the
