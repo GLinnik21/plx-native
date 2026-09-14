@@ -2109,6 +2109,45 @@ mod tests {
         });
     }
 
+    /// `drain_available`/`body_complete` are what `ff.rs::AvioState::drain_wire` calls while
+    /// Original is parked in `aq_push`, so they otherwise have no test of their own — every other
+    /// case exercises them only transitively through `read`. Pin them directly: the non-blocking
+    /// drain must eventually collect the whole body, `body_complete` must not flip early, and a
+    /// drain after completion must report nothing left rather than erroring.
+    #[test]
+    fn drain_available_reads_the_body_and_body_complete_flips_once_done() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Honour, |port, _, _| {
+            let url = format!("http://127.0.0.1:{port}/f.mkv");
+            let mut src = CurlSource::open(&url, 0).expect("open");
+            assert!(
+                !src.body_complete(),
+                "nothing has been drained yet, the body cannot be complete"
+            );
+            let mut got = Vec::new();
+            let mut buf = [0u8; 64];
+            let started = std::time::Instant::now();
+            while !src.body_complete() {
+                let n = src.drain_available(&mut buf);
+                assert!(n >= 0, "a healthy loopback server must not fail the drain");
+                if n > 0 {
+                    got.extend_from_slice(&buf[..n as usize]);
+                } else {
+                    assert!(
+                        started.elapsed() < std::time::Duration::from_secs(2),
+                        "drain_available must eventually see the body complete"
+                    );
+                }
+            }
+            assert_eq!(got, BODY);
+            assert_eq!(
+                src.drain_available(&mut buf),
+                0,
+                "a completed body has nothing left to drain"
+            );
+        });
+    }
+
     // -- (b) a Range answered 200 is an ERROR ---------------------------------------------------
 
     /// The failure that looks like success. A server that ignores `Range` answers 200 from byte

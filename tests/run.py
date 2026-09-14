@@ -3009,7 +3009,8 @@ def a_server_wire(delta, min_opens, min_range, exact_opens=None, exact_range=Non
     server (a hand-substituted `python3 -m http.server`, say) answering 200 to a Range request —
     the silent corruption this tier's server exists to make impossible.
     """
-    opens, ranges = delta
+    opens, ranges = delta[0], delta[1]
+    accepts = delta[2] if len(delta) > 2 else None
     if exact_opens is not None and opens != exact_opens:
         return False, f"the fixture server served {opens} body/bodies, want exactly {exact_opens}"
     if exact_range is not None and ranges != exact_range:
@@ -3019,7 +3020,14 @@ def a_server_wire(delta, min_opens, min_range, exact_opens=None, exact_range=Non
     if ranges < min_range:
         return False, (f"{ranges} ranged (206) request(s), need >={min_range} — the seek never "
                        f"reached the demuxer's Range reopen")
-    return True, f"server saw {opens} open(s), {ranges} ranged"
+    reuse = ""
+    if accepts is not None:
+        reuse = f", {accepts} accept(s)"
+        if opens > 1 and accepts == 1:
+            reuse += " — keep-alive reuse"
+        elif opens > 1 and accepts >= opens:
+            reuse += " — no socket reuse"
+    return True, f"server saw {opens} open(s), {ranges} ranged{reuse}"
 
 
 def a_replayed(lines, want):
@@ -4641,7 +4649,7 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
         # response body, so at the moment this case was set up there were no windows to read.
         c["_dip_windows"] = srv.dip_windows()
         now = srv.stats()
-        return evaluate_pipeline(c, ls, (now[0] - before[0], now[1] - before[1]))
+        return evaluate_pipeline(c, ls, tuple(n - b for n, b in zip(now, before)))
 
     early, why = early_exit_allowed(case, cfg)
     if not early and why:
@@ -4650,7 +4658,7 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     lines, elapsed, stopped_early, settled = stream_case(case, cfg, run_secs, early=early,
                                                          evaluator=grade)
     after = srv.stats()
-    delta = (after[0] - before[0], after[1] - before[1])
+    delta = tuple(a - b for a, b in zip(after, before))
 
     gst_lines = pull_runtime_log(tv, "plxnative-gst.log") if case.get("gst_trace") else None
     if gst_lines is not None:
@@ -5649,7 +5657,8 @@ def main():
                      + (":\n  " + "\n  ".join(f"{n}  <- {r}" for n, r in pskipped)
                         if pskipped else f" — --filter {args.filter!r} matched nothing"))
         srv, url_base = serve(root, port=args.fixtures_port,
-                              sink=(lambda m: print(f"      [srv] {m}")) if args.verbose else None)
+                              sink=(lambda m: print(f"      [srv] {m}")) if args.verbose else None,
+                              peer=cfg["tv"])
         # LIFO: registered after the server and BEFORE arm_teardown, so on the way out the TV is
         # cleaned FIRST and the bytes are pulled second. The other order stops serving an app that
         # is still playing, which turns every interrupted run into a demux failure in the log.

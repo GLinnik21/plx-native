@@ -82,8 +82,34 @@ fn aq_init_cap(q: *mut AuQueue, cap: c_long) {
         ptr::write_bytes(q as *mut u8, 0, core::mem::size_of::<AuQueue>());
         (*q).max_bytes = cap;
         libc::pthread_mutex_init(ptr::addr_of_mut!((*q).m), ptr::null());
-        libc::pthread_cond_init(ptr::addr_of_mut!((*q).not_full), ptr::null());
+        init_not_full_cond(ptr::addr_of_mut!((*q).not_full));
         libc::pthread_cond_init(ptr::addr_of_mut!((*q).not_empty), ptr::null());
+    }
+}
+
+/// `not_full` is the one condvar [`aq_park_deadline`] times out against — every other wait in
+/// this file is untimed. On Linux, bind it to `CLOCK_MONOTONIC` so that timeout tracks elapsed
+/// time even if the wall clock steps (NTP correction; this TV's own pmlog clock is documented as
+/// running skewed) — a REALTIME-based timed wait can block far past its 10 ms deadline on a
+/// backward step, which is exactly the TCP-window-collapse this drain-while-parked mechanism
+/// exists to prevent. `pthread_condattr_setclock` does not exist on macOS, so the host build (and
+/// its tests, which check the drain LOGIC, not clock robustness) keeps the default REALTIME
+/// clock — matched by [`aq_park_deadline`]'s `#[cfg]` twin.
+#[cfg(target_os = "linux")]
+unsafe fn init_not_full_cond(cond: *mut libc::pthread_cond_t) {
+    unsafe {
+        let mut attr: libc::pthread_condattr_t = std::mem::zeroed();
+        libc::pthread_condattr_init(&mut attr);
+        libc::pthread_condattr_setclock(&mut attr, libc::CLOCK_MONOTONIC);
+        libc::pthread_cond_init(cond, &attr);
+        libc::pthread_condattr_destroy(&mut attr);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+unsafe fn init_not_full_cond(cond: *mut libc::pthread_cond_t) {
+    unsafe {
+        libc::pthread_cond_init(cond, ptr::null());
     }
 }
 
@@ -131,6 +157,24 @@ pub(crate) fn aq_push_with_drain(
     aq_push_park(q, data, len, pts, key, es, Some(&mut drain))
 }
 
+/// A `not_full` timed-wait deadline 10 ms out, on the SAME clock `init_not_full_cond` bound the
+/// condvar to — Linux gets `CLOCK_MONOTONIC` (immune to the wall-clock step this device is
+/// documented to experience), everywhere else keeps the wall clock the condvar itself defaults
+/// to. Mixing clock bases between the condvar and its deadline would make the timeout meaningless
+/// rather than merely imprecise.
+#[cfg(target_os = "linux")]
+fn aq_park_deadline() -> libc::timespec {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    add_10ms(ts)
+}
+
+#[cfg(not(target_os = "linux"))]
 fn aq_park_deadline() -> libc::timespec {
     let mut tv = libc::timeval {
         tv_sec: 0,
@@ -139,8 +183,15 @@ fn aq_park_deadline() -> libc::timespec {
     unsafe {
         libc::gettimeofday(&mut tv, ptr::null_mut());
     }
-    let mut nsec = i64::from(tv.tv_usec) * 1000 + 10_000_000;
-    let mut sec = tv.tv_sec;
+    add_10ms(libc::timespec {
+        tv_sec: tv.tv_sec,
+        tv_nsec: i64::from(tv.tv_usec) * 1000,
+    })
+}
+
+fn add_10ms(ts: libc::timespec) -> libc::timespec {
+    let mut nsec = ts.tv_nsec + 10_000_000;
+    let mut sec = ts.tv_sec;
     if nsec >= 1_000_000_000 {
         sec += 1;
         nsec -= 1_000_000_000;

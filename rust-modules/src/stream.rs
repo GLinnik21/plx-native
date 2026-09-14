@@ -36,15 +36,17 @@ pub struct HttpStream {
     /// interrupt (wakes the reader, keeps the number allocated), and exactly one closer via
     /// `take_fd`'s swap. See `http_shutdown` / `http_close`.
     fd: AtomicI32,
-    /// "A teardown asked this stream to stop" — set by [`http_shutdown`], cleared at the top of
-    /// every [`http_open`].
+    /// "A teardown asked this stream to stop" — set by [`http_shutdown`], never cleared by
+    /// [`http_open`].
     ///
     /// It exists because resolving gave the open something it never had: a NEXT address to try
     /// after a failed `connect`. A handshake aborted by `shutdown(2)` and an address that is simply
     /// dead are the same value at `connect`'s return, so without this latch a teardown fired during
     /// attempt 1 of 2 is answered by dialling attempt 2 — the interrupt silently consumed, and a
     /// brand-new connection handed back to a caller that was being torn down. Reading the fd cannot
-    /// stand in for it: between two attempts the fd is legitimately -1.
+    /// stand in for it: between two attempts the fd is legitimately -1. Production boxes a fresh
+    /// [`HttpStream`] per engine, so a leftover latch is not a later session to consume; clearing
+    /// it at open let a shutdown that landed after the caller's AU-abort check connect under join.
     interrupted: AtomicI32,
     buf: [u8; 65536],
     blen: c_int,
@@ -60,6 +62,12 @@ pub struct HttpStream {
     /// 1 once the body has been fully consumed and the fd is still open. A second open
     /// may reuse only when this is set — an unread body would poison the next request.
     body_done: c_int,
+    /// 1 once the current chunked-trailer line has seen a non-CR byte. Drain can return
+    /// `HTTP_READ_DEADLINE` mid-trailer and resume on a later call; a stack `line_empty = true`
+    /// on every entry treated the first `\n` of `\r\n\r\n` as the terminator and left leftover
+    /// bytes that forced a redial. Zeroed default is "empty so far", which `http_stream_boxed`
+    /// already writes.
+    trailer_line_has_content: c_int,
     peer_port: c_int,
     peer_host_len: c_int,
     peer_host: [u8; 256],
@@ -122,8 +130,8 @@ impl HttpStream {
     ///
     /// `interrupted` is not touched. Clearing it here lost a teardown that landed between the
     /// load and the store, so a Transport redial could dial a socket the already-fired shutdown
-    /// cannot reach. The latch is consumed only for a later session (`fd < 0` leftover) at the
-    /// start of `http_open`; a live-fd teardown and a failed keep-alive reuse keep it set.
+    /// cannot reach. The latch stays set for the life of this box; a later engine session is a
+    /// fresh [`HttpStream`].
     #[inline]
     fn reset_request_fields(&mut self) {
         self.blen = 0;
@@ -135,6 +143,7 @@ impl HttpStream {
         self.chunk_left = 0;
         self.keep_alive = 0;
         self.body_done = 0;
+        self.trailer_line_has_content = 0;
     }
 }
 
@@ -397,7 +406,6 @@ unsafe fn hs_skip_chunked_trailers(
     hs: &mut HttpStream,
     deadline: Option<Instant>,
 ) -> Result<(), c_int> {
-    let mut line_empty = true;
     loop {
         let Some(b) = hs_getb(hs, deadline)? else {
             // EOF before the terminating blank line: leftover trailer bytes would be parsed as
@@ -405,14 +413,14 @@ unsafe fn hs_skip_chunked_trailers(
             return Err(-1);
         };
         if b == b'\n' {
-            if line_empty {
+            if hs.trailer_line_has_content == 0 {
                 return Ok(());
             }
-            line_empty = true;
+            hs.trailer_line_has_content = 0;
             continue;
         }
         if b != b'\r' {
-            line_empty = false;
+            hs.trailer_line_has_content = 1;
         }
     }
 }
@@ -1025,16 +1033,13 @@ fn http_open_with_timeouts(
 
         let host_s = CStr::from_ptr(host).to_string_lossy();
         let path_s = CStr::from_ptr(path).to_string_lossy();
-        // A shutdown of a live keep-alive fd is teardown of THIS open. Closing it and returning
-        // leaves `interrupted` set so we do not dial a replacement the already-fired shutdown
-        // cannot reach. `fd < 0` with a leftover interrupt is a later session: consume it here
-        // only — that is the contract `a_new_open_clears_the_interrupt_from_the_last_one` pins.
+        // A shutdown of this stream is teardown of THIS open, including when fd is already -1
+        // (first open, or seek_cb after http_close). Consuming the latch here let a teardown
+        // that landed after the caller's AU-abort check connect under join. Production boxes a
+        // fresh HttpStream per engine, so there is no later-session latch to consume.
         if hs.interrupted() {
-            if hs.fd() >= 0 {
-                close_owned(hs);
-                return Err(HttpOpenError::Aborted);
-            }
-            hs.interrupted.store(0, Ordering::Release);
+            close_owned(hs);
+            return Err(HttpOpenError::Aborted);
         }
         let reuse = can_reuse(hs, &host_s, port);
         if !reuse {
@@ -2937,15 +2942,18 @@ mod tests {
         );
     }
 
-    /// …and the latch is per-request state: the next `http_open` on the same stream must not
-    /// inherit the last teardown, or one interrupted open would poison the reused struct for good.
-    /// (`player::engine` pre-allocates its streams and reopens them for the life of a playback.)
+    /// A leftover interrupt with fd already -1 is still THIS teardown, not a later session.
+    /// Consuming it let `http_open` connect under join after the caller's AU-abort check.
+    /// Production boxes a fresh `HttpStream` per engine; that new box can still dial.
     #[test]
-    fn a_new_open_clears_the_interrupt_from_the_last_one() {
-        let (port, h) = one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec());
+    fn an_interrupt_with_fd_closed_does_not_dial() {
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        srv.set_nonblocking(true).expect("nonblocking accept");
+        let port = srv.local_addr().unwrap().port();
         let mut hs = http_stream_boxed();
         http_shutdown(&mut *hs);
         assert!(hs.interrupted());
+        assert!(hs.fd() < 0);
 
         let ip = std::ffi::CString::new("127.0.0.1").unwrap();
         let path = std::ffi::CString::new("/x").unwrap();
@@ -2957,9 +2965,29 @@ mod tests {
             std::ptr::null(),
             "GET",
         );
-        assert_eq!(rv, 0, "a stale interrupt must not fail the next open");
-        assert!(!hs.interrupted(), "the latch belongs to one request");
-        http_close(&mut *hs);
+        assert_ne!(
+            rv, 0,
+            "teardown with fd already -1 must not connect under join"
+        );
+        assert!(
+            matches!(srv.accept(), Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "http_open dialled a socket the already-fired shutdown cannot reach"
+        );
+        assert!(hs.interrupted(), "the latch belongs to this box");
+
+        let mut next = http_stream_boxed();
+        let (port, h) = one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec());
+        let ip = std::ffi::CString::new("127.0.0.1").unwrap();
+        let rv = http_open(
+            &mut *next,
+            ip.as_ptr(),
+            port as c_int,
+            path.as_ptr(),
+            std::ptr::null(),
+            "GET",
+        );
+        assert_eq!(rv, 0, "a fresh engine box must still be able to dial");
+        http_close(&mut *next);
         h.join().unwrap();
     }
 
@@ -3415,7 +3443,7 @@ mod tests {
                     1,
                     "the already-fired shutdown cannot reach a replacement socket"
                 );
-                assert_eq!(
+                assert_ne!(
                     http_open(
                         &mut *hs,
                         host.as_ptr(),
@@ -3425,9 +3453,23 @@ mod tests {
                         "GET",
                     ),
                     0,
-                    "a later session on a closed stream must still be able to dial"
+                    "the same box stays torn down; a later engine session is a new HttpStream"
+                );
+                let mut next = http_stream_boxed();
+                assert_eq!(
+                    http_open(
+                        &mut *next,
+                        host.as_ptr(),
+                        port as c_int,
+                        path.as_ptr(),
+                        std::ptr::null(),
+                        "GET",
+                    ),
+                    0,
+                    "a fresh engine box must still be able to dial"
                 );
                 assert_eq!(accepts.load(std::sync::atomic::Ordering::Acquire), 2);
+                http_close(&mut *next);
                 http_close(&mut *hs);
             },
             b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH",
@@ -3846,6 +3888,91 @@ mod tests {
                 accepts.load(std::sync::atomic::Ordering::Acquire),
                 1,
                 "trailers split across two writes must still reuse the fd"
+            );
+            http_close(&mut *hs);
+        });
+    }
+
+    #[test]
+    fn chunked_drain_completes_trailers_split_after_field_before_blank_line() {
+        use std::io::{Read, Write};
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        let accepts = std::sync::atomic::AtomicUsize::new(0);
+        let first_drain = std::sync::Barrier::new(2);
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                let Ok((mut s, _)) = srv.accept() else { return };
+                accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\nABCDEFGH\r\n0\r\nFoo: bar",
+                );
+                first_drain.wait();
+                let _ = s.write_all(b"\r\n\r\n");
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\nABCDEFGH\r\n0\r\n\r\n",
+                );
+            });
+            let host = std::ffi::CString::new("127.0.0.1").unwrap();
+            let path = std::ffi::CString::new("/seg").unwrap();
+            let mut hs = http_stream_boxed();
+            assert_eq!(
+                http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0
+            );
+            let mut body = [0u8; 8];
+            assert_eq!(http_read(&mut *hs, body.as_mut_ptr(), 8), 8);
+            let started = std::time::Instant::now();
+            let mut dst = [0u8; 32];
+            let n = http_drain_available(&mut *hs, &mut dst);
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(200),
+                "drain must not wait out SO_RCVTIMEO on a partial trailer"
+            );
+            assert!(n <= 0);
+            assert!(
+                !http_body_done(&mut *hs),
+                "splitting after Foo: bar and before the blank line must not finish the body"
+            );
+            first_drain.wait();
+            let started = std::time::Instant::now();
+            while !http_body_done(&mut *hs) {
+                assert!(
+                    started.elapsed() < std::time::Duration::from_millis(200),
+                    "the blank-line fragment must complete without a blocking recv"
+                );
+                let n = http_drain_available(&mut *hs, &mut dst);
+                assert!(n >= 0, "split trailers are not a transport error");
+                if n == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+            assert_eq!(
+                http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0
+            );
+            drain_body(&mut *hs);
+            assert_eq!(
+                accepts.load(std::sync::atomic::Ordering::Acquire),
+                1,
+                "a trailer split after the field must still reuse the fd"
             );
             http_close(&mut *hs);
         });

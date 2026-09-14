@@ -9147,11 +9147,13 @@ mod hls_recovery_priority_tests {
     use super::{
         HlsCandidateDisposition, HlsCandidateTransition, HlsExit, LatchedOriginalRecovery,
         ReserveDeadlineState, SHARED, SegmentTransfer, TransportWatchdog,
-        candidate_reserve_deadline, classify_hls_avio_facts, classify_hls_deadline,
-        classify_plaintext_open_failure, exploration_snapshot, exploration_timeout_is_final,
-        hls_candidate_disposition, hls_candidate_requires_rung_box, hls_duration_obligation_ms,
-        hls_quality_trial_may_start, hls_wait, latched_original_recovery, observe_hls_deadline,
+        candidate_reserve_deadline, classify_curl_open_err, classify_hls_avio_facts,
+        classify_hls_deadline, classify_plaintext_open_failure, exploration_snapshot,
+        exploration_timeout_is_final, hls_candidate_disposition, hls_candidate_requires_rung_box,
+        hls_duration_obligation_ms, hls_quality_trial_may_start, hls_wait,
+        latched_original_recovery, observe_hls_deadline,
     };
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn fractional_hls_duration_is_rounded_up_as_a_reserve_obligation() {
@@ -9238,6 +9240,36 @@ mod hls_recovery_priority_tests {
         assert!(matches!(
             classify_plaintext_open_failure(crate::stream::HttpOpenError::Aborted),
             HlsExit::Aborted
+        ));
+    }
+
+    #[test]
+    fn classify_curl_open_err_matches_its_plaintext_sibling() {
+        assert!(matches!(
+            classify_curl_open_err(crate::curlio::OpenErr::Deadline),
+            HlsExit::PrimeExpired
+        ));
+        assert!(matches!(
+            classify_curl_open_err(crate::curlio::OpenErr::Aborted),
+            HlsExit::Aborted
+        ));
+        assert!(matches!(
+            classify_curl_open_err(crate::curlio::OpenErr::Status(404)),
+            HlsExit::NotReady
+        ));
+        SHARED.dg_http_status.store(0, Ordering::Relaxed);
+        assert!(matches!(
+            classify_curl_open_err(crate::curlio::OpenErr::Status(500)),
+            HlsExit::Failed(_)
+        ));
+        assert_eq!(
+            SHARED.dg_http_status.load(Ordering::Relaxed),
+            500,
+            "a non-404 status is still recorded for diagnostics"
+        );
+        assert!(matches!(
+            classify_curl_open_err(crate::curlio::OpenErr::Local),
+            HlsExit::Failed(_)
         ));
     }
 
