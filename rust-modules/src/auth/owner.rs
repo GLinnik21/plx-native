@@ -235,6 +235,12 @@ pub(crate) struct PendingCommit {
     pub writes_credentials: bool,
     pub receipt: Option<Receipt>,
     pub delta: CommitDelta,
+    /// The revision an admitted durable write consumed, if any. A completion must repeat it
+    /// exactly; a completion naming any other revision belongs to a different operation.
+    pub admitted_revision: Option<u64>,
+    /// The purpose that admitted write was for. A background refresh is never saved-login
+    /// evidence, so this is what the completion is graded against.
+    pub purpose: Option<PersistencePurpose>,
 }
 
 /// Owner-side durability state of one commit consumption. Replaces the old boolean that advertised
@@ -243,6 +249,24 @@ pub(crate) struct PendingCommit {
 pub(crate) struct CommitPhase {
     /// Authority was current; a durable write was admitted and enqueued, not yet durable.
     pub(crate) admitted: bool,
+    /// Storage CONFIRMED durability for the admitted revision. Still false while merely enqueued,
+    /// and still false for a completion that was fenced out.
+    pub(crate) durable: bool,
+    /// That confirmed durable write had a purpose which may stand as evidence a login was saved.
+    /// A background refresh leaves this false even when it becomes durable.
+    pub(crate) proves_saved_login: bool,
+}
+
+/// The durable write this owner is waiting on, identified exactly. A completion settles only this
+/// identity; anything else is a stale or superseded verdict and must change nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AdmittedPersistence {
+    pub req: u32,
+    pub epoch: u64,
+    pub arrival: u64,
+    pub revision: u64,
+    /// Purpose of the admitted write, when the plan named one.
+    pub purpose: Option<PersistencePurpose>,
 }
 
 /// Typed result of consuming a commit permit. The four cases are deliberately distinct: treating
@@ -269,6 +293,15 @@ impl CommitAdmission {
             _ => None,
         }
     }
+    /// The purpose storage was actually asked to write for. This is the authoritative purpose for
+    /// fencing a completion: the plan's intent and the admission can disagree, and only what was
+    /// enqueued can be answered.
+    pub(crate) fn admitted_purpose(self) -> Option<PersistencePurpose> {
+        match self {
+            Self::Admitted { purpose, .. } => Some(purpose),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -290,6 +323,10 @@ pub(crate) struct CommitPermit<'a> {
 
 impl CommitPermit<'_> {
     pub fn request(&self) -> u32 { self.req }
+    /// The epoch and arrival this permit was issued for. The adapter needs them so the durability
+    /// verdict it reports can be fenced against the exact operation that produced it.
+    pub fn epoch(&self) -> u64 { self.epoch }
+    pub fn arrival(&self) -> u64 { self.arrival }
     pub fn reply(self, admission: CommitAdmission) -> CommitReply {
         CommitReply { req: self.req, epoch: self.epoch, arrival: self.arrival, admission }
     }
@@ -381,6 +418,9 @@ pub(crate) enum SessionEvent {
     Read(SessionReadReply),
     Pump,
     Admission(AdmissionReply),
+    /// A typed durability verdict from the persistence worker, delivered through the ordinary
+    /// effect/FIFO path. It is fenced by request/epoch/arrival/revision before it settles anything.
+    Persistence(crate::plex::session::async_persistence::PersistenceCompletion),
     Erased { epoch: u64, leftovers: usize },
 }
 
@@ -485,6 +525,9 @@ pub(crate) struct SessionInit {
     pub persistence_purpose: Option<PersistencePurpose>,
     /// Durability state of the last consumed commit.
     pub commit_phase: CommitPhase,
+    /// Identity of the durable write this owner is waiting to hear about. Cleared once a matching
+    /// completion settles it, or superseded by a newer admission. Only this identity can settle it.
+    pub admitted_persistence: Option<AdmittedPersistence>,
     /// One ordered erase awaiting resource completion: existing epoch and whether to sign in.
     pub pending_erase: Option<(u64, bool)>,
     pub inbox: VecDeque<SessionEnvelope>,
@@ -506,7 +549,7 @@ impl SessionInit {
             pin_denied: false, authorized_in_flow: false, signin_active: false, apply_pending: false,
             code_replaced: false, qr_gen: 0, next_qr: 0, epoch: 1, next_req: 0,
             pending: BTreeMap::new(), pending_commit: None, persistence_purpose: None,
-            commit_phase: CommitPhase { admitted: false }, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
+            commit_phase: CommitPhase { admitted: false, durable: false, proves_saved_login: false }, admitted_persistence: None, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
             active_profile: None, profile_scope: ProfileScope(0),
             delete_leftovers: 0 }
     }
@@ -665,6 +708,8 @@ impl LogicalState for SessionInit {
         }
         w.option(self.persistence_purpose, |w, purpose| { write_purpose(w, purpose); });
         w.bool(self.commit_phase.admitted);
+        w.bool(self.commit_phase.durable);
+        w.bool(self.commit_phase.proves_saved_login);
         w.option(self.pending_commit.as_ref(), |w, commit| {
             w.u32(commit.req).u64(commit.epoch).u64(commit.arrival).bool(commit.terminal)
                 .bool(commit.writes_credentials);
@@ -881,7 +926,9 @@ impl SessionMachine {
         let epoch = pending.key.epoch;
         self.state.pending_commit = Some(PendingCommit { req, epoch, arrival, terminal,
             writes_credentials: plan.writes_durable && plan.credentials.is_some(),
-            receipt: None, delta });
+            receipt: None, delta,
+            admitted_revision: None,
+            purpose: plan.writes_durable.then_some(plan.purpose) });
         self.state.persistence_purpose = Some(plan.purpose);
         emit(SessionFx::Commit { req, epoch, arrival, plan });
         true
@@ -969,11 +1016,50 @@ impl SessionMachine {
         }, emit)
     }
 
+    /// Settle a durability verdict ONLY if it still describes the write this owner is waiting on.
+    ///
+    /// Fenced by request, epoch, arrival and revision together. A completion that fails the fence
+    /// is inert: it must not activate registry or profile, must not clear a newer error, and must
+    /// not release admission credit that belongs to a different operation. The owner keeps only
+    /// this logical identity; channels and receipts stay in the adapter.
+    fn apply_persistence_completion(
+        &mut self,
+        completion: crate::plex::session::async_persistence::PersistenceCompletion,
+    ) -> bool {
+        use crate::plex::session::async_persistence::CompletionOutcome;
+        let Some(admitted) = self.state.admitted_persistence else { return false };
+        let correlation = crate::plex::session::async_persistence::PersistenceCorrelation {
+            req: admitted.req, epoch: admitted.epoch, arrival: admitted.arrival,
+        };
+        if !completion.acts_on(correlation, admitted.revision) { return false; }
+        // A verdict the worker resolved for a DIFFERENT purpose than the one admitted is not this
+        // operation's verdict either.
+        if admitted.purpose.is_some_and(|purpose| purpose != completion.purpose) { return false; }
+        let durable = matches!(completion.outcome, CompletionOutcome::Durable(_));
+        self.state.admitted_persistence = None;
+        self.state.commit_phase.durable = durable;
+        self.state.commit_phase.proves_saved_login =
+            durable && completion.purpose.proves_saved_login();
+        true
+    }
+
     fn apply_commit_reply(&mut self, reply: CommitReply, emit: &mut impl FnMut(SessionFx)) -> bool {
         if !self.commit_is_current(reply.req, reply.epoch, reply.arrival) { return false; }
+        // `take()` is what makes a duplicate reply inert. The admitted revision and purpose are
+        // copied into `admitted_persistence` first, because that is the identity a later
+        // completion must repeat exactly to be allowed to settle anything.
+        let admit_revision = reply.admission.admitted_revision();
+        // The admission names what storage was actually asked for; the plan only records intent.
+        let admit_purpose = reply.admission.admitted_purpose()
+            .or_else(|| self.state.pending_commit.as_ref().and_then(|c| c.purpose));
         let commit = self.state.pending_commit.take().unwrap();
+        self.state.admitted_persistence = admit_revision.map(|revision| AdmittedPersistence {
+            req: commit.req, epoch: commit.epoch, arrival: commit.arrival, revision,
+            purpose: admit_purpose });
         self.state.commit_phase = CommitPhase {
-            admitted: reply.admission.admitted_revision().is_some(),
+            admitted: admit_revision.is_some(),
+            durable: false,
+            proves_saved_login: false,
         };
         self.state.persistence_purpose = None;
         if !reply.admission.accepted() {
@@ -1819,6 +1905,7 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
             }
             SessionEvent::Result(envelope) => self.ingest(envelope, &mut emit),
             SessionEvent::Commit(reply) => self.apply_commit_reply(*reply, &mut emit),
+            SessionEvent::Persistence(completion) => self.apply_persistence_completion(*completion),
             SessionEvent::Read(reply) => self.apply_read(reply, &mut emit),
             SessionEvent::Admission(reply) => self.apply_admission(*reply, &mut emit),
             SessionEvent::Erased { epoch, leftovers } => self.erased(*epoch, *leftovers, &mut emit),
@@ -1952,7 +2039,7 @@ mod tests {
             admission: CommitAdmission::RegistryOnly };
         let effects = step(&mut owner, SessionEvent::Commit(registry_only));
         assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Retire { .. })));
-        assert_eq!(owner.state.commit_phase, CommitPhase { admitted: false });
+        assert_eq!(owner.state.commit_phase, CommitPhase { admitted: false, durable: false, proves_saved_login: false });
         assert!(owner.state.pending_commit.is_none());
         assert_eq!(owner.state.persistence_purpose, None,
             "a registry-only commit must not claim a persistence purpose");
@@ -1968,7 +2055,7 @@ mod tests {
         assert_eq!(owner.snapshot_init().hash(), before,
             "a stale completion must change nothing");
         assert!(owner.state.pending_commit.is_some());
-        assert_eq!(owner.state.commit_phase, CommitPhase { admitted: false },
+        assert_eq!(owner.state.commit_phase, CommitPhase { admitted: false, durable: false, proves_saved_login: false },
             "a stale completion must not report a durable admission");
 
         // The committed purpose survives into the owner's state so the caller can refuse to
@@ -1979,9 +2066,87 @@ mod tests {
         let durable = CommitReply { req, epoch: owner.state.epoch, arrival: 0,
             admission: CommitAdmission::Admitted { revision: 3, purpose: PersistencePurpose::Final } };
         assert!(owner.apply_commit_reply(durable, &mut |_| {}));
-        assert_eq!(owner.state.commit_phase, CommitPhase { admitted: true });
+        assert_eq!(owner.state.commit_phase, CommitPhase { admitted: true, durable: false, proves_saved_login: false });
         assert_eq!(owner.state.persistence_purpose, None,
             "the purpose is cleared once the commit settles");
+    }
+
+    /// ACCEPTANCE SPEC 5 / Stage B bridge. A durability verdict is fenced by request, epoch,
+    /// arrival AND revision, and only a saved-login-proving purpose may stand as saved-login
+    /// evidence. Before this wiring the owner had no way to receive such a verdict at all, so a
+    /// stale or background verdict could not even be told apart from the durable one.
+    #[test]
+    fn persistence_completion_is_fenced_and_background_never_proves_a_saved_login() {
+        use crate::plex::session::async_persistence::{
+            CompletionOutcome, Operation, PersistOutcome, PersistenceCompletion, PersistenceCorrelation,
+            PersistencePurpose,
+        };
+        let admit = |owner: &mut SessionMachine, purpose: PersistencePurpose| {
+            let req = owner.state.next_req;
+            let epoch = owner.state.epoch;
+            let durable = CommitReply { req, epoch, arrival: 0,
+                admission: CommitAdmission::Admitted { revision: 1, purpose } };
+            assert!(owner.apply_commit_reply(durable, &mut |_| {}));
+            PersistenceCorrelation { req, epoch, arrival: 0 }
+        };
+        let durable_completion = |correlation: PersistenceCorrelation, purpose: PersistencePurpose,
+                                  revision: u64, epoch: u64| PersistenceCompletion {
+            req: correlation.req, epoch, arrival: correlation.arrival, revision, purpose,
+            outcome: CompletionOutcome::Durable(Operation::Write {
+                outcome: PersistOutcome::PersistedPlaintext, verified: true, protection: None }),
+        };
+        // Deliver through the production event route (not the handler directly) and read the
+        // resulting owner state: a settled verdict emits no effects, so state is the oracle.
+        let deliver = |owner: &mut SessionMachine, completion: PersistenceCompletion| {
+            let _ = step(owner, SessionEvent::Persistence(completion));
+        };
+
+        // (a) A stale epoch settles nothing: not durable, not saved-login evidence.
+        let mut owner = SessionMachine::from_init(local_session());
+        assert!(owner.resume_stored(&mut |_| {}));
+        let correlation = admit(&mut owner, PersistencePurpose::Final);
+        assert!(owner.state.admitted_persistence.is_some(),
+            "an admitted write must leave a fenced identity behind");
+        let stale_epoch = durable_completion(correlation, PersistencePurpose::Final, 1, correlation.epoch + 9);
+        deliver(&mut owner, stale_epoch);
+        assert!(!owner.state.commit_phase.durable,
+            "a completion from a retired epoch must be inert");
+        assert!(!owner.state.commit_phase.proves_saved_login);
+        assert!(owner.state.admitted_persistence.is_some(),
+            "a fenced-out completion must not consume the admitted identity");
+
+        // (b) A completion naming another revision is a different operation's verdict.
+        let wrong_revision = durable_completion(correlation, PersistencePurpose::Final, 99, correlation.epoch);
+        deliver(&mut owner, wrong_revision);
+        assert!(!owner.state.commit_phase.durable,
+            "a completion naming another revision is a different operation's verdict");
+
+        // (c) The matching completion for a Final purpose DOES settle as saved-login evidence.
+        let matching = durable_completion(correlation, PersistencePurpose::Final, 1, correlation.epoch);
+        deliver(&mut owner, matching);
+        assert!(owner.state.commit_phase.durable, "storage confirmed durability");
+        assert!(owner.state.commit_phase.proves_saved_login,
+            "a Final write is evidence a login was saved");
+        assert!(owner.state.admitted_persistence.is_none(), "the identity is consumed once settled");
+
+        // (d) The SAME matching completion for a Background purpose is durable but NOT evidence.
+        let mut owner = SessionMachine::from_init(local_session());
+        assert!(owner.resume_stored(&mut |_| {}));
+        let correlation = admit(&mut owner, PersistencePurpose::Background);
+        let background = durable_completion(correlation, PersistencePurpose::Background, 1, correlation.epoch);
+        deliver(&mut owner, background);
+        assert!(owner.state.commit_phase.durable, "a background refresh does become durable");
+        assert!(!owner.state.commit_phase.proves_saved_login,
+            "a background refresh must never be offered as proof of a saved login");
+
+        // (e) A purpose mismatch is fenced even when the correlation matches exactly.
+        let mut owner = SessionMachine::from_init(local_session());
+        assert!(owner.resume_stored(&mut |_| {}));
+        let correlation = admit(&mut owner, PersistencePurpose::Background);
+        let mismatched = durable_completion(correlation, PersistencePurpose::Final, 1, correlation.epoch);
+        deliver(&mut owner, mismatched);
+        assert!(!owner.state.commit_phase.durable,
+            "a verdict resolved for a different purpose is not this operation's verdict");
     }
 
     #[test]

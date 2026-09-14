@@ -131,6 +131,11 @@ pub(crate) struct SessionAdapter {
     /// Metadata only. These credits cover owner-held AND dispatcher-carried envelopes, so
     /// cancelling a request must not clear them before those unique records are discarded.
     receipts: BTreeMap<u64, TransferMetadata>,
+    /// The real durability verdict of the last live credential write, with the correlation
+    /// it belongs to. The live writer is synchronous, so this is already known when the
+    /// typed admission is returned; the bridge drains it as a typed completion rather than
+    /// letting the owner infer durability from `accepted`.
+    live_completion: Option<crate::plex::session::async_persistence::PersistenceCompletion>,
     spawn: fn(&'static str, Box<dyn FnOnce() + Send>) -> bool,
     #[cfg(test)]
     fixture_work: BTreeMap<u32, Box<dyn FnOnce(WorkerOutput, crate::auth::owner::SessionWork) + Send>>,
@@ -224,7 +229,7 @@ impl SessionAdapter {
         Self { landing: Arc::new(Landing::with_limits(SESSION_DATA_RECORDS,
                 SESSION_OWNER_RESERVATIONS, SESSION_TOTAL_RESERVATIONS)),
             launches: BTreeMap::new(), native: BTreeMap::new(), resources, controlled_home: false, replay_resources: false,
-            receipts: BTreeMap::new(), spawn, main_thread: PhantomData, recording_leftovers: 0,
+            receipts: BTreeMap::new(), live_completion: None, spawn, main_thread: PhantomData, recording_leftovers: 0,
             #[cfg(test)] fixture_work: BTreeMap::new(),
             #[cfg(test)] resource_test_io: None }
     }
@@ -339,6 +344,9 @@ impl SessionAdapter {
                 || source.origin().is_none() || !self.endpoint_machine_matches(permit.request(), &source.machine_id),
             _ => false,
         }) { return permit.reply(CommitAdmission::StaleAuthority); }
+        // Filled inside the borrow of `self.resources`, stored after it ends.
+        let mut pending_completion = None;
+        let mut pending_outcome = None;
         match &mut self.resources {
             Resources::Live { .. } => {
                 // The live disk write keeps its existing synchronous, merge-and-write shape:
@@ -349,13 +357,33 @@ impl SessionAdapter {
                 if let Some(patch) = &plan.credentials {
                     let mut examined = false;
                     let mut matches = false;
-                    let _ = crate::plex::session::update(|disk| {
+                    let outcome = crate::plex::session::update_with_outcome(|disk| {
                         examined = true;
                         matches = plan.expected_disk.matches(disk);
                         matches.then(|| patch.merge_into(disk))
                     });
                     if examined && !matches { return permit.reply(CommitAdmission::StaleAuthority); }
-                    if plan.writes_durable { admitted_revision = Some(ordinary_revision()); }
+                    if plan.writes_durable {
+                        let revision = ordinary_revision();
+                        admitted_revision = Some(revision);
+                        // Build the completion from what the write ACTUALLY did. A refusal to
+                        // downgrade or a failed write is not durability, and only a persisted
+                        // outcome is `verified`.
+                        pending_completion = outcome.map(|outcome| {
+                            pending_outcome = Some(outcome);
+                            crate::plex::session::async_persistence::PersistenceCompletion {
+                                req: permit.request(), epoch: permit.epoch(),
+                                arrival: permit.arrival(), revision,
+                                purpose: plan.purpose,
+                                outcome: crate::plex::session::async_persistence::CompletionOutcome::Durable(
+                                    crate::plex::session::async_persistence::Operation::Write {
+                                        outcome,
+                                        verified: outcome.persisted(),
+                                        protection: None,
+                                    }),
+                            }
+                        });
+                    }
                 }
                 for operation in &plan.registry {
                     if !crate::auth::execute_session_registry(operation) {
@@ -363,6 +391,7 @@ impl SessionAdapter {
                     }
                 }
                 if let Some(revision) = admitted_revision {
+                    self.live_completion = pending_completion;
                     return permit.reply(CommitAdmission::Admitted { revision, purpose: plan.purpose });
                 }
             }
@@ -392,6 +421,14 @@ impl SessionAdapter {
             }
         }
         permit.reply(CommitAdmission::RegistryOnly)
+    }
+
+    /// Take the durability verdict of the last live credential write, if one is outstanding.
+    /// Draining exactly once is what keeps a verdict from being delivered twice.
+    pub(crate) fn take_live_completion(
+        &mut self,
+    ) -> Option<crate::plex::session::async_persistence::PersistenceCompletion> {
+        self.live_completion.take()
     }
 
     pub(crate) fn publish_profile(&mut self, publication: crate::auth::owner::ProfilePublication) {
@@ -681,6 +718,55 @@ mod tests {
         LoginProgress::Failed { epoch, message: "Synthetic failure".into() }.into()
     }
 
+    /// Stage B bridge wiring, exercised against the REAL disk writer (not the fixture arm, which
+    /// is not a durability authority). The adapter must hand the bridge the verdict the write
+    /// actually produced so the owner can receive it as a typed completion, and the drain must
+    /// hand it over exactly once.
+    #[test]
+    fn the_bridge_takes_the_live_durability_verdict_exactly_once() {
+        use crate::auth::owner::{CommitDelta, CredentialPatch, Identity, Pending, PendingCommit,
+            SessionInit, SessionMachine, StreamPhase};
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("live-durability-verdict");
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
+        assert!(adapter.take_live_completion().is_none(),
+            "nothing is outstanding before a durable commit");
+
+        let disk = crate::plex::session::peek();
+        let mut init = SessionInit::captured(disk.clone());
+        init.epoch = 1;
+        init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Ready },
+            expected: Identity::of(&disk), lifecycle: None, last_arrival: Some(0),
+            phase: StreamPhase::Running, capture: None,
+            admission: crate::auth::owner::AdmissionState::NotRequested });
+        init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 0, terminal: true,
+            writes_credentials: true, receipt: None, delta: CommitDelta::default(),
+            admitted_revision: None, purpose: None });
+        let owner = SessionMachine::from_init(init);
+
+        let mut next = disk.clone();
+        next.account_token = "synthetic-new-token".into();
+        let plan = CommitPlan { expected_disk: Identity::of(&disk),
+            credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
+            purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
+            writes_durable: true };
+        let reply = adapter.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan);
+        let admitted = reply.admission.admitted_revision()
+            .expect("a durable write must be admitted, not merely accepted");
+
+        let completion = adapter.take_live_completion()
+            .expect("the verdict the write produced must be available to the bridge");
+        assert_eq!((completion.req, completion.epoch, completion.arrival), (1, 1, 0),
+            "the verdict must carry the correlation of the operation that produced it");
+        assert_eq!(completion.purpose,
+            crate::plex::session::async_persistence::PersistencePurpose::Final);
+        assert_eq!(completion.revision, admitted,
+            "the verdict must name the revision that was admitted");
+        assert!(adapter.take_live_completion().is_none(),
+            "a drained verdict must not be deliverable a second time");
+    }
+
     #[test]
     fn fixture_commit_uses_latest_preferences_and_never_writes_another_adapter() {
         use crate::auth::owner::{CommitDelta, CredentialPatch, Identity, Pending, PendingCommit,
@@ -691,7 +777,8 @@ mod tests {
             expected: Identity::of(&disk), lifecycle: None, last_arrival: Some(0),
             phase: StreamPhase::Running, capture: None, admission: crate::auth::owner::AdmissionState::NotRequested });
         init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 0, terminal: true,
-            writes_credentials: true, receipt: None, delta: CommitDelta::default() });
+            writes_credentials: true, receipt: None, delta: CommitDelta::default(),
+            admitted_revision: None, purpose: None });
         let owner = SessionMachine::from_init(init);
         let mut a = SessionAdapter::fixture_with(disk.clone());
         let mut b = SessionAdapter::fixture_with(disk.clone());
@@ -723,7 +810,8 @@ mod tests {
             expected: Identity::of(&disk), lifecycle: Some(lifecycle), last_arrival: Some(1),
             phase: StreamPhase::Running, capture: None, admission: crate::auth::owner::AdmissionState::Accepted(AdmissionId(1)) });
         init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 1, terminal: true,
-            writes_credentials: true, receipt: None, delta: CommitDelta::default() });
+            writes_credentials: true, receipt: None, delta: CommitDelta::default(),
+            admitted_revision: None, purpose: None });
         let owner = SessionMachine::from_init(init);
         let mut adapter = SessionAdapter::fixture_with(disk.clone());
         adapter.fixture_resources().endpoints.insert(0, EndpointCapture {
