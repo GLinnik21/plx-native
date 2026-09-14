@@ -1473,8 +1473,8 @@ SIM_DIR  ?= /tmp/plxnative-sim
 SIM_TDIR  ?= rust-modules/target-sim
 SIM_MACOS_BIN = $(SIM_TDIR)$(if $(LAB),-lab,)/debug/plxnative-sim
 SIM_MACOS_BIN_ENV = $(SIM_MACOS_BIN)
-SIM_WSL_TDIR_ENV = $(SIM_TDIR)
-export SIM_MACOS_BIN_ENV SIM_WSL_TDIR_ENV
+SIM_LINUX_TDIR_ENV = $(SIM_TDIR)
+export SIM_MACOS_BIN_ENV SIM_LINUX_TDIR_ENV
 # Which presented frame `sim-shot` grabs. 200 is comfortably past first paint and the poster
 # fetches on a warm cache; raise it if a shot catches a screen mid-load.
 SIM_FRAME ?= 200
@@ -1537,14 +1537,17 @@ sim-macos: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
 
-# Optimized UI/Plex simulator with no host FFmpeg prerequisite. This is the Windows/WSLg build:
-# it renders and signs in against Plex, but Play intentionally reaches the host seam's existing
-# "no video path" result. `tools/sim.ps1` owns setup, run, capture and remote control on Windows.
-sim-wsl:
+# Optimized Linux UI/Plex simulator with no host FFmpeg prerequisite. It runs natively on Linux;
+# Windows/WSLg uses the same binary through `tools/sim.ps1`. Play intentionally reaches the host
+# seam's existing "no video path" result.
+sim-linux:
 	PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
-	  cargo build --release --manifest-path rust-modules/Cargo.toml --target-dir "$$SIM_WSL_TDIR_ENV" \
+	  cargo build --release --manifest-path rust-modules/Cargo.toml --target-dir "$$SIM_LINUX_TDIR_ENV" \
 	  --features hostsim --bin plxnative-sim
+
+# Compatibility spelling used by the Windows launcher and existing documentation.
+sim-wsl: sim-linux
 
 # Explicit macOS operations. The old names remain aliases so existing scripts do not break.
 sim-run: sim-macos-run
@@ -1683,5 +1686,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

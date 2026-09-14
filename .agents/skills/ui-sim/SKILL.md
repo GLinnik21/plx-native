@@ -72,9 +72,10 @@ files off the Windows-mounted checkout. `-StageToken` copies the token from giti
 The staged token persists in that runtime directory, so use a fresh `-RuntimeDir` for QR sign-in
 after staging one. `-PmsHost` overrides the header's PMS host.
 
-This path deliberately calls `make sim-wsl`, which skips bundled host FFmpeg. UI, sign-in, Plex
-browsing, screenshots and remote commands work; playback reaches the existing host "no video
-path" result. Use macOS `make sim-macos` when the demux/clock-sink simulation is required.
+This path deliberately calls `make sim-wsl`, the Windows-facing compatibility alias for the native
+Linux `make sim-linux` target. Both skip bundled host FFmpeg. UI, sign-in, Plex browsing,
+screenshots and remote commands work; playback reaches the existing host "no video path" result.
+Use macOS `make sim-macos` when the demux/clock-sink simulation is required.
 
 Check `glxinfo -B` before interpreting local smoothness: `Device: D3D12 (<GPU>)` and
 `Accelerated: yes` prove WSLg is using the GPU; `llvmpipe`, `softpipe`, or `Accelerated: no` do not.
