@@ -23,6 +23,8 @@ use super::probe::Location;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Mutex;
+use std::collections::BTreeMap;
+use serde_json::Value;
 
 /// The signed-in profile, in-memory for the UI (the Home profile chip reads this). Set by the boot
 /// gate (from the stored session) and on every profile switch, so it survives an offline boot.
@@ -277,6 +279,23 @@ impl Drop for TempSession {
     }
 }
 
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct OpaqueExtensions(pub(crate) BTreeMap<String, Value>);
+
+impl OpaqueExtensions {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for OpaqueExtensions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<opaque extensions>")
+    }
+}
+
+
 /// The full persisted session. Empty fields mean "not logged in yet" for that stage.
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Session {
@@ -387,7 +406,7 @@ pub struct Session {
     /// [`PinVerifier`] for exactly what is.
     ///
     /// Soft-parsed like every list in this struct: an entry costs itself, never the credentials.
-    #[serde(default, deserialize_with = "de_soft_vec")]
+    #[serde(default, deserialize_with = "de_profile_cache")]
     pub profiles: Vec<ProfileCreds>,
     /// The install's playback-quality preference. `None` is deliberately distinct from an
     /// explicit value: every session written before this field existed lands there and must keep
@@ -422,8 +441,210 @@ pub struct Session {
     /// Not keyed by profile: it says nothing about content history, only about what colour light
     /// this SET last showed, which is why it lives beside `client_id` rather than in a per-profile
     /// section like [`Session::home_pins`].
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_soft_hero_blur")]
     pub(crate) last_hero_blur: Option<[[f32; 3]; 4]>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalSessionAuth {
+    format: String,
+    version: u32,
+    #[serde(default)]
+    profiles: Option<Value>,
+    account_token: String,
+    server: ServerRef,
+    user: UserRef,
+    home_users: Vec<HomeUserRef>,
+    sources: Vec<SourceRef>,
+    /// Unknown top-level fields may contain credentials introduced by a newer client.  Protect
+    /// them by default instead of guessing that an unfamiliar value is a harmless preference.
+    extensions: OpaqueExtensions,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct CanonicalSessionPreferences {
+    #[serde(default, deserialize_with = "de_soft_playback_quality")]
+    playback_quality: Option<PlaybackQuality>,
+    #[serde(default, deserialize_with = "de_soft_bool")]
+    auto_sign_in: bool,
+    #[serde(default, deserialize_with = "de_soft_vec")]
+    last_library: Vec<LastLibrary>,
+    #[serde(default, deserialize_with = "de_soft_hero_blur")]
+    last_hero_blur: Option<[[f32; 3]; 4]>,
+    /// Parsed only so a future preference does not make the known fields disappear. The shipping
+    /// adapter merges these opaque keys from the current DB8 public payload before every rewrite;
+    /// they are not promoted into the Session domain object.
+    #[serde(flatten)]
+    extensions: BTreeMap<String, Value>,
+}
+
+/// Split a typed session at the encryption boundary used by the DB8 helper.
+///
+/// The returned public object is still protected by the helper-owned private DB8 kind, but it is
+/// deliberately readable while Keymanager is unavailable.  The returned string contains every
+/// credential and all unknown extensions and must only cross the authenticated helper socket.
+#[allow(dead_code)] // Connected by the Stage B Session adapter.
+pub(crate) fn split_canonical(
+    session: &Session,
+) -> Result<(crate::storage::state::PublicPayload, String), ()> {
+    // `profiles` in a v1 extension is opaque, never an active credential cache. Refuse an
+    // ambiguous v2 write; only the typed field is permitted to carry active credentials.
+    if session.extensions.0.contains_key("profiles") { return Err(()); }
+    let auth = serde_json::to_string(&CanonicalSessionAuth {
+        format: "plxnative-session-auth".into(),
+        version: 2,
+        profiles: Some(serde_json::to_value(valid_profiles(session.profiles.clone())).map_err(|_| ())?),
+        account_token: session.account_token.clone(),
+        server: session.server.clone(),
+        user: session.user.clone(),
+        home_users: session.home_users.clone(),
+        sources: session.sources.clone(),
+        extensions: session.extensions.clone(),
+    })
+    .map_err(|_| ())?;
+    Ok((split_public(session)?, auth))
+}
+
+fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayload, ()> {
+    let preferences = serde_json::to_value(CanonicalSessionPreferences {
+        playback_quality: session.playback_quality,
+        auto_sign_in: session.auto_sign_in,
+        last_library: session.last_library.clone(),
+        last_hero_blur: session.last_hero_blur,
+        extensions: BTreeMap::new(),
+    })
+    .map_err(|_| ())?;
+    let pins = serde_json::to_value(&session.home_pins).map_err(|_| ())?;
+    let recents = serde_json::to_value(&session.recent_searches).map_err(|_| ())?;
+    Ok(crate::storage::state::PublicPayload {
+            preferences,
+            client_id: (!session.client_id.is_empty()).then(|| session.client_id.clone()),
+            // Profile/server bootstrap metadata is personal and only useful together with its
+            // token, so it stays in CanonicalSessionAuth rather than being duplicated here.
+            profile: Value::Null,
+            pins,
+            recents,
+            consent: Value::Null,
+            scopes: Value::Null,
+            ids: Value::Null,
+            account_extensions: Value::Null,
+        })
+}
+
+/// Reassemble the domain type after the helper has opened the protected auth payload.
+///
+/// Public preferences degrade independently: one malformed optional setting must not discard a
+/// valid token bundle.  The protected half is strict because accepting the wrong auth schema as a
+/// session would turn corruption into an authenticated state.
+#[allow(dead_code)] // Connected by the Stage B Session adapter.
+pub(crate) fn join_canonical(
+    public: &crate::storage::state::PublicPayload,
+    protected: &str,
+) -> Result<Session, ()> {
+    let auth: CanonicalSessionAuth = serde_json::from_str(protected).map_err(|_| ())?;
+    if auth.format != "plxnative-session-auth" || !matches!(auth.version, 1 | 2) {
+        return Err(());
+    }
+    let profiles = match (auth.version, auth.profiles) {
+        (1, None) => Vec::new(),
+        (2, Some(Value::Array(entries))) if !auth.extensions.0.contains_key("profiles") => {
+            parse_profiles(entries)
+        }
+        _ => return Err(()),
+    };
+    let preferences = serde_json::from_value::<CanonicalSessionPreferences>(
+        public.preferences.clone(),
+    )
+    .unwrap_or_default();
+    let home_pins = serde_json::from_value(public.pins.clone()).unwrap_or_default();
+    let recent_searches = serde_json::from_value(public.recents.clone()).unwrap_or_default();
+    Ok(Session {
+        client_id: public.client_id.clone().unwrap_or_default(),
+        account_token: auth.account_token,
+        server: auth.server,
+        user: auth.user,
+        home_users: auth.home_users,
+        sources: auth.sources,
+        home_pins,
+        recent_searches,
+        playback_quality: preferences.playback_quality,
+        auto_sign_in: preferences.auto_sign_in,
+        last_library: preferences.last_library,
+        last_hero_blur: preferences.last_hero_blur,
+        profiles,
+        extensions: auth.extensions,
+    })
+}
+
+/// Public snapshot for a locked protected bundle. It deliberately contains no offline credentials.
+fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
+    let preferences = serde_json::from_value::<CanonicalSessionPreferences>(
+        public.preferences.clone(),
+    )
+    .unwrap_or_default();
+    let home_pins = serde_json::from_value(public.pins.clone()).unwrap_or_default();
+    let recent_searches = serde_json::from_value(public.recents.clone()).unwrap_or_default();
+    Session {
+        client_id: public.client_id.clone().unwrap_or_default(),
+        playback_quality: preferences.playback_quality,
+        auto_sign_in: preferences.auto_sign_in,
+        last_library: preferences.last_library,
+        last_hero_blur: preferences.last_hero_blur,
+        home_pins, recent_searches,
+        ..Default::default()
+    }
+}
+
+fn de_soft_hero_blur<'de, D: Deserializer<'de>>(d: D) -> Result<Option<[[f32; 3]; 4]>, D::Error> {
+    let value = Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
+fn de_profile_cache<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ProfileCreds>, D::Error> {
+    let value = Value::deserialize(d)?;
+    Ok(match value { Value::Array(entries) => parse_profiles(entries), _ => Vec::new() })
+}
+
+fn parse_profiles(entries: Vec<Value>) -> Vec<ProfileCreds> {
+    let mut counts = BTreeMap::new();
+    for entry in &entries {
+        if let Some(uuid) = entry.get("uuid").and_then(Value::as_str) {
+            *counts.entry(uuid.to_owned()).or_insert(0usize) += 1;
+        }
+    }
+    valid_profiles(entries.into_iter().filter(|entry| {
+        entry.get("uuid").and_then(Value::as_str).is_some_and(|uuid| counts.get(uuid) == Some(&1))
+    }).filter_map(|entry| serde_json::from_value(entry).ok()).collect())
+}
+
+/// Compare protected domain data across v1/v2 encodings without manufacturing an auth write.
+/// Public-only edits preserve the original protected bytes, including v1 opaque extensions.
+fn protected_fields(session: &Session) -> Result<Value, serde_json::Error> {
+    serde_json::to_value((&session.account_token, &session.server, &session.user,
+        &session.home_users, &session.sources, &session.profiles, &session.extensions))
+}
+fn protected_fields_equal(left: &Session, right: &Session) -> bool {
+    matches!((protected_fields(left), protected_fields(right)), (Ok(left), Ok(right)) if left == right)
+}
+fn protected_matches(session: &Session, protected: &str) -> bool {
+    join_canonical(&crate::storage::state::PublicPayload::default(), protected)
+        .is_ok_and(|previous| protected_fields_equal(&previous, session))
+}
+
+/// Invalid credentials cost only their offline entry. Duplicate identities invalidate every
+/// matching entry, so input order can never choose which token/PIN becomes authoritative.
+fn valid_profiles(profiles: Vec<ProfileCreds>) -> Vec<ProfileCreds> {
+    let mut counts = BTreeMap::new();
+    for profile in &profiles { *counts.entry(profile.uuid.clone()).or_insert(0usize) += 1; }
+    profiles.into_iter().filter(|profile| {
+        !profile.uuid.trim().is_empty() && profile.uuid == profile.user.uuid
+            && counts.get(&profile.uuid) == Some(&1)
+            && profile.pin.as_ref().is_none_or(PinVerifier::valid_shape)
+    }).collect()
 }
 
 /// Remember the hero envelope Home is showing right now, best-effort, for [`Session::last_hero_blur`].
@@ -518,6 +739,9 @@ pub struct RecentSearches {
     /// credit*, which covers the household's server and an unnamed share as well as our own.
     pub user: String,
     pub terms: Vec<String>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 /// One persisted who's-watching tile (avatar + PIN flag; no tokens live here).
@@ -543,6 +767,9 @@ pub struct HomeUserRef {
     pub thumb: String,
     pub protected: bool,
     pub admin: bool,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 /// One entry of [`Session::profiles`]: what a successful online switch to this profile resolved,
@@ -561,6 +788,9 @@ pub struct ProfileCreds {
     /// switch predates this field, which [`Session::cached_profile`] treats as "cannot verify",
     /// never as "no PIN".
     pub pin: Option<PinVerifier>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 /// A Plex Home PIN as something a PIN can be checked against, never the PIN: PBKDF2-HMAC-SHA-256
@@ -580,9 +810,18 @@ pub struct PinVerifier {
     /// Lower-case hex, the 32-byte PBKDF2 output.
     pub hash: String,
     pub iters: u32,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 impl PinVerifier {
+    fn valid_shape(&self) -> bool {
+        self.salt.len() == 32 && unhex(&self.salt).is_some_and(|v| v.len() == 16)
+            && self.hash.len() == 64 && unhex(&self.hash).is_some_and(|v| v.len() == 32)
+            && (1..=Self::MAX_ITERS).contains(&self.iters)
+    }
+
     pub const ITERS: u32 = 20_000;
     /// The largest count [`PinVerifier::verify`] will run. A record is this app's own writing,
     /// so anything past a few times [`PinVerifier::ITERS`] is a hand edit or a newer build's
@@ -601,6 +840,7 @@ impl PinVerifier {
             salt: hex(salt),
             hash: hex(&hash),
             iters: Self::ITERS,
+        extensions: Default::default(),
         }
     }
 
@@ -610,7 +850,7 @@ impl PinVerifier {
         let (Some(salt), Some(hash)) = (unhex(&self.salt), unhex(&self.hash)) else {
             return false;
         };
-        if salt.is_empty() || hash.len() != 32 || self.iters == 0 || self.iters > Self::MAX_ITERS {
+        if salt.len() != 16 || hash.len() != 32 || self.iters == 0 || self.iters > Self::MAX_ITERS {
             return false;
         }
         let got = crate::sha256::pbkdf2_hmac_sha256(pin.as_bytes(), &salt, self.iters);
@@ -623,7 +863,7 @@ fn hex(b: &[u8]) -> String {
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if s.len() % 2 != 0 || !s.is_ascii() {
         return None;
     }
     (0..s.len())
@@ -679,6 +919,9 @@ pub struct ServerRef {
     /// every use. The FILE's key stays `origin`, which is what a human editing it reads.
     #[serde(default, rename = "origin")]
     pub origin_url: String,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 impl ServerRef {
@@ -757,6 +1000,9 @@ pub struct SourceRef {
     /// for why that fallback exists at all, and [`ServerRef::origin_url`] for the `_url` suffix.
     #[serde(default, rename = "origin")]
     pub origin_url: String,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 impl SourceRef {
@@ -830,6 +1076,9 @@ impl SourceRef {
 pub struct PinnedLib {
     pub machine_id: String,
     pub key: i64,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 /// One profile's last-browsed library per content type. See [`Session::last_library`].
@@ -840,6 +1089,9 @@ pub struct LastLibrary {
     /// the same convention [`HomePins`] and [`RecentSearches`] use, and for the same reason.
     pub user: String,
     pub libs: Vec<TypedLib>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 /// One remembered library, tagged with the TYPE whose tab it answers for.
@@ -853,6 +1105,9 @@ pub struct TypedLib {
     pub kind: String,
     pub machine_id: String,
     pub key: i64,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 impl LastLibrary {
@@ -878,6 +1133,7 @@ impl LastLibrary {
             kind: kind.to_string(),
             machine_id: machine_id.to_string(),
             key,
+        extensions: Default::default(),
         });
     }
 }
@@ -914,6 +1170,9 @@ pub struct HomePins {
     pub on: Vec<PinnedLib>,
     /// … and the ones it turned OFF. See the type doc: absent from both is "never answered for".
     pub off: Vec<PinnedLib>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 impl HomePins {
@@ -946,6 +1205,9 @@ pub struct UserRef {
     pub title: String,
     pub thumb: String,
     pub token: String,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 /// A list that degrades **element by element** instead of taking the whole [`Session`] with it.
@@ -1313,6 +1575,7 @@ impl Session {
             self.recent_searches.push(RecentSearches {
                 user: user.to_string(),
                 terms,
+            extensions: Default::default(),
             });
         }
     }
@@ -3380,6 +3643,7 @@ mod profile_cache_tests {
             },
             sources: vec![],
             pin: pin.map(PinVerifier::new),
+        extensions: Default::default(),
         }
     }
 
@@ -3575,6 +3839,7 @@ mod profile_cache_tests {
             title: "Admin".into(),
             thumb: "https://plex.tv/users/x/avatar?c=1".into(),
             token: "user-tok".into(),
+        extensions: Default::default(),
         };
         s.sources = vec![source.clone()];
         s.remember_profile(ProfileCreds {
@@ -3583,6 +3848,7 @@ mod profile_cache_tests {
             server,
             sources: vec![source],
             pin: Some(PinVerifier::new("1234")),
+        extensions: Default::default(),
         });
         let bytes = serde_json::to_vec_pretty(&s).unwrap();
         let back: Session = serde_json::from_slice(&bytes).unwrap();
@@ -3615,3 +3881,36 @@ mod profile_cache_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod canonical_profile_regressions {
+    use super::*;
+
+    #[test]
+    fn pin_verifier_rejects_non_ascii_hex_without_panicking() {
+        let verifier = PinVerifier {
+            salt: format!("aé{}", "a".repeat(29)),
+            hash: "02".repeat(32), iters: 1, ..Default::default()
+        };
+        assert!(!verifier.verify("1234"));
+    }
+
+    #[test]
+    fn pin_verifier_rejects_non_16_byte_salt_even_when_hash_matches() {
+        let verifier = PinVerifier::with_salt("1234", &[7; 8]);
+        assert!(!verifier.verify("1234"), "malformed persisted salt must fail closed");
+    }
+}
+
+// Storage-facing capability only. Session owner admission is integrated in Stage B.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum SaveAuthority { PublicOnly, Routine, FreshReauthentication }
+#[allow(dead_code)]
+pub(crate) mod persistence;
+
+#[cfg(test)]
+mod migration_tests;
+
+#[allow(dead_code)] // Stage B connects typed owner admission/completions.
+pub(crate) mod async_persistence;

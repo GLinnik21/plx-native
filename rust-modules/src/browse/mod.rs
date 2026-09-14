@@ -817,6 +817,7 @@ impl BrowseState {
                     next.last_library.push(crate::plex::session::LastLibrary {
                         user: user.clone(),
                         libs: Vec::new(),
+                        extensions: Default::default(),
                     });
                     next.last_library.last_mut()?
                 }
@@ -4291,6 +4292,7 @@ mod tests {
         let lib = |machine: &str, key| crate::plex::session::PinnedLib {
             machine_id: machine.into(),
             key,
+            extensions: Default::default(),
         };
         assert!(
             crate::plex::session::update(|s| {
@@ -4302,6 +4304,7 @@ mod tests {
                         asked: true,
                         on: vec![lib("mac-mini", 2)],
                         off: vec![lib("mac-mini", 1), lib("nas-home", 1), lib("nas-home", 2)],
+                        extensions: Default::default(),
                     },
                 );
                 Some(next)

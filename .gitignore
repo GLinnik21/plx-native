@@ -166,3 +166,6 @@ tests/fixtures/softfloat/arm.tbl
 # Local byte-bound linker evidence (contains build paths; never package or publish raw).
 /pkg/*.link.*
 /pkg/link-evidence/
+
+# Independent native DB8 storage helper (built by Makefile).
+/pkg/plxnative-storage

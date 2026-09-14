@@ -5,6 +5,7 @@ The registry reads metadata straight out of the .ipk (webosbrew's repogen/ipk_fi
 Package/Version/Installed-Size from the control file, then appinfo.json), so any disagreement
 between the three places the version is written is a submission failure rather than a warning.
 """
+import io
 import json
 import re
 import struct
@@ -13,6 +14,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from mkipk import storage_archive_errors
 import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and title
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1058,10 +1060,21 @@ expected = {
     "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",
     "THIRD-PARTY-NOTICES.md", "LICENSE", "LICENSING.md", "TRADEMARKS.md", *NEEDED_LICENCES,
 }
-data_tar = ROOT / "ipkroot/data.tar.gz"
-if data_tar.exists():
+data_blob = None
+if built:
+    archive = built[0].read_bytes()
+    offset = 8
+    while offset + 60 <= len(archive):
+        header = archive[offset:offset + 60]
+        size = int(header[48:58].decode("latin-1").strip() or 0)
+        if header[:16].decode("latin-1").strip() == "data.tar.gz":
+            data_blob = archive[offset + 60:offset + 60 + size]
+        offset += 60 + size + size % 2
+if data_blob is not None:
     import tarfile
-    with tarfile.open(data_tar) as t:
+    errors = storage_archive_errors(data_blob, appinfo["id"])
+    check(not errors, "actual archive storage service contract" + (": " + "; ".join(errors) if errors else ""))
+    with tarfile.open(fileobj=io.BytesIO(data_blob), mode="r:gz") as t:
         members = [m for m in t.getmembers() if m.isfile()]
         names = {Path(m.name).name for m in members}
         modes = {Path(m.name).name: m.mode & 0o777 for m in members}
@@ -1120,7 +1133,7 @@ if data_tar.exists():
           f"payload carries resources/<locale>/appinfo.json for all {len(tracked_locales)} locales"
           + (f" (missing {' '.join(missing)})" if missing else ""))
 else:
-    print("  SKIP — ipkroot/data.tar.gz absent (run `make ipk` first)")
+    print("  SKIP — no IPK data.tar.gz member (run `make ipk` first)")
 
 print("== ar container ==")
 # `ar rcD` (GNU) terminates short member names with '/', which appinstalld rejects outright:
