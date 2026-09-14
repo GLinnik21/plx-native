@@ -1664,9 +1664,13 @@ pub(crate) fn forget_pins_for_test(user: &str) {
 
 /// [`peek`] with the lock already held — the read half every entry point here shares.
 fn peek_locked() -> Session {
-    match read_locked() {
+    session_from_read(read_live_locked())
+}
+
+fn session_from_read(read: ReadState) -> Session {
+    match read {
         ReadState::Ready { session, .. } => session,
-        ReadState::Missing | ReadState::Locked => Session::default(),
+        ReadState::Missing | ReadState::Locked | ReadState::Blocked => Session::default(),
     }
 }
 
@@ -1689,10 +1693,63 @@ enum ReadState {
     /// It must shadow every lower-priority candidate: treating it as corrupt and then writing a
     /// fresh client id would destroy the only copy of the credentials.
     Locked,
+    /// The canonical authority could not answer safely. It shadows legacy candidates exactly as
+    /// `Locked` does, so a fresh client id can never overwrite the only copy of the credentials.
+    Blocked,
 }
 
-/// The first usable candidate, retaining whether an encrypted file exists but cannot be opened.
+/// The canonical authority's answer, retaining whether protected data exists but cannot be opened.
 fn read_locked() -> ReadState {
+    match persistence::load() {
+        persistence::CanonicalRead::Opened { session, .. } => ReadState::Ready {
+            session,
+            plaintext: false,
+        },
+        persistence::CanonicalRead::Data { payload, .. } => {
+            match serde_json::from_str::<Session>(&payload) {
+                Ok(session) => ReadState::Ready {
+                    session,
+                    plaintext: true,
+                },
+                Err(error) => {
+                    crate::log(&format!("session: canonical record is invalid: {error}"));
+                    ReadState::Blocked
+                }
+            }
+        }
+        persistence::CanonicalRead::Missing => ReadState::Missing,
+        // A cleared tenure is deliberately not Missing: it must shadow a reappearing legacy file.
+        persistence::CanonicalRead::Cleared { .. } => ReadState::Blocked,
+        persistence::CanonicalRead::Locked { .. } => ReadState::Locked,
+        persistence::CanonicalRead::Pending { .. } => ReadState::Blocked,
+        persistence::CanonicalRead::Blocked(_) => ReadState::Blocked,
+    }
+}
+
+/// Prefer the canonical record, but never let a legacy file outrank an unopenable canonical
+/// state. On ARM `read_legacy_locked` is absent by configuration, so the canonical store is the
+/// only authority a live read can consult.
+fn read_live_locked() -> ReadState {
+    #[cfg(test)]
+    if TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        // A redirected scratch path is an explicit host fixture. It is also deliberately not
+        // behind the process-wide canonical root: dozens of existing tests grade the exact
+        // scratch bytes, including recovery from states the canonical store cannot represent.
+        return read_legacy_locked();
+    }
+    match read_locked() {
+        ReadState::Missing => read_legacy_locked(),
+        canonical => canonical,
+    }
+}
+
+/// The legacy file reader: host/test fixtures, and on ARM the migration INPUT.
+///
+/// It is deliberately available on every target. On ARM a pre-DB8 install has no canonical record
+/// yet, so `read_live_locked` falls through to here exactly once and the bootstrap/migration path
+/// then moves the contents into DB8; removing this reader on ARM would make an existing 0.6.x
+/// `auth.json` unreadable instead of migrated, and would also orphan `keymanager::open`.
+fn read_legacy_locked() -> ReadState {
     for path in auth_paths() {
         let Some(bytes) = read_owned_regular(&path) else {
             continue;
@@ -1724,6 +1781,7 @@ fn read_locked() -> ReadState {
     }
     ReadState::Missing
 }
+
 
 fn identifies_secure_envelope(bytes: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(bytes)
@@ -1802,7 +1860,7 @@ pub(crate) struct DeferredLoad {
 fn read_identity(read: &ReadState) -> Vec<u8> {
     match read {
         ReadState::Missing => vec![0],
-        ReadState::Locked => vec![1],
+        ReadState::Locked | ReadState::Blocked => vec![1],
         ReadState::Ready { session, .. } => serde_json::to_vec(session).expect("Session serialization"),
     }
 }
@@ -1811,7 +1869,7 @@ impl DeferredLoad {
     /// a writer between capture and attachment is not overwritten by an obsolete snapshot.
     pub(crate) fn apply(self) -> Result<(), &'static str> {
         let _io = io();
-        if read_identity(&read_locked()) != self.expected { return Err("session changed during capture"); }
+        if read_identity(&read_live_locked()) != self.expected { return Err("session changed during capture"); }
         if self.save { save_locked(&self.session); }
         publish_identities(&self.session);
         Ok(())
@@ -1821,7 +1879,7 @@ impl DeferredLoad {
 /// Read/mint inputs only: no save, plaintext migration or identity publication before capture.
 pub(crate) fn load_capturing_entropy() -> (Session, Option<[u8; 16]>, DeferredLoad) {
     let _io = io();
-    let read = read_locked();
+    let read = read_live_locked();
     let expected = read_identity(&read);
     let mut captured = None;
     let (session, save) = prepare_load(read, || {
@@ -1835,7 +1893,7 @@ pub(crate) fn load_capturing_entropy() -> (Session, Option<[u8; 16]>, DeferredLo
 
 fn load_with_id(mint: impl FnOnce() -> String) -> Session {
     let _io = io();
-    let read = read_locked();
+    let read = read_live_locked();
     let (s, save) = prepare_load(read, mint);
     if save { save_locked(&s); }
     publish_identities(&s);
@@ -1844,7 +1902,7 @@ fn load_with_id(mint: impl FnOnce() -> String) -> Session {
 
 fn prepare_load(read: ReadState, mint: impl FnOnce() -> String) -> (Session, bool) {
     let persisted = !matches!(read, ReadState::Missing);
-    let locked = matches!(read, ReadState::Locked);
+    let locked = matches!(read, ReadState::Locked | ReadState::Blocked);
     let plaintext = matches!(
         read,
         ReadState::Ready {
@@ -1854,7 +1912,7 @@ fn prepare_load(read: ReadState, mint: impl FnOnce() -> String) -> (Session, boo
     );
     let mut s = match read {
         ReadState::Ready { session, .. } => session,
-        ReadState::Missing | ReadState::Locked => Session::default(),
+        ReadState::Missing | ReadState::Locked | ReadState::Blocked => Session::default(),
     };
     seed_fresh_quality(&mut s, persisted, crate::route::auto_quality_ready());
     let fresh = s.client_id.is_empty();
@@ -1893,7 +1951,7 @@ pub(crate) fn update_with_outcome(
     edit: impl FnOnce(&Session) -> Option<Session>,
 ) -> Option<crate::plex::session::async_persistence::PersistOutcome> {
     let _io = io();
-    let cur = peek_locked();
+    let cur = session_from_read(read_live_locked());
     if cur.client_id.is_empty() {
         return None;
     }
@@ -1906,18 +1964,10 @@ pub(crate) fn update_with_outcome(
 /// The outcome of the sealed/plaintext write attempts, without changing any caller's behavior.
 fn save_locked_outcome(s: &Session) -> async_persistence::PersistOutcome {
     use async_persistence::PersistOutcome;
-    save_locked(s);
-    // The write is synchronous and self-reporting only through these two observable facts: whether
-    // a protected envelope exists now, and whether the session is still readable. A refusal to
-    // downgrade or a failed write both leave the previous bytes intact, which is NOT durability.
-    let sealed_now = has_secure_locked();
-    let written = matches!(read_locked(), ReadState::Ready { session, .. } if session.client_id == s.client_id);
-    if !written {
-        PersistOutcome::WriteFailed
-    } else if sealed_now {
-        PersistOutcome::PersistedSealed
-    } else {
-        PersistOutcome::PersistedPlaintext
+    match save_locked_with_authority(s, SaveAuthority::Routine) {
+        Some(true) => PersistOutcome::PersistedSealed,
+        Some(false) => PersistOutcome::PersistedPlaintext,
+        None => PersistOutcome::WriteFailed,
     }
 }
 
@@ -1941,16 +1991,58 @@ fn save_locked_outcome(s: &Session) -> async_persistence::PersistOutcome {
 /// in a permissive mode, which a chmod after the write cannot promise.
 pub fn save(s: &Session) {
     let _io = io();
-    save_locked(s);
+    let _ = save_locked_with_authority(s, SaveAuthority::FreshReauthentication);
 }
 
-/// [`save`] with the lock already held.
+pub(crate) fn save_fresh_reauthentication(s: &Session) {
+    let _io = io();
+    let _ = save_locked_with_authority(s, SaveAuthority::FreshReauthentication);
+}
+
+/// [`save`] with the lock already held. Ordinary read-modify-writes never ask for fresh login
+/// authority; only [`save`] and its confirmed-auth adapter may do so.
 fn save_locked(s: &Session) {
+    let _ = save_locked_with_authority(s, SaveAuthority::Routine);
+}
+
+fn save_locked_with_authority(s: &Session, authority: SaveAuthority) -> Option<bool> {
     // Before the write, not after: a failed persist still means these names are live in THIS run,
     // and the log wants them redacted either way.
     publish_identities(s);
+    #[cfg(test)]
+    if TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        return save_legacy_locked(s);
+    }
+    let protected_before = has_protected_authority();
+    let commit = persistence::write_session(s, authority);
+    let durable = matches!(commit, persistence::CanonicalCommit::Durable { .. });
+    if !durable {
+        match commit {
+            persistence::CanonicalCommit::Durable { .. } => unreachable!(),
+            persistence::CanonicalCommit::Uncertain { stage, errno } => {
+                crate::log(&format!("session: canonical write is uncertain stage={stage:?} errno={errno}"));
+            }
+            persistence::CanonicalCommit::Failed(error) => {
+                crate::log(&format!("session: canonical write failed: {error:?}"));
+            }
+            persistence::CanonicalCommit::ProtectionFailed(failure) => {
+                crate::log(&format!(
+                    "session: canonical protection failed: {:?}, commit_verified={}",
+                    failure.failure, failure.db8_commit_verified
+                ));
+            }
+        }
+    }
+    let protected_after = has_protected_authority();
+    if durable {
+        return Some(protected_before || protected_after);
+    }
+    if protected_before || protected_after || has_secure_locked() {
+        crate::log("session: preserving the existing protected record; refusing an unprotected downgrade");
+        return None;
+    }
     let Ok(json) = serde_json::to_vec_pretty(s) else {
-        return;
+        return None;
     };
     if let Some(sealed) = crate::keymanager::seal(&json) {
         let envelope = SecureEnvelope {
@@ -1959,7 +2051,7 @@ fn save_locked(s: &Session) {
             sealed,
         };
         let Ok(protected) = serde_json::to_vec_pretty(&envelope) else {
-            return;
+            return None;
         };
         for winner in auth_paths() {
             if write_atomic(&winner, &protected) {
@@ -1969,29 +2061,76 @@ fn save_locked(s: &Session) {
                     remove_temp_siblings(&stale);
                     let _ = std::fs::remove_file(stale);
                 }
-                return;
+                return Some(true);
             }
         }
         crate::log("session: key manager succeeded but the protected file could not be written");
-        return;
+        return None;
     }
     // Never turn an already protected session back into plaintext because a service was
     // temporarily unavailable during a save. Preserve the previous ciphertext instead.
     if has_secure_locked() {
         crate::log("session: preserving the existing secure file; refusing a plaintext downgrade");
-        return;
+        return None;
     }
     // Try each candidate; the first that accepts the write wins. A total failure is still
     // non-fatal — but it is LOGGED, because the symptom (sign in again, every boot, forever) is
     // otherwise indistinguishable from a server-side auth problem and impossible to report.
     for path in auth_paths() {
         if write_atomic(&path, &json) {
-            return;
+            return Some(false);
         }
     }
     crate::log(
         "session: could not persist to ANY candidate path — login will not survive a reboot",
     );
+    None
+}
+
+#[cfg(test)]
+fn save_legacy_locked(s: &Session) -> Option<bool> {
+    let Ok(json) = serde_json::to_vec_pretty(s) else {
+        return None;
+    };
+    crate::keymanager::reset_for_test();
+    if let Some(sealed) = crate::keymanager::seal(&json) {
+        let envelope = SecureEnvelope {
+            format: SECURE_FORMAT.to_string(),
+            version: 1,
+            sealed,
+        };
+        let Ok(protected) = serde_json::to_vec_pretty(&envelope) else {
+            return None;
+        };
+        for winner in auth_paths() {
+            if write_atomic(&winner, &protected) {
+                for stale in auth_paths().into_iter().filter(|p| p != &winner) {
+                    remove_temp_siblings(&stale);
+                    let _ = std::fs::remove_file(stale);
+                }
+                return Some(true);
+            }
+        }
+        return None;
+    }
+    if has_secure_locked() {
+        return None;
+    }
+    for path in auth_paths() {
+        if write_atomic(&path, &json) {
+            return Some(false);
+        }
+    }
+    None
+}
+
+fn has_protected_authority() -> bool {
+    match persistence::load() {
+        persistence::CanonicalRead::Locked { protection, .. } => protection.is_some_and(|outcome| {
+            !matches!(outcome.class, crate::storage::wire::ProtectionClass::Db8AclOnly)
+        }),
+        _ => false,
+    }
 }
 
 /// Write `json` to `path` so that whatever reads it sees the WHOLE previous file or the WHOLE new
