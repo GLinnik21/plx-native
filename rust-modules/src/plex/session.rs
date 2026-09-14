@@ -1743,8 +1743,12 @@ fn read_live_locked() -> ReadState {
     }
 }
 
-/// The legacy file reader retained for host/test fixtures and pre-DB8 migration.
-#[cfg(any(test, not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim")))))]
+/// The legacy file reader: host/test fixtures, and on ARM the migration INPUT.
+///
+/// It is deliberately available on every target. On ARM a pre-DB8 install has no canonical record
+/// yet, so `read_live_locked` falls through to here exactly once and the bootstrap/migration path
+/// then moves the contents into DB8; removing this reader on ARM would make an existing 0.6.x
+/// `auth.json` unreadable instead of migrated, and would also orphan `keymanager::open`.
 fn read_legacy_locked() -> ReadState {
     for path in auth_paths() {
         let Some(bytes) = read_owned_regular(&path) else {
@@ -1778,10 +1782,6 @@ fn read_legacy_locked() -> ReadState {
     ReadState::Missing
 }
 
-#[cfg(not(any(test, not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))))))]
-fn read_legacy_locked() -> ReadState {
-    ReadState::Missing
-}
 
 fn identifies_secure_envelope(bytes: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(bytes)
