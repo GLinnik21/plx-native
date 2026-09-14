@@ -2921,6 +2921,8 @@ mod lifecycle_regression_tests {
             ev: [0; 128],
             remote: Default::default(),
             win: Default::default(),
+            #[cfg(target_os = "linux")]
+            wslg_frame_pacing: false,
             t0: Default::default(),
             instr: crate::diag::heartbeat::Instruments::new(false, 22.0),
             scenarios: crate::dev::scenarios::Scenarios {
