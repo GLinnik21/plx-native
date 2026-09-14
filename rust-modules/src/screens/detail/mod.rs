@@ -1501,11 +1501,16 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
 
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let measure = f.cx.measure;
-        crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
+        let preview = crate::player::preview::view();
+        if preview_punch_through(preview.picture) {
+            crate::gfx::frame_clear_through();
+        } else {
+            crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
+        }
         let p = f.painter;
         let nav_page_alpha = f.nav_page_alpha;
         let d = self.detail();
-        self.draw_backdrop(p, d, f.measure);
+        self.draw_backdrop(p, d, f.measure, preview);
         let hero_vis = hero_alpha(self.scroll.pos, HERO_FADE);
         if hero_vis > 0.01 {
             self.draw_hero(p.translate(0.0, -self.scroll.pos).alpha(hero_vis), f, d, nav_page_alpha);
@@ -1691,7 +1696,13 @@ impl DetailScreen {
             .unwrap_or((self.sid, self.rk.clone(), String::new()))
     }
 
-    fn draw_backdrop(&self, p: Painter, d: Option<&Detail>, measure: &dyn crate::ui::machine::Measure) {
+    fn draw_backdrop(
+        &self,
+        p: Painter,
+        d: Option<&Detail>,
+        measure: &dyn crate::ui::machine::Measure,
+        preview: crate::player::preview::View,
+    ) {
         let sf = (self.scroll.pos / (self.content_top(measure) - crate::ui::detail_layout::TOP_MARGIN))
             .clamp(0.0, 1.0);
         let art_alpha = (1.0 - sf) * self.preview_art;
@@ -1701,11 +1712,10 @@ impl DetailScreen {
         } else {
             (0, 0.0, 0.0)
         };
-        if (texture == 0 || art_alpha < 0.99)
-            && !self
-                .ground
-                .is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS)
-        {
+        let ground_flat = self
+            .ground
+            .is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
+        if keyed_ground_over_plane(preview.picture, texture, art_alpha, ground_flat) {
             self.ground.draw_with(
                 p,
                 Rect::FULL,
@@ -1739,11 +1749,11 @@ impl DetailScreen {
             );
             crate::ui::widgets::hero_scrim(
                 p,
-                visible * crate::player::preview::view().field,
+                visible * preview.field,
                 d.is_some_and(hero::has_people),
             );
         }
-        if self.scroll.pos > 0.0 && crate::player::preview::view().picture {
+        if self.scroll.pos > 0.0 && preview.picture {
             let a = (self.scroll.pos / crate::player::preview::COVER_SCROLL).clamp(0.0, 1.0);
             let cover = theme::with_a(theme::PLANE_COVER, a);
             p.rect(Rect::FULL, 0.0, cover, cover, 0.0);
@@ -2911,4 +2921,62 @@ impl DetailScreen {
         fx.push(Fx::App(AppFx::Content(req)));
     }
 
+}
+
+/// A presented preview must leave the framebuffer transparent. The player route punches this
+/// hole from the loop; this page stays mounted, so an opaque [`crate::gfx::frame_clear`] is a
+/// full-screen sheet over the plane (sound, no picture).
+fn preview_punch_through(picture: bool) -> bool {
+    picture
+}
+
+/// The keyed ambient wash is an opaque stand-in for the clear. Over a live plane it is the same
+/// sheet as an opaque clear: skip it and let the still fade over punch-through alpha instead.
+fn keyed_ground_over_plane(picture: bool, texture: u32, art_alpha: f32, ground_flat: bool) -> bool {
+    !picture && (texture == 0 || art_alpha < 0.99) && !ground_flat
+}
+
+#[cfg(test)]
+mod preview_plane_tests {
+    use super::{keyed_ground_over_plane, preview_punch_through};
+
+    #[test]
+    fn a_preview_picture_clears_through_to_the_plane() {
+        assert!(
+            preview_punch_through(true),
+            "a presented trailer must punch a hole in the UI surface"
+        );
+        assert!(
+            !preview_punch_through(false),
+            "a still page keeps the opaque app ground"
+        );
+    }
+
+    #[test]
+    fn a_preview_picture_does_not_paint_an_opaque_ground_over_the_plane() {
+        assert!(
+            !keyed_ground_over_plane(true, 0, 0.0, false),
+            "missing art over a live plane must not lay an opaque wash"
+        );
+        assert!(
+            !keyed_ground_over_plane(true, 1, 0.5, false),
+            "fading art over a live plane must not lay an opaque wash under the fade"
+        );
+        assert!(
+            keyed_ground_over_plane(false, 0, 1.0, false),
+            "a still page with no art still needs the keyed wash"
+        );
+        assert!(
+            !keyed_ground_over_plane(false, 0, 1.0, true),
+            "a wash that has resolved to the clear is skipped"
+        );
+        assert!(
+            keyed_ground_over_plane(false, 1, 0.5, false),
+            "fading art on a still page still shows the wash"
+        );
+        assert!(
+            !keyed_ground_over_plane(false, 1, 1.0, false),
+            "opaque art covers the wash"
+        );
+    }
 }

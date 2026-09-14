@@ -1972,8 +1972,9 @@ mod tests {
         let _jail_guard = JailTestGuard;
         JAIL_LOAD_BLOCKED.store(false, Relaxed);
         SHARED.reset_session();
+        let ps = crate::route::PlaybackSession::IDLE;
         assert_eq!(
-            state(),
+            state(&ps),
             shared::PlaybackState::Idle,
             "sane starting point: nothing has failed yet"
         );
@@ -1982,7 +1983,7 @@ mod tests {
 
         assert!(JAIL_LOAD_BLOCKED.load(Relaxed), "the refusal must latch");
         assert_eq!(
-            state(),
+            state(&ps),
             shared::PlaybackState::Error,
             "state() must derive Error from JAIL_LOAD_BLOCKED on its own — nothing ever calls \
              pump.rs's set_state for a session whose Engine was never installed"
