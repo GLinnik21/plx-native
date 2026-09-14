@@ -295,6 +295,11 @@ pub(crate) struct App {
     remote: Option<crate::remote::Remote>,
     /// The SDL window (`SDL_CreateWindow`), for the swap.
     win: *mut c_void,
+    /// WSLg accepts swap interval 1 on X11/GLX without pacing the compositor. This boot-scoped
+    /// flag enables the host-only software frame budget while leaving native Linux and macOS on
+    /// their driver swap behavior.
+    #[cfg(all(feature = "hostsim", target_os = "linux"))]
+    wslg_frame_pacing: bool,
     /// Boot time (`SDL_GetTicks` at the end of boot): the origin of every dev-script delay AND
     /// the clock a replay restores from controlled initial inputs — a field BOTH sides
     /// write, so it stays here rather than on `dev::scenarios::Scenarios`.

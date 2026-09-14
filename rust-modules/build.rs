@@ -21,9 +21,9 @@
 //!
 //! Why a build script rather than `.cargo/config.toml`, which is where this crate's other
 //! target-bound flags live: the library search path is not a constant. Homebrew is at
-//! `/opt/homebrew` on Apple Silicon and `/usr/local` on Intel, and a hardcoded guess fails as an
-//! "SDL2 not found" link error a long way from its cause. Asking `brew` is the only answer that is
-//! right on both.
+//! `/opt/homebrew` on Apple Silicon and `/usr/local` on Intel, while Linux distributions publish
+//! their SDL locations through pkg-config. A hardcoded guess fails as an "SDL2 not found" link
+//! error a long way from its cause.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -50,16 +50,16 @@ fn main() {
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
-    if let Some(libdir) = sdl_search_path() {
-        println!("cargo:rustc-link-search=native={}", libdir.display());
+    if let Some(libdirs) = sdl_search_paths(&target_os) {
+        for libdir in libdirs {
+            println!("cargo:rustc-link-search=native={}", libdir.display());
+        }
     } else {
-        // Not fatal — a system-wide install needs no search path, which is the ordinary case on
-        // Linux, where CI installs the `-dev` packages into the default one. Say so anyway,
-        // because the alternative is an undefined-symbol wall with no explanation. Not labelled
-        // "hostsim" any more: this path is now reached by the plain `cargo test --lib` pass too.
+        // Not fatal — a system-wide install may need no extra search path. This is not labelled
+        // "hostsim": plain host tests now reach the same drawing symbols.
         println!(
-            "cargo:warning=host link: no Homebrew lib dir found; relying on the default linker \
-             search path for SDL2/SDL2_ttf"
+            "cargo:warning=host link: could not discover SDL2/SDL2_ttf with the platform package \
+             manager; relying on the default linker search path"
         );
     }
 
@@ -313,13 +313,48 @@ fn git_path(rel: &str) -> Option<PathBuf> {
     Some(PathBuf::from(p.trim()))
 }
 
-/// Homebrew's lib directory, asked of `brew` itself and sanity-checked, or `None`.
-fn sdl_search_path() -> Option<PathBuf> {
+/// SDL library directories supplied by the host's package manager.
+///
+/// A successful pkg-config query may return no `-L` flags because the libraries live on the
+/// linker's default path. That is still discovery success, represented by `Some(vec![])`, so a
+/// normal Linux install does not emit a misleading Homebrew warning.
+fn sdl_search_paths(target_os: &str) -> Option<Vec<PathBuf>> {
+    if target_os == "linux" {
+        if !Command::new("pkg-config")
+            .args(["--exists", "sdl2", "SDL2_ttf"])
+            .status()
+            .ok()?
+            .success()
+        {
+            return None;
+        }
+        let mut paths = Vec::new();
+        for package in ["sdl2", "SDL2_ttf"] {
+            // Query the raw variable rather than parsing shell-escaped `-L` flags: prefixes may
+            // legitimately contain spaces.
+            let out = Command::new("pkg-config")
+                .args(["--variable=libdir", package])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let path = PathBuf::from(String::from_utf8(out.stdout).ok()?.trim());
+            if !path.as_os_str().is_empty() && !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        return Some(paths);
+    }
+
+    if target_os != "macos" {
+        return None;
+    }
     let out = Command::new("brew").arg("--prefix").output().ok()?;
     if !out.status.success() {
         return None;
     }
     let prefix = String::from_utf8(out.stdout).ok()?;
     let libdir = Path::new(prefix.trim()).join("lib");
-    libdir.is_dir().then_some(libdir)
+    libdir.is_dir().then(|| vec![libdir])
 }

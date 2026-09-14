@@ -41,6 +41,14 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
 
 - `make setup-env` — download + extract + `relocate-sdk.sh` the webOS NDK into `$(WEBOS_SDK)`
   (default `~/webos-ndk/…`). One-time; re-run `relocate-sdk.sh` if you move the SDK.
+- `tools/sim.ps1 setup|build|run|shot|send` — Windows 11 UI/Plex simulator through the existing
+  Ubuntu 22.04 WSLg runtime. It uses GPU-accelerated desktop OpenGL, keeps build/runtime state on
+  WSL's Linux filesystem, and stages only fonts into an isolated app directory. Its `make sim-wsl`
+  build is optimized and deliberately skips host FFmpeg, so it covers UI, sign-in, Plex browsing,
+  screenshots and remote commands but not demux/clock-sink playback. WSLg's non-blocking GLX swap
+  is capped at 60 Hz in the Linux host build. The launcher also refuses WSLg's `use_gfxredir=0`
+  copy fallback, where GL swaps can remain at 60 while the Windows surface updates at only a few
+  FPS. See the `ui-sim` skill.
 - `make` — build `pkg/plxnative` (the ARM binary), and, first, the FFmpeg it ships
   (`ci/build-ffmpeg.sh`; ~2 minutes on the first checkout to want that configuration, **3 seconds
   in every checkout after** — the source and object tree is machine-wide under `$PLX_BUILD_CACHE`,
@@ -56,7 +64,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   table per firmware; bundling collapsed that into a single equality (`ffabi-assert.c` opens by
   asserting `LIBAVFORMAT_VERSION_MAJOR == 63`), and the vendored trees are gone.
   **Since 2026-08-28 there ARE two tables again, and the axis is POINTER WIDTH rather than
-  version.** `make sim` builds the same FFmpeg 9.0 from the same component list for this Mac
+  version.** `make sim-macos` builds the same FFmpeg 9.0 from the same component list for this Mac
   (`HOST=1 ci/build-ffmpeg.sh` → `vendor/ffmpeg-prefix-host`, staged into `pkg/` as
   `libavformat-plx.63.dylib`) so the simulator can demux at all, and `ffabi-assert.c` `#if`s on
   `__SIZEOF_POINTER__`, each half compiled against its own build's headers. That is not the old
@@ -250,7 +258,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   `ci/check-package.py` refuses any non-LAB package that carries it). The receiver logs the PEER
   ADDRESS of every request, which is the only thing that tells "the television reached me from the
   internet" apart from "something on the LAN hairpinned". It composes with `RELEASE=1`
-  and with `make sim`, each getting its own `--target-dir` for the reason every other feature set
+  and with `make sim-macos`, each getting its own `--target-dir` for the reason every other feature set
   does. Full account: **`docs/lab-diagnostics.md`**. The trigger is a code LIST in that file rather
   than a constant, and the reason is worth carrying: the colour buttons are **`wcode` 486 RED /
   487 GREEN / 488 YELLOW / 489 BLUE** (device-measured 2026-08-26), while the STANDARD evdev
@@ -986,7 +994,7 @@ you its own numbers are wrong.
 > still run in series, and that queue is invisible in the plan you wrote. The one line to carry
 > without opening it: the television is the scheduling constraint, **a lane is a CHECKOUT** (so a
 > second worktree on the same Mac is a second lane, however the prompt describes it), give device
-> access to at most one and send every other lane to `make sim`. Telling two prompts "you own the
+> access to at most one and send every other lane to `make sim-macos` or `tools/sim.ps1`. Telling two prompts "you own the
 > television exclusively" is *not* a mutex — each is true when written and false the moment the
 > second one starts, which is the 2026-08-21 collision that was caught by luck rather than by
 > anything failing loudly. **A subagent proves which lane it is by prefixing
@@ -1095,7 +1103,8 @@ you get without waking a television. What it covers today, by module:
   running real frames — whose Browse owner reaches `sync_roster`, which resets that owner's table
   on any source the live registry does not hold, i.e. on every Browse fixture in the suite.
 
-**Tier 1.5 — the desktop simulator (`make sim`), which DOES draw pixels on the host.** This tier
+**Tier 1.5 — the desktop simulator (`make sim-macos` or `tools/sim.ps1`), which DOES draw pixels
+on the host.** This tier
 did not exist before 2026-08-14, and the line below used to read "there is no host *runtime*" flatly
 — that is now wrong for the UI half and right for everything else. `plxnative-sim` is the same app
 core built with `--features hostsim` and linked against desktop SDL2 + desktop GL 4.1 core: it
@@ -1106,8 +1115,8 @@ harness jobs kill each other — while N simulators run side by side, each point
 instance root (`PLXNATIVE_RUNTIME_DIR`, which is where the triggers, FIFO and event log now come
 from; unset it and everything resolves to `/tmp` exactly as before). It answers layout, focus,
 navigation, every screen, and the whole Plex data layer.
-**And since 2026-08-28 it STREAMS — real HTTP, real demux, real HLS, the real adaptive
-controller.** `make sim` builds a HOST copy of the same bundled FFmpeg 9.0 from the same
+**On macOS, since 2026-08-28 it STREAMS — real HTTP, real demux, real HLS, the real adaptive
+controller.** `make sim-macos` builds a HOST copy of the same bundled FFmpeg 9.0 from the same
 `ci/build-ffmpeg.sh` component list (`HOST=1`, into `vendor/ffmpeg-prefix-host`, staged into
 `pkg/` as `libavformat-plx.63.dylib` beside the ARM `.so.63`), and `ff.rs` carries a second ABI
 table selected on `target_pointer_width` with `ci/ffabi-assert.c` holding both. Arm
@@ -1115,8 +1124,9 @@ table selected on `target_pointer_width` with `ci/ffabi-assert.c` holding both. 
 clamped to the last fed PTS, position reported at the television's measured 5 Hz) and the whole
 pipeline between the socket and the decoder runs on the Mac: both AVIO transports, `ff.rs`'s
 demux, the AU queues and their byte-cap backpressure, the feed-ahead throttle, rung transactions,
-seek. Measured the day it landed: 94 `abr:` lines and a rung commit in one 30 s host run against
-`tests/serve_fixtures.py`. Until then this half was device-only and `make sim` said so
+seek. The Windows `sim-wsl` target deliberately omits FFmpeg and stops at the host no-video seam.
+Measured the day the macOS path landed: 94 `abr:` lines and a rung commit in one 30 s host run against
+`tests/serve_fixtures.py`. Until then this half was device-only and `make sim-macos` said so
 (`ff: FFmpeg unavailable — the app runs, playback will refuse`), which is why the ABR work was
 pinned to the one-television mutex.
 It still CANNOT answer frame rate (different
@@ -1131,7 +1141,7 @@ ignored `SDL_Surface::pitch` (`text.rs`), `dev`/`remote`/`log` all hardcoded `/t
 deriving the ABI table at a second pointer width — `AVSubtitleRect` was modelled with `flags`
 last where the header puts it before `type`, so `type_` read `flags` and on 64-bit `flags` landed
 one word past the end of the struct.
-**Two host-only traps that read as your change being broken.** (1) **`make sim-shot` HANGS on a
+**Two macOS-host traps that read as your change being broken.** (1) **`make sim-macos-shot` HANGS on a
 settled screen** — `SIM_FRAME` is a count of *presented* frames (`shot.rs`, and `app.rs` says the
 same at the `shot` token: "presented frames only accrue when something repaints"), and `ui::idle`
 gates presents, so a screen that settles before frame N never reaches N. Arm

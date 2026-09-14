@@ -100,6 +100,8 @@ impl Frame {
 /// needed a second token, and minting one is the hole `MainThread::assume` documents.
 pub(crate) unsafe fn run(app: &mut App) {
     while app.running {
+        #[cfg(all(feature = "hostsim", target_os = "linux"))]
+        let wslg_frame_budget = app.wslg_frame_pacing.then(crate::system::WslgFrameBudget::begin);
         // Resolve the control row ONCE per iteration, before the event pump, and pass this
         // value to input, update and draw alike. `player_hud::slot()` reads `playpos_ns`, which
         // LG's media thread writes and `player::pump` advances mid-iteration — deriving it per
@@ -240,7 +242,12 @@ pub(crate) unsafe fn run(app: &mut App) {
         app.rec.content_results();
         app.instr.mark(crate::diag::heartbeat::Phase::TickDrain); // tick_drain
         prepare_window(app, fr);
-        present_and_swap(app, fr);
+        present_and_swap(
+            app,
+            fr,
+            #[cfg(all(feature = "hostsim", target_os = "linux"))]
+            wslg_frame_budget,
+        );
         report(app, fr);
         heartbeat(app, fr);
     }
@@ -429,7 +436,12 @@ pub(crate) fn rig_clear_opaque_region() {
 
 /// **Draw, capture, swap — or sleep one frame period** (spec §3.3 step 10). Everything in here is
 /// inside the present gate's decision, which `prepare_window` has already taken into `fr.present`.
-unsafe fn present_and_swap(app: &mut App, fr: &mut Frame) {
+unsafe fn present_and_swap(
+    app: &mut App,
+    fr: &mut Frame,
+    #[cfg(all(feature = "hostsim", target_os = "linux"))]
+    wslg_frame_budget: Option<crate::system::WslgFrameBudget>,
+) {
     if fr.present {
         // the glyph cache's frame serial (phase 11, text.rs's hot window): a drawn frame
         crate::text::begin_frame();
@@ -471,11 +483,14 @@ unsafe fn present_and_swap(app: &mut App, fr: &mut Frame) {
         // capture; a first discovery frame may still need a second non-contained grab.
         crate::gfx::blur_frame_end();
         crate::ui::idle::note_present(fr.now);
+        #[cfg(all(feature = "hostsim", target_os = "linux"))]
+        if let Some(budget) = wslg_frame_budget {
+            budget.finish();
+        }
     } else {
-        // The swap is this loop's ONLY blocking call — there is no SDL_Delay, nanosleep
-        // or frame budget anywhere else in it. Skipping the present without sleeping here
-        // would turn a 16%-of-a-core app into a 100% spinner: strictly worse than the
-        // problem. One frame period, so input latency is exactly what it is today.
+        // Device and macOS presented frames block in swap; WSLg/X11 presented frames use the
+        // software budget above. A skipped frame reaches neither path, so sleep here to keep a
+        // settled screen from becoming a CPU spinner.
         SDL_Delay(crate::ui::idle::IDLE_POLL_MS);
     }
 }
@@ -2903,6 +2918,8 @@ mod lifecycle_regression_tests {
             ev: [0; 128],
             remote: Default::default(),
             win: Default::default(),
+            #[cfg(target_os = "linux")]
+            wslg_frame_pacing: false,
             t0: Default::default(),
             instr: crate::diag::heartbeat::Instruments::new(false, 22.0),
             scenarios: crate::dev::scenarios::Scenarios {

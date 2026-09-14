@@ -1,0 +1,122 @@
+name: Simulator CI
+
+on:
+  push:
+    branches: [main, 'release/v*']
+    paths: &simulator_paths
+      - '.github/workflows/simulators.yml'
+      - 'Makefile'
+      - 'rust-modules/**'
+      - 'src/svg.c'
+      - 'assets/icons/**'
+      - 'vendor/nanosvg/**'
+      - 'pkg/appfont*.ttf'
+      - 'pkg/OFL.txt'
+      - 'LICENSE'
+      - 'ci/build-ffmpeg.sh'
+      - 'ci/stage-host-ffmpeg.sh'
+      - 'ci/ffabi-assert.c'
+      - 'tools/sim.ps1'
+      - 'tools/sim-smoke.py'
+  pull_request:
+    paths: *simulator_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: simulator-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux simulator build + launch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install SDL/OpenGL and virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev \
+            libgl1-mesa-dri xvfb xauth
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: rust-modules -> target-sim-ci
+          key: simulator-linux
+      - name: Build native Linux simulator
+        run: make sim-linux SIM_TDIR=rust-modules/target-sim-ci
+      - name: Launch and capture 1080p frame
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s '-screen 0 1920x1080x24' python3 tools/sim-smoke.py \
+            --binary "$GITHUB_WORKSPACE/rust-modules/target-sim-ci/release/plxnative-sim" \
+            --runtime "$RUNNER_TEMP/plxnative-sim-runtime" \
+            --assets "$GITHUB_WORKSPACE/pkg" \
+            --output "$RUNNER_TEMP/plxnative-linux.png"
+      - name: Preserve Linux capture
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: simulator-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/plxnative-linux.png
+          if-no-files-found: ignore
+          retention-days: 7
+
+  macos:
+    name: macOS simulator build + launch
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install SDL
+        run: brew install sdl2_ttf
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            vendor/ffmpeg-prefix-host
+            vendor/ffmpeg-build
+          key: host-ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh') }}
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: rust-modules -> target-sim-ci
+          key: simulator-macos
+      - name: Build native macOS simulator
+        run: make sim-macos SIM_TDIR=rust-modules/target-sim-ci
+      - name: Launch and capture 1080p frame
+        run: |
+          python3 tools/sim-smoke.py \
+            --binary "$GITHUB_WORKSPACE/rust-modules/target-sim-ci/debug/plxnative-sim" \
+            --runtime "$RUNNER_TEMP/plxnative-sim-runtime" \
+            --assets "$GITHUB_WORKSPACE/pkg" \
+            --output "$RUNNER_TEMP/plxnative-macos.png"
+      - name: Preserve macOS capture
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: simulator-macos-${{ github.sha }}
+          path: ${{ runner.temp }}/plxnative-macos.png
+          if-no-files-found: ignore
+          retention-days: 7
+
+  windows-launcher:
+    name: Windows launcher syntax
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Parse with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/sim.ps1'), [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { $errors | Format-List; exit 1 }
+      - name: Parse with PowerShell 7
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/sim.ps1'), [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { $errors | Format-List; exit 1 }

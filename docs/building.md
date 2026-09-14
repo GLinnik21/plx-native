@@ -10,8 +10,9 @@ subsystem has a guide of its own next to the code.
 
 ## Requirements
 
-Cross-compiled to 32-bit ARM. Host must be macOS (x86_64 or arm64) or **arm64** Linux — there is no
-x86_64 build of the webOS NDK, so an x86_64 Linux host cannot build this.
+The ARM/webOS product build requires macOS (x86_64 or arm64) or **arm64** Linux because the webOS
+NDK has no x86_64 Linux build. The UI-only simulator also builds on x86_64 Ubuntu through WSLg on
+Windows and needs no webOS NDK; run `tools/sim.ps1 setup` there.
 
 - The **webOS NDK**, fetched by `make setup-env` (a few hundred MB, once).
 - A **Rust nightly** toolchain with `rust-src` (for `-Z build-std`) and `clippy` (the lint gate).
@@ -62,14 +63,34 @@ the name traps.
 
 ## The desktop simulator
 
-`make sim` builds the same application core against desktop SDL2 and GL; `make sim-run` opens the
-window, and `make sim-shot` boots it headlessly and writes a PNG. It renders the real interface
-against a real Plex Media Server, and since 2026-08-28 it also streams and demuxes, so the whole
-pipeline between the socket and the decoder runs on the host.
+The platform entry points are deliberately separate:
+
+- macOS: `make sim-macos`, `make sim-macos-run`, and `make sim-macos-shot`. This build includes
+  host FFmpeg, so the pipeline between the socket and decoder runs on the host. The historical
+  `sim`, `sim-run`, and `sim-shot` names remain aliases for these macOS targets.
+- Linux: `make sim-linux` builds the optimized UI/Plex simulator without host FFmpeg. Run the
+  resulting `rust-modules/target-sim/release/plxnative-sim` under X11 or Wayland with
+  `PLXNATIVE_APP_DIR=pkg` (or use the matching path below a custom `SIM_TDIR`).
+- Windows/WSLg: `tools/sim.ps1 build|run|shot|send`, backed by the `make sim-wsl` compatibility
+  alias for `sim-linux`. It adds dependency setup, isolated assets/runtime state and WSLg checks.
+
+The PowerShell launcher refuses to run when WSLg reports `use_gfxredir=0`. In that degraded mode
+the app can render and count 60 frames each second while the Windows window receives only a few of
+them through WSLg's copy fallback. Close other WSL work, run `wsl.exe --shutdown`, and launch again;
+`grep "RDP backend: use_gfxredir" /mnt/wslg/weston.log | tail -1` should then end in `= 1`.
 
 Several simulators run side by side, which the television cannot — prefer it for ordinary UI and
 data-layer work. It **cannot** answer frame rate (different GPU), text rasterization, or anything
 about LG's decoder and video plane. Those need the set.
+
+`.github/workflows/simulators.yml` links and launches the Linux and macOS variants when shared
+simulator inputs change. Linux runs a 1920x1080 screenshot smoke test under Xvfb; macOS performs
+the same smoke test through its native window server. The Windows job parses `tools/sim.ps1` with
+Windows PowerShell 5.1 and PowerShell 7. Hosted Windows runners cannot boot WSLg, so Linux runtime
+coverage is the runtime half of the Windows/WSLg path until a native Windows binary exists.
+The workflow is path-filtered, so do not make `Simulator CI` a required status check: GitHub leaves
+a path-skipped required workflow pending. If it must become required, first move the path decision
+inside an always-started workflow and report one aggregate status.
 
 ## Developing against a real TV
 
