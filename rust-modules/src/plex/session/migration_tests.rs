@@ -377,6 +377,63 @@ impl Drop for LegacyFile {
     }
 }
 
+#[cfg(test)]
+struct TempCanonicalState {
+    dir: std::path::PathBuf,
+}
+
+#[cfg(test)]
+impl TempCanonicalState {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "plx-live-canonical-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+        Self { dir }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TempCanonicalState {
+    fn drop(&mut self) {
+        crate::paths::redirect_persistent_state_root_for_test(None);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn live_load_and_update_use_the_canonical_authority() {
+    let _serial = crate::testlock::serial();
+    let _state = TempCanonicalState::new("live-authority");
+    let session = fixture();
+    assert!(matches!(
+        persistence::write_session(&session, SaveAuthority::Routine),
+        persistence::CanonicalCommit::Durable { revision: 1, .. }
+    ));
+    assert_eq!(
+        super::peek().account_token,
+        "synthetic-account",
+        "the live read must consume the canonical store instead of legacy auth.json"
+    );
+    assert!(super::update(|current| {
+        assert_eq!(current.account_token, "synthetic-account");
+        let mut next = current.clone();
+        next.auto_sign_in = true;
+        Some(next)
+    }));
+    let CanonicalRead::Data { payload, revision } = persistence::load() else {
+        panic!("live update must commit through the canonical store");
+    };
+    assert_eq!(revision, 2);
+    assert_eq!(
+        serde_json::from_str::<Session>(&payload).unwrap().account_token,
+        "synthetic-account"
+    );
+}
+
 #[test]
 fn canonical_cleared_blocked_and_existing_data_all_outrank_reappeared_legacy() {
     let source = LegacyFile::new(
