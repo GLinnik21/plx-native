@@ -79,7 +79,11 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         preview_synopsis: 1.0,
         preview_chrome: 1.0,
         preview_field: 1.0,
+        preview_base_scrim: 1.0,
         preview_logo: Spring::at(0.0),
+        preview_played_for: None,
+        preview_started_for: None,
+        preview_had_picture: false,
         refresh: DetailRefreshPhase::None,
         restore_intent: None,
         scroll: Spring::at(0.0),
@@ -1203,6 +1207,60 @@ fn back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise() {
     clear();
 }
 
+/// `preview_completed_naturally` is the pure core of §8.2's play-once suppression, extracted
+/// specifically so it is testable without driving the live, process-wide `player::preview`
+/// singleton (which needs `plex::session::peek()` file I/O to even start a Load — exactly the
+/// fragility the original plan's §5 rejected a live-Machine integration test over). This table
+/// pins the outside-voice-found ordering bug: the check must fire when full-trailer mode was
+/// active (`promoted=true`) even though `hero_active` is irrelevant there, AND when the viewer is
+/// simply sitting still (`hero_active=true`, `promoted=false`) — and must NOT fire on abandonment
+/// (`hero_active=false`, `promoted=false`) or when there was no picture to lose.
+#[test]
+fn preview_completed_naturally_covers_both_full_trailer_and_sitting_still() {
+    // (had_picture, has_picture, promoted, hero_active) -> expected
+    let cases = [
+        (true, false, true, false, true, "full-trailer-mode completion — the ordering bug's case"),
+        (true, false, false, true, true, "sitting still, unpromoted completion"),
+        (true, false, false, false, false, "abandonment (scrolled off / hero lost) must not count"),
+        (true, true, false, true, false, "still playing — no transition yet"),
+        (false, false, false, true, false, "nothing was playing to begin with"),
+        (true, false, true, true, true, "full-trailer AND still hero-active — either reason suffices"),
+    ];
+    for (had, has, promoted, hero_active, expected, why) in cases {
+        assert_eq!(
+            super::preview_completed_naturally(had, has, promoted, hero_active),
+            expected,
+            "{why}"
+        );
+    }
+}
+
+#[test]
+fn preview_already_played_is_a_plain_key_match() {
+    assert!(!super::preview_already_played(None, "rk1"));
+    assert!(!super::preview_already_played(Some("rk2"), "rk1"));
+    assert!(super::preview_already_played(Some("rk1"), "rk1"));
+}
+
+/// Closes the outside-voice-found gap: `preview_played_for`/`preview_started_for` must reset on
+/// leave, matching the existing `preview_dwell`/`preview_promoted` convention at the same call
+/// site, or §8.2's own "resets whenever you leave and re-enter" decision silently does not hold.
+#[test]
+fn leaving_the_page_resets_play_once_state_alongside_the_existing_preview_fields() {
+    let _guard = install(detail(ServerId::UNSET, "show"));
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    screen.preview_dwell = 1.5;
+    screen.preview_promoted = true;
+    screen.preview_played_for = Some("some-rk".into());
+    screen.preview_started_for = Some("some-rk".into());
+    step(&mut screen, &ScreenEvent::Unmount, None);
+    assert_eq!(screen.preview_dwell, 0.0);
+    assert!(!screen.preview_promoted);
+    assert_eq!(screen.preview_played_for, None);
+    assert_eq!(screen.preview_started_for, None);
+    clear();
+}
+
 #[test]
 fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply() {
     let _guard = crate::testlock::serial();
@@ -1866,7 +1924,7 @@ fn ticking_the_page_allows_layout_to_remeasure() {
 }
 
 #[test]
-fn extras_sit_after_episodes_and_do_not_move_the_compact_title() {
+fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     let extra = crate::metadata::Extra {
         rk: "9".into(),
         part: "/p".into(),
@@ -1891,8 +1949,8 @@ fn extras_sit_after_episodes_and_do_not_move_the_compact_title() {
     let (sections, n) = screen.sections(Some(loaded));
     assert_eq!(
         &sections[..n],
-        &[0, 1, 2, 6, 4, 3, 5],
-        "extras sits after the episode strip and before Cast"
+        &[0, 1, 2, 4, 6, 3, 5],
+        "extras sits after Cast and before Related"
     );
     let hide = super::compact_title_hide_pos(&sections, n, true).unwrap();
     assert_eq!(sections[hide], 4, "a show still hides the compact title at Cast");
@@ -1937,9 +1995,56 @@ fn extras_sit_after_episodes_and_do_not_move_the_compact_title() {
         ..Default::default()
     };
     let (sections, n) = screen.sections(Some(&movie));
-    assert_eq!(&sections[..n], &[0, 6, 4, 3, 5]);
+    assert_eq!(&sections[..n], &[0, 4, 6, 3, 5]);
     let hide = super::compact_title_hide_pos(&sections, n, false).unwrap();
     assert_eq!(sections[hide], 3, "a movie still hides the compact title at Related");
+    clear();
+}
+
+/// Pins the exact hazard `docs/trailer-ux-plan.md` §8's eng review verified was already retired
+/// (the `detail-sections-array-position-traps` prior learning) with a test rather than only a
+/// source read: `LayoutCache.top`/`.seen` must be indexed by `SectionId as usize` (identity), not
+/// by the section's ARRAY-WALK position. This movie fixture puts `Cast` at array position 1 —
+/// deliberately NOT equal to `SectionId::Cast`'s own discriminant (4) — so a regression to
+/// position-indexing would write the measured Y into `top[1]`/`seen`'s bit 1 instead of `top[4]`/
+/// bit 4, leaving `section_top(SectionId::Cast.raw(), ..)` unable to find it and falling through to
+/// the "not found" fallback (`c.end`, the whole-layout height) instead of Cast's real, much smaller
+/// top position.
+#[test]
+fn cast_section_top_is_keyed_by_identity_not_array_position() {
+    let movie = Detail {
+        sid: ServerId::UNSET,
+        rk: "movie-cast-pos".into(),
+        kind: "movie".into(),
+        cast: vec![crate::metadata::Cast {
+            tag: "Actor".into(),
+            role: "Lead".into(),
+            thumb: String::new(),
+            id: 1,
+            tag_key: String::new(),
+        }],
+        related: vec![Default::default()],
+        ..Default::default()
+    };
+    let _guard = install(movie);
+    let screen = bare(&_guard, ServerId::UNSET, "movie-cast-pos");
+    let loaded = screen.detail().expect("installed");
+    let (sections, n) = screen.sections(Some(loaded));
+    assert_eq!(
+        &sections[..n],
+        &[0, 4, 3, 5],
+        "Cast sits at array position 1, three away from its own SectionId discriminant (4)"
+    );
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let cast_top = screen.section_top(section::SectionId::Cast.raw(), loaded, &measure);
+    let content_top = screen.content_top(&measure);
+    let layout_end = screen.ensure_layout(loaded, &measure).end;
+    assert!(
+        cast_top >= content_top && cast_top < layout_end,
+        "Cast's real top ({cast_top}) must lie between content_top ({content_top}) and the whole \
+         layout's end ({layout_end}) — a position-indexed regression would instead return \
+         layout_end itself (the 'not found' fallback), since slot 4 would never get written"
+    );
     clear();
 }
 

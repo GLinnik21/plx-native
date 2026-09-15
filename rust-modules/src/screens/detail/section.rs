@@ -41,7 +41,10 @@ impl SectionId {
         })
     }
 
-    /// Cast, Related, About. Extras is not one: inserting it must not move the compact title.
+    /// Cast, Related, About. Extras is not one — it sits between Cast and Related in visual order
+    /// (`DetailScreen::sections`) but must not itself move the compact title's appear/disappear
+    /// threshold, which walks the visual-order array by anchor membership, not by adjacency to
+    /// Extras. `is_hide_anchor` checks identity, so this holds regardless of where Extras sits.
     pub(crate) const fn is_hide_anchor(self) -> bool {
         matches!(self, Self::Cast | Self::Related | Self::About)
     }

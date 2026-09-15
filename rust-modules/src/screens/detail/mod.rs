@@ -111,11 +111,31 @@ pub(crate) struct DetailScreen {
     /// picture is up) but eases toward the lower `PROMOTED_FIELD` once full-trailer mode owns the
     /// screen, since the Play/Resume pill left standing there already protects its own legibility.
     preview_field: f32,
+    /// The bottom-anchored base scrim's own alpha multiplier — 1.0 normal (leaves
+    /// `detail_layout::base_scrim_a`'s own scroll-driven value untouched), eased to 0.0 in
+    /// full-trailer mode since only the self-protecting Play/Resume pill is left to guard by then.
+    /// A separate scalar from [`preview_field`](Self::preview_field): that one drives the corner
+    /// wedge, this one the bottom gradient — distinct layers per `draw_backdrop`.
+    preview_base_scrim: f32,
     /// 0 = full hero position/size, 1 = fully collapsed to the top-left compact spot while a
     /// trailer plays in the background. A geometric transform, so it is a critically-damped
     /// [`Spring`] rather than the linear [`ease`] the alpha scalars above use — `ui::idle` sees it
     /// for free through `Spring::step`'s own `note_spring` call.
     preview_logo: Spring,
+    /// The `preview_cache_rk()` this hero already autoplayed a trailer to COMPLETION for, this
+    /// visit. Single slot, not a history — bouncing between two items and back within one visit can
+    /// re-arm each once more per return, which is accepted as reasonable rather than a gap (eng
+    /// review, `docs/trailer-ux-plan.md` §8.2 issue 1B). Reset on `WillLeave`/`Unmount` alongside
+    /// `preview_dwell`/`preview_promoted`, so re-entering the same item's page autoplays again.
+    preview_played_for: Option<String>,
+    /// The `preview_cache_rk()` captured at the MOMENT [`request_preview`](Self::request_preview)
+    /// actually starts a Load — never re-resolved later. Marking `preview_played_for` from this
+    /// captured value (rather than a fresh `preview_cache_rk()` read at EOS time) is what keeps an
+    /// item swap underneath a live full-trailer session from attributing "played" to the wrong item.
+    preview_started_for: Option<String>,
+    /// Last tick's `view.picture`, so `preview_tick` can detect the true→false edge that means a
+    /// trailer just stopped — the only way to tell "it finished" from "nothing is playing yet".
+    preview_had_picture: bool,
     /// Server reconciliation owed by this item, independent of cancellable focus restoration.
     /// Navigation memory cannot rewind it; only a new refresh or its terminal request changes it.
     refresh: DetailRefreshPhase,
@@ -253,7 +273,11 @@ impl DetailScreen {
             preview_synopsis: 1.0,
             preview_chrome: 1.0,
             preview_field: 1.0,
+            preview_base_scrim: 1.0,
             preview_logo: Spring::at(0.0),
+            preview_played_for: None,
+            preview_started_for: None,
+            preview_had_picture: false,
             refresh: DetailRefreshPhase::None,
             restore_intent: None,
             scroll: Spring::at(0.0),
@@ -636,12 +660,12 @@ impl DetailScreen {
                 out[n] = section::SectionId::Episode.raw();
                 n += 1;
             }
-            if !d.extras.is_empty() {
-                out[n] = section::SectionId::Extras.raw();
-                n += 1;
-            }
             if d.credits_len() > 0 {
                 out[n] = section::SectionId::Cast.raw();
+                n += 1;
+            }
+            if !d.extras.is_empty() {
+                out[n] = section::SectionId::Extras.raw();
                 n += 1;
             }
             if !d.related.is_empty() {
@@ -1515,6 +1539,8 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 self.season_settle = 0.0;
                 self.preview_dwell = 0.0;
                 self.preview_promoted = false;
+                self.preview_played_for = None;
+                self.preview_started_for = None;
                 self.content(fx, ContentReq::PreviewStop);
                 self.restore_intent = None;
                 self.refresh = DetailRefreshPhase::None;
@@ -1804,10 +1830,10 @@ impl DetailScreen {
                 ),
                 0.0,
                 theme::scrim(0.0),
-                theme::scrim(crate::ui::detail_layout::base_scrim_a(
-                    crate::ui::consts::SCR_H,
-                    visible,
-                )),
+                theme::scrim(
+                    crate::ui::detail_layout::base_scrim_a(crate::ui::consts::SCR_H, visible)
+                        * self.preview_base_scrim,
+                ),
                 0.0,
             );
             crate::ui::widgets::hero_scrim(
@@ -2139,6 +2165,22 @@ impl DetailScreen {
             );
         }
     }
+}
+
+/// Whether a `view.picture` true→false transition this tick means the trailer finished on its own
+/// (play-once suppression, `docs/trailer-ux-plan.md` §8.2) — pure, so it is unit-testable without
+/// the live `player::preview` singleton. `had_picture`/`has_picture` are `preview_had_picture` and
+/// `view.picture`; `promoted` is `self.preview_promoted`'s value from the END of last tick (read
+/// BEFORE `preview_tick`'s own end-of-function clear); `hero_active` is `hero && !scrolled_off`.
+fn preview_completed_naturally(had_picture: bool, has_picture: bool, promoted: bool, hero_active: bool) -> bool {
+    had_picture && !has_picture && (promoted || hero_active)
+}
+
+/// Whether this item's trailer already autoplayed to completion this visit — pure string
+/// comparison, split out so `can_dwell`'s gate is testable independent of `preview_cache_rk`'s own
+/// item-resolution logic.
+fn preview_already_played(played_for: Option<&str>, current_cache_rk: &str) -> bool {
+    played_for == Some(current_cache_rk)
 }
 
 fn compact_title_hide_pos(sections: &[i32], n: usize, is_show: bool) -> Option<usize> {
@@ -2619,16 +2661,39 @@ impl DetailScreen {
         let hero = matches!(focused, Some(Located::Hero(_)));
         let view = crate::player::preview::view();
         let scrolled_off = self.scroll.pos >= crate::player::preview::COVER_SCROLL;
-        if crate::player::preview::occupies() && (!hero || scrolled_off) && !self.preview_promoted {
+        // "Is the viewer still actively engaged with this hero" — shared by the abandon trigger,
+        // `can_dwell` and the natural-completion check below, which all used to repeat this same
+        // two-term condition independently (eng review, `docs/trailer-ux-plan.md` §8.2 issue 2A).
+        let hero_active = hero && !scrolled_off;
+        if crate::player::preview::occupies() && !hero_active && !self.preview_promoted {
             self.preview_dwell = 0.0;
             self.content(fx, ContentReq::PreviewStop);
         }
+        // Natural-completion detection for play-once suppression (`docs/trailer-ux-plan.md` §8.2).
+        // `preview_completed_naturally` is a pure function precisely so it is unit-testable
+        // without driving the live, process-wide `player::preview` singleton (the original plan's
+        // §5 rejected a live-Machine integration test for exactly the fragility that would bring —
+        // session-file coupling and shared global state — and this extraction gets the same
+        // regression coverage without either). Must read `self.preview_promoted`'s value from the
+        // END of last tick — i.e. BEFORE this tick's own clear further down — which is exactly "was
+        // full-trailer mode active". While promoted, the abandon trigger above can never fire (it
+        // requires `!preview_promoted`), so ANY picture-loss while promoted can only be natural EOS
+        // or an item swap underneath, and `preview_started_for`'s captured-at-start key (set in
+        // `request_preview`) makes even that swap case attribute to the right item rather than
+        // whatever is current by the time EOS is observed here.
+        if preview_completed_naturally(self.preview_had_picture, view.picture, self.preview_promoted, hero_active) {
+            if let Some(started_for) = self.preview_started_for.take() {
+                self.preview_played_for = Some(started_for);
+            }
+        }
+        self.preview_had_picture = view.picture;
         let blocked = crate::player::preview::blocked(self.sid, &self.preview_cache_rk());
-        let can_dwell = hero
-            && !scrolled_off
+        let already_played = preview_already_played(self.preview_played_for.as_deref(), &self.preview_cache_rk());
+        let can_dwell = hero_active
             && !self.preview_promoted
             && !view.playing
             && !crate::player::preview::occupies()
+            && !already_played
             && !blocked;
         if can_dwell {
             crate::ui::dwell::accumulate(&mut self.preview_dwell, dt, &mut |event| {
@@ -2654,11 +2719,16 @@ impl DetailScreen {
         } else {
             view.field
         };
+        // The bottom base scrim fades all the way to transparent in full-trailer mode — unlike the
+        // wedge above, nothing at the bottom needs protecting once only the self-protecting
+        // Play/Resume pill remains (`docs/trailer-ux-plan.md` §8.3).
+        let base_scrim_target = if full_trailer { 0.0 } else { 1.0 };
         if ease(&mut self.preview_art, view.art, dt)
             | ease(&mut self.preview_prose, view.prose, dt)
             | ease(&mut self.preview_synopsis, synopsis_target, dt)
             | ease(&mut self.preview_chrome, chrome_target, dt)
             | ease(&mut self.preview_field, field_target, dt)
+            | ease(&mut self.preview_base_scrim, base_scrim_target, dt)
         {
             fx.note(PresentEvent::Motion);
         }
@@ -2692,7 +2762,8 @@ impl DetailScreen {
         self.preview_extra().map(|e| e.rk.clone()).unwrap_or_else(|| self.rk.clone())
     }
 
-    fn request_preview<H: ContentLike>(&self, fx: &mut Effects<'_, H>) {
+    fn request_preview<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) {
+        self.preview_started_for = Some(self.preview_cache_rk());
         let extra = self.preview_extra();
         let (rk, part, vcodec, acodec, title) = match extra {
             Some(e) => (

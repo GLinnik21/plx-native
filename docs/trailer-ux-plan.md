@@ -179,16 +179,20 @@ preference for inline diagrams on non-obvious state transitions, this is exactly
 
 Table form of the same four states, with every visual channel spelled out:
 
-| State | Trigger | Poster art | Logo | Synopsis | Other meta (identity/ratings/facts/people) | Action row | Scrim/`field` |
-|---|---|---|---|---|---|---|---|
-| **Idle / browsing** | default, or hero not focused, or scrolled off | 1.0 (full still) | Hero rung, hero position | visible | visible | visible | 1.0 |
-| **Dwelling** | hero focused, unscrolled, no preview yet, dwell timer running | 1.0 | Hero rung, hero position | visible | visible | visible | 1.0 |
-| **Background autoplay** | `view.picture == true`, `!preview_promoted` | **0.0** (art fully yields to video) | **Compact rung, top-left**, animated in | **stays visible** (new) | **fades to 0** (unchanged) | **stays visible** (decision: unchanged from today) | 1.35 (unchanged — protects the now-larger amount of text: logo + synopsis) |
-| **Full trailer** | `view.picture == true`, `preview_promoted == true` | 0.0 | fades to 0 (from wherever the compact rung left it) | **fades to 0** (new — previously already 0, now explicit) | 0 (unchanged) | **only Play/Resume visible and focusable**, everything else leaves the row | **eased down** to a low residual (new — see §2.4) |
+| State | Trigger | Poster art | Logo | Synopsis | Other meta (identity/ratings/facts/people) | Action row | Scrim/`field` (wedge) | Bottom scrim (§8.3) |
+|---|---|---|---|---|---|---|---|---|
+| **Idle / browsing** | default, or hero not focused, or scrolled off | 1.0 (full still) | Hero rung, hero position | visible | visible | visible | 1.0 | 1.0 (`base_scrim_a`'s own scroll-driven value) |
+| **Dwelling** | hero focused, unscrolled, no preview yet, dwell timer running | 1.0 | Hero rung, hero position | visible | visible | visible | 1.0 | 1.0 |
+| **Background autoplay** | `view.picture == true`, `!preview_promoted` | **0.0** (art fully yields to video) | **Compact rung, top-left**, animated in | **stays visible** (new) | **fades to 0** (unchanged) | **stays visible** (decision: unchanged from today) | 1.35 (unchanged — protects the now-larger amount of text: logo + synopsis) | 1.0 (unchanged — still protecting the action row) |
+| **Full trailer** | `view.picture == true`, `preview_promoted == true` | 0.0 | fades to 0 (from wherever the compact rung left it) | **fades to 0** (new — previously already 0, now explicit) | 0 (unchanged) | **only Play/Resume visible and focusable**, everything else leaves the row | **eased down** to a low residual (new — see §2.4) | **eased to 0.0** (§8.3, follow-up pass — was unwired at first ship, see §8) |
 
 Transitions:
 
-- Idle/Dwelling → Background autoplay: unchanged mechanism, just a shorter dwell (§2.1).
+- Idle/Dwelling → Background autoplay: unchanged mechanism, just a shorter dwell (§2.1). **Since
+  §8.2 (follow-up pass): also requires `preview_started_for != Some(preview_cache_rk())`** — this
+  item's trailer must not already be the one that finished naturally this visit, or the dwell gate
+  stays closed instead of re-triggering. See §8.2 for the full mechanism and the exact tick-ordering
+  bug an eng review found and fixed in it.
 - Background autoplay → Full trailer: **UP**, unchanged trigger condition (focus on hero,
   `view.picture`). No change needed here beyond what already exists.
 - Full trailer → Background autoplay: **BACK (unchanged) or DOWN (new, §2.5)**.
@@ -665,7 +669,7 @@ gate for anything that moves pixels)**
 
 ---
 
-## GSTACK REVIEW REPORT
+## GSTACK REVIEW REPORT — 2026-09-15 (hero UX pass)
 
 ### Design-dimension ratings (0-10, on the ORIGINAL request vs. this finished plan)
 
@@ -724,3 +728,556 @@ in §2.2/§2.4(c) with the device pass that must set them.
   `field=1.35` at all, or whether background-autoplay needs its own, higher field constant separate
   from `PREVIEW_FIELD` (§2.3) — needs the anchor-table test to actually be written and run before
   this is known either way.
+
+---
+
+## 8. Follow-up polish pass (2026-09-15): section order, play-once, scrim fade
+
+**Status: planned, not yet implemented.** Four small, independent fixes to the shipped trailer/
+extras feature above — three requested, one verified rather than assumed while touching the same
+code. Nothing in §1-§7 changes; this section only reorders, adds suppression state, and wires one
+previously-unwired scrim. Three explicit decisions were made with the requester before finalizing
+this section (recorded so a reviewer does not have to re-derive them):
+
+- **Play-once suppression is scoped per visit**, not per app-session — a new field lives on
+  `DetailScreen`, keyed to the current item, and resets whenever you leave and re-enter that item's
+  detail page (or swap season/episode). The alternative (reusing `preview.rs`'s existing per-item
+  negative-fact cache, which lives for the app process's lifetime) was rejected because it would
+  mean a trailer that already played once literally never autoplays again for that item until the
+  app restarts — a UX cost bigger than the simplicity it buys.
+- **The bottom scrim (`base_scrim_a`) fades all the way to fully transparent** in full-trailer mode,
+  not to a residual floor — matching "fades out" literally, and consistent with the existing
+  rationale for the wedge's own `PROMOTED_FIELD`: once only the Play/Resume pill is left on screen
+  (which already carries its own legibility treatment independent of any scrim, `landing_hero.rs:14
+  -21`), nothing at the bottom needs protecting.
+- **Play/Resume staying visible and focused in full-trailer mode needed no new code** — verified
+  directly against source (below, §8.4), not assumed from the "implemented" status line at the top
+  of this doc. It already works; the gap found was a missing regression test, not missing behavior.
+
+### 8.1 Move Extras below Cast & Crew
+
+**Current order** (`sections()`, `screens/detail/mod.rs:627-655`): the function builds the visual
+stack by walking `Season → Episode → Extras → Cast → Related → About` (the `Extras` check at
+`mod.rs:639-642` runs, and is inserted, **before** the `Cast` check at `mod.rs:643-646`). `SectionId`
+itself (`section.rs:12-22`) is an identity enum indexed for layout-cache lookups, not the draw
+order — the doc comment there is explicit that "visual order is a separate list," which is exactly
+this function.
+
+**Change**: swap the two blocks so `Cast` is appended before `Extras`. New order:
+`Hero → Season → Episode → Cast → Extras → Related → About`.
+
+```rust
+// sections() — swap these two blocks
+if d.credits_len() > 0                 { Cast }
+if !d.extras.is_empty()                { Extras }
+```
+
+**Two things to re-verify, not just assume, once the swap lands:**
+
+- `section.rs:44-47`'s `is_hide_anchor` set (`Cast`, `Related`, `About` — the sections the compact
+  title's appear/disappear threshold anchors to) is defined by `SectionId` membership, not by
+  position relative to `Extras`, so moving `Extras` should not change which sections are anchors or
+  when the compact title appears. Confirm this with the existing pinning test (below) rather than
+  by inspection, since `section.rs:44-47`'s own comment ("Extras is not one: inserting it must not
+  move the compact title") was written for the OLD position (between Episode and Cast) and needs
+  its wording updated to describe the new one (between Cast and Related) even if the underlying
+  invariant still holds.
+- `extras.rs`'s Extras shelf itself is unaffected — it still draws every `metadata::Extra` the item
+  has via `Extra::caption()` (trailer, behind-the-scenes, featurette, scene, deleted scene,
+  interview, extra). This is purely a layout-order change; no data-selection logic moves.
+
+**Test update** — `screens/detail/tests.rs:1868-1940`,
+`extras_sit_after_episodes_and_do_not_move_the_compact_title`: rename to reflect the new position
+(e.g. `extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title`) and update both fixed
+arrays:
+
+```rust
+// show case: was &[0, 1, 2, 6, 4, 3, 5] (Hero, Season, Episode, Extras, Cast, Related, About)
+assert_eq!(&sections[..n], &[0, 1, 2, 4, 6, 3, 5], "extras sits after Cast and before Related");
+// movie case: was &[0, 6, 4, 3, 5] (Hero, Extras, Cast, Related, About)
+assert_eq!(&sections[..n], &[0, 4, 6, 3, 5]);
+```
+
+### 8.2 Trailer plays only once per visit
+
+**Root cause, confirmed against source, not assumed from the symptom.** `Machine::eos()`
+(`preview.rs:284-288`) only moves `Phase::Playing → Phase::Stopping`; the actual teardown
+(`after_pump`, `preview.rs:454-460`) resets the machine fully to `Phase::Idle`
+(`note_stopped()`, `preview.rs:290-294`) with no replay-suppression bit anywhere — the module's own
+doc comment (`preview.rs:5-10`) states this is deliberate for the *re-dwell* case ("a second dwell
+on an item that has a trailer starts from the beginning again"). `DetailScreen::preview_tick`'s
+`can_dwell` gate (`mod.rs:2613-2675`) has no memory of a prior play either. So after a natural EOS,
+`occupies()` returns `false`, `view.playing` is `false`, no negative `Fact` was recorded (those
+guard *known-bad* trailers, not *already-finished-successfully* ones), and — if the viewer is still
+sitting on the unscrolled, non-promoted hero — `can_dwell` becomes `true` again almost immediately,
+the 2.0s dwell timer re-accumulates, and a fresh `request_preview` replays the same trailer from the
+start. This is the exact "plays more than once" symptom, and it is a genuine gap: no test in
+`screens/detail/tests.rs` or `preview.rs`'s own test module pins EOS→re-dwell behavior at all.
+
+**Fix — a visit-scoped, item-keyed "already played" flag, set only on natural completion.**
+**Key type, decided (eng review, issue 1A): reuse `preview_cache_rk()`, not a new concept.**
+`DetailScreen::preview_cache_rk()` (`mod.rs:2691-2693`) already resolves "the correct key for
+whatever this hero is currently previewing" — the trailer extra's own rk when one exists, else
+`self.rk` — and its own doc comment (`mod.rs:2685-2690`) already states `preview_tick`'s dwell gate
+must check the negative-fact `blocked()` cache against exactly this key, not `self.rk`
+unconditionally. Using anything else for play-once suppression would risk it disagreeing with the
+existing blocked-cache key on exactly the cases (an on-deck episode with its own trailer) that key
+exists to get right.
+
+```rust
+// DetailScreen fields, alongside preview_dwell/preview_promoted (mod.rs:99-118)
+preview_played_for: Option<String>,   // the preview_cache_rk() this hero already autoplayed a
+                                       // trailer to completion for, this visit — single slot, not
+                                       // a history (eng review, issue 1B: bouncing between two
+                                       // episodes and back within one visit can replay each once
+                                       // more per return; accepted as reasonable, not a bug)
+preview_started_for: Option<String>,  // the preview_cache_rk() captured at the MOMENT
+                                       // request_preview() starts a Load — NOT re-resolved later,
+                                       // so an item swap underneath a live full-trailer session
+                                       // can never misattribute "played" to the wrong item
+                                       // (outside-voice finding, folded into the fix below)
+preview_had_picture: bool,            // last tick's view.picture, to detect the true→false edge
+```
+
+**Two bugs an eng review's outside-voice pass found in the first draft of this fix, both closed
+below — read this before implementing, not just the final snippet.** The first draft's natural-
+completion check read `self.preview_promoted` near the TOP of `preview_tick`, but
+`preview_promoted` is only cleared at the very LAST line of the function (`if !view.picture {
+self.preview_promoted = false; }`, `mod.rs:2672`) — so on the exact tick a trailer finishes WHILE
+in full-trailer mode, the top-of-function read still sees last tick's `true`, the guard fails, and
+the trailer that was most likely actually watched (immersive full-trailer completion) never gets
+suppressed. The second bug: re-resolving `preview_cache_rk()` fresh at the moment EOS is detected
+means an item swap underneath a live full-trailer session (season/episode change while promoted)
+could attribute "played" to whichever item happens to be current BY THEN, not the one that actually
+finished. Both are closed by (a) capturing the key at Load-start time instead of at EOS-detection
+time, and (b) a corrected condition that accounts for `preview_promoted`'s real clear-timing.
+
+**Shared boolean, factored out (eng review, issue 2A — DRY): `hero_active`.** The three-term
+condition "hero focused AND not scrolled off" appears, in one form or another, at the existing
+abandon-trigger (`mod.rs:2622`), the existing `can_dwell` gate's first two conjuncts
+(`mod.rs:2627-2628`), and now this fix's own natural-completion check. Extract it once:
+
+```rust
+// preview_tick, right after computing hero/scrolled_off (mod.rs:2619-2621)
+let hero_active = hero && !scrolled_off;
+```
+
+The existing abandon trigger becomes `occupies() && !hero_active && !self.preview_promoted`
+(algebraically identical to today's `occupies() && (!hero || scrolled_off) && !preview_promoted` —
+De Morgan on the negated pair), and `can_dwell`'s first two conjuncts become `hero_active &&
+!self.preview_promoted && ...`.
+
+**Set `preview_started_for` where the Load actually starts** (`request_preview`, `mod.rs:2695`):
+
+```rust
+fn request_preview<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) {   // &mut self now
+    self.preview_started_for = Some(self.preview_cache_rk());
+    // ...unchanged body below (resolves extra, sends ContentReq::PreviewStart)
+}
+```
+
+**The corrected natural-completion check — fires whenever `view.picture` is lost WITHOUT the
+screen itself having just caused it**, which happens in exactly two shapes: sitting on an active,
+unpromoted hero when EOS lands (the original target case), or being in full-trailer mode when EOS
+lands (promoted mode structurally excludes the abandon path — the abandon trigger itself requires
+`!preview_promoted` — so ANY picture-loss while promoted can only be natural EOS or an item swap
+underneath, and `preview_started_for`'s captured-at-start key makes even that swap case attribute
+correctly):
+
+```rust
+// preview_tick, using preview_promoted's value from the END of last tick — i.e. BEFORE this
+// tick's own clear at mod.rs:2672 — which is exactly what "was full-trailer mode active" means
+if self.preview_had_picture && !view.picture && (self.preview_promoted || hero_active) {
+    if let Some(started_for) = self.preview_started_for.take() {
+        self.preview_played_for = Some(started_for);   // natural completion — suppress re-dwell
+    }
+}
+self.preview_had_picture = view.picture;
+```
+
+The gate, added to `can_dwell`:
+
+```rust
+let already_played = self.preview_played_for.as_deref() == Some(self.preview_cache_rk().as_str());
+let can_dwell = hero_active
+    && !self.preview_promoted
+    && !view.playing
+    && !crate::player::preview::occupies()
+    && !already_played   // NEW
+    && !blocked;
+```
+
+Whenever the current item changes underneath (season/episode swap, a different detail page
+mounted), `preview_cache_rk()` no longer matches the stored `preview_played_for`, so `already_played`
+evaluates `false` and the new item's trailer can autoplay — no separate reset call needed for THAT
+case, same pattern the per-item negative-fact cache in `preview.rs` already relies on.
+
+**Reset on leaving the page (eng review, outside-voice finding #2 — confirmed against source).**
+`ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount` (`mod.rs:1513-1524`) already
+explicitly zeroes `preview_dwell`/`preview_promoted` on leaving the page — the established
+convention for every per-visit preview field, and itself evidence `DetailScreen` instances are
+pooled/reused across visits rather than freshly constructed (why else reset fields on leave?). The
+two new fields must join it or the "resets whenever you leave and re-enter" scoping this section
+opened with (issue 1B's decision) silently doesn't hold:
+
+```rust
+// mod.rs:1513-1524, add alongside the existing preview_dwell/preview_promoted resets
+self.preview_played_for = None;
+self.preview_started_for = None;
+```
+
+**Explicitly unaffected**: manual trailer playback from the Extras shelf or the hero's `Trailer`
+disc control (`hero::disc_verb`, `hero.rs:292-301`) is a different playback path entirely (the main
+`player` module, not `player::preview`'s background machine) and shares no suppression state with
+this fix — pressing the Trailer control still plays the trailer on demand, every time, as today.
+
+**Considered and deferred (eng review, outside-voice finding #3 — overcomplexity):** moving this
+detection into `player::preview::Machine` itself as a one-shot `just_finished` flag, set at
+`note_eos()` before `note_stopped()` wipes the session's key, would eliminate this fix's ordering
+fragility at the source rather than patching around it, and would benefit any future consumer of
+trailer-completion signal, not just this screen. Not chosen for this PR — it touches a shared
+module other code paths depend on, a larger blast radius than a screen-local fix for what is
+fundamentally a screen-local suppression feature — but recorded in `docs/TODOS.md` for if this ever
+needs a second consumer.
+
+### 8.3 Bottom scrim animates with full-trailer mode
+
+**Current state, confirmed against source.** `draw_backdrop` (`mod.rs:1762-1824`) draws two
+overlapping-but-distinct dark layers, both gated on `visible = hero_alpha(self.scroll.pos,
+HERO_FADE)`:
+
+- `detail_layout::base_scrim_a(SCR_H, visible)` (`detail_layout.rs:44-47`) — the bottom-anchored
+  base gradient (the "bottom dark opacity"). Its only inputs are screen height and scroll-driven
+  `visible`; it has **no** `preview`/`preview_promoted`/`preview_field` parameter at all, so
+  entering or exiting full-trailer mode (which doesn't move `self.scroll.pos`) leaves it completely
+  unaffected today — it is a hard function of scroll position, not eased against any preview-state
+  target.
+- `widgets::hero_scrim` (the corner wedge) — already multiplied by `self.preview_field`
+  (`mod.rs:1815`), so IT already eases correctly between the idle/background values and
+  `PROMOTED_FIELD = 0.4` in full-trailer mode. This part of the original plan's §2.4(c) is verified
+  shipped as documented. The wedge is not part of this fix; only the base gradient is.
+
+**Fix**: a new eased scalar, alongside `preview_field`, targeting full transparency in full-trailer
+mode:
+
+```rust
+// DetailScreen fields (mod.rs:99-118)
+preview_base_scrim: f32,   // 1.0 = normal (base_scrim_a's own value), 0.0 = fully faded out
+
+// preview_tick, folded into the same target-computation block as preview_field (mod.rs:2644-2661)
+let base_scrim_target = if full_trailer { 0.0 } else { 1.0 };
+// fold into the existing `|`-combined ease() chain (mod.rs:2581-2586) so idle-gate motion
+// reporting sees it — see §4's obligation, unchanged by this addition
+| ease(&mut self.preview_base_scrim, base_scrim_target, dt)
+```
+
+```rust
+// draw_backdrop (mod.rs:1807-1810) — multiply the existing alpha by the new scalar
+theme::scrim(crate::ui::detail_layout::base_scrim_a(SCR_H, visible) * self.preview_base_scrim),
+```
+
+Initial value `1.0`, so idle and background-autoplay states render byte-identical to today until
+full-trailer mode actually engages — this is purely additive to the existing draw call, not a
+behavior change outside the new state transition. Uses the file's existing linear `ease()` pattern
+(0.35s time constant, same as `preview_field`/`preview_chrome`/`preview_synopsis`) rather than a
+`Spring`, consistent with `ui/CLAUDE.md`'s rule that alpha fades use `ease()` and only geometric
+transforms (position/scale) use `Spring` — this is an opacity multiplier, not a transform.
+
+### 8.4 Play/Resume stays visible and focused in full-trailer mode — already correct, missing only its regression test
+
+**Verified directly against source, not assumed from this doc's "implemented" status line** (the
+same diligence the scrim item above needed, since that one turned out to be only half-implemented
+despite the doc's claim). `hero::focusable(ctl, full_trailer)` (`hero.rs:181-183`) is
+`!full_trailer || ctl == HeroCtl::Play`, and `hero::hero_pill_label` (`hero.rs:311-318`) already
+makes `HeroCtl::Play` show "Resume" whenever the item has a resume point and "Play" otherwise — so
+`HeroCtl::Play` **is** the "Play/continue watching" control the request names, not a separate thing.
+Every call site that decides what's drawn, enumerated, or focusable routes through this one
+predicate consistently: `groups` (`mod.rs:797`), `draw_buttons` (`mod.rs:1984`), `reconcile`
+(`mod.rs:1100-1139`, which explicitly redirects any non-`Play` hero focus to
+`hero::HeroCtl::Play.elem()` as the **first** check in the function, before the
+`return_pending`/`restore_intent` short-circuits can hand back a stale target), and `valid`
+(`mod.rs:1252-1259`). No code change is needed for this requirement.
+
+**What's actually missing**: the original plan's §5 called this exact path "CRITICAL" and specified
+a regression test — seed focus on `HeroCtl::Restart` (a resume-point item), promote to full-trailer,
+assert `reconcile`/`valid`/`place` all redirect/reject to `Play`, then un-promote and assert focus
+returns to `Restart`. Grepping `screens/detail/tests.rs` confirms only the BACK/DOWN
+collapse-trigger test exists (`back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise`,
+`tests.rs:1176`); the `reconcile`/`valid` redirect test was never added. Since this pass is already
+touching `preview_tick` and `draw_backdrop` in the same file, add the missing test here rather than
+leaving a correct-but-unguarded code path — per the project's own testing culture, a correct
+behavior with no regression test is one accidental refactor away from breaking silently.
+
+### 8.5 Files touched
+
+| File | Change |
+|---|---|
+| `rust-modules/src/screens/detail/mod.rs` | swap Cast/Extras order in `sections()` (§8.1); shared `hero_active` local + new `preview_played_for`/`preview_started_for`/`preview_had_picture` fields + gate/set logic in `preview_tick`, `request_preview` capturing `preview_started_for`, both new fields added to the `WillLeave`/`Unmount` reset block (§8.2); new `preview_base_scrim` field + ease target + fold into idle-gate `\|` chain (§8.3); `draw_backdrop` multiplies `base_scrim_a` by `preview_base_scrim` (§8.3) |
+| `rust-modules/src/screens/detail/section.rs` | update `is_hide_anchor`'s stale comment describing Extras' old position (§8.1) |
+| `rust-modules/src/screens/detail/tests.rs` | rename + update the section-order pinning test, plus a new `compact_title_hide_pos` pixel-identity regression test (§8.1, eng review issue 3A); new play-once tests: natural-EOS suppression (both the sitting-still case AND the full-trailer-mode-completion case the eng review's outside-voice pass found missing), abandon-then-return still replays, item-change resets, leave-and-return resets via the `WillLeave`/`Unmount` path (§8.2); new scrim-fade test: `preview_base_scrim` eases to 0/1 correctly and reports idle-gate motion (§8.3); new `reconcile`/`valid`/`place` Restart→Play regression test (§8.4) |
+
+### 8.6 Verification
+
+Per `AGENTS.md`'s testing rule: reproduce the current (buggy or unwired) behavior in a host test
+first, confirm it fails against unmodified code, implement, confirm it passes, keep the test.
+
+**Host (`make check`, run first and always)**
+
+- `sections()` reorder: the renamed pinning test (§8.1) — write it against the swapped order,
+  confirm it fails on unmodified code (since the arrays literally differ), then land the swap.
+  **New (eng review, issue 3A):** a second test asserting `compact_title_hide_pos`'s resolved
+  `section_top()` pixel value is byte-identical before and after the swap, for both the movie and
+  show fixtures — closes the exact hazard class the `detail-sections-array-position-traps` prior
+  learning flagged (verified already retired at the `LayoutCache`/`Spot` level by commit
+  `2a227a94`, but with no regression test pinning it until now).
+- Play-once (§8.2), five cases — **two more than the original draft, both added after an eng
+  review's outside-voice pass found the first draft's fix silently missed them:**
+  1. A `DetailScreen`-level test simulating a full dwell→admit→picture-true tick sequence, then a
+     natural `view.picture` true→false transition while still hero-focused/unscrolled/unpromoted —
+     assert `preview_played_for` is now `Some(preview_cache_rk())` and that stepping the dwell timer
+     past `DWELL_S` again does **not** call `request_preview`.
+  2. **[NEW — closes the ordering bug]** The same sequence, but the natural completion happens
+     WHILE `preview_promoted` is `true` (full-trailer mode) — assert `preview_played_for` is set
+     correctly even though `preview_promoted` hasn't cleared yet on this tick. Written to fail
+     against the uncorrected condition (`!self.preview_promoted` read before the function's own
+     clear) before passing against the corrected one (`self.preview_promoted || hero_active`), per
+     this repo's reproduce-fail-fix-pass rule.
+  3. The same sequence but with the transition happening while `scrolled_off` (simulating the
+     existing abandon path) — assert `preview_played_for` stays `None` and a subsequent re-dwell
+     **does** fire `request_preview`, pinning that the pre-existing "restart from beginning on
+     re-focus" behavior is unchanged.
+  4. After natural completion, swap to a different item (new `preview_cache_rk()`) and assert the
+     new item's dwell gate is unaffected by the previous item's suppression.
+  5. **[NEW — closes the attribution bug]** An item swap while `preview_promoted` is `true` and a
+     Load is in flight — assert that when EOS lands, `preview_played_for` is set from
+     `preview_started_for` (the item that actually started playing), not from a fresh
+     `preview_cache_rk()` read (which would now resolve to the swapped-in item).
+  6. **[NEW — closes outside-voice finding #2]** `WillLeave(Leave::ForGood)`/`Unmount` with
+     `preview_played_for`/`preview_started_for` set — assert both reset to `None`, so re-entering
+     the same item's detail page autoplays its trailer again, matching this section's own "resets
+     whenever you leave and re-enter" decision.
+- Scrim fade (§8.3): a `preview_tick`-level test asserting `preview_base_scrim`'s target is `0.0`
+  exactly when `full_trailer` and `1.0` otherwise (extend the existing four-state table test from
+  §2's original plan with this fifth channel), plus a settle/report test confirming the new `ease()`
+  term is folded into the idle-gate `\|` chain (mirrors the existing obligation in §4 of this doc for
+  every other eased/spring scalar in this screen).
+- Full-trailer focus (§8.4): the missing `reconcile`/`valid`/`place` regression test described above,
+  written against the CURRENT (already-correct) code — this one is expected to pass immediately, not
+  fail-then-pass, since it is closing a coverage gap rather than fixing a behavior bug; note this
+  explicitly in the test's own doc comment so a future reader doesn't mistake it for dead weight.
+
+**Device (blocking for anything that moves pixels — no host runtime for GLES composition or real
+trailer video)**
+
+- A `tools/capture-screen.sh` still (or live `tv-session` observation) of the detail page confirming
+  Extras now renders below Cast & Crew, on both a movie and a show fixture (movies have no
+  Season/Episode strips ahead of Cast, per §8.1's two fixed arrays).
+- A real-device session sitting still on an item's hero through one full trailer playthrough,
+  confirming it does not restart on its own — this is the one thing a host test cannot fully prove,
+  since the host test simulates the `view.picture` transition rather than observing a real EOS from
+  the bundled FFmpeg pipeline. **Do this twice**: once in background autoplay, once entering
+  full-trailer mode (UP) partway through and letting it finish there — the second case is exactly
+  the one an eng review's outside-voice pass found the first draft silently failed to suppress.
+- A live UP/BACK cycle on an item WITH a resume point, confirming visually: the bottom scrim visibly
+  fades to nothing on UP and fades back in on BACK/DOWN, and the visible/focused pill reads "Resume"
+  (not "Play") both before promoting and after returning, with no visible flash of `Restart`/
+  `Trailer`/the watch toggle mid-transition.
+
+### 8.7 Explicitly out of scope
+
+- The wedge (`hero_scrim`/`PROMOTED_FIELD` = 0.4) — already shipped and unchanged by this pass; only
+  the separate base gradient (`base_scrim_a`) is newly wired.
+- Manual/on-demand trailer playback (the Extras shelf, the hero's `Trailer` disc control) — a
+  different playback path, unaffected by the play-once suppression (§8.2).
+- Extras' own internal ordering, or the Cast & Crew shelf's own cast/crew ordering — unchanged;
+  this pass only moves the two shelves relative to each other.
+- Home's own hero preview — a different surface sharing only `landing_hero.rs`'s pure geometry, per
+  §7 of the original plan; not touched here either.
+- **[Eng review addition]** Moving natural-completion detection into `player::preview::Machine`
+  (the outside-voice's alternative fix for §8.2's ordering bug) — considered, not chosen for this
+  PR (larger blast radius, no second consumer today to justify it); recorded in `docs/TODOS.md`
+  instead.
+- **[Eng review addition]** Tracking play-once suppression as a history/set rather than a single
+  slot (issue 1B) — the single-slot design accepted as sufficient; bouncing between two episodes
+  and back within one visit can replay each once more per return, judged reasonable rather than a
+  gap worth a second data structure.
+
+### 8.8 Eng review addenda: what already existed and was reused
+
+Beyond `preview_cache_rk()` (§8.2's key type, already built for exactly this purpose) and the
+`ease()`/idle-gate patterns §8.3 already reused, the eng review pass found two more pieces of
+existing machinery this section's fixes now depend on rather than duplicate:
+
+- **The `WillLeave(Leave::ForGood)`/`Unmount` reset block** (`mod.rs:1513-1524`) already existed
+  and already reset `preview_dwell`/`preview_promoted` for exactly the "per-visit" scoping this
+  section's play-once feature needs — the fix was adding two fields to an existing convention, not
+  inventing a new lifecycle hook.
+- **The abandon-trigger's own boolean shape** (`mod.rs:2622`) already encoded "is the viewer still
+  actively engaged with this hero" as `(!hero || scrolled_off) && !preview_promoted` — the eng
+  review's `hero_active` extraction (issue 2A) is a factoring of logic that already existed in three
+  near-duplicate forms, not new logic.
+
+---
+
+## GSTACK REVIEW REPORT — 2026-09-15 (design review, §8 follow-up pass)
+
+### Design-dimension ratings (0-10, on the ORIGINAL 3-bullet request vs. this finished section)
+
+| Dimension | Original request | This plan | What closed the gap |
+|---|---|---|---|
+| Interaction completeness | 3/10 — "play only once" named no scope (per-visit vs. per-session), and the scrim bullet didn't say how far it should fade | 9/10 | Both ambiguities resolved as explicit decisions (visit-scoped suppression; full fade to transparent) before being written into the plan, with the tradeoff of the rejected alternative stated for each |
+| Correctness of the starting claim | 2/10 — the request assumed three independent gaps, but one (Play/Resume staying focused) turned out to already be correctly implemented; treating it as a fourth code change without checking would have been wasted/risky work on a path the project's own doc already claimed was done | 9/10 | Verified `hero::focusable`/`reconcile`/`valid`/`draw_buttons` directly against source before writing anything; found the real gap was a missing regression test, not missing behavior, and scoped the fix accordingly |
+| Regression risk awareness | 2/10 — none of the three bullets mentioned the existing pinning test, the intentional "restart on re-focus" behavior, or the CRITICAL test the original plan called for and was never added | 8/10 | Named the exact test that breaks (§8.1's array literals), the exact existing behavior that must NOT change (re-dwell-after-abandon in §8.2), and closed the specific missing-test gap from the prior plan pass (§8.4) instead of leaving it for a future surprise |
+| Reuse over invention | 4/10 — request implies three separate bespoke mechanisms | 8/10 | Play-once reuses the existing `ease()`/dwell-tick architecture and the same "item changed underneath" inference the codebase already relies on elsewhere, rather than inventing a new subsystem; the scrim fade reuses the exact `preview_field` pattern already shipped one section away in this same file |
+| Visual/state consistency across the four preview states (§2's table) | 3/10 — the three bullets didn't reconcile against the existing four-state model at all | 8/10 | Explicitly traced each fix onto the existing Idle/Dwelling/Background/Full-trailer states from §2, confirming none of the three changes needs a fifth state or a new trigger condition |
+| Test-plan completeness | 1/10 — none specified | 8/10 | Host tests enumerated per new piece of state (including the two failure-mode variants for play-once: interrupted vs. natural), plus the specific device-only checks and why each needs a real device |
+
+### Adaptation note
+
+Same adaptation as the original plan's report: this is an interaction/state-machine spec against a
+native TV codebase with a fixed 1920x1080 canvas, SDL2_ttf rasterization, and a hardware video plane
+GL cannot read — none of which a generated mockup PNG could meaningfully represent or de-risk. This
+review substituted direct verification against the project's own source (`hero.rs`, `mod.rs`,
+`preview.rs`, `detail_layout.rs`, `section.rs`, `tests.rs`) for the mockup/comparison-board/
+outside-model-critique steps, and used AskUserQuestion only for the two decisions genuinely
+unresolved by the request (play-once scope; scrim fade target) — the third apparent gap (Play/Resume
+focus) resolved to "already correct" on inspection rather than needing a decision at all.
+
+### Runs
+
+| Check | Status |
+|---|---|
+| Scope gate (user pointed at `docs/trailer-ux-plan.md`, this skill's own explicit-path exception) | Applied |
+| Codebase reconnaissance (`sections()`, `player/preview.rs`, `draw_backdrop`/`base_scrim_a`, `hero::focusable`/`reconcile`/`valid`) via a dedicated research pass, independent of this doc's own "implemented" claims | Done |
+| 2-question decision pass (play-once scope; scrim fade target) | Done — answers folded into §8.2/§8.3 |
+| Mid-review scope addition (Play/Resume visible+focused) verified against source before being added to the plan | Done — §8.4 |
+| Design-dimension rating + gap-closing rewrite | Done (table above) |
+| Visual mockup generation / comparison board | Skipped — no visual medium fits this app's real constraints, same reasoning as the original plan's report |
+| Outside-voice (Codex) design critique | Skipped — no visual surface to critique; the equivalent check performed here was independent source verification of every claim before it entered the plan (including catching that the scrim wasn't actually wired despite the doc, and that the focus behavior already was) |
+
+### VERDICT
+
+Section 8 is implementation-ready. One implementation-time detail is intentionally left unpinned
+rather than guessed: the exact type/field used as `ItemKey` in §8.2 (verify against whatever already
+identifies the current item for `hero_set()`/the preview-extra picker) — this is a naming lookup at
+implementation time, not a design decision, and does not block starting the work.
+
+NO UNRESOLVED DECISIONS
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | not run (bug fix + small UX polish, not a scope/strategy question) |
+| Outside Review | Claude subagent fallback (Codex not installed) | Independent 2nd opinion | 1 | unavailable (native fallback completed; not cross-model) | 3 findings — 2 confirmed real (EOS-detection ordering bug, missing leave-reset), 1 architectural alternative considered and deferred to TODOS.md |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | clean | 5 issues found and resolved (2 architecture, 2 code-quality, 1 test), plus 2 outside-voice bugs fixed |
+| Design Review | `/plan-design-review` | UI/UX gaps | 1 | clean | score 2/10 → 9/10, 2 decisions made (play-once scope, scrim fade target) |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | not run (internal native-app screen logic, not a DX-facing surface) |
+
+**OUTSIDE COVERAGE:** Codex CLI not installed on this machine (`CODEX_MODE: not_installed`) — fell
+back to a Claude subagent with fresh context per the skill's documented fallback path. The fallback
+completed successfully and found two real, source-verified bugs (see CROSS-MODEL below), but per
+this skill's own rule a same-harness fallback never supplies genuine outside/cross-model coverage,
+so `outside_status` is recorded as `unavailable` despite the fallback's findings being real and
+actioned. Install `@openai/codex` for genuine cross-model coverage on a future pass.
+
+**CROSS-MODEL:** No cross-model tension to report — the outside pass was a same-harness (Claude)
+fallback, not an independent model, so "cross-model" doesn't strictly apply. It is recorded here
+anyway because its findings were substantive and changed the plan: (1) the natural-EOS detector's
+placement relative to `preview_promoted`'s clear-timing was wrong and was fixed
+(`self.preview_promoted || hero_active`, verified against `mod.rs:2672`'s actual clear site); (2)
+the two new fields were missing from the existing `WillLeave`/`Unmount` per-visit reset convention
+and were added (`mod.rs:1513-1524`). Both were verified against source before being accepted, not
+applied on the fallback's word alone.
+
+**VERDICT:** CEO (not applicable) + ENG CLEARED + DESIGN CLEARED — ready to implement. Outside
+coverage remains genuinely unavailable (no Codex CLI on this machine); the plan proceeded on native
+review plus a same-harness fallback that found and closed two real bugs, which is the best coverage
+available in this environment today.
+
+### Diagrams
+
+- `docs/trailer-ux-plan.md` §2's state table now carries a "Bottom scrim" column and the
+  Idle→Background transition note both this review's issue 2B and §8.2's rewrite required — kept in
+  sync with the code it describes rather than left to drift, per the standing rule that a stale
+  diagram actively misleads.
+- No new inline ASCII diagram is warranted in `mod.rs` itself: `preview_tick`'s existing shape
+  (sequential `if`/`let` blocks, no branching state machine of its own beyond what §2's diagram
+  already covers) doesn't gain clarity from one, and the function is already short enough to read
+  linearly. The `hero_active` extraction is a two-line local, not a control-flow change worth
+  diagramming.
+
+### Failure modes
+
+For each new codepath, one realistic production failure and whether it's covered:
+
+| Codepath | Realistic failure | Test? | Error handling? | User-visible? |
+|---|---|---|---|---|
+| `sections()` reorder | A future edit adds an 8th section without widening `SPOT_SECTION_SLOTS`/`SLOTS` | New pixel-identity test (issue 3A) catches position drift; array-size mismatch is a compile-time `const` bound, not runtime | N/A (compile-time) | N/A |
+| `preview_played_for` gate | `preview_cache_rk()` returns different strings for what a viewer perceives as "the same item" across two ticks (e.g. a metadata refetch changes the trailer's own rk) | Not directly tested — inherits whatever guarantee `preview_cache_rk()` already provides for the pre-existing `blocked()` check | None beyond re-autoplaying (worst case: one extra play, not a crash or hang) | Yes, but benign — at most an extra unwanted autoplay, not a silent failure |
+| `preview_started_for` capture | `request_preview` is called twice before EOS lands (e.g. rapid re-trigger) — second call overwrites the first's captured key | Not directly tested; existing `Machine` single-target refusal (per the `single-video-plane-forces-ambient-not-per-tile` pattern) makes a second admit while one is in flight structurally rare | `Machine::admit`'s existing all-or-nothing contract | No — would at most misattribute which item's key gets marked played, same low-severity class as the row above |
+| `preview_base_scrim` ease | Idle-gate motion report forgotten, scrim visibly freezes mid-fade on a settled frame | New settle/report test (§8.6) — this is exactly the `Xfade`/`Spinner` failure class `ui/CLAUDE.md` warns about, now guarded | `ui::idle`'s 2s keepalive bounds the staleness even if forgotten | Yes, but bounded (2s max staleness, not indefinite freeze) |
+
+No **critical gap** (untested AND unhandled AND silent) found. The two lower-severity rows above
+(`preview_played_for`/`preview_started_for` key-mismatch edge cases) fail closed toward "plays an
+extra time" rather than toward a crash, hang, or silent stuck UI — judged acceptable given the
+narrow, low-frequency conditions required to trigger them and that the negative-fact-cache pattern
+they inherit from has run in production already.
+
+### Worktree parallelization strategy
+
+Sequential implementation, no parallelization opportunity — all six tasks below touch
+`screens/detail/mod.rs` (four directly, two via its test file), so splitting them across worktrees
+would produce a merge conflict on nearly every edit rather than saving time.
+
+### Implementation Tasks
+
+Synthesized from this review's findings. Each task derives from a specific finding above. Run with
+Claude Code or Codex; checkbox as you ship.
+
+- [ ] **T1 (P1, human: ~30min / CC: ~8min)** — screens/detail — Fix play-once suppression: `hero_active` extraction, corrected EOS condition, `preview_started_for` capture, leave-reset
+  - Surfaced by: Outside voice — EOS-detection ordering bug (`preview_promoted` clears after the naive check reads it) + missing `WillLeave`/`Unmount` reset
+  - Files: `rust-modules/src/screens/detail/mod.rs`
+  - Verify: new host tests in T6 below; `make check`
+- [ ] **T2 (P1, human: ~10min / CC: ~3min)** — screens/detail — Swap Extras/Cast order in `sections()`, update `is_hide_anchor` comment
+  - Surfaced by: Design review §8.1 + eng review issue 3A verification (`LayoutCache`/`Spot` confirmed identity-keyed, safe to reorder)
+  - Files: `rust-modules/src/screens/detail/mod.rs`, `rust-modules/src/screens/detail/section.rs`
+  - Verify: updated pinning test + new `compact_title_hide_pos` test (T5); device capture per §8.6
+- [ ] **T3 (P1, human: ~15min / CC: ~4min)** — screens/detail — Wire `preview_base_scrim`: new eased scalar, fold into idle-gate chain, multiply into `draw_backdrop`
+  - Surfaced by: Design review §8.3 — `base_scrim_a` was completely unwired from full-trailer mode
+  - Files: `rust-modules/src/screens/detail/mod.rs`
+  - Verify: state-table test extension + idle-gate settle test; device UP/BACK cycle capture
+- [ ] **T4 (P2, human: ~20min / CC: ~5min)** — screens/detail — Add `reconcile`/`valid`/`place` Restart→Play regression test in full-trailer mode
+  - Surfaced by: Original plan §5 called this CRITICAL; never added. Design review §8.4 closed the gap
+  - Files: `rust-modules/src/screens/detail/tests.rs`
+  - Verify: `make check` — expected to pass immediately (closing coverage, not fixing a bug)
+- [ ] **T5 (P2, human: ~15min / CC: ~4min)** — screens/detail — Add `compact_title_hide_pos` pixel-identity regression test across the Extras/Cast reorder
+  - Surfaced by: Eng review issue 3A — closes the `detail-sections-array-position-traps` hazard class with a test, not just a source read
+  - Files: `rust-modules/src/screens/detail/tests.rs`
+  - Verify: `make check`
+- [ ] **T6 (P2, human: ~30min / CC: ~8min)** — screens/detail — Add play-once host tests: natural EOS (sitting-still + full-trailer-mode), abandon-preserves-replay, item-change reset, leave-reset
+  - Surfaced by: Design review §8.6 + eng review outside-voice cases 2, 5, 6
+  - Files: `rust-modules/src/screens/detail/tests.rs`
+  - Verify: `make check` — cases 2 and 6 must be written to fail against the uncorrected/unfixed code first, per this repo's reproduce-fail-fix-pass rule
+
+JSONL artifact: `~/.gstack/projects/MrcRjs-plx-native/tasks-eng-review-20260915-144303.jsonl` (6 tasks, for `/autoplan` aggregation).
+
+### Completion summary
+
+- Step 0: Scope Challenge — scope accepted as-is (3 files, 0 new services — well under the complexity-check threshold)
+- Architecture Review: 2 issues found (both resolved: reuse `preview_cache_rk()`; single-slot suppression accepted)
+- Code Quality Review: 2 issues found (both resolved: `hero_active` DRY extraction; §2's state table + transition note updated)
+- Test Review: diagram produced, 1 gap identified and closed (`compact_title_hide_pos` pixel-identity regression test)
+- Performance Review: 0 issues found
+- NOT in scope: written (§8.7, extended with 2 eng-review additions)
+- What already exists: written (§8.8)
+- TODOS.md updates: 1 item proposed and accepted (Machine-level `just_finished` flag, P3)
+- Failure modes: 0 critical gaps flagged (2 lower-severity edge cases noted, judged acceptable)
+- Outside voice: ran (Claude subagent fallback — Codex not installed) — 2 real bugs found and fixed, 1 alternative deferred to TODOS.md
+- Parallelization: 1 lane, sequential (all tasks touch `screens/detail/`)
+- Lake Score: 2/2 — both decisions comparing a complete option against a shortcut (issue 1B: single-slot vs. history; the outside-voice EOS-detection fix: screen-local patch vs. Machine-level refactor) chose the option scoped correctly for this PR's size, not the more complex one, and the incomplete option (Machine-level flag) was captured as a TODO rather than dropped
+- Unresolved decisions: 0
+
+NO UNRESOLVED DECISIONS

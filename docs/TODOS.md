@@ -93,3 +93,36 @@ else in the trailer UI depends on which mechanism sets `view.picture`) are in
 **Priority:** P3
 **Depends on:** None, but do the RSS re-measurement TODO above first if this raises Load frequency
 further — the two compound.
+
+### Move natural-trailer-completion detection into `player::preview::Machine`
+
+**What:** Add a one-shot `just_finished`/rk flag to `player::preview::Machine`/`View`, set at the
+`note_eos()` call site (`preview.rs`, `after_pump`'s EOS branch) before `note_stopped()` wipes the
+session's `key`, consumed and cleared by `DetailScreen` each tick.
+
+**Why:** `docs/trailer-ux-plan.md` §8.2's play-once suppression (shipped) reconstructs "did the
+trailer finish naturally, vs. was it interrupted by the viewer scrolling/leaving" at the SCREEN
+layer, via a `hero`/`scrolled_off`/`preview_promoted` heuristic (`preview_tick`'s `hero_active`
+combined with `preview_promoted`). This is the shape an outside-voice review pass caught a real
+ordering bug in during that PR's eng review — `preview_promoted` only clears at the very last line
+of `preview_tick`, so a naive check near the top of the function read last-tick's value and missed
+EOS-during-full-trailer-mode entirely. The shipped fix patches the heuristic correctly (and adds a
+`preview_started_for` capture to avoid attributing "played" to the wrong item if one swaps
+underneath a live full-trailer session), but the underlying fragility is structural: `Machine`
+already knows unambiguously which rk just finished, at the one place (`note_eos()`) that has that
+fact before anything else can race it. A `Machine`-owned one-shot flag would make this class of bug
+structurally impossible rather than merely fixed, and would give any FUTURE consumer (not just
+`DetailScreen`) the same unambiguous signal for free.
+
+**Pros:** Centralizes "did this trailer actually finish" at its true source of truth. Eliminates the
+whole ordering-bug/attribution-risk class this review found, rather than just patching today's two
+instances of it. Reusable by any future screen or feature that needs trailer-completion signal.
+
+**Cons:** Touches `player::preview`, a shared module other code paths depend on (larger blast radius
+than the screen-local fix that shipped). No second consumer exists today to justify the refactor on
+its own merits — this is a "do it when it starts hurting twice" deferral, not an urgent one.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** `docs/trailer-ux-plan.md` §8 shipping first (the screen-local fix this would
+replace).
