@@ -151,15 +151,20 @@ struct LayoutCache {
 /// Cheap identity of the values [`LayoutCache`] was measured from. `current()` hands out a
 /// `'static` borrow of one static slot, so pointer equality on `Detail` cannot see a replacement
 /// or an in-place `episodes =` from [`crate::metadata::pump_season`].
+///
+/// `content_hash` carries the actual episode/summary/hero-episode TEXT rather than a summed
+/// length: two different seasons with the same episode count and the same *aggregate*
+/// title+summary+aired length (plausible with patterned titles like "Episode N", or fixed-width
+/// aired dates dominating the sum) used to hash to the same `ep_chars`, serving the previous
+/// season's cached geometry under the new one. A `DefaultHasher` over the real strings makes that
+/// coincidence practically impossible instead of merely unlikely.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct LayoutStamp {
     episodes: usize,
     n_ep: u32,
     summary: usize,
-    summary_len: u32,
     hero_ep: usize,
-    hero_chars: u32,
-    ep_chars: u32,
+    content_hash: u64,
     n_cast: u32,
     n_rel: u32,
     n_extras: u32,
@@ -169,14 +174,20 @@ struct LayoutStamp {
 
 impl LayoutStamp {
     fn of(d: &Detail) -> Self {
+        use std::hash::{Hash, Hasher};
         let hero = hero::hero_episode(d);
-        let mut ep_chars = 0u32;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for e in &d.episodes {
-            ep_chars = ep_chars
-                .saturating_add(e.title.len() as u32)
-                .saturating_add(e.summary.len() as u32)
-                .saturating_add(e.aired.len() as u32);
+            e.title.hash(&mut hasher);
+            e.summary.hash(&mut hasher);
+            e.aired.hash(&mut hasher);
         }
+        d.summary.hash(&mut hasher);
+        if let Some(e) = hero {
+            e.title.hash(&mut hasher);
+            e.summary.hash(&mut hasher);
+        }
+        let content_hash = hasher.finish();
         let mut flags = 0u8;
         if d.is_show {
             flags |= 1;
@@ -188,12 +199,8 @@ impl LayoutStamp {
             episodes: d.episodes.as_ptr() as usize,
             n_ep: d.episodes.len() as u32,
             summary: d.summary.as_ptr() as usize,
-            summary_len: d.summary.len() as u32,
             hero_ep: hero.map(|e| std::ptr::from_ref(e) as usize).unwrap_or(0),
-            hero_chars: hero
-                .map(|e| (e.title.len() + e.summary.len()) as u32)
-                .unwrap_or(0),
-            ep_chars,
+            content_hash,
             n_cast: d.credits_len() as u32,
             n_rel: d.related.len() as u32,
             n_extras: d.extras.len() as u32,
@@ -2617,7 +2624,11 @@ impl DetailScreen {
                 )
             })
             .unwrap_or((false, PosterMark::None));
-        // The preview path replaced the disc. Play Trailer stays in the item menu.
+        // The preview path replaced the disc. Play Trailer stays in the item menu. (Confirmed as
+        // the shipped decision by `screens::detail::tests` — see
+        // `a_movie_trailer_disc_plays_the_extra_from_the_start` et al., which explicitly assert
+        // `!hero_set().trailer` and then drive `ELEM_TRAILER` directly to prove `activate_hero`'s
+        // handling stays correct even though the disc itself is never shown.)
         hero::HeroSet {
             restart,
             trailer: false,

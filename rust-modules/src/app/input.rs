@@ -524,23 +524,30 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             if rk.is_empty() || part.is_empty() {
                 return;
             }
-            if !crate::route::request_play(
-                ps,
+            let intent = crate::screens::registry::PlayIntent::Item {
                 sid,
-                &rk,
-                &part,
-                &vcodec,
-                &acodec,
-                &title,
-                crate::metadata::TRAILER_CONTEXT,
-            ) {
+                rk,
+                part,
+                vcodec,
+                acodec,
+                title,
+                context: crate::metadata::TRAILER_CONTEXT.to_string(),
+            };
+            // A press-and-hold context menu can reach here within the same beat as opening it,
+            // which only STARTED the open preview's abandonment (`ContentReq::ItemMenu`'s own
+            // `halt_preview`) — its Load thread may still hold the engine installed. Starting a
+            // second Load against that installed engine hits the double-start conflict guard and
+            // silently refuses instead of playing, exactly the ordinary Play path's own race
+            // (`ContentReq::Play` in `app::content`), so this takes the same hold-until-released
+            // path rather than calling `request_play`/`start_playback_with` directly.
+            super::content::halt_preview_now(ps, pa);
+            if crate::player::preview::occupies() {
+                super::content::hold_feature(intent, 0, None);
                 return;
             }
-            crate::stores::metadata::apply(
-                crate::stores::metadata::MetadataCmd::SetNowPlaying(
-                    crate::metadata::trailer_now_playing(sid, &rk),
-                ),
-            );
+            if !super::content::request_play_intent(ps, &intent) {
+                return;
+            }
             super::playback::start_playback_with(
                 ps,
                 pa,

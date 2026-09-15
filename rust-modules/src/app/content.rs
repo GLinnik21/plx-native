@@ -33,7 +33,9 @@ pub(super) fn drain_item_menu_requests<R: super::playback::PlaybackResources>(
 struct HeldFeature {
     play: crate::screens::registry::PlayIntent,
     resume_ns: i64,
-    ret: ReturnState<u32, PageMemory>,
+    /// `Some` for a page navigation's own captured spot (BACK returns there); `None` for an
+    /// item-menu-initiated play, which never carried one — see [`hold_feature`].
+    ret: Option<ReturnState<u32, PageMemory>>,
     hud_ms: u32,
 }
 
@@ -42,10 +44,33 @@ std::thread_local! {
 }
 
 fn halt_preview(app: &mut App) {
-    crate::player::preview::halt(&mut app.player.session, &mut app.adapters.player);
+    halt_preview_now(&mut app.player.session, &mut app.adapters.player);
 }
 
-fn hold_feature(play: crate::screens::registry::PlayIntent, resume_ns: i64, ret: ReturnState<u32, PageMemory>) {
+/// The `&mut App`-free half of [`halt_preview`], for call sites (the item menu's own action
+/// dispatch in `app::input`) that only have the playback session and adapter, not the whole
+/// frame. Both must start abandonment before checking [`crate::player::preview::occupies`] —
+/// see [`hold_feature`]'s doc for why a still-abandoning preview needs a hold rather than a
+/// synchronous play.
+pub(super) fn halt_preview_now(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
+) {
+    crate::player::preview::halt(ps, pa);
+}
+
+/// Queue a play for [`drain_held_feature`] to perform once a still-abandoning preview's Load
+/// thread has actually released the engine. `halt_preview`/`halt_preview_now` only STARTS
+/// abandonment — the preview may still hold `pa.engine()` installed for a moment after, and
+/// starting a second Load against that installed engine hits the double-start conflict guard
+/// and refuses instead of queuing. Every caller that can reach a still-occupied preview
+/// (an ordinary page Play, and the item menu's Play Trailer) must hold through here rather
+/// than call `request_play`/`start_playback` directly.
+pub(super) fn hold_feature(
+    play: crate::screens::registry::PlayIntent,
+    resume_ns: i64,
+    ret: Option<ReturnState<u32, PageMemory>>,
+) {
     HELD_FEATURE.with(|slot| {
         *slot.borrow_mut() = Some(HeldFeature {
             play,
@@ -72,7 +97,7 @@ fn note_extra_now_playing(sid: crate::plex::ServerId, rk: &str, context: &str) {
     }
 }
 
-fn request_play_intent(
+pub(super) fn request_play_intent(
     session: &mut crate::route::PlaybackSession,
     play: &crate::screens::registry::PlayIntent,
 ) -> bool {
@@ -108,7 +133,7 @@ fn drain_held_feature(app: &mut App) {
         held.resume_ns,
         super::playback::Origin::Here,
         held.hud_ms,
-        Some(held.ret),
+        held.ret,
         &mut app.pages,
         &mut app.bridge,
     );
@@ -166,7 +191,7 @@ mod held_feature_tests {
     }
 
     fn install_held(play: PlayIntent) {
-        hold_feature(play, 0, ReturnState::default());
+        hold_feature(play, 0, Some(ReturnState::default()));
     }
 
     /// The post-accept half of [`request_play_intent`] / [`drain_held_feature`]. A full
@@ -261,6 +286,25 @@ mod held_feature_tests {
         crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
         crate::metadata::set_current_for_test(None);
     }
+
+    /// [`HeldFeature::ret`] widened to `Option<ReturnState<..>>` so `app::input::apply_item_action`
+    /// (which has no captured return spot — an item-menu play, unlike a page's own `ContentReq::Play`,
+    /// never had one) can hold a play too, alongside a page navigation's real captured `Some(ret)`.
+    /// A `None` must round-trip as `None`, not get coerced into a synthesized `Some(default())` —
+    /// the two reach different `enter_player` branches (`nav_push` vs `nav_push_with_return`), and
+    /// swapping one for the other would seed a BACK-return spot no item-menu play ever had.
+    #[test]
+    fn a_none_ret_round_trips_through_the_held_queue_unchanged() {
+        let _g = crate::testlock::serial();
+        hold_feature(trailer_play(crate::metadata::TRAILER_CONTEXT), 0, None);
+        let held_ret_is_none = HELD_FEATURE.with(|slot| slot.borrow().as_ref().map(|h| h.ret.is_none()));
+        assert_eq!(
+            held_ret_is_none,
+            Some(true),
+            "an item-menu hold must carry no return state at all"
+        );
+        HELD_FEATURE.with(|slot| { slot.borrow_mut().take(); });
+    }
 }
 
 pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
@@ -323,7 +367,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
             ContentReq::Play { play, resume_ns } => {
                 halt_preview(app);
                 if crate::player::preview::occupies() {
-                    hold_feature(play, resume_ns, ret);
+                    hold_feature(play, resume_ns, Some(ret));
                     continue;
                 }
                 // The PAGE decided which item; the LOOP performs the request, because

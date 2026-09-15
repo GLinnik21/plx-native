@@ -2241,6 +2241,15 @@ fn project_extras(
         }
     } else if d.extras.len() < EXTRAS_MAX {
         d.extras.insert(0, winner.clone());
+    } else {
+        // The winner can be ANY row in server order — `extras_from_rows` already capped the
+        // shelf to `EXTRAS_MAX` before this ran, so a `primaryExtraKey` past that cut would
+        // otherwise leave `trailer_rk` naming a key `d.extras` never carries. `Detail::trailer()`
+        // would then silently fall back to the first playable trailer among the 32 KEPT rows
+        // (or find none), which is not the server's own answer. The winner earns a guaranteed
+        // slot; the shelf's own last tile pays for it instead of the picker's contract.
+        d.extras.pop();
+        d.extras.insert(0, winner.clone());
     }
     d.trailer_rk = winner.rk;
 }

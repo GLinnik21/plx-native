@@ -1131,9 +1131,6 @@ RE_STREAM_PATH = re.compile(r"stream:.*?path=(\S+)")
 RE_LOAD = re.compile(r'load: v=(\S+) a="([^"]*)" fps=([\d.]+) '
                      r'dv=present:(\d) P(-?\d+)/(-?\d+) el:(\d) atmos:(\d)'
                      r'(?: max=(\d+)x(\d+)@(\d+))?')
-# Hero preview first-picture line. A drifting format fails the host pin in
-# `player/preview.rs` (`the_preview_line_keeps_the_pinned_shape`) and then this parse.
-RE_PREVIEW = re.compile(r"preview= dwell_ms=(\d+) nop=(\d+) num=(\d+)")
 # The PIPELINE's echo of the sink envelope it was handed — `smp_cb type=5`, the one line in the
 # log that is the television's reading of our `adaptiveStreaming` block rather than our own
 # (`docs/webos10-lab-report.md` §3.2: `… video/x-h264 (null) (null) 3840 2160 (null) 60.000000 …`).

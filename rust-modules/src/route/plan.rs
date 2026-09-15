@@ -1053,12 +1053,22 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // on this playback identity, and a later HLS `/decision` must physical-stop that encoder
     // first. A successful remux Original leaves the session for the play-path decision.
     let mut remux_probed = false;
+    // A preview that is already not direct-playable (MDE denied Original, or the extra carries
+    // no Part) is refused unconditionally below by `preview::accepts_direct_play` regardless of
+    // what Auto's bandwidth probe would decide — `adaptive` cannot rescue a `directplay=false`
+    // preview. Skipping the probe here (and, on the remux leg, the `put_selection` PUT that
+    // would otherwise register a transcode this preview can never play) is the only branch worth
+    // guarding: it is the one place this function does live network I/O before that refusal
+    // check, and a preview is exactly the request most likely to hit a non-direct-playable item.
+    let preview_already_refused = env.preview && (!directplay || part.is_empty());
     let decision = match (env.quality, link_kind) {
         (Quality::Auto, Some(link)) => {
             // The probe is the only expensive input, so it is only taken where it can change the
             // answer: a direct Remote with a feasible Original. Local needs no proof and Relay
             // cannot be talked into carrying a remux.
-            let probe = (link == crate::abr::LinkKind::Remote && original_feasible)
+            let probe = (link == crate::abr::LinkKind::Remote
+                && original_feasible
+                && !preview_already_refused)
                 .then(|| {
                     if directplay {
                         measure_remote_original(
