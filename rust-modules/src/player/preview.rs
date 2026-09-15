@@ -327,8 +327,15 @@ pub(crate) fn defer_media_join(loading: bool, thread_finished: bool) -> bool {
     loading && !thread_finished
 }
 
+crate::dev::latched_flag!(
+    /// `/tmp/plxnative-nopreview` — disable background trailer autoplay. Latched: `enabled()`
+    /// runs on `preview_tick`'s every-frame path (via `blocked`) while the detail hero holds
+    /// focus, and a `dev::flag` read is a `stat(2)` syscall per call.
+    fn nopreview_armed = "nopreview";
+);
+
 pub(crate) fn enabled() -> bool {
-    !crate::dev::flag("nopreview") && crate::plex::session::peek().trailer_autoplay()
+    !nopreview_armed() && crate::plex::session::peek().trailer_autoplay()
 }
 
 fn slot() -> &'static std::sync::Mutex<Machine> {
@@ -414,6 +421,17 @@ pub(crate) fn after_pump(
     }
     let failed = super::SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire);
     if abandoning() {
+        // KNOWN GAP (code review, unresolved): this poll has no timeout. If the native load
+        // thread never finishes (the k5lp DirectVoInit hang class this app already has a general
+        // budget for on the live path, `pump::NATIVE_LOAD_BUDGET`), `finished` stays false
+        // forever, `PlayerAdapter::is_live()` stays true forever, and `start_bufferfeed`'s
+        // double-start guard then refuses every later Play for the rest of the session. Adding a
+        // budget here is NOT a drop-in of that same mechanism: `engine::teardown` re-checks
+        // `finished` itself and bails out identically while the thread is still running (see its
+        // `is_preview` arm), so forcing a teardown past a timeout means abandoning a native
+        // resource an OS thread may still be executing against — a real memory-safety question
+        // (does the leaked `SfSlot` pattern in `src/starfish.c` make that safe, or does it not)
+        // that needs `player/CLAUDE.md`'s device verification + fw-compat review, not a desk fix.
         let finished = pa
             .engine()
             .and_then(|e| e.load_th.as_ref())

@@ -5704,7 +5704,13 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession) -> Option<i64> {
         let mut resume = PLAY_RESUME.lock().unwrap_or_else(|e| e.into_inner());
         take_resume_for(&mut resume, gen)
     };
-    ACTIVE_TRACE_GENERATION.store(trace_generation, Ordering::SeqCst);
+    // A preview's trace_generation is the placeholder 0 (request_play_inner never asked
+    // report::requested() for a real one), so it must not overwrite the funnel's active
+    // generation here — doing so would misattribute whatever telemetry a genuinely active,
+    // non-preview resolve/trace is still using this counter for.
+    if !is_preview(ps) {
+        ACTIVE_TRACE_GENERATION.store(trace_generation, Ordering::SeqCst);
+    }
     let _start = apply_plan(ps, plan, &rk);
     if let Some(resources) = refused_resources {
         retire_plan_resources(resources);

@@ -21,7 +21,7 @@ mod geometry_tests;
 #[cfg(test)]
 mod identity_tests;
 
-use crate::metadata::{Detail, Spot};
+use crate::metadata::{Detail, Extra, Spot};
 use crate::screens::registry::PlayIntent;
 use crate::plex::ServerId;
 use crate::stores::metadata::{apply as apply_metadata, MetadataCmd};
@@ -1098,6 +1098,21 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
     }
 
     fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, H>) -> FocusKey<u32> {
+        // Full-trailer mode collapses the hero row to Play/Resume only, and this must be the
+        // FIRST check in the function: the return_pending/restore_intent short-circuit below and
+        // restore_focus() can each hand back a hero elem without knowing about full-trailer mode,
+        // so gating only the dedicated hero branch further down let a restored or
+        // return-pending focus land on a control the row no longer draws.
+        if self.full_trailer() {
+            if let Some(Located::Hero(ctl)) = self.locate(want.elem) {
+                if !hero::focusable(ctl, true) {
+                    return FocusKey {
+                        entry: want.entry,
+                        elem: hero::HeroCtl::Play.elem(),
+                    };
+                }
+            }
+        }
         let known = self.keys.iter().any(|key| key.elem == want.elem);
         if known && (self.return_pending || self.restore_intent.is_some()) && (crate::metadata::detail_request_status(self.sid, &self.rk) == Some(true)
             || self.detail().is_some() && (crate::metadata::season_loading() || self.return_waiting())) {
@@ -1819,7 +1834,11 @@ impl DetailScreen {
             .unwrap_or("Loading…");
         let chrome = p.alpha(self.preview_chrome);
         let prose = p.alpha(self.preview_chrome * self.preview_prose);
-        let synopsis_alpha = p.alpha(self.preview_chrome * self.preview_synopsis);
+        // NOT `self.preview_chrome * self.preview_synopsis`: synopsis_target already tracks
+        // chrome_target exactly (both states — background autoplay, full-trailer — target the
+        // same 1.0/0.0), so multiplying the two eased values together would fade the synopsis
+        // along the SQUARE of the intended curve instead of the same rate as the logo/title.
+        let synopsis_alpha = p.alpha(self.preview_synopsis);
 
         // Interpolate continuously between the hero position/size and the top-left compact spot a
         // trailer's background autoplay shrinks the logo into — `preview_logo.pos` is the spring's
@@ -2604,7 +2623,7 @@ impl DetailScreen {
             self.preview_dwell = 0.0;
             self.content(fx, ContentReq::PreviewStop);
         }
-        let blocked = crate::player::preview::blocked(self.sid, &self.rk);
+        let blocked = crate::player::preview::blocked(self.sid, &self.preview_cache_rk());
         let can_dwell = hero
             && !scrolled_off
             && !self.preview_promoted
@@ -2655,8 +2674,26 @@ impl DetailScreen {
         }
     }
 
+    /// The item's currently playable trailer, if it has one — the ONE resolution both
+    /// `request_preview` (what to actually start) and `preview_cache_rk` (what key the started
+    /// session's facts get recorded under) must agree on, or the negative-fact cache writes under
+    /// one rk and reads under another and never actually blocks a known-bad trailer.
+    fn preview_extra(&self) -> Option<&Extra> {
+        self.detail().and_then(|d| d.trailer()).filter(|e| e.playable())
+    }
+
+    /// The rk `player::preview`'s cache/breaker keys THIS item's facts on — the extra's own rk
+    /// when a trailer exists (matching `note_refused_direct`'s `route::cur_rk(ps)`, which is set
+    /// from that same extra's rk once the Load starts), else `self.rk` (matching `note_no_extra`,
+    /// which fires before any extra-specific session exists). `preview_tick`'s dwell gate must
+    /// check `blocked` against this, not `self.rk` unconditionally, or a refused trailer's cache
+    /// entry is written under a key nothing ever looks up again.
+    fn preview_cache_rk(&self) -> String {
+        self.preview_extra().map(|e| e.rk.clone()).unwrap_or_else(|| self.rk.clone())
+    }
+
     fn request_preview<H: ContentLike>(&self, fx: &mut Effects<'_, H>) {
-        let extra = self.detail().and_then(|d| d.trailer()).filter(|e| e.playable());
+        let extra = self.preview_extra();
         let (rk, part, vcodec, acodec, title) = match extra {
             Some(e) => (
                 e.rk.clone(),
@@ -2670,7 +2707,10 @@ impl DetailScreen {
         self.content(
             fx,
             ContentReq::PreviewStart {
-                sid: self.sid,
+                // Normalized the same way every other play path in this file resolves the
+                // server (mod.rs's hero/related/extras presses): `item_sid` falls back to the
+                // browsed surface whenever `self.sid` is still `ServerId::UNSET`.
+                sid: crate::route::item_sid(self.sid),
                 rk,
                 part,
                 vcodec,
