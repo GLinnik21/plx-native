@@ -1477,6 +1477,9 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                     if self.collapse_full_trailer(fx) {
                         return Handled::Yes;
                     }
+                    if self.collapse_background_preview(fx) {
+                        return Handled::Yes;
+                    }
                     self.content(fx, ContentReq::Back);
                     return Handled::Yes;
                 }
@@ -1901,7 +1904,12 @@ impl DetailScreen {
             hero::draw_facts(prose, d, chain.facts_y, cx.measure);
             hero::draw_people(prose, d, chain.btn_y, measure);
         }
-        self.draw_buttons(chrome, cx, chain.btn_y, nav_page_alpha);
+        // Full-trailer mode collapses `visible_ctls` down to just Play/Resume (hero.rs's
+        // `focusable`/`visible_ctls` doc), which is meant to stay drawn at full strength the whole
+        // time — not fade out with the rest of the chrome via `preview_chrome`. Use the unscaled
+        // `p` (still carrying the outer hero-scroll alpha) rather than `chrome` in that state.
+        let buttons = if self.full_trailer() { p } else { chrome };
+        self.draw_buttons(buttons, cx, chain.btn_y, nav_page_alpha);
     }
 
     fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -2811,6 +2819,20 @@ impl DetailScreen {
         }
         self.preview_promoted = false;
         fx.invalidate(Provenance::Input);
+        true
+    }
+
+    /// BACK's second stage, after `collapse_full_trailer`: while a trailer is autoplaying in the
+    /// background (picture up, not promoted), BACK stops the preview so `preview_tick` animates
+    /// the logo, identity line and ratings back to their normal resting position — staying on the
+    /// page rather than leaving it. A second BACK press, with no preview left to collapse, falls
+    /// through to the ordinary `ContentReq::Back` navigation below. Returns whether it fired.
+    fn collapse_background_preview<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) -> bool {
+        if !crate::player::preview::view().picture {
+            return false;
+        }
+        self.preview_dwell = 0.0;
+        self.content(fx, ContentReq::PreviewStop);
         true
     }
 

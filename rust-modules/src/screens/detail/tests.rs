@@ -1207,6 +1207,38 @@ fn back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise() {
     clear();
 }
 
+/// BACK's second stage, `collapse_background_preview`: with no live trailer picture up (the
+/// default host-test state — driving the live `player::preview` singleton is deliberately avoided
+/// here, same as `preview_completed_naturally`'s extraction reasons above), BACK must not be
+/// swallowed by the new arm and must still reach ordinary `ContentReq::Back` navigation exactly as
+/// before this stage existed.
+#[test]
+fn back_falls_through_to_navigation_when_no_background_preview_is_up() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    let event = ScreenEvent::Input(InputEvent {
+        at: Default::default(),
+        source: crate::ui::machine::Source::Script,
+        kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+    });
+    let (handled, effects) = step(&mut screen, &event, None);
+    assert_eq!(handled, Handled::Yes);
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect.fx, Fx::App(AppFx::Content(ContentReq::Back)))),
+        "BACK with no background preview up must still leave the page"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect.fx, Fx::App(AppFx::Content(ContentReq::PreviewStop)))),
+        "there is no preview to stop"
+    );
+    clear();
+}
+
 /// `preview_completed_naturally` is the pure core of §8.2's play-once suppression, extracted
 /// specifically so it is testable without driving the live, process-wide `player::preview`
 /// singleton (which needs `plex::session::peek()` file I/O to even start a Load — exactly the
