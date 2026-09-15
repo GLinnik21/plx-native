@@ -337,6 +337,19 @@ pub(crate) fn clip_clear() {
 /// clear the framebuffer to an opaque color — the retui frame's first op, so the
 /// framework doesn't have to link GLES itself (it draws only through gfx/text).
 pub(crate) fn frame_clear(r: f32, g: f32, b: f32) {
+    frame_clear_alpha(r, g, b, 1.0);
+}
+
+/// Transparent black. The compositor blends this surface over the hardware video plane, so alpha 0
+/// is a hole, not a black fill. The player route clears this way from the loop because that page
+/// never paints a ground. A page that keeps its own chrome (the detail trailer preview) has to
+/// punch the same hole itself: [`frame_clear`] here is a full-screen sheet over the plane, which
+/// is sound with no picture.
+pub(crate) fn frame_clear_through() {
+    frame_clear_alpha(0.0, 0.0, 0.0, 0.0);
+}
+
+fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
     // A frozen page must not clear: the cached host quad is already on the framebuffer and this is
     // the FIRST thing every page draws, so an ungated clear would wipe the snapshot and leave the
     // popover sitting on flat grey. See [`PAGE_FROZEN`] — this is the one refusal that is not a
@@ -345,7 +358,7 @@ pub(crate) fn frame_clear(r: f32, g: f32, b: f32) {
         return;
     }
     unsafe {
-        glClearColor(r, g, b, 1.0);
+        glClearColor(r, g, b, a);
         glClear(GL_COLOR_BUFFER_BIT);
     }
 }

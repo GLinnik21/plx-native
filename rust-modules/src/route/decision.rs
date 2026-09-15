@@ -33,6 +33,9 @@ struct PlaybackRequest {
     acodec: String,
     title: String,
     ctx: String,
+    /// Background hero preview. No PlayQueue, no timeline, no scrobble, resume at 0, and the
+    /// caller must not push the player route.
+    preview: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,6 +316,9 @@ pub(crate) struct PlaybackSession {
     /// have to be carried by a dozen functions that have no other use for it — which is how the
     /// second clock read this replaces got there in the first place.
     now_ms: u32,
+    /// This session is a hero preview. Skips watch-state writes and must not be repaired onto
+    /// the player route.
+    preview: bool,
 }
 
 impl PlaybackSession {
@@ -361,6 +367,7 @@ impl PlaybackSession {
         up_next: None,
         queue: Vec::new(),
         now_ms: 0,
+        preview: false,
     };
 }
 
@@ -424,6 +431,7 @@ impl PlaybackSession {
             up_next,
             now_ms,
             queue: _,
+            preview: _,
         } = self;
         PlaybackSession {
             request: request.clone(),
@@ -468,6 +476,8 @@ impl PlaybackSession {
             up_next: up_next.clone(),
             now_ms: *now_ms,
             queue: Vec::new(),
+            // A screen copy is not the live preview. The loop reads the real session.
+            preview: false,
         }
     }
 }
@@ -4119,6 +4129,9 @@ pub(crate) fn scrobble_stop(
     final_report: Option<(String, i64, i64)>,
     report_th: Option<std::thread::JoinHandle<()>>,
 ) {
+    if ps.preview {
+        return;
+    }
     let (logical_session, pq, pqi) = (sess(ps), pq_id(ps), pq_item_id(ps));
     let (aud, sub) = (cur_audio_sid(ps), cur_sub_sid(ps)); // the selection this playback reported under
     let tsession = take_active_encoder();
@@ -5067,7 +5080,13 @@ pub(crate) fn with_queue<R>(ps: &PlaybackSession, f: impl FnOnce(&[crate::plex::
 ///      for the session's own server rung 1 is empty and this is what saves a round trip.
 ///   3. `GET /identity`, whose answer travels back in `QueueInfo::machine_id` for `apply_plan` to
 ///      cache against this server.
-pub(super) fn resolve_playqueue(c: &crate::plex::Client, rk: &str, session: &str, cached: &str) -> QueueInfo {
+pub(super) fn resolve_playqueue(
+    c: &crate::plex::Client,
+    rk: &str,
+    session: &str,
+    cached: &str,
+    continuous: bool,
+) -> QueueInfo {
     let known = c.machine_id();
     // `mid` is the FETCHED id and nothing else: apply_plan's "" means "leave the cache alone", and
     // the first two rungs are already-known values with nothing to write back.
@@ -5087,7 +5106,7 @@ pub(super) fn resolve_playqueue(c: &crate::plex::Client, rk: &str, session: &str
         crate::player::log("playqueue: no machineIdentifier (skip)");
         return QueueInfo::default();
     }
-    match c.create_play_queue(effective, rk, session) {
+    match c.create_play_queue(effective, rk, session, continuous) {
         Some(q) => {
             let up_next = q.next.as_ref().and_then(up_next_of);
             crate::player::log(&format!(
@@ -5147,9 +5166,9 @@ impl ResolveEnv {
             sub_sid: cur_sub_sid(ps),
             cached_item: crate::metadata::cached_playing(sid, rk),
             quality: quality(),
-            src_kbps: crate::metadata::current()
-                .filter(|d| detail_describes(d, sid, rk))
-                .map_or(0, source_kbps),
+            src_kbps: resolve_src_kbps(crate::metadata::current(), sid, rk),
+            omit_queue_continuous: false,
+            preview: false,
         }
     }
 }
@@ -5248,6 +5267,15 @@ pub(crate) fn play_pending() -> bool {
     PLAY_BUSY.load(Ordering::SeqCst)
 }
 
+/// This session is a hero preview. The route backstop must not steal it onto the player.
+pub(crate) fn is_preview(ps: &PlaybackSession) -> bool {
+    ps.preview
+}
+
+pub(crate) fn clear_preview(ps: &mut PlaybackSession) {
+    ps.preview = false;
+}
+
 /// Attach the UI's resume point to the resolve currently in flight.
 ///
 /// `request_play_*` is issued immediately before `app::start_playback`, so the latter knows the
@@ -5303,6 +5331,36 @@ pub(crate) fn request_play(
             acodec: acodec.to_owned(),
             title: title.to_owned(),
             ctx: ctx.to_owned(),
+            preview: false,
+        },
+        None,
+        None,
+        false,
+    )
+}
+
+/// Same resolve door as [`request_play`], flagged as a preview. Does not push a route. Resume is
+/// zero. The caller keeps the detail page mounted.
+pub(crate) fn request_preview(
+    ps: &mut PlaybackSession,
+    sid: ServerId,
+    rk: &str,
+    part: &str,
+    vcodec: &str,
+    acodec: &str,
+    title: &str,
+) -> bool {
+    request_play_inner(
+        ps,
+        PlaybackRequest {
+            sid,
+            rk: rk.to_owned(),
+            part: part.to_owned(),
+            vcodec: vcodec.to_owned(),
+            acodec: acodec.to_owned(),
+            title: title.to_owned(),
+            ctx: crate::metadata::TRAILER_CONTEXT.to_owned(),
+            preview: true,
         },
         None,
         None,
@@ -5340,8 +5398,11 @@ fn request_play_inner(
     // would have produced a `playback.failed` with no `playback.requested` before it: a funnel that
     // under-counts exactly the failure it exists to measure. It is after the empty-request guard
     // above, so a press that resolves to nothing is not an attempt.
-    let trace_generation =
-        trace_generation.unwrap_or_else(|| crate::player::report::requested(ps, sid));
+    let trace_generation = if request.preview {
+        0
+    } else {
+        trace_generation.unwrap_or_else(|| crate::player::report::requested(ps, sid))
+    };
     // The fields a play REQUEST owns, as against the ones only a landing may install: the HUD
     // strings (published now, so the pre-roll has a title through the whole resolve) and the five
     // the OUTGOING item leaves behind. Everything else — url, session ids, codecs — stays as it is
@@ -5349,7 +5410,11 @@ fn request_play_inner(
     // for itself while the next one resolves.
     { let s = &mut *ps; {
         s.request = Some(request.clone());
-        s.requested_resume_ns = retry.map_or(0, |r| r.resume_ns.max(0));
+        s.requested_resume_ns = if request.preview {
+            0
+        } else {
+            retry.map_or(0, |r| r.resume_ns.max(0))
+        };
         // SAFETY: `s.title`/`s.ctxline` are exactly the fixed C buffers `set_c` is given the length
         // of, taken from the arrays themselves so the two can never disagree.
         unsafe {
@@ -5374,15 +5439,19 @@ fn request_play_inner(
     } };
     // …and the outgoing item's track/marker/chapter store, for exactly the reason above: it stays
     // the PREVIOUS leaf's until this resolve lands. See `metadata::retire_playing_item`.
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RetirePlayingItem);
-    crate::player::reset_audio_track();
-    crate::player::reset_subtitle();
+    if !request.preview {
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RetirePlayingItem);
+        crate::player::reset_audio_track();
+        crate::player::reset_subtitle();
+    }
     // Capture the reducer revision BEFORE projecting the environment. Both happen on the main
     // thread, so a later quality/track edit necessarily advances this revision after the snapshot
     // and makes the landing stale instead of installing an old plan beneath a new checkmark.
     let contract_revision = desired_contract_revision();
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
     let mut env = ResolveEnv::snapshot(ps, sid, rk);
+    env.omit_queue_continuous = crate::metadata::context_omits_queue_continuous(ctx);
+    env.preview = request.preview;
     if let Some(retry) = retry {
         // `request_play` resets the live selection because that is correct for a new item.  A
         // retry is the SAME item: override the fresh defaults with the selection captured before
@@ -5635,7 +5704,13 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession) -> Option<i64> {
         let mut resume = PLAY_RESUME.lock().unwrap_or_else(|e| e.into_inner());
         take_resume_for(&mut resume, gen)
     };
-    ACTIVE_TRACE_GENERATION.store(trace_generation, Ordering::SeqCst);
+    // A preview's trace_generation is the placeholder 0 (request_play_inner never asked
+    // report::requested() for a real one), so it must not overwrite the funnel's active
+    // generation here — doing so would misattribute whatever telemetry a genuinely active,
+    // non-preview resolve/trace is still using this counter for.
+    if !is_preview(ps) {
+        ACTIVE_TRACE_GENERATION.store(trace_generation, Ordering::SeqCst);
+    }
     let _start = apply_plan(ps, plan, &rk);
     if let Some(resources) = refused_resources {
         retire_plan_resources(resources);
@@ -5728,6 +5803,7 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
             (plan.vcodec, plan.acodec, plan.src_vcodec, plan.src_acodec)
         };
         let now_ms = s.now_ms;
+        let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
             request,
             requested_resume_ns,
@@ -5784,6 +5860,7 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
             // The frame tick is the MACHINE's, not the plan's: a landing replaces the session's
             // contents and must not rewind the stamp `Player::set_now` wrote this iteration.
             now_ms,
+            preview,
         };
     } };
     if let (crate::plex::TranscodeDelivery::FixedHls { .. }, Some(rung)) = (
@@ -7691,6 +7768,7 @@ mod tests {
             acodec: "eac3".into(),
             title: "Episode".into(),
             ctx: "S01 E02".into(),
+            preview: false,
         };
         { let s = &mut ps; {
             s.request = Some(request.clone());

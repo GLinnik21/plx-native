@@ -32,12 +32,24 @@ use std::os::raw::c_int;
 /// Which presence rung a logo is drawn at. Both HEROES share one rung — the "mutual logic for logo
 /// size for all hero" directive — and the pinned compact title is the only other one. A new site
 /// picks a rung; it does not invent bounds.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum LogoRung {
     /// The full-bleed hero title band — home's sliding column and the detail page's title block.
     Hero,
     /// The detail page's pinned compact title, the strip the hero scrolls up into.
     Compact,
+    /// A continuous point between two named rungs, at `t` (0 = the first, 1 = the second) — never
+    /// authored as a constant, always the live output of [`LogoRung::lerp`] driven by a spring or
+    /// other per-frame progress value (the detail hero's trailer-preview logo, shrinking from
+    /// `Hero` to `Compact` while a trailer plays in the background). `PartialEq` compares floats
+    /// here, so treat two `Custom` values as equal only by coincidence — match on `Hero`/`Compact`
+    /// as before, never on this variant's fields.
+    Custom {
+        area: f32,
+        h_min: f32,
+        h_max: f32,
+        fallback_sz: c_int,
+    },
 }
 
 impl LogoRung {
@@ -57,6 +69,26 @@ impl LogoRung {
                 theme::logo::COMPACT_H_MAX,
                 theme::size::TITLE,
             ),
+            LogoRung::Custom { area, h_min, h_max, fallback_sz } => (area, h_min, h_max, fallback_sz),
+        }
+    }
+
+    /// A continuous point between rungs `a` and `b` at `t` (clamped to `[0, 1]`) — every one of
+    /// the area/floor/ceiling/fallback-size numbers interpolated independently, so [`fit`]'s
+    /// constant-area solve produces a continuously changing size across a live transform instead
+    /// of snapping between two fixed rungs partway through it. `t = 0.0`/`1.0` reproduce `a`/`b`'s
+    /// own `bounds()` exactly (pinned by a host test), so this is safe to call every frame of a
+    /// spring/ease that starts or ends at either endpoint.
+    pub fn lerp(a: LogoRung, b: LogoRung, t: f32) -> LogoRung {
+        let (a_area, a_min, a_max, a_sz) = a.bounds();
+        let (b_area, b_min, b_max, b_sz) = b.bounds();
+        let t = t.clamp(0.0, 1.0);
+        let lerp = |x: f32, y: f32| x + (y - x) * t;
+        LogoRung::Custom {
+            area: lerp(a_area, b_area),
+            h_min: lerp(a_min, b_min),
+            h_max: lerp(a_max, b_max),
+            fallback_sz: lerp(a_sz as f32, b_sz as f32).round() as c_int,
         }
     }
 }
@@ -369,5 +401,60 @@ mod tests {
             band_h(Hero) < fit(Hero, 800.0, 800.0, 900.0).1,
             "a square draws taller than its band"
         );
+    }
+
+    /// `LogoRung::lerp`'s two endpoints must reproduce the named rungs' own `bounds()` exactly —
+    /// this is what makes it safe to call every frame of a transform that starts or ends AT a
+    /// named rung (the detail hero's trailer-preview logo does both), not just safe mid-travel.
+    #[test]
+    fn lerp_at_its_endpoints_is_bit_identical_to_the_named_rungs() {
+        for (src_w, src_h, col_w) in [
+            (1500.0f32, 300.0f32, 900.0f32),
+            (800.0, 800.0, 660.0),
+            (600.0, 100.0, 1740.0),
+        ] {
+            let hero = fit(Hero, src_w, src_h, col_w);
+            let at_0 = fit(LogoRung::lerp(Hero, Compact, 0.0), src_w, src_h, col_w);
+            assert_eq!(at_0, hero, "t=0 must match LogoRung::Hero exactly");
+            let compact = fit(Compact, src_w, src_h, col_w);
+            let at_1 = fit(LogoRung::lerp(Hero, Compact, 1.0), src_w, src_h, col_w);
+            assert_eq!(at_1, compact, "t=1 must match LogoRung::Compact exactly");
+        }
+    }
+
+    /// Mid-travel: no NaN, no overflow past the wider of the two endpoints' ceilings, and the size
+    /// moves monotonically as `t` sweeps 0..1 (the property a snap-at-0.5 implementation would
+    /// break: this asserts a continuous shrink, not a jump).
+    #[test]
+    fn lerp_is_monotonic_and_bounded_across_the_whole_sweep() {
+        let (src_w, src_h, col_w) = (1500.0f32, 300.0f32, 900.0f32);
+        let mut prev_h = fit(LogoRung::lerp(Hero, Compact, 0.0), src_w, src_h, col_w).1;
+        for i in 1..=10 {
+            let t = i as f32 / 10.0;
+            let (w, h) = fit(LogoRung::lerp(Hero, Compact, t), src_w, src_h, col_w);
+            assert!(w.is_finite() && h.is_finite(), "t={t} produced {w}x{h}");
+            assert!(h <= theme::logo::HERO_H_MAX + 1e-3, "t={t} broke the wider ceiling at {h}");
+            assert!(h <= prev_h + 1e-3, "t={t} grew from {prev_h} to {h}, not monotonic shrinking");
+            prev_h = h;
+        }
+        assert!(
+            (prev_h - theme::logo::COMPACT_H_MAX.min(prev_h + 1e-3)).abs() < 5.0
+                || prev_h <= theme::logo::COMPACT_H_MAX + 1e-3,
+            "t=1 must land at/under the Compact ceiling, got {prev_h}"
+        );
+    }
+
+    /// `lerp` clamps `t` outside `[0, 1]` rather than extrapolating past either endpoint — a
+    /// spring can overshoot its target for a frame (this app's springs are critically damped and
+    /// should not, but a caller passing a raw un-clamped progress value is an easy mistake).
+    #[test]
+    fn lerp_clamps_t_outside_zero_one() {
+        let (src_w, src_h, col_w) = (1500.0f32, 300.0f32, 900.0f32);
+        let below = fit(LogoRung::lerp(Hero, Compact, -0.5), src_w, src_h, col_w);
+        let at_0 = fit(LogoRung::lerp(Hero, Compact, 0.0), src_w, src_h, col_w);
+        assert_eq!(below, at_0, "t<0 must clamp to t=0");
+        let above = fit(LogoRung::lerp(Hero, Compact, 1.5), src_w, src_h, col_w);
+        let at_1 = fit(LogoRung::lerp(Hero, Compact, 1.0), src_w, src_h, col_w);
+        assert_eq!(above, at_1, "t>1 must clamp to t=1");
     }
 }

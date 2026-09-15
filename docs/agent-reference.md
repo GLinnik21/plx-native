@@ -1570,7 +1570,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `/tmp/plxnative-autoplay` (auto-press OK for headless capture), `/tmp/plxnative-autoseek` (empty =
   one seek to 140s; else a seek script: optional `gap=<ms>` + comma steps, absolute `120` or
   tap-relative `+10`/`-10` — rapid-burst seek testing), `/tmp/plxnative-ptype` (ACB playerType
-  bisect knob), `/tmp/plxnative-marker[=intro|credits]` (once playing, seek to 5s before that
+  bisect knob), `/tmp/plxnative-holdload[=ms]` (sleep `ms` — default 30000 for a bare/empty
+  trigger — on `threads::load_thread` right after the real `sf_load` call returns and BEFORE the
+  Load-returned flag publishes, making issue #74 D.1's budget observable on demand: the pump's
+  `deferring` line, then, past `NATIVE_LOAD_BUDGET`, the failure read-out; NOT `DIAG`, since it
+  changes playback behaviour), `/tmp/plxnative-marker[=intro|credits]` (once playing, seek to 5s before that
   server marker — the only practical way to reach the Skip Intro / Skip Credits pill, and, via a
   `final` credits marker, the whole finish → Up Next → auto-advance chain, without playing 50
   minutes of episode first),
@@ -1582,14 +1586,17 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   and green on the simulator with a stored session; pair a `/tmp/plxnative-servers` entry's
   `"scheme":"https"` with its new `"pin":"<address>"` field to put a pinned TLS origin through the
   registry headlessly),
-  `/tmp/plxnative-failtest[=verdict|audio|novideo|stream|connection|tv|none]` (force one
+  `/tmp/plxnative-failtest[=verdict|audio|novideo|stream|connection|tv|jail|none]` (force one
   variant of the full-screen **failure read-out** — the one screen that cannot be reached on
   purpose, since it needs a server that refuses, and the one most meant to be LOOKED at: it is
   shaped to survive a phone photograph in an issue thread. Live-read, so arming it mid-playback
   swaps the frame at once; `stream`, `connection`, and `tv` exercise the runtime media-source,
-  interrupted-transfer, and native-pipeline reasons; pair `audio` with
-  `/tmp/plxnative-nopass` for the PLEX PASS capsule line. It feeds the real
-  `player::error_shape`, and forces the STATE only at
+  interrupted-transfer, and native-pipeline reasons; `jail` forces the missing-`/dev/rtkmem`
+  read-out regardless of the real device probe, since most dev machines are not an affected SoC;
+  pair `audio` with
+  `/tmp/plxnative-nopass` for the PLEX PASS capsule line. Every arm but `jail` feeds the real
+  `player::error_shape` (`jail` is the one `ErrorShape` `error_shape` never produces, so it calls
+  the sibling `jail_error_shape` directly instead), and forces the STATE only at
   `player_hud::busy` — never at `player::state()`, which the pump acts on),
   `/tmp/plxnative-testpat=<spec>` — **replace the page's picture with a SYNTHETIC ground**
   (`flat:<L*>`, `ramp`, `edge`, `checker:<px>`, `lines:<px>`, `hbars:<px>`, `hue[:L*]`, `rainbow[:L*]`,
