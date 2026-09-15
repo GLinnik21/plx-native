@@ -139,6 +139,7 @@ mod held_feature_tests {
     fn leftover_episode_now_playing() -> crate::metadata::NowPlaying {
         crate::metadata::NowPlaying {
             is_episode: true,
+            is_real_episode: true,
             title: "Show".into(),
             ep_title: "Pilot".into(),
             season: 1,

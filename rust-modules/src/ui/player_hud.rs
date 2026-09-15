@@ -1312,8 +1312,12 @@ pub(crate) fn draw_hud(
 
     if transport {
         // title block under the playbar: for an episode, "S1, E1 · Episode Name" (white) sits above the
-        // SHOW title; for a movie, the route ctxline over the movie title. (Apple-TV layout.)
-        if let Some(n) = crate::metadata::now_playing().filter(|n| n.is_episode) {
+        // SHOW title; for a movie (or any extra, trailers included), the route ctxline over the movie
+        // title. (Apple-TV layout.) Gated on `is_real_episode`, not `is_episode` — a show's trailer
+        // has `is_episode == true` (it still labels "Go to Show" elsewhere) but no real S#/E# address,
+        // so it takes this same "Trailer" ctxline + title treatment a movie trailer already gets,
+        // instead of a fabricated `S0 · E0` kicker.
+        if let Some(n) = crate::metadata::now_playing().filter(|n| n.is_real_episode) {
             // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
             // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
             // caption already read it, and the whole point is that all three say the same thing).

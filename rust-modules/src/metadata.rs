@@ -1383,7 +1383,18 @@ pub(crate) fn set_current_for_test(d: Option<Detail>) {
 /// explicitly by show-page episode play (where `current()` is still the show).
 #[derive(Clone, Debug)]
 pub(crate) struct NowPlaying {
+    /// Whether the "Go to X" target (`detail_rk`) is a show rather than a movie, and whether the
+    /// info card should title itself from `ep_title` rather than `title`. True for a real episode
+    /// AND for a show's trailer/extra — a show trailer still labels "Go to Show" and titles itself
+    /// from the extra's own name. **Not** "does this leaf carry a real episode address" — see
+    /// [`Self::is_real_episode`] for that, which is a strictly narrower question.
     pub(crate) is_episode: bool,
+    /// True only for a genuine episode leaf, where `season`/`index` are a real address. False for
+    /// a movie AND for every extra (a trailer's `season`/`index` are placeholder zeros, never a
+    /// real address) — including a show's trailer, where [`Self::is_episode`] is true but this is
+    /// not. Gates the player HUD's `S# · E#` kicker line: filtering on `is_episode` there rendered
+    /// `S0 · E0` under a show trailer, since a show trailer has no episode address to print.
+    pub(crate) is_real_episode: bool,
     pub(crate) title: String, // big title: show title (episode) or movie title
     pub(crate) ep_title: String, // episode name (episode only)
     pub(crate) season: i64,
@@ -1408,6 +1419,7 @@ pub(crate) fn sync_now_playing() {
     let np = current().and_then(|d| match d.kind.as_str() {
         "episode" => Some(NowPlaying {
             is_episode: true,
+            is_real_episode: true,
             title: d.show_title.clone(),
             ep_title: d.title.clone(),
             season: d.season,
@@ -1421,6 +1433,7 @@ pub(crate) fn sync_now_playing() {
         }),
         "movie" => Some(NowPlaying {
             is_episode: false,
+            is_real_episode: false,
             title: d.title.clone(),
             ep_title: String::new(),
             season: 0,
@@ -1456,6 +1469,9 @@ pub(crate) fn trailer_now_playing(
         .find(|e| crate::plex::same_item((d.sid, e.rk.as_str()), (sid, extra_rk)))?;
     Some(NowPlaying {
         is_episode: d.is_show,
+        // An extra is never a real episode leaf, whatever kind its parent is — `season`/`index`
+        // below are placeholder zeros, not an address, so the HUD kicker must not read them.
+        is_real_episode: false,
         title: d.title.clone(),
         ep_title: extra.hud_title(&d.title).to_string(),
         season: 0,
@@ -4117,6 +4133,7 @@ mod trailer_tests {
         }));
         let np = trailer_now_playing(crate::plex::ServerId::UNSET, "9").unwrap();
         assert!(!np.is_episode);
+        assert!(!np.is_real_episode, "an extra is never a real episode leaf");
         assert_eq!(np.title, "Movie");
         assert_eq!(np.ep_title, "Official Trailer");
         assert_eq!(np.dur_ms, 120_000);
@@ -4140,6 +4157,11 @@ mod trailer_tests {
         }));
         let show = trailer_now_playing(crate::plex::ServerId::UNSET, "9").unwrap();
         assert!(show.is_episode, "a show parent labels Go to Show");
+        assert!(
+            !show.is_real_episode,
+            "a show trailer is not an episode — the HUD must not print an S0 · E0 kicker for it \
+             (`is_episode` alone said the opposite of what the player HUD needed here)"
+        );
         assert_eq!(show.title, "Show");
         assert_eq!(show.ep_title, "Show");
         assert_eq!(show.dur_ms, 90_000);

@@ -2888,6 +2888,7 @@ impl DetailScreen {
         let resume_ns = play_resume_ns(from_start, ep.resume_ms, ep.dur_ms);
         let now_playing = crate::metadata::NowPlaying {
             is_episode: true,
+            is_real_episode: true,
             title: d.title.clone(),
             ep_title: ep.title.clone(),
             season: ep.season,
