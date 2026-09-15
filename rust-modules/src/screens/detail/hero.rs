@@ -173,6 +173,38 @@ pub(crate) fn hero_ctls(set: HeroSet) -> ([HeroCtl; 5], usize) {
     (v, n)
 }
 
+/// Whether `ctl` may hold — or be drawn/enumerated as holding — focus right now, given whether
+/// full-trailer mode has collapsed the row. The ONE predicate [`visible_ctls`] (paint + group
+/// extent) and `DetailScreen::reconcile`/`valid` (focus legitimacy) all gate on, so a control
+/// cannot be invisible-but-still-focusable or drawn-but-unreachable — the exact class of bug this
+/// predicate replaced (two independent "what's visible" checks that had silently drifted apart).
+pub(crate) fn focusable(ctl: HeroCtl, full_trailer: bool) -> bool {
+    !full_trailer || ctl == HeroCtl::Play
+}
+
+/// [`hero_ctls`], filtered through [`focusable`] for full-trailer mode — the transient UI state
+/// where only Play/Resume stays drawn and focusable, everything else (Restart/Trailer/Alt/the
+/// watch toggle) leaves the row entirely rather than merely losing its paint. Deliberately NOT a
+/// flag on [`HeroSet`]: that struct describes what the ITEM offers, not a screen's transient
+/// presentation mode. Every call site that enumerates the row for painting or for focus/hit-testing
+/// extent must go through this rather than `hero_ctls` directly, or the two can disagree about
+/// which controls exist right now.
+pub(crate) fn visible_ctls(set: HeroSet, full_trailer: bool) -> ([HeroCtl; 5], usize) {
+    let (all, n) = hero_ctls(set);
+    if !full_trailer {
+        return (all, n);
+    }
+    let mut v = [HeroCtl::Play; 5];
+    let mut count = 0;
+    for &c in &all[..n] {
+        if focusable(c, full_trailer) {
+            v[count] = c;
+            count += 1;
+        }
+    }
+    (v, count)
+}
+
 /// The control at index `i` in `set`, or `None` for an index the set does not have.
 pub(crate) fn ctl_at(set: HeroSet, i: usize) -> Option<HeroCtl> {
     let (v, n) = hero_ctls(set);
@@ -810,6 +842,33 @@ mod tests {
                         let (v, n) = hero_ctls(s);
                         let watch_ctls: Vec<_> = v[..n].iter().filter(|c| c.is_watch()).collect();
                         assert_eq!(watch_ctls.len(), 1, "set={s:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// **Full-trailer mode always collapses the row to exactly `[Play]`, whatever the item's own
+    /// facts offer** — swept over every `HeroSet` this row can take. The property that protects
+    /// full-trailer mode from ever redrawing (or re-enumerating focus groups over) a control that
+    /// is supposed to be hidden.
+    #[test]
+    fn full_trailer_mode_always_collapses_to_play_only() {
+        for mark in [
+            PosterMark::None,
+            PosterMark::InProgress,
+            PosterMark::Watched,
+        ] {
+            for restart in [false, true] {
+                for alt in [false, true] {
+                    for trailer in [false, true] {
+                        let s = set_full(restart, alt, mark, trailer);
+                        let (v, n) = visible_ctls(s, true);
+                        assert_eq!(n, 1, "set={s:?}");
+                        assert_eq!(v[0], HeroCtl::Play, "set={s:?}");
+                        // And the non-full-trailer path must be byte-identical to `hero_ctls` —
+                        // `visible_ctls` is a strict narrowing, never a second row model.
+                        assert_eq!(visible_ctls(s, false), hero_ctls(s), "set={s:?}");
                     }
                 }
             }

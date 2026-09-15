@@ -1,7 +1,7 @@
 //! Shared detail hero geometry, also used by the contrast and safe-area audits.
-use super::{consts::{MARGIN_Y, SCR_H}, theme, widgets};
+use super::{consts::{MARGIN_X, MARGIN_Y, SCR_H}, theme, widgets};
 #[cfg(test)]
-use super::{consts::{MARGIN_X, SCR_W}, Rect};
+use super::{consts::SCR_W, Rect};
 
 pub(crate) const HERO_TEXT_W: f32 = 943.0;
 pub(crate) const TITLE_BOTTOM: f32 = 566.0;
@@ -11,6 +11,14 @@ pub(crate) const PEOPLE_MAX_LINES: usize = 4;
 pub(crate) const PEOPLE_INK: [f32; 4] = theme::TEXT_SECONDARY;
 pub(crate) const COMPACT_TITLE_BOT: f32 = MARGIN_Y + theme::logo::COMPACT_H_MAX;
 pub(crate) const TOP_MARGIN: f32 = COMPACT_TITLE_BOT + 26.0;
+
+/// Top-left anchor for the hero logo while a trailer plays in the background — independent of
+/// scroll, unlike the pinned [`COMPACT_TITLE_BOT`] title (which answers "how far down have I
+/// scrolled", not "is a trailer playing"). Sits inside the safe-area margins.
+pub(crate) const PREVIEW_LOGO_X: f32 = MARGIN_X;
+pub(crate) const PREVIEW_LOGO_Y: f32 = MARGIN_Y;
+/// Keeps a wide wordmark from reaching toward the center of the screen once it has shrunk.
+pub(crate) const PREVIEW_LOGO_MAX_W: f32 = 480.0;
 
 #[derive(Clone, Copy)]
 pub(crate) struct HeroChain {

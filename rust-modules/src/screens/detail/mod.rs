@@ -101,8 +101,21 @@ pub(crate) struct DetailScreen {
     preview_dwell: f32,
     preview_promoted: bool,
     preview_art: f32,
+    /// Identity line, ratings, facts and people — everything the hero's meta says EXCEPT the
+    /// synopsis, which keeps its own [`preview_synopsis`](Self::preview_synopsis) so it can stay
+    /// visible through background autoplay while the rest of the meta clears.
     preview_prose: f32,
+    preview_synopsis: f32,
     preview_chrome: f32,
+    /// The hero scrim/wedge strength — chases `view.field` (1.0 idle, `PREVIEW_FIELD` once a
+    /// picture is up) but eases toward the lower `PROMOTED_FIELD` once full-trailer mode owns the
+    /// screen, since the Play/Resume pill left standing there already protects its own legibility.
+    preview_field: f32,
+    /// 0 = full hero position/size, 1 = fully collapsed to the top-left compact spot while a
+    /// trailer plays in the background. A geometric transform, so it is a critically-damped
+    /// [`Spring`] rather than the linear [`ease`] the alpha scalars above use — `ui::idle` sees it
+    /// for free through `Spring::step`'s own `note_spring` call.
+    preview_logo: Spring,
     /// Server reconciliation owed by this item, independent of cancellable focus restoration.
     /// Navigation memory cannot rewind it; only a new refresh or its terminal request changes it.
     refresh: DetailRefreshPhase,
@@ -237,7 +250,10 @@ impl DetailScreen {
             preview_promoted: false,
             preview_art: 1.0,
             preview_prose: 1.0,
+            preview_synopsis: 1.0,
             preview_chrome: 1.0,
+            preview_field: 1.0,
+            preview_logo: Spring::at(0.0),
             refresh: DetailRefreshPhase::None,
             restore_intent: None,
             scroll: Spring::at(0.0),
@@ -778,7 +794,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             self.disc_unfurl.map(|s| s.pos),
             self.named_show(),
         );
-        let (_, hero_n) = hero::hero_ctls(set);
+        let (_, hero_n) = hero::visible_ctls(set, self.full_trailer());
         let hero_y = self.hero_chain(measure).btn_y;
         let hero_last = hero::hero_btn_rect_at(set, hero_n.saturating_sub(1), hero_y, widths);
         out.push(GroupSpec {
@@ -1100,17 +1116,23 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 elem,
             };
         }
+        // Full-trailer mode collapses the row to Play/Resume only (`hero::visible_ctls`) — a
+        // control that was focused the instant UP promoted must not be reconciled back onto
+        // itself here just because the ITEM's facts still offer it. `hero::focusable` is the same
+        // predicate `visible_ctls` and `valid` gate on, so this cannot silently drift from either.
         if let Some(Located::Hero(ctl)) = self.locate(want.elem) {
-            let set = self.hero_set();
-            if hero::index_of(set, ctl).is_some() {
-                return want;
-            }
-            if ctl.is_watch() {
-                let (controls, _) = hero::hero_ctls(set);
-                return FocusKey {
-                    entry: want.entry,
-                    elem: controls[hero::watch_index(set).unwrap()].elem(),
-                };
+            if hero::focusable(ctl, self.full_trailer()) {
+                let set = self.hero_set();
+                if hero::index_of(set, ctl).is_some() {
+                    return want;
+                }
+                if ctl.is_watch() {
+                    let (controls, _) = hero::hero_ctls(set);
+                    return FocusKey {
+                        entry: want.entry,
+                        elem: controls[hero::watch_index(set).unwrap()].elem(),
+                    };
+                }
             }
         }
         if self
@@ -1215,7 +1237,12 @@ impl DetailScreen {
     fn valid(&self, located: Located) -> bool {
         let d = self.detail();
         match located {
-            Located::Hero(c) => hero::index_of(self.hero_set(), c).is_some(),
+            // A control other than Play is never valid while full-trailer mode has collapsed the
+            // row to just it — `hero::focusable` is the same predicate `reconcile` and
+            // `hero::visible_ctls` gate on.
+            Located::Hero(c) => {
+                hero::focusable(c, self.full_trailer()) && hero::index_of(self.hero_set(), c).is_some()
+            }
             Located::Season(i) => d.is_some_and(|d| i < d.seasons.len().min(64)),
             Located::Episode(i, _) => {
                 d.is_some_and(|d| i < d.episodes.len().min(episodes::MAX_ITEMS))
@@ -1408,12 +1435,26 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                         ..
                     }
                 ) {
-                    if self.preview_promoted {
-                        self.preview_promoted = false;
-                        fx.invalidate(Provenance::Input);
+                    if self.collapse_full_trailer(fx) {
                         return Handled::Yes;
                     }
                     self.content(fx, ContentReq::Back);
+                    return Handled::Yes;
+                }
+                // DOWN is BACK's twin for leaving full-trailer mode (design decision: either key
+                // returns to background autoplay). Consumed only while full-trailer mode was
+                // actually active, so ordinary DOWN-into-episodes/seasons navigation is untouched
+                // otherwise — this arm must run before the generic focus-engine DOWN resolution,
+                // exactly like the BACK arm above.
+                if matches!(
+                    input.kind,
+                    InputKind::Key {
+                        key: Key::Down,
+                        edge: Edge::Down,
+                        ..
+                    }
+                ) && self.collapse_full_trailer(fx)
+                {
                     return Handled::Yes;
                 }
                 if matches!(
@@ -1756,7 +1797,7 @@ impl DetailScreen {
             );
             crate::ui::widgets::hero_scrim(
                 p,
-                visible * preview.field,
+                visible * self.preview_field,
                 d.is_some_and(hero::has_people),
             );
         }
@@ -1778,17 +1819,25 @@ impl DetailScreen {
             .unwrap_or("Loading…");
         let chrome = p.alpha(self.preview_chrome);
         let prose = p.alpha(self.preview_chrome * self.preview_prose);
-        let band = crate::ui::hero_logo::band_h(LogoRung::Hero);
-        HeroLogo::new(self.sid, &rk, title, LogoRung::Hero).draw(
-            chrome,
-            Rect::new(
-                crate::ui::consts::MARGIN_X,
-                TITLE_BOTTOM - band,
-                HERO_TEXT_W,
-                band,
-            ),
-            cx.measure,
+        let synopsis_alpha = p.alpha(self.preview_chrome * self.preview_synopsis);
+
+        // Interpolate continuously between the hero position/size and the top-left compact spot a
+        // trailer's background autoplay shrinks the logo into — `preview_logo.pos` is the spring's
+        // live 0..1 progress (see `preview_tick`). `LogoRung::lerp` keeps `HeroLogo::fit`'s
+        // constant-area solve continuous across the whole travel instead of snapping partway
+        // through it (`ui/hero_logo.rs`'s own module doc: sizing is area-based, not a height clamp).
+        let hero_band = crate::ui::hero_logo::band_h(LogoRung::Hero);
+        let compact_band = crate::ui::hero_logo::band_h(LogoRung::Compact);
+        let t = self.preview_logo.pos;
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        let band = Rect::new(
+            lerp(crate::ui::consts::MARGIN_X, crate::ui::detail_layout::PREVIEW_LOGO_X),
+            lerp(TITLE_BOTTOM - hero_band, crate::ui::detail_layout::PREVIEW_LOGO_Y),
+            lerp(HERO_TEXT_W, crate::ui::detail_layout::PREVIEW_LOGO_MAX_W),
+            lerp(hero_band, compact_band),
         );
+        HeroLogo::new(self.sid, &rk, title, LogoRung::lerp(LogoRung::Hero, LogoRung::Compact, t))
+            .draw(chrome, band, cx.measure);
 
         let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_view = crate::ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
@@ -1799,7 +1848,7 @@ impl DetailScreen {
         }
         if !synopsis.is_empty() {
             synopsis_view.draw(
-                prose,
+                synopsis_alpha,
                 Rect::new(crate::ui::consts::MARGIN_X, chain.syn_y, HERO_TEXT_W, 0.0),
             );
         }
@@ -1913,7 +1962,7 @@ impl DetailScreen {
             self.named_show(),
         );
         let current = cx.focus.current.map(|k| k.elem);
-        let (controls, n) = hero::hero_ctls(set);
+        let (controls, n) = hero::visible_ctls(set, self.full_trailer());
         let last = hero::hero_btn_rect_at(set, n.saturating_sub(1), y, widths);
         let row = [
             crate::ui::consts::MARGIN_X,
@@ -2573,17 +2622,34 @@ impl DetailScreen {
         } else if !view.playing {
             self.preview_dwell = 0.0;
         }
-        let chrome_target = if self.preview_promoted && view.picture {
-            0.0
+        let full_trailer = self.preview_promoted && view.picture;
+        let chrome_target = if full_trailer { 0.0 } else { 1.0 };
+        // Synopsis stays through background autoplay and only fades once full-trailer mode
+        // collapses the rest of the chrome to just the Play/Resume pill.
+        let synopsis_target = if full_trailer { 0.0 } else { 1.0 };
+        // The scrim/wedge strength: `view.field` normally (1.0 idle, `PREVIEW_FIELD` once a
+        // picture is up, protecting the logo+synopsis), eased down to a low residual once only
+        // the self-protecting Play/Resume pill is left standing.
+        let field_target = if full_trailer {
+            crate::ui::landing_hero::PROMOTED_FIELD
         } else {
-            1.0
+            view.field
         };
         if ease(&mut self.preview_art, view.art, dt)
             | ease(&mut self.preview_prose, view.prose, dt)
+            | ease(&mut self.preview_synopsis, synopsis_target, dt)
             | ease(&mut self.preview_chrome, chrome_target, dt)
+            | ease(&mut self.preview_field, field_target, dt)
         {
             fx.note(PresentEvent::Motion);
         }
+        // Collapsed to the top-left compact spot for the whole time a picture is up (background
+        // AND full-trailer alike — full-trailer fades the logo's alpha via `chrome`, from wherever
+        // this transform already left it, rather than animating it back toward the hero position
+        // while also fading). `Spring::step` reports its own motion to `ui::idle` — no `fx.note`
+        // needed here, unlike the linear `ease()` scalars above.
+        self.preview_logo
+            .step(f32::from(view.picture), crate::ui::consts::K_SCALE, dt);
         if !view.picture {
             self.preview_promoted = false;
         }
@@ -2612,6 +2678,29 @@ impl DetailScreen {
                 title,
             },
         );
+    }
+
+    /// Is full-trailer mode (UP-promoted, trailer picture up) collapsing the hero row down to
+    /// Play/Resume only right now? The one predicate every site that enumerates or resolves hero
+    /// focus must agree on — `groups`/`draw_buttons` (via [`hero::visible_ctls`]) for what is
+    /// DRAWN, `reconcile`/`valid` for what is FOCUSABLE. Computed fresh rather than cached: reading
+    /// `crate::player::preview::view()` live means a frame where `preview_promoted` is still true
+    /// but the machine has already dropped `picture` (EOS/failure) self-corrects immediately,
+    /// rather than depending on `preview_tick` having already cleared the flag this same frame.
+    fn full_trailer(&self) -> bool {
+        self.preview_promoted && crate::player::preview::view().picture
+    }
+
+    /// Un-promotes full-trailer mode if it was active — shared by the BACK and DOWN key arms so
+    /// the collapse itself has exactly one body. Returns whether it fired, so a caller can decide
+    /// whether to also consume the key.
+    fn collapse_full_trailer<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) -> bool {
+        if !self.preview_promoted {
+            return false;
+        }
+        self.preview_promoted = false;
+        fx.invalidate(Provenance::Input);
+        true
     }
 
     fn hero_set(&self) -> hero::HeroSet {

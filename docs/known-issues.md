@@ -37,39 +37,66 @@ so `Load` hangs inside video-output init, stretching that window wide open — w
 the crash lands. The fix gates on a `devjail: soc=k5lp rtkmem=missing` probe and refuses to `Load`
 at all in that case, plus closes the race for every other set.
 
-**Why it's not on `main`:** `v0.6.1` (and every patch through `v0.6.6`) was cut from the
-`release/v0.6` maintenance line, not from `main` — see the `cut-release` skill's `line:
-release/vX.Y` dispatch input. That line diverged from `main` at `b074943f` and its 37 commits
-(issue #74's fix among them, plus #75/#76 sign-in fixes, IPv6 redaction, sandbox-repair docs, DB8
-persistence) were **never merged back**. `main`, and every branch cut from `main` since, still
-carries the original race. Verified directly:
+**Correction (2026-09-15, from a `/plan-eng-review` pass on `feature-trailers`): the ancestor check
+below names the wrong commit, and the fix IS present on `main`/`feature-trailers` today.** The
+paragraph and command this replaces said the fix lived only on `release/v0.6` as commit `ac305265`
+and was "never merged back." That is only half true: `ac305265`'s exact content — confirmed
+byte-identical, `diff <(git show ac305265:src/starfish.c) <(git show 6f3486d0:src/starfish.c)` and
+the same for `rust-modules/src/webos.rs` both produce no output — was independently re-applied to
+`main` as a **different commit, `6f3486d0`**, same author, same commit message, same timestamp
+(2026-09-10 02:44:43 +0300 on both). `6f3486d0` **is** an ancestor of current `feature-trailers`
+(`git merge-base --is-ancestor 6f3486d0 HEAD` → yes), and the live `src/starfish.c` on this branch
+today has the full `g_load_returned`/`LOAD_RETURNED()`/`SET_LOAD_RETURNED()` gate, and
+`rust-modules/src/webos.rs` has the full `devjail`/`rtkmem` probe — both read directly off the
+current tree, not inferred. The `ac305265`-only ancestor check below is why an eng-review pass on
+`feature-trailers` almost re-applied this fix a second time (`git cherry-pick -n ac305265` produced
+conflicts across 20+ files entirely because of unrelated drift, not because the fix was missing —
+aborted once this was found).
 
-```sh
-git merge-base --is-ancestor ac305265 main   && echo "on main" || echo "NOT on main"    # NOT on main
-git merge-base --is-ancestor ac305265 v0.6.6 && echo "on v0.6.6" || echo "not on v0.6.6" # on v0.6.6
-git log main..v0.6.6 --oneline | wc -l                                                   # 37
-```
+**This directly contradicts the "Empirically confirmed 2026-09-14" paragraph below, and that
+contradiction is unresolved, not silently overwritten.** `6f3486d0` predates that device session in
+the branch's own history (it sits before `1f82193e`, the commit that introduced this very file), so
+a device build of "the current `HEAD` of `main`" on 2026-09-14 should already have carried the fix.
+Either that device session built something other than what it intended to (a stale local checkout,
+a different flavour/branch), or the fix is textually present but not actually effective on real
+hardware for a reason not yet understood, or the empirical claim itself is mistaken. **Whoever picks
+this up next: re-run the device reproduction (`tests/run.py --pipeline --only pipe_finish_eos` or a
+real PMS Play press) against a genuinely fresh `feature-trailers`/`main` checkout before trusting
+either paragraph** — the code-level evidence above is solid, but it has not been re-confirmed on the
+television this file's whole premise is about.
+
+**Why it's not on `main` (historical — the fix WAS eventually ported, see the correction above):**
+`v0.6.1` (and every patch through `v0.6.6`) was cut from the `release/v0.6` maintenance line, not
+from `main` — see the `cut-release` skill's `line: release/vX.Y` dispatch input. That line diverged
+from `main` at `b074943f` and its 37 commits (issue #74's fix among them, plus #75/#76 sign-in
+fixes, IPv6 redaction, sandbox-repair docs, DB8 persistence) were not merged back as a batch — issue
+#74's fix specifically was re-applied to `main` separately, under commit `6f3486d0`, not by merging
+or cherry-picking `release/v0.6` wholesale. The other 36 commits' status on `main` is unverified by
+this file and should not be assumed either way from the fact that this one was ported.
 
 **Before you spend a device session on a k5lp/k3lp crash shaped like this one**, check whether your
-branch already has the fix:
+branch already has the fix — check BOTH possible commits, since a re-applied fix gets a new hash:
 
 ```sh
-git merge-base --is-ancestor ac305265 HEAD && echo "fix present — this is a different bug" \
-  || echo "fix MISSING — this is issue #74, known and already fixed elsewhere"
+for c in 6f3486d0 ac305265; do
+  git merge-base --is-ancestor "$c" HEAD 2>/dev/null && echo "fix present via $c" && break
+done || echo "fix MISSING under either known hash — this may be issue #74 for real, or a new bug; verify content, not just these two hashes, since a future re-application would get a third hash"
 ```
 
-If missing: **do not** re-run `decompile-tv-lib` against `libpf`/`libplayerAPIs` to indict LG's
-GStreamer bindings — that path was walked once already and produced a real Ghidra finding (a
-`GenericPipeline::deepElementRemovedCallback` double-`gst_object_unref` on dispose) that was true
-but was a *symptom* of the race, reachable only because of it, not an independent unpatchable
-defect. Either merge or cherry-pick `ac305265` (and ideally the rest of `release/v0.6` — it is 37
-commits of real fixes sitting nowhere but a tag) onto the branch you're testing, or restrict k5lp/
-k3lp device testing to a build already past that commit. `devjail: soc=<name>
+If missing under both: **do not** re-run `decompile-tv-lib` against `libpf`/`libplayerAPIs` to
+indict LG's GStreamer bindings — that path was walked once already and produced a real Ghidra
+finding (a `GenericPipeline::deepElementRemovedCallback` double-`gst_object_unref` on dispose) that
+was true but was a *symptom* of the race, reachable only because of it, not an independent
+unpatchable defect. Either merge or cherry-pick the fix (and ideally the rest of `release/v0.6` — it
+is 37 commits of real fixes sitting nowhere but a tag) onto the branch you're testing, or restrict
+k5lp/k3lp device testing to a build already past that commit. `devjail: soc=<name>
 rtkmem=ok|missing|n/a`, on the `webos:` line near the top of the event log, says which chassis
 you're on and whether the jail grants `/dev/rtkmem` — check it before assuming a crash is generic.
 
-**Empirically confirmed 2026-09-14:** building the `v0.6.6` tag in an isolated worktree and
-deploying it to the `debug` flavour on the affected television reproduced no crash — the event log
-shows a clean `start_bufferfeed: refusing — this sandbox does not give the app /dev/rtkmem on this
-chassis` and the app declines to play, instead of dying. The current `HEAD` of `main` (and of
-`feature-trailers`, cut from it) still crashes on the identical scenario.
+**Empirically confirmed 2026-09-14 (status: contradicted by the correction above, not yet
+re-verified):** building the `v0.6.6` tag in an isolated worktree and deploying it to the `debug`
+flavour on the affected television reproduced no crash — the event log shows a clean
+`start_bufferfeed: refusing — this sandbox does not give the app /dev/rtkmem on this chassis` and
+the app declines to play, instead of dying. This paragraph originally claimed the current `HEAD` of
+`main` (and of `feature-trailers`, cut from it) still crashed on the identical scenario — see the
+correction above for why that claim needs a fresh device session before being trusted either way.

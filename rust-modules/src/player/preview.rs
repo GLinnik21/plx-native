@@ -22,9 +22,22 @@ use crate::plex::ServerId;
 /// Admitted Loads per process, from the source arithmetic above. Not a device measurement.
 pub(crate) const CYCLE_BUDGET: u32 = 14;
 
-/// How long the hero must sit still before a preview is requested. Long enough that browsing past
-/// never starts one.
-pub(crate) const DWELL_S: f32 = 4.5;
+/// How long the hero must sit still before a preview is requested. Was 4.5 — cut to 2.0 to make
+/// autoplay feel responsive (Apple TV/Netflix hover-preview territory), matching a browsing pause
+/// rather than a long, deliberate stop.
+///
+/// **This is the documented fallback of a two-option design, not the option that was fully
+/// investigated.** `docs/trailer-ux-plan.md` §2.1 asks whether the felt latency (`dwell + Load
+/// time`) can be cut further by decoupling when the fetch STARTS from when the frame is REVEALED —
+/// i.e. start `request_preview` on a short fetch-commit threshold while holding the screen's Idle
+/// presentation for a separate, longer minimum reveal delay. That mechanism was not implemented:
+/// it needs real device data to know whether a short fetch-commit threshold actually reduces
+/// false-starts against `CYCLE_BUDGET` or merely spends the same 14 cycles faster on browsed-past
+/// items (the cost the plan's own review flagged and did not resolve on paper). A single dwell
+/// timer is the safe, already-understood mechanism; if the investigation above is carried out and
+/// finds the two-timer approach worth the complexity, it replaces this constant rather than adding
+/// a parallel path — nothing else in the trailer UI depends on which mechanism sets `view.picture`.
+pub(crate) const DWELL_S: f32 = 2.0;
 
 /// Scroll, in px, at which the opaque cover is fully up and the plane is released.
 pub(crate) const COVER_SCROLL: f32 = 160.0;

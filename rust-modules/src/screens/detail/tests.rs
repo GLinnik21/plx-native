@@ -76,7 +76,10 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         preview_promoted: false,
         preview_art: 1.0,
         preview_prose: 1.0,
+        preview_synopsis: 1.0,
         preview_chrome: 1.0,
+        preview_field: 1.0,
+        preview_logo: Spring::at(0.0),
         refresh: DetailRefreshPhase::None,
         restore_intent: None,
         scroll: Spring::at(0.0),
@@ -1162,6 +1165,41 @@ fn episode_text_ok_activates_on_down_without_arming_a_holdable_press() {
         &effect.fx,
         Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Detail { rk, .. }))) if rk == "e2"
     )));
+    clear();
+}
+
+/// Both BACK and DOWN collapse full-trailer mode through the SAME shared helper
+/// (`collapse_full_trailer`), and neither one does anything unusual when it was already off — the
+/// regression this guards is the naive first draft, which duplicated the same four-line body
+/// under two different key guards instead of sharing one.
+#[test]
+fn back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    fn key_event(key: Key) -> ScreenEvent<TestHost> {
+        ScreenEvent::Input(InputEvent {
+            at: Default::default(),
+            source: crate::ui::machine::Source::Script,
+            kind: InputKind::Key { key, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+        })
+    }
+    for key in [Key::Back, Key::Down] {
+        let mut screen = bare(&_guard, sid, "show");
+        screen.preview_promoted = true;
+        let (handled, _) = step(&mut screen, &key_event(key), None);
+        assert_eq!(handled, Handled::Yes, "{key:?} must collapse full-trailer mode");
+        assert!(!screen.preview_promoted, "{key:?} left preview_promoted set");
+    }
+    // DOWN with full-trailer mode already off falls through to ordinary navigation instead of
+    // being swallowed — `collapse_full_trailer` returning `false` must not itself count as handled.
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = false;
+    let (handled, _) = step(&mut screen, &key_event(Key::Down), Some(hero::HeroCtl::Play.elem()));
+    assert_ne!(
+        handled,
+        Handled::Yes,
+        "DOWN with nothing promoted must not be swallowed by the collapse arm"
+    );
     clear();
 }
 
