@@ -3492,16 +3492,17 @@ mod replay_after_stop_tests {
 mod load_in_flight_tests {
     use super::*;
 
+    /// The Engine itself needs no cleanup since phase 9 — it lives in the test's own
+    /// `PlayerAdapter`, which drops with the test. What is still process-wide is `SHARED`, the
+    /// native lifecycle test seams, and the route reducer's projection.
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
             ffi::reset_native_lifecycle_for_test();
             ffi::force_clocksink_for_test(false);
             ffi::set_load_in_flight_for_test(false);
-            let mt = unsafe { crate::task::MainThread::assume() };
-            let _ = engine_take(&mt);
             SHARED.reset_session();
-            crate::route::reset_player_control_for_test();
+            crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }
     }
 
@@ -3548,16 +3549,19 @@ mod load_in_flight_tests {
     /// a real held `sf_load`.
     #[test]
     fn nothing_reaches_the_seam_while_load_is_still_in_flight() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
-        crate::route::reset_player_control_for_test();
+        crate::route::reset_player_control_for_test(&ps);
         ffi::reset_native_lifecycle_for_test();
         ffi::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
         let epoch = SHARED.begin_native_session().expect("native session");
-        engine_install(&mt, engine_loading(epoch));
+        pa.install(engine_loading(epoch));
 
         // Push a whole segment's worth onto both lanes now, the way a demuxer already running
         // ahead of Load would (investigation.md §A.4 names exactly this as what differed between
@@ -3569,7 +3573,7 @@ mod load_in_flight_tests {
             const A_STEP_NS: i64 = 21_333_333; // 1024 samples at 48 kHz
             const VIDEO_AUS: i64 = 30; // ~1.25s > PRIME_NS (700ms)
             const AUDIO_AUS: i64 = 20; // ~427ms > PRIME_AUDIO_NS (300ms)
-            let eng = engine(&mt).expect("engine installed above");
+            let eng = pa.engine().expect("engine installed above");
             let au = [0u8; 32];
             let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
             for i in 0..VIDEO_AUS {
@@ -3600,7 +3604,7 @@ mod load_in_flight_tests {
 
         // The primary assertion: several real pump ticks, none of which may reach the seam.
         for _ in 0..5 {
-            crate::player::pump::pump(&mt, 1_000);
+            crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         }
         assert_eq!(
             ffi::in_flight_calls_for_test(), 0,
@@ -3616,7 +3620,7 @@ mod load_in_flight_tests {
             "sanity: the Rust-side gate must still read closed while sf_load has not returned"
         );
         assert!(
-            engine(&mt).is_some_and(|e| e.stage == Stage::Loading),
+            pa.engine().is_some_and(|e| e.stage == Stage::Loading),
             "the pump must not have advanced past Loading while Load was still in flight"
         );
 
@@ -3628,8 +3632,8 @@ mod load_in_flight_tests {
         // advance past Loading and reach Play — proving the fix doesn't just refuse forever.
         let mut advanced = false;
         for _ in 0..20 {
-            crate::player::pump::pump(&mt, 1_000);
-            if engine(&mt).is_some_and(|e| e.stage != Stage::Loading) {
+            crate::player::pump::pump(&mut ps, &mut pa, 1_000);
+            if pa.engine().is_some_and(|e| e.stage != Stage::Loading) {
                 advanced = true;
                 break;
             }
@@ -3659,16 +3663,19 @@ mod load_in_flight_tests {
     /// to make impossible, on the one path where the gate can never open again.
     #[test]
     fn losing_the_active_phase_while_still_deferred_fires_the_budget_instead_of_hanging() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
-        crate::route::reset_player_control_for_test();
+        crate::route::reset_player_control_for_test(&ps);
         ffi::reset_native_lifecycle_for_test();
         ffi::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
         let epoch = SHARED.begin_native_session().expect("native session");
-        engine_install(&mt, engine_loading(epoch));
+        pa.install(engine_loading(epoch));
 
         // `sf_ready(mt)` must already read nonzero (SMP_READY true) BEFORE the loadCompleted arm
         // is even reached — pump.rs's own `sf_ready == 0 => Connecting` early return sits ahead
@@ -3705,7 +3712,7 @@ mod load_in_flight_tests {
         );
 
         assert!(!SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire));
-        crate::player::pump::pump(&mt, 1_000);
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         assert!(
             SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
             "losing Active while loadCompleted was still deferred must fire the D.1.4 budget \
@@ -3729,16 +3736,19 @@ mod load_in_flight_tests {
     /// without a sleep.
     #[test]
     fn native_load_budget_expiry_fires_load_failed() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
-        crate::route::reset_player_control_for_test();
+        crate::route::reset_player_control_for_test(&ps);
         ffi::reset_native_lifecycle_for_test();
         ffi::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
         let epoch = SHARED.begin_native_session().expect("native session");
-        engine_install(&mt, engine_loading(epoch));
+        pa.install(engine_loading(epoch));
 
         ffi::hold_load_for_test();
         let payload = std::ffi::CString::new("{}").unwrap();
@@ -3766,7 +3776,7 @@ mod load_in_flight_tests {
             "sanity: load_failed starts clear"
         );
 
-        crate::player::pump::pump(&mt, 1_000);
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
 
         assert!(
             SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
@@ -3794,17 +3804,20 @@ mod load_in_flight_tests {
     /// pipeline" this fix is about.
     #[test]
     fn native_load_returned_loadcompleted_never_arrives_fires_load_failed() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
-        crate::route::reset_player_control_for_test();
+        crate::route::reset_player_control_for_test(&ps);
         ffi::reset_native_lifecycle_for_test();
         ffi::force_clocksink_for_test(true);
         ffi::force_object_ready_for_test(true);
         let _cleanup = Cleanup;
 
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
         let epoch = SHARED.begin_native_session().expect("native session");
-        engine_install(&mt, engine_loading(epoch));
+        pa.install(engine_loading(epoch));
 
         assert!(
             SHARED.mark_native_load_returned(epoch).is_some(),
@@ -3820,13 +3833,13 @@ mod load_in_flight_tests {
             "PRECONDITION FAILED: loadCompleted must genuinely never have arrived"
         );
         assert_ne!(
-            unsafe { ffi::sf_ready(&mt) },
+            unsafe { ffi::sf_ready(pa.mt()) },
             0,
             "PRECONDITION FAILED: sf_ready() must read true (force_object_ready_for_test), or \
              pump() bails out at its own sf_ready wait before ever reaching the arm under test"
         );
         assert_eq!(
-            unsafe { ffi::sf_is_load_completed(&mt) },
+            unsafe { ffi::sf_is_load_completed(pa.mt()) },
             0,
             "PRECONDITION FAILED: sf_is_load_completed() must read false — if it reads true, the \
              OTHER arm (loadCompleted arrived) fires instead and this test proves nothing about \
@@ -3853,7 +3866,7 @@ mod load_in_flight_tests {
             "sanity: load_failed starts clear"
         );
 
-        crate::player::pump::pump(&mt, 1_000);
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
 
         assert!(
             SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
@@ -3870,16 +3883,19 @@ mod load_in_flight_tests {
     /// real-concurrency test that this one deliberately does not attempt to replace.
     #[test]
     fn the_gate_is_epoch_scoped() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = crate::testlock::serial();
         SHARED.reset_session();
-        crate::route::reset_player_control_for_test();
+        crate::route::reset_player_control_for_test(&ps);
         ffi::reset_native_lifecycle_for_test();
         ffi::force_clocksink_for_test(true);
         let _cleanup = Cleanup;
 
-        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
         let epoch = SHARED.begin_native_session().expect("native session");
-        engine_install(&mt, engine_loading(epoch));
+        pa.install(engine_loading(epoch));
 
         // Get the host seam's OBJECT_READY (so `sf_ready(mt)` reads true and the pump reaches
         // the loadCompleted arm at all) without arming HOLD_LOAD — this call returns at once.
@@ -3890,7 +3906,7 @@ mod load_in_flight_tests {
         ffi::set_load_in_flight_for_test(true);
         super::super::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
 
-        crate::player::pump::pump(&mt, 1_000);
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         assert_eq!(
             ffi::in_flight_calls_for_test(), 0,
             "loadCompleted alone, with the Rust-side gate not yet marked Returned for this \
@@ -3898,7 +3914,7 @@ mod load_in_flight_tests {
             ffi::in_flight_verb_for_test()
         );
         assert!(
-            engine(&mt).is_some_and(|e| e.stage == Stage::Loading),
+            pa.engine().is_some_and(|e| e.stage == Stage::Loading),
             "the gate must still be closed"
         );
 
@@ -3917,14 +3933,14 @@ mod load_in_flight_tests {
              the gate for a newer one"
         );
 
-        crate::player::pump::pump(&mt, 1_000);
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         assert_eq!(
             ffi::in_flight_calls_for_test(), 0,
             "the pump must still defer after a differently-epoched mark ({:?})",
             ffi::in_flight_verb_for_test()
         );
         assert!(
-            engine(&mt).is_some_and(|e| e.stage == Stage::Loading),
+            pa.engine().is_some_and(|e| e.stage == Stage::Loading),
             "marking an epoch other than the pump's own must never open ITS gate"
         );
 

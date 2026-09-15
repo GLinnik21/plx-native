@@ -2013,14 +2013,15 @@ mod tests {
         crate::webos::FORCE_JAIL_BLOCKED.store(true, Relaxed);
         JAIL_LOAD_BLOCKED.store(false, Relaxed);
         SHARED.reset_session();
+        let mut ps = crate::route::PlaybackSession::IDLE;
         assert_eq!(
-            state(),
+            state(&ps),
             shared::PlaybackState::Idle,
             "sane starting point: nothing has failed yet"
         );
 
-        let mt = unsafe { MainThread::assume() };
-        let entered = start_bufferfeed(&mt);
+        let mut pa = adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+        let entered = start_bufferfeed(&mut ps, &mut pa);
 
         assert!(
             entered,
@@ -2029,7 +2030,7 @@ mod tests {
              unreachable — the original silent-Play-button bug"
         );
         assert_eq!(
-            state(),
+            state(&ps),
             shared::PlaybackState::Error,
             "with `entered == true` the route is Player and the HUD must see Error, with no \
              Engine ever installed"
@@ -2052,11 +2053,12 @@ mod tests {
         crate::webos::FORCE_JAIL_BLOCKED.store(true, Relaxed);
         JAIL_LOAD_BLOCKED.store(false, Relaxed);
         SHARED.reset_session();
+        let mut ps = crate::route::PlaybackSession::IDLE;
 
-        let mt = unsafe { MainThread::assume() };
-        let _ = start_bufferfeed(&mt);
+        let mut pa = adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+        let _ = start_bufferfeed(&mut ps, &mut pa);
         assert_eq!(
-            state(),
+            state(&ps),
             shared::PlaybackState::Error,
             "sane precondition: the refusal must be visible while still on the player route"
         );
@@ -2065,7 +2067,7 @@ mod tests {
         clear_jail_refusal_for_route_exit();
 
         assert_eq!(
-            state(),
+            state(&ps),
             shared::PlaybackState::Idle,
             "a refusal retired on route exit must not keep describing Home, the Library or any \
              detail page as PlaybackState::Error — the leak this test pins"
