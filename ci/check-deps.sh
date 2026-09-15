@@ -132,7 +132,6 @@ strip_strings_and_comments() {
     }
     print out
   }' "$1"
-}
 
 # allowed <rule> <path>: is `path` an entry of ci/allow/<rule>.txt?
 allowed() {
@@ -422,7 +421,7 @@ gate ticks 'SDL_GetTicks\(' "$SRC"
 #              rule its old home had. Re-verified clean on 2026-09-10 with no new violation.
 gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC/ui" "$SRC/app" "$SRC/route/plan.rs" "$SRC/screens" "$SRC/stores"
 
-if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^\s*#'; then
+if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
 else ok "fpflags"; fi
 
@@ -472,7 +471,7 @@ while IFS= read -r f; do
   done < <(awk '
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
     prev=="#[cfg(test)]" && /^mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
-    { print NR":"$0; prev=$0 }' "$f" | sed -E 's/crate::ui::[a-z_]+::[a-z_]+\(/UI_CALL(/g' | grep -E "$MUTATORS" | grep -vE '^[0-9]+:\s*//' | grep -v 'stores::' || true)
+    { print NR":"$0; prev=$0 }' "$f" | sed -E 's/crate::ui::[a-z_]+::[a-z_]+\(/UI_CALL(/g' | grep -E "$MUTATORS" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -v 'stores::' || true)
 done < <(find "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" -name '*.rs' | sort)
 if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use stores::<store>::apply)"; fi
 
