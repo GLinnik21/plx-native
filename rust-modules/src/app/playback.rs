@@ -383,7 +383,7 @@ pub(crate) fn request_loaded_episode(ps: &mut crate::route::PlaybackSession, rk:
 
 fn request_episode(ps: &mut crate::route::PlaybackSession, d: &crate::metadata::Detail, ep: &crate::metadata::Episode) -> bool {
     crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(crate::metadata::NowPlaying {
-        is_episode: true, title: d.title.clone(), ep_title: ep.title.clone(),
+        is_episode: true, is_real_episode: true, title: d.title.clone(), ep_title: ep.title.clone(),
         season: ep.season, index: ep.index, summary: ep.summary.clone(),
         year: ep.aired.get(..4).and_then(|s| s.parse().ok()).unwrap_or(0),
         dur_ms: ep.dur_ms, rating: ep.rating.clone(), thumb: ep.thumb.clone(), detail_rk: d.rk.clone(),
@@ -587,6 +587,11 @@ pub(crate) fn exit_player(
     // BACK during resolve has no engine for teardown to take. The exit ritual still ends that
     // attempt, so retire its in-memory trace here as the common backstop.
     crate::player::report::clear_error_trace();
+    // Same reasoning for the jail pre-flight refusal, which also has no Engine: without this,
+    // `player::state()` kept reporting `Error` on every OTHER screen too — Home, the Library,
+    // any detail page — for the rest of the process, after the viewer had already walked away
+    // from the one refused attempt.
+    crate::player::clear_jail_refusal_for_route_exit();
     // **The return is a `PopTo` of the ORIGIN ENTRY** (§5.1) — the page that was on top when the
     // push was asked for, captured at the player's own mount and read back off the instance. It
     // replaces `App.play_from: Node` plus `enter_node` plus `Trail::ensure`, which between them

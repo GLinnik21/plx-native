@@ -114,6 +114,8 @@ fn envelope_props(
         ("hardware_revision", &context.hardware_revision),
         ("server_connection", &context.server_connection),
         ("ip_version", &context.ip_version),
+        ("rtkmem", &context.rtkmem),
+        ("install", &context.install),
     ] {
         properties.insert(key.into(), value.clone().into());
     }
@@ -479,6 +481,44 @@ mod tests {
         assert_eq!(b["api_key"], "phc_k");
     }
 
+    /// **THE ONE THAT MATTERS FOR ISSUE #74.** A `playback.failed` event, put through the exact
+    /// wire body a flush would send (`captured`, off the durable envelope — never `single`, which
+    /// only the legacy tests below exercise), carries the real `FailureKind::code()` as
+    /// `properties.kind` — for a NON-DEFAULT kind, so this cannot pass by accident on the
+    /// `unspecified` fallback every under-diagnosed dev failure produces. This is the check that
+    /// would have caught `kind` never reaching a production row: every earlier assertion in this
+    /// file used the legacy `single`/`batch` helpers, which are test-only and were never what the
+    /// sender actually posts — `sender::wire_body` decodes the durable envelope and calls
+    /// [`captured`], and this is the first test in this file to go through that same function.
+    #[test]
+    fn a_playback_failed_event_carries_the_real_failure_kind_on_the_durable_wire_body() {
+        for kind in [
+            crate::player::FailureKind::TvPipeline,
+            crate::player::FailureKind::LoadTimeout,
+            crate::player::FailureKind::JailMissingRtkmem,
+        ] {
+            let event = DiagEvent::PlaybackFailed {
+                playback_id: 7,
+                mode: "direct",
+                kind: kind.code(),
+            };
+            let envelope = crate::diag::schema::UsageEnvelope::capture(event, 0, "session");
+            let body = parse(&captured("phc_k", "id1", &envelope, "test"));
+            assert_eq!(
+                body["event"], "playback.failed",
+                "the wrong event serialised"
+            );
+            assert_eq!(
+                body["properties"]["kind"], kind.code(),
+                "the real FailureKind code did not reach the wire body for {kind:?}"
+            );
+            assert_ne!(
+                body["properties"]["kind"], "unspecified",
+                "a non-default kind must not fall back to the default code"
+            );
+        }
+    }
+
     #[test]
     fn a_durable_event_keeps_its_original_time_and_session() {
         let context = UsageContext {
@@ -491,6 +531,8 @@ mod tests {
             hardware_revision: "BOARD_PT_1ST".into(),
             server_connection: "local".into(),
             ip_version: "v4".into(),
+            rtkmem: "missing".into(),
+            install: "devmode".into(),
         };
         let event = UsageEnvelope::capture_with_context(
             DiagEvent::RouteEntered { screen: "detail" },
@@ -509,6 +551,9 @@ mod tests {
         assert_eq!(body["properties"]["soc"], "M19_DVB");
         assert_eq!(body["properties"]["server_connection"], "local");
         assert_eq!(body["properties"]["ip_version"], "v4");
+        // issue #74: the two sandbox facts ride on every event, same as `soc`/`device_model`.
+        assert_eq!(body["properties"]["rtkmem"], "missing");
+        assert_eq!(body["properties"]["install"], "devmode");
         assert_eq!(body["properties"][ANON], false);
     }
 }

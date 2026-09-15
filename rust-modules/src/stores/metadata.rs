@@ -73,15 +73,16 @@
 //! ## 3. `Spot`'s new location and shape
 //!
 //! `Spot` moved from `ui::detail` to `crate::metadata` (this phase; see `crate::metadata::Spot`'s
-//! own doc for the field-by-field rationale, unchanged from its previous home). `ui::detail`
-//! re-exports it (`pub(crate) use crate::metadata::Spot;`) so no other module's imports moved. Its
-//! shape is exactly what it was:
+//! own doc for the field-by-field rationale). `ui::detail` re-exports it
+//! (`pub(crate) use crate::metadata::Spot;`) so no other module's imports moved. Section ids are
+//! 0 hero, 1 tabs, 2 episodes, 3 related, 4 cast, 5 about, 6 extras. `saved_col` is indexed by
+//! that id, so the seventh slot is extras, not a spare.
 //! ```text
 //! pub(crate) struct Spot {
-//!     pub(crate) section: c_int,       // 0 hero, 1 tabs, 2 episodes, 3 related, 4 cast, 5 about
+//!     pub(crate) section: c_int,       // 0 hero … 6 extras
 //!     pub(crate) col: c_int,           // focused item within that section
 //!     pub(crate) ep_text: bool,        // episode filmstrip: still (false) vs. its text block (true)
-//!     pub(crate) saved_col: [c_int; 6],// per-section focus memory
+//!     pub(crate) saved_col: [c_int; 7],// per-section focus memory, indexed by section id
 //!     pub(crate) season: Option<i64>,  // the selected season's NUMBER (not its list position)
 //! }
 //! ```

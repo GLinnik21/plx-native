@@ -1066,6 +1066,7 @@ pub(crate) const MARK_UNWATCHED_VERB: &str = "Mark as Unwatched";
 /// `Icon::Restart`'s doc is the argument. One action, one word, and the mark chosen per surface for
 /// what that surface has to tell apart.
 pub(crate) const PLAY_FROM_START_VERB: &str = "Play from Start";
+pub(crate) const PLAY_TRAILER_VERB: &str = "Play Trailer";
 
 /// The **watched tick** on a poster, as fractions of the tile's DRAWN width: the tick's box, its
 /// corner inset, then the veil's box. Anchored on the design system's `ArtTile` — a 26px tick inset
@@ -2130,11 +2131,15 @@ pub(crate) const HERO_BASE_SCRIM_Y0: f32 = 0.34 * crate::ui::consts::SCR_H; // 3
 /// the paint cannot come from two different curves.
 ///
 /// `strength` is the screen's own hero fade (home's `env.hero_a`, detail's
-/// `hero_alpha(scroll, HERO_FADE)`) — everything scales by it, so the wedge leaves with the hero
-/// rather than lingering over the shelves, where the flat ground is what makes card shadows read.
+/// `hero_alpha(scroll, HERO_FADE)`), multiplied by [`crate::ui::landing_hero::PREVIEW_FIELD`]
+/// while a preview picture is bound. Everything scales by it, so the wedge leaves with the hero
+/// rather than lingering over the shelves. The clamp is that video-bound ceiling, not 1, so the
+/// raised row stays on this curve.
 pub(crate) fn hero_scrim_a(x: f32, strength: f32) -> f32 {
     let u = (x.max(0.0) / HERO_SCRIM_W).min(1.0);
-    theme::SCRIM_TEXT_A * (1.0 - u) * strength.clamp(0.0, 1.0)
+    theme::SCRIM_TEXT_A
+        * (1.0 - u)
+        * strength.clamp(0.0, crate::ui::landing_hero::PREVIEW_FIELD)
 }
 
 /// The mirrored right wedge's alpha at `(x, y)` — [`hero_scrim_a`]'s sibling, and the only part of
@@ -2144,7 +2149,7 @@ pub(crate) fn hero_scrim_right_a(x: f32, y: f32, strength: f32) -> f32 {
     let u = ((x - (crate::ui::consts::SCR_W - HERO_SCRIM_R_W)).max(0.0) / HERO_SCRIM_R_W).min(1.0);
     let v =
         ((y - HERO_SCRIM_R_TOP).max(0.0) / (crate::ui::consts::SCR_H - HERO_SCRIM_R_TOP)).min(1.0);
-    HERO_SCRIM_R_A * strength.clamp(0.0, 1.0) * u * v
+    HERO_SCRIM_R_A * strength.clamp(0.0, crate::ui::landing_hero::PREVIEW_FIELD) * u * v
 }
 
 /// The wedge's quads as `(rect, [tl, tr, br, bl])`, built pure so the seam between quad 0 and
@@ -9295,8 +9300,8 @@ mod tests {
         );
         assert_eq!(
             hero_scrim_a(0.0, 4.0),
-            theme::SCRIM_TEXT_A,
-            "strength saturates at the token"
+            theme::SCRIM_TEXT_A * crate::ui::landing_hero::PREVIEW_FIELD,
+            "strength saturates at the video-bound ceiling, not past it"
         );
     }
 
@@ -9672,6 +9677,28 @@ mod tests {
                     "{label} over art {art}: the wedge made it WORSE ({before:.2} → {after:.2})"
                 );
             }
+        }
+        // Video-bound row. The title stays; prose has receded. Same curve, raised strength.
+        {
+            let x = det_col_r;
+            let y = detail_title_cap_top();
+            let strength = crate::ui::landing_hero::PREVIEW_FIELD;
+            let base = crate::ui::detail_layout::base_scrim_a(y, 1.0);
+            let wedge = hero_scrim_a(x, strength);
+            let rw = hero_scrim_right_a(x, y, strength);
+            let still = 1.0
+                - (1.0 - base) * (1.0 - hero_scrim_a(x, 1.0)) * (1.0 - hero_scrim_right_a(x, y, 1.0));
+            let total = 1.0 - (1.0 - base) * (1.0 - wedge) * (1.0 - rw);
+            let after = contrast_over_art(theme::TEXT_PRIMARY, 0.85, total);
+            let still_after = contrast_over_art(theme::TEXT_PRIMARY, 0.85, still);
+            assert!(
+                after >= 3.0,
+                "detail title (video-bound) over bright art: {after:.2}:1, under 3:1"
+            );
+            assert!(
+                after >= still_after,
+                "the raised field must not weaken the title ({still_after:.2} → {after:.2})"
+            );
         }
     }
 

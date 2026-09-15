@@ -77,6 +77,14 @@ pub(crate) enum Action {
     MarkUnwatched(String),
     /// play this leaf ignoring its resume point
     PlayFromStart(String),
+    /// play the item's already-loaded trailer extra — never the parent, never a PMS fetch
+    PlayTrailer {
+        rk: String,
+        part: String,
+        vcodec: String,
+        acodec: String,
+        title: String,
+    },
     /// hide this item from the Continue Watching deck — the server-side
     /// `removeFromContinueWatching`. **Keeps the resume point**: it is a hide, not a reset, so
     /// playing the item again picks up where it left off (see
@@ -111,6 +119,7 @@ impl Action {
             | Action::MarkUnwatched(rk)
             | Action::PlayFromStart(rk)
             | Action::RemoveFromDeck(rk) => rk,
+            Action::PlayTrailer { rk, .. } => rk,
             Action::None => "",
         }
     }
@@ -124,10 +133,21 @@ impl Action {
             Action::MarkUnwatched(_) => 4,
             Action::PlayFromStart(_) => 5,
             Action::RemoveFromDeck(_) => 6,
+            Action::PlayTrailer { .. } => 7,
         };
         c.u32(tag).str(self.rk());
         if let Action::GoToShow(_, season) = self {
             c.u32(*season as u32);
+        }
+        if let Action::PlayTrailer {
+            part,
+            vcodec,
+            acodec,
+            title,
+            ..
+        } = self
+        {
+            c.str(part).str(vcodec).str(acodec).str(title);
         }
     }
 }
@@ -152,7 +172,7 @@ const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
 const SCRIM_A: f32 = 0.34;
 
 pub(crate) const SHAPE: &str =
-    "ItemMenu{arg:ItemMenuArg,acts:[Option<Action{tag:u32,rk:str,season:u32}>],sel:i32,\
+    "ItemMenu{arg:ItemMenuArg,acts:[Option<Action{tag:u32,rk:str,season:u32,part:str,vcodec:str,acodec:str,title:str}>],sel:i32,\
      table:TableViewMotion}";
 
 /// Is `m` an item the menu has anything to offer? A leaf or a show/season — i.e. everything the
@@ -176,7 +196,16 @@ const ACTS_PARALLEL: &str = "acts must stay one-to-one with the rows: a row with
 /// `Play from Start`), adapted per item kind (`PmsMovie::kind`: 0 movie / 1 show / 2 season /
 /// 3 episode). The state group is one row or two off [`state_rows`], so this list has no fixed
 /// length and every index into it is resolved through `acts` — see [`ACTS_PARALLEL`].
+#[cfg(test)]
 fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
+    build_with(m, from_deck, None)
+}
+
+fn build_with(
+    m: &PmsMovie,
+    from_deck: bool,
+    trailer: Option<&crate::metadata::Extra>,
+) -> (Section, Vec<Option<Action>>) {
     let mut sec = Section::new(""); // no header: the card behind the panel IS the title
     let mut acts: Vec<Option<Action>> = Vec::new();
     let leaf = m.kind == 0 || m.kind == 3;
@@ -238,6 +267,8 @@ fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
         &m.rk,
         crate::ui::widgets::row_watch_state(m),
         leaf,
+        trailer.filter(|_| m.kind == 0 || m.kind == 1),
+        &m.title,
     );
 
     // ---- and, only on a Continue Watching card, the row that takes it off the deck ----
@@ -288,6 +319,8 @@ fn state_rows(
     rk: &str,
     mark: PosterMark,
     leaf: bool,
+    trailer: Option<&crate::metadata::Extra>,
+    parent_title: &str,
 ) -> Section {
     let mut sec = sec;
     if mark != PosterMark::Watched {
@@ -302,6 +335,16 @@ fn state_rows(
     if leaf {
         sec = sec.row(Row::new(crate::ui::widgets::PLAY_FROM_START_VERB).licon(Icon::PlayStart));
         acts.push(Some(Action::PlayFromStart(rk.to_string())));
+    }
+    if let Some(extra) = trailer.filter(|e| e.playable()) {
+        sec = sec.row(Row::new(crate::ui::widgets::PLAY_TRAILER_VERB).licon(Icon::Trailer));
+        acts.push(Some(Action::PlayTrailer {
+            rk: extra.rk.clone(),
+            part: extra.part.clone(),
+            vcodec: extra.vcodec.clone(),
+            acodec: extra.acodec.clone(),
+            title: extra.hud_title(parent_title).to_string(),
+        }));
     }
     sec
 }
@@ -322,7 +365,7 @@ fn state_rows(
 /// are reachable and a part-watched one gets the pair, exactly as a shelf card does.
 fn build_episode(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
     let mut acts: Vec<Option<Action>> = Vec::new();
-    let sec = state_rows(Section::new(""), &mut acts, rk, mark, true);
+    let sec = state_rows(Section::new(""), &mut acts, rk, mark, true, None, "");
     debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
     (sec, acts)
 }
@@ -336,7 +379,7 @@ fn build_episode(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
 /// `leaf: false` — the same flag [`build`] passes for a show, for the same reason.
 fn build_season(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
     let mut acts: Vec<Option<Action>> = Vec::new();
-    let sec = state_rows(Section::new(""), &mut acts, rk, mark, false);
+    let sec = state_rows(Section::new(""), &mut acts, rk, mark, false, None, "");
     debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
     (sec, acts)
 }
@@ -391,6 +434,19 @@ pub(crate) struct ItemMenuScreen {
     built: bool,
 }
 
+/// Play Trailer only when the already-loaded Detail is this movie/show and already has a trailer.
+/// The menu never talks to PMS.
+fn cached_trailer(sid: crate::plex::ServerId, m: &PmsMovie) -> Option<crate::metadata::Extra> {
+    if m.kind != 0 && m.kind != 1 {
+        return None;
+    }
+    let d = crate::metadata::current()?;
+    if !crate::plex::same_item((d.sid, d.rk.as_str()), (sid, m.rk.as_str())) {
+        return None;
+    }
+    d.trailer().cloned().filter(|e| e.playable())
+}
+
 impl ItemMenuScreen {
     pub(crate) fn new(entry: EntryId, arg: ItemMenuArg) -> Self {
         Self {
@@ -413,7 +469,10 @@ impl ItemMenuScreen {
         }
         self.built = true;
         let (sec, acts) = match &self.arg.kind {
-            ItemMenuKind::Card { row, from_deck } => build(row, *from_deck),
+            ItemMenuKind::Card { row, from_deck } => {
+                let trailer = cached_trailer(self.arg.sid, row);
+                build_with(row, *from_deck, trailer.as_ref())
+            }
             ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark),
             ItemMenuKind::Season { mark } => build_season(&self.arg.rk, *mark),
         };
@@ -1466,5 +1525,141 @@ mod tests {
             },
         });
         with_cx(|cx| <ItemMenuScreen as Machine<HostFixture>>::step(s, &ev, cx, &mut fx))
+    }
+
+    fn extra() -> crate::metadata::Extra {
+        crate::metadata::Extra {
+            rk: "99".into(),
+            part: "/library/parts/trailer".into(),
+            vcodec: "h264".into(),
+            acodec: "aac".into(),
+            title: "Official Trailer".into(),
+            subtype: "trailer".into(),
+            extra_type: 1,
+            dur_ms: 120_000,
+            bitrate: 2_500,
+            thumb: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_movie_menu_without_a_trailer_keeps_today_s_labels() {
+        let (sec, acts) = build(&item(0, PosterMark::None), false);
+        assert_eq!(
+            labels(&sec),
+            ["Go to Movie", "—", "Mark as Watched", "Play from Start"]
+        );
+        assert_eq!(acts.len(), sec.rows.len());
+        assert!(acts
+            .iter()
+            .flatten()
+            .all(|a| !matches!(a, Action::PlayTrailer { .. })));
+    }
+
+    #[test]
+    fn a_movie_menu_with_a_trailer_offers_play_trailer_for_the_extra() {
+        let extra = extra();
+        let movie = item(0, PosterMark::None);
+        let (sec, acts) = build_with(&movie, false, Some(&extra));
+        assert!(labels(&sec).contains(&"Play Trailer".to_string()));
+        assert_eq!(acts.len(), sec.rows.len());
+        match acts.iter().flatten().find(|a| matches!(a, Action::PlayTrailer { .. })) {
+            Some(Action::PlayTrailer { rk, part, .. }) => {
+                assert_eq!(rk, "99");
+                assert_eq!(part, "/library/parts/trailer");
+                assert_ne!(rk.as_str(), movie.rk.as_str());
+            }
+            other => panic!("expected PlayTrailer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_show_menu_with_a_trailer_offers_play_trailer() {
+        let (sec, acts) = build_with(&item(1, PosterMark::None), false, Some(&extra()));
+        assert!(labels(&sec).contains(&"Play Trailer".to_string()));
+        assert_eq!(acts.len(), sec.rows.len());
+    }
+
+    #[test]
+    fn episode_and_season_menus_never_offer_play_trailer() {
+        for kind in [2, 3] {
+            let (sec, acts) = build_with(&item(kind, PosterMark::None), false, Some(&extra()));
+            assert!(
+                !labels(&sec).contains(&"Play Trailer".to_string()),
+                "kind {kind}"
+            );
+            assert!(acts
+                .iter()
+                .flatten()
+                .all(|a| !matches!(a, Action::PlayTrailer { .. })));
+        }
+    }
+
+    #[test]
+    fn play_trailer_is_cache_only_on_the_loaded_detail() {
+        let _g = crate::testlock::serial();
+        crate::metadata::set_current_for_test(None);
+        assert!(
+            cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None)).is_none(),
+            "no loaded Detail → no row"
+        );
+
+        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+            sid: crate::plex::ServerId::UNSET,
+            rk: "42".into(),
+            kind: "movie".into(),
+            extras: vec![extra()],
+            ..Default::default()
+        }));
+        let hit = cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None)).unwrap();
+        assert_eq!(hit.rk, "99");
+
+        let mut other = item(0, PosterMark::None);
+        other.rk = "other".into();
+        assert!(
+            cached_trailer(crate::plex::ServerId::UNSET, &other).is_none(),
+            "a related tile of a different item must not steal the loaded trailer"
+        );
+        crate::metadata::set_current_for_test(None);
+    }
+
+    #[test]
+    fn play_trailer_falls_back_to_the_card_title() {
+        let mut extra = extra();
+        extra.title.clear();
+        let mut movie = item(0, PosterMark::None);
+        movie.title = "The Movie".into();
+        let (_, acts) = build_with(&movie, false, Some(&extra));
+        match acts
+            .iter()
+            .flatten()
+            .find(|a| matches!(a, Action::PlayTrailer { .. }))
+        {
+            Some(Action::PlayTrailer { title, rk, part, .. }) => {
+                assert_eq!(title, "The Movie");
+                assert_eq!(rk, "99");
+                assert_eq!(part, "/library/parts/trailer");
+            }
+            other => panic!("expected PlayTrailer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn play_trailer_action_carries_the_extra_identity() {
+        let act = Action::PlayTrailer {
+            rk: "9".into(),
+            part: "/p".into(),
+            vcodec: "h264".into(),
+            acodec: "aac".into(),
+            title: "T".into(),
+        };
+        assert_eq!(act.rk(), "9");
+        match act {
+            Action::PlayTrailer { part, title, .. } => {
+                assert_eq!(part, "/p");
+                assert_eq!(title, "T");
+            }
+            _ => unreachable!(),
+        }
     }
 }

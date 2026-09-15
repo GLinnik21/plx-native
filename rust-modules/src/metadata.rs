@@ -29,7 +29,8 @@ use std::ptr::{addr_of, addr_of_mut};
 /// list that will never arrive (see `ui::detail::spot_season_gate`).
 #[derive(Clone, Default, PartialEq, Debug)]
 pub(crate) struct Spot {
-    /// section id (0 hero, 1 tabs, 2 episodes, 3 related, 4 cast, 5 about)
+    /// section id (0 hero, 1 tabs, 2 episodes, 3 related, 4 cast, 5 about, 6 extras).
+    /// Indexed by identity, not visual position — see [`SPOT_SECTION_SLOTS`].
     pub(crate) section: c_int,
     /// focused item within that section
     pub(crate) col: c_int,
@@ -38,8 +39,9 @@ pub(crate) struct Spot {
     /// business naming it
     pub(crate) ep_text: bool,
     /// the per-section focus memory, so LEFT/RIGHT in a row the user never returned to still comes
-    /// back where they left it
-    pub(crate) saved_col: [c_int; 6],
+    /// back where they left it. Indexed by section id. A new id without a slot here is a compile
+    /// failure at the array length, not a silent drop.
+    pub(crate) saved_col: [c_int; SPOT_SECTION_SLOTS],
     /// the selected season's NUMBER, or `None` for an item with no seasons
     pub(crate) season: Option<i64>,
 }
@@ -534,6 +536,93 @@ pub(crate) struct Episode {
     pub(crate) rating: String,
     pub(crate) vcodec: String, // Media[0].videoCodec (for the direct-play/transcode decision)
     pub(crate) acodec: String, // Media[0].audioCodec
+}
+
+/// One slot per [`Spot`] section id. Section 6 is extras. Do not shrink this without a migration
+/// of remembered columns.
+pub(crate) const SPOT_SECTION_SLOTS: usize = 7;
+
+/// One extra row. Play fields match [`Episode`]. A row with an empty part is still a shelf tile;
+/// OK refuses it.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct Extra {
+    pub(crate) rk: String,
+    pub(crate) title: String,
+    pub(crate) subtype: String,
+    pub(crate) extra_type: i64,
+    pub(crate) part: String,
+    pub(crate) vcodec: String,
+    pub(crate) acodec: String,
+    pub(crate) dur_ms: i64,
+    /// `Media[0].bitrate` in kbps. The quality ceiling judges this file, not the parent.
+    #[serde(default)]
+    pub(crate) bitrate: i64,
+    /// Still for the extras shelf. Empty draws the card placeholder, not a broken image.
+    #[serde(default)]
+    pub(crate) thumb: String,
+}
+
+impl Extra {
+    pub(crate) fn playable(&self) -> bool {
+        !self.rk.is_empty() && !self.part.is_empty()
+    }
+
+    pub(crate) fn is_trailer(&self) -> bool {
+        self.subtype == "trailer" || self.extra_type == 1
+    }
+
+    /// Human subtype for the extras shelf caption. Unknown subtypes stay "Extra".
+    pub(crate) fn caption(&self) -> &'static str {
+        match self.subtype.as_str() {
+            "trailer" => "Trailer",
+            "behindTheScenes" => "Behind the Scenes",
+            "featurette" => "Featurette",
+            "sceneOrSample" => "Scene",
+            "deletedScene" => "Deleted Scene",
+            "interview" => "Interview",
+            _ => match self.extra_type {
+                1 => "Trailer",
+                5 => "Behind the Scenes",
+                6 => "Scene",
+                _ => "Extra",
+            },
+        }
+    }
+
+    /// HUD / PlayIntent title: the extra's own name, or the parent item's if PMS sent none.
+    pub(crate) fn hud_title<'a>(&'a self, parent: &'a str) -> &'a str {
+        if self.title.is_empty() {
+            parent
+        } else {
+            &self.title
+        }
+    }
+}
+
+/// HUD context line AND the PlayQueue gate. [`crate::route::request_play`] omits `continuous`
+/// when `ctx` equals this, so EOS cannot Up-Next into a sibling extra. The HUD prints the
+/// same word.
+pub(crate) const TRAILER_CONTEXT: &str = "Trailer";
+/// Non-trailer extras. Same queue rule as a trailer: omit `continuous` so EOS cannot Up-Next.
+pub(crate) const EXTRA_CONTEXT: &str = "Extra";
+
+pub(crate) fn context_omits_queue_continuous(ctx: &str) -> bool {
+    ctx == TRAILER_CONTEXT || ctx == EXTRA_CONTEXT
+}
+
+pub(crate) fn extra_play_context(extra: &Extra) -> &'static str {
+    if extra.is_trailer() {
+        TRAILER_CONTEXT
+    } else {
+        EXTRA_CONTEXT
+    }
+}
+
+/// Movie and show detail can show a Trailer control. Episode/season pages do not inherit the
+/// show trailer in this pass, and must not pay extras I/O.
+pub(crate) fn extras_wanted(kind: &str) -> bool {
+    kind == "movie" || kind == "show"
 }
 
 // Deliberately NOT `Default`: every construction site spells every field, so adding one to a
@@ -1064,6 +1153,14 @@ pub(crate) struct Detail {
     pub(crate) chapters: Vec<Chapter>,
     pub(crate) markers: Vec<Marker>, // intro / credits segments (leaf items only)
     pub(crate) ratings: Vec<Rating>, // review scores, critic-first (see convert_ratings)
+    /// Every extras row, server order. Empty when PMS sent none, the GET was refused and no
+    /// primary trailer could be filled, or this item is an episode/season (those never request
+    /// extras). The Trailer control reads [`Self::trailer`], not this vec's first element.
+    #[serde(default)]
+    pub(crate) extras: Vec<Extra>,
+    /// Rating key of the picker winner inside [`Self::extras`]. Empty when there is none.
+    #[serde(default)]
+    pub(crate) trailer_rk: String,
 }
 
 impl Detail {
@@ -1083,6 +1180,23 @@ impl Detail {
     /// Detail's seven layout reads asked before the page's own item had landed.
     pub(crate) fn has_own_file(&self) -> bool {
         !self.part.is_empty()
+    }
+
+    /// The extras row whose rating key is `rk`, if this detail carries it.
+    pub(crate) fn extra(&self, rk: &str) -> Option<&Extra> {
+        self.extras.iter().find(|e| e.rk == rk)
+    }
+
+    /// Picker winner: the playable trailer `primaryExtraKey` named, else the first playable
+    /// trailer in server order. Not a stored second copy of the extra.
+    pub(crate) fn trailer(&self) -> Option<&Extra> {
+        if !self.trailer_rk.is_empty() {
+            if let Some(e) = self.extra(&self.trailer_rk).filter(|e| e.playable() && e.is_trailer())
+            {
+                return Some(e);
+            }
+        }
+        self.extras.iter().find(|e| e.playable() && e.is_trailer())
     }
 
     /// **WHOSE copy this is** — the credit for the server this item came from, or empty when there
@@ -1269,7 +1383,18 @@ pub(crate) fn set_current_for_test(d: Option<Detail>) {
 /// explicitly by show-page episode play (where `current()` is still the show).
 #[derive(Clone, Debug)]
 pub(crate) struct NowPlaying {
+    /// Whether the "Go to X" target (`detail_rk`) is a show rather than a movie, and whether the
+    /// info card should title itself from `ep_title` rather than `title`. True for a real episode
+    /// AND for a show's trailer/extra — a show trailer still labels "Go to Show" and titles itself
+    /// from the extra's own name. **Not** "does this leaf carry a real episode address" — see
+    /// [`Self::is_real_episode`] for that, which is a strictly narrower question.
     pub(crate) is_episode: bool,
+    /// True only for a genuine episode leaf, where `season`/`index` are a real address. False for
+    /// a movie AND for every extra (a trailer's `season`/`index` are placeholder zeros, never a
+    /// real address) — including a show's trailer, where [`Self::is_episode`] is true but this is
+    /// not. Gates the player HUD's `S# · E#` kicker line: filtering on `is_episode` there rendered
+    /// `S0 · E0` under a show trailer, since a show trailer has no episode address to print.
+    pub(crate) is_real_episode: bool,
     pub(crate) title: String, // big title: show title (episode) or movie title
     pub(crate) ep_title: String, // episode name (episode only)
     pub(crate) season: i64,
@@ -1294,6 +1419,7 @@ pub(crate) fn sync_now_playing() {
     let np = current().and_then(|d| match d.kind.as_str() {
         "episode" => Some(NowPlaying {
             is_episode: true,
+            is_real_episode: true,
             title: d.show_title.clone(),
             ep_title: d.title.clone(),
             season: d.season,
@@ -1307,6 +1433,7 @@ pub(crate) fn sync_now_playing() {
         }),
         "movie" => Some(NowPlaying {
             is_episode: false,
+            is_real_episode: false,
             title: d.title.clone(),
             ep_title: String::new(),
             season: 0,
@@ -1325,6 +1452,41 @@ pub(crate) fn sync_now_playing() {
         _ => None, // show / season → not a playing leaf
     });
     set_now_playing(np);
+}
+
+/// Info-card descriptor for a trailer extra: parent identity (Go to Movie/Show, art, summary)
+/// with the extra's own duration and title. `None` when `current()` is not that extra's parent.
+/// Call only after `request_play` accepted the session, so a refused play cannot wipe a leftover
+/// episode descriptor.
+pub(crate) fn trailer_now_playing(
+    sid: crate::plex::ServerId,
+    extra_rk: &str,
+) -> Option<NowPlaying> {
+    let d = current()?;
+    let extra = d
+        .extras
+        .iter()
+        .find(|e| crate::plex::same_item((d.sid, e.rk.as_str()), (sid, extra_rk)))?;
+    Some(NowPlaying {
+        is_episode: d.is_show,
+        // An extra is never a real episode leaf, whatever kind its parent is — `season`/`index`
+        // below are placeholder zeros, not an address, so the HUD kicker must not read them.
+        is_real_episode: false,
+        title: d.title.clone(),
+        ep_title: extra.hud_title(&d.title).to_string(),
+        season: 0,
+        index: 0,
+        summary: d.summary.clone(),
+        year: d.year,
+        dur_ms: extra.dur_ms,
+        rating: d.rating.clone(),
+        thumb: if !d.art.is_empty() {
+            d.art.clone()
+        } else {
+            d.thumb.clone()
+        },
+        detail_rk: d.rk.clone(),
+    })
 }
 
 // ---- fetches (all via the typed crate::plex client; serde DTOs, no Value scraping) ----
@@ -1351,7 +1513,7 @@ fn dev_source() -> Option<&'static str> {
     None
 }
 
-fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
+fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<(Detail, String)> {
     let it = crate::plex::client_for(sid)?.metadata(rk)?;
     let media0 = it.primary_media();
     // one read, both fields (see `Detail::blur`)
@@ -1435,11 +1597,13 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
         chapters: convert_chapters(&it.chapter),
         markers: convert_markers(&it.marker),
         ratings: convert_ratings(&it),
+        extras: Vec::new(),
+        trailer_rk: String::new(),
     };
     // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
     // episodes do, so load_detail backfills a show's streams from its first episode).
     parse_streams(&it, &mut d);
-    Some(d)
+    Some((d, it.primary_extra_key.clone()))
 }
 
 /// The crew jobs we surface, in the order they appear on the shelf. PMS names the job by the
@@ -1942,6 +2106,154 @@ fn convert_episode(x: &crate::plex::Metadata) -> Episode {
     }
 }
 
+fn convert_extra(x: &crate::plex::Metadata) -> Extra {
+    Extra {
+        rk: x.rating_key.clone(),
+        title: x.title.clone(),
+        subtype: x.subtype.clone(),
+        extra_type: x.extra_type,
+        part: x.first_part().map(|p| p.key.clone()).unwrap_or_default(),
+        vcodec: x.primary_media().map(|m| m.video_codec.clone()).unwrap_or_default(),
+        acodec: x.primary_media().map(|m| m.audio_codec.clone()).unwrap_or_default(),
+        dur_ms: x.duration,
+        bitrate: x.primary_media().map(|m| m.bitrate).unwrap_or(0),
+        thumb: x.thumb.clone(),
+    }
+}
+
+/// Path tail of `primaryExtraKey` (`/library/metadata/9` → `9`). A bare rk is returned as-is.
+fn extra_key_tail(primary: &str) -> &str {
+    primary.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(primary)
+}
+
+fn extra_matches_primary(x: &crate::plex::Metadata, primary: &str) -> bool {
+    !primary.is_empty()
+        && (x.rating_key == extra_key_tail(primary) || (!x.key.is_empty() && x.key == primary))
+}
+
+fn is_trailer_meta(x: &crate::plex::Metadata) -> bool {
+    x.subtype == "trailer" || x.extra_type == 1
+}
+
+fn playable_trailer_meta(x: &crate::plex::Metadata) -> bool {
+    is_trailer_meta(x) && x.first_part().is_some_and(|p| !p.key.is_empty())
+}
+
+/// Picker winner: a playable trailer, preferring `primaryExtraKey`, else first in server order.
+/// A primary that names a non-trailer (or a trailer with no Part) is ignored.
+fn pick_trailer(rows: &[crate::plex::Metadata], primary: &str) -> Option<Extra> {
+    let playable: Vec<&crate::plex::Metadata> =
+        rows.iter().filter(|x| playable_trailer_meta(x)).collect();
+    playable
+        .iter()
+        .copied()
+        .find(|x| extra_matches_primary(x, primary))
+        .or_else(|| playable.first().copied())
+        .map(convert_extra)
+}
+
+/// First trailer row (playable or not) under the same primary preference — used only when the
+/// picker found none, so we can pay **one** follow-up metadata GET for a missing Part.
+fn trailer_fill_candidate<'a>(
+    rows: &'a [crate::plex::Metadata],
+    primary: &str,
+) -> Option<&'a crate::plex::Metadata> {
+    let trailers: Vec<&crate::plex::Metadata> = rows
+        .iter()
+        .filter(|x| is_trailer_meta(x) && !x.rating_key.is_empty())
+        .collect();
+    trailers
+        .iter()
+        .copied()
+        .find(|x| extra_matches_primary(x, primary))
+        .or_else(|| trailers.first().copied())
+}
+
+fn trailer_from_item(it: &crate::plex::Metadata) -> Option<Extra> {
+    playable_trailer_meta(it).then(|| convert_extra(it))
+}
+
+fn fetch_primary_trailer(sid: crate::plex::ServerId, primary: &str) -> Option<Extra> {
+    let rk = extra_key_tail(primary);
+    if rk.is_empty() {
+        return None;
+    }
+    let it = crate::plex::client_for(sid).and_then(|c| c.metadata(rk))?;
+    trailer_from_item(&it)
+}
+
+fn fetch_extras_rows(sid: crate::plex::ServerId, rk: &str) -> Option<Vec<crate::plex::Metadata>> {
+    match crate::plex::client_for(sid).and_then(|c| c.extras(rk)) {
+        Some(mc) => Some(mc.metadata),
+        None => {
+            crate::log(&format!(
+                "detail: rk={rk} /extras did not answer — trying primaryExtraKey if the parent named one"
+            ));
+            None
+        }
+    }
+}
+
+/// Resolve the Trailer control's extra. At most one follow-up `metadata()` when every trailer
+/// row arrived without a Part; never N+1 over the rest of the list.
+fn resolve_trailer(
+    sid: crate::plex::ServerId,
+    rows: &[crate::plex::Metadata],
+    primary: &str,
+) -> Option<Extra> {
+    if let Some(e) = pick_trailer(rows, primary) {
+        return Some(e);
+    }
+    let candidate = trailer_fill_candidate(rows, primary)?;
+    let it = crate::plex::client_for(sid).and_then(|c| c.metadata(&candidate.rating_key))?;
+    let e = convert_extra(&it);
+    e.playable().then_some(e)
+}
+
+/// Shelf cap. The extras element range is the same number, so a dropped tail is never a tile
+/// the page promised and then could not focus.
+const EXTRAS_MAX: usize = 32;
+
+fn extras_from_rows(rows: &[crate::plex::Metadata]) -> Vec<Extra> {
+    rows.iter()
+        .filter(|x| !x.rating_key.is_empty())
+        .take(EXTRAS_MAX)
+        .map(convert_extra)
+        .collect()
+}
+
+/// Store every extras row, and the picker winner's rating key. A follow-up metadata GET that
+/// fills a missing Part replaces that row so the shelf tile and the Trailer disc agree.
+fn project_extras(
+    d: &mut Detail,
+    sid: crate::plex::ServerId,
+    rows: &[crate::plex::Metadata],
+    primary: &str,
+) {
+    d.extras = extras_from_rows(rows);
+    let Some(winner) = resolve_trailer(sid, rows, primary) else {
+        d.trailer_rk.clear();
+        return;
+    };
+    if let Some(slot) = d.extras.iter_mut().find(|e| e.rk == winner.rk) {
+        if !slot.playable() {
+            *slot = winner.clone();
+        }
+    } else if d.extras.len() < EXTRAS_MAX {
+        d.extras.insert(0, winner.clone());
+    } else {
+        // The winner can be ANY row in server order — `extras_from_rows` already capped the
+        // shelf to `EXTRAS_MAX` before this ran, so a `primaryExtraKey` past that cut would
+        // otherwise leave `trailer_rk` naming a key `d.extras` never carries. `Detail::trailer()`
+        // would then silently fall back to the first playable trailer among the 32 KEPT rows
+        // (or find none), which is not the server's own answer. The winner earns a guaranteed
+        // slot; the shelf's own last tile pays for it instead of the picker's contract.
+        d.extras.pop();
+        d.extras.insert(0, winner.clone());
+    }
+    d.trailer_rk = winner.rk;
+}
+
 fn fetch_related(sid: crate::plex::ServerId, rk: &str) -> Vec<Related> {
     let mc = match crate::plex::client_for(sid).and_then(|c| c.related(rk)) {
         Some(m) => m,
@@ -2018,7 +2330,7 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     // `client_for(sid)?.metadata(rk)?`, so this arm is also taken when the server id resolves to no
     // client at all and no request was ever issued. One line for both is right — the page is equally
     // empty either way — but it must not assert a round trip that may not have happened.
-    let Some(mut d) = fetch_detail(sid, rk) else {
+    let Some((mut d, primary_extra_key)) = fetch_detail(sid, rk) else {
         crate::log(&format!(
             "detail: rk={rk} sid={sid:?} — no metadata (server unresolved, or it refused)"
         ));
@@ -2055,7 +2367,46 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
             // episode the button would start.
         }
     }
-    d.related = fetch_related(sid, rk);
+    // Movie/show: extras GET overlaps `/related` on a sibling thread so serial depth stays 2 / 5.
+    // Episode/season pages never show the Trailer control, so they must not pay extras I/O.
+    // Spawn failure omits the trailer rather than adding a serial extras hop behind related.
+    let extras_src: &'static str;
+    if extras_wanted(&d.kind) {
+        let (related, extras) = std::thread::scope(|s| {
+            let extras_h = std::thread::Builder::new()
+                .name("detail-extras".into())
+                .spawn_scoped(s, || fetch_extras_rows(sid, rk));
+            let related = fetch_related(sid, rk);
+            let extras = match extras_h {
+                Ok(h) => h.join().ok().flatten(),
+                Err(_) => None,
+            };
+            (related, extras)
+        });
+        d.related = related;
+        match extras {
+            Some(rows) => {
+                extras_src = "extras";
+                project_extras(&mut d, sid, &rows, &primary_extra_key);
+            }
+            None => {
+                // Refused extras GET: still try the parent's `primaryExtraKey` (one metadata GET)
+                // so a blip on `/extras` does not hide a trailer the parent already named.
+                // An empty extras *list* is a real answer and must not do this. The filled
+                // trailer is also the shelf's one tile.
+                if let Some(e) = fetch_primary_trailer(sid, &primary_extra_key) {
+                    d.trailer_rk = e.rk.clone();
+                    d.extras = vec![e];
+                    extras_src = "primary";
+                } else {
+                    extras_src = "none";
+                }
+            }
+        }
+    } else {
+        extras_src = "skip";
+        d.related = fetch_related(sid, rk);
+    }
     // The item's IDENTITY and the SHAPE of what came back — never its title. `scrub_local` runs
     // on every line in every build, but nothing in a line distinguishes a programme title from
     // ordinary prose (`diag::scrub`'s `a_bare_quoted_title_is_explicitly_out_of_scope_for_the_scrubber`),
@@ -2063,9 +2414,9 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     // from the day it was added until phase 11 — `'{}'` with `d.title` in it, on every detail
     // open, in a log the maintainer routinely pastes into a public issue.
     crate::player::log(&format!(
-        "detail: sid={} rk={} show={} genres={} cast={} crew={} seasons={} eps={} related={} audio={} subs={} ms={}",
+        "detail: sid={} rk={} show={} genres={} cast={} crew={} seasons={} eps={} related={} audio={} subs={} trailer={} extras={} ms={}",
         d.sid.raw(), d.rk, d.is_show, d.genres.len(), d.cast.len(), d.crew.len(), d.seasons.len(), d.episodes.len(),
-        d.related.len(), d.audio.len(), d.subs.len(), t0.elapsed().as_millis()
+        d.related.len(), d.audio.len(), d.subs.len(), u8::from(d.trailer().is_some()), extras_src, t0.elapsed().as_millis()
     ));
     Some(d)
 }
@@ -3544,6 +3895,287 @@ mod rating_tests {
         assert_eq!(rating_score(RatingArt::Tmdb, 7.8), "78%");
         assert_eq!(rating_score(RatingArt::Imdb, 7.4), "7.4");
         assert_eq!(rating_score(RatingArt::TomatoFresh, 10.0), "100%");
+    }
+}
+
+#[cfg(test)]
+mod trailer_tests {
+    use super::*;
+
+    fn extra(json: &str) -> crate::plex::Metadata {
+        serde_json::from_str(json).expect("an extras row parses")
+    }
+
+    fn trailer(rk: &str, part: &str) -> crate::plex::Metadata {
+        extra(&format!(
+            r#"{{"type":"clip","ratingKey":"{rk}","key":"/library/metadata/{rk}",
+                 "subtype":"trailer","extraType":"1","title":"Trailer {rk}",
+                 "duration":"120000","Media":[{{"videoCodec":"h264","audioCodec":"aac",
+                 "bitrate":"2500","Part":[{{"key":"{part}"}}]}}]}}"#
+        ))
+    }
+
+    fn trailer_no_part(rk: &str) -> crate::plex::Metadata {
+        extra(&format!(
+            r#"{{"type":"clip","ratingKey":"{rk}","key":"/library/metadata/{rk}",
+                 "subtype":"trailer","extraType":"1","title":"Trailer {rk}"}}"#
+        ))
+    }
+
+    fn bts(rk: &str) -> crate::plex::Metadata {
+        extra(&format!(
+            r#"{{"type":"clip","ratingKey":"{rk}","key":"/library/metadata/{rk}",
+                 "subtype":"behindTheScenes","extraType":"5","title":"BTS {rk}",
+                 "Media":[{{"Part":[{{"key":"/library/parts/{rk}"}}]}}]}}"#
+        ))
+    }
+
+    #[test]
+    fn extras_wanted_only_for_movie_and_show() {
+        assert!(extras_wanted("movie"));
+        assert!(extras_wanted("show"));
+        assert!(!extras_wanted("episode"));
+        assert!(!extras_wanted("season"));
+        assert!(!extras_wanted(""));
+    }
+
+    #[test]
+    fn empty_extras_picks_none() {
+        assert!(pick_trailer(&[], "/library/metadata/9").is_none());
+        assert!(pick_trailer(&[], "").is_none());
+    }
+
+    #[test]
+    fn only_non_trailers_picks_none() {
+        assert!(pick_trailer(&[bts("1"), bts("2")], "/library/metadata/1").is_none());
+        let featurette = extra(
+            r#"{"type":"clip","ratingKey":"3","subtype":"featurette","extraType":"2",
+                "Media":[{"Part":[{"key":"/p"}]}]}"#,
+        );
+        let interview = extra(
+            r#"{"type":"clip","ratingKey":"4","subtype":"interview","extraType":"3",
+                "Media":[{"Part":[{"key":"/p"}]}]}"#,
+        );
+        assert!(pick_trailer(&[featurette, interview], "").is_none());
+    }
+
+    #[test]
+    fn one_trailer_with_part_wins() {
+        let e = pick_trailer(&[trailer("9", "/library/parts/9")], "").unwrap();
+        assert_eq!(e.rk, "9");
+        assert_eq!(e.part, "/library/parts/9");
+        assert_eq!(e.bitrate, 2500);
+        assert!(e.playable());
+    }
+
+    #[test]
+    fn empty_part_then_playable_trailer_picks_the_second() {
+        let e = pick_trailer(
+            &[trailer_no_part("1"), trailer("2", "/library/parts/2")],
+            "",
+        )
+        .unwrap();
+        assert_eq!(e.rk, "2");
+    }
+
+    #[test]
+    fn primary_extra_key_path_matches_rating_key_tail() {
+        let e = pick_trailer(
+            &[trailer("8", "/p8"), trailer("9", "/p9")],
+            "/library/metadata/9",
+        )
+        .unwrap();
+        assert_eq!(e.rk, "9");
+    }
+
+    #[test]
+    fn primary_extra_key_bare_rk_matches() {
+        let e = pick_trailer(&[trailer("8", "/p8"), trailer("9", "/p9")], "9").unwrap();
+        assert_eq!(e.rk, "9");
+    }
+
+    #[test]
+    fn primary_naming_a_bts_still_picks_the_trailer() {
+        let e = pick_trailer(&[bts("1"), trailer("9", "/p9")], "/library/metadata/1").unwrap();
+        assert_eq!(e.rk, "9");
+        assert_eq!(e.subtype, "trailer");
+    }
+
+    #[test]
+    fn primary_trailer_without_part_loses_to_a_playable_trailer() {
+        let e = pick_trailer(
+            &[trailer_no_part("9"), trailer("8", "/p8")],
+            "/library/metadata/9",
+        )
+        .unwrap();
+        assert_eq!(e.rk, "8");
+    }
+
+    #[test]
+    fn extra_type_1_with_empty_subtype_is_a_trailer() {
+        let row = extra(
+            r#"{"type":"clip","ratingKey":"9","extraType":"1",
+                "Media":[{"Part":[{"key":"/p"}]}]}"#,
+        );
+        let e = pick_trailer(&[row], "").unwrap();
+        assert_eq!(e.rk, "9");
+        assert!(e.subtype.is_empty());
+        assert_eq!(e.extra_type, 1);
+    }
+
+    #[test]
+    fn subtype_trailer_with_extra_type_0_is_a_trailer() {
+        let row = extra(
+            r#"{"type":"clip","ratingKey":"9","subtype":"trailer","extraType":"0",
+                "Media":[{"Part":[{"key":"/p"}]}]}"#,
+        );
+        let e = pick_trailer(&[row], "").unwrap();
+        assert_eq!(e.rk, "9");
+        assert_eq!(e.extra_type, 0);
+    }
+
+    #[test]
+    fn a_failed_extras_get_projects_to_no_trailer_without_failing_the_page() {
+        // Empty extras rows (or a refused GET with no primaryExtraKey) never fail the page.
+        let d = Detail {
+            rk: "movie".into(),
+            kind: "movie".into(),
+            extras: Vec::new(),
+            ..Default::default()
+        };
+        assert!(d.trailer().is_none());
+        assert_eq!(d.rk, "movie");
+        assert!(
+            resolve_trailer(crate::plex::ServerId::UNSET, &[], "").is_none(),
+            "empty extras never fails the page"
+        );
+        assert!(
+            fetch_primary_trailer(crate::plex::ServerId::UNSET, "").is_none(),
+            "no primaryExtraKey → no follow-up GET"
+        );
+    }
+
+    #[test]
+    fn extras_rows_keep_non_trailers_and_caption_them() {
+        let rows = [
+            extra(
+                r#"{"type":"clip","ratingKey":"1","subtype":"behindTheScenes","title":"BTS","thumb":"/t",
+                    "Media":[{"Part":[{"key":"/b"}]}]}"#,
+            ),
+            extra(
+                r#"{"type":"clip","ratingKey":"9","subtype":"trailer",
+                    "Media":[{"Part":[{"key":"/p"}]}]}"#,
+            ),
+        ];
+        let shelf = extras_from_rows(&rows);
+        assert_eq!(shelf.len(), 2);
+        assert_eq!(shelf[0].rk, "1");
+        assert_eq!(shelf[0].thumb, "/t");
+        assert_eq!(shelf[0].caption(), "Behind the Scenes");
+        let mut d = Detail::default();
+        project_extras(&mut d, crate::plex::ServerId::UNSET, &rows, "");
+        assert_eq!(d.trailer().unwrap().rk, "9");
+        assert_eq!(d.extras.len(), 2, "the shelf keeps the featurette");
+        let bare = Extra {
+            title: "No still".into(),
+            subtype: "featurette".into(),
+            ..Default::default()
+        };
+        assert!(bare.thumb.is_empty());
+        assert_eq!(bare.caption(), "Featurette");
+    }
+
+    #[test]
+    fn a_primary_metadata_item_is_kept_only_if_it_is_a_playable_trailer() {
+        assert_eq!(trailer_from_item(&trailer("9", "/p")).unwrap().rk, "9");
+        assert!(
+            trailer_from_item(&bts("1")).is_none(),
+            "primaryExtraKey naming a featurette must not become the Trailer control"
+        );
+        assert!(
+            trailer_from_item(&trailer_no_part("9")).is_none(),
+            "a primary trailer without a Part is not playable"
+        );
+    }
+
+    #[test]
+    fn extra_key_tail_accepts_path_or_bare_rk() {
+        assert_eq!(extra_key_tail("/library/metadata/9"), "9");
+        assert_eq!(extra_key_tail("9"), "9");
+        assert_eq!(extra_key_tail(""), "");
+    }
+
+    #[test]
+    fn hud_title_falls_back_to_the_parent() {
+        let named = Extra {
+            title: "Official Trailer".into(),
+            ..Default::default()
+        };
+        assert_eq!(named.hud_title("Movie"), "Official Trailer");
+        let untitled = Extra {
+            title: String::new(),
+            ..Default::default()
+        };
+        assert_eq!(untitled.hud_title("Movie"), "Movie");
+    }
+
+    #[test]
+    fn trailer_now_playing_keeps_the_parent_and_the_extra_duration() {
+        let _g = crate::testlock::serial();
+        set_current_for_test(Some(Detail {
+            sid: crate::plex::ServerId::UNSET,
+            rk: "movie".into(),
+            kind: "movie".into(),
+            title: "Movie".into(),
+            summary: "Blurb".into(),
+            year: 2024,
+            art: "/art".into(),
+            extras: vec![Extra {
+                rk: "9".into(),
+                title: "Official Trailer".into(),
+                dur_ms: 120_000,
+                bitrate: 2500,
+                part: "/p".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+        let np = trailer_now_playing(crate::plex::ServerId::UNSET, "9").unwrap();
+        assert!(!np.is_episode);
+        assert!(!np.is_real_episode, "an extra is never a real episode leaf");
+        assert_eq!(np.title, "Movie");
+        assert_eq!(np.ep_title, "Official Trailer");
+        assert_eq!(np.dur_ms, 120_000);
+        assert_eq!(np.detail_rk, "movie");
+        assert_eq!(np.thumb, "/art");
+        assert!(trailer_now_playing(crate::plex::ServerId::UNSET, "other").is_none());
+        set_current_for_test(Some(Detail {
+            sid: crate::plex::ServerId::UNSET,
+            rk: "show".into(),
+            kind: "show".into(),
+            is_show: true,
+            title: "Show".into(),
+            extras: vec![Extra {
+                rk: "9".into(),
+                title: String::new(),
+                dur_ms: 90_000,
+                part: "/p".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+        let show = trailer_now_playing(crate::plex::ServerId::UNSET, "9").unwrap();
+        assert!(show.is_episode, "a show parent labels Go to Show");
+        assert!(
+            !show.is_real_episode,
+            "a show trailer is not an episode — the HUD must not print an S0 · E0 kicker for it \
+             (`is_episode` alone said the opposite of what the player HUD needed here)"
+        );
+        assert_eq!(show.title, "Show");
+        assert_eq!(show.ep_title, "Show");
+        assert_eq!(show.dur_ms, 90_000);
+        assert_eq!(show.detail_rk, "show");
+        set_current_for_test(None);
     }
 }
 

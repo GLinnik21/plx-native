@@ -110,6 +110,7 @@ pub(crate) fn probe() {
     }
     let _ = INFO.set(info);
     probe_hw();
+    probe_jail();
 }
 
 // ---- which SET this is, as opposed to which webOS ---------------------------------------------
@@ -212,6 +213,130 @@ fn probe_hw() {
         ));
     }
     let _ = HW.set(hw);
+}
+
+// ---- k5lp/k3lp jail pre-flight: does this jail have /dev/rtkmem? ------------------------------
+//
+// **Community-tier evidence, not an LG or webosbrew formal spec.** On 2019-model Realtek-SoC
+// webOS 4.x sets whose board name starts `k5lp` or `k3lp`, the DEFAULT jailer profile
+// (`native_devmode` — exactly how this app is installed) omits `/dev/rtkmem`, a device node the
+// video-output init path needs. Sources: webosbrew/webos-homebrew-channel PR #202 ("For 2019
+// models with k5lp SoC, default jailer config (native_devmode) misses /dev/rtkmem causing A/V
+// related apps to crash (e.g. Kodi, Moonlight)"), and ss4s's own detection
+// (`modules/webos/utils/jail_check.c`), which reads exactly the file below then probes exactly
+// the path below. A GitHub PR plus another open-source project's own probe is real, but it is
+// still one project's finding rather than a vendor statement — every log line and read-out
+// sentence built on this states what was FOUND, never asserts a diagnosis as certain fact.
+
+/// A flat text value (unlike the two JSON files above) — one line naming the board/SoC family.
+const MACHINE_NAME: &str = "/etc/prefs/properties/machineName";
+
+/// The device node whose absence is the reported root cause. See the section doc above.
+const RTKMEM_DEVICE: &str = "/dev/rtkmem";
+
+/// PURE: does this machine name belong to the affected 2019 Realtek family? Exact PREFIX match —
+/// the two SoC name spellings webosbrew's PR names, and nothing broader: a name that merely
+/// *contains* one of them without starting with it does not match, and neither does a case
+/// variant this platform has never been observed to write.
+pub(crate) fn is_realtek_k5lp_family(machine_name: &str) -> bool {
+    machine_name.starts_with("k5lp") || machine_name.starts_with("k3lp")
+}
+
+/// The three outcomes of the boot-time probe, cached for the process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RtkmemProbe {
+    /// The SoC did not match the affected family — `/dev/rtkmem` was never probed.
+    NotApplicable,
+    /// The SoC matched and `/dev/rtkmem` is readable.
+    Ok,
+    /// The SoC matched and `/dev/rtkmem` is missing (or unreadable) from this jail.
+    Missing,
+}
+
+static RTKMEM: OnceLock<RtkmemProbe> = OnceLock::new();
+
+/// Read the machine name and, only on a matching SoC, probe `/dev/rtkmem` with `access(2)` —
+/// once per boot, from [`probe`]'s own boot slot, so it shares that call's ordering guarantee
+/// (before the first Load can be attempted). Logs UNCONDITIONALLY, beside the `webos:` line:
+/// `devjail: soc=<name> rtkmem=ok|missing|n/a`. `<name>` is the raw, trimmed file content, or
+/// empty when the file could not be read — logged honestly rather than invented, the same rule
+/// [`probe`] and [`probe_hw`] already follow for their own unreadable files.
+fn probe_jail() {
+    let name = std::fs::read_to_string(MACHINE_NAME)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let result = if is_realtek_k5lp_family(&name) {
+        let readable = std::ffi::CString::new(RTKMEM_DEVICE)
+            .map(|path| unsafe { libc::access(path.as_ptr(), libc::R_OK) } == 0)
+            .unwrap_or(false);
+        if readable {
+            RtkmemProbe::Ok
+        } else {
+            RtkmemProbe::Missing
+        }
+    } else {
+        RtkmemProbe::NotApplicable
+    };
+    let word = match result {
+        RtkmemProbe::NotApplicable => "n/a",
+        RtkmemProbe::Ok => "ok",
+        RtkmemProbe::Missing => "missing",
+    };
+    crate::log(&format!("devjail: soc={name} rtkmem={word}"));
+    let _ = RTKMEM.set(result);
+}
+
+/// TEST ONLY: force [`jail_blocks_native_video`] to report blocked, without touching the
+/// process-wide `RTKMEM` `OnceLock` — a real boot sets that exactly once via [`probe_jail`], and
+/// no test can re-init it to exercise the blocked path. Mirrors `ffi_host.rs`'s `FORCE_*`
+/// controls. There is no separate "release" call: `false` is the default, so a test that sets
+/// this to `true` must reset it to `false` before returning, under `crate::testlock::serial()`.
+#[cfg(test)]
+pub(crate) static FORCE_JAIL_BLOCKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// True only when this session must not attempt a native video Load: the SoC matched the
+/// affected family AND `/dev/rtkmem` was missing from this jail. See the section doc above for
+/// the community-tier evidence this is built on. `player::mod` calls this before the first Load
+/// of every session.
+///
+/// Reads with a plain `get()` (never `get_or_init`) so a call that races ahead of [`probe_jail`]
+/// sees `NotApplicable` for itself but leaves the cell EMPTY — a later `probe_jail` can still
+/// `set()` the real verdict, and every subsequent call observes it. `get_or_init` would instead
+/// latch `NotApplicable` permanently on that first early call, silently discarding the real
+/// probe's `set()` and leaving the `devjail: … rtkmem=missing` log line contradicted by a gate
+/// that reports not-blocked forever.
+pub(crate) fn jail_blocks_native_video() -> bool {
+    #[cfg(test)]
+    if FORCE_JAIL_BLOCKED.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+    rtkmem_blocks(&RTKMEM)
+}
+
+/// PURE half of [`jail_blocks_native_video`]'s verdict, taking the cell as a parameter — so the
+/// early-read-vs-later-write race it exists to guard against can be tested against a throwaway
+/// local `OnceLock`, rather than by writing into the real process-wide `RTKMEM` (which a test can
+/// never un-set, and which every later test's `jail_blocks_native_video()` call also reads).
+fn rtkmem_blocks(cell: &OnceLock<RtkmemProbe>) -> bool {
+    matches!(
+        cell.get().copied().unwrap_or(RtkmemProbe::NotApplicable),
+        RtkmemProbe::Missing
+    )
+}
+
+/// The closed-enum sandbox fact for every telemetry event — `ok` / `missing` / `n/a` — read from
+/// the SAME cached [`probe_jail`] verdict [`jail_blocks_native_video`] gates playback on, never a
+/// second probe of `/dev/rtkmem`. An unset cell (a call racing ahead of boot's [`probe_jail`], the
+/// same race [`jail_blocks_native_video`]'s doc describes) reads as `n/a` — the same fallback that
+/// function uses, so a telemetry event and the gate it would have been diagnosing this attempt's
+/// failure against can never disagree about what this jail carries.
+pub(crate) fn rtkmem_context() -> &'static str {
+    match RTKMEM.get().copied().unwrap_or(RtkmemProbe::NotApplicable) {
+        RtkmemProbe::NotApplicable => "n/a",
+        RtkmemProbe::Ok => "ok",
+        RtkmemProbe::Missing => "missing",
+    }
 }
 
 // ---- the ROOT press: give the screen back, without ending the process -------------------------
@@ -1045,5 +1170,46 @@ mod tests {
         };
         assert_eq!(i.release_line(), "webOS 4.10.2");
         assert_eq!(Info::default().release_line(), "webOS unknown");
+    }
+
+    /// The predicate the jail pre-flight gates on. Exact-prefix, and nothing broader — see the
+    /// function's own doc for why "contains" is deliberately excluded.
+    #[test]
+    fn is_realtek_k5lp_family_matches_only_the_named_prefixes() {
+        assert!(is_realtek_k5lp_family("k5lp"));
+        assert!(is_realtek_k5lp_family("k3lp"));
+        // A longer, real-looking board name still matches on the prefix alone.
+        assert!(is_realtek_k5lp_family("k5lp.grampians"));
+        assert!(is_realtek_k5lp_family("k3lp.something"));
+        // Not a match: a different board entirely, empty, or the family name present but not
+        // leading (which is not the shape any real machineName has taken).
+        assert!(!is_realtek_k5lp_family("o22"));
+        assert!(!is_realtek_k5lp_family(""));
+        assert!(!is_realtek_k5lp_family("prefix-k5lp"));
+        assert!(!is_realtek_k5lp_family("K5LP"));
+    }
+
+    /// Regression for `rtkmem-verdict-defeated-by-get-or-init-default`: an early call to
+    /// `jail_blocks_native_video()` (before `probe_jail` has ever run) must NOT permanently latch
+    /// `NotApplicable` into the cell. With the old `get_or_init(|| NotApplicable)` reader this
+    /// first call would win the race and every later `RTKMEM.set(Missing)` from the real probe
+    /// would be silently dropped (`OnceLock::set` returns `Err` once already initialized) — the
+    /// gate would report "not blocked" forever while the boot log said `rtkmem=missing`.
+    ///
+    /// Exercised against a throwaway local cell via `rtkmem_blocks`, not the process-wide
+    /// `RTKMEM` static — that `OnceLock` can never be un-set, so writing into the real one here
+    /// would permanently latch `jail_blocks_native_video()` to `true` for every other test in
+    /// this process, un-serialized. See finding
+    /// `rtkmem-probe-test-permanently-sets-the-process-wide-oncelock`.
+    #[test]
+    fn early_read_does_not_defeat_a_later_missing_verdict() {
+        let cell: OnceLock<RtkmemProbe> = OnceLock::new();
+        assert!(!rtkmem_blocks(&cell), "cell must start empty/unset");
+        cell.set(RtkmemProbe::Missing)
+            .expect("cell was still empty, so this must be the first, winning set()");
+        assert!(
+            rtkmem_blocks(&cell),
+            "a verdict set after an earlier read must still take effect"
+        );
     }
 }

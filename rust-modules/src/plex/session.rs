@@ -411,6 +411,12 @@ pub struct Session {
     /// credentials.
     #[serde(default, deserialize_with = "de_soft_bool")]
     pub(crate) auto_sign_in: bool,
+    /// **Hero trailer autoplay.** Detail default is on. Absence is on, so a session written
+    /// before this field existed does not silently lose the preview. Explicit `false` stays off.
+    /// Soft-parsed to on rather than failing the credentials file. The bound Starfish surface
+    /// has no mute, so this is also the only sound control.
+    #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
+    pub(crate) trailer_autoplay: bool,
     /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
     /// rendered on this television, so a route in the Settings/first-run family that opens
     /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
@@ -462,6 +468,16 @@ pub(crate) fn set_auto_sign_in(on: bool) -> bool {
             return None;
         }
         Some(cur.with_auto_sign_in(on))
+    })
+}
+
+/// Persist hero trailer autoplay. Same write door as [`set_auto_sign_in`].
+pub(crate) fn set_trailer_autoplay(on: bool) -> bool {
+    update(|cur| {
+        if cur.trailer_autoplay == on {
+            return None;
+        }
+        Some(cur.with_trailer_autoplay(on))
     })
 }
 
@@ -1014,6 +1030,22 @@ where
     Ok(v.as_bool().unwrap_or(false))
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// Same soft parse as [`de_soft_bool`], but garbage and a missing value stay on. Used where the
+/// product default is on ([`Session::trailer_autoplay`]).
+fn de_soft_bool_on<'de, D>(d: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(true);
+    };
+    Ok(v.as_bool().unwrap_or(true))
+}
+
 impl Session {
     /// Record (or replace) the cached credentials for one profile — the online switch's write.
     pub fn remember_profile(&mut self, creds: ProfileCreds) {
@@ -1080,6 +1112,16 @@ impl Session {
     pub(crate) fn with_auto_sign_in(&self, on: bool) -> Self {
         let mut next = self.clone();
         next.auto_sign_in = on;
+        next
+    }
+
+    pub(crate) fn trailer_autoplay(&self) -> bool {
+        self.trailer_autoplay
+    }
+
+    pub(crate) fn with_trailer_autoplay(&self, on: bool) -> Self {
+        let mut next = self.clone();
+        next.trailer_autoplay = on;
         next
     }
 
@@ -1591,7 +1633,13 @@ fn prepare_load(read: ReadState, mint: impl FnOnce() -> String) -> (Session, boo
     );
     let mut s = match read {
         ReadState::Ready { session, .. } => session,
-        ReadState::Missing | ReadState::Locked => Session::default(),
+        ReadState::Missing | ReadState::Locked => {
+            let mut fresh = Session::default();
+            // Product default is on. `Default` for a bool is off, and this is the path that
+            // writes the first file, so set it before that save.
+            fresh.trailer_autoplay = true;
+            fresh
+        }
     };
     seed_fresh_quality(&mut s, persisted, crate::route::auto_quality_ready());
     let fresh = s.client_id.is_empty();
@@ -2163,6 +2211,14 @@ mod tests {
             let again: Session = serde_json::from_value(json).unwrap();
             assert_eq!(again.playback_quality(), quality);
         }
+    }
+
+    #[test]
+    fn an_absent_trailer_autoplay_field_stays_on() {
+        let parsed: Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
+        assert!(parsed.trailer_autoplay());
+        let off: Session = serde_json::from_str(r#"{"client_id":"c","trailer_autoplay":false}"#).unwrap();
+        assert!(!off.trailer_autoplay());
     }
 
     #[test]

@@ -701,6 +701,10 @@ pub(super) fn enc(src: &str) -> String {
 /// (digits are unreserved). No op file ever formats a query by hand. `.query()` returns just
 /// the joined params (no path/`?`) for the transcode endpoints that embed them after a fixed
 /// `start.mkv?`/`decision?` prefix.
+///
+/// A path that already carries a query (an IVA extra's `/services/iva/assets?…` part key)
+/// joins further params with `&`. A second `?` is a 400 from PMS, and Auto then treats that
+/// failed direct-play sample as a reason to start HLS.
 pub(super) struct QueryBuilder {
     path: String,
     parts: Vec<String>,
@@ -738,7 +742,8 @@ impl QueryBuilder {
         if self.parts.is_empty() {
             self.path
         } else {
-            format!("{}?{}", self.path, self.parts.join("&"))
+            let sep = if self.path.contains('?') { '&' } else { '?' };
+            format!("{}{sep}{}", self.path, self.parts.join("&"))
         }
     }
     pub(super) fn query(self) -> String {
@@ -854,6 +859,24 @@ mod tests {
                 parsed: None,
             } if body == b"not-json"
         ));
+    }
+
+    /// IVA extra part keys already carry a query. Appending playback identity with a second
+    /// `?` is a 400, which Auto reads as a failed capacity sample and answers with HLS. The
+    /// preview then refuses that as "not a direct play" even though the file itself is a
+    /// direct-playable mp4.
+    #[test]
+    fn an_extra_part_key_keeps_its_existing_query() {
+        let c = a_client("mach-A", "tok-a");
+        let extra = c.direct_play_url(
+            "/services/iva/assets?url=https%3A%2F%2Fexample.invalid%2Fx",
+            "sess-1",
+        );
+        assert_eq!(extra.path.matches('?').count(), 1, "{}", extra.path);
+        assert!(extra.path.starts_with(
+            "/services/iva/assets?url=https%3A%2F%2Fexample.invalid%2Fx&X-Plex-Session-Identifier=sess-1&"
+        ));
+        assert!(extra.path.contains("&X-Plex-Token=tok-a"));
     }
 
     /// A `Client` is one server's identity plus its token, and every piece of it now arrives
