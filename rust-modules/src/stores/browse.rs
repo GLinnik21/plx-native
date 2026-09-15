@@ -1,7 +1,3 @@
-
-thread_local! {
-    static ACTIVE: () = ();
-}
 //! The Library table and its per-section listing, as a machine over `crate::browse`
 //! (`docs/stores-as-machines.md`). The vocabulary is [`BrowseCmd`]; each [`BrowseStore`] owns its
 //! main-thread state, worker adapter and notice while `crate::browse` retains the core
