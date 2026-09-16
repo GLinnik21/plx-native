@@ -63,13 +63,13 @@ jobs:
           cp site/media/feel-1080p60.av1.mp4 _site/media/feel-1080p60.av1.mp4
           cp site/media/feel-1080p60.h264.mp4 _site/media/feel-1080p60.h264.mp4
           cp site/media/feel-poster.jpg _site/media/feel-poster.jpg
+          cp site/media/closeup-glass.jpg _site/media/closeup-glass.jpg
+          cp site/media/closeup-tiles.jpg _site/media/closeup-tiles.jpg
+          cp site/media/closeup-player.jpg _site/media/closeup-player.jpg
 
           cp assets/logo-master.png _site/assets/logo-master.png
 
           cp docs/screenshots/home.jpg _site/docs/screenshots/home.jpg
-          cp docs/screenshots/library.jpg _site/docs/screenshots/library.jpg
-          cp docs/screenshots/search.jpg _site/docs/screenshots/search.jpg
-          cp docs/screenshots/player.jpg _site/docs/screenshots/player.jpg
 
           cp pkg/appfont.ttf _site/fonts/appfont.ttf
           cp pkg/appfont-bold.ttf _site/fonts/appfont-bold.ttf
