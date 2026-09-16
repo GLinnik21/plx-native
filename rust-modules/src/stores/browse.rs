@@ -482,6 +482,13 @@ mod contract_tests {
             &first.browse.borrow().adapter,
             &second.browse.borrow().adapter,
         ));
+        // Drain any Hubs/Metadata/Search/Person notice a PRIOR test left dirty: those four are
+        // still process-wide globals (`stores::mod.rs`'s `NOTICES`), not owned per `Stores`
+        // instance, so `take_notices()` below would otherwise fold someone else's leftover
+        // bump into this test's precise assertion — the same idiom the other contract tests in
+        // this module already use before their own exact-equality check.
+        let _ = first.take_notices();
+        let _ = second.take_notices();
         first.browse_run(BrowseCmd::Reset);
         assert_eq!(first.take_notices(), [(StoreId::Browse, 1)]);
         assert!(second.take_notices().is_empty());
