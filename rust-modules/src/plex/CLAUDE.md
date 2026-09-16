@@ -32,22 +32,22 @@ token gets a **401** from it, and its section key `1` is a different library fro
 `client()` and `client_opt()` still mean what they always did, they just mean **the CURRENT
 server** now — which is why nothing outside `plex/` changed when the `OnceLock<Client>` singleton
 became a table. `client_for(id)` is the multi-server addition; `register_origin(machine_id,
-&Origin, token, Option<&ResolvePin>)` puts a server in the table. **`install(&Origin, token,
-Option<&ResolvePin>, ConnectionFacts)` is the SESSION path** (boot, QR login, profile switch) and
-always retargets — it grew the fourth parameter in #95 step 8: `ConnectionFacts{tier, ip}` is
+&Origin, token, Option<&ResolvePin>, ConnectionFacts)` puts a server in the table. **`install(&Origin,
+token, Option<&ResolvePin>, ConnectionFacts)` is the SESSION path** (boot, QR login, profile switch)
+and always retargets — it grew the fourth parameter in #95 step 8: `ConnectionFacts{tier, ip}` is
 applied to the published `Client` INSIDE the same registration write that creates or re-points its
 slot, never as a separate post-hoc `set_link`/`set_connection` call a caller could forget or a
 re-point could race. `None` in either field means **leave unchanged**, not "set unknown" — a
 same-origin retoken that knows nothing new about the connection passes `ConnectionFacts::default()`
 and the client's prior tier/IP survive; only a re-point (a genuinely fresh `Client`, which
 `Client::new` starts at `LINK_UNKNOWN`/`IP_UNKNOWN` regardless) or an explicit `Some` actually
-changes what's stored. `register_origin_with_connection`/`register_captured_origin_with_connection`
-are the `pub(crate)` seams that carry it through the other registration paths (dev boot,
-`install_captured_registry`'s primary and extras, the endpoint/roster/candidate-activation
-handlers in `auth.rs`); every one of them derives the IP family from the candidate's own advertised
-`address`, never `Origin::host()` — a `plex.direct` origin's host is a certificate NAME
-`IpVersion::of_host` cannot parse as a literal, which is why that used to read `unknown` on almost
-every real boot (issue #95's R3(a)).
+changes what's stored. `register_origin` takes `ConnectionFacts` directly rather than keeping a
+connection-less twin beside it; `register_captured_origin_with_connection` is the `pub(crate)` seam
+that carries it through the other registration paths (dev boot, `install_captured_registry`'s
+primary and extras, the endpoint/roster/candidate-activation handlers in `auth.rs`); every one of
+them derives the IP family from the candidate's own advertised `address`, never `Origin::host()` —
+a `plex.direct` origin's host is a certificate NAME `IpVersion::of_host` cannot parse as a literal,
+which is why that used to read `unknown` on almost every real boot (issue #95's R3(a)).
 
 **A server's address is an `Origin` — scheme + host + port — and it is PARSED FROM A URL, never
 assembled from an address.** `origin.rs` is the type and the reasoning; the short version is that
@@ -107,12 +107,19 @@ outage does not cost a connect timeout per pick. Three simulator runs in `docs/m
 offline-picker-sim-*-2026-09-06.log`, and `tests/run.py`'s `offline_pick_cached` on the set.
 
 **A candidate only becomes the LIVE origin if this build can put a token on it.** The probe race
-activates "the first usable answer immediately", and on a LAN the plaintext twin answers before the
-TLS handshake completes — so a store build re-pointed its live server to an origin it then refused
-(`security: refused plaintext PMS credentials`) for the ~100 ms until the https winner landed, and
-whatever was in flight (a hub fetch, the picker's first avatar) failed for good. `auth::
-activation_allowed` asks `http::credential_transport_allowed_by_policy` BEFORE registering; the
-first answer still counts as reached, and the best usable one is activated at the end.
+used to activate "the first usable answer immediately", and on a LAN the plaintext twin answers
+before the TLS handshake completes — so a store build re-pointed its live server to an origin it
+then refused (`security: refused plaintext PMS credentials`) for the ~100 ms until the https winner
+landed, and whatever was in flight (a hub fetch, the picker's first avatar) failed for good. Issue
+#95's fix is that eligibility is decided once, at synthesis, not asked again at activation:
+`probe::candidates` stamps each `Candidate::credential_eligible` from the `CredentialPolicy` the
+plan was built with, and only an eligible answer can become `first`/`best`/get activated — a
+verified plaintext answer in a store build does **not** count as reached and does not hold back the
+relay leg. If nothing eligible verifies, the result is `Reach::InsecureOnly` (plan §4's precedence:
+`At` > `InsecureOnly` > `Refused` > `No`), which becomes `Outcome::InsecureOnly` /
+`Discovery::InsecureOnly` / `SourceState::InsecureOnly` ("Not secure") — a fifth sentence, told
+apart from `Unreachable`, that **outranks a 401**. Before this it counted as reached, which was
+issue #95 itself.
 
 Slots are keyed on `machineIdentifier` because that is the only identity that survives a server
 changing address — and a registration that has *learned* an id **adopts** an address-only slot
