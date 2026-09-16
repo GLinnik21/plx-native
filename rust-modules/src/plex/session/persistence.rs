@@ -823,6 +823,50 @@ mod db8_policy_tests {
         }
     }
 
+    /// Point the LEGACY sweep candidate `cleanup_after_confirmed_clear()`'s `#[cfg(test)]`
+    /// `super::auth_paths()` resolves at a scratch file of this test's own, and restore the
+    /// process-shared default (`session::redirect_for_test(None)`, i.e. `fallback_file()`) on
+    /// drop — same RAII shape as [`TempPersistenceRoot`] above, one module over.
+    ///
+    /// This exists because `session::auth_paths()` under `#[cfg(test)]` returns exactly ONE
+    /// candidate: the file a redirect names, or else `session::fallback_file()` — a
+    /// process-`OnceLock` scratch path shared by the WHOLE test binary. A test that leaves
+    /// `session::redirect_for_test(None)` in place therefore points the legacy sweep at that
+    /// SAME shared file every other unredirected test in the process also reads, writes or has
+    /// residue in — see the RED note on the test below, where planting a stray candidate there
+    /// really does flip this test's own verdict.
+    ///
+    /// Deliberately narrower than `session.rs`'s own `TempSession`: this redirects only the
+    /// legacy-candidate lookup (`session::redirect_for_test`), nothing else, so it can be paired
+    /// with [`TempPersistenceRoot`] (the CANONICAL root) to exercise both halves of
+    /// `cleanup_after_confirmed_clear()` — the canonical read via `load()`/`commit_cleared()` and
+    /// the legacy sweep — each against its own isolated storage, with no shared state left in
+    /// play. Do not also apply a `TempSession`-style redirect in a test using this guard; the two
+    /// would fight over the same `TEST_FILE` global.
+    struct TempLegacyCandidate {
+        dir: PathBuf,
+    }
+
+    impl TempLegacyCandidate {
+        fn new(tag: &str) -> TempLegacyCandidate {
+            let dir = std::env::temp_dir().join(format!(
+                "plxnative-persistence-legacy-candidate-{}-{tag}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a writable temp dir");
+            super::super::redirect_for_test(Some(dir.join("auth.json")));
+            TempLegacyCandidate { dir }
+        }
+    }
+
+    impl Drop for TempLegacyCandidate {
+        fn drop(&mut self) {
+            super::super::redirect_for_test(None);
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
     /// AUTH-09 Finding B regression: `ClearCleanupOutcome::AuthorityNotConfirmed` is a genuinely
     /// distinct outcome from `ClearCleanupOutcome::Confirmed` — the two failure/success modes a
     /// bare `bool` used to conflate before the AUTH-09 contract freeze (commit 4a9c8a27).
@@ -869,11 +913,32 @@ mod db8_policy_tests {
     /// trivially "completes", and reports `Confirmed` where the test asserts
     /// `AuthorityNotConfirmed` — then reverting the mutation. This was actually run live with
     /// cargo, not reasoned through: red observed on the mutated source, green after reverting.
+    ///
+    /// **Isolation, added separately (review Finding 3 on this lineage):** this test used to call
+    /// `super::super::redirect_for_test(None)`, which points the legacy sweep at
+    /// `session::fallback_file()` — a process-`OnceLock` path shared by the whole test binary —
+    /// rather than at a fixture of its own. `TempPersistenceRoot` isolates the CANONICAL root but
+    /// deliberately does not touch that lookup, so this test's own `Confirmed` assertion was
+    /// deciding itself against whatever any other unredirected test in the process happened to
+    /// leave at that shared path. **RED observed live, not simulated:** with the original
+    /// `redirect_for_test(None)` restored and, immediately before the first assertion, a stray
+    /// file written to `super::super::fallback_file()` with permissive (group/other-writable)
+    /// mode bits — plausible residue, since `crate::storage::read_owned_bytes` treats such a mode
+    /// as untrusted — `cargo +nightly test --lib
+    /// plex::session::persistence::db8_policy_tests::cleanup_after_confirmed_clear_distinguishes_an_unconfirmed_authority_from_a_confirmed_one`
+    /// failed the SECOND assertion: `left: LegacyRetireFailed, right: Confirmed`. That is this
+    /// test's own verdict, not a different test's, so the experiment discriminates the isolation
+    /// bug directly rather than merely tripping something else. [`TempLegacyCandidate`] (added
+    /// alongside this test) removes the hazard by giving the legacy candidate a scratch file of
+    /// its own; with it in place the identical stray-planting experiment against
+    /// `super::super::fallback_file()` no longer touches this test's verdict, because
+    /// `auth_paths()` under `#[cfg(test)]` never resolves there once redirected. The planting
+    /// edit itself was reverted before this test was left in its final shape.
     #[test]
     fn cleanup_after_confirmed_clear_distinguishes_an_unconfirmed_authority_from_a_confirmed_one() {
         let _serial = crate::testlock::serial();
         let _root = TempPersistenceRoot::new("clear-cleanup-outcome");
-        super::super::redirect_for_test(None);
+        let _legacy = TempLegacyCandidate::new("clear-cleanup-outcome");
 
         // Fresh root: nothing has ever been committed, so the authority cannot read back
         // `Cleared` yet — this is the "unconfirmed" premise `AuthorityNotConfirmed` exists for.
