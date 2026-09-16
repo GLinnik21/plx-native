@@ -312,12 +312,23 @@ const FIXED = {
 const A = (args && typeof args === 'object' && !Array.isArray(args)) ? args : { task: typeof args === 'string' ? args : '' }
 const TASK = String(A.task || '').trim()
 const REPO = String(A.repo || '').trim()                     // the checkout, ABSOLUTE — pinned into every prompt (v5)
-const MAX_WORKERS = clampInt(A.maxWorkers, 4, 1, 8)
+// 0.7 forward-port task rule: at most two concurrent implementation workers. Hard
+// ceiling, not just a default — a caller cannot raise it past 2 for this harness.
+const MAX_WORKERS = clampInt(A.maxWorkers, 2, 1, 2)
 const MAX_FIX_ROUNDS = clampInt(A.maxFixRounds, 2, 0, 5)      // counts FIX WAVES
 const MAX_PACKAGES = clampInt(A.maxPackages, 8, 1, 24)
 const MAX_FINDINGS = clampInt(A.maxReviewFindings, 30, 1, 40)
 const MAX_RETRIES = clampInt(A.maxAgentRetries, 1, 0, 2)      // retries BEYOND the first attempt
 const LANE_CHECKS = A.laneChecks === true
+// High-risk packages (persistence, concurrency/ownership, auth/session, migration/security,
+// native lifecycle contracts) get an Opus architecture pre-review of the frozen contract, before
+// any Sonnet worker starts implementing against it — catching a wrong approach before parallel
+// work is sunk into it, not just after. Off by default because most tasks have no such contract.
+const HIGH_RISK = A.highRisk === true
+// Escalation model, invoked only for a concrete architectural ambiguity a package prompt names
+// explicitly, or after two materially different Sonnet attempts have failed on the SAME finding
+// (tracked below by how many separate fix waves re-reported the same key). Never a default fixer.
+const FABLE_MODEL = 'fable'
 
 const hard_failures = []
 const reviews = []
@@ -587,6 +598,41 @@ if (ifaces.length) {
   }
 }
 
+// -------- 2c. Opus pre-review of the approach (high-risk contracts only) ----
+// Runs BEFORE any Sonnet worker opens a worktree. Cheap relative to discovering the same
+// architectural problem after N parallel packages have been built against it. Read-only,
+// same throwaway-worktree discipline as the post-implementation Review stage.
+if (HIGH_RISK && baseSha) {
+  phase('Review')
+  const preReview = await tryAgent(
+    [
+      preamble(prep), '',
+      '## Your stage: PRE-IMPLEMENTATION REVIEW. You are read-only and run ALONE, before any worker starts.', '',
+      ownWorktree(baseSha, 'pre-review'),
+      'This package was flagged high-risk: persistence, concurrency/ownership, auth/session, migration/security, or a native lifecycle contract is involved.', '',
+      contract ? `## The frozen contract about to be built against\n${contract}\n` : '',
+      `## The planned decomposition\n${plan.packages.map(p => `- ${p.id}: ${p.title}\n  ${p.prompt}`).join('\n')}`, '',
+      'Judge the APPROACH, not code that does not exist yet: does the contract/decomposition correctly express the required ownership, durability, and failure semantics for this domain? Would building the planned packages against it hit a structural dead end?',
+      '`verdict: PASS`' + ' to let implementation proceed, `REPLAN` if the approach itself needs to change before a worker touches it, or `BLOCKED` if you could not review. Put architectural findings in `findings`, but a `blocker`/`high` finding here about the CONTRACT is what should stop the run, not code style.',
+    ].filter(Boolean).join('\n'),
+    { label: 'pre-review', phase: 'Review', model: 'opus', schema: REVIEW }, 'pre-implementation review',
+  )
+  if (!preReview) {
+    hard_failures.push('pre-implementation Opus review was unavailable or failed for a high-risk package — proceeding is not the same as REVIEW_PENDING being resolved')
+    log('! high-risk pre-review unavailable — this run cannot claim architectural sign-off before implementation; continuing, but the final verdict will reflect it')
+  } else {
+    log(`pre-review verdict: ${preReview.verdict}${preReview.findings.length ? ` (${preReview.findings.length} finding(s))` : ''}`)
+    if (preReview.verdict === 'REPLAN') {
+      return {
+        ok: false, verdict: 'REPLAN', fix_waves_used: 0, reviews_run: 0, baseline: prep, packages: plan.packages, hard_failures,
+        reason: `Opus pre-implementation review says the approach is wrong: ${preReview.replan_reason || preReview.summary}`,
+        pre_review: preReview,
+      }
+    }
+    if (preReview.verdict === 'BLOCKED') hard_failures.push('pre-implementation review returned BLOCKED — proceeding without architectural sign-off')
+  }
+}
+
 // ============================== 3. Implement ================================
 
 const WEAVE = {
@@ -789,6 +835,10 @@ dirty_checks.push(compareDirty(dirtyBase, p0, 'after-wave-0'))
 log(`integration wave 0: ${integ.merged.length} branch(es) merged, blocking checks ${integ.all_blocking_passed ? 'PASS' : 'FAIL'}, user work ${dirty_checks[0].ok === true ? 'intact' : dirty_checks[0].ok === false ? 'CHANGED' : 'unverified'}`)
 
 const openFindings = new Map()
+// How many separate review waves have reported each finding key still open — the
+// measure of "two materially different Sonnet attempts failed on the same blocker"
+// that decides whether it gets escalated to Fable below.
+const findingRounds = new Map()
 let fixWaves = 0
 let verdict = 'BLOCKED'
 let replanReason = null
@@ -797,7 +847,9 @@ const workerClaims = implementations.map(r => ({ id: r.id, status: r.status, sum
 for (;;) {
   phase('Review')
   const rv = await review(fixWaves, integ, [...openFindings.values()], workerClaims)
-  if (!rv) { verdict = 'BLOCKED'; break }
+  // A failed/unavailable/incomplete premium review is its own terminal state — never silently
+  // folded into BLOCKED, and never a path that can reach PASS below.
+  if (!rv) { verdict = 'REVIEW_PENDING'; hard_failures.push(`review wave ${fixWaves}: the Opus reviewer was unavailable or failed — REVIEW_PENDING, never treated as PASS`); break }
 
   // No silent caps: a reviewer over the ceiling gets truncated by PRIORITY and
   // the drop is named, because "30 findings" reading as "all of them" is the
@@ -812,7 +864,7 @@ for (;;) {
 
   reviews.push({ wave: fixWaves, verdict: rv.verdict, summary: rv.summary, replan_reason: rv.replan_reason, findings, closed_previous: rv.closed_previous || [], verified_good: rv.verified_good || [] })
   for (const k of (rv.closed_previous || [])) openFindings.delete(k)
-  for (const f of findings) openFindings.set(f.key, f)
+  for (const f of findings) { openFindings.set(f.key, f); findingRounds.set(f.key, (findingRounds.get(f.key) || 0) + 1) }
   verdict = rv.verdict
   log(`review wave ${fixWaves}: ${rv.verdict}, ${findings.length} finding(s), ${(rv.closed_previous || []).length} closed, ${openFindings.size} open`)
 
@@ -936,6 +988,69 @@ for (;;) {
   const dc = compareDirty(dirtyBase, fixProbe, `after-fix-wave-${fixWaves}`)
   dirty_checks.push(dc)
   log(`integration wave ${fixWaves}: blocking checks ${integ.all_blocking_passed ? 'PASS' : 'FAIL'}, user work ${dc.ok === true ? 'intact' : dc.ok === false ? 'CHANGED' : 'unverified'}`)
+}
+
+// ==================== 7b. Escalate (Fable, at most once) ====================
+// Fable is an escalation model only: a concrete architectural ambiguity, or a finding that
+// survived at least two MATERIALLY DIFFERENT Sonnet fix attempts (findingRounds >= 2) and is
+// still open when the ordinary fix loop stops. Never a default fixer, never looped.
+{
+  const stuck = [...openFindings.values()].filter(f => (findingRounds.get(f.key) || 0) >= 2)
+  const canEscalate = stuck.length && verdict !== 'PASS' && verdict !== 'REPLAN' && verdict !== 'REVIEW_PENDING' && (!budget.total || budget.remaining() >= 60000)
+  if (canEscalate) {
+    phase('Fix')
+    log(`escalating ${stuck.length} finding(s) to Fable — each survived >=2 Sonnet fix attempt(s) unresolved: ${stuck.map(f => f.key).join(', ')}`)
+    const escalated = await tryAgent(
+      [
+        preamble(prep), sharedNote, '',
+        '## Your stage: ESCALATE (Fable). Two materially different Sonnet fix attempts already failed on every finding below — a third attempt at the same kind of fix is not useful.',
+        '', 'Name the concrete blocker precisely before proposing anything. If the real problem is that the finding as stated cannot be fixed without changing the approach, say so explicitly rather than patching around it.',
+        '', stuck.map(f => `### \`${f.key}\` [${f.priority}] ${f.title}\nfiles: ${(f.files || []).join(', ') || '(unspecified)'}\n\n${f.explanation}\n\n**Verify by:** ${f.how_to_verify}`).join('\n\n'),
+        '', ownWorktree(baseSha, 'escalate-fable'), '',
+        LANE_CHECKS ? 'Verify your files build before you finish.' : 'Do NOT run a whole-project build. The integrator owns that.',
+        'COMMIT in your worktree and report your branch, worktree path, and which finding keys you actually addressed.',
+        'If you decline a finding, put its key in `declined` WITH the reason.',
+      ].join('\n'),
+      { label: 'escalate:fable', phase: 'Fix', model: FABLE_MODEL, schema: FIXED }, 'fable escalation',
+    )
+    if (escalated && escalated.status !== 'blocked' && escalated.branch) {
+      phase('Integrate')
+      const after = await integrate(
+        [{ branch: escalated.branch, worktree: escalated.worktree, summary: `Fable escalation fix for ${(escalated.addressed || []).join(', ')}`, shared_file_deltas: [] }],
+        fixWaves + 1,
+        '\n## This branch is a Fable ESCALATION fix for finding(s) that survived two Sonnet attempts. If it contradicts an earlier partial fix, that is expected — it replaces the approach, not just the code.',
+        'escalation',
+      )
+      if (after) {
+        integrations.push(after); integ = after
+        phase('Review')
+        const rv2 = await review(fixWaves + 1, integ, [...openFindings.values()], workerClaims)
+        if (rv2) {
+          let findings2 = rv2.findings.slice().sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9))
+          if (findings2.length > MAX_FINDINGS) findings2 = findings2.slice(0, MAX_FINDINGS)
+          reviews.push({ wave: fixWaves + 1, verdict: rv2.verdict, summary: rv2.summary, replan_reason: rv2.replan_reason, findings: findings2, closed_previous: rv2.closed_previous || [], verified_good: rv2.verified_good || [] })
+          for (const k of (rv2.closed_previous || [])) openFindings.delete(k)
+          for (const f of findings2) openFindings.set(f.key, f)
+          verdict = rv2.verdict
+          if (verdict === 'REPLAN') replanReason = rv2.replan_reason || rv2.summary
+          log(`post-escalation review: ${rv2.verdict}, ${openFindings.size} finding(s) still open`)
+        } else {
+          verdict = 'REVIEW_PENDING'
+          hard_failures.push('post-escalation review was unavailable or failed — REVIEW_PENDING, never treated as PASS')
+        }
+      } else {
+        verdict = 'BLOCKED'
+        hard_failures.push('the Fable escalation branch could not be integrated')
+      }
+      phase('Measure')
+      const escProbe = await probeDirty('after-escalation')
+      if (escProbe && escProbe.HEAD_SHA) baseSha = escProbe.HEAD_SHA
+      dirty_checks.push(compareDirty(dirtyBase, escProbe, 'after-escalation'))
+    } else {
+      hard_failures.push(`Fable escalation produced no mergeable branch for: ${stuck.map(f => f.key).join(', ')} — those findings remain open`)
+    }
+    fixWaves += 1
+  }
 }
 
 // ============================== 8. Report ===================================
