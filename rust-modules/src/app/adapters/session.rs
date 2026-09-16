@@ -62,6 +62,11 @@ pub(crate) struct FixtureResources {
     pub root_press_available: bool,
     pub back_results: Vec<bool>,
     pub sweep_leftovers: usize,
+    /// One-shot override for the next admitted durable write's completion outcome (e.g. a
+    /// `Failed`/`Uncertain` verdict) — drained by `commit` the same way a real disk failure would
+    /// be, so an app-level test can drive `PersistenceWarning` routing without a real filesystem
+    /// fault. `None` keeps the default `Durable(PersistedPlaintext)` outcome.
+    pub next_completion_outcome: Option<crate::plex::session::async_persistence::CompletionOutcome>,
 }
 
 /// Only auxiliary IO is stubbed: this mode executes the real disk and registry paths.
@@ -209,6 +214,7 @@ impl SessionAdapter {
             disk, endpoints: BTreeMap::new(), native_endpoints: BTreeMap::new(), registry_writes: Vec::new(), profile: None,
             recently_unreachable: false, minted_client_id: "synthetic-client".into(),
             coordinator_events: Vec::new(), root_press_available: true, back_results: Vec::new(), sweep_leftovers: 0,
+            next_completion_outcome: None,
         }))
     }
 
@@ -358,14 +364,21 @@ impl SessionAdapter {
                     let mut matches = false;
                     let write = if plan.authority == crate::plex::session::SaveAuthority::FreshReauthentication {
                         // A fresh reauthentication is a whole-record replace and is NOT fenced on
-                        // the disk identity: a Locked/Blocked disk reads as a default `Session`,
-                        // which the owner's boot-minted identity can never match, and refusing
-                        // here is exactly how a sign-in over an unopenable envelope used to live
-                        // for one run only (0.6.6's `save_after_reauthentication`).
-                        examined = true;
-                        matches = true;
-                        crate::plex::session::replace_after_reauthentication_with_outcome(
-                            |disk| patch.merge_into(disk))
+                        // the disk identity when the disk is UNREADABLE (Locked/Blocked/Missing
+                        // read as a default `Session`, which the owner's boot-minted identity can
+                        // never match) — refusing there is exactly how a sign-in over an
+                        // unopenable envelope used to live for one run only (0.6.6's
+                        // `save_after_reauthentication`). A disk that DOES hold a readable record
+                        // is still fenced, exactly like the Routine arm below: a fresh sign-in
+                        // must still lose to a concurrent external replacement of a record it
+                        // could actually read (`replace_after_reauthentication_with_outcome`'s
+                        // own doc has the full split).
+                        match crate::plex::session::replace_after_reauthentication_with_outcome(
+                            |disk| plan.expected_disk.matches(disk),
+                            |disk| patch.merge_into(disk)) {
+                            Ok(write) => write,
+                            Err(()) => { examined = true; None }
+                        }
                     } else {
                         crate::plex::session::update_with_outcome(|disk| {
                             examined = true;
@@ -419,10 +432,20 @@ impl SessionAdapter {
             Resources::Fixture(resources) => {
                 let mut admitted = None;
                 if let Some(patch) = &plan.credentials {
-                    if !resources.disk.client_id.is_empty() {
-                        if !plan.expected_disk.matches(&resources.disk) {
-                            return permit.reply(CommitAdmission::StaleAuthority);
-                        }
+                    // Mirror the Live arm's authority split (`replace_after_reauthentication_
+                    // with_outcome`'s doc has the full reasoning): a Fresh write is fenced on
+                    // disk identity only when the disk holds a READABLE record; an unreadable
+                    // (empty `client_id`) disk never refuses a Fresh write, but — unlike a
+                    // Routine write over the same unreadable disk — still merges and admits it,
+                    // since Fresh's whole point is surviving exactly that case. A Routine write
+                    // over an unreadable disk stays a no-op, matching the live
+                    // `update_with_outcome`'s own `client_id.is_empty()` early return.
+                    let fresh = plan.authority == crate::plex::session::SaveAuthority::FreshReauthentication;
+                    let readable = !resources.disk.client_id.is_empty();
+                    if readable && !plan.expected_disk.matches(&resources.disk) {
+                        return permit.reply(CommitAdmission::StaleAuthority);
+                    }
+                    if readable || fresh {
                         resources.disk = patch.merge_into(&resources.disk);
                         admitted = Some(CommitAdmission::Admitted {
                             revision: 0, purpose: plan.purpose,
@@ -443,15 +466,16 @@ impl SessionAdapter {
                             // Fixture-driven flows still need a real completion to drain — a held
                             // handoff (AUTH-03/04) would otherwise stay held forever in a fixture
                             // test, since nothing else produces one for this path.
+                            let outcome = resources.next_completion_outcome.take().unwrap_or(
+                                crate::plex::session::async_persistence::CompletionOutcome::Durable(
+                                    crate::plex::session::async_persistence::Operation::Write {
+                                        outcome: crate::plex::session::async_persistence::PersistOutcome::PersistedPlaintext,
+                                        verified: true, protection: None,
+                                    }));
                             self.live_completion = Some(
                                 crate::plex::session::async_persistence::PersistenceCompletion {
                                     req: permit.request(), epoch: permit.epoch(),
-                                    arrival: permit.arrival(), revision, purpose,
-                                    outcome: crate::plex::session::async_persistence::CompletionOutcome::Durable(
-                                        crate::plex::session::async_persistence::Operation::Write {
-                                            outcome: crate::plex::session::async_persistence::PersistOutcome::PersistedPlaintext,
-                                            verified: true, protection: None,
-                                        }),
+                                    arrival: permit.arrival(), revision, purpose, outcome,
                                 });
                         }
                     }
@@ -1268,6 +1292,65 @@ mod tests {
             crate::plex::session::persistence::CanonicalRead::Data { .. }
             | crate::plex::session::persistence::CanonicalRead::Opened { .. }),
             "the write must have reached the canonical authority, not only the legacy floor");
+    }
+
+    /// Companion to `a_fresh_sign_in_over_an_unopenable_envelope_is_persisted_for_the_next_launch`:
+    /// that test proves the UNREADABLE-disk half of the narrowed fence in
+    /// `replace_after_reauthentication_with_outcome`; this one proves the other half — a write
+    /// over a disk that DOES hold a readable record a concurrent actor has already replaced must
+    /// still be refused, for both `Routine` and `FreshReauthentication` authority. Before this
+    /// test nothing in this module exercised the live adapter's `examined && !matches` refusal at
+    /// all: every other `StaleAuthority` assertion here is either against a synthetic
+    /// `CommitReply` or against the `Fixture` resource arm, never the real disk writer.
+    ///
+    /// RED: OBSERVED. Deleting `if !cur.client_id.is_empty() && !fence(&cur) { return Err(()); }`
+    /// from `replace_after_reauthentication_with_outcome` (the fresh half of this test) and
+    /// deleting `matches = plan.expected_disk.matches(disk);` from the `Routine` arm of
+    /// `SessionAdapter::commit` (the routine half) each turned the corresponding iteration's
+    /// `assert!(matches!(reply.admission, CommitAdmission::StaleAuthority))` into a failure — the
+    /// write was silently admitted over the external replacement instead.
+    #[test]
+    fn the_live_adapter_refuses_a_write_over_a_readable_disk_whose_identity_moved() {
+        use crate::auth::owner::{CommitAdmission, CommitDelta, CredentialPatch, Identity, Pending,
+            PendingCommit, SessionInit, SessionMachine, StreamPhase};
+        let _serial = crate::testlock::serial();
+        for authority in [crate::plex::session::SaveAuthority::Routine,
+                          crate::plex::session::SaveAuthority::FreshReauthentication] {
+            let _session = crate::plex::session::TempSession::new("stale-write-readable-disk");
+            let mt = unsafe { crate::task::MainThread::assume() };
+            let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
+
+            let disk = crate::plex::session::peek();
+            let expected = Identity::of(&disk);
+            let mut init = SessionInit::captured(disk.clone());
+            init.epoch = 1;
+            init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Ready },
+                expected: expected.clone(), lifecycle: None, last_arrival: Some(0),
+                phase: StreamPhase::Running, capture: None,
+                admission: crate::auth::owner::AdmissionState::NotRequested });
+            init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 0, terminal: true,
+                writes_credentials: true, receipt: None, delta: CommitDelta::default(),
+                admitted_revision: None, purpose: None, fresh: false });
+            let owner = SessionMachine::from_init(init);
+
+            // A concurrent external actor replaces the readable record out from under this plan.
+            assert!(crate::plex::session::update(|d| Some(crate::plex::session::Session {
+                account_token: "synthetic-external-change".into(), ..d.clone() })),
+                "setup: the seeded session must be updatable");
+
+            let mut next = disk.clone();
+            next.account_token = "synthetic-new-token".into();
+            let plan = CommitPlan { expected_disk: expected,
+                credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
+                purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
+                writes_durable: true, authority };
+            let reply = adapter.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan);
+            assert!(matches!(reply.admission, CommitAdmission::StaleAuthority),
+                "a write over a READABLE disk whose identity moved must be refused for {authority:?}, got {:?}",
+                reply.admission);
+            assert_eq!(crate::plex::session::peek().account_token, "synthetic-external-change",
+                "a refused write must not have touched disk, for {authority:?}");
+        }
     }
 
     #[test]
