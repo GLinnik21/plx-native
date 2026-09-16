@@ -175,6 +175,9 @@ pub(crate) unsafe fn run(app: &mut App) {
         if app.adapters.player.poll_repair(&mut app.player.repair) {
             crate::ui::idle::invalidate();
         }
+        // A timed-out native Load parked by teardown is released here, on the main thread, the
+        // first frame after its media thread returns (`player::engine::AbandonedLoad`).
+        crate::player::engine::reap_abandoned_load(&mut app.adapters.player);
         app.player.session.repair_status = app.player.repair.state();
         app.bridge.publish_playback(&app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),

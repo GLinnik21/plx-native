@@ -114,7 +114,12 @@ something.
   C `LOAD_RETURNED` gate. Rust records the return on the exact native epoch before publishing
   the route result. The pump waits before even polling `sf_is_load_completed`, with separate
   20-second issued→return and return→loadCompleted budgets. Timeout has code `load_timeout`;
-  firmware refusal remains `tv_pipeline`. The host concurrent tests model this boundary, not
+  firmware refusal remains `tv_pipeline`. Teardown after that timeout does NOT join a media
+  thread still inside `sf_load` (that froze the SDL thread on BACK): the thread, payload and
+  epoch are parked as `engine::AbandonedLoad` (Rust phase `Abandoned`), native starts are
+  refused, and `reap_abandoned_load` runs the ordinary Unload → gate → retire → D1 release on the
+  main thread once Load returns; a Load that never returns leaks its object. A Load that has not
+  timed out is still joined. The host concurrent tests model this boundary, not
   the firmware's native initialization. ACB dispatch is additionally constrained by stage/bind
   ordering; the C Starfish gate does not wrap ACB calls.
 - **The k5lp/k3lp sandbox preflight refuses native playback when `/dev/rtkmem` is unreadable.**

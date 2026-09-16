@@ -292,6 +292,15 @@ enum NativeSessionPhase {
     Unloaded {
         epoch: u32,
     },
+    /// Teardown gave up on this epoch's `Load` while it was still in flight (the D.1.4 budget
+    /// had fired and the media thread had not returned). The native object belongs to no engine
+    /// any more: it is held by `PlayerAdapter`'s abandoned-Load slot until `sf_load` returns and
+    /// the main thread releases it. Only the firmware's UNLOADCOMPLETED is admitted (that is the
+    /// release's own lifecycle evidence); every other callback is dropped, and no new native
+    /// session may begin, because the C seam still owns exactly this one object.
+    Abandoned {
+        epoch: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1130,6 +1139,7 @@ impl Shared {
             state.phase,
             NativeSessionPhase::Active { epoch: active, .. }
                 | NativeSessionPhase::Unloaded { epoch: active }
+                | NativeSessionPhase::Abandoned { epoch: active }
                 if epoch != 0 && active == epoch
         );
         if !owns {
@@ -1137,6 +1147,31 @@ impl Shared {
         }
         state.phase = NativeSessionPhase::Idle;
         true
+    }
+
+    /// Hand `epoch`'s still-in-flight Load to the abandoned-Load release (see
+    /// [`NativeSessionPhase::Abandoned`]). `false` when `epoch` does not own the `Active` phase.
+    pub(crate) fn abandon_native_session(&self, epoch: u32) -> bool {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !matches!(state.phase, NativeSessionPhase::Active { epoch: active, .. } if epoch != 0 && active == epoch)
+        {
+            return false;
+        }
+        state.phase = NativeSessionPhase::Abandoned { epoch };
+        true
+    }
+
+    /// Test-only: drop an abandoned phase that a failing test left behind, which
+    /// [`reset_session`](Self::reset_session) deliberately preserves.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn test_force_native_idle(&self) {
+        self.native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .phase = NativeSessionPhase::Idle;
     }
 
     /// Whether this exact object crossed firmware's synchronous unload-complete callback path.
@@ -1277,6 +1312,16 @@ impl Shared {
             .native_session
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        if let NativeSessionPhase::Abandoned { epoch: abandoned } = state.phase {
+            // The release of an abandoned object needs its own UNLOADCOMPLETED evidence; nothing
+            // else from that object may reach the process-long state a later session will own.
+            if epoch == 0 || abandoned != epoch || class != NativeEventClass::UnloadCompleted {
+                return None;
+            }
+            let result = event();
+            state.phase = NativeSessionPhase::Unloaded { epoch };
+            return Some(result);
+        }
         let NativeSessionPhase::Active {
             epoch: active,
             presentation_gate,
@@ -1367,7 +1412,12 @@ impl Shared {
             .native_session
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        native.phase = NativeSessionPhase::Idle;
+        // An ABANDONED native object is not this engine's session: it outlives the engine by
+        // design until its `Load` returns and `engine::reap_abandoned_load` releases it. Clearing
+        // it here would let the next session begin while the C seam still owns that object.
+        if !matches!(native.phase, NativeSessionPhase::Abandoned { .. }) {
+            native.phase = NativeSessionPhase::Idle;
+        }
         // the diagnostics mirror is per-session too — a stale bind outcome from the last item is
         // exactly the misleading answer the read-out exists to avoid
         self.dg_stage.store(0, Ordering::Relaxed);

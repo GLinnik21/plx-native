@@ -35,6 +35,10 @@ pub(crate) struct PlayerAdapter {
     /// The live native session, or `None` between playbacks.
     engine: Option<Engine>,
     repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), crate::webos::jail_repair::Failure>>)>,
+    /// A timed-out native `Load` whose media thread had not returned when its Engine was torn
+    /// down. Owned here, not by a static, for the same reason the Engine is: releasing it calls
+    /// the Starfish seam, which only the main thread may do. See `engine::AbandonedLoad`.
+    abandoned_load: Option<super::engine::AbandonedLoad>,
 }
 
 impl PlayerAdapter {
@@ -44,6 +48,7 @@ impl PlayerAdapter {
             mt,
             engine: None,
             repair: None,
+            abandoned_load: None,
         }
     }
 
@@ -98,6 +103,27 @@ impl PlayerAdapter {
     #[inline]
     pub(crate) fn take(&mut self) -> Option<Engine> {
         self.engine.take()
+    }
+
+    /// Park a still-in-flight Load for a later main-thread release. At most one can exist: the
+    /// C seam owns one object at a time and every start is refused while this slot is full.
+    pub(crate) fn park_abandoned_load(&mut self, load: super::engine::AbandonedLoad) {
+        debug_assert!(self.abandoned_load.is_none(), "a second abandoned Load cannot exist");
+        self.abandoned_load = Some(load);
+    }
+
+    /// Is a native object still parked behind a Load that has not been released?
+    pub(crate) fn has_abandoned_load(&self) -> bool {
+        self.abandoned_load.is_some()
+    }
+
+    /// The parked Load, borrowed mutably (its once-only log latch), or taken once it returned.
+    pub(crate) fn abandoned_load_mut(&mut self) -> Option<&mut super::engine::AbandonedLoad> {
+        self.abandoned_load.as_mut()
+    }
+
+    pub(crate) fn take_abandoned_load(&mut self) -> Option<super::engine::AbandonedLoad> {
+        self.abandoned_load.take()
     }
 
     /// The token, for the ACB/Starfish seam. `player::ffi`'s wrappers still take one — see the

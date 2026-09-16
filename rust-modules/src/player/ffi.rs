@@ -131,6 +131,12 @@ pub(crate) fn force_object_ready_for_test(on: bool) {
     sys::force_object_ready_for_test(on);
 }
 
+/// Whether the host seam has quarantined its object. See `ffi_host.rs::lifecycle_blocked_for_test`.
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn lifecycle_blocked_for_test() -> bool {
+    sys::lifecycle_blocked_for_test()
+}
+
 #[cfg(all(test, feature = "hostsim"))]
 pub(crate) fn force_pause_result_for_test(result: Option<c_int>) {
     sys::FORCE_PAUSE_RESULT.store(
