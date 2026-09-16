@@ -1390,6 +1390,7 @@ mod tests {
             usage: true,
             install_id: Some("old-id".into()),
             errors_id: Some("old-errors-id".into()),
+            ..Default::default()
         };
         assert!(should_show(&old, false));
         let current = consent::apply(&Consent::default(), true, false, || Some("new-id".into()));

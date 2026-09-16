@@ -3051,7 +3051,7 @@ mod tests {
         ));
         assert!(consent::allows_usage() && consent::errors_id().is_some());
         assert!(
-            consent_file.exists(),
+            crate::telemetry::persistence::load(std::slice::from_ref(&consent_file)).any(),
             "the decision was persisted for account A"
         );
 
@@ -3092,9 +3092,10 @@ mod tests {
             consent::should_ask(&after, false),
             "the next authorized sign-in must put the question on screen again"
         );
+        let reopened = crate::telemetry::persistence::load(std::slice::from_ref(&consent_file));
         assert!(
-            !consent_file.exists(),
-            "the consent file outlived the sign-out and would resume A's decision at the next boot"
+            !consent_file.exists() && !reopened.answered() && reopened.errors_id.is_none(),
+            "the persisted decision outlived the sign-out and would resume A's at the next boot"
         );
     }
 

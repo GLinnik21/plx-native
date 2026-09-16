@@ -971,3 +971,139 @@ fn helper_migration_keeps_opened_session_typed_through_exact_readback() {
     );
     assert_eq!(backend.rpc.puts, 1);
 }
+
+/// Published 0.6 sessions through the shipping helper migration: the 0.6.6 schema fixtures, a
+/// session written by 0.6.0's own serializer, and a DB8 record written by 0.6.6's own backend.
+mod published_06 {
+    use super::*;
+
+    macro_rules! fx {
+        ($p:literal) => {
+            ($p, include_str!(concat!("../../../../tests/fixtures/persistence/", $p)))
+        };
+    }
+
+    fn sessions() -> Vec<(&'static str, &'static str)> {
+        vec![
+            fx!("v0.6.0/session.json"),
+            fx!("v0.6.1/session.json"),
+            fx!("v0.6.2/session.json"),
+            fx!("v0.6.3/session.json"),
+            fx!("v0.6.4/session.json"),
+            fx!("v0.6.5/session.json"),
+            fx!("generated/v0.6.0.session.json"),
+        ]
+    }
+
+    fn envelopes() -> Vec<(&'static str, &'static str)> {
+        vec![
+            fx!("v0.6.0/secure-envelope-v1.json"),
+            fx!("v0.6.1/secure-envelope-v1.json"),
+            fx!("v0.6.2/secure-envelope-v1.json"),
+            fx!("v0.6.3/secure-envelope-v1.json"),
+            fx!("v0.6.4/secure-envelope-v1.json"),
+            fx!("v0.6.5/secure-envelope-v1.json"),
+        ]
+    }
+
+    /// Everything the 0.6 file held — credentials, selected profile, roster, sources, per-profile
+    /// pins and recents, quality — compared field by field against 0.7's reading of those bytes.
+    fn assert_carried(label: &str, actual: &Session, legacy: &str) {
+        let expected: Session = serde_json::from_str(legacy).unwrap();
+        assert!(!expected.account_token.is_empty() && !expected.home_pins.is_empty(), "{label}: fixture is signed in with settings");
+        let raw: Value = serde_json::from_str(legacy).unwrap();
+        let (actual, expected) = (serde_json::to_value(actual).unwrap(), serde_json::to_value(&expected).unwrap());
+        for key in raw.as_object().unwrap().keys() {
+            assert_eq!(actual[key], expected[key], "{label}: {key}");
+        }
+    }
+
+    fn helper(record: Option<Value>) -> crate::storage::backend::Backend<Db8> {
+        crate::storage::backend::Backend::new(
+            Db8 { record, ..Default::default() },
+            state::Flavor::Stable,
+            "com.beb.plxnative.storage".into(),
+        )
+    }
+
+    fn boot(
+        backend: &mut crate::storage::backend::Backend<Db8>,
+        opener: &mut Opener,
+        candidates: &[std::path::PathBuf],
+    ) -> persistence::Bootstrap {
+        let mut transport = |request| Ok(backend.dispatch(request));
+        persistence::bootstrap_with(
+            &mut persistence::HelperMigration { transport: &mut transport, major: 4 },
+            opener,
+            candidates,
+        )
+    }
+
+    fn opened(label: &str, boot: persistence::Bootstrap) -> Session {
+        let CanonicalRead::Opened { session, .. } = boot.state else {
+            panic!("{label}: the migrated session did not open")
+        };
+        session
+    }
+
+    #[test]
+    fn every_published_06_session_migrates_into_db8_and_reopens_on_the_next_launch() {
+        let plain = sessions().into_iter().map(|(label, bytes)| (label, bytes, bytes, None));
+        let sealed = envelopes()
+            .into_iter()
+            .zip(sessions())
+            .map(|((label, envelope), (_, bytes))| (label, envelope, bytes, Some(bytes.as_bytes().to_vec())));
+        for (label, on_disk, session, plaintext) in plain.chain(sealed) {
+            let source = LegacyFile::new("published-06", &serde_json::from_str(on_disk).unwrap());
+            let mut backend = helper(None);
+            let mut opener = Opener { plaintext, ..opener() };
+            let first = boot(&mut backend, &mut opener, std::slice::from_ref(&source.path));
+            assert!(
+                matches!(first.migration, Some(persistence::CanonicalCommit::Durable { verified: true, .. })),
+                "{label}: verified import"
+            );
+            assert_carried(label, &opened(label, first), session);
+            assert!(!source.path.exists(), "{label}: source retired after exact readback");
+
+            let restarted = boot(&mut backend, &mut opener, std::slice::from_ref(&source.path));
+            assert!(restarted.migration.is_none(), "{label}: import is not repeated");
+            assert_carried(label, &opened(label, restarted), session);
+            assert_eq!(backend.rpc.puts, 1, "{label}: one write for the whole upgrade");
+        }
+    }
+
+    #[test]
+    fn a_066_db8_record_opens_with_its_session_and_settings_without_writing() {
+        let record: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/persistence/generated/v0.6.6-db8-record.json"
+        ))
+        .unwrap();
+        let mut backend = helper(Some(record));
+        let session = opened("0.6.6 DB8", boot(&mut backend, &mut opener(), &[]));
+        assert_carried(
+            "0.6.6 DB8",
+            &session,
+            include_str!("../../../../tests/fixtures/persistence/generated/v0.6.0.session.json"),
+        );
+        assert_eq!(backend.rpc.puts, 0);
+    }
+
+    #[test]
+    fn a_066_host_store_session_record_reopens_on_host() {
+        let _serial = crate::testlock::serial();
+        let state = TempCanonicalState::new("json-066");
+        std::fs::write(
+            state.dir.join("session.json"),
+            include_str!("../../../../tests/fixtures/persistence/generated/v0.6.6-json-store/session.json"),
+        )
+        .unwrap();
+        let CanonicalRead::Data { payload, .. } = persistence::load() else {
+            panic!("0.6.6 host record did not load")
+        };
+        assert_carried(
+            "0.6.6 JSON store",
+            &serde_json::from_str(&payload).unwrap(),
+            include_str!("../../../../tests/fixtures/persistence/generated/v0.6.0.session.json"),
+        );
+    }
+}

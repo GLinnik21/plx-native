@@ -79,14 +79,9 @@ fn newly_enables_errors(previous: &Consent, next: &Consent) -> bool {
 /// detection a function of the owner's explicit transition.
 fn commit_live(previous: &Consent, next: &Consent) {
     let enabling_errors = newly_enables_errors(previous, next);
-    let Ok(json) = serde_json::to_vec_pretty(next) else {
-        return;
-    };
-    let stored = crate::telemetry::resource_candidates()
-        .iter()
-        .any(|path| crate::plex::session::write_atomic(path, &json));
-    if !stored {
-        crate::log("telemetry: could not persist the decision to ANY candidate path");
+    let outcome = crate::telemetry::persistence::record(next);
+    if outcome.write != crate::telemetry::persistence::PersistResult::Durable {
+        crate::log(&format!("telemetry: the decision is not durably persisted: {outcome:?}"));
     }
     if enabling_errors {
         crate::telemetry::crashreport::discard_pending_before_opt_in();
@@ -105,19 +100,13 @@ fn forget_live(_prior: &Consent) {
     let next = Consent::default();
     crate::telemetry::consent::install(next.clone());
     crate::player::report::clear_error_trace();
-    for path in crate::telemetry::resource_candidates() {
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                let overwritten = serde_json::to_vec_pretty(&next)
-                    .map(|json| crate::plex::session::write_atomic(&path, &json))
-                    .unwrap_or(false);
-                crate::log(&format!(
-                    "telemetry: sign-out could not unlink the decision ({error}); overwritten={overwritten}"
-                ));
-            }
-        }
+    let outcome = crate::telemetry::persistence::forget();
+    if !matches!(
+        outcome.write,
+        crate::telemetry::persistence::PersistResult::Durable
+            | crate::telemetry::persistence::PersistResult::Delegated
+    ) {
+        crate::log(&format!("telemetry: sign-out could not durably clear the decision: {outcome:?}"));
     }
     crate::telemetry::spool::purge_withdrawn(&next);
     crate::telemetry::native::sync_change(&next);
@@ -135,6 +124,7 @@ mod tests {
             usage: false,
             install_id: None,
             errors_id: Some(id.into()),
+            ..Default::default()
         }
     }
 
