@@ -1931,4 +1931,91 @@ mod tests {
             assert!(snapshot().unwrap().account_token.is_empty());
         }
     }
+
+    fn keymanager_failure() -> crate::storage::wire::KeymanagerFailure {
+        crate::storage::wire::KeymanagerFailure {
+            operation: crate::storage::wire::KeymanagerOperation::Seal,
+            stage: crate::storage::wire::KeymanagerStage::Finish,
+            code: crate::storage::wire::ErrorCode::Unavailable,
+            category: crate::storage::wire::KeymanagerFailureCategory::Unavailable,
+            service_code: None,
+        }
+    }
+
+    fn protection_failure(preservation: AuthPreservation) -> ProtectionFailure {
+        ProtectionFailure {
+            failure: keymanager_failure(),
+            preservation,
+            db8_commit_verified: false,
+        }
+    }
+
+    /// `live-write-protection-failed-arm-unpinned`: `LiveWrite::disk_outcome` must keep routing a
+    /// `CanonicalCommit::ProtectionFailed` verdict through `DiskOutcome::ProtectionFailed` (never
+    /// through `DiskOutcome::Write`, which is what silently upgrades it to `Durable` whenever the
+    /// legacy fall-through write beneath it happens to succeed). This is a real production shape:
+    /// a first sign-in where keymanager3 is present but sealing itself fails.
+    ///
+    /// RED: OBSERVED. Temporarily replacing the `Some(CanonicalCommit::ProtectionFailed(evidence))
+    /// => DiskOutcome::ProtectionFailed(*evidence)` arm in `disk_outcome` with
+    /// `DiskOutcome::Write { outcome: self.outcome, verified: self.outcome.persisted(),
+    /// protection: None, commit: None }` (the exact collapse P1's report described making, then
+    /// backing out) makes both assertions below fail: with a successful legacy write
+    /// (`Some(false)` => `PersistedPlaintext`, which `persisted()` reports `true`), the mutated
+    /// code reports `CompletionOutcome::Durable(..)` for every `preservation` value instead of
+    /// `ProtectionUncertain`/`Failed(Failure::Protection(..))`.
+    #[test]
+    fn a_protection_failure_never_reports_durable_even_when_the_legacy_write_succeeds() {
+        let uncertain = LiveWrite::canonical(
+            CanonicalCommit::ProtectionFailed(protection_failure(AuthPreservation::Uncertain)),
+            Some(false),
+        );
+        assert!(
+            matches!(
+                uncertain.classify(),
+                CompletionOutcome::ProtectionUncertain(evidence)
+                    if evidence.preservation == AuthPreservation::Uncertain
+            ),
+            "an Uncertain-preservation protection failure must report ProtectionUncertain, not \
+             Durable, even though the legacy write succeeded: {:?}",
+            uncertain.classify(),
+        );
+
+        for preservation in [AuthPreservation::Unchanged, AuthPreservation::Restored] {
+            let write = LiveWrite::canonical(
+                CanonicalCommit::ProtectionFailed(protection_failure(preservation)),
+                Some(false),
+            );
+            assert!(
+                matches!(
+                    write.classify(),
+                    CompletionOutcome::Failed(Failure::Protection(evidence))
+                        if evidence.preservation == preservation
+                ),
+                "a non-Uncertain protection failure ({:?}) must report Failed(Protection(..)), \
+                 not Durable, even though the legacy write succeeded: {:?}",
+                preservation,
+                write.classify(),
+            );
+        }
+    }
+
+    /// Companion to the test above: the `CanonicalCommit::Failed(StoreError)` arm must likewise
+    /// stay `Failed`, never `Durable`, when the legacy fall-through write succeeds underneath it.
+    /// Not the same arm as `ProtectionFailed` — pinned separately because the two are matched on
+    /// different `CanonicalCommit` variants in `disk_outcome`, and a fix that only widens one of
+    /// them would leave the other collapsed.
+    #[test]
+    fn a_failed_canonical_commit_never_reports_durable_even_when_the_legacy_write_succeeds() {
+        let write = LiveWrite::canonical(CanonicalCommit::Failed(StoreError::RootChanged), Some(true));
+        assert!(
+            matches!(
+                write.classify(),
+                CompletionOutcome::Failed(Failure::Storage(StoreError::RootChanged))
+            ),
+            "a failed canonical commit must report Failed(Storage(..)), not Durable, even though \
+             the legacy write succeeded: {:?}",
+            write.classify(),
+        );
+    }
 }

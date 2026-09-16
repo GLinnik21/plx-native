@@ -903,18 +903,29 @@ mod tests {
     /// legacy fallback file the fall-through write lands in, so no other test in this process
     /// observes residue from it.
     ///
-    /// RED: OBSERVED. Before Finding 1's fix (the frozen `LiveWrite`/`classify` widening now in
-    /// `save_locked_with_authority`/`async_persistence.rs`), this exact test — run against the
-    /// pre-freeze shape of `save_locked_with_authority` (`Option<bool>`, discarding the
-    /// `CanonicalCommit`) and `commit`'s old inline `if outcome.persisted() { Durable } else {
-    /// Failed }` mapping — yielded `CompletionOutcome::Durable(..)` with the completion's
-    /// `outcome` reporting the write as persisted, because only the legacy write's boolean
-    /// result reached the adapter. Discrimination check: reverting *only* the widening (restoring
-    /// the bool-collapsing `Option<bool>` signature and the unconditional `Durable` mapping) is a
-    /// different, larger mutation than the one `the_bridge_reports_a_failed_write_as_failed_not_
-    /// durable` guards, and that pre-existing test keeps passing under it (its `TempSession`
-    /// fixture never reaches the canonical authority at all, so it cannot see this regression) —
-    /// so this test discriminates a distinct failure mode from that one.
+    /// RED: OBSERVED, against a narrower mutation than an earlier version of this note claimed.
+    /// The `save_locked_with_authority`/`LiveWrite`/`classify` widening this test guards is
+    /// already in place at the base this test was written against, and reverting that signature
+    /// cannot even compile against this test (it calls `write.classify()`, which does not exist
+    /// on `Option<bool>`). The mutation actually run left the widening untouched and replaced
+    /// only THIS `commit` arm's `outcome: write.classify()` with the pre-widening inline mapping
+    /// — `if write.outcome.persisted() { Durable(Operation::Write{ verified: true, .. }) } else {
+    /// Failed(Failure::Persistence(write.outcome)) }` — applied to the current `LiveWrite` value.
+    /// Under that mutation this test failed, observed as:
+    /// `Durable(Write { outcome: PersistedPlaintext, verified: true, protection: None })`.
+    /// Discrimination check: the same mutation leaves `the_bridge_reports_a_failed_write_as_
+    /// failed_not_durable` passing — that test's `TempSession` fixture drives a genuinely failed
+    /// disk write, so `outcome.persisted()` is `false` either way and the inline mapping produces
+    /// the same `Failed` verdict `classify()` would — so this test discriminates a distinct
+    /// failure mode from that one, and the claim above is the one this test's own mutation run
+    /// actually supports.
+    ///
+    /// A second, narrower mutation also goes red under this test: leaving `commit` untouched and
+    /// instead changing `LiveWrite::disk_outcome`'s `CanonicalCommit::Uncertain` arm
+    /// (`async_persistence.rs`) to build its `DiskOutcome::Write` with `commit: None` instead of
+    /// `commit: Some(CommitDetail::Uncertain{..})` — `classify`'s absent-commit-detail arm then
+    /// falls through to `outcome.persisted()`, which is `true` for the successful legacy write,
+    /// again yielding `Durable(..)`.
     #[test]
     fn the_bridge_reports_an_uncertain_canonical_commit_as_uncertain_not_durable() {
         use crate::auth::owner::{CommitDelta, CredentialPatch, Identity, Pending, PendingCommit,
