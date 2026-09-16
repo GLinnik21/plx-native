@@ -3117,7 +3117,27 @@ mod lifecycle_regression_tests {
     }
 
     impl Rig {
-        fn new() -> Self {
+        /// `None` means `crate::task::spawn_small_keeping` was refused by the OS (Finding 4: the
+        /// rig must honour `task.rs`'s "a refused spawn is a return value, not a panic" contract
+        /// instead of `.expect`-ing it into a panic that reads as a product regression). Nothing
+        /// past the spawn point has been armed yet at that moment — `register_for_test` and
+        /// `app()` both run AFTER a successful spawn — so the only cleanup owed on the refused
+        /// path is re-running `reset_servers_for_test()` to leave the registry exactly as clean
+        /// as it was on entry; the listener, channels and `Arc`s all drop normally when this
+        /// function returns `None`.
+        ///
+        /// **RED observed for this contract, SIMULATED (not a real OS refusal):** temporarily
+        /// change the `match crate::task::spawn_small_keeping(...)` below to unconditionally
+        /// evaluate to `None` (discarding the real handle), leaving the closure and everything
+        /// else untouched, then run the five tests in this module. Before this fix that
+        /// substitution panicked every one of them — at the old `.expect("spawn lifecycle
+        /// fixture")` here, and, once that alone was removed, at `self.worker.take().unwrap()` in
+        /// `Drop for Rig` — each reading exactly like a product regression in code the failing
+        /// test never touches. After this fix the same substitution makes all five tests print a
+        /// `SKIPPED …` line naming the reason and return cleanly, with no panic anywhere. The
+        /// substitution was reverted before committing; the host's real thread budget was never
+        /// actually exhausted, so this is a SIMULATED red, not an observed historical one.
+        fn new() -> Option<Rig> {
             crate::plex::reset_servers_for_test();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
@@ -3128,7 +3148,7 @@ mod lifecycle_regression_tests {
             let log = requests.clone();
             let stop = Arc::new(AtomicBool::new(false));
             let stopping = stop.clone();
-            let worker = crate::task::spawn_small_keeping("lifecycle-fixture", move || {
+            let worker = match crate::task::spawn_small_keeping("lifecycle-fixture", move || {
                 let mut first = true;
                 while !stopping.load(Ordering::Acquire) {
                     let (mut socket, _) = match listener.accept() {
@@ -3182,8 +3202,15 @@ mod lifecycle_regression_tests {
                     };
                     let _ = write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                 }
-            })
-            .expect("spawn lifecycle fixture");
+            }) {
+                Some(h) => h,
+                None => {
+                    // See the doc comment above: nothing past this point has run yet, so undoing
+                    // the initial reset is the whole cleanup owed.
+                    crate::plex::reset_servers_for_test();
+                    return None;
+                }
+            };
             let sid = crate::plex::register_for_test(
                 "lifecycle-fixture",
                 "127.0.0.1",
@@ -3194,7 +3221,7 @@ mod lifecycle_regression_tests {
             let mut app = app();
             super::super::bridge::nav_root(&mut app.pages, AppArg::Home);
             frame(&mut app, 0);
-            Self {
+            Some(Self {
                 app,
                 sid,
                 release,
@@ -3202,7 +3229,7 @@ mod lifecycle_regression_tests {
                 requests,
                 stop,
                 worker: Some(worker),
-            }
+            })
         }
 
         fn request(&mut self) {
@@ -3287,7 +3314,13 @@ mod lifecycle_regression_tests {
     #[test]
     fn did_background_cancels_accepted_resolve_before_player_mount() {
         let _serial = crate::testlock::serial();
-        let mut rig = Rig::new();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED did_background_cancels_accepted_resolve_before_player_mount: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
         rig.request();
         rig.accept_start();
         assert!(super::super::bridge::player(&rig.app.pages).is_none());
@@ -3350,7 +3383,13 @@ mod lifecycle_regression_tests {
     #[test]
     fn did_background_suspends_created_engine_before_player_mount() {
         let _serial = crate::testlock::serial();
-        let mut rig = Rig::new();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED did_background_suspends_created_engine_before_player_mount: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
         rig.request();
         rig.resolve();
         rig.accept_start();
@@ -3381,7 +3420,13 @@ mod lifecycle_regression_tests {
     #[test]
     fn did_background_prevents_due_up_next_from_launching_while_suspended() {
         let _serial = crate::testlock::serial();
-        let mut rig = Rig::new();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED did_background_prevents_due_up_next_from_launching_while_suspended: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
         let mut fr = rig.due_up_next();
         let entry = rig.app.pages.nav.top_page().unwrap().id;
         let instance = rig.app.pages.nav.instance_of(entry);
@@ -3422,7 +3467,13 @@ mod lifecycle_regression_tests {
     #[test]
     fn foreground_due_up_next_still_requests_its_successor() {
         let _serial = crate::testlock::serial();
-        let mut rig = Rig::new();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED foreground_due_up_next_still_requests_its_successor: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
         let mut fr = rig.due_up_next();
         unsafe {
             playback_tick(&mut rig.app, &mut fr);
@@ -3437,7 +3488,13 @@ mod lifecycle_regression_tests {
     #[test]
     fn replacement_play_retires_failed_foreground_owner_and_lands() {
         let _serial = crate::testlock::serial();
-        let mut rig = Rig::new();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED replacement_play_retires_failed_foreground_owner_and_lands: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
         rig.request();
         rig.resolve();
         rig.accept_start();
