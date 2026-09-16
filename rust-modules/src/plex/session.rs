@@ -1670,7 +1670,9 @@ fn peek_locked() -> Session {
 fn session_from_read(read: ReadState) -> Session {
     match read {
         ReadState::Ready { session, .. } => session,
-        ReadState::Missing | ReadState::Locked | ReadState::Blocked => Session::default(),
+        ReadState::Missing | ReadState::Locked | ReadState::Blocked | ReadState::Cleared => {
+            Session::default()
+        }
     }
 }
 
@@ -1696,6 +1698,14 @@ enum ReadState {
     /// The canonical authority could not answer safely. It shadows legacy candidates exactly as
     /// `Locked` does, so a fresh client id can never overwrite the only copy of the credentials.
     Blocked,
+    /// The canonical authority answered with an explicit cleared/signed-out tenure record — this
+    /// device really did sign out, and the authority durably recorded that. For load/lock
+    /// semantics it must behave exactly like [`Missing`](ReadState::Missing): no locked/blocked UI
+    /// framing, and a fresh client id is minted and persisted normally. It is still its own
+    /// variant rather than `Missing` itself for the one property it does NOT share with `Missing`:
+    /// it must still shadow a reappearing legacy file, exactly as `Locked`/`Blocked` do, so a
+    /// stale pre-DB8 `auth.json` can never resurrect a tenure this device already cleared.
+    Cleared,
 }
 
 /// The canonical authority's answer, retaining whether protected data exists but cannot be opened.
@@ -1719,7 +1729,10 @@ fn read_locked() -> ReadState {
         }
         persistence::CanonicalRead::Missing => ReadState::Missing,
         // A cleared tenure is deliberately not Missing: it must shadow a reappearing legacy file.
-        persistence::CanonicalRead::Cleared { .. } => ReadState::Blocked,
+        // It is also deliberately not Blocked/Locked: those carry locked/blocked UI framing that a
+        // cleanly signed-out device must not present. `ReadState::Cleared` is its own variant so
+        // downstream `match`es are forced to decide, rather than silently inheriting either policy.
+        persistence::CanonicalRead::Cleared { .. } => ReadState::Cleared,
         persistence::CanonicalRead::Locked { .. } => ReadState::Locked,
         persistence::CanonicalRead::Pending { .. } => ReadState::Blocked,
         persistence::CanonicalRead::Blocked(_) => ReadState::Blocked,
@@ -1861,6 +1874,10 @@ fn read_identity(read: &ReadState) -> Vec<u8> {
     match read {
         ReadState::Missing => vec![0],
         ReadState::Locked | ReadState::Blocked => vec![1],
+        // Its own bucket, distinct from both Missing and Locked/Blocked: a concurrent transition
+        // into or out of Cleared must be detectable by `DeferredLoad::apply`'s identity check, not
+        // silently matched against whichever of those two buckets it happens to share a vec! with.
+        ReadState::Cleared => vec![2],
         ReadState::Ready { session, .. } => serde_json::to_vec(session).expect("Session serialization"),
     }
 }
@@ -1901,7 +1918,10 @@ fn load_with_id(mint: impl FnOnce() -> String) -> Session {
 }
 
 fn prepare_load(read: ReadState, mint: impl FnOnce() -> String) -> (Session, bool) {
-    let persisted = !matches!(read, ReadState::Missing);
+    // A cleared tenure is grouped with Missing here, deliberately not with Locked/Blocked: it is
+    // not "a persisted session exists" (there is nothing to preserve), and — the actual fix this
+    // exists for — it must not be `locked`, which is what drives locked/blocked UI/boot framing.
+    let persisted = !matches!(read, ReadState::Missing | ReadState::Cleared);
     let locked = matches!(read, ReadState::Locked | ReadState::Blocked);
     let plaintext = matches!(
         read,
@@ -1912,7 +1932,9 @@ fn prepare_load(read: ReadState, mint: impl FnOnce() -> String) -> (Session, boo
     );
     let mut s = match read {
         ReadState::Ready { session, .. } => session,
-        ReadState::Missing | ReadState::Locked | ReadState::Blocked => Session::default(),
+        ReadState::Missing | ReadState::Locked | ReadState::Blocked | ReadState::Cleared => {
+            Session::default()
+        }
     };
     seed_fresh_quality(&mut s, persisted, crate::route::auto_quality_ready());
     let fresh = s.client_id.is_empty();
@@ -2284,6 +2306,11 @@ fn tmp_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
 
 /// Clear the persisted session (sign-out) — removes the file; a fresh `client_id` is minted next
 /// load. The old-path copy goes too, or the migration fallback would resurrect the stale session.
+/// **And commits an explicit Cleared record to the canonical authority** — the legacy-file sweep
+/// below only ever touches pre-DB8 candidates; on a build where `persistence::load`/`write_session`
+/// actually read/write the canonical store (DB8 or its host/ARM equivalent), that store is a
+/// SEPARATE copy of the account token and roster, and clearing only the legacy files would leave a
+/// clean-looking sign-out that the canonical authority still hands back on the next boot.
 ///
 /// Takes [`IO`] like every other entry point, and that is not tidiness: a sign-out racing an
 /// in-flight worker's read-modify-write would otherwise delete the file and have the worker put it
@@ -2304,6 +2331,34 @@ pub fn clear() {
         }
         remove_temp_siblings(&path);
         let _ = std::fs::remove_file(path);
+    }
+    // The canonical clear is best-effort in the sense that sign-out must still remove the legacy
+    // files above even when it does not durably land — losing the local files on report of a
+    // canonical failure would leave BOTH copies of the credentials on disk. But "best-effort" must
+    // never mean "silent": anything short of a verified Durable commit is a real security-relevant
+    // failure (the account token may still be readable from the canonical authority on next boot),
+    // so it is always logged, matching this module's existing `save`-side logging idiom.
+    match persistence::commit_cleared() {
+        persistence::CanonicalCommit::Durable { .. } => {}
+        persistence::CanonicalCommit::Uncertain { stage, errno } => {
+            crate::log(&format!(
+                "session: canonical clear is uncertain stage={stage:?} errno={errno} — the \
+                 account token may still be readable from the canonical authority"
+            ));
+        }
+        persistence::CanonicalCommit::Failed(error) => {
+            crate::log(&format!(
+                "session: canonical clear failed: {error:?} — the account token may still be \
+                 readable from the canonical authority"
+            ));
+        }
+        persistence::CanonicalCommit::ProtectionFailed(failure) => {
+            crate::log(&format!(
+                "session: canonical clear protection failed: {:?}, commit_verified={} — the \
+                 account token may still be readable from the canonical authority",
+                failure.failure, failure.db8_commit_verified
+            ));
+        }
     }
 }
 
@@ -3393,6 +3448,141 @@ mod tests {
         std::fs::write(t.tmp(), b"{}").unwrap();
         clear();
         assert!(!t.file().exists() && !t.tmp().exists());
+    }
+
+    // ---- The CANONICAL half (AUTH-08/AUTH-09): `clear()` must commit a canonical Cleared record,
+    // and a Cleared record must present like Missing (not Locked/Blocked) while still shadowing a
+    // reappearing legacy file. --------------------------------------------------------------------
+    //
+    // These exercise `persistence::load`/`write_session`/`commit_cleared` for real, not the
+    // `TEST_FILE` legacy-file bypass `TempSession` above uses — under `#[cfg(test)]`,
+    // `read_live_locked` short-circuits straight to `read_legacy_locked` whenever `TEST_FILE` is
+    // set, which is exactly right for grading the legacy file in isolation but would make it
+    // impossible to ever reach the canonical authority `clear`/`ReadState::Cleared` are about.
+    // `redirect_persistent_state_root_for_test` instead redirects the canonical store itself.
+
+    /// Point the canonical persistence root at a directory of this test's own, and take it back on
+    /// drop.
+    struct TempCanonicalRoot {
+        dir: std::path::PathBuf,
+    }
+
+    impl TempCanonicalRoot {
+        fn new(tag: &str) -> TempCanonicalRoot {
+            let dir = std::env::temp_dir().join(format!(
+                "plxnative-session-canonical-{}-{tag}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+            TempCanonicalRoot { dir }
+        }
+    }
+
+    impl Drop for TempCanonicalRoot {
+        fn drop(&mut self) {
+            crate::paths::redirect_persistent_state_root_for_test(None);
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// AUTH-08 (RED before the fix, for the real reason — not a compile error, not a fixture bug):
+    /// `clear()` only ever swept the legacy on-disk candidates, never committing anything to the
+    /// canonical authority. `save`/`clear` both route through `persistence::write_session`/
+    /// `persistence::load` exactly as a live build does once `TEST_FILE` is left unset (see
+    /// `save_locked_with_authority`'s own `TEST_FILE`-gated branch), so this is the production
+    /// path, not a fixture standing in for it — it fails today because `clear()` never calls
+    /// `persistence::commit_cleared()`, and the account token is still there to read back.
+    #[test]
+    fn clear_commits_a_canonical_cleared_record_so_the_account_token_does_not_survive_signout() {
+        let _serial = crate::testlock::serial();
+        let _root = TempCanonicalRoot::new("signout");
+        redirect_for_test(None);
+
+        save(&signed_in());
+        match persistence::load() {
+            persistence::CanonicalRead::Missing => {
+                panic!("setup: the seed save did not reach the canonical authority")
+            }
+            persistence::CanonicalRead::Cleared { .. } => {
+                panic!("setup: the canonical authority already reads as cleared before clear() ran")
+            }
+            _ => {}
+        }
+
+        clear();
+
+        match persistence::load() {
+            persistence::CanonicalRead::Cleared { .. } => {}
+            persistence::CanonicalRead::Missing => panic!(
+                "clear() left the canonical authority Missing rather than committing an explicit \
+                 Cleared record — AUTH-09's legacy-shadow guarantee needs a real Cleared record, \
+                 not mere absence"
+            ),
+            _ => panic!(
+                "AUTH-08: clear() did not commit a canonical Cleared record — the canonical \
+                 authority still answers with a readable/protected tenure after sign-out, so the \
+                 account token and roster survive sign-out in the authority `load()` actually reads"
+            ),
+        }
+
+        match read_live_locked() {
+            ReadState::Ready { session, .. } => panic!(
+                "the account token survived sign-out in the live read path: {:?}",
+                session.account_token
+            ),
+            _ => {}
+        }
+    }
+
+    /// AUTH-09 (RED before the fix, for the real reason): a canonical `Cleared` record was mapped
+    /// onto the same `ReadState` as `Locked`/an unreadable `Blocked` envelope, so a cleanly
+    /// signed-out device booted with locked/blocked UI framing instead of a plain signed-out Home.
+    /// `prepare_load`'s `save` output is the load path's real signal for that distinction: a fresh
+    /// client id is minted AND persisted for a genuinely fresh/cleared device, exactly as it is on
+    /// true first boot — while a truly `Locked`/`Blocked` record must refuse to, because it might
+    /// still hold the only copy of real credentials once whatever blocked it clears. Conflating
+    /// `Cleared` with that policy is what fails this test today.
+    #[test]
+    fn a_cleared_canonical_tenure_boots_clean_and_still_shadows_a_reappearing_legacy_file() {
+        let _serial = crate::testlock::serial();
+        let _root = TempCanonicalRoot::new("boot");
+        redirect_for_test(None);
+
+        // A legacy file "reappears" (e.g. carried over from a pre-DB8 install) beside a canonical
+        // authority that has already recorded this tenure as cleared.
+        std::fs::write(fallback_file(), serde_json::to_vec(&signed_in()).unwrap()).unwrap();
+
+        let commit = persistence::commit_cleared();
+        assert!(
+            matches!(commit, persistence::CanonicalCommit::Durable { .. }),
+            "setup: the canonical authority must accept the clear: {commit:?}"
+        );
+
+        // AUTH-09a: not locked/blocked UI framing.
+        let read = read_locked();
+        let (session, save) = prepare_load(read, || "fresh-id".to_string());
+        assert!(
+            session.account_token.is_empty(),
+            "a cleared tenure must not read back with an account token"
+        );
+        assert!(
+            save,
+            "a cleared tenure must mint and persist a fresh client id exactly like Missing; \
+             today it is conflated with Locked/Blocked, which refuses to persist a fresh id \
+             (save={save})"
+        );
+
+        // AUTH-09b (must hold both before and after the fix): the legacy shadow priority survives.
+        match read_live_locked() {
+            ReadState::Ready { .. } => panic!(
+                "a reappearing legacy file was read back over a canonical Cleared record — \
+                 AUTH-09's shadow-priority guarantee was broken"
+            ),
+            _ => {}
+        }
+
+        let _ = std::fs::remove_file(fallback_file());
     }
 
     /// **The route ground's one persisted seed.** A fresh device has recorded nothing, a real
