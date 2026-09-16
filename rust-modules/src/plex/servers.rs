@@ -851,14 +851,16 @@ pub(crate) fn register_with_client_id(
     client_id: &str,
 ) -> ServerId {
     // Same crate-global registry guard as `register_lazy` (which this reaches through
-    // `register_origin_with_client_id`) — named directly here too, since this is the entry point
+    // `register_pinned_with_client_id`) — named directly here too, since this is the entry point
     // D5 names and `register_lazy`'s own assertion is one call away rather than at this frame.
     #[cfg(test)]
     crate::testlock::assert_held("the plex server registry (register_with_client_id)");
-    register_origin_with_client_id(machine_id, &Origin::http(host, port), token, client_id)
+    register_pinned_with_client_id(machine_id, &Origin::http(host, port), token, None, client_id,
+        ConnectionFacts::default())
 }
 
-/// [`register_origin_with_client_id`] with a resolve pin — the seam for the test that is about the
+/// [`register_with_client_id`], given the whole [`Origin`] and, optionally, a resolve pin — the
+/// seam for a test that is about the SCHEME (which the `(host, port)` form cannot express) or the
 /// PIN, and for grading [`ConnectionFacts`]'s "leave unchanged on retoken" / "sets both on
 /// re-point" semantics (#95 step 8). Same contract as every `_with_client_id` seam: no session
 /// file, no worker — a caller that genuinely knows nothing about the connection passes
@@ -874,19 +876,6 @@ pub(crate) fn register_pinned_with_client_id(
     register_lazy(machine_id, origin, token, pin, connection, &|| client_id.to_owned())
 }
 
-/// [`register_with_client_id`], given the whole [`Origin`] — the seam for a test that is about the
-/// SCHEME, which the `(host, port)` form cannot express. Identical to
-/// [`register_pinned_with_client_id`] with `pin: None`, so it forwards there rather than repeating
-/// the `register_lazy` call.
-pub(crate) fn register_origin_with_client_id(
-    machine_id: &str,
-    origin: &Origin,
-    token: &str,
-    client_id: &str,
-) -> ServerId {
-    register_pinned_with_client_id(machine_id, origin, token, None, client_id, ConnectionFacts::default())
-}
-
 fn register_lazy(
     machine_id: &str,
     origin: &Origin,
@@ -896,9 +885,9 @@ fn register_lazy(
     client_id: &dyn Fn() -> String,
 ) -> ServerId {
     // The registry's SLOTS/COUNT/ACTIVE/CURRENT tables are crate globals — a test reaching this
-    // through `register_with_client_id`/`register_origin_with_client_id`/
-    // `register_pinned_with_client_id` without `crate::testlock::serial()` writes them outside the
-    // lock, exactly what `lib.rs::testlock` exists to catch.
+    // through `register_with_client_id`/`register_pinned_with_client_id` without
+    // `crate::testlock::serial()` writes them outside the lock, exactly what `lib.rs::testlock`
+    // exists to catch.
     #[cfg(test)]
     crate::testlock::assert_held("the plex server registry (register)");
     // Recorded BEFORE the client is published, so no request made through the new pointer can
@@ -1436,7 +1425,7 @@ mod tests {
     /// pair-shaped code did because it could not spell one — and the day a server moves to https
     /// the registry keeps a plaintext client for it, in place, with nothing in the log.
     ///
-    /// Driven through [`register_origin_with_client_id`], NOT the public [`register_origin`] — see
+    /// Driven through [`register_pinned_with_client_id`], NOT the public [`register_origin`] — see
     /// that seam's doc. This test was written against the public one and turned CI red on Linux
     /// with a stack overflow in an unnamed thread, because `register_origin` spawns a real
     /// `serverinfo` worker that opens a real socket on a 256 KiB stack.
@@ -1444,7 +1433,7 @@ mod tests {
     fn moving_a_server_to_https_re_points_its_slot() {
         let _g = fresh();
         let reg_at = |o: &Origin, tok: &str| {
-            register_origin_with_client_id("mach-A", o, tok, "test-client-id")
+            register_pinned_with_client_id("mach-A", o, tok, None, "test-client-id", ConnectionFacts::default())
         };
         let plain = Origin::http("10.0.0.1", 32400);
         let id = reg_at(&plain, "tok-a");

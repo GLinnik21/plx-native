@@ -2496,18 +2496,22 @@ fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: Session
         }));
     };
     let mut settled = Vec::new();
+    // Unlike `activate` above, this does NOT also `output.progress(RegistryProgress::Settled)`
+    // per server as the race runs. It used to, and the owner committed BOTH: the live progress
+    // arm (`Observation::Registry` in `owner.rs`) planned one `RegistryPlan::Probe` per server as
+    // it settled, and the terminal `ServerRosterOutcome` below planned the identical set again
+    // through `settled`/`roster_plan` — every probe this worker ever runs was published twice.
+    // This worker is a BACKGROUND refresh (`refresh_roster`) with no live race screen watching
+    // it — unlike `discover_and_store`'s sign-in flow, which really does drive a Sources/QR
+    // screen off `RegistryProgress::Activate` while candidates settle, and keeps publishing both
+    // — so there is nothing here for the extra progress arrival to reach before the terminal
+    // commit does the same work. `settled` alone, folded into the terminal outcome, is authoritative.
     let found = match resolve_roster_live_while(
         &resources,
         &household,
         &mut activate,
         &mut |plan, outcome, tier, address| {
-            let probe = settled_probe(plan, outcome, tier, address);
-            settled.push(probe.clone());
-            output.progress(AuthProgress::Registry(RegistryProgress::Settled {
-                epoch,
-                expected: Some(expected.clone()),
-                probe,
-            }));
+            settled.push(settled_probe(plan, outcome, tier, address));
         },
         &|| output.live(),
     ) {

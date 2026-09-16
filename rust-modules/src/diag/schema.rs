@@ -250,7 +250,7 @@ pub(crate) struct UsageContext {
     /// server** — `app.launch`, `route.entered`, `signin.*` — since an account with N servers has
     /// no single connection to report for those. Present (possibly `unknown`, when the winning
     /// client hasn't classified its link yet) on every event captured through
-    /// [`UsageEnvelope::capture_for_server`]. `#[serde(default)]` keeps an older spooled envelope,
+    /// [`UsageEnvelope::capture_for_snapshot`]. `#[serde(default)]` keeps an older spooled envelope,
     /// captured before this field could be omitted, decoding as `None` rather than refusing to
     /// parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -298,33 +298,20 @@ impl Default for UsageContext {
 
 impl UsageContext {
     /// Read the already-probed platform inventory. `webos::probe` runs before telemetry boot and
-    /// before the first usage event; an unavailable field is reported honestly as `unknown`.
+    /// before the first usage event; an unavailable field is reported honestly as `unknown`. This
+    /// is the server-LESS form — a generic screen or app event has no one server when an account
+    /// owns N of them, so it OMITS `server_connection`/`ip_version` entirely rather than
+    /// inheriting whichever registry slot happens to be current or reporting a hardcoded
+    /// `unknown` for a connection the event never had. The one server-addressed producer is
+    /// [`Self::for_snapshot`], for an event that captured its own `(link, ip)` up front.
     pub(crate) fn current() -> Self {
-        Self::for_server(None)
-    }
-
-    /// Capture network facts for the server the action actually addressed, reading the CURRENT
-    /// client's link/IP at capture time. A generic screen or app event has no one server when an
-    /// account owns N of them, so `None` OMITS both fields rather than inheriting whichever
-    /// registry slot happens to be current or reporting a hardcoded `unknown` for a connection the
-    /// event never had.
-    ///
-    /// **Not what a playback attempt event wants.** An attempt is captured well after it started
-    /// (`player::report::requested`), and a live lookup here would report whichever connection
-    /// facts the CURRENT client carries at send/emit time — which a mid-attempt re-point can
-    /// change out from under it. [`Self::for_snapshot`] is the one that takes an already-frozen
-    /// `(link, ip)` pair instead of re-reading the registry.
-    pub(crate) fn for_server(server: Option<crate::plex::ServerId>) -> Self {
-        let connection = server.and_then(crate::plex::client_for).map(|client| {
-            (client.link(), client.ip_version())
-        });
-        Self::build(connection)
+        Self::build(None)
     }
 
     /// Capture network facts from an ALREADY-CAPTURED `(link, ip)` pair rather than a live
     /// registry read. `server.is_some()` is what decides "this event addresses one server" (and
     /// so gets fields at all, possibly `unknown`); `server.is_none()` omits both regardless of
-    /// `link`/`ip`, matching [`Self::for_server`]'s server-less behaviour exactly.
+    /// `link`/`ip`, matching [`Self::current`]'s server-less behaviour exactly.
     pub(crate) fn for_snapshot(
         server: Option<crate::plex::ServerId>,
         link: Option<crate::plex::probe::Location>,

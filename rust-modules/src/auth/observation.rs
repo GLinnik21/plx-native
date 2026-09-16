@@ -211,6 +211,9 @@ fn write_probe(w: &mut crate::ui::machine::Canon, probe: &SettledProbe) {
         Outcome::InsecureOnly => 4,
     });
     owner::write_tier(w, probe.tier);
+    // The candidate address now affects application state (`publish_settled_probe` derives the
+    // client's IP generation from it), so it must be part of what the Canon encodes too.
+    w.option(probe.address.as_deref(), |w, address| { w.str(address); });
 }
 
 fn write_probes(w: &mut crate::ui::machine::Canon, probes: &[SettledProbe]) {
@@ -422,5 +425,31 @@ mod insecure_only_outcome_tests {
         for other in [Outcome::Reachable, Outcome::WrongServer, Outcome::Unauthorized, Outcome::Unreachable] {
             assert_ne!(insecure, bytes(other), "InsecureOnly must not collide with {other:?}'s Canon bytes");
         }
+    }
+
+    /// PR #104 review: `SettledProbe::address` now affects application state
+    /// (`publish_settled_probe` derives the client's IP generation from it) — the recorder/replay
+    /// Canon must therefore see a change in it, or a replay could diverge silently on the very
+    /// field that decides what gets published.
+    #[test]
+    fn write_probe_encodes_the_address_so_a_change_in_it_changes_the_canon() {
+        use crate::ui::machine::Canon;
+        let probe = |address: Option<&str>| SettledProbe {
+            machine_id: "m".into(), outcome: Outcome::InsecureOnly,
+            tier: Some(crate::plex::probe::Location::Local), address: address.map(str::to_owned),
+        };
+        let bytes = |address: Option<&str>| {
+            let mut w = Canon::new();
+            write_probe(&mut w, &probe(address));
+            w.finish()
+        };
+        assert_ne!(
+            bytes(Some("10.0.0.9")), bytes(None),
+            "a probe's address must be part of what the Canon encodes"
+        );
+        assert_ne!(
+            bytes(Some("10.0.0.9")), bytes(Some("10.0.0.10")),
+            "two different addresses must not collide in the Canon"
+        );
     }
 }

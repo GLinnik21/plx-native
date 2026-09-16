@@ -35,22 +35,37 @@
 //! the completion rate a measure of how often people scrub.
 
 use crate::diag::schema::DiagEvent;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU32, AtomicU8, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU8, Ordering::Relaxed};
 
 /// The current attempt's opaque id — random, per attempt, never stored. See `DiagEvent`'s playback
 /// block: it joins one attempt's lifecycle events and cannot link two playbacks, let alone two sets.
 static ATTEMPT: AtomicI64 = AtomicI64::new(0);
-/// Registry slot of the server this attempt addresses. Captured when the plan commits so a later
-/// server switch cannot relabel the attempt's analytics.
-static ATTEMPT_SERVER: AtomicU16 = AtomicU16::new(crate::plex::ServerId::UNSET.raw());
-/// #95 step 8, item 4: the attempt's connection facts, SNAPSHOTTED once in [`requested`] rather
-/// than read live off `ATTEMPT_SERVER`'s client at every `emit`. A live read would let a
-/// mid-attempt re-point (a fresh `Client` published over the same slot) relabel `started`/`ended`
-/// events that reported `local` a moment ago as `unknown`, or worse, as whatever the NEW server's
-/// connection happens to be — neither is the connection THIS attempt actually used.
-/// `link_code`/`ip_code` below mirror `plex::client`'s private encoding (0 = unknown).
-static ATTEMPT_LINK: AtomicU8 = AtomicU8::new(0);
-static ATTEMPT_IP: AtomicU8 = AtomicU8::new(0);
+/// The attempt's server slot and connection facts, packed into one word so `requested` publishes
+/// all three with a SINGLE store and `emit` reads them with a single load — three separate atomics
+/// (as this used to be: a `u16` server plus two `u8` link/ip fields) let a concurrent `emit` (the
+/// engine's own worker thread; `requested` runs on the main thread) observe a torn combination —
+/// e.g. the NEW attempt's server slot paired with the OLD attempt's link/ip, or vice versa,
+/// whenever the two threads interleave between the three stores/loads.
+///
+/// Bit layout (LSB first), all little-endian within the `u32`:
+/// - bits 0..16:  server slot (`ServerId::raw()`, a `u16`; `ServerId::UNSET.raw()` when idle)
+/// - bits 16..24: link code (`encode_link`'s `u8`: 0 = unknown, mirrors `plex::client`'s private encoding)
+/// - bits 24..32: ip code (`encode_ip`'s `u8`: 0 = unknown, mirrors `plex::client`'s private encoding)
+///
+/// #95 step 8, item 4: the connection half is SNAPSHOTTED once in [`requested`] rather than read
+/// live off the server slot's client at every `emit`. A live read would let a mid-attempt re-point
+/// (a fresh `Client` published over the same slot) relabel `started`/`ended` events that reported
+/// `local` a moment ago as `unknown`, or worse, as whatever the NEW server's connection happens to
+/// be — neither is the connection THIS attempt actually used.
+static ATTEMPT_CONNECTION: AtomicU32 = AtomicU32::new(pack_connection(crate::plex::ServerId::UNSET.raw(), 0, 0));
+
+const fn pack_connection(server: u16, link: u8, ip: u8) -> u32 {
+    (server as u32) | ((link as u32) << 16) | ((ip as u32) << 24)
+}
+
+fn unpack_connection(word: u32) -> (u16, u8, u8) {
+    (word as u16, (word >> 16) as u8, (word >> 24) as u8)
+}
 
 fn encode_link(l: Option<crate::plex::probe::Location>) -> u8 {
     match l {
@@ -877,14 +892,13 @@ pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: crate::plex:
         previous + 1
     };
     ATTEMPT.store(id, Relaxed);
-    ATTEMPT_SERVER.store(server.raw(), Relaxed);
-    // Snapshot the connection ONCE, here — see `ATTEMPT_LINK`/`ATTEMPT_IP`'s doc for why `emit`
-    // must never re-read the live client.
+    // Snapshot the server slot AND the connection together, in one store — see
+    // `ATTEMPT_CONNECTION`'s doc for why `emit` must never re-read the live client, and why this
+    // must not be three separate stores.
     let (link, ip) = crate::plex::client_for(server)
         .map(|c| (c.link(), c.ip_version()))
         .unwrap_or((None, None));
-    ATTEMPT_LINK.store(encode_link(link), Relaxed);
-    ATTEMPT_IP.store(encode_ip(ip), Relaxed);
+    ATTEMPT_CONNECTION.store(pack_connection(server.raw(), encode_link(link), encode_ip(ip)), Relaxed);
     SAW_START.store(false, Relaxed);
     SAW_FAIL.store(false, Relaxed);
     SAW_END.store(false, Relaxed);
@@ -917,14 +931,17 @@ pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: crate::plex:
 #[cfg(test)]
 pub(crate) fn attempt_connection_snapshot_for_test(
 ) -> (Option<crate::plex::probe::Location>, Option<crate::plex::IpVersion>) {
-    (decode_link(ATTEMPT_LINK.load(Relaxed)), decode_ip(ATTEMPT_IP.load(Relaxed)))
+    let (_, link, ip) = unpack_connection(ATTEMPT_CONNECTION.load(Relaxed));
+    (decode_link(link), decode_ip(ip))
 }
 
 fn emit(event: DiagEvent) {
-    let sid = crate::plex::ServerId::from_raw(ATTEMPT_SERVER.load(Relaxed));
-    // The snapshot `requested` took, not a live `client_for(sid)` read — see `ATTEMPT_LINK`'s doc.
-    let link = decode_link(ATTEMPT_LINK.load(Relaxed));
-    let ip = decode_ip(ATTEMPT_IP.load(Relaxed));
+    // One load, not three — see `ATTEMPT_CONNECTION`'s doc for why a concurrent `requested` must
+    // never be observable as a torn mix of the old server slot and the new connection or back.
+    let (server, link, ip) = unpack_connection(ATTEMPT_CONNECTION.load(Relaxed));
+    let sid = crate::plex::ServerId::from_raw(server);
+    let link = decode_link(link);
+    let ip = decode_ip(ip);
     crate::diag::event_for_connection(event, sid, link, ip);
 }
 
@@ -1299,6 +1316,35 @@ pub(crate) fn watched_class(position_ns: i64, duration_ns: i64) -> &'static str 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PR #104 review: `ATTEMPT_CONNECTION` packs the server slot, link code and ip code into one
+    /// `u32` so `requested`/`emit` publish/observe them with a single store/load. Every field must
+    /// round-trip through the pack/unpack pair independently of the others, at both ends of each
+    /// field's range (a bit landing in the wrong lane would show up here as one field corrupting
+    /// its neighbour).
+    #[test]
+    fn attempt_connection_packing_round_trips_every_field_independently() {
+        for server in [0u16, 1, u16::MAX - 1, u16::MAX] {
+            for link in [0u8, 1, 2, 3] {
+                for ip in [0u8, 1, 2] {
+                    let packed = pack_connection(server, link, ip);
+                    assert_eq!(
+                        unpack_connection(packed),
+                        (server, link, ip),
+                        "server={server} link={link} ip={ip} did not round-trip"
+                    );
+                }
+            }
+        }
+        // The three lanes must not bleed into each other: changing one field's bits must never
+        // change what another field decodes to.
+        let base = pack_connection(0x1234, 1, 2);
+        let bumped_server = pack_connection(0x5678, 1, 2);
+        let (_, link, ip) = unpack_connection(bumped_server);
+        assert_eq!((link, ip), (1, 2), "changing the server lane must not disturb link/ip");
+        let (server, _, _) = unpack_connection(base);
+        assert_eq!(server, 0x1234);
+    }
 
     /// #95 step 8, item 4: `requested` snapshots the attempt's `(link, ip)` once; a re-point that
     /// lands mid-attempt (a fresh `Client` published over the same slot, e.g. the roster refresh

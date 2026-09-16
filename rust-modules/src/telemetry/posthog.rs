@@ -118,7 +118,7 @@ fn envelope_props(
         properties.insert(key.into(), value.clone().into());
     }
     // Omitted entirely, not sent as `"unknown"`, when this event has no one server — see
-    // `UsageContext::for_server`'s doc.
+    // `UsageContext::current`'s doc.
     for (key, value) in [
         ("server_connection", &context.server_connection),
         ("ip_version", &context.ip_version),
@@ -565,13 +565,13 @@ mod tests {
         assert_eq!(body["properties"][ANON], false);
     }
 
-    /// #95 step 8, item 1: an event with no one server (`UsageContext::for_server(None)`, which is
-    /// what every server-less `DiagEvent` captures through) must OMIT `server_connection` and
+    /// #95 step 8, item 1: an event with no one server (`UsageContext::current()`, which is what
+    /// every server-less `DiagEvent` captures through) must OMIT `server_connection` and
     /// `ip_version` from the wire body entirely, never send a hardcoded `"unknown"`. Other context
     /// fields are unaffected.
     #[test]
     fn a_server_less_event_omits_connection_and_ip_version() {
-        let context = UsageContext::for_server(None);
+        let context = UsageContext::current();
         assert_eq!(context.server_connection, None);
         assert_eq!(context.ip_version, None);
         let event = UsageEnvelope::capture_with_context(
