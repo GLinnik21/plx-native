@@ -18,8 +18,41 @@ p.add_argument('destination', type=Path)
 p.add_argument('--stripped', action='store_true')
 p.add_argument('--evidence-base', type=Path)
 a = p.parse_args()
+
+
+def find_evidence_by_content(source):
+    """Locate the linker's own evidence for `source`'s bytes.
+
+    `cargo rustc --bin <name>` invokes the linker with `-o` pointed at a
+    HASHED path under `target/<triple>/release/deps/<crate>-<hash>`, so
+    arm-cc.py's evidence lands there — then cargo copies (not symlinks or
+    hardlinks) the binary to the plain `release/<name>` path Make actually
+    names. `.resolve()` cannot find it: there is no symlink to follow. Match
+    on the recorded elf_sha256 instead of guessing a path, so a stale sibling
+    with the right name but the wrong build can never be picked by accident.
+    """
+    deps_dir = source.parent / 'deps'
+    if not deps_dir.is_dir():
+        return None
+    crate = source.name.replace('-', '_')
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    for candidate_json in sorted(deps_dir.glob(f'{crate}-*.link.json')):
+        try:
+            record = json.loads(candidate_json.read_text())
+        except (OSError, ValueError):
+            continue
+        if record.get('elf_sha256') == digest:
+            return Path(str(candidate_json)[:-len('.link.json')])
+    return None
+
+
 if not Path(str(a.source) + '.link.json').is_file():
-    a.source = a.source.resolve()
+    resolved = a.source.resolve()
+    if Path(str(resolved) + '.link.json').is_file():
+        a.source = resolved
+    else:
+        by_content = find_evidence_by_content(a.source) if a.source.is_file() else None
+        a.source = by_content if by_content is not None else resolved
 m.check_elf(a.source)
 source = a.source.read_bytes()
 target = a.destination.read_bytes()
