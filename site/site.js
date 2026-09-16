@@ -32,7 +32,7 @@
           el.classList.add("is-revealed");
         });
       },
-      { rootMargin: "0px 0px -10% 0px", threshold: 0 }
+      { rootMargin: "0px 0px -18% 0px", threshold: 0 }
     );
 
     const reset = new IntersectionObserver(
@@ -50,6 +50,21 @@
       enter.observe(el);
       reset.observe(el);
     });
+
+    // The trigger line sits above the bottom of the viewport, so an element
+    // near the end of the page could stay under it at full scroll on a tall
+    // window. At the bottom, reveal whatever is on screen.
+    const revealAtBottom = () => {
+      if (window.innerHeight + window.scrollY < document.documentElement.scrollHeight - 2) return;
+      targets
+        .filter((el) => !el.classList.contains("is-revealed") && el.getBoundingClientRect().top < window.innerHeight)
+        .forEach((el, i) => {
+          el.style.setProperty("--reveal-delay", Math.min(i * STAGGER_MS, MAX_DELAY_MS) + "ms");
+          el.classList.add("is-revealed");
+        });
+    };
+    window.addEventListener("scroll", revealAtBottom, { passive: true });
+    revealAtBottom();
   }
 
   /* ---------- Demo video ---------- */

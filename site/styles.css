@@ -120,6 +120,13 @@ img {
     translate: 0 72px;
     scale: var(--reveal-scale, 0.92);
   }
+  /* A card is tall enough that a text-sized rise finishes while most of it is
+     still below the fold, so it travels further and settles from a little
+     smaller, like media. */
+  .reveal [data-reveal="card"] {
+    translate: 0 64px;
+    scale: 0.96;
+  }
   .reveal [data-reveal].is-revealed {
     opacity: 1;
     translate: none;
