@@ -866,6 +866,12 @@ mod tests {
         assert_eq!(decode_ip(200), None);
     }
 
+    // Dev-only: this fixture drives a plaintext loopback PMS with a real client that carries a
+    // token, which a store build's `CredentialPolicy::HttpsOnly` refuses before the request ever
+    // reaches the wire (see `http::credential_transport_allowed`) — the connection this test
+    // waits on then never arrives. The store-build case is covered instead by `auth.rs`'s
+    // `e2e_real_curl_*` HTTPS harness.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn malformed_2xx_remains_a_response_after_its_deadline_passes() {
         use std::io::{Read, Write};

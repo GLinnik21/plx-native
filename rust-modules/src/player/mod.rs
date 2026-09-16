@@ -1398,7 +1398,10 @@ pub(crate) fn pending_transcode_refresh() -> bool {
     crate::route::pending_user_route_intent(crate::route::UserRouteIntent::Retranscode)
 }
 
-#[cfg(test)]
+// Dev-only: used only by `route::decision`'s `#[cfg(feature = "devtriggers")]` tests (a store
+// build's `CredentialPolicy::HttpsOnly` refuses those tests' plaintext loopback PMS fixtures; see
+// the comment on that module's first gated test).
+#[cfg(all(test, feature = "devtriggers"))]
 pub(crate) fn pending_adaptive_reload() -> bool {
     crate::route::pending_user_route_intent(crate::route::UserRouteIntent::AdaptiveReload)
 }
