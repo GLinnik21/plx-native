@@ -249,6 +249,18 @@ pub(crate) fn inject_next_commit_failure_for_test(stage: CommitStage) {
         .unwrap_or_else(|e| e.into_inner()) = Some(stage);
 }
 
+/// Unconditionally clear whatever `inject_next_commit_failure_for_test` armed, whether or not it
+/// was ever consumed. A caller whose commit path can refuse BEFORE reaching the injected stage
+/// (`StaleAuthority`, a registry refusal, an admission refusal) must pair `inject_next_commit_failure_for_test`
+/// with this in a `Drop` guard — otherwise an unconsumed injection leaks into whichever canonical
+/// commit the test process runs next.
+#[cfg(test)]
+pub(crate) fn clear_injected_commit_failure_for_test() {
+    *NEXT_COMMIT_FAILURE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 impl JsonStore {
     /// Open an already-selected state root. The root is never created or searched for here.
     pub(crate) fn new(root: PathBuf) -> Result<Self, StoreError> {
