@@ -201,7 +201,8 @@ mod tests {
                 port: 32400, origin_url: format!("http://{address}:32400"),
                 ..Default::default()
             };
-            (Some(source), crate::auth::settled_probe(&crate::plex::probe::plan(resource),
+            (Some(source), crate::auth::settled_probe(
+                &crate::plex::probe::plan(resource, crate::plex::CredentialPolicy::HttpsOnly),
                 crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local)))
         }
         fn gap(&mut self) {

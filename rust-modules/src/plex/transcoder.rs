@@ -1001,7 +1001,7 @@ mod tests {
         )
         .expect("fixture parses");
 
-        let cs = super::super::probe::candidates(&res);
+        let cs = super::super::probe::candidates(&res, crate::plex::CredentialPolicy::HttpsOnly);
         assert_eq!(cs.len(), 1, "a relay gets no plain-http twin: {cs:#?}");
         assert_eq!(cs[0].location, Location::Relay);
 

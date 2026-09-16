@@ -83,7 +83,7 @@ mod tests {
                     ..Default::default()
                 }),
                 crate::auth::settled_probe(
-                    &crate::plex::probe::plan(resource),
+                    &crate::plex::probe::plan(resource, crate::plex::CredentialPolicy::HttpsOnly),
                     crate::plex::probe::Outcome::Reachable,
                     Some(crate::plex::probe::Location::Local),
                 ),

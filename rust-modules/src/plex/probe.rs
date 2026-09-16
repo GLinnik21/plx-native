@@ -53,7 +53,7 @@ use super::account::{Connection, Resource};
 /// RANKS it (see the third sort key in [`candidates`]). Re-exported so `probe::Scheme` keeps
 /// resolving for every caller that reads it as a ranking axis.
 pub use super::origin::Scheme;
-use super::origin::{url_host, Origin};
+use super::origin::{url_host, CredentialPolicy, Origin};
 use serde::{Deserialize, Serialize};
 
 /// Where an address sits relative to us. The ranking axis every Plex client agrees on, ordered
@@ -86,6 +86,14 @@ pub struct Candidate {
     pub address: String,
     pub port: i64,
     pub ipv6: bool,
+    /// May this candidate's origin carry a credential under the [`CredentialPolicy`] `candidates`
+    /// was built with? TLS always; plaintext only under
+    /// [`CredentialPolicy::AllowPlaintext`](super::origin::CredentialPolicy::AllowPlaintext) —
+    /// [`CredentialPolicy::may_carry_credential`](super::origin::CredentialPolicy::may_carry_credential)'s
+    /// answer, computed once here rather than re-derived by every consumer. A verified but
+    /// ineligible candidate is still evidence the server is alive on this address; it is the race
+    /// in `auth.rs` that decides what an ineligible-but-verified answer means.
+    pub credential_eligible: bool,
 }
 
 impl Candidate {
@@ -126,6 +134,10 @@ pub struct ProbePlan {
     /// In rank order, best first. Empty means the policy refused every advertised address, which is
     /// a decision and not a failure to reach anything — nothing was dialled.
     pub candidates: Vec<Candidate>,
+    /// The [`CredentialPolicy`] this plan's [`Candidate::credential_eligible`] flags were computed
+    /// under — carried alongside rather than re-derived, so a caller grading eligibility later
+    /// reads the same policy the plan was built with rather than the build's CURRENT one.
+    pub policy: CredentialPolicy,
 }
 
 /// How a probe of one candidate ended. Spelled out here because the distinction the caller must not
@@ -326,7 +338,11 @@ fn is_numeric_address(a: &str) -> bool {
 ///
 /// A `relay` connection gets no http twin: it is a Plex-operated TLS tunnel, and plain HTTP on it is
 /// not a thing that exists — synthesizing one would only spend a probe slot proving that.
-pub fn candidates(res: &Resource) -> Vec<Candidate> {
+///
+/// `policy` decides only [`Candidate::credential_eligible`] — it never drops a candidate. A
+/// verified-but-ineligible answer is still evidence the server is alive on that address; see the
+/// field's own doc and `auth.rs`'s race semantics for what that answer is allowed to mean.
+pub fn candidates(res: &Resource, policy: CredentialPolicy) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     for c in res.connections.iter().filter(|c| is_usable(c)) {
         let location = tier(c);
@@ -345,6 +361,8 @@ pub fn candidates(res: &Resource) -> Vec<Candidate> {
                 address: c.address.clone(),
                 port: c.port,
                 ipv6,
+                credential_eligible: scheme == Scheme::Https
+                    || policy == CredentialPolicy::AllowPlaintext,
             });
         };
         let unmatched_shared_lan = c.local && !res.owned && !res.public_address_matches;
@@ -383,14 +401,15 @@ pub fn candidates(res: &Resource) -> Vec<Candidate> {
 }
 
 /// The plan for one server: identity to verify, token to send, addresses to try.
-pub fn plan(res: &Resource) -> ProbePlan {
+pub fn plan(res: &Resource, policy: CredentialPolicy) -> ProbePlan {
     ProbePlan {
         machine_id: res.client_identifier.clone(),
         token: res.access_token.clone(),
         owned: res.owned,
         name: res.name.clone(),
         source_title: res.source_title.clone(),
-        candidates: candidates(res),
+        candidates: candidates(res, policy),
+        policy,
     }
 }
 
@@ -451,7 +470,7 @@ mod tests {
     /// name the server we asked for.
     #[test]
     fn a_shares_unmatched_local_connection_keeps_tls_but_never_plaintext() {
-        let cs = candidates(&shared_server());
+        let cs = candidates(&shared_server(), CredentialPolicy::HttpsOnly);
 
         assert!(
             cs.iter().any(|c| {
@@ -475,7 +494,7 @@ mod tests {
         advertised_plain.connections[0].uri = "http://10.9.9.7:32400".into();
         advertised_plain.connections[0].protocol = "http".into();
         assert!(
-            !candidates(&advertised_plain)
+            !candidates(&advertised_plain, CredentialPolicy::HttpsOnly)
                 .iter()
                 .any(|c| c.address == "10.9.9.7"),
             "an advertised plaintext URI is no safer than the synthesized twin"
@@ -506,7 +525,7 @@ mod tests {
     /// reproducible for one account and not another.
     #[test]
     fn a_dotted_quad_outranks_a_hostname_that_plex_tv_listed_first() {
-        let cs = candidates(&shared_server());
+        let cs = candidates(&shared_server(), CredentialPolicy::HttpsOnly);
         let pos = |u: &str| {
             cs.iter()
                 .position(|c| c.url == u)
@@ -550,7 +569,7 @@ mod tests {
     /// into `Origin::http(&self.address, self.port)`.
     #[test]
     fn a_candidates_origin_is_parsed_from_its_url_not_rebuilt_from_its_address() {
-        let cs = candidates(&shared_server());
+        let cs = candidates(&shared_server(), CredentialPolicy::HttpsOnly);
 
         let uri = cs
             .iter()
@@ -599,7 +618,7 @@ mod tests {
     /// `origin.rs` documents, asserted where the v6 candidate is actually built.
     #[test]
     fn a_v6_candidates_origin_is_bare_for_the_resolver() {
-        let cs = candidates(&owned_server());
+        let cs = candidates(&owned_server(), CredentialPolicy::HttpsOnly);
         let v6 = cs
             .iter()
             .find(|c| c.url == "http://[2001:db8::1]:32400")
@@ -626,7 +645,7 @@ mod tests {
     /// resolve one.
     #[test]
     fn a_hostname_ranks_behind_an_address_that_can_actually_be_dialled() {
-        let cs = candidates(&shared_server());
+        let cs = candidates(&shared_server(), CredentialPolicy::HttpsOnly);
         let http: Vec<&Candidate> = cs.iter().filter(|c| c.scheme == Scheme::Http).collect();
 
         assert_eq!(
@@ -657,7 +676,7 @@ mod tests {
     fn a_non_owned_local_address_survives_when_our_public_address_matches() {
         let mut res = shared_server();
         res.public_address_matches = true;
-        let cs = candidates(&res);
+        let cs = candidates(&res, CredentialPolicy::HttpsOnly);
 
         assert_eq!(
             cs[0].location,
@@ -680,7 +699,7 @@ mod tests {
             "the fixture must carry both flags"
         );
 
-        let cs = candidates(&res);
+        let cs = candidates(&res, CredentialPolicy::HttpsOnly);
         assert!(
             cs.iter()
                 .any(|c| c.url == "http://192.168.0.10:32400" && c.location == Location::Local),
@@ -691,7 +710,7 @@ mod tests {
     /// Local first, relay last — and the relay is https-only, so it contributes exactly one.
     #[test]
     fn our_own_server_ranks_lan_first_and_relay_last() {
-        let cs = candidates(&owned_server());
+        let cs = candidates(&owned_server(), CredentialPolicy::HttpsOnly);
 
         let tiers: Vec<Location> = cs.iter().map(|c| c.location).collect();
         assert_eq!(
@@ -761,7 +780,7 @@ mod tests {
                   {"protocol":"https","address":"plex.example.com","port":443,
                    "uri":"https://plex.example.com","local":false,"relay":false,"IPv6":false}]}"#,
         );
-        let cs = candidates(&res);
+        let cs = candidates(&res, CredentialPolicy::HttpsOnly);
         let remote: Vec<&Candidate> = cs
             .iter()
             .filter(|c| c.location == Location::Remote)
@@ -796,7 +815,7 @@ mod tests {
     fn https_required_suppresses_every_http_candidate() {
         let mut res = owned_server();
         res.https_required = true;
-        let cs = candidates(&res);
+        let cs = candidates(&res, CredentialPolicy::HttpsOnly);
 
         assert!(cs.iter().all(|c| c.scheme == Scheme::Https), "{cs:#?}");
         assert_eq!(cs.len(), 4, "one per connection, the advertised uri only");
@@ -805,7 +824,7 @@ mod tests {
         // and the share, whose measured working fallback is the plain-http twin, loses it too
         let mut share = shared_server();
         share.https_required = true;
-        assert!(candidates(&share).iter().all(|c| c.scheme == Scheme::Https));
+        assert!(candidates(&share, CredentialPolicy::HttpsOnly).iter().all(|c| c.scheme == Scheme::Https));
     }
 
     /// Addresses that cannot be dialled are not candidates, and a resource with nothing usable
@@ -819,7 +838,7 @@ mod tests {
                   {"address":"10.0.0.9","port":0,"uri":"","local":true}]}"#,
         );
         assert!(
-            candidates(&res).is_empty(),
+            candidates(&res, CredentialPolicy::HttpsOnly).is_empty(),
             "no address and no port are both nothing to dial"
         );
     }
@@ -850,7 +869,7 @@ mod tests {
                   {"protocol":"http","address":"10.0.0.9","port":4294999696,"uri":"","local":true},
                   {"protocol":"http","address":"10.0.0.9","port":32400,"uri":"","local":true}]}"#,
         );
-        let cs = candidates(&res);
+        let cs = candidates(&res, CredentialPolicy::HttpsOnly);
         assert!(
             !cs.is_empty(),
             "the good address is still dialable: {cs:#?}"
@@ -865,7 +884,7 @@ mod tests {
     /// that turn "something answered" into "this server answered, and we are allowed in".
     #[test]
     fn the_plan_carries_the_identity_to_verify_and_the_per_server_token() {
-        let p = plan(&shared_server());
+        let p = plan(&shared_server(), CredentialPolicy::HttpsOnly);
         assert_eq!(
             p.machine_id, "bbbb2222",
             "what the probe response must equal"
@@ -892,7 +911,7 @@ mod tests {
     #[test]
     fn ownership_or_a_public_address_match_restores_the_plain_lan_twin() {
         let has_plain_lan = |r: &Resource| {
-            candidates(r)
+            candidates(r, CredentialPolicy::HttpsOnly)
                 .iter()
                 .any(|c| c.url == "http://10.9.9.7:32400")
         };

@@ -12,7 +12,7 @@
 use crate::plex::account::{AccountClient, HomeUser, PinPoll, Resource, SwitchOutcome};
 use crate::plex::probe::{self, Candidate, Outcome, ProbePlan};
 use crate::plex::session::{self, ProfileCreds, ServerRef, Session, SourceRef, UserRef};
-use crate::plex::{Origin, ServerId};
+use crate::plex::{CredentialPolicy, Origin, ServerId};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
@@ -1832,10 +1832,13 @@ enum Resolved {
 /// rather than a screenshot — which matters because this function is the gate on the whole feature:
 /// register the wrong connection and no other unit's work is reachable, however correct it is.
 ///
-/// `household` is [`session::Session::household_ids`] — see [`credit_of`].
+/// `household` is [`session::Session::household_ids`] — see [`credit_of`]. `policy` is passed
+/// explicitly, as it is to every pure function in this file's discovery path — this function has
+/// no live edge of its own and must not re-derive the build's policy on its own.
 fn resolve_roster_using(
     resources: &[Resource],
     household: &[i64],
+    policy: CredentialPolicy,
     probe_one: &mut dyn FnMut(&ProbePlan) -> Reach,
     between_servers: &mut dyn FnMut(),
     observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>),
@@ -1854,7 +1857,7 @@ fn resolve_roster_using(
         if server_index != 0 {
             between_servers();
         }
-        let plan = probe::plan(r);
+        let plan = probe::plan(r, policy);
         let reach = probe_one(&plan);
         let (outcome, tier) = match &reach {
             Reach::At(c, _) => (Outcome::Reachable, Some(c.location)),
@@ -1970,6 +1973,7 @@ fn resolve_roster(
     resolve_roster_using(
         resources,
         household,
+        CredentialPolicy::HttpsOnly,
         &mut probe_one,
         &mut || {},
         &mut |_, _, _| {},
@@ -1983,6 +1987,7 @@ fn resolve_roster_live_while(
     observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>),
     live: &dyn Fn() -> bool,
 ) -> Resolved {
+    let policy = CredentialPolicy::build();
     let dial: ProbeDial = Arc::new(get_identity);
     let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
     let mut probe_one = |plan: &ProbePlan| {
@@ -1992,6 +1997,7 @@ fn resolve_roster_live_while(
     resolve_roster_using(
         resources,
         household,
+        policy,
         &mut probe_one,
         &mut || { if live() { std::thread::sleep(SERVER_GAP); } },
         observe,
@@ -2032,7 +2038,7 @@ fn probe_profile_resource_live(
     resource: &Resource,
     household: &[i64],
 ) -> (Option<SourceRef>, SettledProbe) {
-    let plan = probe::plan(resource);
+    let plan = probe::plan(resource, CredentialPolicy::build());
     let dial: ProbeDial = Arc::new(get_identity);
     let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
     let reach = probe_server_racing(&plan, dial, &spawn, PROBE_DEADLINES, &mut |_, _, _| {});
@@ -3180,17 +3186,21 @@ mod tests {
     }
 
     fn race_plan() -> ProbePlan {
-        let candidate = |url: &str, address: &str, location: probe::Location| Candidate {
-            url: url.into(),
-            scheme: if url.starts_with("https://") {
+        let candidate = |url: &str, address: &str, location: probe::Location| {
+            let scheme = if url.starts_with("https://") {
                 Scheme::Https
             } else {
                 Scheme::Http
-            },
-            location,
-            address: address.into(),
-            port: 32400,
-            ipv6: false,
+            };
+            Candidate {
+                url: url.into(),
+                scheme,
+                location,
+                address: address.into(),
+                port: 32400,
+                ipv6: false,
+                credential_eligible: scheme == Scheme::Https,
+            }
         };
         ProbePlan {
             machine_id: "race-machine".into(),
@@ -3210,6 +3220,7 @@ mod tests {
                     probe::Location::Remote,
                 ),
             ],
+            policy: CredentialPolicy::HttpsOnly,
         }
     }
 
@@ -3372,6 +3383,7 @@ mod tests {
             address: "relay.example.test".into(),
             port: 443,
             ipv6: false,
+            credential_eligible: true,
         });
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_by_dial = Arc::clone(&seen);
@@ -3408,6 +3420,7 @@ mod tests {
             address: "relay.example.test".into(),
             port: 443,
             ipv6: false,
+            credential_eligible: true,
         });
         let dial: ProbeDial = Arc::new(|origin, _| {
             if origin.host() == "relay.example.test" {
@@ -3437,6 +3450,7 @@ mod tests {
             address: "relay.example.test".into(),
             port: 443,
             ipv6: false,
+            credential_eligible: true,
         });
         let dial: ProbeDial = Arc::new(|origin, _| {
             if origin.host() == "relay.example.test" {
@@ -3603,7 +3617,7 @@ mod tests {
     /// #95's build carries.
     #[test]
     fn issue_95_a_plaintext_only_winner_must_not_be_reach_at_and_must_not_starve_the_relay() {
-        let plan = probe::plan(&issue_95_account(true));
+        let plan = probe::plan(&issue_95_account(true), CredentialPolicy::HttpsOnly);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_by_dial = Arc::clone(&seen);
         let dial: ProbeDial = Arc::new(move |origin, budget| {
@@ -3667,7 +3681,14 @@ mod tests {
             )
         };
         let resolved =
-            resolve_roster_using(&resources, &[], &mut probe_one, &mut || {}, &mut |_, _, _| {});
+            resolve_roster_using(
+                &resources,
+                &[],
+                CredentialPolicy::HttpsOnly,
+                &mut probe_one,
+                &mut || {},
+                &mut |_, _, _| {},
+            );
         let Resolved::Reached(roster) = resolved else {
             panic!("the relay verifies this machine and must be recorded as reached");
         };
@@ -3697,7 +3718,14 @@ mod tests {
             )
         };
         let resolved =
-            resolve_roster_using(&resources, &[], &mut probe_one, &mut || {}, &mut |_, _, _| {});
+            resolve_roster_using(
+                &resources,
+                &[],
+                CredentialPolicy::HttpsOnly,
+                &mut probe_one,
+                &mut || {},
+                &mut |_, _, _| {},
+            );
         assert!(
             !matches!(resolved, Resolved::Reached(_)),
             "a plaintext-only answer this build cannot use must not be reported reached"
@@ -3725,6 +3753,7 @@ mod tests {
         let resolved = resolve_roster_using(
             &resources,
             &[],
+            CredentialPolicy::HttpsOnly,
             &mut |plan| {
                 order.push(plan.machine_id.clone());
                 Reach::No
@@ -3758,12 +3787,14 @@ mod tests {
             address: "203.0.113.9".into(),
             port: 32400,
             ipv6: false,
+            credential_eligible: true,
         };
         let origin = winner.origin().expect("fixture origin");
         let mut observed = Vec::new();
         let resolved = resolve_roster_using(
             &resources,
             &[],
+            CredentialPolicy::HttpsOnly,
             &mut |plan| match plan.machine_id.as_str() {
                 "yes" => Reach::At(winner.clone(), origin.clone()),
                 "denied" => Reach::Refused,
@@ -3877,7 +3908,7 @@ mod tests {
     /// that address, not about the server.
     #[test]
     fn a_response_from_the_wrong_machine_is_rejected_and_the_next_address_is_tried() {
-        let plan = probe::plan(&a_share());
+        let plan = probe::plan(&a_share(), CredentialPolicy::HttpsOnly);
         let d = Dialled::new(vec![
             ("198-51-100-7.h.plex.direct", 200, identity_json("zzzz9999")), // someone else entirely
             ("203-0-113-9.h.plex.direct", 200, identity_json("bbbb2222")), // the server we asked for
@@ -3946,7 +3977,7 @@ mod tests {
             );
         }
 
-        let plan = probe::plan(&a_share());
+        let plan = probe::plan(&a_share(), CredentialPolicy::HttpsOnly);
         let d = Dialled::new(vec![
             ("198-51-100-7.h.plex.direct", 401, Vec::new()),
             ("203.0.113.9", 200, identity_json("bbbb2222")),
@@ -3977,7 +4008,7 @@ mod tests {
     /// nothing, and only the one whose `machineIdentifier` matches is accepted.
     #[test]
     fn every_advertised_address_is_dialable_and_only_an_impossible_port_is_not() {
-        let plan = probe::plan(&a_share());
+        let plan = probe::plan(&a_share(), CredentialPolicy::HttpsOnly);
         assert_eq!(
             plan.candidates.len(),
             7,
@@ -4022,6 +4053,7 @@ mod tests {
             address: host.into(),
             port,
             ipv6: host.contains(':'),
+            credential_eligible: scheme == Scheme::Https,
         };
         let at = |host: &str| cand(Scheme::Http, host, 32400);
         assert!(dialable(&at("203.0.113.9")));
@@ -4068,7 +4100,7 @@ mod tests {
     /// `machineIdentifier` matches — which, on a server that really is at 32400, it does.
     #[test]
     fn an_undialable_port_costs_that_candidate_and_not_the_server() {
-        let mut plan = probe::plan(&a_share());
+        let mut plan = probe::plan(&a_share(), CredentialPolicy::HttpsOnly);
         let good = plan
             .candidates
             .iter()
@@ -4123,7 +4155,7 @@ mod tests {
                   {"protocol":"https","address":"192.168.0.10","port":32400,
                    "uri":"https://192-168-0-10.h.plex.direct:32400","local":true,"relay":false,"IPv6":false}]}"#,
         );
-        let plan = probe::plan(&res);
+        let plan = probe::plan(&res, CredentialPolicy::HttpsOnly);
         let d = Dialled::new(vec![
             // No plex.direct name resolves on an isolated LAN, so only the plaintext twins are
             // reachable — and both v6 ones answer too, so nothing but the ORDER decides.

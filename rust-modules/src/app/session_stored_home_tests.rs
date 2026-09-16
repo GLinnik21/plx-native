@@ -52,7 +52,8 @@ fn inject_roster_terminal(rig: &mut Bridge, expected: crate::auth::SessionIdenti
         })).unwrap();
         output.progress(crate::auth::AuthProgress::Registry(crate::auth::RegistryProgress::Settled {
             epoch, expected: Some(expected.clone()),
-            probe: crate::auth::settled_probe(&crate::plex::probe::plan(&resource),
+            probe: crate::auth::settled_probe(
+                &crate::plex::probe::plan(&resource, crate::plex::CredentialPolicy::HttpsOnly),
                 crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local)),
         })).unwrap();
         let roster = serde_json::from_value(serde_json::json!({
