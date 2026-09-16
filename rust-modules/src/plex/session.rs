@@ -208,6 +208,13 @@ pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
 }
 
+/// Snapshot the current [`TEST_FILE`] redirect so a caller can restore it exactly with
+/// `redirect_for_test`, rather than assuming `None` is always the value to go back to.
+#[cfg(test)]
+pub(crate) fn redirect_snapshot_for_test() -> Option<std::path::PathBuf> {
+    TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// **A signed-in session at a scratch path, taken back on drop — THE guard, not one of several.**
 ///
 /// Any test that reads or writes a per-profile decision (the favourite libraries above all, since

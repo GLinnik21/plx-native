@@ -945,24 +945,74 @@ mod tests {
         // module's own `RestorePerms`/`the_bridge_reports_a_failed_write_as_failed_not_durable`
         // documents.
         let _root = TempCanonicalRoot::new("uncertain-verdict");
+
+        // Snapshot whatever `TEST_FILE` held before this test touched it (normally `None`, but a
+        // guard, not an assumption) and restore it on drop.
+        let test_file_original = crate::plex::session::redirect_snapshot_for_test();
+        struct RestoreTestFile { original: Option<std::path::PathBuf> }
+        impl Drop for RestoreTestFile {
+            fn drop(&mut self) {
+                crate::plex::session::redirect_for_test(self.original.clone());
+            }
+        }
+        let _restore_test_file = RestoreTestFile { original: test_file_original };
         crate::plex::session::redirect_for_test(None);
 
         // The legacy fall-through write (once the injected canonical failure makes the commit
-        // non-durable) lands in the process-global `fallback_file()`. Snapshot its current bytes
-        // (or absence) up front and restore exactly that state on drop, so this test leaves no
-        // residue for any other test in the process that also falls through to it.
+        // non-durable) lands in the process-global `fallback_file()` — this test CANNOT redirect
+        // `TEST_FILE` away from it, because `save_locked_with_authority`'s `#[cfg(test)]` guard
+        // short-circuits a redirect straight to the legacy writer and never calls
+        // `persistence::write_session`, which would make the whole test vacuous. So this test
+        // deliberately writes the shared floor `fallback_file()`, and snapshots both its bytes
+        // (or absence) AND its permission mode up front, restoring both exactly on drop —
+        // `write_atomic` (`plex/session.rs`) renames a freshly-created 0600 temp over this path,
+        // so a run of this test can otherwise leave a 0600 file where a prior test left something
+        // more permissive, which is precisely the hazard Finding 3 was filed to remove at
+        // `persistence.rs`'s own legacy-candidate sweep.
+        use std::os::unix::fs::PermissionsExt;
         let fallback_path = crate::plex::session::fallback_file_for_test();
         let fallback_original = std::fs::read(&fallback_path).ok();
-        struct RestoreFallback { path: std::path::PathBuf, original: Option<Vec<u8>> }
+        let fallback_original_mode = std::fs::metadata(&fallback_path)
+            .ok()
+            .map(|m| m.permissions().mode());
+        struct RestoreFallback {
+            path: std::path::PathBuf,
+            original: Option<Vec<u8>>,
+            original_mode: Option<u32>,
+        }
         impl Drop for RestoreFallback {
             fn drop(&mut self) {
                 match &self.original {
-                    Some(bytes) => { let _ = std::fs::write(&self.path, bytes); }
+                    Some(bytes) => {
+                        let _ = std::fs::write(&self.path, bytes);
+                        if let Some(mode) = self.original_mode {
+                            let _ = std::fs::set_permissions(
+                                &self.path,
+                                std::fs::Permissions::from_mode(mode),
+                            );
+                        }
+                    }
                     None => { let _ = std::fs::remove_file(&self.path); }
                 }
             }
         }
-        let _restore_fallback = RestoreFallback { path: fallback_path, original: fallback_original };
+        let _restore_fallback = RestoreFallback {
+            path: fallback_path,
+            original: fallback_original,
+            original_mode: fallback_original_mode,
+        };
+
+        // The injection is consumed only at the requested stage: if this test's commit ever
+        // refuses BEFORE reaching it (`StaleAuthority`, a registry refusal, an admission refusal),
+        // the armed failure is never taken and would otherwise leak into whichever canonical
+        // commit the process runs next. Clear it unconditionally on drop.
+        struct ClearInjectedFailure;
+        impl Drop for ClearInjectedFailure {
+            fn drop(&mut self) {
+                crate::storage::clear_injected_commit_failure_for_test();
+            }
+        }
+        let _clear_injected_failure = ClearInjectedFailure;
 
         let mt = unsafe { crate::task::MainThread::assume() };
         let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
