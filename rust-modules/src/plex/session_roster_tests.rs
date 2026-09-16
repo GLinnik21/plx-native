@@ -125,7 +125,7 @@ fn an_undialable_stored_origin_is_refused_not_repaired() {
         let s = bad(origin);
         assert!(!s.can_go_local(), "{origin} is not something to boot on");
         assert!(
-            !s.sources[0].usable(),
+            !s.sources[0].dialable(),
             "{origin} is not something to register"
         );
     }
@@ -158,7 +158,7 @@ fn the_roster_round_trips_through_the_session_file_format() {
         "the sharing grant, not the account token"
     );
     assert_eq!(share.shared_by, "friend");
-    assert!(!share.owned && share.usable());
+    assert!(!share.owned && share.dialable());
     assert_eq!(s.shared_sources().count(), 1);
 
     let mine = s
@@ -243,7 +243,7 @@ fn a_corrupt_or_absent_roster_never_costs_the_session() {
 /// value that is impossible.
 ///
 /// Both gates the value reaches are stated here, because they fail differently and one does not
-/// imply the other: a bad ROSTER entry costs that entry (`usable`, which
+/// imply the other: a bad ROSTER entry costs that entry (`dialable`, which
 /// `auth::install_roster` filters on before registering), while a bad PRIMARY costs the resume
 /// (`can_go_local`, the one gate in front of `plex::install`) and lands the app on sign-in.
 #[test]
@@ -258,11 +258,11 @@ fn a_port_no_socket_could_take_is_refused_rather_than_wrapped() {
     )
     .unwrap();
     assert!(
-        !s.sources[0].usable(),
+        !s.sources[0].dialable(),
         "32400 is what that number wraps to — it must not be dialled"
     );
     assert!(
-        s.sources[1].usable(),
+        s.sources[1].dialable(),
         "…and the entry beside it is untouched"
     );
     assert!(

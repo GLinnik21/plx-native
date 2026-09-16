@@ -1318,7 +1318,7 @@ impl SessionMachine {
                     expected: Identity::of(&self.state.persisted), tile, pin, recently_unreachable: *recently_unreachable },
             (CaptureIntent::Endpoint { sid }, SessionReadValue::Endpoint(Some(captured)))
                 if captured.lifecycle.sid == sid && self.state.persisted.sources.iter().any(|source|
-                    source.machine_id == captured.machine_id && source.usable()) => {
+                    source.machine_id == captured.machine_id && source.dialable()) => {
                 self.state.pending.get_mut(&req).unwrap().lifecycle = Some(captured.lifecycle);
                 SessionWork::Endpoint { session: self.state.persisted.clone(), expected: Identity::of(&self.state.persisted),
                     lifecycle: captured.lifecycle, machine_id: captured.machine_id.clone() }
@@ -1425,28 +1425,41 @@ impl SessionMachine {
                 delta.users = Some(users.clone());
                 plan.credentials = Some(patch);
             }
-            Observation::ServerRoster(progress) => {
-                let super::ServerRosterOutcome::Reconcile { resources, found, household, settled } = &progress.outcome else {
-                    self.retire(req, emit);
-                    return true;
-                };
-                let mut next = self.state.persisted.clone();
-                let refreshed = super::refreshed_sources(&next.sources, found, resources, household);
-                let usable = !refreshed.is_empty();
-                let sources = if usable { refreshed } else { next.sources.clone() };
-                let roster_changed = !super::same_sources(&sources, &next.sources);
-                let moved = usable && super::reconcile_refresh_session(&mut next, &sources);
-                next.sources = sources;
-                let repaired = next.refresh_profile_record();
-                if !(roster_changed || moved || repaired) {
+            Observation::ServerRoster(progress) => match &progress.outcome {
+                super::ServerRosterOutcome::Unreachable => {
                     self.retire(req, emit);
                     return true;
                 }
-                let patch = CredentialPatch::of(&next);
-                delta.credentials = Some(patch.clone());
-                plan.credentials = Some(patch);
-                plan.registry = Self::roster_plan(&next, settled);
-            }
+                super::ServerRosterOutcome::NoReachable { settled } => {
+                    // R2/A5: nothing was found to REGISTER, but a probe may still have verified
+                    // something worth recording (an InsecureOnly answer, most of all) — a
+                    // registry-only commit, the same shape `start_switch`'s initial-primary plan
+                    // already uses: no credential patch, no lifecycle, just the probe facts.
+                    if settled.is_empty() {
+                        self.retire(req, emit);
+                        return true;
+                    }
+                    plan.registry = settled.iter().cloned().map(RegistryPlan::Probe).collect();
+                }
+                super::ServerRosterOutcome::Reconcile { resources, found, household, settled } => {
+                    let mut next = self.state.persisted.clone();
+                    let refreshed = super::refreshed_sources(&next.sources, found, resources, household);
+                    let usable = !refreshed.is_empty();
+                    let sources = if usable { refreshed } else { next.sources.clone() };
+                    let roster_changed = !super::same_sources(&sources, &next.sources);
+                    let moved = usable && super::reconcile_refresh_session(&mut next, &sources);
+                    next.sources = sources;
+                    let repaired = next.refresh_profile_record();
+                    if !(roster_changed || moved || repaired) {
+                        self.retire(req, emit);
+                        return true;
+                    }
+                    let patch = CredentialPatch::of(&next);
+                    delta.credentials = Some(patch.clone());
+                    plan.credentials = Some(patch);
+                    plan.registry = Self::roster_plan(&next, settled);
+                }
+            },
             Observation::ProfileSwitch(progress) => match &progress.outcome {
                 super::ProfileSwitchOutcomeProgress::Failed { error, pin_denied } => {
                     self.state.error = error.clone();
@@ -1486,17 +1499,44 @@ impl SessionMachine {
                 plan.registry = Self::roster_plan(&next, &progress.probes);
             }
             Observation::Endpoint(progress) => {
-                let Some(fresh) = &progress.fresh else { self.retire(req, emit); return true; };
                 let Some(lifecycle) = pending.lifecycle else { return false; };
-                let mut next = self.state.persisted.clone();
-                let Some((source, changed)) = super::apply_refreshed_endpoint(&mut next, &progress.machine_id, fresh) else {
-                    self.retire(req, emit);
-                    return true;
-                };
-                let patch = CredentialPatch::of(&next);
-                delta.credentials = Some(patch.clone());
-                if changed && !self.state.apply_pending { plan.credentials = Some(patch); }
-                plan.registry.push(RegistryPlan::Endpoint { expected: lifecycle, source });
+                match &progress.fresh {
+                    None => match &progress.probe {
+                        // Nothing to INSTALL, but the probe itself is evidence — an InsecureOnly
+                        // verdict most of all — so publish it rather than retiring silently.
+                        Some(probe) => plan.registry.push(RegistryPlan::Probe(probe.clone())),
+                        // The worker exited early (plex.tv itself unreachable, or the machine no
+                        // longer among its resources): nothing was dialled, so there is nothing
+                        // to publish and no verdict to widen — retire exactly as an empty
+                        // `ServerRosterOutcome::NoReachable` does.
+                        None => {
+                            self.retire(req, emit);
+                            return true;
+                        }
+                    },
+                    Some(fresh) => {
+                        let mut next = self.state.persisted.clone();
+                        let Some((source, changed)) = super::apply_refreshed_endpoint(&mut next, &progress.machine_id, fresh) else {
+                            self.retire(req, emit);
+                            return true;
+                        };
+                        // Issue #95 step 6: this endpoint repair changes exactly the fields
+                        // `refresh_profile_record` copies into the active profile's cached
+                        // record (server/sources) — miss this and a plaintext-to-https repair
+                        // (or any other endpoint move) never reaches `Session::profiles`, so an
+                        // offline reseat of this same profile keeps dialling the stale origin
+                        // forever. `ProfileRoster`'s commit above makes the identical call.
+                        // The ServerRoster Reconcile arm above already plans credentials on
+                        // `changed || repaired`; this commit used to gate on `changed` alone,
+                        // silently dropping a repaired-but-otherwise-unchanged active
+                        // `ProfileCreds` record on the floor.
+                        let repaired = next.refresh_profile_record();
+                        let patch = CredentialPatch::of(&next);
+                        delta.credentials = Some(patch.clone());
+                        if (changed || repaired) && !self.state.apply_pending { plan.credentials = Some(patch); }
+                        plan.registry.push(RegistryPlan::Endpoint { expected: lifecycle, source });
+                    }
+                }
             }
         }
         self.begin_commit(req, envelope.arrival, envelope.terminal, plan, delta, emit)
@@ -1858,6 +1898,45 @@ mod tests {
         }
     }
 
+    /// Issue #95 step 6, the owner-dedup half: a stored plaintext session's repair loop is
+    /// `pms::landed_fail` (backoff 2s, 4s, 8s, 16s, then 30s — see
+    /// `pms::the_backoff_doubles_then_holds_at_the_ceiling`) → `RequestEndpoint` on every step that
+    /// comes due. `pms.rs`'s own retry gate (`kick_with`'s `s.fetching` check) already stops a
+    /// second FETCH from starting before the backoff elapses, so this is the seam that matters
+    /// here: however many times a heartbeat's worth of `landed_fail`s re-fires `RequestEndpoint`
+    /// for the SAME sid while the previous probe is still outstanding, the owner must admit at
+    /// most one `SessionOp::Endpoint(sid)` at a time. There is no single deterministic seam that
+    /// drives both the backoff ladder and this admission gate together (the ladder lives in
+    /// `pms.rs`, on a different clock than the owner's `pending` map), so — as the plan allows —
+    /// this tests the dedup half directly; the ladder's own shape is `pms.rs`'s test above.
+    #[test]
+    fn request_endpoint_admits_at_most_one_per_sid_until_the_previous_attempt_resolves() {
+        let mut init = captured_session();
+        init.persisted.account_token = "synthetic-account".into();
+        let mut owner = SessionMachine::from_init(init);
+        let sid: u16 = 3;
+
+        // First backoff step: a fresh RequestEndpoint is admitted.
+        let fx = step(&mut owner, SessionEvent::Command(Command::RequestEndpoint {
+            sid: crate::plex::ServerId::from_raw(sid) }));
+        assert!(fx.iter().any(|f| matches!(f,
+            SessionFx::Capture { request: SessionReadRequest::Endpoint { sid: s }, .. } if *s == sid)),
+            "the first RequestEndpoint for an idle sid must be admitted");
+        assert_eq!(owner.snapshot_init().pending.values()
+            .filter(|p| p.key.op == SessionOp::Endpoint(sid)).count(), 1);
+
+        // Every re-fire while that attempt is still outstanding — exactly what a `landed_fail`
+        // during the same backoff wait produces — must be refused, not open a second probe.
+        for _ in 0..3 {
+            let fx = step(&mut owner, SessionEvent::Command(Command::RequestEndpoint {
+                sid: crate::plex::ServerId::from_raw(sid) }));
+            assert!(fx.is_empty(), "a RequestEndpoint for a sid already in flight must be a no-op");
+        }
+        assert_eq!(owner.snapshot_init().pending.values()
+            .filter(|p| p.key.op == SessionOp::Endpoint(sid)).count(), 1,
+            "still exactly one outstanding attempt for this sid — one per backoff step, not per fire");
+    }
+
     #[test]
     fn auto_sign_in_only_changes_init_and_cached_owner_hash_and_round_trips() {
         let off = captured_session();
@@ -2196,5 +2275,159 @@ mod tests {
         envelope.addr.to = MachineId::Session;
         envelope.addr.req = RequestId(req + 1);
         assert!(!owner.accepts(&envelope));
+    }
+
+    // ---- issue #95, step 5: R2/A5 — a worker outcome with nothing to REGISTER still PUBLISHES ----
+
+    /// Endpoint worker, `fresh: None` (plan §4): nothing to INSTALL, but the probe itself is
+    /// evidence — an `InsecureOnly` verdict most of all — so the owner commits it as a
+    /// registry-only [`RegistryPlan::Probe`] rather than silently retiring the request.
+    #[test]
+    fn endpoint_worker_with_no_fresh_source_still_publishes_its_probe() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test("insecure-mach", "10.0.0.9", 32400, "tok", "cid");
+        let client = crate::plex::client_for(sid).unwrap();
+        let lifecycle = super::super::ClientLifecycle::capture(client);
+
+        let mut owner = SessionMachine::from_init(captured_session());
+        let req = owner.allocate(SessionOp::Endpoint(sid.raw()), Some(lifecycle.logical(sid.raw()))).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let probe = super::super::settled_probe_for_test(
+            "insecure-mach", crate::plex::probe::Outcome::InsecureOnly, Some(crate::plex::probe::Location::Local), Some("10.0.0.9".into()));
+        let envelope = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::Endpoint(sid.raw()) },
+            admission: AdmissionId(req), arrival: 1, terminal: true, lifecycle: Some(lifecycle.logical(sid.raw())),
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Endpoint(
+                super::super::observation::EndpointFact {
+                    epoch, expected, sid: sid.raw(), machine_id: "insecure-mach".into(),
+                    fresh: None, probe: Some(probe.clone()),
+                }))),
+        };
+        assert!(owner.accepts(&envelope), "a None-fresh endpoint reply is still a valid terminal arrival");
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        let plan = effects.iter().find_map(|fx| match fx {
+            SessionFx::Commit { plan, .. } => Some(plan),
+            _ => None,
+        }).expect("a None-fresh endpoint reply must still commit its probe");
+        assert_eq!(plan.registry.len(), 1, "nothing to INSTALL — the probe is the whole plan");
+        assert!(
+            matches!(&plan.registry[0], RegistryPlan::Probe(p)
+                if p.machine_id == "insecure-mach" && p.outcome == crate::plex::probe::Outcome::InsecureOnly),
+            "the InsecureOnly verdict must reach the registry even with no source to install"
+        );
+        assert!(plan.credentials.is_none(), "a registry-only probe writes no credentials");
+    }
+
+    /// PR #104 review: the endpoint commit used to gate `plan.credentials` on `changed` alone,
+    /// discarding `refresh_profile_record`'s own return — unlike the `ServerRosterOutcome::
+    /// Reconcile` arm a few lines above, which already includes `repaired`. So an endpoint reply
+    /// whose route facts exactly match what is already stored (`changed == false`) but whose
+    /// active profile's cached record (`Session::profiles`) is stale never got repaired on disk,
+    /// even though `delta.credentials` (the in-memory/UI side) was updated regardless. A later
+    /// offline reseat of that profile would then read the stale cached server/sources forever.
+    #[test]
+    fn endpoint_commit_plans_credentials_when_only_the_profile_record_needed_repair() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test("ours", "10.0.0.9", 32400, "profile-token", "cid");
+        let client = crate::plex::client_for(sid).unwrap();
+        let lifecycle = super::super::ClientLifecycle::capture(client);
+
+        // The route facts the endpoint reply carries are IDENTICAL to what is already stored, so
+        // `apply_refreshed_endpoint` reports `changed == false`.
+        let current = crate::plex::session::SourceRef {
+            machine_id: "ours".into(),
+            owned: true,
+            token: "profile-token".into(),
+            address: "10.0.0.9".into(),
+            port: 32400,
+            origin_url: "http://10.0.0.9:32400".into(),
+            ..Default::default()
+        };
+        let mut persisted = PersistedSession {
+            client_id: "synthetic-client".into(),
+            user: UserRef { uuid: "u1".into(), ..Default::default() },
+            server: super::super::server_ref(&current),
+            sources: vec![current.clone()],
+            ..Default::default()
+        };
+        // The active profile's own cached record is stale/blank — `refresh_profile_record` must
+        // overwrite it and report `repaired == true`, independently of `changed`.
+        persisted.profiles.push(crate::plex::session::ProfileCreds {
+            uuid: "u1".into(),
+            user: UserRef::default(),
+            server: crate::plex::session::ServerRef::default(),
+            sources: Vec::new(),
+            pin: None,
+        });
+
+        let mut owner = SessionMachine::from_init(SessionInit::captured(persisted));
+        let req = owner.allocate(SessionOp::Endpoint(sid.raw()), Some(lifecycle.logical(sid.raw()))).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let probe = super::super::settled_probe_for_test(
+            "ours", crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local), Some("10.0.0.9".into()));
+        let envelope = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::Endpoint(sid.raw()) },
+            admission: AdmissionId(req), arrival: 1, terminal: true, lifecycle: Some(lifecycle.logical(sid.raw())),
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Endpoint(
+                super::super::observation::EndpointFact {
+                    epoch, expected, sid: sid.raw(), machine_id: "ours".into(),
+                    fresh: Some(current.clone()), probe: Some(probe),
+                }))),
+        };
+        assert!(owner.accepts(&envelope));
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        let plan = effects.iter().find_map(|fx| match fx {
+            SessionFx::Commit { plan, .. } => Some(plan),
+            _ => None,
+        }).expect("an endpoint reply that repairs the profile record must still commit");
+        assert!(
+            plan.credentials.is_some(),
+            "route facts were unchanged but the active profile's cached record needed repair — \
+             the commit must still write credentials so the repair reaches disk"
+        );
+    }
+
+    /// `ServerRosterOutcome::NoReachable` (R2/A5): the roster itself found nothing to REGISTER,
+    /// but every probe that ran is still carried to the owner and committed as registry-only
+    /// [`RegistryPlan::Probe`]s — never as a credential or a roster write, since nothing about the
+    /// disk roster changed.
+    #[test]
+    fn no_reachable_server_roster_commits_registry_only_probes_and_no_credentials() {
+        let _g = crate::testlock::serial();
+        let mut owner = SessionMachine::from_init(captured_session());
+        let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let settled = vec![
+            super::super::settled_probe_for_test("a", crate::plex::probe::Outcome::InsecureOnly,
+                Some(crate::plex::probe::Location::Local), Some("10.0.0.1".into())),
+            super::super::settled_probe_for_test("b", crate::plex::probe::Outcome::Unreachable, None, None),
+        ];
+        let envelope = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ServerRoster },
+            admission: AdmissionId(req), arrival: 1, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
+                super::super::ServerRosterProgress { epoch, expected,
+                    outcome: super::super::ServerRosterOutcome::NoReachable { settled: settled.clone() } }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        let plan = effects.iter().find_map(|fx| match fx {
+            SessionFx::Commit { plan, .. } => Some(plan),
+            _ => None,
+        }).expect("NoReachable with a non-empty settled list must still commit");
+        assert_eq!(plan.registry.len(), settled.len(), "one RegistryPlan::Probe per settled probe, no roster Install");
+        assert!(plan.registry.iter().all(|p| matches!(p, RegistryPlan::Probe(_))),
+            "NoReachable must never write RegistryPlan::Install — the roster itself is unchanged");
+        assert!(plan.credentials.is_none(), "a registry-only commit writes no credentials");
     }
 }

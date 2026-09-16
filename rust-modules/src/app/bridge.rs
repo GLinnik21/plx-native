@@ -531,8 +531,8 @@ impl Bridge {
     pub(crate) fn take_session_ready(&mut self) -> Option<crate::auth::ReadyCreds> {
         let (epoch, scope, server, token, install) = self.session_ready.take()?;
         if !self.session.ready_is_current(epoch, scope) { return None; }
-        Some(crate::auth::ReadyCreds { origin: server.origin(), token, install,
-            tier: server.tier, pin: server.resolve_pin() })
+        Some(crate::auth::ReadyCreds { origin: server.origin(), address: server.address.clone(),
+            token, install, tier: server.tier, pin: server.resolve_pin() })
     }
 
     pub(crate) fn take_content_reqs(&mut self) -> Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)> {
@@ -2793,6 +2793,10 @@ mod session_stored_home_tests;
 #[cfg(test)]
 #[path = "bridge_test_support.rs"]
 mod test_support;
+
+#[cfg(test)]
+#[path = "session_plaintext_repair_tests.rs"]
+mod session_plaintext_repair_tests;
 
 #[cfg(test)]
 #[path = "session_dispatch_tests.rs"]

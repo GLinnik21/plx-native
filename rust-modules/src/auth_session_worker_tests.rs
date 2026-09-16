@@ -178,6 +178,61 @@ fn instance_profile_worker_completes_offline_policy_on_its_own_landing() {
     })));
 }
 
+/// S7 (plan §4): a grant whose only settled probe is `InsecureOnly` must fail with the SHARED
+/// discovery copy, not "has no access to this server" — the grant is real, only the transport
+/// is unusable in this build, and the ordinary wording sends the user to ask their friend for
+/// access they already have.
+#[test]
+fn a_grant_verified_only_over_plaintext_reports_the_shared_insecure_only_copy() {
+    use crate::auth::owner::{SessionArrival, SessionOp, SessionWorkKey};
+    use crate::app::adapters::session::SessionAdapter;
+    use crate::plex::account::SwitchedUser;
+    use crate::ui::machine::RequestId;
+
+    struct InsecureOnlyGrantIo;
+    impl ProfileWorkIo for InsecureOnlyGrantIo {
+        fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
+            SwitchOutcome::Switched(SwitchedUser {
+                id: 1, uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-token".into(),
+            })
+        }
+        fn resources(&mut self, _: &AccountClient) -> Option<Vec<Resource>> {
+            Some(vec![Resource {
+                name: "srv".into(), client_identifier: "srv".into(), provides: "server".into(),
+                owned: true, access_token: "srv-token".into(), ..Default::default()
+            }])
+        }
+        fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<SourceRef>, SettledProbe) {
+            // No winning source (nothing this build may put a credential on), but the probe
+            // itself verified the server — over plaintext only.
+            (None, settled_probe_for_test("srv", Outcome::InsecureOnly,
+                Some(probe::Location::Local), Some("10.0.0.5".into())))
+        }
+        fn gap(&mut self) {}
+    }
+
+    let mut a = SessionAdapter::fixture();
+    let stored = cached_session(None);
+    let expected = SessionIdentity::of(&stored);
+    let tile = UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() };
+    a.launch(RequestId(1), SessionWorkKey { epoch: 1, op: SessionOp::ProfileSwitch }, true,
+        |job| { job(); true }, move |output| {
+            profile_switch_worker_with_io(1, expected, stored, tile, None, false,
+                &output, &mut InsecureOnlyGrantIo);
+        }).unwrap();
+    let results = a.take_results();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].terminal);
+    let SessionArrival::Data(data) = &results[0].outcome else { panic!("missing failure result") };
+    assert!(
+        matches!(&**data, observation::Observation::ProfileSwitch(ProfileSwitchProgress {
+            outcome: ProfileSwitchOutcomeProgress::Failed { error, pin_denied: false }, ..
+        }) if error == DISCOVERY_INSECURE_ONLY_MESSAGE),
+        "an InsecureOnly-only grant must report the shared discovery copy, not the generic \
+         'has no access' wording"
+    );
+}
+
 /// **The invariant phase 6 exists to establish, pinned by reading the source.** Nothing else
 /// can see a regression here: a `with_ctl(|c| c.foo = …)` spliced back into `login_thread`
 /// compiles cleanly, passes every OTHER test in this file (none of them spin up a real worker
@@ -307,4 +362,3 @@ fn all_auth_worker_bodies_are_observation_only() {
         }
     }
 }
-

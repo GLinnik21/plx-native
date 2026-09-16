@@ -67,7 +67,7 @@
 //! cannot, because libcurl owns that framing and `net.rs` sees only the assembled body. The gap is
 //! narrower than it looks: `plex::client::get_json` logs the status, the byte count and serde's own
 //! error whenever a 2xx will not parse, over either transport.
-use crate::plex::{Origin, Scheme, ResolvePin};
+use crate::plex::{CredentialPolicy, Origin, Scheme, ResolvePin};
 
 /// The verb. Three, because three is what the Plex control plane uses: reads, the body-less
 /// `PUT /library/parts/{id}` that selects a track server-side, and the POSTs whose params ride the
@@ -219,10 +219,13 @@ pub(crate) fn request_until_outcome(
 /// or relay candidate; this façade carries that policy into either transport without either arm
 /// trying to infer locality from an address.
 ///
-/// **Unpinned, and that is a known gap rather than an oversight.** A probe runs only after
-/// `/api/v2/resources` answered, i.e. with the internet up, so its name resolves the ordinary way;
-/// carrying the candidate's [`ResolvePin`] into `auth::ProbeDial` is the follow-up that would let
-/// discovery itself run on a LAN with no resolver.
+/// **Pinned.** `auth::race_batch` builds a [`ResolvePin`] for each `https://…plex.direct`
+/// candidate from the address plex.tv advertised beside it (`ResolvePin::for_origin`) and hands it
+/// down here — exactly the mechanism data calls already use (the `tls` arm below), now run at the
+/// DIAL that decides a winner rather than only after one is already decided. The plaintext arm
+/// ignores it: a pin belongs to a TLS name, never to a literal. A candidate whose dashed label does
+/// not encode the address it was persisted with gets no pin, and resolves through DNS exactly as
+/// before.
 pub(crate) fn request_probe(
     origin: &Origin,
     path: &str,
@@ -230,6 +233,7 @@ pub(crate) fn request_probe(
     headers: &[&str],
     max_body: usize,
     timeout_s: i32,
+    pin: Option<&ResolvePin>,
 ) -> Option<Reply> {
     request_with(
         origin,
@@ -240,7 +244,7 @@ pub(crate) fn request_probe(
             max: max_body,
             timeout_s,
         },
-        None,
+        pin,
     )
     .response()
 }
@@ -277,9 +281,9 @@ pub(crate) fn credential_transport_allowed_by_policy(
     origin: &Origin,
     path: &str,
     headers: &[&str],
-    allow_plaintext_credentials: bool,
+    policy: CredentialPolicy,
 ) -> bool {
-    origin.is_tls() || !carries_credential(path, headers) || allow_plaintext_credentials
+    !carries_credential(path, headers) || policy.may_carry_credential(origin)
 }
 
 /// The shared control/media credential boundary. Store builds fail closed on a token-bearing HTTP
@@ -290,7 +294,7 @@ pub(crate) fn credential_transport_allowed(origin: &Origin, path: &str, headers:
         origin,
         path,
         headers,
-        cfg!(feature = "devtriggers"),
+        CredentialPolicy::build(),
     );
     if !origin.is_tls() && carries_credential(path, headers) {
         static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -700,6 +704,68 @@ mod tests {
         });
     }
 
+    /// **`request_probe` — the discovery race's entry point — carries a pin the same way
+    /// [`request`] does over TLS, and structurally cannot over plaintext.** `auth::race_batch`
+    /// builds a [`ResolvePin`] only for a TLS origin (`ResolvePin::for_origin` refuses anything
+    /// else outright), and `request_with`'s `Scheme::Http` arm calls `plaintext(...)`, which has no
+    /// `pin` parameter at all — there is no plumbing left for a foreign value to travel through even
+    /// if one were built. Proved the same way as the test above, at this entry point instead of
+    /// `request`'s: the TLS probe reaches the pinned loopback socket with no resolver involved, and a
+    /// plaintext probe against a guaranteed-unrouted TEST-NET-1 (RFC 5737) address, given the SAME
+    /// pin pointed at that socket, never reaches it.
+    #[test]
+    fn request_probe_hands_the_pin_to_the_tls_path_only() {
+        let _g = crate::testlock::serial();
+        if !crate::net::global_init() {
+            return;
+        }
+        let Ok(srv) = std::net::TcpListener::bind("127.0.0.1:0") else { return };
+        let port = srv.local_addr().unwrap().port();
+        srv.set_nonblocking(true).unwrap();
+        let accepts = std::sync::atomic::AtomicUsize::new(0);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                    match srv.accept() {
+                        Ok(_) => {
+                            accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(1))
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            let tls_origin = Origin::parse(&format!("https://no-such-host.invalid:{port}")).unwrap();
+            let pin = ResolvePin::for_test("no-such-host.invalid", port as i32, "127.0.0.1".parse().unwrap());
+            assert!(
+                request_probe(&tls_origin, "/identity", Method::Get, &[], 4096, 1, Some(&pin)).is_none(),
+                "TLS against a plaintext listener fails, as it must"
+            );
+            assert_eq!(
+                accepts.load(std::sync::atomic::Ordering::Acquire),
+                1,
+                "the TLS probe reached the pinned socket with no resolver"
+            );
+
+            let http_origin = Origin::parse("http://192.0.2.1:32400").unwrap();
+            let same_pin = ResolvePin::for_test("192.0.2.1", 32400, "127.0.0.1".parse().unwrap());
+            assert!(
+                request_probe(&http_origin, "/identity", Method::Get, &[], 4096, 1, Some(&same_pin))
+                    .is_none(),
+                "the unrouted literal never answers, pin or no pin"
+            );
+            assert_eq!(
+                accepts.load(std::sync::atomic::Ordering::Acquire),
+                1,
+                "a plaintext probe must never be redirected to the pinned socket"
+            );
+            stop.store(true, std::sync::atomic::Ordering::Release);
+        });
+    }
+
     #[test]
     fn a_request_is_routed_by_the_origins_scheme() {
         // TEST-NET-1 (RFC 5737): guaranteed unrouted, so nothing can answer either of these.
@@ -762,31 +828,31 @@ mod tests {
             &http,
             token_path,
             &[],
-            false,
+            CredentialPolicy::HttpsOnly,
         ));
         assert!(!credential_transport_allowed_by_policy(
             &http,
             "/identity",
             &["Authorization: Bearer secret"],
-            false,
+            CredentialPolicy::HttpsOnly,
         ));
         assert!(credential_transport_allowed_by_policy(
             &https,
             token_path,
             &[],
-            false,
+            CredentialPolicy::HttpsOnly,
         ));
         assert!(credential_transport_allowed_by_policy(
             &http,
             "/identity",
             &[ACCEPT_JSON],
-            false,
+            CredentialPolicy::HttpsOnly,
         ));
         assert!(credential_transport_allowed_by_policy(
             &http,
             token_path,
             &[],
-            true,
+            CredentialPolicy::AllowPlaintext,
         ));
     }
 
@@ -814,7 +880,7 @@ mod tests {
         });
 
         let origin = Origin::http("127.0.0.1", port as i32);
-        assert!(request_probe(&origin, "/identity", Method::Get, &[ACCEPT_JSON], 4, 1).is_none());
+        assert!(request_probe(&origin, "/identity", Method::Get, &[ACCEPT_JSON], 4, 1, None).is_none());
         server.join().expect("server");
     }
 

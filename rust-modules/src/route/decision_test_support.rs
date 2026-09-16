@@ -5,6 +5,9 @@ use super::*;
 /// Duplicated from `plan::tests` (a 3-line Dolby Vision Profile 8 fixture the shared-
 /// fixture split left on both sides of the module boundary; see that module's `p8` for
 /// the sibling copy and its provenance comment).
+// Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module (see the
+// comment on the first one).
+#[cfg(feature = "devtriggers")]
 pub(super) fn p8() -> crate::metadata::Dovi {
     crate::metadata::Dovi {
         present: true,
@@ -16,6 +19,9 @@ pub(super) fn p8() -> crate::metadata::Dovi {
 }
 
 /// Same provenance as `plan::tests::p5`: single-layer IPT-PQ with no HDR10 fallback.
+// Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module (see the
+// comment on the first one).
+#[cfg(feature = "devtriggers")]
 pub(super) fn p5() -> crate::metadata::Dovi {
     crate::metadata::Dovi {
         present: true,

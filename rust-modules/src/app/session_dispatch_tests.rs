@@ -42,6 +42,12 @@ fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
     crate::plex::reset_servers_for_test();
 }
 
+// Dev-only: this fixture drives a plaintext loopback PMS with a real, token-bearing registered
+// server, which a store build's `CredentialPolicy::HttpsOnly` refuses before the library GET
+// reaches the wire (see `http::credential_transport_allowed`) — the connection this test waits
+// on then never arrives. The store-build case is covered instead by `auth.rs`'s
+// `e2e_real_curl_*` HTTPS harness.
+#[cfg(feature = "devtriggers")]
 #[test]
 fn production_bridges_do_not_share_browse_state_or_landings() {
     use std::io::{Read, Write};

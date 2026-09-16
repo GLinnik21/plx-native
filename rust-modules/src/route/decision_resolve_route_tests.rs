@@ -7,6 +7,7 @@ use super::test_support::*;
 use super::test_support::apply_plan;
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_user_contract_requested_during_resolve_survives_the_landing() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -52,6 +53,7 @@ fn a_cancelled_resolve_has_an_explicit_terminal_phase() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn cancelling_resolve_restores_failed_even_when_its_projection_has_a_url() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -130,6 +132,7 @@ fn a_new_load_attempt_supersedes_the_old_observer_and_rejects_its_late_results()
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn backgrounding_an_unproven_original_rearms_frame_proof_on_a_new_load() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -191,6 +194,7 @@ fn backgrounding_an_unproven_original_rearms_frame_proof_on_a_new_load() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn resolve_cannot_hide_a_live_start_transaction() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -210,6 +214,7 @@ fn resolve_cannot_hide_a_live_start_transaction() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn accepted_original_load_stays_in_trial_until_a_frame_or_rollback() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -259,6 +264,7 @@ fn accepted_original_load_stays_in_trial_until_a_frame_or_rollback() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn automatic_publication_is_busy_for_the_whole_staged_user_edit() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -328,6 +334,7 @@ fn a_failed_resolve_spawn_without_an_old_url_lands_idle() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn quality_changed_during_resolve_cannot_land_the_old_contract() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -368,6 +375,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_seek_revokes_automatic_evidence_without_erasing_the_user_contract() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -400,6 +408,7 @@ fn a_seek_revokes_automatic_evidence_without_erasing_the_user_contract() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_seek_retargets_an_accepted_handoff_instead_of_erasing_its_only_producer() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -430,6 +439,7 @@ fn a_seek_retargets_an_accepted_handoff_instead_of_erasing_its_only_producer() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn rejected_transcode_seek_preserves_hls_worker_authority() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -487,6 +497,7 @@ fn a_rejected_user_action_leaves_the_accepted_handoff_owned_for_the_next_tick() 
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn rejected_user_action_preserves_old_applied_auto_handoff_without_rebinding_it_to_desired() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -542,6 +553,7 @@ fn rejected_user_action_preserves_old_applied_auto_handoff_without_rebinding_it_
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn rejected_route_effect_restores_the_whole_applied_projection() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -610,6 +622,7 @@ fn rejected_route_effect_restores_the_whole_applied_projection() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn hls_commit_during_a_staged_user_contract_merges_only_physical_fields() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -666,6 +679,7 @@ fn hls_commit_during_a_staged_user_contract_merges_only_physical_fields() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn rejected_user_retranscode_keeps_the_physical_worker_authorized() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -698,6 +712,7 @@ fn rejected_user_retranscode_keeps_the_physical_worker_authorized() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn pinning_the_live_auto_hls_rung_fences_its_worker_before_projection_changes() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -757,6 +772,7 @@ fn pinning_the_live_auto_hls_rung_fences_its_worker_before_projection_changes() 
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn reselecting_the_exact_quality_does_not_fence_the_current_worker() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -806,6 +822,7 @@ fn a_pending_retranscode_cannot_be_weakened_into_a_native_reload() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn subtitle_off_keeps_a_pending_original_recovery() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -883,6 +900,7 @@ fn a_direct_subtitle_change_keeps_the_original_watchdog_ticket_current() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn subtitle_on_invalidates_a_pending_original_recovery() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -918,6 +936,7 @@ fn subtitle_on_invalidates_a_pending_original_recovery() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn audio_change_invalidates_a_pending_original_recovery() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -953,6 +972,7 @@ fn audio_change_invalidates_a_pending_original_recovery() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn an_original_trial_is_busy_not_stale_to_its_new_watchdog() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -975,6 +995,7 @@ fn an_original_trial_is_busy_not_stale_to_its_new_watchdog() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn teardown_invalidates_the_worker_before_it_can_publish() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -1120,6 +1141,7 @@ fn a_claimed_route_action_fences_worker_candidate_commits() {
 /// store let seek replace ACTIVE in between. The callback door must both reject an already
 /// moved route without touching the mailbox and hold ACTIVE throughout an accepted store.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn source_recovery_publication_is_atomic_with_route_ownership() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -1168,6 +1190,7 @@ fn source_recovery_publication_is_atomic_with_route_ownership() {
 /// retains the HLS Streaming Resource while dropping its HLS projection. Comparing only the
 /// id therefore admits an outgoing HLS worker after ownership has changed (same-id ABA).
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_same_id_route_change_invalidates_the_outgoing_worker() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -1201,6 +1224,7 @@ fn a_resume_intent_belongs_to_exactly_one_resolve_generation() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn abandoned_resolves_retire_the_streaming_resources_they_created() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::io::{BufRead, BufReader, Write};
@@ -1512,6 +1536,7 @@ fn encoder_cleanup_ledger_releases_only_on_exact_absence() {
 /// identity and no control-plane request precedes or follows it. This proves the local route
 /// remains selected; it deliberately does not infer PMS-side cursor continuity.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::io::{BufRead, BufReader, Write};
@@ -1628,6 +1653,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
 /// not a zero-rate sample, and an optional source check must never make the live HLS route
 /// fatal or replace it.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_rejected_original_probe_keeps_hls_and_produces_no_capacity_observation() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::io::{BufRead, BufReader, Write};
@@ -1716,6 +1742,7 @@ fn a_rejected_original_probe_keeps_hls_and_produces_no_capacity_observation() {
 /// different HLS resource.  Bytes charged to the old identity are not evidence for the new
 /// route: keep the replacement intact and discard the completed sample.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::io::{BufRead, BufReader, Write};
@@ -1809,6 +1836,7 @@ fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
 /// must not manufacture a `source-N` identity or exact-close the resource before the selected
 /// Original/HLS route can reuse it.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn cold_source_preflight_uses_the_playback_identity_and_does_not_close_it() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::io::{BufRead, BufReader, Write};

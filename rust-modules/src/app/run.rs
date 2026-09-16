@@ -1653,7 +1653,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                         .unwrap_or_else(|| saved.playback_quality()),
                 );
                 let endpoints = super::boot::install_pms_owned(&mut app.bridge, &c.origin,
-                    &c.token, c.tier, c.pin.as_ref(), &c.install);
+                    &c.address, &c.token, c.tier, c.pin.as_ref(), &c.install);
                 super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
                 // **A new user must never be able to walk BACK into the previous one's pages**,
                 // which is the fourth store an identity change must not survive beside the

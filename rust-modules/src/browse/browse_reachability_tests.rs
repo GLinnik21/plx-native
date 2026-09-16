@@ -91,6 +91,36 @@ fn not_probed_reads_as_reachable_and_only_a_failed_dial_dims_a_group() {
         "it answered; this old bool projection is only the network question"
     );
 }
+/// Issue #95 plan §4/S9: `InsecureOnly` is a FIFTH state, and unlike `Unauthorized` it reads
+/// `reachable() == false` — there is nothing behind it in this build, not a credential problem
+/// on a server that would otherwise work.
+#[test]
+fn insecure_only_reads_unreachable_and_a_status_fold_cannot_erase_it() {
+    let _g = crate::testlock::serial();
+    assert_eq!(
+        source_state(Some(crate::plex::probe::Outcome::InsecureOnly)),
+        SourceState::InsecureOnly
+    );
+    let mut s = a_source("nas-home", "friend", true);
+    s.state = SourceState::InsecureOnly;
+    assert!(
+        !s.reachable(),
+        "verified alive but nothing this build may put a credential on — not the same as NotProbed"
+    );
+    s.set_reachable(false);
+    assert_eq!(
+        s.state,
+        SourceState::InsecureOnly,
+        "a status-folded request cannot erase the more specific InsecureOnly verdict"
+    );
+    s.set_reachable(true);
+    assert_eq!(
+        s.state,
+        SourceState::Reachable,
+        "only a real success clears it"
+    );
+}
+
 #[test]
 fn registry_probe_state_and_tier_seed_and_update_the_browse_source() {
     let _g = crate::testlock::serial();

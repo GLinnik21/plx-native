@@ -12,6 +12,7 @@ use super::test_support::apply_plan;
 /// `route::source_decodable()` and never evaluates `video_direct_plays` itself, deliberately,
 /// because a second evaluation could disagree with the routing decision it describes.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn the_codec_gates_verdict_is_what_the_quality_menu_reads() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let caps = crate::devcaps::Caps::assumed();
@@ -138,6 +139,7 @@ fn the_fixture_can_start_in_hls_instead_of_provoking_a_starvation() {
 /// deliberately carries bootstrap's unknown-link fallback: Local admitted Original without a
 /// measurement, and source demand must not be relabelled as capacity after the open fails.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn an_unopened_auto_original_reuses_admission_evidence_instead_of_inventing_zero_rate() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -184,6 +186,7 @@ fn an_unopened_auto_original_reuses_admission_evidence_instead_of_inventing_zero
 /// re-encoded as H.264 + AAC, so carrying its source-only Dolby flags across the handoff makes
 /// diagnostics lie and (for `immersive`) tells the system player that AAC contains Atmos.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn an_original_to_hls_handoff_drops_source_only_dolby_declarations() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -299,6 +302,7 @@ fn a_local_auto_original_is_supervised_exactly_like_a_remote_one() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn hls_controller_starts_at_the_rung_the_runtime_fallback_selected() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -457,6 +461,7 @@ fn a_candidate_is_never_named_after_the_encoder_it_would_replace() {
 /// `abr-N` starting twice.  The replacement must therefore be registered under a fresh key,
 /// published atomically, and the old exact key stopped only after that publication succeeds.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_transcode_seek_swaps_to_a_fresh_physical_session_and_retires_the_old_one() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::io::{BufRead, BufReader, Write};
@@ -550,6 +555,7 @@ fn a_transcode_seek_swaps_to_a_fresh_physical_session_and_retires_the_old_one() 
 /// return an unparseable body after registering the proposed resource; neither outcome may
 /// rewrite Session/ACTIVE to the requested rung while the old encoder is still on screen.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_failed_retranscode_decision_leaves_the_live_route_unchanged() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::io::{BufRead, BufReader, Write};
@@ -653,6 +659,7 @@ fn a_failed_retranscode_decision_leaves_the_live_route_unchanged() {
 /// regression the worker updated only `ACTIVE_ENCODER`; the main-thread route still named the
 /// bootstrap URL and ceiling, so rollback reopened old media and Auto restarted at 720 kbps.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn failed_original_then_auto_keeps_the_live_adaptive_route() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -747,6 +754,7 @@ fn failed_original_then_auto_keeps_the_live_adaptive_route() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn hls_recovery_restores_the_exact_direct_source_and_rearms_its_watchdog() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -916,6 +924,7 @@ fn a_recovery_that_never_opens_can_still_go_back_to_the_encoder_it_replaced() {
 /// frame.  Keep the working HLS encoder until that frame arrives. If the remux never opens,
 /// restore HLS and retire the unproven replacement rather than the stream the viewer had.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_remux_recovery_keeps_hls_until_frames_and_rolls_back_the_replacement() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::io::{BufRead, BufReader, Write};
@@ -1226,6 +1235,7 @@ fn a_recovery_that_opens_spends_the_way_back_rather_than_leaving_it_armed() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn manual_original_adopts_one_running_trial_and_revokes_its_auto_ticket_on_frame() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -1507,6 +1517,7 @@ fn a_failed_rollback_load_discards_trial_effects_before_the_next_trial() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn audio_selected_during_original_trial_uses_the_route_that_actually_lands() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -1562,6 +1573,7 @@ fn audio_selected_during_original_trial_uses_the_route_that_actually_lands() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn an_installed_cold_direct_route_closes_its_logical_resource_at_teardown() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::io::{BufRead, BufReader, Write};
@@ -1661,6 +1673,7 @@ fn an_installed_cold_direct_route_closes_its_logical_resource_at_teardown() {
 /// later Range GET. Therefore confirmation stops only the physical HLS encoder, retains that
 /// exact resource identity in the direct URL, and closes it only at final playback teardown.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::io::{BufRead, BufReader, Write};
@@ -1840,6 +1853,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
 /// Dropping PendingOriginal must only forget its rollback in this branch, or PMS receives two
 /// concurrent stop/close requests for the same resource.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::io::{BufRead, BufReader, Write};
@@ -1971,6 +1985,7 @@ fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn direct_recovery_without_its_server_keeps_hls_instead_of_using_a_logical_alias() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -2014,6 +2029,7 @@ fn direct_recovery_without_its_server_keeps_hls_instead_of_using_a_logical_alias
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscoding() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -2091,6 +2107,7 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
 /// declaration to return to. Without it the Local route has no recovery target and asks for
 /// one more encoder.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn local_auto_preserves_the_candidate_needed_to_leave_a_fixed_rung() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -2145,6 +2162,7 @@ fn local_auto_preserves_the_candidate_needed_to_leave_a_fixed_rung() {
 /// Local alone set `auto_original = true`, selected progressive MKV, and left this AV1-shaped
 /// playback without an HLS controller after the reload.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn local_auto_keeps_hls_when_original_is_infeasible() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -2201,6 +2219,7 @@ fn local_auto_keeps_hls_when_original_is_infeasible() {
 /// return to direct play. The bad old route kept the progressive-transcode flavor and asked
 /// for one more encoder refresh, because the recovery branch only recognized Fixed HLS.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn manual_original_after_a_fixed_rung_returns_to_the_native_source() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -2296,6 +2315,7 @@ fn manual_original_after_a_fixed_rung_returns_to_the_native_source() {
 /// flag leaves the already-running Manual worker alive with the `None` it captured at spawn,
 /// which is the photographed `Auto · controller idle / no adaptive session` state.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn original_to_auto_restarts_the_worker_to_arm_the_watchdog() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -2371,6 +2391,7 @@ fn original_to_auto_restarts_the_worker_to_arm_the_watchdog() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn auto_to_an_admitting_fixed_rung_restarts_the_worker_to_remove_the_watchdog() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -2437,6 +2458,7 @@ fn auto_to_an_admitting_fixed_rung_restarts_the_worker_to_remove_the_watchdog() 
 /// after the user temporarily selects a fixed rung. This is the Depeche Mode shape: Original
 /// direct-play → 480p burned-subtitle transcode → Original.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn manual_original_after_a_fixed_rung_with_a_subtitle_returns_to_direct_play() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);

@@ -85,6 +85,11 @@ pub(crate) enum SourceState {
     Unauthorized,
     /// Did not answer: refused, timed out, or unresolvable.
     Unreachable,
+    /// Answered, verified — the right machine — but only over a transport this build can never
+    /// put a credential on (issue #95, plan §4). Not [`Self::Reachable`]: nothing is browsable
+    /// behind it. Not [`Self::Unreachable`] either: the server is alive, and saying it is not
+    /// sends the user to look at a router for nothing.
+    InsecureOnly,
 }
 
 /// One SOURCE the table is addressed by — a server this account has been granted. Comes from the
@@ -146,20 +151,21 @@ impl BrowseSource {
     /// would otherwise open dimmed"*. Anything that needs to tell "not yet" from "yes" must read
     /// [`BrowseSource::state`] and say so, which is the entire reason the state exists.
     pub(crate) fn reachable(&self) -> bool {
-        !matches!(self.state, SourceState::Unreachable)
+        !matches!(self.state, SourceState::Unreachable | SourceState::InsecureOnly)
     }
     /// Record a generic PMS request that answered or did not. A failed request cannot distinguish
-    /// HTTP status from transport/parse failure, so it preserves an Unauthorized result supplied
-    /// by the identity prober; a successful request is enough evidence to clear any failure.
+    /// HTTP status from transport/parse failure, so it preserves an Unauthorized or InsecureOnly
+    /// result supplied by the identity prober; a successful request is enough evidence to clear
+    /// any failure.
     #[cfg(test)]
     pub(crate) fn set_reachable(&mut self, ok: bool) {
         // A generic PMS request folds status/transport/parse errors into one `None`, so it cannot
-        // disprove the more specific 401 the identity prober already observed. Only a successful
-        // request clears Unauthorized; the auth coordinator can explicitly replace it with a
-        // later aggregate Unreachable result through the registry.
+        // disprove the more specific 401/InsecureOnly result the identity prober already
+        // observed. Only a successful request clears either; the auth coordinator can explicitly
+        // replace it with a later aggregate Unreachable result through the registry.
         if ok {
             self.state = SourceState::Reachable;
-        } else if self.state != SourceState::Unauthorized {
+        } else if !matches!(self.state, SourceState::Unauthorized | SourceState::InsecureOnly) {
             self.state = SourceState::Unreachable;
         }
     }
@@ -178,6 +184,7 @@ fn source_state(outcome: Option<crate::plex::probe::Outcome>) -> SourceState {
         Some(
             crate::plex::probe::Outcome::WrongServer | crate::plex::probe::Outcome::Unreachable,
         ) => SourceState::Unreachable,
+        Some(crate::plex::probe::Outcome::InsecureOnly) => SourceState::InsecureOnly,
     }
 }
 
@@ -2175,7 +2182,7 @@ impl SrcGroup {
     /// The old two-state question. See [`BrowseSource::reachable`] — `NotProbed` answers `true`
     /// here too, and for the same reason: a group nobody has dialled must not open dimmed.
     pub(crate) fn reachable(&self) -> bool {
-        !matches!(self.state, SourceState::Unreachable)
+        !matches!(self.state, SourceState::Unreachable | SourceState::InsecureOnly)
     }
 }
 

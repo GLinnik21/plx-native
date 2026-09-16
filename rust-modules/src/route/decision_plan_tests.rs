@@ -13,6 +13,7 @@ use super::test_support::apply_plan;
 /// before any network, and a plan that carries no server is one `apply_plan` cannot install an
 /// honest `cur_sid` from. Every richer exit builds on the same field.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_plan_round_trips_the_server_the_request_captured() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -77,6 +78,7 @@ fn a_plan_that_never_resolved_makes_no_claim_about_the_source() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn remux_review_probe_installs_effective_selection_before_decision_and_start() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -119,6 +121,7 @@ fn remux_review_probe_installs_effective_selection_before_decision_and_start() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn remux_review_http_200_refusal_never_gets_media() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -139,6 +142,7 @@ fn remux_review_http_200_refusal_never_gets_media() {
 /// to skip `/decision` because EAC3 is a direct-play audio codec; the plan URL must not
 /// be that part until MDE has registered the session.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn original_hevc_eac3_registers_mde_before_returning_the_part() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -199,6 +203,7 @@ fn original_hevc_eac3_registers_mde_before_returning_the_part() {
 /// `/decision` query must name that sibling; otherwise PMS evaluates TrueHD and the part
 /// GET 503s or the title is sent to a video-downscaling transcode.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn smart_dp_names_the_ac3_sibling_on_mde() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -268,6 +273,7 @@ fn smart_dp_names_the_ac3_sibling_on_mde() {
 /// returning the part URL the local codec test would have chosen. A `/decision` body that
 /// names no video stream cannot claim the video must re-encode, so this unnamed shape remuxes.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn mde_transcode_does_not_return_the_part_url() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -322,6 +328,7 @@ fn mde_transcode_does_not_return_the_part_url() {
 /// profile) but the video can still be copied. A Part-level veto would re-encode 4K for an
 /// audio problem.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn mde_transcode_for_truehd_only_still_remuxes() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -382,6 +389,7 @@ fn mde_transcode_for_truehd_only_still_remuxes() {
 /// A video-stream `transcode` (bit depth past the profile, …) is the copy veto. Remux here
 /// would ship pixels the decoder cannot take.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn mde_video_stream_transcode_forbids_remux() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -429,6 +437,7 @@ fn mde_video_stream_transcode_forbids_remux() {
 /// Declared Profile 5 can Original, but a remux copy carries no `DolbyHdrInfo`. MDE's
 /// video=`copy` (the measured P5 shape) must not override `no_video_copy`.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -479,6 +488,7 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
 /// fell through to HLS and re-encoded 4K for an audio-only veto. The probe has to sample the
 /// remux `start.mkv` we would actually play.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn remote_auto_truehd_remux_probes_start_mkv_not_the_part() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -567,6 +577,7 @@ fn remote_auto_truehd_remux_probes_start_mkv_not_the_part() {
 /// MDE, the remux probe, the play-path PUT, and the installed start.mkv must all name the
 /// AC3 sibling `id=2` that smart-DP will actually feed.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn remote_auto_truehd_remux_probe_names_the_ac3_sibling_not_env_audio_sid() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -678,6 +689,7 @@ fn remote_auto_truehd_remux_probe_names_the_ac3_sibling_not_env_audio_sid() {
 /// 720p denies remux, so the encoder can transcode the selected DTS. Putting the smart-DP
 /// AC3 sibling here replaced English with the Russian default (reproduced on PMS 1.43.4).
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_720p_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -764,6 +776,7 @@ fn a_720p_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
 /// the same sibling smart-DP / pref-lang would copy. Treating that echo as a pick would
 /// open The Morning Show in the foreign dub at 720p.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_720p_reencode_does_not_put_a_default_echo_over_english() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -849,6 +862,7 @@ fn a_720p_reencode_does_not_put_a_default_echo_over_english() {
 /// 720p can transcode unselected English DTS when the smart-DP sibling is a foreign AC3.
 /// Treating pref-lang as DP-only would keep the Russian copy the encoder does not need.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_720p_reencode_puts_pref_lang_dts_not_the_foreign_ac3_sibling() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -934,6 +948,7 @@ fn a_720p_reencode_puts_pref_lang_dts_not_the_foreign_ac3_sibling() {
 /// Relay Auto cannot Original, so bootstrap installs HLS. The play-path PUT and start.m3u8
 /// must still name selected English DTS, not the Russian AC3 sibling a remux would copy.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn a_auto_hls_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1023,6 +1038,7 @@ fn a_auto_hls_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
 /// physical-stop (`closeResourceSession=0`) so the HLS `/decision` on the same identity
 /// is not 503'd. Closing the Streaming Resource would.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn remote_auto_failed_remux_sample_physical_stops_before_hls() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1102,6 +1118,7 @@ fn remote_auto_failed_remux_sample_physical_stops_before_hls() {
 /// An empty / unusable MDE body must not fall back to Original — that Part GET 503s on 1.43.
 /// Remux/re-encode via a separate registering decision is still allowed.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn unreachable_mde_does_not_return_the_part_url() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1157,6 +1174,7 @@ fn unreachable_mde_does_not_return_the_part_url() {
 /// the default `auto`. The mock PMS rejects that shape, so omitting the mode fail-closes
 /// into remux + PUT sub=0 (the selected subtitle disappears).
 #[test]
+#[cfg(feature = "devtriggers")]
 fn selected_embedded_srt_names_id_and_client_rendered_mode_on_mde() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1212,6 +1230,7 @@ fn selected_embedded_srt_names_id_and_client_rendered_mode_on_mde() {
 /// Selected PGS is client-rendered on Original; MDE must see that stream id (and the profile
 /// must list pgs) so the decision stays directplay.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn selected_pgs_names_subtitle_stream_id_on_mde() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1262,6 +1281,7 @@ fn selected_pgs_names_subtitle_stream_id_on_mde() {
 /// A selected external sidecar is not in the container — Original leaves subs off. MDE must
 /// see subtitleStreamID=0 so it does not force a burn/transcode for a sub we will not render.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn external_selected_sub_sends_subtitle_stream_id_zero_on_mde() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1321,6 +1341,7 @@ fn external_selected_sub_sends_subtitle_stream_id_zero_on_mde() {
 /// Selected embedded `mov_text` (iTunes MP4) is client-rendered; the profile lists it so
 /// MDE must see the stream id and stay Original rather than re-encoding.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn selected_mov_text_names_subtitle_stream_id_on_mde() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1371,6 +1392,7 @@ fn selected_mov_text_names_subtitle_stream_id_on_mde() {
 /// PMS reports DVD bitmaps as `dvd_subtitle`; listing only `dvd` would MDE-transcode and
 /// then forbid remux. The stream id must land on `/decision`.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn selected_dvd_subtitle_names_subtitle_stream_id_on_mde() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;

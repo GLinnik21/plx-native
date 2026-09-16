@@ -58,6 +58,7 @@ fn the_machine_id_cache_is_scoped_to_the_server_that_taught_it() {
 /// B. The closing report to A is the control — it proves the two stubs are distinguishable, so
 /// "A heard nothing" is a fact about the routing and not about a listener that never worked.
 #[test]
+#[cfg(feature = "devtriggers")]
 fn the_timeline_reaches_the_server_the_item_came_from_not_the_current_one() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::time::Duration;
@@ -154,6 +155,7 @@ fn the_timeline_reaches_the_server_the_item_came_from_not_the_current_one() {
 }
 
 #[test]
+#[cfg(feature = "devtriggers")]
 fn replacement_timeline_waits_for_the_announced_old_stop_boundary() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     use std::time::Duration;

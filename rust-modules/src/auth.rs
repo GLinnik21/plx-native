@@ -12,7 +12,7 @@
 use crate::plex::account::{AccountClient, HomeUser, PinPoll, Resource, SwitchOutcome};
 use crate::plex::probe::{self, Candidate, Outcome, ProbePlan};
 use crate::plex::session::{self, ProfileCreds, ServerRef, Session, SourceRef, UserRef};
-use crate::plex::{Origin, ServerId};
+use crate::plex::{CredentialPolicy, Origin, ServerId};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
@@ -56,19 +56,20 @@ pub(crate) fn endpoint_worker_with_io(epoch: u64, session: Session, expected: ow
     lifecycle: owner::ServerLifecycle, machine_id: String, output: &dyn owner::ObservationSink,
     resources: impl FnOnce(&AccountClient) -> Option<Vec<Resource>>,
     probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe)) {
-    let fresh = probe_endpoint_work(ServerId::from_raw(lifecycle.sid), &machine_id, &session,
+    let (fresh, probe) = probe_endpoint_work(ServerId::from_raw(lifecycle.sid), &machine_id, &session,
         resources, probe, &|| output.live());
-    output.terminal(endpoint_work_fact(epoch, expected, lifecycle, machine_id, fresh));
+    output.terminal(endpoint_work_fact(epoch, expected, lifecycle, machine_id, fresh, probe));
 }
 
 /// Endpoint transport projection shared by the real worker and injected network-result tests.
 /// Admission, interest and native lifecycle validation remain in the adapter/owner protocol.
 pub(crate) fn endpoint_work_fact(epoch: u64, expected: owner::Identity,
-    lifecycle: owner::ServerLifecycle, machine_id: String, fresh: Option<SourceRef>) -> AuthProgress {
+    lifecycle: owner::ServerLifecycle, machine_id: String, fresh: Option<SourceRef>,
+    probe: Option<SettledProbe>) -> AuthProgress {
     AuthProgress::Endpoint(EndpointProgress { epoch,
         expected: SessionIdentity { client_id: expected.client_id, account_token: expected.account_token,
             profile_uuid: expected.profile_uuid },
-        id: ServerId::from_raw(lifecycle.sid), machine_id, lifecycle: None, fresh })
+        id: ServerId::from_raw(lifecycle.sid), machine_id, lifecycle: None, fresh, probe })
 }
 
 /// Application commands are the concrete owner's domain vocabulary, not global operations.
@@ -218,6 +219,10 @@ pub struct ReadyCreds {
     /// it (`plex::origin`). Read straight off the stored [`session::ServerRef`], which is the
     /// value discovery wrote and the one `can_go_local` gates.
     pub origin: Origin,
+    /// The advertised address BEHIND `origin` — a dotted quad or v6 literal, never a
+    /// `plex.direct` hostname. `plex::IpVersion::of_host` can classify this even when `origin`'s
+    /// own host is a certificate NAME it cannot parse as an address (#95 step 8 / R3(a)).
+    pub address: String,
     pub token: String,
     /// The tier that won discovery, restored only after the main thread installs/re-points the
     /// client because a fresh client deliberately starts with an unknown link.
@@ -480,7 +485,11 @@ pub(crate) struct ServerRosterProgress {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) enum ServerRosterOutcome {
     Unreachable,
-    NoReachable,
+    /// Nothing was found to REGISTER, but at least the probes themselves ran (R2/A5) — `settled`
+    /// carries every one, empty only when there was truly nothing to probe (no server named at
+    /// all). The owner commits these as registry-only [`RegistryPlan::Probe`]s: the roster itself
+    /// is unchanged, so there is nothing to write to disk.
+    NoReachable { settled: Vec<SettledProbe> },
     Reconcile {
         #[serde(with = "observation::resources")]
         resources: Vec<Resource>,
@@ -497,6 +506,7 @@ pub(crate) struct EndpointProgress {
     machine_id: String,
     lifecycle: Option<ClientLifecycle>,
     fresh: Option<SourceRef>,
+    probe: Option<SettledProbe>,
 }
 
 /// The exact registry incarnation an endpoint request was issued through. `ServerId` and
@@ -528,11 +538,18 @@ impl ClientLifecycle {
 pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
     match plan {
         owner::RegistryPlan::DevInstall { primary, extras, client_id } => {
-            install_captured_registry(&primary.origin(), &primary.token, primary.tier,
-                primary.resolve_pin().as_ref(), extras, Some(client_id));
+            install_captured_registry(&primary.origin(), &primary.address, &primary.token,
+                primary.tier, primary.resolve_pin().as_ref(), extras, Some(client_id));
         }
         owner::RegistryPlan::Primary { server, token } => {
-            crate::plex::install(&server.origin(), token, server.resolve_pin().as_ref());
+            // #95 step 8 / A2: carry the tier + address-derived IP into the same registration
+            // write, rather than restoring them in a later separate call the boot picker's avatar
+            // client used to skip.
+            let connection = crate::plex::ConnectionFacts::new(
+                server.tier,
+                crate::plex::IpVersion::of_host(&server.address),
+            );
+            crate::plex::install(&server.origin(), token, server.resolve_pin().as_ref(), connection);
         }
         owner::RegistryPlan::Activate { source, ipv6 } => {
             let Some(origin) = source.origin() else { return false };
@@ -551,11 +568,13 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
         }
         owner::RegistryPlan::Endpoint { expected, source } => {
             let Some(origin) = source.origin() else { return false };
-            let id = register_observed_origin(&source.machine_id, &origin, &source.token, source.resolve_pin().as_ref());
+            let connection = crate::plex::ConnectionFacts::new(
+                source.tier,
+                crate::plex::IpVersion::of_host(&source.address),
+            );
+            let id = register_observed_origin(&source.machine_id, &origin, &source.token,
+                source.resolve_pin().as_ref(), connection);
             if id.raw() != expected.sid { return false; }
-            if let (Some(tier), Some(client)) = (source.tier, crate::plex::client_for(id)) {
-                client.set_connection(tier, crate::plex::IpVersion::of_host(&source.address));
-            }
             crate::plex::describe_server(id, &source.name, &source.shared_by, source.owned);
             crate::plex::publish_probe_result(id, Outcome::Reachable);
         }
@@ -567,26 +586,40 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
 
 /// Shared resource installer. Dev boot supplies its captured device identity so registration
 /// cannot mint/read a session file; Account installation retains the existing lazy-ID behavior.
-pub(crate) fn install_captured_registry(origin: &Origin, token: &str, tier: Option<probe::Location>,
-    pin: Option<&crate::plex::ResolvePin>, extras: &[SourceRef], client_id: Option<&str>) {
-    let register = |machine: &str, origin: &Origin, token: &str, pin: Option<&crate::plex::ResolvePin>| {
-        if let Some(cid) = client_id { crate::plex::register_captured_origin(machine, origin, token, pin, cid) }
-        else { register_observed_origin(machine, origin, token, pin) }
-    };
-    let id = register("", origin, token, pin);
-    crate::plex::set_current(id);
-    if let Some(link) = tier {
-        if let Some(client) = crate::plex::client_for(id) {
-            client.set_connection(link, crate::plex::IpVersion::of_host(origin.host()));
+///
+/// `address` is the advertised address BEHIND `origin` (#95 step 8 / R3(a)): `origin.host()` is
+/// usually a `plex.direct` certificate NAME that `IpVersion::of_host` cannot parse, so deriving
+/// the IP family from it silently produced `None` on every real boot. The stored/advertised
+/// address is the one value that is actually a literal.
+pub(crate) fn install_captured_registry(origin: &Origin, address: &str, token: &str,
+    tier: Option<probe::Location>, pin: Option<&crate::plex::ResolvePin>, extras: &[SourceRef],
+    client_id: Option<&str>) {
+    // Applies `connection` atomically, inside the same registration write, on whichever branch
+    // runs (#95 step 8) — the primary and every extra used to register first and set the
+    // connection facts in a SEPARATE call afterward, which is exactly the gap `ConnectionFacts`
+    // exists to close.
+    let register = |machine: &str, origin: &Origin, token: &str,
+        pin: Option<&crate::plex::ResolvePin>, connection: crate::plex::ConnectionFacts| {
+        if let Some(cid) = client_id {
+            crate::plex::register_captured_origin_with_connection(machine, origin, token, pin, cid,
+                connection)
+        } else {
+            register_observed_origin(machine, origin, token, pin, connection)
         }
-    }
+    };
+    let primary_connection =
+        crate::plex::ConnectionFacts::new(tier, crate::plex::IpVersion::of_host(address));
+    let id = register("", origin, token, pin, primary_connection);
+    crate::plex::set_current(id);
     for source in extras {
         let Some(origin) = source.origin() else { continue };
         if source.token.is_empty() { continue; }
-        let id = register(&source.machine_id, &origin, &source.token, source.resolve_pin().as_ref());
-        if let Some(link) = source.tier {
-            if let Some(client) = crate::plex::client_for(id) { client.set_link(link); }
-        }
+        let connection = crate::plex::ConnectionFacts::new(
+            source.tier,
+            crate::plex::IpVersion::of_host(&source.address),
+        );
+        let id = register(&source.machine_id, &origin, &source.token,
+            source.resolve_pin().as_ref(), connection);
         crate::plex::describe_server(id, &source.name, &source.shared_by, source.owned);
     }
 }
@@ -680,15 +713,21 @@ pub(crate) enum LoginProgress {
 
 /// Register one accepted observed origin. Host tests use the registry's explicit no-I/O seam;
 /// shipping builds retain `register_origin`'s server-info refresh and persisted client identity.
+///
+/// `connection` (#95 step 8) is applied atomically, inside the SAME registration write, on
+/// whichever branch below runs — never as a separate call after this function returns, which is
+/// what let a re-point publish a fresh `Client` between "registered" and "connection applied" and
+/// briefly (or, if the caller forgot the follow-up, permanently) report it as unknown.
 fn register_observed_origin(
     machine_id: &str,
     origin: &Origin,
     token: &str,
     pin: Option<&crate::plex::ResolvePin>,
+    connection: crate::plex::ConnectionFacts,
 ) -> ServerId {
     #[cfg(not(test))]
     {
-        crate::plex::register_origin(machine_id, origin, token, pin)
+        crate::plex::register_origin(machine_id, origin, token, pin, connection)
     }
     #[cfg(test)]
     {
@@ -698,27 +737,29 @@ fn register_observed_origin(
             token,
             pin,
             "auth-observation-test",
+            connection,
         )
     }
 }
 
 fn apply_candidate_activation(candidate: CandidateActivation) {
     let pin = crate::plex::ResolvePin::for_origin(&candidate.origin, &candidate.address);
+    let connection = crate::plex::ConnectionFacts::new(
+        Some(candidate.location),
+        Some(if candidate.ipv6 {
+            crate::plex::IpVersion::V6
+        } else {
+            crate::plex::IpVersion::V4
+        }),
+    );
     let id = register_observed_origin(
         &candidate.machine_id,
         &candidate.origin,
         &candidate.token,
         pin.as_ref(),
+        connection,
     );
-    if let Some(client) = crate::plex::client_for(id) {
-        client.set_connection(
-            candidate.location,
-            Some(if candidate.ipv6 {
-                crate::plex::IpVersion::V6
-            } else {
-                crate::plex::IpVersion::V4
-            }),
-        );
+    if crate::plex::client_for(id).is_some() {
         crate::plex::publish_probe_result(id, Outcome::Reachable);
     }
     crate::plex::describe_server(id, &candidate.name, &candidate.credit, candidate.owned);
@@ -808,6 +849,9 @@ fn login_worker_with_output(epoch: u64, cid: String, output: &dyn owner::Observa
                 epoch,
                 "Couldn't reach any Plex server — check the connection.",
             )
+        }
+        Discovery::InsecureOnly => {
+            return output_failed(output, epoch, DISCOVERY_INSECURE_ONLY_MESSAGE)
         }
     };
     finish_sign_in(&ac, epoch, server, sources, output);
@@ -973,6 +1017,7 @@ fn rediscovery_worker_with_output(cid: String, token: String, epoch: u64,
             epoch,
             "Couldn't reach any Plex server — check the connection.",
         ),
+        Discovery::InsecureOnly => output_failed(output, epoch, DISCOVERY_INSECURE_ONLY_MESSAGE),
     }
 }
 
@@ -1142,11 +1187,16 @@ fn poll_for_token(w: &mut impl PinWatch, window: Duration) -> PollEnd {
 // forms of an unmatched shared-LAN address), race one server's direct candidates, and **verify
 // identity on the answer** before believing it. Servers remain serial, with relay as a second phase.
 
-/// How far one server got. Only [`Reach::At`] is a server we can use; the other two are the
+/// How far one server got. Only [`Reach::At`] is a server we can use; the others are the
 /// distinction `probe.rs`'s module doc refuses to let a caller collapse, because they send the
-/// user to two different places.
+/// user to different places.
+///
+/// **Precedence, best first: `At` > `InsecureOnly` > `Refused` > `No`.** A verified identity —
+/// even one this build cannot put a credential on — beats a 401 from a different, parallel or
+/// proxied candidate; silence is the weakest signal of all.
 enum Reach {
-    /// This address answered `/identity` **as the server we asked for**.
+    /// This address answered `/identity` **as the server we asked for**, over a transport that
+    /// can carry a credential.
     ///
     /// Two values, and the split is the point: the [`Origin`] is **what was actually dialled**, and
     /// so the only thing the roster may record as this server's address; the [`Candidate`] is kept
@@ -1155,6 +1205,14 @@ enum Reach {
     /// left exactly one gap — a plex.tv `uri` whose port disagrees with `port` would be verified at
     /// one and written down as the other — and this pairing closes it by construction.
     At(Candidate, Origin),
+    /// This address answered `/identity` **as the server we asked for**, but
+    /// [`Candidate::credential_eligible`] is `false` — a plaintext answer in a store build.
+    /// **Alive, and provably the right server, but nothing may register it or put a token on it.**
+    /// It is not [`Reach::At`], because the whole point of this app's credential guard is that a
+    /// verified-but-ineligible candidate must not read as success (`probe.rs`'s module doc); it is
+    /// not [`Reach::No`] either, because "the server did not answer" and "the server answered and
+    /// this build cannot use it" are two different facts to hand the user.
+    InsecureOnly(Candidate),
     /// One or more candidates answered 401 and no candidate verified the server. A proxy-specific
     /// 401 does not cancel parallel direct probes or the relay fallback; it survives only as the
     /// final reason when none of those proves reachability. Reporting that as generic silence would
@@ -1188,7 +1246,21 @@ enum Discovery {
     /// refuses unauthenticated requests — an auth proxy, or `allowedNetworks` excluding this
     /// subnet. It is not a network fault and not a dead server, so it must not be worded as one.
     Refused,
+    /// At least one server verified — the identity matched — but only [`Reach::InsecureOnly`]:
+    /// over a transport this build can never put a credential on. Takes precedence over
+    /// [`Self::Refused`] (plan §4): a verified plaintext answer is a more useful fact than a
+    /// parallel/proxy 401, and points at a fixable cause (HTTPS to the server) rather than a
+    /// credential one.
+    InsecureOnly,
 }
+
+/// Copy for [`Discovery::InsecureOnly`], shared by sign-in and rediscovery so the two paths
+/// cannot say two different things about the same verdict (plan §4).
+///
+/// Owner-approved wording; keep byte-identical.
+const DISCOVERY_INSECURE_ONLY_MESSAGE: &str =
+    "Found your Plex server, but couldn't connect to it securely (HTTPS). Check that your server \
+     allows secure connections, then try again.";
 
 /// The probe path. **Unauthenticated on purpose** — `/identity` answers 200 to anybody, which
 /// makes it useless as a token test and perfect as a reachability + identity one.
@@ -1306,7 +1378,16 @@ fn classify(status: i32, body: &[u8], want_machine_id: &str) -> Outcome {
 /// A transport failure — nothing answered, DNS said no, the certificate would not validate — comes
 /// back as `(0, [])`, and `classify` reads that as [`Outcome::Unreachable`]. `0` is not a status any
 /// server can send, so it cannot be confused with one.
-fn get_identity(origin: &Origin, budget: Duration) -> (i32, Vec<u8>) {
+///
+/// `pin`, when [`race_batch`] built one for this candidate, is forwarded to
+/// [`crate::http::request_probe`] exactly as `apply_candidate_activation` forwards one to
+/// `register_origin` — the same [`crate::plex::ResolvePin`], used one step earlier: at the DIAL
+/// that decides the winner, not only at the registration of one already decided.
+fn get_identity(
+    origin: &Origin,
+    pin: Option<&crate::plex::ResolvePin>,
+    budget: Duration,
+) -> (i32, Vec<u8>) {
     match crate::http::request_probe(
         origin,
         IDENTITY,
@@ -1314,6 +1395,7 @@ fn get_identity(origin: &Origin, budget: Duration) -> (i32, Vec<u8>) {
         &[crate::http::ACCEPT_JSON],
         64 * 1024,
         budget.as_secs().max(1) as i32,
+        pin,
     ) {
         // `/identity` is one small MediaContainer. The ceiling is enforced by each transport
         // WHILE it reads, before a machine we have not accepted can make this worker allocate an
@@ -1339,7 +1421,9 @@ const PROBE_DEADLINES: ProbeDeadlines = ProbeDeadlines {
 };
 const SERVER_GAP: Duration = Duration::from_secs(4);
 
-type ProbeDial = Arc<dyn Fn(&Origin, Duration) -> (i32, Vec<u8>) + Send + Sync + 'static>;
+type ProbeDial = Arc<
+    dyn Fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> (i32, Vec<u8>) + Send + Sync + 'static,
+>;
 type ProbeJob = Box<dyn FnOnce() + Send + 'static>;
 
 #[derive(Clone)]
@@ -1370,6 +1454,10 @@ struct PendingProbe {
 struct BatchResult {
     first: Option<Winner>,
     best: Option<Winner>,
+    /// The best-scored verified-but-ineligible answer in this batch — set instead of `first`/
+    /// `best` when [`Candidate::credential_eligible`] is `false`. Never activated; kept as
+    /// evidence for [`Reach::InsecureOnly`] when nothing eligible verifies.
+    insecure: Option<Winner>,
     refused: bool,
 }
 
@@ -1444,18 +1532,32 @@ fn settle_probe_message(
                 candidate: c.clone(),
                 origin,
             };
-            if result.first.is_none() {
-                // "First usable immediately" — and USABLE is the word: on a LAN the plaintext
-                // twin answers before the TLS handshake completes, and a store build refuses
-                // to put a token on it, so activating it re-pointed the live server to an
-                // origin every request then failed on until the https winner landed ~100 ms
-                // later (device, 2026-09-06: `security: refused plaintext PMS credentials`,
-                // a hub fetch and the picker's first avatar lost in the gap). The first answer
-                // still counts as reached; it just does not become the live origin unless this
-                // build can dial it with a credential.
-                if activation_allowed(&winner.origin) {
-                    activate(plan, &winner.candidate, &winner.origin);
+            if !c.credential_eligible {
+                // Verified — this really is the server we asked for — but over a transport this
+                // build can never put a credential on (a plaintext twin in a store build). It
+                // must not become `first`/`best`: those are what `activate` acts on, and
+                // activating this origin would re-point the live server to something every
+                // credentialed request then fails on (device, 2026-09-06: `security: refused
+                // plaintext PMS credentials`, a hub fetch and the picker's first avatar lost in
+                // the gap while the LAN plaintext twin answered before the TLS winner did). It
+                // is still evidence the server is alive here, so it is kept — best-scored — as
+                // `insecure`, and `probe_server_racing` decides what that means once nothing
+                // eligible has verified.
+                log(&format!(
+                    "auth: '{}' answered only over plaintext at {}",
+                    plan.name,
+                    winner.origin.log_form()
+                ));
+                if result.insecure.as_ref().is_none_or(|old| better(&winner, old)) {
+                    result.insecure = Some(winner);
                 }
+                return;
+            }
+            if result.first.is_none() {
+                // "First usable immediately" — every candidate that reaches this branch is
+                // already `credential_eligible`, so nothing here needs to ask again whether the
+                // build can put a token on it.
+                activate(plan, &winner.candidate, &winner.origin);
                 result.first = Some(winner.clone());
             }
             if result.best.as_ref().is_none_or(|old| better(&winner, old)) {
@@ -1474,6 +1576,9 @@ fn settle_probe_message(
             plan.name, c.address, c.port
         )),
         Outcome::Unreachable => {}
+        // `classify` never produces this — it is the whole-server AGGREGATE verdict this
+        // function's own caller derives from `result.insecure`, not a per-candidate answer.
+        Outcome::InsecureOnly => {}
     }
 }
 
@@ -1506,8 +1611,13 @@ fn race_batch(
         let worker_state = Arc::clone(&state);
         let machine_id = plan.machine_id.clone();
         let budget = probe_deadline(c, policy);
+        // Built here, at the dial that decides a winner — not only at `apply_candidate_activation`,
+        // which pins the same way after one already has. `None` for a plaintext candidate (a pin
+        // belongs to a TLS name only) or an unmatched/undecodable label; the request then resolves
+        // through DNS exactly as before.
+        let pin = crate::plex::ResolvePin::for_origin(&origin, &c.address);
         let job = Box::new(move || {
-            let (status, body) = dial(&origin, budget);
+            let (status, body) = dial(&origin, pin.as_ref(), budget);
             let outcome = classify(status, &body, &machine_id);
             let on_time = Instant::now() <= deadline;
             // Claim completion before publishing the message. If the coordinator expires first,
@@ -1652,17 +1762,26 @@ fn probe_server_racing(
         .collect();
 
     let mut batch = race_batch(plan, &direct, Arc::clone(&dial), spawn, policy, activate);
-    // Relay is the reachability fallback whenever no direct origin verified, including when a
-    // proxy on one direct origin answered 401. Preserve that refusal only as the final reason if
-    // relay also produces no winner; a verified identity always beats a parallel/proxy 401.
+    // Relay is the reachability fallback whenever nothing eligible verified directly — `first` is
+    // only ever set for a `credential_eligible` winner now (`settle_probe_message`), so a
+    // plaintext-only direct answer still starves nothing here — including when a proxy on one
+    // direct origin answered 401. Preserve that refusal, and the direct-only insecure answer, only
+    // as the final reason if relay also produces no eligible winner; a verified identity always
+    // beats a parallel/proxy 401.
     if batch.first.is_none() && !relay.is_empty() {
         let direct_refused = batch.refused;
+        let direct_insecure = batch.insecure.take();
         batch = race_batch(plan, &relay, dial, spawn, policy, activate);
         batch.refused |= direct_refused;
+        if batch.insecure.is_none() {
+            batch.insecure = direct_insecure;
+        }
     }
 
     let Some(best) = batch.best else {
-        return if batch.refused {
+        return if let Some(insecure) = batch.insecure {
+            Reach::InsecureOnly(insecure.candidate)
+        } else if batch.refused {
             Reach::Refused
         } else {
             Reach::No
@@ -1672,31 +1791,15 @@ fn probe_server_racing(
         .first
         .as_ref()
         .expect("a best winner is also a first winner");
-    // The final re-point to the best score — or the first activation of the best, when the
-    // first answer was one this build could not make live (see `settle_probe_message`).
-    if (first.index != best.index || !activation_allowed(&first.origin))
-        && activation_allowed(&best.origin)
-    {
+    // The final re-point to the best score. Both `first` and `best` are `credential_eligible` by
+    // construction (`settle_probe_message` never lets an ineligible winner become either), so the
+    // activation question this used to re-ask here is already settled.
+    if first.index != best.index {
         activate(plan, &best.candidate, &best.origin);
     }
     Reach::At(best.candidate, best.origin)
 }
 
-/// May this origin become the LIVE one — can the app put a credential on it in this build?
-/// TLS always; plaintext only in a developer build (`http::credential_transport_allowed`'s rule,
-/// asked before a registration instead of after a refused request).
-fn activation_allowed(origin: &Origin) -> bool {
-    activation_allowed_by_policy(origin, cfg!(feature = "devtriggers"))
-}
-
-fn activation_allowed_by_policy(origin: &Origin, allow_plaintext_credentials: bool) -> bool {
-    crate::http::credential_transport_allowed_by_policy(
-        origin,
-        "/",
-        &["X-Plex-Token: any"],
-        allow_plaintext_credentials,
-    )
-}
 
 fn candidate_activation(
     plan: &ProbePlan,
@@ -1727,17 +1830,51 @@ pub(crate) struct SettledProbe {
     #[serde(with = "observation::outcome")]
     outcome: Outcome,
     tier: Option<probe::Location>,
+    /// The candidate address that answered, kept ONLY so a background application of this
+    /// verdict (`publish_settled_probe`) can derive the connection's IP generation without ever
+    /// reading `origin.host()` (R3/A3) — a `plex.direct` NAME there, not the dotted quad. `None`
+    /// whenever `tier` is: nothing verified, so there is nothing to derive from.
+    #[serde(default)]
+    address: Option<String>,
 }
 
 pub(crate) fn settled_probe(
     plan: &ProbePlan,
     outcome: Outcome,
     tier: Option<probe::Location>,
+    address: Option<String>,
 ) -> SettledProbe {
     SettledProbe {
         machine_id: plan.machine_id.clone(),
         outcome,
         tier,
+        address,
+    }
+}
+
+/// Test-only convenience: build a [`SettledProbe`] directly by machine id, for fixtures that have
+/// a `SourceRef`/machine id in hand but no [`ProbePlan`] worth constructing just to read one field
+/// off it.
+#[cfg(test)]
+pub(crate) fn settled_probe_for_test(
+    machine_id: &str,
+    outcome: Outcome,
+    tier: Option<probe::Location>,
+    address: Option<String>,
+) -> SettledProbe {
+    SettledProbe { machine_id: machine_id.to_owned(), outcome, tier, address }
+}
+
+/// Turn one settled race into what gets published and, when something verified, recorded —
+/// `resolve_roster_using` and `probe_profile_resource_live` each needed this same mapping once per
+/// server (plan §4). [`Reach::InsecureOnly`] keeps its candidate's tier and address (S9): the
+/// state itself already carries the verdict, so a diagnostic tier is not a claim of usability.
+fn probe_verdict(reach: &Reach) -> (Outcome, Option<probe::Location>, Option<String>) {
+    match reach {
+        Reach::At(c, _) => (Outcome::Reachable, Some(c.location), Some(c.address.clone())),
+        Reach::InsecureOnly(c) => (Outcome::InsecureOnly, Some(c.location), Some(c.address.clone())),
+        Reach::Refused => (Outcome::Unauthorized, None, None),
+        Reach::No => (Outcome::Unreachable, None, None),
     }
 }
 
@@ -1749,7 +1886,14 @@ fn publish_settled_probe(probe: &SettledProbe) {
         return;
     };
     if let Some(link) = probe.tier {
-        client.set_link(link);
+        // `apply_connection`, not the bare `set_link` this used to call: the same rule (R3) — the
+        // IP generation comes from the candidate's own ADDRESS, never from `origin.host()`, which
+        // is a `plex.direct` NAME for exactly the connections this fix is about — and `None` from
+        // an unparseable address LEAVES a previously known ip alone (A1) rather than forcing it
+        // back to unknown, since this function updates an ALREADY-registered client rather than
+        // applying facts inside a fresh registration write.
+        let ip = probe.address.as_deref().and_then(crate::plex::IpVersion::of_host);
+        client.apply_connection(crate::plex::ConnectionFacts::new(Some(link), ip));
     }
     crate::plex::publish_probe_result(id, probe.outcome);
 }
@@ -1767,6 +1911,10 @@ fn publish_settled_probes(probes: &[SettledProbe]) {
 #[cfg(test)]
 fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> Reach {
     let mut tried = 0;
+    // The same eligibility rule the racing coordinator applies (`settle_probe_message`): a
+    // verified-but-ineligible answer is kept as evidence, never returned as `Reach::At`, and the
+    // search continues past it — the next candidate may still verify AND be usable.
+    let mut insecure: Option<Candidate> = None;
     for c in plan.candidates.iter() {
         let Some(origin) = dial_target(c) else {
             continue;
@@ -1778,7 +1926,20 @@ fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> R
         // would put the transport choice back at a call site.
         let (status, body) = dial(&origin);
         match classify(status, &body, &plan.machine_id) {
-            Outcome::Reachable => return Reach::At(c.clone(), origin),
+            Outcome::Reachable => {
+                if !c.credential_eligible {
+                    log(&format!(
+                        "auth: '{}' answered only over plaintext at {}",
+                        plan.name,
+                        origin.log_form()
+                    ));
+                    if insecure.is_none() {
+                        insecure = Some(c.clone());
+                    }
+                    continue;
+                }
+                return Reach::At(c.clone(), origin);
+            }
             Outcome::Unauthorized => {
                 log(&format!(
                     "auth: '{}' answered 401 at {} — a token problem, not the network",
@@ -1795,7 +1956,12 @@ fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> R
                 ));
             }
             Outcome::Unreachable => {}
+            // `classify` never produces this; see `settle_probe_message`'s identical arm.
+            Outcome::InsecureOnly => {}
         }
+    }
+    if let Some(c) = insecure {
+        return Reach::InsecureOnly(c);
     }
     let skipped = plan.candidates.len() - tried;
     log(&format!(
@@ -1811,8 +1977,10 @@ enum Resolved {
     /// account rather than about the network.
     NoServers,
     /// Servers were probed and none was accepted. `refused` distinguishes "at least one answered
-    /// 401" from "silence", which are two different things to tell the user.
-    None { refused: bool },
+    /// 401" from "silence", and `insecure` marks that at least one server answered
+    /// [`Reach::InsecureOnly`] — verified alive, but over a transport this build can never put a
+    /// credential on. Three different things to tell the user.
+    None { refused: bool, insecure: bool },
     /// The roster, **ours first**, each entry carrying the address that actually answered.
     Reached(Vec<SourceRef>),
 }
@@ -1825,13 +1993,16 @@ enum Resolved {
 /// rather than a screenshot — which matters because this function is the gate on the whole feature:
 /// register the wrong connection and no other unit's work is reachable, however correct it is.
 ///
-/// `household` is [`session::Session::household_ids`] — see [`credit_of`].
+/// `household` is [`session::Session::household_ids`] — see [`credit_of`]. `policy` is passed
+/// explicitly, as it is to every pure function in this file's discovery path — this function has
+/// no live edge of its own and must not re-derive the build's policy on its own.
 fn resolve_roster_using(
     resources: &[Resource],
     household: &[i64],
+    policy: CredentialPolicy,
     probe_one: &mut dyn FnMut(&ProbePlan) -> Reach,
     between_servers: &mut dyn FnMut(),
-    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>),
+    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>, Option<String>),
 ) -> Resolved {
     let mut servers: Vec<&Resource> = resources.iter().filter(|r| r.is_server()).collect();
     if servers.is_empty() {
@@ -1843,21 +2014,18 @@ fn resolve_roster_using(
 
     let mut found: Vec<SourceRef> = Vec::new();
     let mut refused = false;
+    let mut insecure = false;
     for (server_index, r) in servers.into_iter().enumerate() {
         if server_index != 0 {
             between_servers();
         }
-        let plan = probe::plan(r);
+        let plan = probe::plan(r, policy);
         let reach = probe_one(&plan);
-        let (outcome, tier) = match &reach {
-            Reach::At(c, _) => (Outcome::Reachable, Some(c.location)),
-            Reach::Refused => (Outcome::Unauthorized, None),
-            Reach::No => (Outcome::Unreachable, None),
-        };
+        let (outcome, tier, address) = probe_verdict(&reach);
         // Publish one aggregate result per server, after all of its direct/relay candidates have
         // settled. In particular a 401 remains distinct from silence, while wrong-machine-only
         // races fold to Unreachable because no address verified this server.
-        observe(&plan, outcome, tier);
+        observe(&plan, outcome, tier, address);
         match reach {
             Reach::At(c, origin) => {
                 let s = SourceRef {
@@ -1905,12 +2073,24 @@ fn resolve_roster_using(
                 ));
                 found.push(s);
             }
+            // The verified-but-ineligible probe itself already reached the registry through
+            // `observe` above (one `RegistryProgress::Settled`/`RegistryPlan::Probe` per server,
+            // published before this match runs) — R2/A5's registry-only commit besides. This arm
+            // only records the fact for `Resolved`'s own aggregate, which decides the user-facing
+            // `Discovery`/`ServerRosterOutcome` rather than the registry write.
+            Reach::InsecureOnly(c) => {
+                log(&format!(
+                    "auth: '{}' verified at {}:{} but only over plaintext — not recorded",
+                    plan.name, c.address, c.port
+                ));
+                insecure = true;
+            }
             Reach::Refused => refused = true,
             Reach::No => {}
         }
     }
     if found.is_empty() {
-        Resolved::None { refused }
+        Resolved::None { refused, insecure }
     } else {
         Resolved::Reached(found)
     }
@@ -1953,19 +2133,24 @@ fn credit_for_machine(resources: &[Resource], machine_id: &str, household: &[i64
 
 /// Test seam for the pre-racing acceptance fixtures. The injected dial runs synchronously and the
 /// gap is elided; the racing coordinator has its own focused tests for completion order/refusal.
+/// `policy` is explicit, like every other pure call in this path — most callers want `HttpsOnly`
+/// (the store policy), and a fixture whose dial answers only over a plaintext twin passes
+/// `AllowPlaintext` instead of asking this seam to guess.
 #[cfg(test)]
 fn resolve_roster(
     resources: &[Resource],
     household: &[i64],
+    policy: CredentialPolicy,
     dial: &dyn Fn(&Origin) -> (i32, Vec<u8>),
 ) -> Resolved {
     let mut probe_one = |plan: &ProbePlan| probe_server(plan, dial);
     resolve_roster_using(
         resources,
         household,
+        policy,
         &mut probe_one,
         &mut || {},
-        &mut |_, _, _| {},
+        &mut |_, _, _, _| {},
     )
 }
 
@@ -1973,9 +2158,10 @@ fn resolve_roster_live_while(
     resources: &[Resource],
     household: &[i64],
     activate: &mut dyn FnMut(&ProbePlan, &Candidate, &Origin),
-    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>),
+    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>, Option<String>),
     live: &dyn Fn() -> bool,
 ) -> Resolved {
+    let policy = CredentialPolicy::build();
     let dial: ProbeDial = Arc::new(get_identity);
     let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
     let mut probe_one = |plan: &ProbePlan| {
@@ -1985,6 +2171,7 @@ fn resolve_roster_live_while(
     resolve_roster_using(
         resources,
         household,
+        policy,
         &mut probe_one,
         &mut || { if live() { std::thread::sleep(SERVER_GAP); } },
         observe,
@@ -2025,17 +2212,32 @@ fn probe_profile_resource_live(
     resource: &Resource,
     household: &[i64],
 ) -> (Option<SourceRef>, SettledProbe) {
-    let plan = probe::plan(resource);
+    let plan = probe::plan(resource, CredentialPolicy::build());
     let dial: ProbeDial = Arc::new(get_identity);
     let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
     let reach = probe_server_racing(&plan, dial, &spawn, PROBE_DEADLINES, &mut |_, _, _| {});
-    let (outcome, tier) = match &reach {
-        Reach::At(c, _) => (Outcome::Reachable, Some(c.location)),
-        Reach::Refused => (Outcome::Unauthorized, None),
-        Reach::No => (Outcome::Unreachable, None),
-    };
+    let (outcome, tier, address) = probe_verdict(&reach);
     let source = source_from_reach(resource, &plan, &reach, household);
-    (source, settled_probe(&plan, outcome, tier))
+    (source, settled_probe(&plan, outcome, tier, address))
+}
+
+/// Fold [`Resolved`]'s three empty-roster shapes into the [`Discovery`] outcome they map to, and
+/// leave a real roster (`Resolved::Reached`) for the caller to keep processing. Pure and pulled out
+/// of [`discover_and_store`] so the precedence rule (plan §4: `At` > `InsecureOnly` > `Refused` >
+/// `No`) is itself gradeable on the dev Mac rather than only reachable through a live worker.
+fn resolved_without_roster(resolved: Resolved) -> Result<Vec<SourceRef>, Discovery> {
+    match resolved {
+        Resolved::NoServers => Err(Discovery::NoServers),
+        // A verified-but-plaintext answer is worth more to the user than a parallel/proxy 401,
+        // because it names a fixable cause (HTTPS to the server) rather than a credential one.
+        Resolved::None { insecure: true, .. } => {
+            log("auth: at least one server verified only over plaintext (insecure-only), unusable in this build");
+            Err(Discovery::InsecureOnly)
+        }
+        Resolved::None { refused: true, insecure: false } => Err(Discovery::Refused),
+        Resolved::None { refused: false, insecure: false } => Err(Discovery::Silent),
+        Resolved::Reached(found) => Ok(found),
+    }
 }
 
 /// Discover **every** server this identity can use — ours and each share — and store the roster.
@@ -2073,11 +2275,11 @@ fn discover_and_store(ac: &AccountClient, epoch: u64, output: &dyn owner::Observ
             candidate: candidate_activation(plan, c, origin, &credit),
         }));
     };
-    let mut observe = |plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>| {
+    let mut observe = |plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>, address: Option<String>| {
         output.progress(AuthProgress::Registry(RegistryProgress::Settled {
             epoch,
             expected: None,
-            probe: settled_probe(plan, outcome, tier),
+            probe: settled_probe(plan, outcome, tier, address),
         }));
     };
     // **No household ids here, and that is a fact about the ORDER rather than an omission**: the
@@ -2089,11 +2291,9 @@ fn discover_and_store(ac: &AccountClient, epoch: u64, output: &dyn owner::Observ
     // with `refresh_roster` or the first profile switch, both of which pass the real roster.
     let resolved = resolve_roster_live_while(&resources, &[], &mut activate, &mut observe, &|| output.live());
     if !output.live() { return Discovery::Cancelled; }
-    let found = match resolved {
-        Resolved::NoServers => return Discovery::NoServers,
-        Resolved::None { refused: true } => return Discovery::Refused,
-        Resolved::None { refused: false } => return Discovery::Silent,
-        Resolved::Reached(f) => f,
+    let found = match resolved_without_roster(resolved) {
+        Ok(found) => found,
+        Err(discovery) => return discovery,
     };
 
     let primary = primary_index(&found);
@@ -2208,7 +2408,7 @@ fn refreshed_sources(
         // stops being credited — see `plex::servers::owner_credit` on why absence is the safe way
         // to be wrong.
         cached.shared_by = credit_of(r, household);
-        if cached.usable() {
+        if cached.dialable() {
             out.push(cached);
         }
     }
@@ -2296,27 +2496,34 @@ fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: Session
         }));
     };
     let mut settled = Vec::new();
+    // Unlike `activate` above, this does NOT also `output.progress(RegistryProgress::Settled)`
+    // per server as the race runs. It used to, and the owner committed BOTH: the live progress
+    // arm (`Observation::Registry` in `owner.rs`) planned one `RegistryPlan::Probe` per server as
+    // it settled, and the terminal `ServerRosterOutcome` below planned the identical set again
+    // through `settled`/`roster_plan` — every probe this worker ever runs was published twice.
+    // This worker is a BACKGROUND refresh (`refresh_roster`) with no live race screen watching
+    // it — unlike `discover_and_store`'s sign-in flow, which really does drive a Sources/QR
+    // screen off `RegistryProgress::Activate` while candidates settle, and keeps publishing both
+    // — so there is nothing here for the extra progress arrival to reach before the terminal
+    // commit does the same work. `settled` alone, folded into the terminal outcome, is authoritative.
     let found = match resolve_roster_live_while(
         &resources,
         &household,
         &mut activate,
-        &mut |plan, outcome, tier| {
-            let probe = settled_probe(plan, outcome, tier);
-            settled.push(probe.clone());
-            output.progress(AuthProgress::Registry(RegistryProgress::Settled {
-                epoch,
-                expected: Some(expected.clone()),
-                probe,
-            }));
+        &mut |plan, outcome, tier, address| {
+            settled.push(settled_probe(plan, outcome, tier, address));
         },
         &|| output.live(),
     ) {
         Resolved::Reached(found) => found,
         _ => {
+            // R2/A5: a background refresh that found nothing to REGISTER may still have PROBED
+            // something worth recording — carry it rather than throwing `settled` away, so the
+            // owner can commit it as a registry-only `RegistryPlan::Probe` (`owner.rs`).
             output.terminal(AuthProgress::ServerRoster(ServerRosterProgress {
                 epoch,
                 expected,
-                outcome: ServerRosterOutcome::NoReachable,
+                outcome: ServerRosterOutcome::NoReachable { settled },
             }));
             return;
         }
@@ -2380,15 +2587,19 @@ fn probe_endpoint_work(
     resources: impl FnOnce(&AccountClient) -> Option<Vec<Resource>>,
     probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe),
     live: &dyn Fn() -> bool,
-) -> Option<SourceRef> {
-    if !live() { return None; }
+) -> (Option<SourceRef>, Option<SettledProbe>) {
+    // Nothing was actually probed on any of the early exits below — plex.tv never answered, or
+    // this machine is no longer among its resources — so there is no verdict to report at all:
+    // fabricating `Unreachable` here would widen a real, more specific probe result
+    // (`InsecureOnly`/`Unauthorized`) into "Not reachable" once it reached the registry.
+    if !live() { return (None, None); }
     let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
     let Some(resources) = resources(&ac) else {
         log(&format!(
             "auth: endpoint refresh for source {} could not reach plex.tv",
             id.raw()
         ));
-        return None;
+        return (None, None);
     };
     let Some(resource) = resources
         .iter()
@@ -2398,11 +2609,11 @@ fn probe_endpoint_work(
             "auth: endpoint refresh for source {} found no matching resource",
             id.raw()
         ));
-        return None;
+        return (None, None);
     };
-    if !live() { return None; }
-    let (fresh, _) = probe(resource, &sess.household_ids());
-    fresh
+    if !live() { return (None, None); }
+    let (fresh, probe) = probe(resource, &sess.household_ids());
+    (fresh, Some(probe))
 }
 
 /// Point the persisted PRIMARY at wherever the refreshed roster says that machine now answers.
@@ -2432,7 +2643,7 @@ fn reconcile_primary(server: &mut ServerRef, found: &[SourceRef]) -> bool {
     }
     let Some(s) = found
         .iter()
-        .find(|s| s.machine_id == server.machine_id && s.usable())
+        .find(|s| s.machine_id == server.machine_id && s.dialable())
     else {
         return false;
     };
@@ -2494,17 +2705,16 @@ fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> Vec<ServerId
         // so this `else` is unreachable today and is a `continue` rather than an `expect` because
         // a roster entry has never been allowed to cost more than itself (`de_soft_vec`).
         let Some(origin) = s.origin() else { continue };
-        let id =
-            register_observed_origin(&s.machine_id, &origin, &s.token, s.resolve_pin().as_ref());
+        // Applied atomically inside the same write (#95 step 8) — a re-pointed slot's fresh
+        // `Client` gets its connection facts from THIS call rather than a separate one after.
+        let connection =
+            crate::plex::ConnectionFacts::new(s.tier, crate::plex::IpVersion::of_host(&s.address));
+        let id = register_observed_origin(&s.machine_id, &origin, &s.token,
+            s.resolve_pin().as_ref(), connection);
         if !id.is_set() {
             continue;
         }
         installed.push(id);
-        // Registration may have re-pointed the slot by publishing a fresh Client, whose link is
-        // deliberately unknown. Restore the winner only AFTER that publication, every time.
-        if let (Some(link), Some(client)) = (s.tier, crate::plex::client_for(id)) {
-            client.set_connection(link, crate::plex::IpVersion::of_host(&s.address));
-        }
         // …and say WHOSE it is. Registering without this was the bug that made the whole shared-
         // source feature invisible on the only path a real user takes: `ServerFacts` stayed unset,
         // so every source read as owned with no handle, and each surface then correctly drew
@@ -2534,7 +2744,7 @@ fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> Vec<ServerId
 /// group.
 fn registration_order(sources: &[SourceRef]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..sources.len())
-        .filter(|&i| sources[i].usable())
+        .filter(|&i| sources[i].dialable())
         .collect();
     order.sort_by_key(|&i| !sources[i].owned);
     order
@@ -2879,7 +3089,7 @@ pub(crate) fn profile_switch_worker_with_io(
         let roster = profile_sources(&stored.sources, &reached, &resources, &household);
         if roster
             .iter()
-            .any(|s| s.machine_id == resources[i].client_identifier && s.usable())
+            .any(|s| s.machine_id == resources[i].client_identifier && s.dialable())
         {
             selected_mid = Some(resources[i].client_identifier.clone());
             break;
@@ -2889,15 +3099,24 @@ pub(crate) fn profile_switch_worker_with_io(
     let Some(primary) =
         selected_mid.and_then(|mid| initial.iter().find(|s| s.machine_id == mid).cloned())
     else {
+        // S7: a grant that verified but only over plaintext is not the same failure as "you were
+        // never given this server" — it names a fixable cause (HTTPS to the server), and the
+        // ordinary copy sends the user to ask their friend for access they already have.
+        let insecure_only = probes.iter().any(|p| p.outcome == Outcome::InsecureOnly);
         log(&format!(
-            "auth: switch '{}' -> no server access",
-            tile.title
+            "auth: switch '{}' -> {}",
+            tile.title,
+            if insecure_only { "verified only over plaintext" } else { "no server access" },
         ));
         output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
             epoch,
             expected,
             outcome: ProfileSwitchOutcomeProgress::Failed {
-                error: format!("{} has no access to this server", tile.title),
+                error: if insecure_only {
+                    DISCOVERY_INSECURE_ONLY_MESSAGE.to_owned()
+                } else {
+                    format!("{} has no access to this server", tile.title)
+                },
                 pin_denied: false,
             },
         }));

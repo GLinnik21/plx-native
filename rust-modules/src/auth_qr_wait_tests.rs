@@ -73,6 +73,56 @@ fn restarting_a_live_wait_is_the_same_attempt_carrying_on() {
     );
 }
 
+/// A scripted pin: answers from a list, and a clock that moves only when the loop waits or
+/// polls. A fifteen-minute pin therefore runs to its death in microseconds.
+struct ScriptedPin {
+    answers: std::collections::VecDeque<PinPoll>,
+    clock: Duration,
+    waits: Vec<Duration>,
+    /// The wait (by index) at which a newer flow takes the screen.
+    superseded_at: Option<usize>,
+    polls: usize,
+    /// What one request costs. Settable because it is the axis the old iteration count was
+    /// blind to, and because `net::API` lets one poll cost 25 s.
+    poll_cost: Duration,
+}
+
+impl ScriptedPin {
+    fn new(answers: Vec<PinPoll>) -> ScriptedPin {
+        ScriptedPin {
+            answers: answers.into(),
+            clock: Duration::ZERO,
+            waits: Vec::new(),
+            superseded_at: None,
+            polls: 0,
+            poll_cost: Duration::from_millis(300),
+        }
+    }
+}
+
+impl PinWatch for ScriptedPin {
+    fn poll(&mut self) -> PinPoll {
+        self.polls += 1;
+        // A poll costs a round trip. That cost is the whole of the second defect: the old loop
+        // counted ITERATIONS and paid this on top of every one of them, so its window was
+        // always longer than the pin it was watching — by minutes on a healthy link and by
+        // hours against `net::API`'s 25 s deadline.
+        self.clock += self.poll_cost;
+        self.answers.pop_front().unwrap_or(PinPoll::Unreachable)
+    }
+    fn wait(&mut self, d: Duration) -> bool {
+        if self.superseded_at == Some(self.waits.len()) {
+            return false;
+        }
+        self.waits.push(d);
+        self.clock += d;
+        true
+    }
+    fn elapsed(&self) -> Duration {
+        self.clock
+    }
+}
+
 /// **The wait ends with the pin, not some multiple of it.**
 ///
 /// plex.tv mints a code with `expiresIn: 900` and answers a poll of a dead one with
@@ -267,4 +317,3 @@ fn a_codes_lifetime_is_read_from_the_pin_and_clamped_at_both_ends() {
     assert_eq!(pin_window(-7), Duration::from_secs(60), "or a nonsense one");
     assert_eq!(pin_window(86_400), Duration::from_secs(1800));
 }
-

@@ -561,6 +561,14 @@ mod tests {
     /// matching ping exact-looks up that half of the lifecycle: 200 while the physical map entry
     /// exists, 404 after it is gone. Other statuses prove neither state and must fail closed; the
     /// logical Streaming Resource has its own close method and is deliberately not inferred here.
+    //
+    // Dev-only, this test through `resource_close_is_posted_and_accepts_only_terminated_or_absent`
+    // below: each drives a plaintext loopback PMS with a real, token-bearing client, which a store
+    // build's `CredentialPolicy::HttpsOnly` refuses before the request reaches the wire (see
+    // `http::credential_transport_allowed`) — the refused call's return value fails the fixture's
+    // own assertion. The store-build case is covered instead by `auth.rs`'s `e2e_real_curl_*`
+    // HTTPS harness.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn transcode_ping_distinguishes_present_absent_and_unknown_cleanup_state() {
         use std::io::{BufRead, BufReader, Write};
@@ -612,6 +620,8 @@ mod tests {
     /// carries both `closeResourceSession=1` and the exact resource identity. Without these two
     /// fields each successful ABR experiment leaves less WAN budget for the next one even after
     /// `/ping` says the physical encoder is gone.
+    // Dev-only: see the comment on `transcode_ping_distinguishes_present_absent_and_unknown_cleanup_state`.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn transcode_stop_closes_its_exact_streaming_resource() {
         use std::io::{BufRead, BufReader, Write};
@@ -649,6 +659,8 @@ mod tests {
         );
     }
 
+    // Dev-only: see the comment on `transcode_ping_distinguishes_present_absent_and_unknown_cleanup_state`.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn resource_close_is_posted_and_accepts_only_terminated_or_absent() {
         use std::io::{BufRead, BufReader, Write};
@@ -1001,7 +1013,7 @@ mod tests {
         )
         .expect("fixture parses");
 
-        let cs = super::super::probe::candidates(&res);
+        let cs = super::super::probe::candidates(&res, crate::plex::CredentialPolicy::HttpsOnly);
         assert_eq!(cs.len(), 1, "a relay gets no plain-http twin: {cs:#?}");
         assert_eq!(cs[0].location, Location::Relay);
 

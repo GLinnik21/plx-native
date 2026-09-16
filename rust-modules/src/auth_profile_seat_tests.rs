@@ -27,15 +27,19 @@ fn a_seated_profile_is_recorded_under_the_roster_uuid() {
 }
 
 /// The plaintext twin may answer first, but a store build cannot make it live: only an
-/// https origin is activated there, while a developer build keeps its lab plaintext.
+/// https origin can carry a credential there, while a developer build keeps its lab
+/// plaintext. Superseded `activation_allowed_by_policy`, deleted with the race-semantics
+/// change: `CredentialPolicy::may_carry_credential` is the one place this rule lives now, and
+/// `settle_probe_message`/`probe_server_racing` ask it once, at synthesis, through
+/// `Candidate::credential_eligible` — not a second time here at activation.
 #[test]
 fn a_store_build_never_makes_a_plaintext_origin_live() {
     let plain = Origin::http("192.168.0.10", 32400);
     let tls = Origin::parse("https://192-168-0-10.abc.plex.direct:32400").unwrap();
-    assert!(!activation_allowed_by_policy(&plain, false));
-    assert!(activation_allowed_by_policy(&tls, false));
+    assert!(!CredentialPolicy::HttpsOnly.may_carry_credential(&plain));
+    assert!(CredentialPolicy::HttpsOnly.may_carry_credential(&tls));
     assert!(
-        activation_allowed_by_policy(&plain, true),
+        CredentialPolicy::AllowPlaintext.may_carry_credential(&plain),
         "a developer build keeps its lab server"
     );
 }
@@ -209,4 +213,3 @@ fn a_rejected_pin_leaves_no_error_on_the_who_s_watching_roster() {
         "…and must not flash the pad red, which reads as a typo to retry forever"
     );
 }
-

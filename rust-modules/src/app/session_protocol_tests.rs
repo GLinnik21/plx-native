@@ -990,7 +990,7 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
         crate::plex::reset_servers_for_test();
         let initial_origin = crate::plex::Origin::http("127.0.0.1", 9);
         let sid = crate::plex::register_pinned_with_client_id("synthetic-server", &initial_origin,
-            "synthetic-profile-token", None, "synthetic-client");
+            "synthetic-profile-token", None, "synthetic-client", crate::plex::ConnectionFacts::default());
         let client = crate::plex::client_for(sid).unwrap();
         let instance = client.instance_gen();
         let token_gen = client.token_gen();
@@ -1025,8 +1025,11 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
             assert_eq!(lifecycle.instance_gen, instance);
             assert_eq!(lifecycle.token_gen, token_gen);
             assert_eq!(expected.profile_uuid, "synthetic-profile");
+            let probe = crate::auth::settled_probe_for_test(&machine_id,
+                crate::plex::probe::Outcome::Reachable,
+                Some(crate::plex::probe::Location::Local), Some(fresh.address.clone()));
             assert!(output.complete(crate::auth::endpoint_work_fact(1, expected, lifecycle,
-                machine_id, Some(fresh))).is_ok());
+                machine_id, Some(fresh), Some(probe))).is_ok());
         });
         let mut d = Dispatcher::<AppHost>::new();
         execute_session_command(&mut d, crate::auth::SessionCmd::RequestEndpoint { sid });
@@ -1046,7 +1049,7 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
             2 => {
                 let newer = crate::plex::Origin::http("127.0.0.1", 10);
                 let replaced_sid = crate::plex::register_pinned_with_client_id("synthetic-server", &newer,
-                    "synthetic-new-profile-token", None, "synthetic-client");
+                    "synthetic-new-profile-token", None, "synthetic-client", crate::plex::ConnectionFacts::default());
                 assert_eq!(replaced_sid, sid);
                 assert!(!std::ptr::eq(client, crate::plex::client_for(sid).unwrap()));
                 assert_ne!(crate::plex::client_for(sid).unwrap().instance_gen(), instance);

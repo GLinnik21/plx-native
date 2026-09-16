@@ -2094,7 +2094,9 @@ fn take_active_encoder() -> String {
     std::mem::take(&mut active.id)
 }
 
-#[cfg(test)]
+// Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module's `tests`
+// submodule below (see the comment on the first one).
+#[cfg(all(test, feature = "devtriggers"))]
 fn replace_active_encoder(expected: &str, replacement: &str) -> bool {
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     let active = &mut control.active;
@@ -2157,8 +2159,10 @@ enum ActiveHlsCommitRefusal {
 /// The process route no longer belongs to the worker which tried to publish a bounded local
 /// transition. Kept separate from [`HlsCommitRefusal`]: this door changes no HLS route and has no
 /// controller-rejection or server-session arm.
+// Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module's `tests`
+// submodule below (see the comment on the first one).
+#[cfg(all(test, feature = "devtriggers"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg(test)]
 pub(crate) enum ActiveEncoderRefusal {
     RouteMoved,
 }
@@ -2168,7 +2172,9 @@ pub(crate) enum ActiveEncoderRefusal {
 /// Production enters this under the AU queue mutex, fixing the global order at AQ -> ACTIVE. The
 /// callback executes before ACTIVE is released; a check which returned `bool` and published later
 /// would reopen a gap for seek/retranscode to retire this worker between those two operations.
-#[cfg(test)]
+// Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module's `tests`
+// submodule below (see the comment on the first one).
+#[cfg(all(test, feature = "devtriggers"))]
 fn with_active_route<T>(
     expected: &RouteLease,
     publication: impl FnOnce() -> T,
@@ -2240,7 +2246,9 @@ fn active_encoder() -> String {
         .clone()
 }
 
-#[cfg(test)]
+// Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module's `tests`
+// submodule below (see the comment on the first one).
+#[cfg(all(test, feature = "devtriggers"))]
 fn active_route_lease() -> RouteLease {
     let control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     lease_of(&control.active)
@@ -2450,7 +2458,9 @@ impl HlsAbrControl {
     /// replacement decision. It does not prove that PMS preserves the old HLS cursor: observed PMS
     /// can rebind the shared resource during the raw Part read, so a successful recovery must leave
     /// from the same media boundary instead of asking that cursor for one more segment.
-    #[cfg(test)]
+    // Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module's `tests`
+    // submodule below (see the comment on the first one).
+    #[cfg(all(test, feature = "devtriggers"))]
     pub(crate) fn probe_original_while_hls(
         &self,
         expected: &WorkerTicket,
@@ -3061,7 +3071,9 @@ pub(crate) fn arm_auto_fixture(
 /// rate, which is one sample of a distribution; atomically move the route to the best HLS state
 /// that estimate sustains, then build the replacement encoder at the current movie position. The
 /// caller performs the fresh Starfish Load only when this returns a URL.
-#[cfg(test)]
+// Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module's `tests`
+// submodule below (see the comment on the first one).
+#[cfg(all(test, feature = "devtriggers"))]
 pub(crate) fn fallback_auto_to_hls(ps: &mut PlaybackSession, measured_kbps: u32, offset_secs: i64) -> Option<String> {
     let expected = worker_ticket();
     fallback_auto_to_hls_for(ps, &expected, measured_kbps, offset_secs)

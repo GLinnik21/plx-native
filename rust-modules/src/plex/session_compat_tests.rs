@@ -44,7 +44,7 @@ fn a_session_file_written_before_origins_existed_still_boots_as_plain_http() {
 
     // every roster entry too, including the share on its non-default port
     assert!(
-        s.sources.iter().all(|x| x.usable()),
+        s.sources.iter().all(|x| x.dialable()),
         "{:#?}",
         s.sources.len()
     );

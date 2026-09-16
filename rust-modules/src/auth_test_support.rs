@@ -76,17 +76,21 @@ impl Dialled {
 }
 
 pub(super) fn race_plan() -> ProbePlan {
-    let candidate = |url: &str, address: &str, location: probe::Location| Candidate {
-        url: url.into(),
-        scheme: if url.starts_with("https://") {
+    let candidate = |url: &str, address: &str, location: probe::Location| {
+        let scheme = if url.starts_with("https://") {
             Scheme::Https
         } else {
             Scheme::Http
-        },
-        location,
-        address: address.into(),
-        port: 32400,
-        ipv6: false,
+        };
+        Candidate {
+            url: url.into(),
+            scheme,
+            location,
+            address: address.into(),
+            port: 32400,
+            ipv6: false,
+            credential_eligible: scheme == Scheme::Https,
+        }
     };
     ProbePlan {
         machine_id: "race-machine".into(),
@@ -106,6 +110,7 @@ pub(super) fn race_plan() -> ProbePlan {
                 probe::Location::Remote,
             ),
         ],
+        policy: CredentialPolicy::HttpsOnly,
     }
 }
 
@@ -279,56 +284,6 @@ pub(super) fn signed_in_as(uuid: &str) -> Session {
             },
         ],
         ..Default::default()
-    }
-}
-
-/// A scripted pin: answers from a list, and a clock that moves only when the loop waits or
-/// polls. A fifteen-minute pin therefore runs to its death in microseconds.
-pub(super) struct ScriptedPin {
-    answers: std::collections::VecDeque<PinPoll>,
-    pub(super) clock: Duration,
-    pub(super) waits: Vec<Duration>,
-    /// The wait (by index) at which a newer flow takes the screen.
-    pub(super) superseded_at: Option<usize>,
-    pub(super) polls: usize,
-    /// What one request costs. Settable because it is the axis the old iteration count was
-    /// blind to, and because `net::API` lets one poll cost 25 s.
-    pub(super) poll_cost: Duration,
-}
-
-impl ScriptedPin {
-    pub(super) fn new(answers: Vec<PinPoll>) -> ScriptedPin {
-        ScriptedPin {
-            answers: answers.into(),
-            clock: Duration::ZERO,
-            waits: Vec::new(),
-            superseded_at: None,
-            polls: 0,
-            poll_cost: Duration::from_millis(300),
-        }
-    }
-}
-
-impl PinWatch for ScriptedPin {
-    fn poll(&mut self) -> PinPoll {
-        self.polls += 1;
-        // A poll costs a round trip. That cost is the whole of the second defect: the old loop
-        // counted ITERATIONS and paid this on top of every one of them, so its window was
-        // always longer than the pin it was watching — by minutes on a healthy link and by
-        // hours against `net::API`'s 25 s deadline.
-        self.clock += self.poll_cost;
-        self.answers.pop_front().unwrap_or(PinPoll::Unreachable)
-    }
-    fn wait(&mut self, d: Duration) -> bool {
-        if self.superseded_at == Some(self.waits.len()) {
-            return false;
-        }
-        self.waits.push(d);
-        self.clock += d;
-        true
-    }
-    fn elapsed(&self) -> Duration {
-        self.clock
     }
 }
 
