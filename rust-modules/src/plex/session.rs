@@ -1969,9 +1969,13 @@ pub fn update(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
 /// The live adapter writes synchronously, so durability is already decided by the time the call
 /// returns. Callers that must not conflate "the write was attempted" with "the write reached disk"
 /// use this; the typed persistence completion is built from this real outcome rather than assumed.
+///
+/// It hands back the whole [`async_persistence::LiveWrite`] — the canonical verdict as well as the
+/// legacy write's result — because collapsing the two into one "persisted" bool is exactly how an
+/// `Uncertain` canonical commit used to be reported as a durable login.
 pub(crate) fn update_with_outcome(
     edit: impl FnOnce(&Session) -> Option<Session>,
-) -> Option<crate::plex::session::async_persistence::PersistOutcome> {
+) -> Option<async_persistence::LiveWrite> {
     let _io = io();
     let cur = session_from_read(read_live_locked());
     if cur.client_id.is_empty() {
@@ -1983,14 +1987,10 @@ pub(crate) fn update_with_outcome(
     }
 }
 
-/// The outcome of the sealed/plaintext write attempts, without changing any caller's behavior.
-fn save_locked_outcome(s: &Session) -> async_persistence::PersistOutcome {
-    use async_persistence::PersistOutcome;
-    match save_locked_with_authority(s, SaveAuthority::Routine) {
-        Some(true) => PersistOutcome::PersistedSealed,
-        Some(false) => PersistOutcome::PersistedPlaintext,
-        None => PersistOutcome::WriteFailed,
-    }
+/// What the routine-authority write actually did — the canonical verdict beside the
+/// sealed/plaintext attempt's own result, without changing any caller's behavior.
+fn save_locked_outcome(s: &Session) -> async_persistence::LiveWrite {
+    save_locked_with_authority(s, SaveAuthority::Routine)
 }
 
 /// Persist the session (best-effort; a write failure is non-fatal — we just re-login next boot).
@@ -2027,19 +2027,30 @@ fn save_locked(s: &Session) {
     let _ = save_locked_with_authority(s, SaveAuthority::Routine);
 }
 
-fn save_locked_with_authority(s: &Session, authority: SaveAuthority) -> Option<bool> {
+/// Write the session, reporting BOTH verdicts the write produced.
+///
+/// The canonical authority's [`persistence::CanonicalCommit`] is carried out of here rather than
+/// reduced to "sealed / plaintext / nothing" on the way: a non-durable canonical commit with no
+/// protected authority falls through to the legacy write below, that write succeeds, and a caller
+/// holding only the bool cannot tell that apart from a commit the store confirmed. The typed
+/// completion the live adapter publishes is built from the pair by
+/// [`async_persistence::LiveWrite::classify`].
+fn save_locked_with_authority(
+    s: &Session,
+    authority: SaveAuthority,
+) -> async_persistence::LiveWrite {
     // Before the write, not after: a failed persist still means these names are live in THIS run,
     // and the log wants them redacted either way.
     publish_identities(s);
     #[cfg(test)]
     if TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-        return save_legacy_locked(s);
+        return async_persistence::LiveWrite::legacy(save_legacy_locked(s));
     }
     let protected_before = has_protected_authority();
     let commit = persistence::write_session(s, authority);
     let durable = matches!(commit, persistence::CanonicalCommit::Durable { .. });
     if !durable {
-        match commit {
+        match &commit {
             persistence::CanonicalCommit::Durable { .. } => unreachable!(),
             persistence::CanonicalCommit::Uncertain { stage, errno } => {
                 crate::log(&format!("session: canonical write is uncertain stage={stage:?} errno={errno}"));
@@ -2057,8 +2068,25 @@ fn save_locked_with_authority(s: &Session, authority: SaveAuthority) -> Option<b
     }
     let protected_after = has_protected_authority();
     if durable {
-        return Some(protected_before || protected_after);
+        return async_persistence::LiveWrite::canonical(
+            commit,
+            Some(protected_before || protected_after),
+        );
     }
+    let legacy = save_legacy_fallback_locked(s, protected_before, protected_after);
+    async_persistence::LiveWrite::canonical(commit, legacy)
+}
+
+/// The pre-canonical sealed/plaintext write, run only where the canonical commit did NOT land.
+///
+/// Split out of [`save_locked_with_authority`] so that function can return the canonical verdict
+/// alongside this one; the body is unchanged, including every refusal to downgrade a protected
+/// record. `Some(true)` sealed, `Some(false)` plaintext, `None` nothing was written.
+fn save_legacy_fallback_locked(
+    s: &Session,
+    protected_before: bool,
+    protected_after: bool,
+) -> Option<bool> {
     if protected_before || protected_after || has_secure_locked() {
         crate::log("session: preserving the existing protected record; refusing an unprotected downgrade");
         return None;

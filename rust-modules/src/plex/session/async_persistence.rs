@@ -428,6 +428,105 @@ impl DiskOutcome {
     }
 }
 
+/// What ONE synchronous live write actually did, with the canonical verdict un-collapsed.
+///
+/// The live adapter writes synchronously, so there is no `Receipt`/`Completion` round trip to
+/// carry the canonical authority's own verdict back to the owner — the writer returns it here
+/// instead, beside the legacy sealed/plaintext attempt's [`PersistOutcome`].
+///
+/// **Keeping the [`CanonicalCommit`] is the whole point.** `save_locked_with_authority` used to
+/// reduce it to `Option<bool>` (sealed / plaintext / nothing) before anyone downstream could see
+/// it, so a canonical commit that reported `Uncertain` — a real state on a first sign-in where
+/// keymanager3 is absent, where control then falls through to the legacy write and that write
+/// SUCCEEDS — reached the adapter as an ordinary "persisted" and became
+/// `CompletionOutcome::Durable`, i.e. `proves_saved_login = true` for a write the canonical store
+/// never confirmed. A bool cannot express that difference; this can.
+pub(crate) struct LiveWrite {
+    /// What the sealed/plaintext write attempt ended up doing.
+    pub(crate) outcome: PersistOutcome,
+    /// The canonical authority's own verdict, when this path consulted it. `None` only where the
+    /// canonical store was deliberately bypassed (the `TEST_FILE` legacy-fixture path).
+    pub(crate) commit: Option<CanonicalCommit>,
+}
+
+impl LiveWrite {
+    /// The legacy-only path: `Some(true)` sealed, `Some(false)` plaintext, `None` nothing — with
+    /// no canonical verdict to report, because the canonical store was never consulted.
+    pub(crate) fn legacy(sealed: Option<bool>) -> Self {
+        Self {
+            outcome: Self::outcome_of(sealed),
+            commit: None,
+        }
+    }
+
+    /// The production path: the canonical verdict, plus whatever the legacy write did after it.
+    pub(crate) fn canonical(commit: CanonicalCommit, sealed: Option<bool>) -> Self {
+        Self {
+            outcome: Self::outcome_of(sealed),
+            commit: Some(commit),
+        }
+    }
+
+    fn outcome_of(sealed: Option<bool>) -> PersistOutcome {
+        match sealed {
+            Some(true) => PersistOutcome::PersistedSealed,
+            Some(false) => PersistOutcome::PersistedPlaintext,
+            None => PersistOutcome::WriteFailed,
+        }
+    }
+
+    /// The durability verdict this write should be reported as.
+    ///
+    /// **This is not a second decision site.** It rewrites the write into the same [`DiskOutcome`]
+    /// the asynchronous path builds and hands it to [`DiskOutcome::classify`], so the two paths
+    /// cannot drift: there is exactly one set of match arms in the crate turning a durability
+    /// verdict into a [`CompletionOutcome`], and it is `classify`'s.
+    pub(crate) fn classify(&self) -> CompletionOutcome {
+        self.disk_outcome().classify()
+    }
+
+    fn disk_outcome(&self) -> DiskOutcome {
+        match &self.commit {
+            Some(CanonicalCommit::ProtectionFailed(evidence)) => {
+                DiskOutcome::ProtectionFailed(*evidence)
+            }
+            Some(CanonicalCommit::Durable {
+                verified,
+                protection,
+                ..
+            }) => DiskOutcome::Write {
+                outcome: self.outcome,
+                verified: *verified,
+                protection: *protection,
+                commit: Some(CommitDetail::Durable),
+            },
+            Some(CanonicalCommit::Uncertain { stage, errno }) => DiskOutcome::Write {
+                outcome: self.outcome,
+                verified: false,
+                protection: None,
+                commit: Some(CommitDetail::Uncertain {
+                    stage: *stage,
+                    errno: *errno,
+                }),
+            },
+            Some(CanonicalCommit::Failed(error)) => DiskOutcome::Write {
+                outcome: self.outcome,
+                verified: false,
+                protection: None,
+                commit: Some(CommitDetail::Failed(*error)),
+            },
+            // No canonical verdict was taken here, so the legacy write's own result is the only
+            // evidence there is — `classify`'s absent-commit-detail arm.
+            None => DiskOutcome::Write {
+                outcome: self.outcome,
+                verified: self.outcome.persisted(),
+                protection: None,
+                commit: None,
+            },
+        }
+    }
+}
+
 #[derive(Clone)]
 struct State {
     revision: u64,

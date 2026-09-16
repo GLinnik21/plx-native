@@ -356,7 +356,7 @@ impl SessionAdapter {
                 if let Some(patch) = &plan.credentials {
                     let mut examined = false;
                     let mut matches = false;
-                    let outcome = crate::plex::session::update_with_outcome(|disk| {
+                    let write = crate::plex::session::update_with_outcome(|disk| {
                         examined = true;
                         matches = plan.expected_disk.matches(disk);
                         matches.then(|| patch.merge_into(disk))
@@ -365,30 +365,21 @@ impl SessionAdapter {
                     if plan.writes_durable {
                         let revision = ordinary_revision();
                         admitted_revision = Some(revision);
-                        // Build the completion from what the write ACTUALLY did. A refusal to
-                        // downgrade or a failed write is not durability, and only a persisted
-                        // outcome is `verified`. This mirrors `DiskOutcome::classify`'s `None`
-                        // commit-detail arm (there is no `CommitDetail` tracking on this
-                        // synchronous live-write path): persisted -> `Durable`, otherwise ->
-                        // `Failed(Failure::Persistence(outcome))`, never an unconditional
-                        // `Durable` regardless of what the disk actually did.
-                        pending_completion = outcome.map(|outcome| {
-                            let completion_outcome = if outcome.persisted() {
-                                crate::plex::session::async_persistence::CompletionOutcome::Durable(
-                                    crate::plex::session::async_persistence::Operation::Write {
-                                        outcome,
-                                        verified: outcome.persisted(),
-                                        protection: None,
-                                    })
-                            } else {
-                                crate::plex::session::async_persistence::CompletionOutcome::Failed(
-                                    crate::plex::session::async_persistence::Failure::Persistence(outcome))
-                            };
+                        // Build the completion from what the write ACTUALLY did, and decide it in
+                        // exactly ONE place: `LiveWrite::classify` rebuilds the synchronous write
+                        // as a `DiskOutcome` and routes it through `DiskOutcome::classify`, the
+                        // same arms the asynchronous path uses. So a canonical commit that came
+                        // back `Uncertain` reports `CompletionOutcome::Uncertain{stage,errno}` —
+                        // even though the legacy write beneath it succeeded and the old bool
+                        // collapse therefore reported it as a durable saved login — and a
+                        // `ProtectionFailed` commit reports `ProtectionUncertain` or
+                        // `Failed(Failure::Protection(..))` by its own preservation evidence.
+                        pending_completion = write.map(|write| {
                             crate::plex::session::async_persistence::PersistenceCompletion {
                                 req: permit.request(), epoch: permit.epoch(),
                                 arrival: permit.arrival(), revision,
                                 purpose: plan.purpose,
-                                outcome: completion_outcome,
+                                outcome: write.classify(),
                             }
                         });
                     }
@@ -808,13 +799,19 @@ mod tests {
     /// `commit_phase.durable` / `commit_phase.proves_saved_login` off a write that never reached
     /// disk.
     ///
-    /// RED: observed live. Reverting `commit`'s write-outcome mapping to the old unconditional
+    /// RED: observed live (against the shape this mapping had at `f6e19098`). Reverting `commit`'s
+    /// write-outcome mapping to the old unconditional
     /// `CompletionOutcome::Durable(Operation::Write { outcome, verified: outcome.persisted(),
     /// protection: None })` construction (i.e. dropping the `if outcome.persisted() { .. } else
     /// { Failed(..) }` branch this test exists to pin) and re-running just this test failed on
     /// the final `matches!` assertion: `take_live_completion()` returned `Durable(..)` even
     /// though the underlying disk write on the read-only directory genuinely failed
-    /// (`PersistOutcome::WriteFailed`). Reapplying the fix turns it back green.
+    /// (`PersistOutcome::WriteFailed`). Reapplying the fix turns it back green. That branch is no
+    /// longer written out here — `commit` now hands the whole `LiveWrite` to
+    /// `LiveWrite::classify`, so the same verdict comes from `DiskOutcome::classify`'s arms — and
+    /// this test pins the behavior across that move: a `TempSession` fixture bypasses the
+    /// canonical store, so the write arrives with no `CanonicalCommit` and takes exactly the
+    /// absent-commit-detail arm the old inline branch imitated.
     #[test]
     fn the_bridge_reports_a_failed_write_as_failed_not_durable() {
         use crate::auth::owner::{CommitDelta, CredentialPatch, Identity, Pending, PendingCommit,
@@ -851,8 +848,8 @@ mod tests {
 
         // Make the underlying disk write genuinely fail: strip write permission on the scratch
         // session's own directory, so `write_atomic`'s temp-file create fails with EACCES and
-        // `save_locked_outcome` reports `PersistOutcome::WriteFailed` rather than anything
-        // synthetic.
+        // `save_locked_outcome` reports a `LiveWrite` carrying `PersistOutcome::WriteFailed`
+        // rather than anything synthetic.
         let dir = session.path().parent().expect("a directory").to_path_buf();
         let original_mode = std::fs::metadata(&dir).unwrap().permissions();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500))
