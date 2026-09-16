@@ -325,7 +325,7 @@ img {
 .hero-gh-link:hover {
   color: var(--text-primary);
 }
-.hero-meta {
+.hero-copy .hero-meta {
   font-size: 15px;
   color: var(--text-secondary);
   margin: 0;
@@ -476,6 +476,44 @@ img {
   width: 100%;
   height: auto;
   aspect-ratio: 16 / 9;
+}
+/* The video plays itself while it is on screen, with no native controls; this
+   is the one control left, so motion can always be stopped. */
+.demo-toggle {
+  position: absolute;
+  right: clamp(10px, 1.6vw, 18px);
+  bottom: clamp(10px, 1.6vw, 18px);
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text-primary);
+  background: rgba(40, 40, 44, 0.55);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  backdrop-filter: blur(14px) saturate(1.4);
+  box-shadow: inset 0 0 0 1px var(--color-white-a22);
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+.demo-toggle[hidden] {
+  display: none;
+}
+.demo-toggle:hover {
+  background: rgba(60, 60, 66, 0.7);
+}
+.demo-toggle:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 3px;
+}
+.demo-toggle .demo-toggle-play {
+  margin-left: 2px;
+}
+.demo-toggle[data-state="playing"] .demo-toggle-play,
+.demo-toggle:not([data-state="playing"]) .demo-toggle-pause {
+  display: none;
 }
 .demo-figure figcaption {
   display: flex;
@@ -948,9 +986,12 @@ img {
     padding: 10px 2px;
   }
 
+  /* Phones get their own taller crop (a <picture> source) so the bar reads
+     larger instead of shrinking the wide strip. */
   .closeup-box--glass {
-    --crop-x: 440;
-    --crop-w: 1760;
+    --crop-w: 1120;
+    --crop-h: 530;
+    --src-w: 1120;
   }
   .closeup-box--tiles {
     --crop-x: 334;

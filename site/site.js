@@ -49,22 +49,60 @@
   }
 
   /* ---------- Demo video ---------- */
+  // Plays by itself while at least half of it is on screen, like a product
+  // page loop. The markup ships native controls so the video still works
+  // without JS; with JS they are replaced by a single pause/play button.
+  // Reduced motion starts paused, and a viewer's pause is never overridden.
   function initDemoVideo() {
     const video = document.getElementById("demo-video");
     const card = document.getElementById("demo-card");
-    if (!video || !card) return;
+    const toggle = document.getElementById("demo-toggle");
+    if (!video || !card || !toggle) return;
+
+    video.controls = false;
+    video.muted = true;
+    toggle.hidden = false;
+
+    let userPaused = reducedMotion();
+    let inView = false;
+
+    const sync = () => {
+      const playing = !video.paused;
+      toggle.dataset.state = playing ? "playing" : "paused";
+      toggle.setAttribute("aria-label", playing ? "Pause video" : "Play video");
+    };
+    const play = () => {
+      const p = video.play();
+      if (p && p.catch) p.catch(sync);
+    };
+    const update = () => {
+      if (inView && !userPaused) play();
+      else if (!video.paused) video.pause();
+    };
+
+    video.addEventListener("play", sync);
+    video.addEventListener("pause", sync);
+    toggle.addEventListener("click", () => {
+      userPaused = !video.paused;
+      if (userPaused) video.pause();
+      else play();
+    });
 
     if ("IntersectionObserver" in window) {
-      const observer = new IntersectionObserver(
+      new IntersectionObserver(
         (entries) => {
           entries.forEach((entry) => {
-            if (!entry.isIntersecting && !video.paused) video.pause();
+            inView = entry.isIntersecting;
           });
+          update();
         },
-        { threshold: 0 }
-      );
-      observer.observe(card);
+        { threshold: 0.5 }
+      ).observe(card);
+    } else {
+      inView = true;
+      update();
     }
+    sync();
   }
 
   initReveal();
