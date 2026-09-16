@@ -65,7 +65,7 @@ pub(crate) fn endpoint_worker_with_io(epoch: u64, session: Session, expected: ow
 /// Admission, interest and native lifecycle validation remain in the adapter/owner protocol.
 pub(crate) fn endpoint_work_fact(epoch: u64, expected: owner::Identity,
     lifecycle: owner::ServerLifecycle, machine_id: String, fresh: Option<SourceRef>,
-    probe: SettledProbe) -> AuthProgress {
+    probe: Option<SettledProbe>) -> AuthProgress {
     AuthProgress::Endpoint(EndpointProgress { epoch,
         expected: SessionIdentity { client_id: expected.client_id, account_token: expected.account_token,
             profile_uuid: expected.profile_uuid },
@@ -506,7 +506,7 @@ pub(crate) struct EndpointProgress {
     machine_id: String,
     lifecycle: Option<ClientLifecycle>,
     fresh: Option<SourceRef>,
-    probe: SettledProbe,
+    probe: Option<SettledProbe>,
 }
 
 /// The exact registry incarnation an endpoint request was issued through. `ServerId` and
@@ -2583,19 +2583,19 @@ fn probe_endpoint_work(
     resources: impl FnOnce(&AccountClient) -> Option<Vec<Resource>>,
     probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe),
     live: &dyn Fn() -> bool,
-) -> (Option<SourceRef>, SettledProbe) {
+) -> (Option<SourceRef>, Option<SettledProbe>) {
     // Nothing was actually probed on any of the early exits below — plex.tv never answered, or
-    // this machine is no longer among its resources — so there is nothing more specific than
-    // Unreachable to report; the machine id alone is enough to make it a well-formed `Probe`.
-    let unreached = || SettledProbe { machine_id: machine_id.to_owned(), outcome: Outcome::Unreachable, tier: None, address: None };
-    if !live() { return (None, unreached()); }
+    // this machine is no longer among its resources — so there is no verdict to report at all:
+    // fabricating `Unreachable` here would widen a real, more specific probe result
+    // (`InsecureOnly`/`Unauthorized`) into "Not reachable" once it reached the registry.
+    if !live() { return (None, None); }
     let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
     let Some(resources) = resources(&ac) else {
         log(&format!(
             "auth: endpoint refresh for source {} could not reach plex.tv",
             id.raw()
         ));
-        return (None, unreached());
+        return (None, None);
     };
     let Some(resource) = resources
         .iter()
@@ -2605,10 +2605,11 @@ fn probe_endpoint_work(
             "auth: endpoint refresh for source {} found no matching resource",
             id.raw()
         ));
-        return (None, unreached());
+        return (None, None);
     };
-    if !live() { return (None, unreached()); }
-    probe(resource, &sess.household_ids())
+    if !live() { return (None, None); }
+    let (fresh, probe) = probe(resource, &sess.household_ids());
+    (fresh, Some(probe))
 }
 
 /// Point the persisted PRIMARY at wherever the refreshed roster says that machine now answers.
@@ -6557,5 +6558,67 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- PR #104 review: an early exit must not fabricate a dialled verdict ----
+
+    /// `probe_endpoint_work` used to report `Outcome::Unreachable` on every early exit —
+    /// plex.tv itself not answering, or the machine no longer being among its resources —
+    /// even though nothing was ever dialled. That fabricated verdict then overwrote a real,
+    /// more specific probe result (`InsecureOnly`/`Unauthorized`) once it reached the registry.
+    /// An early exit must report that nothing was probed at all.
+    #[test]
+    fn probe_endpoint_work_reports_nothing_when_plex_tv_is_unreachable() {
+        let sess = Session::default();
+        let (fresh, probe) = probe_endpoint_work(
+            ServerId::from_raw(0),
+            "some-machine",
+            &sess,
+            |_ac: &AccountClient| -> Option<Vec<Resource>> { None }, // plex.tv unreachable
+            |_resource, _household| -> (Option<SourceRef>, SettledProbe) {
+                panic!("the probe closure must never run when plex.tv could not be reached")
+            },
+            &|| true,
+        );
+        assert!(fresh.is_none());
+        assert!(
+            probe.is_none(),
+            "an early exit dialled nothing, so it must publish no verdict at all"
+        );
+    }
+
+    /// End-to-end: a source already graded `InsecureOnly` must keep reading `InsecureOnly` after
+    /// an endpoint refresh that exits early (plex.tv unreachable) — the early exit is not
+    /// evidence of anything and must not widen a real, more specific verdict to "Not reachable".
+    #[test]
+    fn endpoint_refresh_early_exit_does_not_widen_an_existing_insecure_only_verdict() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test("insecure-mach", "10.0.0.9", 32400, "tok", "cid");
+        crate::plex::publish_probe_result(sid, Outcome::InsecureOnly);
+        assert_eq!(crate::plex::server_probe_result(sid), Some(Outcome::InsecureOnly));
+
+        let sess = Session::default();
+        let (fresh, probe) = probe_endpoint_work(
+            sid,
+            "insecure-mach",
+            &sess,
+            |_ac: &AccountClient| -> Option<Vec<Resource>> { None }, // plex.tv unreachable
+            |_resource, _household| -> (Option<SourceRef>, SettledProbe) {
+                panic!("nothing should be dialled once plex.tv itself never answered")
+            },
+            &|| true,
+        );
+        assert!(fresh.is_none());
+        assert!(probe.is_none());
+
+        // The owner only plans a `RegistryPlan::Probe` when there is a real settled probe to
+        // publish; with `probe: None` nothing is planned and `publish_settled_probe` never runs,
+        // so the registry still reads the original, more specific verdict.
+        assert_eq!(
+            crate::plex::server_probe_result(sid),
+            Some(Outcome::InsecureOnly),
+            "an early exit with nothing dialled must not overwrite a real verdict"
+        );
     }
 }

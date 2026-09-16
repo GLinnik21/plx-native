@@ -23,8 +23,10 @@ pub(crate) struct EndpointFact {
     pub machine_id: String,
     pub fresh: Option<SourceRef>,
     /// What the probe itself proved, whether or not `fresh` has a source to install (R2/A5's
-    /// "publish rather than retire" applies to the endpoint worker too).
-    pub probe: SettledProbe,
+    /// "publish rather than retire" applies to the endpoint worker too). `None` when the worker
+    /// exited early — plex.tv itself unreachable, or the machine no longer among its resources —
+    /// meaning nothing was actually dialled, so there is no verdict to report at all.
+    pub probe: Option<SettledProbe>,
 }
 
 impl Observation {
@@ -88,7 +90,7 @@ impl Observation {
                 w.u8(4).u64(progress.epoch); write_identity(w, &progress.expected);
                 w.u32(u32::from(progress.sid)).str(&progress.machine_id);
                 w.option(progress.fresh.as_ref(), |w, source| write_sources(w, std::slice::from_ref(source)));
-                write_probe(w, &progress.probe);
+                w.option(progress.probe.as_ref(), write_probe);
             }
             Self::ProfileSwitch(progress) => {
                 w.u8(5).u64(progress.epoch); write_identity(w, &progress.expected);

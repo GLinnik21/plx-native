@@ -1501,11 +1501,19 @@ impl SessionMachine {
             Observation::Endpoint(progress) => {
                 let Some(lifecycle) = pending.lifecycle else { return false; };
                 match &progress.fresh {
-                    None => {
+                    None => match &progress.probe {
                         // Nothing to INSTALL, but the probe itself is evidence — an InsecureOnly
                         // verdict most of all — so publish it rather than retiring silently.
-                        plan.registry.push(RegistryPlan::Probe(progress.probe.clone()));
-                    }
+                        Some(probe) => plan.registry.push(RegistryPlan::Probe(probe.clone())),
+                        // The worker exited early (plex.tv itself unreachable, or the machine no
+                        // longer among its resources): nothing was dialled, so there is nothing
+                        // to publish and no verdict to widen — retire exactly as an empty
+                        // `ServerRosterOutcome::NoReachable` does.
+                        None => {
+                            self.retire(req, emit);
+                            return true;
+                        }
+                    },
                     Some(fresh) => {
                         let mut next = self.state.persisted.clone();
                         let Some((source, changed)) = super::apply_refreshed_endpoint(&mut next, &progress.machine_id, fresh) else {
@@ -1518,10 +1526,14 @@ impl SessionMachine {
                         // (or any other endpoint move) never reaches `Session::profiles`, so an
                         // offline reseat of this same profile keeps dialling the stale origin
                         // forever. `ProfileRoster`'s commit above makes the identical call.
-                        next.refresh_profile_record();
+                        // The ServerRoster Reconcile arm above already plans credentials on
+                        // `changed || repaired`; this commit used to gate on `changed` alone,
+                        // silently dropping a repaired-but-otherwise-unchanged active
+                        // `ProfileCreds` record on the floor.
+                        let repaired = next.refresh_profile_record();
                         let patch = CredentialPatch::of(&next);
                         delta.credentials = Some(patch.clone());
-                        if changed && !self.state.apply_pending { plan.credentials = Some(patch); }
+                        if (changed || repaired) && !self.state.apply_pending { plan.credentials = Some(patch); }
                         plan.registry.push(RegistryPlan::Endpoint { expected: lifecycle, source });
                     }
                 }
@@ -2292,7 +2304,7 @@ mod tests {
             outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Endpoint(
                 super::super::observation::EndpointFact {
                     epoch, expected, sid: sid.raw(), machine_id: "insecure-mach".into(),
-                    fresh: None, probe: probe.clone(),
+                    fresh: None, probe: Some(probe.clone()),
                 }))),
         };
         assert!(owner.accepts(&envelope), "a None-fresh endpoint reply is still a valid terminal arrival");
@@ -2308,6 +2320,79 @@ mod tests {
             "the InsecureOnly verdict must reach the registry even with no source to install"
         );
         assert!(plan.credentials.is_none(), "a registry-only probe writes no credentials");
+    }
+
+    /// PR #104 review: the endpoint commit used to gate `plan.credentials` on `changed` alone,
+    /// discarding `refresh_profile_record`'s own return — unlike the `ServerRosterOutcome::
+    /// Reconcile` arm a few lines above, which already includes `repaired`. So an endpoint reply
+    /// whose route facts exactly match what is already stored (`changed == false`) but whose
+    /// active profile's cached record (`Session::profiles`) is stale never got repaired on disk,
+    /// even though `delta.credentials` (the in-memory/UI side) was updated regardless. A later
+    /// offline reseat of that profile would then read the stale cached server/sources forever.
+    #[test]
+    fn endpoint_commit_plans_credentials_when_only_the_profile_record_needed_repair() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test("ours", "10.0.0.9", 32400, "profile-token", "cid");
+        let client = crate::plex::client_for(sid).unwrap();
+        let lifecycle = super::super::ClientLifecycle::capture(client);
+
+        // The route facts the endpoint reply carries are IDENTICAL to what is already stored, so
+        // `apply_refreshed_endpoint` reports `changed == false`.
+        let current = crate::plex::session::SourceRef {
+            machine_id: "ours".into(),
+            owned: true,
+            token: "profile-token".into(),
+            address: "10.0.0.9".into(),
+            port: 32400,
+            origin_url: "http://10.0.0.9:32400".into(),
+            ..Default::default()
+        };
+        let mut persisted = PersistedSession {
+            client_id: "synthetic-client".into(),
+            user: UserRef { uuid: "u1".into(), ..Default::default() },
+            server: super::super::server_ref(&current),
+            sources: vec![current.clone()],
+            ..Default::default()
+        };
+        // The active profile's own cached record is stale/blank — `refresh_profile_record` must
+        // overwrite it and report `repaired == true`, independently of `changed`.
+        persisted.profiles.push(crate::plex::session::ProfileCreds {
+            uuid: "u1".into(),
+            user: UserRef::default(),
+            server: crate::plex::session::ServerRef::default(),
+            sources: Vec::new(),
+            pin: None,
+        });
+
+        let mut owner = SessionMachine::from_init(SessionInit::captured(persisted));
+        let req = owner.allocate(SessionOp::Endpoint(sid.raw()), Some(lifecycle.logical(sid.raw()))).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let probe = super::super::settled_probe_for_test(
+            "ours", crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local), Some("10.0.0.9".into()));
+        let envelope = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::Endpoint(sid.raw()) },
+            admission: AdmissionId(req), arrival: 1, terminal: true, lifecycle: Some(lifecycle.logical(sid.raw())),
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Endpoint(
+                super::super::observation::EndpointFact {
+                    epoch, expected, sid: sid.raw(), machine_id: "ours".into(),
+                    fresh: Some(current.clone()), probe: Some(probe),
+                }))),
+        };
+        assert!(owner.accepts(&envelope));
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        let plan = effects.iter().find_map(|fx| match fx {
+            SessionFx::Commit { plan, .. } => Some(plan),
+            _ => None,
+        }).expect("an endpoint reply that repairs the profile record must still commit");
+        assert!(
+            plan.credentials.is_some(),
+            "route facts were unchanged but the active profile's cached record needed repair — \
+             the commit must still write credentials so the repair reaches disk"
+        );
     }
 
     /// `ServerRosterOutcome::NoReachable` (R2/A5): the roster itself found nothing to REGISTER,

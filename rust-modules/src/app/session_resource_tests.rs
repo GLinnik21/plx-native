@@ -517,7 +517,7 @@ mod tests {
                                 lifecycle,
                                 machine_id,
                                 Some(fresh),
-                                probe,
+                                Some(probe),
                             ))
                             .is_ok());
                     });
@@ -671,7 +671,7 @@ mod tests {
                     crate::plex::probe::Outcome::Reachable,
                     Some(crate::plex::probe::Location::Local), Some("127.0.0.9".into()));
                 output.complete(crate::auth::endpoint_work_fact(EPOCH, expected, lifecycle,
-                    machine_id, Some(stale), probe)).unwrap();
+                    machine_id, Some(stale), Some(probe))).unwrap();
             });
             let mut d = Dispatcher::<AppHost>::new();
             command(&mut rig, &mut d, SessionCmd::RequestEndpoint { sid: id });

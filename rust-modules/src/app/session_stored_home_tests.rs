@@ -125,7 +125,7 @@ fn prove_home_observations(conflicting_owner: bool) {
             Some(crate::plex::probe::Location::Local), Some("127.0.0.3".into()));
         output.complete(crate::auth::endpoint_work_fact(epoch,
             if conflicting_owner { wrong_identity } else { expected }, lifecycle, machine_id,
-            Some(source("127.0.0.3", "account-token-not-authoritative")), probe)).unwrap();
+            Some(source("127.0.0.3", "account-token-not-authoritative")), Some(probe))).unwrap();
     });
     command(&mut rig, &mut d, crate::auth::SessionCmd::RequestEndpoint { sid: id });
     let records = rig.session_adapter.take_results();
@@ -214,7 +214,7 @@ fn admitted_endpoint_lifecycle_and_nonterminal_rejections_preserve_current_inter
                 crate::plex::probe::Outcome::Reachable,
                 Some(crate::plex::probe::Location::Local), Some("127.0.0.9".into()));
             output.complete(crate::auth::endpoint_work_fact(epoch, expected, lifecycle, machine_id,
-                Some(source("127.0.0.9", "unused-payload-token")), probe)).unwrap();
+                Some(source("127.0.0.9", "unused-payload-token")), Some(probe))).unwrap();
         });
         command(&mut rig, &mut d, crate::auth::SessionCmd::RequestEndpoint { sid: id });
         let mut records = rig.session_adapter.take_results();
