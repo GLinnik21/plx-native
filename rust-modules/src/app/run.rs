@@ -3304,7 +3304,18 @@ mod lifecycle_regression_tests {
             );
             crate::route::drain_scrobble();
             self.stop.store(true, Ordering::Release);
-            self.worker.take().unwrap().join().unwrap();
+            // Finding `lifecycle-rig-drop-still-unwraps-join`: a panicking fixture worker must
+            // not re-panic here. `.join().unwrap()` used to propagate the worker's `Err` into
+            // this destructor, and a panic inside a destructor while another panic is already
+            // unwinding is a Rust abort (SIGABRT) that takes down the whole test binary — every
+            // other module's result in that `make check` run along with it. `crate::task::join`
+            // (task.rs's own documented contract: a bare `.join()` outside that module is a
+            // stall nobody can see) logs a panicked worker instead of re-panicking, and the
+            // `if let` tolerates an absent handle on the refused-spawn path this rig can no
+            // longer actually reach (`Rig` is only ever constructed with `worker: Some(..)`).
+            if let Some(h) = self.worker.take() {
+                crate::task::join("lifecycle-fixture", h);
+            }
             crate::player::SHARED.reset_session();
             crate::route::reset_player_control_for_test(&self.app.player.session);
             crate::plex::reset_servers_for_test();
