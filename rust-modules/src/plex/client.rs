@@ -179,22 +179,41 @@ impl IpVersion {
     }
 }
 
-/// `Location` ⇄ `u8`, so the tier fits in an atomic. Written as two total matches rather than a
-/// cast: `Location`'s declaration ORDER is its preference order (`probe`'s derived `Ord` is the
+/// `Location`/`IpVersion` ⇄ `u8`, so each tier fits in an atomic. **The one encode/decode pair for
+/// both fields** — this `Client`'s own atomics and [`crate::player::report`]'s packed attempt
+/// snapshot (`ATTEMPT_CONNECTION`) both go through these rather than keeping a second private
+/// table each, which is what let the two drift apart before. Written as total matches rather than
+/// a cast: `Location`'s declaration ORDER is its preference order (`probe`'s derived `Ord` is the
 /// ranking), so a discriminant cast would silently tie the stored encoding to that ordering and
-/// break the moment a tier is inserted in the middle.
-fn link_code(l: Location) -> u8 {
+/// break the moment a tier is inserted in the middle. `0` is the shared "unknown"/`None` code for
+/// both fields.
+pub(crate) fn encode_link(l: Option<Location>) -> u8 {
     match l {
-        Location::Local => 1,
-        Location::Remote => 2,
-        Location::Relay => 3,
+        None => LINK_UNKNOWN,
+        Some(Location::Local) => 1,
+        Some(Location::Remote) => 2,
+        Some(Location::Relay) => 3,
     }
 }
-fn link_of_code(c: u8) -> Option<Location> {
+pub(crate) fn decode_link(c: u8) -> Option<Location> {
     match c {
         1 => Some(Location::Local),
         2 => Some(Location::Remote),
         3 => Some(Location::Relay),
+        _ => None,
+    }
+}
+pub(crate) fn encode_ip(ip: Option<IpVersion>) -> u8 {
+    match ip {
+        None => IP_UNKNOWN,
+        Some(IpVersion::V4) => 1,
+        Some(IpVersion::V6) => 2,
+    }
+}
+pub(crate) fn decode_ip(c: u8) -> Option<IpVersion> {
+    match c {
+        1 => Some(IpVersion::V4),
+        2 => Some(IpVersion::V6),
         _ => None,
     }
 }
@@ -369,7 +388,7 @@ impl Client {
     /// unconditional setter for tests that want to seed a tier directly (e.g. to grade
     /// `finish_profile_switch` against a known-good roster) without going through the registry.
     pub fn set_link(&self, l: Location) {
-        self.link.store(link_code(l), Relaxed);
+        self.link.store(encode_link(Some(l)), Relaxed);
     }
     /// Publish both coarse network facts unconditionally — `ip_version: None` sets `ip_version()`
     /// back to `None`/unknown, unlike [`Client::apply_connection`]'s "leave unchanged" semantics.
@@ -377,14 +396,7 @@ impl Client {
     /// direct test seam.
     pub fn set_connection(&self, l: Location, ip_version: Option<IpVersion>) {
         self.set_link(l);
-        self.ip_version.store(
-            match ip_version {
-                Some(IpVersion::V4) => 1,
-                Some(IpVersion::V6) => 2,
-                None => IP_UNKNOWN,
-            },
-            Relaxed,
-        );
+        self.ip_version.store(encode_ip(ip_version), Relaxed);
     }
     /// Apply [`super::servers::ConnectionFacts`] captured AT registration (#95 step 8 / A1).
     /// `None` in either field of `conn` is LEFT UNCHANGED — never written as unknown — so a
@@ -393,30 +405,20 @@ impl Client {
     /// re-points the slot, never as a separate step a caller can forget.
     pub(crate) fn apply_connection(&self, conn: super::servers::ConnectionFacts) {
         if let Some(tier) = conn.tier {
-            self.link.store(link_code(tier), Relaxed);
+            self.link.store(encode_link(Some(tier)), Relaxed);
         }
         if let Some(ip) = conn.ip {
-            self.ip_version.store(
-                match ip {
-                    IpVersion::V4 => 1,
-                    IpVersion::V6 => 2,
-                },
-                Relaxed,
-            );
+            self.ip_version.store(encode_ip(Some(ip)), Relaxed);
         }
     }
     /// How this server is reached, `None` while nothing has said. Feed it to
     /// [`super::transcoder::link_policy`] rather than matching on it at a call site — a relay is
     /// not the only fact a tier could ever carry, and the policy is the one place that decides.
     pub fn link(&self) -> Option<Location> {
-        link_of_code(self.link.load(Relaxed))
+        decode_link(self.link.load(Relaxed))
     }
     pub fn ip_version(&self) -> Option<IpVersion> {
-        match self.ip_version.load(Relaxed) {
-            1 => Some(IpVersion::V4),
-            2 => Some(IpVersion::V6),
-            _ => None,
-        }
+        decode_ip(self.ip_version.load(Relaxed))
     }
 
     // ---- transport choke points: the only code that touches crate::stream ----
@@ -840,6 +842,28 @@ mod tests {
             token,
             "cid-42",
         )
+    }
+
+    /// PR #104 review: `encode_link`/`decode_link` and `encode_ip`/`decode_ip` are the ONE
+    /// encode/decode pair for both fields — `Client`'s own atomics and `player::report`'s packed
+    /// attempt snapshot both go through these instead of each keeping a private copy. Every
+    /// `Location`/`IpVersion` value, plus `None`, must round-trip through its pair.
+    #[test]
+    fn link_and_ip_codes_round_trip_every_value() {
+        for l in [None, Some(Location::Local), Some(Location::Remote), Some(Location::Relay)] {
+            assert_eq!(decode_link(encode_link(l)), l, "link {l:?} did not round-trip");
+        }
+        for ip in [None, Some(IpVersion::V4), Some(IpVersion::V6)] {
+            assert_eq!(decode_ip(encode_ip(ip)), ip, "ip {ip:?} did not round-trip");
+        }
+        // `0` is the shared unknown/`None` code for both fields, and an unrecognised code decodes
+        // to `None` rather than panicking — a packed word can carry any `u8` in these bits.
+        assert_eq!(encode_link(None), 0);
+        assert_eq!(encode_ip(None), 0);
+        assert_eq!(decode_link(0), None);
+        assert_eq!(decode_ip(0), None);
+        assert_eq!(decode_link(200), None);
+        assert_eq!(decode_ip(200), None);
     }
 
     #[test]

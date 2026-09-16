@@ -1257,7 +1257,7 @@ enum Discovery {
 /// Copy for [`Discovery::InsecureOnly`], shared by sign-in and rediscovery so the two paths
 /// cannot say two different things about the same verdict (plan §4).
 ///
-/// **Placeholder text, pending the owner's approval of the exact wording.**
+/// Owner-approved wording; keep byte-identical.
 const DISCOVERY_INSECURE_ONLY_MESSAGE: &str =
     "Found your Plex server, but couldn't connect to it securely (HTTPS). Check that your server \
      allows secure connections, then try again.";

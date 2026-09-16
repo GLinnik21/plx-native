@@ -362,8 +362,8 @@ impl UsageContext {
             device_model: "<device model class>".into(),
             soc: "<SoC/platform class>".into(),
             hardware_revision: "<hardware revision class>".into(),
-            server_connection: Some("<local / remote / relay / unknown / omitted>".into()),
-            ip_version: Some("<v4 / v6 / unknown / omitted>".into()),
+            server_connection: Some("<local / remote / relay / unknown>".into()),
+            ip_version: Some("<v4 / v6 / unknown>".into()),
             rtkmem: "<ok / missing / n/a>".into(),
             install: "<devmode / homebrew / unknown>".into(),
         }

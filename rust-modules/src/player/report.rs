@@ -49,8 +49,8 @@ static ATTEMPT: AtomicI64 = AtomicI64::new(0);
 ///
 /// Bit layout (LSB first), all little-endian within the `u32`:
 /// - bits 0..16:  server slot (`ServerId::raw()`, a `u16`; `ServerId::UNSET.raw()` when idle)
-/// - bits 16..24: link code (`encode_link`'s `u8`: 0 = unknown, mirrors `plex::client`'s private encoding)
-/// - bits 24..32: ip code (`encode_ip`'s `u8`: 0 = unknown, mirrors `plex::client`'s private encoding)
+/// - bits 16..24: link code (`plex::client::encode_link`'s `u8`: 0 = unknown)
+/// - bits 24..32: ip code (`plex::client::encode_ip`'s `u8`: 0 = unknown)
 ///
 /// #95 step 8, item 4: the connection half is SNAPSHOTTED once in [`requested`] rather than read
 /// live off the server slot's client at every `emit`. A live read would let a mid-attempt re-point
@@ -67,36 +67,10 @@ fn unpack_connection(word: u32) -> (u16, u8, u8) {
     (word as u16, (word >> 16) as u8, (word >> 24) as u8)
 }
 
-fn encode_link(l: Option<crate::plex::probe::Location>) -> u8 {
-    match l {
-        None => 0,
-        Some(crate::plex::probe::Location::Local) => 1,
-        Some(crate::plex::probe::Location::Remote) => 2,
-        Some(crate::plex::probe::Location::Relay) => 3,
-    }
-}
-fn decode_link(c: u8) -> Option<crate::plex::probe::Location> {
-    match c {
-        1 => Some(crate::plex::probe::Location::Local),
-        2 => Some(crate::plex::probe::Location::Remote),
-        3 => Some(crate::plex::probe::Location::Relay),
-        _ => None,
-    }
-}
-fn encode_ip(ip: Option<crate::plex::IpVersion>) -> u8 {
-    match ip {
-        None => 0,
-        Some(crate::plex::IpVersion::V4) => 1,
-        Some(crate::plex::IpVersion::V6) => 2,
-    }
-}
-fn decode_ip(c: u8) -> Option<crate::plex::IpVersion> {
-    match c {
-        1 => Some(crate::plex::IpVersion::V4),
-        2 => Some(crate::plex::IpVersion::V6),
-        _ => None,
-    }
-}
+// Link/IP encode-decode is the one pair `crate::plex::client` owns (`encode_link`/`decode_link`,
+// `encode_ip`/`decode_ip`) — this module used to keep a second private copy of both tables, which
+// is exactly the drift the shared pair exists to rule out.
+use crate::plex::{decode_ip, decode_link, encode_ip, encode_link};
 /// Process-local trace generation. Unlike `ATTEMPT`, this is never sent; it only prevents an
 /// outgoing demux worker from writing its late transitions into the next Play's reset trace.
 static NEXT_TRACE_GENERATION: AtomicU32 = AtomicU32::new(0);
