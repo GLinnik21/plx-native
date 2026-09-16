@@ -825,14 +825,15 @@ fn error_shape(
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
-        // Same reader-facing wording as `TvPipeline` — a viewer sees the same failure either way
-        // (playback never started) — but a DIFFERENT `kind`, so a hang (issue #74 D.1.4's budget)
-        // is distinguishable from an ordinary firmware refusal on the telemetry wire.
+        // A DIFFERENT `kind` from `TvPipeline` (issue #74 D.1.4's budget is a hang, not a firmware
+        // refusal — see `RuntimeFailure::LoadTimeout`'s doc), and now its own reader-facing wording
+        // too: the pipeline never actually answered, so "rejected" would claim a firmware verdict
+        // that was never given.
         RuntimeFailure::LoadTimeout => ErrorShape {
             kind: FailureKind::LoadTimeout,
-            caption: c"Playback failed — the TV rejected the stream",
-            panel: "the television media pipeline rejected the stream",
-            readout: "This TV could not start the video stream",
+            caption: c"Playback failed — the TV did not finish starting the stream",
+            panel: "the television media pipeline did not finish starting the stream in time",
+            readout: "This TV did not finish starting the video stream in time",
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
@@ -2465,6 +2466,42 @@ mod tests {
             runtime_failure(true, true, true, true),
             RuntimeFailure::LoadTimeout,
             "a timed-out Load must win over every other concurrently-set signal",
+        );
+    }
+
+    /// A firmware REFUSAL (`TvPipeline`) and a HANG (`LoadTimeout`, issue #74 D.1.4's
+    /// `NATIVE_LOAD_BUDGET`) are different events on the telemetry wire — `runtime_failures_fill_
+    /// the_existing_readout_reason_slot` above already pins the distinct `kind`/`code` — but until
+    /// now every viewer-facing string (`caption`, `panel`, `readout`) was byte-identical between
+    /// them, so a maintainer reading a photographed read-out or the diagnostics panel could not
+    /// tell "the TV said no" from "the TV never answered" apart. Pin that they now differ, and that
+    /// the timeout's own wording says something a hang actually describes (never finished /
+    /// answered), not the refusal's "rejected".
+    #[test]
+    fn load_timeout_has_its_own_wording_distinct_from_an_ordinary_tv_refusal() {
+        use crate::plex::serverinfo::Subscription as Sub;
+        let refused = error_shape(false, false, Sub::Unknown, None, RuntimeFailure::TvPipeline);
+        let timed_out = error_shape(false, false, Sub::Unknown, None, RuntimeFailure::LoadTimeout);
+        assert_ne!(
+            refused.caption, timed_out.caption,
+            "a refusal and a hang must not share a caption"
+        );
+        assert_ne!(
+            refused.panel, timed_out.panel,
+            "a refusal and a hang must not share a diagnostics panel line"
+        );
+        assert_ne!(
+            refused.readout, timed_out.readout,
+            "a refusal and a hang must not share a read-out reason"
+        );
+        let timed_out_caption = timed_out.caption.to_str().unwrap();
+        assert!(
+            timed_out_caption.contains("did not finish") || timed_out_caption.contains("never finished"),
+            "{timed_out_caption:?} should say the Load never finished, not that the TV rejected anything"
+        );
+        assert!(
+            !timed_out_caption.to_lowercase().contains("rejected"),
+            "{timed_out_caption:?} borrows the refusal's wording; a hang was never rejected"
         );
     }
 
