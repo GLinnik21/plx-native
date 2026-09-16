@@ -2925,6 +2925,17 @@ pub(crate) fn profile_switch_worker_with_io(
         extensions: Default::default(),
     };
     if !output.live() { return; }
+    // Carry forward whatever this uuid's PRIOR seating cached in `extensions` — the serde-flatten
+    // catch-all for fields this build does not model (forward compatibility with a newer build
+    // that wrote this session). `remember_profile` below replaces that uuid's whole cache entry,
+    // so building a fresh one with `Default::default()` here silently erased it (Copilot review on
+    // PR #105, finding 3).
+    let carried_extensions = stored
+        .profiles
+        .iter()
+        .find(|p| p.uuid == user.uuid)
+        .map(|p| p.extensions.clone())
+        .unwrap_or_default();
     let cache = ProfileCreds {
         uuid: user.uuid.clone(),
         user: user.clone(),
@@ -2934,7 +2945,7 @@ pub(crate) fn profile_switch_worker_with_io(
             .as_deref()
             .filter(|value| !value.is_empty())
             .map(session::PinVerifier::new),
-        extensions: Default::default(),
+        extensions: carried_extensions,
     };
     let next_identity = SessionIdentity {
         client_id: expected.client_id.clone(),
@@ -5370,6 +5381,111 @@ mod tests {
         assert!(matches!(&**b, observation::Observation::ProfileSwitch(ProfileSwitchProgress {
             epoch: 7, outcome: ProfileSwitchOutcomeProgress::Failed { pin_denied: false, .. }, ..
         })));
+    }
+
+    /// A minimal, entirely local [`ProfileWorkIo`] for the ONLINE switch success path — no
+    /// network, no thread sleep (`gap` is a no-op rather than `SERVER_GAP`). `switch` always answers
+    /// with the one seated user the test configures; `resources` always answers with the one server
+    /// resource matching `stored.server.machine_id` ("ours" in [`cached_session`]); `probe` always
+    /// reports that server reachable, winning it a [`SourceRef`] built the same way the fixtures
+    /// build one.
+    struct OnlineSwitchIo {
+        seated: crate::plex::account::SwitchedUser,
+        resource_token: String,
+    }
+    impl ProfileWorkIo for OnlineSwitchIo {
+        fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
+            SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+                id: self.seated.id,
+                uuid: self.seated.uuid.clone(),
+                title: self.seated.title.clone(),
+                auth_token: self.seated.auth_token.clone(),
+            })
+        }
+        fn resources(&mut self, _: &AccountClient) -> Option<Vec<Resource>> {
+            Some(vec![Resource {
+                name: "ours".into(),
+                client_identifier: "ours".into(),
+                provides: "server".into(),
+                owned: true,
+                access_token: self.resource_token.clone(),
+                ..Default::default()
+            }])
+        }
+        fn probe(&mut self, resource: &Resource, _: &[i64]) -> (Option<SourceRef>, SettledProbe) {
+            let plan = probe::plan(resource);
+            let winner = source(&resource.client_identifier, resource.owned, &self.resource_token);
+            (Some(winner), settled_probe(&plan, Outcome::Reachable, None))
+        }
+        fn gap(&mut self) {}
+    }
+
+    /// A captured-in-place [`owner::ObservationSink`] — no worker/adapter plumbing, since this
+    /// finding only needs the single [`AuthProgress`] the online switch emits on success.
+    #[derive(Default)]
+    struct CapturingSink(std::cell::RefCell<Vec<AuthProgress>>);
+    impl owner::ObservationSink for CapturingSink {
+        fn live(&self) -> bool { true }
+        fn progress(&self, value: AuthProgress) -> bool {
+            self.0.borrow_mut().push(value);
+            true
+        }
+        fn terminal(&self, value: AuthProgress) -> bool {
+            self.0.borrow_mut().push(value);
+            true
+        }
+    }
+
+    /// Copilot review on PR #105, finding 3: the online profile-switch success path built its
+    /// `ProfileCreds` with `extensions: Default::default()`, unconditionally discarding whatever
+    /// extensions a PRIOR seating of the same uuid had cached — `Session::remember_profile` then
+    /// replaces that uuid's whole cache entry with the impoverished one. `cached_session`'s `u-kid`
+    /// entry starts with empty extensions like every other test fixture; this test gives it a
+    /// real one first, switches to `u-kid` online, and asserts the delta's cache keeps it.
+    #[test]
+    fn online_profile_switch_preserves_the_uuids_existing_cached_extensions() {
+        let mut stored = cached_session(None);
+        let mut previous = stored
+            .profiles
+            .iter()
+            .find(|p| p.uuid == "u-kid")
+            .cloned()
+            .expect("cached_session seeds a u-kid profile");
+        previous.extensions = session::OpaqueExtensions(std::collections::BTreeMap::from([(
+            "futureField".to_string(),
+            serde_json::json!("kept from an earlier build"),
+        )]));
+        stored.remember_profile(previous.clone());
+
+        let expected = SessionIdentity::of(&stored);
+        let tile = UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() };
+        let mut io = OnlineSwitchIo {
+            seated: crate::plex::account::SwitchedUser {
+                id: 0,
+                uuid: "u-kid".into(),
+                title: "Kid".into(),
+                auth_token: "fresh-kid-token".into(),
+            },
+            resource_token: "fresh-kid-token".into(),
+        };
+        let sink = CapturingSink::default();
+        profile_switch_worker_with_io(1, expected, stored, tile, None, false, &sink, &mut io);
+
+        let events = sink.0.into_inner();
+        let ready = events.iter().find_map(|event| match event {
+            AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+                outcome: ProfileSwitchOutcomeProgress::Ready { delta, .. }, ..
+            }) => Some(delta),
+            _ => None,
+        });
+        let delta = ready.expect("expected a Ready online-switch outcome among the emitted events");
+        let cache = delta.cache.as_ref().expect("an online switch always caches credentials");
+        assert_eq!(
+            cache.extensions.0.get("futureField"),
+            previous.extensions.0.get("futureField"),
+            "the online switch dropped the uuid's previously-cached extensions instead of \
+             carrying them forward"
+        );
     }
 
     /// Extract one `fn NAME(` … `}` body, verbatim, from this file's OWN source. A tiny lexer —
