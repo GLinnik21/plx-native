@@ -346,7 +346,6 @@ impl SessionAdapter {
         }) { return permit.reply(CommitAdmission::StaleAuthority); }
         // Filled inside the borrow of `self.resources`, stored after it ends.
         let mut pending_completion = None;
-        let mut pending_outcome = None;
         match &mut self.resources {
             Resources::Live { .. } => {
                 // The live disk write keeps its existing synchronous, merge-and-write shape:
@@ -368,19 +367,28 @@ impl SessionAdapter {
                         admitted_revision = Some(revision);
                         // Build the completion from what the write ACTUALLY did. A refusal to
                         // downgrade or a failed write is not durability, and only a persisted
-                        // outcome is `verified`.
+                        // outcome is `verified`. This mirrors `DiskOutcome::classify`'s `None`
+                        // commit-detail arm (there is no `CommitDetail` tracking on this
+                        // synchronous live-write path): persisted -> `Durable`, otherwise ->
+                        // `Failed(Failure::Persistence(outcome))`, never an unconditional
+                        // `Durable` regardless of what the disk actually did.
                         pending_completion = outcome.map(|outcome| {
-                            pending_outcome = Some(outcome);
-                            crate::plex::session::async_persistence::PersistenceCompletion {
-                                req: permit.request(), epoch: permit.epoch(),
-                                arrival: permit.arrival(), revision,
-                                purpose: plan.purpose,
-                                outcome: crate::plex::session::async_persistence::CompletionOutcome::Durable(
+                            let completion_outcome = if outcome.persisted() {
+                                crate::plex::session::async_persistence::CompletionOutcome::Durable(
                                     crate::plex::session::async_persistence::Operation::Write {
                                         outcome,
                                         verified: outcome.persisted(),
                                         protection: None,
-                                    }),
+                                    })
+                            } else {
+                                crate::plex::session::async_persistence::CompletionOutcome::Failed(
+                                    crate::plex::session::async_persistence::Failure::Persistence(outcome))
+                            };
+                            crate::plex::session::async_persistence::PersistenceCompletion {
+                                req: permit.request(), epoch: permit.epoch(),
+                                arrival: permit.arrival(), revision,
+                                purpose: plan.purpose,
+                                outcome: completion_outcome,
                             }
                         });
                     }
@@ -793,6 +801,88 @@ mod tests {
             "a drained verdict must not be deliverable a second time");
     }
 
+    /// A disk write can fail (a revoked, missing or unwritable credential path), and the bridge
+    /// must surface exactly that — `CompletionOutcome::Failed`, never a silently upgraded
+    /// `Durable` — mirroring `DiskOutcome::classify`'s convention that only a persisted write is
+    /// durable. Without this, `auth::owner::apply_persistence_completion` would key
+    /// `commit_phase.durable` / `commit_phase.proves_saved_login` off a write that never reached
+    /// disk.
+    ///
+    /// RED: observed live. Reverting `commit`'s write-outcome mapping to the old unconditional
+    /// `CompletionOutcome::Durable(Operation::Write { outcome, verified: outcome.persisted(),
+    /// protection: None })` construction (i.e. dropping the `if outcome.persisted() { .. } else
+    /// { Failed(..) }` branch this test exists to pin) and re-running just this test failed on
+    /// the final `matches!` assertion: `take_live_completion()` returned `Durable(..)` even
+    /// though the underlying disk write on the read-only directory genuinely failed
+    /// (`PersistOutcome::WriteFailed`). Reapplying the fix turns it back green.
+    #[test]
+    fn the_bridge_reports_a_failed_write_as_failed_not_durable() {
+        use crate::auth::owner::{CommitDelta, CredentialPatch, Identity, Pending, PendingCommit,
+            SessionInit, SessionMachine, StreamPhase};
+        use std::os::unix::fs::PermissionsExt;
+        let _serial = crate::testlock::serial();
+        // Declared FIRST so it is dropped LAST (Rust drops locals in reverse declaration order):
+        // the RAII permission-restore guard below must run before `TempSession::drop` tries to
+        // remove this same now-read-only directory.
+        let session = crate::plex::session::TempSession::new("live-write-failure");
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
+        assert!(adapter.take_live_completion().is_none(),
+            "nothing is outstanding before any commit");
+
+        let disk = crate::plex::session::peek();
+        let mut init = SessionInit::captured(disk.clone());
+        init.epoch = 1;
+        init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Ready },
+            expected: Identity::of(&disk), lifecycle: None, last_arrival: Some(0),
+            phase: StreamPhase::Running, capture: None,
+            admission: crate::auth::owner::AdmissionState::NotRequested });
+        init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 0, terminal: true,
+            writes_credentials: true, receipt: None, delta: CommitDelta::default(),
+            admitted_revision: None, purpose: None });
+        let owner = SessionMachine::from_init(init);
+
+        let mut next = disk.clone();
+        next.account_token = "synthetic-new-token".into();
+        let plan = CommitPlan { expected_disk: Identity::of(&disk),
+            credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
+            purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
+            writes_durable: true };
+
+        // Make the underlying disk write genuinely fail: strip write permission on the scratch
+        // session's own directory, so `write_atomic`'s temp-file create fails with EACCES and
+        // `save_locked_outcome` reports `PersistOutcome::WriteFailed` rather than anything
+        // synthetic.
+        let dir = session.path().parent().expect("a directory").to_path_buf();
+        let original_mode = std::fs::metadata(&dir).unwrap().permissions();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500))
+            .expect("can restrict the scratch directory");
+        struct RestorePerms { dir: std::path::PathBuf, mode: std::fs::Permissions }
+        impl Drop for RestorePerms {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.dir, self.mode.clone());
+            }
+        }
+        // Declared AFTER `session`, so (reverse drop order) it restores the directory's
+        // permissions BEFORE `session`'s own `Drop` tries to `remove_dir_all` it.
+        let _restore = RestorePerms { dir: dir.clone(), mode: original_mode };
+
+        let reply = adapter.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan);
+        // The registry/admission bookkeeping is unrelated to this finding and is unchanged by
+        // it; only the completion's outcome is under test here.
+        let _ = reply;
+
+        let completion = adapter.take_live_completion()
+            .expect("a verdict is still delivered even when the write failed");
+        assert!(
+            matches!(completion.outcome,
+                crate::plex::session::async_persistence::CompletionOutcome::Failed(
+                    crate::plex::session::async_persistence::Failure::Persistence(
+                        crate::plex::session::async_persistence::PersistOutcome::WriteFailed))),
+            "a failed disk write must surface as Failed, not be silently upgraded to Durable: {:?}",
+            completion.outcome);
+    }
+
     #[test]
     fn fixture_commit_uses_latest_preferences_and_never_writes_another_adapter() {
         use crate::auth::owner::{CommitDelta, CredentialPatch, Identity, Pending, PendingCommit,
@@ -1064,7 +1154,25 @@ mod tests {
         let start = source
             .find("pub(crate) fn erase(")
             .expect("erase() must exist in this file");
-        let body = &source[start..];
+        // Bound the scan to `erase()`'s OWN body. An unbounded `&source[start..]` runs to the end
+        // of the file — including this very test's source, whose literals ("crate::plex::
+        // revoke_all()", "crate::plex::session::clear()") also appear later in the string — so an
+        // unbounded scan can find a MATCH IN THE TEST ITSELF and pass even if `erase()`'s real
+        // calls were reordered or one were deleted. `coordinator(` is the next function declared
+        // after `erase()` in this file; if that stops being true, this `expect` fails loudly
+        // rather than silently falling back to EOF (i.e. update the marker below to whatever the
+        // next function after `erase()` is, do not delete the bound).
+        let end_marker = "pub(crate) fn coordinator(";
+        let end = start
+            + source[start..]
+                .find(end_marker)
+                .expect(concat!(
+                    "erase()'s end-of-body marker `", "pub(crate) fn coordinator(",
+                    "` was not found after erase() — a function was reordered; update this \
+                     test's end marker to whatever function now immediately follows erase(), \
+                     do not remove the bound (an unbounded scan can match this test's own \
+                     source instead of erase()'s body)"));
+        let body = &source[start..end];
         let revoke_at = body
             .find("crate::plex::revoke_all()")
             .expect("erase() must call plex::revoke_all()");
