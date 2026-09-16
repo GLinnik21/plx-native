@@ -2,50 +2,54 @@
   const reducedMotion = () =>
     window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  /* ---------- Section reveal ---------- */
+  /* ---------- Scroll reveal ---------- */
+  // Reveals [data-reveal] elements as they enter the viewport, staggering the
+  // ones that enter together. An element is reset only once it is entirely
+  // BELOW the viewport (the reader scrolled back up past it): the hidden state
+  // moves it further down, so the reset can never pull it back into view and
+  // flicker, and scrolling down again replays the animation.
   function initReveal() {
-    if (reducedMotion() || !("IntersectionObserver" in window)) return;
-    const root = document.querySelector(".page-root");
-    if (!root) return;
-    const targets = [...root.querySelectorAll(":scope > section, :scope > footer")].slice(1);
+    const html = document.documentElement;
+    window.plxReveal = true;
+    if (reducedMotion() || !("IntersectionObserver" in window)) {
+      html.classList.remove("reveal");
+      return;
+    }
+    const targets = [...document.querySelectorAll("[data-reveal]")];
     if (!targets.length) return;
 
-    targets.forEach((el) => el.classList.add("reveal-pending"));
+    const STAGGER_MS = 90;
+    const MAX_DELAY_MS = 540;
 
-    const reveal = (el) => {
-      el.classList.remove("reveal-pending");
-      el.classList.add("reveal-in");
-    };
-
-    const observer = new IntersectionObserver(
-      (entries, obs) => {
-        entries.forEach((entry) => {
-          if (!entry.isIntersecting) return;
-          reveal(entry.target);
-          obs.unobserve(entry.target);
+    const enter = new IntersectionObserver(
+      (entries) => {
+        const entering = entries
+          .filter((e) => e.isIntersecting && !e.target.classList.contains("is-revealed"))
+          .map((e) => e.target)
+          .sort((x, y) => (x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+        entering.forEach((el, i) => {
+          el.style.setProperty("--reveal-delay", Math.min(i * STAGGER_MS, MAX_DELAY_MS) + "ms");
+          el.classList.add("is-revealed");
         });
       },
-      { rootMargin: "0px 0px -12% 0px", threshold: 0.06 }
+      { rootMargin: "0px 0px -10% 0px", threshold: 0 }
     );
-    targets.forEach((el) => observer.observe(el));
 
-    // A short trailing element (the footer) can sit inside the shrunk root
-    // margin without ever crossing the intersection threshold once the page
-    // can scroll no further. Once the viewport reaches the bottom of the
-    // document, force-reveal anything still pending so it never gets stuck.
-    const revealAtBottom = () => {
-      const atBottom =
-        window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
-      if (!atBottom) return;
-      targets.forEach((el) => {
-        if (!el.classList.contains("reveal-pending")) return;
-        reveal(el);
-        observer.unobserve(el);
-      });
-    };
-    window.addEventListener("scroll", revealAtBottom, { passive: true });
-    window.addEventListener("resize", revealAtBottom);
-    revealAtBottom();
+    const reset = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          if (e.isIntersecting) return;
+          const viewportBottom = e.rootBounds ? e.rootBounds.bottom : window.innerHeight;
+          if (e.boundingClientRect.top >= viewportBottom) e.target.classList.remove("is-revealed");
+        });
+      },
+      { threshold: 0 }
+    );
+
+    targets.forEach((el) => {
+      enter.observe(el);
+      reset.observe(el);
+    });
   }
 
   /* ---------- Demo video ---------- */

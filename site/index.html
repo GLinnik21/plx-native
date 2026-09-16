@@ -9,6 +9,14 @@
     />
     <title>PlxNative — a fast, native Plex client for LG webOS TVs</title>
     <link rel="stylesheet" href="styles.css" />
+    <script>
+      // Hide reveal targets before first paint; site.js animates them in. If it
+      // never runs, the page is shown as-is rather than left blank.
+      document.documentElement.classList.add("reveal");
+      setTimeout(function () {
+        if (!window.plxReveal) document.documentElement.classList.remove("reveal");
+      }, 2500);
+    </script>
   </head>
   <body>
     <div class="page-shell">
@@ -39,24 +47,24 @@
         </header>
 
         <section class="hero" id="top" aria-labelledby="hero-title">
-          <h1 id="hero-title">
+          <h1 id="hero-title" data-reveal>
             Your TV still looks great.<br />
             <span>Plex should feel great, too.</span>
           </h1>
           <div class="hero-copy">
-            <p>
+            <p data-reveal>
               PlxNative is an independent client for Plex Media Server, built to make browsing feel
               fast, smooth, and enjoyable again on LG webOS TVs — even older ones.
             </p>
-            <div class="hero-actions">
+            <div class="hero-actions" data-reveal>
               <a class="button button-primary" href="#install">Install PlxNative</a>
               <a class="hero-gh-link" href="https://github.com/GLinnik21/plx-native">View on GitHub</a>
             </div>
-            <p class="hero-meta">Open source <span>·</span> No root required <span>·</span> Built for LG webOS</p>
+            <p class="hero-meta" data-reveal>Open source <span>·</span> No root required <span>·</span> Built for LG webOS</p>
           </div>
         </section>
 
-        <section class="television" aria-label="PlxNative on a television">
+        <section class="television" data-reveal="media" aria-label="PlxNative on a television">
           <div class="screen-frame">
             <img src="docs/screenshots/home.jpg" alt="PlxNative on a television" />
           </div>
@@ -67,12 +75,12 @@
         </section>
 
         <section class="split-section" id="why" aria-labelledby="why-title">
-          <h2 id="why-title">Why I built PlxNative</h2>
+          <h2 id="why-title" data-reveal>Why I built PlxNative</h2>
           <div class="section-copy">
-            <p class="lead">
+            <p class="lead" data-reveal>
               My TV still had a great panel. But using the official Plex app on it had become frustratingly slow.
             </p>
-            <p>
+            <p data-reveal>
               The TV itself was still perfectly good — replacing it, or adding another box just to get a responsive
               interface, felt like the wrong solution. So I built the client I wanted to use myself.
             </p>
@@ -80,12 +88,12 @@
         </section>
 
         <section class="showcase-section" id="feel" aria-labelledby="feel-title">
-          <div class="section-heading">
+          <div class="section-heading" data-reveal>
             <h2 id="feel-title">See how it feels</h2>
             <p>Responsiveness is hard to describe. It is easier to show.</p>
           </div>
           <figure class="demo-figure">
-            <div class="demo-card" id="demo-card">
+            <div class="demo-card" id="demo-card" data-reveal="media">
               <video
                 id="demo-video"
                 controls
@@ -105,19 +113,19 @@
                 <svg class="demo-toggle-pause" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1.2"></rect><rect x="14" y="5" width="4" height="14" rx="1.2"></rect></svg>
               </button>
             </div>
-            <figcaption>
+            <figcaption data-reveal>
               <span>Captured in the webOS simulator at normal speed.</span>
             </figcaption>
           </figure>
         </section>
 
         <section class="showcase-section" id="showcase" aria-labelledby="showcase-title">
-          <div class="section-heading section-heading--showcase">
+          <div class="section-heading section-heading--showcase" data-reveal>
             <h2 id="showcase-title">Fast doesn't have to mean stripped down.</h2>
             <p>Performance was the reason PlxNative started. It was never the whole goal.</p>
           </div>
           <figure class="closeup-figure closeup-figure--full">
-            <div class="closeup-box closeup-box--glass">
+            <div data-reveal="media" class="closeup-box closeup-box--glass">
               <picture>
                 <source media="(max-width: 759px)" srcset="media/closeup-glass-narrow.jpg" />
                 <img
@@ -129,7 +137,7 @@
                 />
               </picture>
             </div>
-            <figcaption>
+            <figcaption data-reveal>
               <h3>Depth without distraction</h3>
               <p>Translucent surfaces keep artwork visible and controls readable.</p>
             </figcaption>
@@ -137,7 +145,7 @@
 
           <div class="closeup-grid">
             <figure class="closeup-figure">
-              <div class="closeup-box closeup-box--tiles">
+              <div data-reveal="media" class="closeup-box closeup-box--tiles">
                 <img
                   class="closeup-tiles"
                   src="media/closeup-tiles.jpg"
@@ -146,13 +154,13 @@
                   decoding="async"
                 />
               </div>
-              <figcaption>
+              <figcaption data-reveal>
                 <h3>Designed for ten feet away</h3>
                 <p>Clear focus states make remote navigation obvious.</p>
               </figcaption>
             </figure>
             <figure class="closeup-figure">
-              <div class="closeup-box closeup-box--player">
+              <div data-reveal="media" class="closeup-box closeup-box--player">
                 <img
                   class="closeup-player"
                   src="media/closeup-player.jpg"
@@ -161,7 +169,7 @@
                   decoding="async"
                 />
               </div>
-              <figcaption>
+              <figcaption data-reveal>
                 <h3>Ready for the next episode</h3>
                 <p>When the credits roll, the next episode is one press away.</p>
               </figcaption>
@@ -170,7 +178,7 @@
         </section>
 
         <section class="built-section" aria-label="How PlxNative is built">
-          <div class="built-card">
+          <div class="built-card" data-reveal>
             <div class="built-copy">
               <p class="kicker">Built differently</p>
               <p>
@@ -188,9 +196,9 @@
         </section>
 
         <section class="quote-section" aria-label="Community feedback">
-          <p class="kicker">From the community</p>
+          <p class="kicker" data-reveal>From the community</p>
           <div class="quote-cloud">
-            <div class="quote-lead">
+            <div class="quote-lead" data-reveal>
               <p class="quote-lead-text">
                 <span class="quote-mark" aria-hidden="true">&ldquo;</span
                 ><span>The most responsive and speedy Plex experience I've had on any platform</span>
@@ -199,25 +207,25 @@
                 >Read the original comment on GitHub →</a
               >
             </div>
-            <span class="quote-lg filled">It looks better and more modern than the official Plex app</span>
-            <span class="quote-lg">Snappy as hell compared to the original Plex app</span>
-            <span class="quote-sm">This app is incredible</span>
-            <span class="quote-sm">Very nice and smooth app</span>
-            <span class="quote-sm">Love the liquid glass aesthetic</span>
+            <span data-reveal class="quote-lg filled">It looks better and more modern than the official Plex app</span>
+            <span data-reveal class="quote-lg">Snappy as hell compared to the original Plex app</span>
+            <span data-reveal class="quote-sm">This app is incredible</span>
+            <span data-reveal class="quote-sm">Very nice and smooth app</span>
+            <span data-reveal class="quote-sm">Love the liquid glass aesthetic</span>
           </div>
-          <p class="quote-caption">
-            Selected excerpts from public GitHub feedback.
-            <a href="https://github.com/GLinnik21/plx-native/issues?q=is%3Aissue">More community feedback →</a>
+          <p class="quote-caption" data-reveal>
+            Selected from public GitHub feedback <span aria-hidden="true">·</span>
+            <a href="https://github.com/GLinnik21/plx-native/issues?q=is%3Aissue" aria-label="More community feedback on GitHub">More →</a>
           </p>
         </section>
 
         <section class="install-section" id="install" aria-labelledby="install-title">
-          <div class="install-intro">
+          <div class="install-intro" data-reveal>
             <h2 id="install-title">Keep the TV. Install a better experience.</h2>
             <p>PlxNative can be installed without rooting your television.</p>
           </div>
           <div class="install-grid">
-            <article class="install-card">
+            <article class="install-card" data-reveal>
               <p class="install-eyebrow">For a normal LG TV, no root</p>
               <h3>Developer Mode</h3>
               <p>Install PlxNative on an unrooted television using LG's own Developer Mode app.</p>
@@ -226,21 +234,21 @@
               </p>
               <a href="https://github.com/GLinnik21/plx-native/blob/main/docs/install-and-verify.md">Installation guide →</a>
             </article>
-            <article class="install-card">
+            <article class="install-card" data-reveal>
               <p class="install-eyebrow">If you already run Homebrew Channel</p>
               <h3>Homebrew Channel</h3>
               <p>Find PlxNative in the Homebrew Channel catalogue and install it directly on the TV.</p>
               <a href="https://repo.webosbrew.org/apps/com.beb.plxnative/">Open in the catalogue →</a>
             </article>
           </div>
-          <p class="install-footnote">
+          <p class="install-footnote" data-reveal>
             <span>LG Content Store:</span> I'm exploring an official release. Availability and timing aren't
             confirmed.
           </p>
         </section>
 
         <section class="notes-section" aria-labelledby="notes-title">
-          <div class="notes-heading">
+          <div class="notes-heading" data-reveal>
             <h2 id="notes-title">Before you install</h2>
             <div class="notes-links">
               <a href="https://github.com/GLinnik21/plx-native/blob/main/README.md">Compatibility notes</a>
@@ -249,19 +257,19 @@
             </div>
           </div>
           <div class="notes-grid">
-            <div>
+            <div data-reveal>
               <h3>LG webOS</h3>
               <p>Built for webOS 4.0 and newer. Compatibility can vary by TV model.</p>
             </div>
-            <div>
+            <div data-reveal>
               <h3>Plex</h3>
               <p>Requires a Plex account and Plex Media Server.</p>
             </div>
-            <div>
+            <div data-reveal>
               <h3>Playback</h3>
               <p>PlxNative uses the codecs available on your television and falls back to Plex transcoding when needed.</p>
             </div>
-            <div>
+            <div data-reveal>
               <h3>Privacy</h3>
               <p>Crash reporting and usage analytics are optional and disabled by default.</p>
             </div>
