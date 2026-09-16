@@ -67,7 +67,7 @@
 //! cannot, because libcurl owns that framing and `net.rs` sees only the assembled body. The gap is
 //! narrower than it looks: `plex::client::get_json` logs the status, the byte count and serde's own
 //! error whenever a 2xx will not parse, over either transport.
-use crate::plex::{Origin, Scheme, ResolvePin};
+use crate::plex::{CredentialPolicy, Origin, Scheme, ResolvePin};
 
 /// The verb. Three, because three is what the Plex control plane uses: reads, the body-less
 /// `PUT /library/parts/{id}` that selects a track server-side, and the POSTs whose params ride the
@@ -277,9 +277,9 @@ pub(crate) fn credential_transport_allowed_by_policy(
     origin: &Origin,
     path: &str,
     headers: &[&str],
-    allow_plaintext_credentials: bool,
+    policy: CredentialPolicy,
 ) -> bool {
-    origin.is_tls() || !carries_credential(path, headers) || allow_plaintext_credentials
+    !carries_credential(path, headers) || policy.may_carry_credential(origin)
 }
 
 /// The shared control/media credential boundary. Store builds fail closed on a token-bearing HTTP
@@ -290,7 +290,7 @@ pub(crate) fn credential_transport_allowed(origin: &Origin, path: &str, headers:
         origin,
         path,
         headers,
-        cfg!(feature = "devtriggers"),
+        CredentialPolicy::build(),
     );
     if !origin.is_tls() && carries_credential(path, headers) {
         static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -762,31 +762,31 @@ mod tests {
             &http,
             token_path,
             &[],
-            false,
+            CredentialPolicy::HttpsOnly,
         ));
         assert!(!credential_transport_allowed_by_policy(
             &http,
             "/identity",
             &["Authorization: Bearer secret"],
-            false,
+            CredentialPolicy::HttpsOnly,
         ));
         assert!(credential_transport_allowed_by_policy(
             &https,
             token_path,
             &[],
-            false,
+            CredentialPolicy::HttpsOnly,
         ));
         assert!(credential_transport_allowed_by_policy(
             &http,
             "/identity",
             &[ACCEPT_JSON],
-            false,
+            CredentialPolicy::HttpsOnly,
         ));
         assert!(credential_transport_allowed_by_policy(
             &http,
             token_path,
             &[],
-            true,
+            CredentialPolicy::AllowPlaintext,
         ));
     }
 

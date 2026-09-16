@@ -1685,17 +1685,24 @@ fn probe_server_racing(
 /// May this origin become the LIVE one — can the app put a credential on it in this build?
 /// TLS always; plaintext only in a developer build (`http::credential_transport_allowed`'s rule,
 /// asked before a registration instead of after a refused request).
+///
+/// **Interim shape, on its way out in the next step of this change.** `CredentialPolicy::build()`
+/// is now the one `cfg!(feature = "devtriggers")` for this rule; the `bool` seam below stays only
+/// until this function and its test callers are replaced by `CredentialPolicy` throughout.
 fn activation_allowed(origin: &Origin) -> bool {
-    activation_allowed_by_policy(origin, cfg!(feature = "devtriggers"))
+    activation_allowed_by_policy(
+        origin,
+        crate::plex::CredentialPolicy::build() == crate::plex::CredentialPolicy::AllowPlaintext,
+    )
 }
 
 fn activation_allowed_by_policy(origin: &Origin, allow_plaintext_credentials: bool) -> bool {
-    crate::http::credential_transport_allowed_by_policy(
-        origin,
-        "/",
-        &["X-Plex-Token: any"],
-        allow_plaintext_credentials,
-    )
+    let policy = if allow_plaintext_credentials {
+        crate::plex::CredentialPolicy::AllowPlaintext
+    } else {
+        crate::plex::CredentialPolicy::HttpsOnly
+    };
+    crate::http::credential_transport_allowed_by_policy(origin, "/", &["X-Plex-Token: any"], policy)
 }
 
 fn candidate_activation(
