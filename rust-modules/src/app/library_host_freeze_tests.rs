@@ -1,3 +1,10 @@
+//! Library Sort/Filter menu host-freeze regression.
+
+use super::*;
+#[allow(unused_imports)]
+use super::test_support::*;
+use super::test_support::{frame};
+
 /// **The Library's Sort/Filter menu freezes the page under it, as its legacy `Popover` did.**
 ///
 /// The reproduction of the `fps:library-switch` regression (restructure phase 8, device-measured

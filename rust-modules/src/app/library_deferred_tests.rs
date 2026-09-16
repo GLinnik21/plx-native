@@ -1,3 +1,10 @@
+//! Library filter-menu dismissal and deferred query commands.
+
+use super::*;
+#[allow(unused_imports)]
+use super::test_support::*;
+use super::test_support::{frame, frame_with_tap};
+
 #[test]
 fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query() {
     #[derive(Default)]

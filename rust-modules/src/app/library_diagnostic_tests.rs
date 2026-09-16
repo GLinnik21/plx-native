@@ -1,3 +1,10 @@
+//! Library keyboard-rail and diagnostic frame behavior.
+
+use super::*;
+#[allow(unused_imports)]
+use super::test_support::*;
+use super::test_support::{frame, frame_with_tap};
+
 #[test]
 fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
     let _guard = crate::testlock::serial();

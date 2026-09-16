@@ -1,3 +1,12 @@
+//! Search as an owned page: lifecycle, retention and leave events.
+
+use super::*;
+use crate::ui::machine::Chrome;
+use crate::ui::screen::ScreenArg;
+#[allow(unused_imports)]
+use super::test_support::*;
+use super::test_support::frame;
+
 fn owned_search_probe(d: &Dispatcher<AppHost>) -> String {
     let screen = d.top_screen().expect("Search mounted");
     assert!(screen.as_any().unwrap().is::<crate::screens::search::SearchScreen>());
