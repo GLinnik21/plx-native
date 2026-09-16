@@ -2566,7 +2566,27 @@ pub fn clear() -> ClearOutcome {
             // clean. `cleanup_after_confirmed_clear` re-reads the authority to confirm it really is
             // Cleared before retiring anything, so this can only ever remove residue, never data a
             // concurrent re-login just wrote.
-            clear_cleanup_outcome(persistence::cleanup_after_confirmed_clear())
+            #[allow(unused_mut)] // only mutated on the ARM cfg arm below
+            let mut outcome = clear_cleanup_outcome(persistence::cleanup_after_confirmed_clear());
+            // Telemetry/consent's own legacy files are a SEPARATE candidate set from the session
+            // auth-token sweep above (`persistence::cleanup_after_confirmed_clear` never touches
+            // them — see `paths::telemetry_candidates` vs `paths::session_migration_candidates`).
+            // On ARM, `telemetry::persistence::forget_at` defers their removal to exactly this
+            // moment, once this canonical commit is confirmed durable (Copilot review on PR #105,
+            // finding 7; ported from `release/v0.6`'s `telemetry::cleanup_after_account_clear`,
+            // called here in that release).
+            #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+            if !crate::telemetry::cleanup_after_account_clear() {
+                crate::log(
+                    "session: canonical clear is durable but a telemetry/consent legacy \
+                     candidate could not be retired — it remains on disk and will be swept \
+                     again on the next sign-out",
+                );
+                if let ClearOutcome::Durable { legacy_swept } = &mut outcome {
+                    *legacy_swept = false;
+                }
+            }
+            outcome
         }
         persistence::CanonicalCommit::Uncertain { stage, errno } => {
             crate::log(&format!(

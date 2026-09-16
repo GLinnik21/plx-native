@@ -139,6 +139,16 @@ fn log_cleanup_failure(stage: &str, path: &Path, error: &std::io::Error) {
     crate::log(&cleanup_failure_message(stage, path, error));
 }
 
+/// Sweep telemetry/consent's own legacy candidates once the shared account ClearTenure DB8
+/// mutation has been confirmed durable. [`forget_at`]'s ARM branch defers exactly this cleanup
+/// here rather than doing it inline, because the immediately-following session ClearTenure is the
+/// one atomic DB8 revocation for both domains and legacy sources must survive until THAT commit is
+/// confirmed, not merely queued.
+#[cfg(any(test, all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))))]
+pub(crate) fn cleanup_after_combined_clear(legacy: &[PathBuf]) -> CleanupResult {
+    remove_legacy_sources(legacy.iter().cloned())
+}
+
 fn remove_legacy_sources(paths: impl IntoIterator<Item = PathBuf>) -> CleanupResult {
     let mut parents = std::collections::BTreeSet::new();
     let mut result = CleanupResult::Complete;
@@ -1023,6 +1033,34 @@ mod tests {
                 serde_json::json!({"opaque": "value"}),
             )]),
         }
+    }
+
+    /// Copilot review on PR #105, finding 7. `release/v0.6` swept telemetry/consent's own legacy
+    /// files (`telemetry::cleanup_after_account_clear` / `persistence::cleanup_after_combined_clear`)
+    /// once the shared account ClearTenure DB8 mutation was confirmed durable on ARM sign-out; the
+    /// 0.7 forward-port dropped both the function and its only caller entirely (`forget_at`'s ARM
+    /// branch still says it relies on this sweep, but nothing performed it — confirmed absent by
+    /// grep against this tree before this fix). ARM's `forget_at` is compiled out on host
+    /// (`not(all(target_os = "linux", target_arch = "arm", ...))`), so the real defect cannot be
+    /// observed red on this platform; this test pins the restored sweep function directly rather
+    /// than through the ARM-only call site. `cleanup_after_combined_clear` did not exist before
+    /// this fix, so the red here is simulated (a compile failure against the old tree), not an
+    /// observed runtime failure.
+    #[test]
+    fn cleanup_after_combined_clear_removes_every_legacy_candidate() {
+        let _g = crate::testlock::serial();
+        let fixture = Fixture::new("combined-clear");
+        let a = legacy_path(&fixture, "a-telemetry.json");
+        let b = legacy_path(&fixture, "b-telemetry.json");
+        std::fs::write(&a, b"{}").unwrap();
+        std::fs::write(&b, b"{}").unwrap();
+        let missing = legacy_path(&fixture, "missing-telemetry.json");
+
+        let result = cleanup_after_combined_clear(&[a.clone(), b.clone(), missing]);
+
+        assert_eq!(result, CleanupResult::Complete);
+        assert!(!a.exists());
+        assert!(!b.exists());
     }
 
     #[test]
