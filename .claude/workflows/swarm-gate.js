@@ -5,8 +5,8 @@ export const meta = {
   phases: [
     { title: 'Prepare',   detail: 'read the task and project rules; record the git baseline and the blocking checks', model: 'sonnet' },
     { title: 'Measure',   detail: 'single-purpose probes: digest the user\'s uncommitted work, list what each branch really touched', model: 'haiku' },
-    { title: 'Decompose', detail: 'packages with owned files, declared dependencies and dependency waves', model: 'sonnet' },
-    { title: 'Contract',  detail: 'freeze the shared interfaces before anything runs in parallel', model: 'sonnet' },
+    { title: 'Decompose', detail: 'packages with owned files, declared dependencies and dependency waves — Opus for a high-risk package, and a one-shot read-only Fable diagnostic once its ordinary replanning is exhausted', model: 'sonnet' },
+    { title: 'Contract',  detail: 'freeze the shared interfaces before anything runs in parallel — Opus for a high-risk package', model: 'sonnet' },
     { title: 'Implement', detail: 'bounded waves of Sonnet workers, one git worktree each', model: 'sonnet' },
     { title: 'Weave',     detail: 'merge each wave onto the session branch BEFORE the next wave is cut from it', model: 'sonnet' },
     { title: 'Integrate', detail: 'merge sequentially into the working branch, commit, run every blocking check', model: 'sonnet' },
@@ -327,14 +327,23 @@ const LANE_CHECKS = A.laneChecks === true
 const HIGH_RISK = A.highRisk === true
 // Escalation model, invoked only for a concrete architectural ambiguity a package prompt names
 // explicitly, or after two materially different Sonnet attempts have failed on the SAME finding
-// (tracked below by how many separate fix waves re-reported the same key). Never a default fixer.
+// (tracked below by how many separate fix waves re-reported the same key). Never a default fixer,
+// and never the Implement-stage model — Sonnet remains the implementation and fix model always;
+// only the CONTRACT for a high-risk package, or a one-shot diagnostic for an exhausted one, ever
+// routes to Fable or Opus authorship (below).
 const FABLE_MODEL = 'fable'
-// Top-level implementer override, for the OTHER shape of "concrete architectural ambiguity":
-// several Sonnet-authored task contracts in a row failing the Opus PRE-implementation review
-// (never a Sonnet WORKER attempt — no worker ever touched code) is the same escalation trigger
-// by a different route. Defaults to Sonnet; set only when that has actually happened.
-const IMPLEMENT_MODEL = (A.implementModel === 'fable') ? 'fable' : 'sonnet'
-if (IMPLEMENT_MODEL === 'fable') log('! implementModel=fable — escalating the Implement stage itself, per the escalation policy (repeated pre-implementation REPLANs on the same package)')
+// Cross-invocation retry state, since this script keeps none of its own: THIS is "the existing
+// ledger" the caller is required to track (e.g. an escalation table in the project's verification
+// doc, keyed by a stable blockerId — renaming a finding must not reset it). The caller increments
+// replanCount and re-passes it on every re-run of the SAME blocker; the script never resets it.
+const REPLAN_COUNT = clampInt(A.replanCount, 0, 0, 50)
+const BLOCKER_ID = String(A.blockerId || '').trim()
+// Ordinary replanning is exhausted once a high-risk package has REPLAN'd twice already, across
+// separate invocations. This is the ONLY thing that routes to the one-shot Fable diagnostic below;
+// it is never looped automatically by this script, and the caller must not auto-relaunch either —
+// a failed/unavailable diagnostic or review is REVIEW_PENDING, a terminal state, not a retry.
+const EXHAUSTED = HIGH_RISK && REPLAN_COUNT >= 2
+if (HIGH_RISK) log(`high-risk package: replanCount=${REPLAN_COUNT}${BLOCKER_ID ? ` blockerId=${BLOCKER_ID}` : ''} — ${EXHAUSTED ? 'ordinary replanning EXHAUSTED, routing to one-shot Fable diagnostic' : 'Opus authors the contract directly'}`)
 
 const hard_failures = []
 const reviews = []
@@ -546,14 +555,70 @@ function decomposePrompt(retryNote) {
   ].filter(Boolean).join('\n')
 }
 
-let plan = await tryAgent(decomposePrompt(null), { label: 'decompose', phase: 'Decompose', model: 'sonnet', schema: DECOMP }, 'decompose')
-if (plan && plan.packages.length > MAX_PACKAGES) {
-  log(`! decomposer produced ${plan.packages.length} packages, ceiling is ${MAX_PACKAGES} — ONE consolidation attempt`)
-  const again = await tryAgent(
-    decomposePrompt(`\n**Your previous attempt produced ${plan.packages.length} packages, over the ceiling of ${MAX_PACKAGES}.** Consolidate — merge packages that share a concern or a dependency edge. Do not drop scope silently: if something must be left out, name it in \`risks\`.`),
-    { label: 'decompose (consolidate)', phase: 'Decompose', model: 'sonnet', schema: DECOMP }, 'decompose/consolidate',
+// WHO AUTHORS THE CONTRACT, and why it moved (v6). A high-risk package's decomposition IS its
+// architecture: which files are owned, which edges are real, what the ownership and durability
+// semantics are. Sonnet authored those here and an Opus pre-review graded them, and on the
+// AUTH-08/AUTH-09 package that loop REPLAN'd seven times in a row without one worker ever
+// touching code — each REPLAN a correct catch of a Sonnet-authored contract that was
+// structurally unbuildable (a fix scoped out of the only file that could carry it, a test
+// mandated through a seam that does not exist, a type name that collides with a private one).
+// Seven correct reviews of seven wrong contracts is not a review problem. So for a high-risk
+// package Opus AUTHORS the decomposition and the contract freeze, Sonnet implements it, and the
+// independent gate is the post-implementation Review over real code — which is a stronger
+// independence property than a model grading its own prose.
+const CONTRACT_MODEL = HIGH_RISK ? 'opus' : 'sonnet'
+
+let plan = null
+if (EXHAUSTED) {
+  // -------- One scoped Fable diagnostic, in place of another authored contract ----------
+  // READ-ONLY by construction: it cuts a throwaway worktree, commits nothing, and returns a
+  // contract rather than a change. A shared-interface edit it finds necessary is IMPLEMENTATION
+  // and belongs inside the one package's scope — never landed here as hidden contract prep.
+  phase('Decompose')
+  log(`ordinary replanning exhausted (replanCount=${REPLAN_COUNT}) — ONE read-only Fable diagnostic, not another authored contract`)
+  const diag = await tryAgent(
+    [
+      preamble(prep), '',
+      '## Your stage: DIAGNOSE (escalation, READ-ONLY). You are the only agent running.', '',
+      `This blocker${BLOCKER_ID ? ` (\`${BLOCKER_ID}\`)` : ''} has already failed pre-implementation review ${REPLAN_COUNT} time(s), in separate runs, each time because the CONTRACT was unbuildable rather than because a worker failed. You are not being asked to re-plan it again at the same level of abstraction. You are being asked to settle it against the code.`, '',
+      ownWorktree(baseSha, 'diagnose'),
+      'That worktree is THROWAWAY and you are READ-ONLY in it: commit nothing, modify nothing, land nothing. Your entire output is the contract below.', '',
+      '## What to do',
+      '1. Inspect the ACTUAL call graph: the real callers, the real types, the real ownership and the real test seams of the code this task concerns. Every claim you make must be one you verified by reading code that exists at this commit.',
+      '2. Name the concrete blocker precisely. If the task as stated cannot be done without changing the approach, say that in `risks` rather than routing around it.',
+      '3. Produce **EXACTLY ONE package**, implementable IN ONE PASS by a single Sonnet worker:',
+      '   - `files_owned`: every file the fix really needs, including the one the fix cannot avoid. A package scoped out of the file that must change is the exact failure that got us here.',
+      '   - `prompt`: the literal instruction — concrete function and type signatures, exact call sites with paths, the precise edit. Written to be executed verbatim, not interpreted. The worker will be told NOT to redesign it.',
+      '   - `acceptance`: the smallest discriminating check, and for a regression the exact mutation that makes the new test go RED against the unfixed code. If a required RED is unreachable at this commit, say so plainly in the acceptance text instead of mandating a test that cannot fail.',
+      '4. A shared-interface change the fix genuinely needs is IMPLEMENTATION: put it inside this one package\'s scope. Do not describe it as a separate preparatory contract step and do not land it yourself.',
+      '5. Do NOT propose a package that writes a ledger, verification table or status document. That is the coordinator\'s, and is written only after a real outcome is known.',
+      '', 'Leave `shared_interfaces` empty — there is one package, so nothing is shared between packages.',
+    ].filter(Boolean).join('\n'),
+    { label: 'diagnose:fable', phase: 'Decompose', model: FABLE_MODEL, schema: DECOMP }, 'fable diagnostic',
   )
-  if (again) plan = again
+  if (!diag || !diag.packages || diag.packages.length !== 1) {
+    return {
+      ok: false, verdict: 'REVIEW_PENDING', fix_waves_used: 0, reviews_run: 0, baseline: prep, hard_failures,
+      blocker_id: BLOCKER_ID || null, replan_count_in: REPLAN_COUNT,
+      // NOT incremented: a premium stage that never ran is not an approach that was tried and
+      // rejected, and counting it would burn the escalation ladder on an availability problem.
+      replan_count_next: REPLAN_COUNT, contract_authored_by: 'none — the escalation diagnostic did not produce one',
+      reason: `the one-shot escalation diagnostic ${diag ? `returned ${diag.packages ? diag.packages.length : 0} packages instead of exactly 1` : 'was unavailable or failed'}. This is REVIEW_PENDING, not a REPLAN: it must NOT be answered by launching another fresh run. Record the attempt against \`${BLOCKER_ID || 'this blocker'}\` in the ledger and settle the ambiguity by hand.`,
+      next_step: 'Do not re-run. The escalation path is exhausted for this blocker; a human decision about the approach is the next step.',
+    }
+  }
+  plan = { packages: diag.packages, shared_interfaces: [], shared_files: diag.shared_files || [], risks: diag.risks || [] }
+  log(`diagnostic produced one package: ${diag.packages[0].id} over ${diag.packages[0].files_owned.length} file(s)`)
+} else {
+  plan = await tryAgent(decomposePrompt(null), { label: 'decompose', phase: 'Decompose', model: CONTRACT_MODEL, schema: DECOMP }, 'decompose')
+  if (plan && plan.packages.length > MAX_PACKAGES) {
+    log(`! decomposer produced ${plan.packages.length} packages, ceiling is ${MAX_PACKAGES} — ONE consolidation attempt`)
+    const again = await tryAgent(
+      decomposePrompt(`\n**Your previous attempt produced ${plan.packages.length} packages, over the ceiling of ${MAX_PACKAGES}.** Consolidate — merge packages that share a concern or a dependency edge. Do not drop scope silently: if something must be left out, name it in \`risks\`.`),
+      { label: 'decompose (consolidate)', phase: 'Decompose', model: CONTRACT_MODEL, schema: DECOMP }, 'decompose/consolidate',
+    )
+    if (again) plan = again
+  }
 }
 if (!plan || !plan.packages || !plan.packages.length) {
   return { ok: false, verdict: 'BLOCKED', reason: 'the Decompose stage produced no packages', baseline: prep, fix_waves_used: 0, reviews_run: 0, hard_failures }
@@ -585,7 +650,7 @@ if (ifaces.length) {
       ifaces.map(i => `### ${i.name}\nfiles: ${(i.files || []).join(', ')}\n${i.spec}`).join('\n\n'), '',
       'Make it compile. Commit on the current branch, naming this as the contract freeze. Then report exactly what you landed, so the workers are told the truth about what exists.',
     ].join('\n'),
-    { label: 'contract', phase: 'Contract', model: 'sonnet' }, 'contract freeze',
+    { label: 'contract', phase: 'Contract', model: CONTRACT_MODEL }, 'contract freeze',
   )
   // The freeze COMMITS on the session branch, so the base every wave-1 worker cuts from has
   // moved. Run 4 (wf_508f8da1-d84) cut A and B2 from the pre-freeze sha and would have merged
@@ -604,40 +669,17 @@ if (ifaces.length) {
   }
 }
 
-// -------- 2c. Opus pre-review of the approach (high-risk contracts only) ----
-// Runs BEFORE any Sonnet worker opens a worktree. Cheap relative to discovering the same
-// architectural problem after N parallel packages have been built against it. Read-only,
-// same throwaway-worktree discipline as the post-implementation Review stage.
-if (HIGH_RISK && baseSha) {
-  phase('Review')
-  const preReview = await tryAgent(
-    [
-      preamble(prep), '',
-      '## Your stage: PRE-IMPLEMENTATION REVIEW. You are read-only and run ALONE, before any worker starts.', '',
-      ownWorktree(baseSha, 'pre-review'),
-      'This package was flagged high-risk: persistence, concurrency/ownership, auth/session, migration/security, or a native lifecycle contract is involved.', '',
-      contract ? `## The frozen contract about to be built against\n${contract}\n` : '',
-      `## The planned decomposition\n${plan.packages.map(p => `- ${p.id}: ${p.title}\n  ${p.prompt}`).join('\n')}`, '',
-      'Judge the APPROACH, not code that does not exist yet: does the contract/decomposition correctly express the required ownership, durability, and failure semantics for this domain? Would building the planned packages against it hit a structural dead end?',
-      '`verdict: PASS`' + ' to let implementation proceed, `REPLAN` if the approach itself needs to change before a worker touches it, or `BLOCKED` if you could not review. Put architectural findings in `findings`, but a `blocker`/`high` finding here about the CONTRACT is what should stop the run, not code style.',
-    ].filter(Boolean).join('\n'),
-    { label: 'pre-review', phase: 'Review', model: 'opus', schema: REVIEW }, 'pre-implementation review',
-  )
-  if (!preReview) {
-    hard_failures.push('pre-implementation Opus review was unavailable or failed for a high-risk package — proceeding is not the same as REVIEW_PENDING being resolved')
-    log('! high-risk pre-review unavailable — this run cannot claim architectural sign-off before implementation; continuing, but the final verdict will reflect it')
-  } else {
-    log(`pre-review verdict: ${preReview.verdict}${preReview.findings.length ? ` (${preReview.findings.length} finding(s))` : ''}`)
-    if (preReview.verdict === 'REPLAN') {
-      return {
-        ok: false, verdict: 'REPLAN', fix_waves_used: 0, reviews_run: 0, baseline: prep, packages: plan.packages, hard_failures,
-        reason: `Opus pre-implementation review says the approach is wrong: ${preReview.replan_reason || preReview.summary}`,
-        pre_review: preReview,
-      }
-    }
-    if (preReview.verdict === 'BLOCKED') hard_failures.push('pre-implementation review returned BLOCKED — proceeding without architectural sign-off')
-  }
-}
+// -------- 2c. (removed) the separate pre-implementation review ---------------
+// There used to be an Opus review of the approach here, grading a Sonnet-authored contract before
+// any worker opened a worktree. It worked exactly as designed and still produced nothing: seven
+// consecutive REPLANs on one package, zero worker attempts, because a correct review of a wrong
+// contract only ever returns the contract to the model that got it wrong. Authorship moved to
+// Opus instead (CONTRACT_MODEL above), so this stage would now be a model grading its own prose —
+// weaker than what replaced it, and it can only produce the REPLAN loop it used to detect.
+// The real gate is unchanged and is stronger: the post-implementation Review, over real code, by a
+// model that did not write it. A REPLAN now costs a run's implementation instead of pre-empting
+// it — which is the trade this package's history says is worth making.
+if (HIGH_RISK) log(`contract authored by ${CONTRACT_MODEL}; the gate is the post-implementation Review, not a pre-review of the plan`)
 
 // ============================== 3. Implement ================================
 
@@ -703,6 +745,9 @@ for (let w = 0; w < waves.length; w++) {
       `## Your package: ${pkg.id} — ${pkg.title}`, '',
       `**You own these files and only these:**\n${pkg.files_owned.map(f => `- ${f}`).join('\n')}`, '',
       pkg.prompt, '', `**Acceptance:** ${pkg.acceptance}`, '',
+      EXHAUSTED
+        ? '## This contract is not a starting point — it is the instruction\nIt was produced by a read-only escalation stage that inspected the real call graph, after the ordinary planning path failed on this package repeatedly. **Implement it as written.** Do not redesign it, do not re-scope it, do not "improve" it, and do not substitute a different fix you find more natural on the way. If you become convinced it is actually wrong — a named file does not exist, a named signature does not match, the prescribed test cannot fail — STOP and report `blocked` with that specific evidence. Reporting the obstacle is useful; quietly building something else is the failure this stage exists to end.'
+        : '',
       ownWorktree(baseSha, pkg.id.replace(/[^a-z0-9]+/gi, '-')), '',
       '## How you work',
       'That worktree contains every earlier wave, because the base above is the commit the last weave produced — measured, not claimed.',
@@ -714,7 +759,7 @@ for (let w = 0; w < waves.length; w++) {
       'Report your branch (`git branch --show-current`), your worktree path (`git rev-parse --show-toplevel`) and the files you changed.',
       'If you cannot finish, say `partial` or `blocked` and name precisely what is missing. Do not report `done` for a stub.',
     ].join('\n'),
-    { label: `impl:${pkg.id}`, phase: 'Implement', model: IMPLEMENT_MODEL, schema: WORK },
+    { label: `impl:${pkg.id}`, phase: 'Implement', model: 'sonnet', schema: WORK },
     `package ${pkg.id}`,
   ))
 
@@ -1002,7 +1047,11 @@ for (;;) {
 // still open when the ordinary fix loop stops. Never a default fixer, never looped.
 {
   const stuck = [...openFindings.values()].filter(f => (findingRounds.get(f.key) || 0) >= 2)
-  const canEscalate = stuck.length && verdict !== 'PASS' && verdict !== 'REPLAN' && verdict !== 'REVIEW_PENDING' && (!budget.total || budget.remaining() >= 60000)
+  // `!EXHAUSTED`: this run already spent its one scoped escalation on the Fable diagnostic that
+  // produced the contract. One escalation per run, per the escalation policy — a second one here
+  // would be the unbounded premium loop the policy exists to prevent.
+  const canEscalate = stuck.length && !EXHAUSTED && verdict !== 'PASS' && verdict !== 'REPLAN' && verdict !== 'REVIEW_PENDING' && (!budget.total || budget.remaining() >= 60000)
+  if (stuck.length && EXHAUSTED) log(`! ${stuck.length} finding(s) stuck after ${MAX_FIX_ROUNDS} fix wave(s), but this run's one escalation was already spent on the diagnostic — they stay open rather than buying a second premium pass`)
   if (canEscalate) {
     phase('Fix')
     log(`escalating ${stuck.length} finding(s) to Fable — each survived >=2 Sonnet fix attempt(s) unresolved: ${stuck.map(f => f.key).join(', ')}`)
@@ -1123,6 +1172,12 @@ return {
   not_passed_because: ok ? [] : why,
   fix_waves_used: fixWaves,
   reviews_run: reviews.length,
+  blocker_id: BLOCKER_ID || null,
+  replan_count_in: REPLAN_COUNT,
+  // What the caller must persist against this blocker before it decides anything. A REPLAN that is
+  // not counted is a REPLAN that repeats, which is how one package reached seven of them.
+  replan_count_next: (verdict === 'REPLAN' ? REPLAN_COUNT + 1 : REPLAN_COUNT),
+  contract_authored_by: EXHAUSTED ? 'fable-diagnostic' : CONTRACT_MODEL,
   limits: { max_workers: MAX_WORKERS, max_fix_rounds: MAX_FIX_ROUNDS, max_packages: MAX_PACKAGES, max_review_findings: MAX_FINDINGS, max_agent_retries: MAX_RETRIES },
   baseline: { branch: prep.branch, sha: prep.baseline_sha, dirty_files: prep.dirty_files },
   acceptance_criteria: prep.acceptance_criteria,
@@ -1141,8 +1196,10 @@ return {
   hard_failures,
   next_step: [
     verdict === 'REPLAN'
-      ? 'The reviewer says the approach itself is wrong. Read `replan_reason` and re-cut the task before spending another fix wave.'
-      : ok
+      ? `The reviewer says the approach itself is wrong. Record this against \`${BLOCKER_ID || 'this blocker'}\` in the ledger as replanCount=${REPLAN_COUNT + 1} and pass that back on any re-run — a REPLAN whose count resets is how the same unbuildable contract gets authored again. ${REPLAN_COUNT + 1 >= 2 ? 'At 2 the next run routes to the one-shot escalation diagnostic instead of authoring another contract.' : ''} Do NOT launch a fresh run that reinterprets this same REPLAN by hand: repeated task-authoring failure on one package is the same unresolved blocker, not new work.`
+      : verdict === 'REVIEW_PENDING'
+        ? 'A required premium-model stage was unavailable or failed. That is PENDING, not a verdict, and not an invitation to re-run: re-running replaces a missing review with a different missing review. Resolve the availability problem, or finish the review by hand.'
+        : ok
         ? 'Nothing was pushed and nothing was merged into the default branch — the work sits committed on the working branch for you to land.'
         : 'Read `not_passed_because`, `open_findings` and `hard_failures`. Re-run with a higher maxFixRounds, or finish the remainder by hand.',
     harnessFiles.length
@@ -1168,6 +1225,10 @@ function preamble(p) {
     '- Never bare `git stash` / `git stash pop` — the stash stack is shared between worktrees.',
     '- Do not spawn subagents and do not start another workflow. You are a leaf.',
     '- Stay inside the files you were given. Another agent owns the rest.',
+    '- Never write to a ledger, verification table or status document. Those record an OUTCOME, and the outcome is not known until a review this run has not run yet has passed; the coordinator writes them afterwards. A worker that files its own PASS row is writing a claim the run may contradict.',
+    HIGH_RISK
+      ? '- Any test you add or touch must stand up its OWN runtime-state root (a temp session / temp canonical root / temp directory fixture it owns and drops). Never let a test read or write shared, process-global or default-path state: this package is persistence/auth/lifecycle work, the suite runs in one process, and a test that leaks state fails some OTHER module\'s test at a rate that reads as flakiness.'
+      : '',
     '- Report what is true. A partial result reported as `done` is the one outcome this whole structure exists to prevent.',
   ].filter(Boolean).join('\n')
 }
