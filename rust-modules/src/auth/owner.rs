@@ -1425,28 +1425,41 @@ impl SessionMachine {
                 delta.users = Some(users.clone());
                 plan.credentials = Some(patch);
             }
-            Observation::ServerRoster(progress) => {
-                let super::ServerRosterOutcome::Reconcile { resources, found, household, settled } = &progress.outcome else {
-                    self.retire(req, emit);
-                    return true;
-                };
-                let mut next = self.state.persisted.clone();
-                let refreshed = super::refreshed_sources(&next.sources, found, resources, household);
-                let usable = !refreshed.is_empty();
-                let sources = if usable { refreshed } else { next.sources.clone() };
-                let roster_changed = !super::same_sources(&sources, &next.sources);
-                let moved = usable && super::reconcile_refresh_session(&mut next, &sources);
-                next.sources = sources;
-                let repaired = next.refresh_profile_record();
-                if !(roster_changed || moved || repaired) {
+            Observation::ServerRoster(progress) => match &progress.outcome {
+                super::ServerRosterOutcome::Unreachable => {
                     self.retire(req, emit);
                     return true;
                 }
-                let patch = CredentialPatch::of(&next);
-                delta.credentials = Some(patch.clone());
-                plan.credentials = Some(patch);
-                plan.registry = Self::roster_plan(&next, settled);
-            }
+                super::ServerRosterOutcome::NoReachable { settled } => {
+                    // R2/A5: nothing was found to REGISTER, but a probe may still have verified
+                    // something worth recording (an InsecureOnly answer, most of all) — a
+                    // registry-only commit, the same shape `start_switch`'s initial-primary plan
+                    // already uses: no credential patch, no lifecycle, just the probe facts.
+                    if settled.is_empty() {
+                        self.retire(req, emit);
+                        return true;
+                    }
+                    plan.registry = settled.iter().cloned().map(RegistryPlan::Probe).collect();
+                }
+                super::ServerRosterOutcome::Reconcile { resources, found, household, settled } => {
+                    let mut next = self.state.persisted.clone();
+                    let refreshed = super::refreshed_sources(&next.sources, found, resources, household);
+                    let usable = !refreshed.is_empty();
+                    let sources = if usable { refreshed } else { next.sources.clone() };
+                    let roster_changed = !super::same_sources(&sources, &next.sources);
+                    let moved = usable && super::reconcile_refresh_session(&mut next, &sources);
+                    next.sources = sources;
+                    let repaired = next.refresh_profile_record();
+                    if !(roster_changed || moved || repaired) {
+                        self.retire(req, emit);
+                        return true;
+                    }
+                    let patch = CredentialPatch::of(&next);
+                    delta.credentials = Some(patch.clone());
+                    plan.credentials = Some(patch);
+                    plan.registry = Self::roster_plan(&next, settled);
+                }
+            },
             Observation::ProfileSwitch(progress) => match &progress.outcome {
                 super::ProfileSwitchOutcomeProgress::Failed { error, pin_denied } => {
                     self.state.error = error.clone();
@@ -1486,17 +1499,25 @@ impl SessionMachine {
                 plan.registry = Self::roster_plan(&next, &progress.probes);
             }
             Observation::Endpoint(progress) => {
-                let Some(fresh) = &progress.fresh else { self.retire(req, emit); return true; };
                 let Some(lifecycle) = pending.lifecycle else { return false; };
-                let mut next = self.state.persisted.clone();
-                let Some((source, changed)) = super::apply_refreshed_endpoint(&mut next, &progress.machine_id, fresh) else {
-                    self.retire(req, emit);
-                    return true;
-                };
-                let patch = CredentialPatch::of(&next);
-                delta.credentials = Some(patch.clone());
-                if changed && !self.state.apply_pending { plan.credentials = Some(patch); }
-                plan.registry.push(RegistryPlan::Endpoint { expected: lifecycle, source });
+                match &progress.fresh {
+                    None => {
+                        // Nothing to INSTALL, but the probe itself is evidence — an InsecureOnly
+                        // verdict most of all — so publish it rather than retiring silently.
+                        plan.registry.push(RegistryPlan::Probe(progress.probe.clone()));
+                    }
+                    Some(fresh) => {
+                        let mut next = self.state.persisted.clone();
+                        let Some((source, changed)) = super::apply_refreshed_endpoint(&mut next, &progress.machine_id, fresh) else {
+                            self.retire(req, emit);
+                            return true;
+                        };
+                        let patch = CredentialPatch::of(&next);
+                        delta.credentials = Some(patch.clone());
+                        if changed && !self.state.apply_pending { plan.credentials = Some(patch); }
+                        plan.registry.push(RegistryPlan::Endpoint { expected: lifecycle, source });
+                    }
+                }
             }
         }
         self.begin_commit(req, envelope.arrival, envelope.terminal, plan, delta, emit)
@@ -2196,5 +2217,86 @@ mod tests {
         envelope.addr.to = MachineId::Session;
         envelope.addr.req = RequestId(req + 1);
         assert!(!owner.accepts(&envelope));
+    }
+
+    // ---- issue #95, step 5: R2/A5 — a worker outcome with nothing to REGISTER still PUBLISHES ----
+
+    /// Endpoint worker, `fresh: None` (plan §4): nothing to INSTALL, but the probe itself is
+    /// evidence — an `InsecureOnly` verdict most of all — so the owner commits it as a
+    /// registry-only [`RegistryPlan::Probe`] rather than silently retiring the request.
+    #[test]
+    fn endpoint_worker_with_no_fresh_source_still_publishes_its_probe() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test("insecure-mach", "10.0.0.9", 32400, "tok", "cid");
+        let client = crate::plex::client_for(sid).unwrap();
+        let lifecycle = super::super::ClientLifecycle::capture(client);
+
+        let mut owner = SessionMachine::from_init(captured_session());
+        let req = owner.allocate(SessionOp::Endpoint(sid.raw()), Some(lifecycle.logical(sid.raw()))).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let probe = super::super::settled_probe_for_test(
+            "insecure-mach", crate::plex::probe::Outcome::InsecureOnly, Some(crate::plex::probe::Location::Local), Some("10.0.0.9".into()));
+        let envelope = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::Endpoint(sid.raw()) },
+            admission: AdmissionId(req), arrival: 1, terminal: true, lifecycle: Some(lifecycle.logical(sid.raw())),
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Endpoint(
+                super::super::observation::EndpointFact {
+                    epoch, expected, sid: sid.raw(), machine_id: "insecure-mach".into(),
+                    fresh: None, probe: probe.clone(),
+                }))),
+        };
+        assert!(owner.accepts(&envelope), "a None-fresh endpoint reply is still a valid terminal arrival");
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        let plan = effects.iter().find_map(|fx| match fx {
+            SessionFx::Commit { plan, .. } => Some(plan),
+            _ => None,
+        }).expect("a None-fresh endpoint reply must still commit its probe");
+        assert_eq!(plan.registry.len(), 1, "nothing to INSTALL — the probe is the whole plan");
+        assert!(
+            matches!(&plan.registry[0], RegistryPlan::Probe(p)
+                if p.machine_id == "insecure-mach" && p.outcome == crate::plex::probe::Outcome::InsecureOnly),
+            "the InsecureOnly verdict must reach the registry even with no source to install"
+        );
+        assert!(plan.credentials.is_none(), "a registry-only probe writes no credentials");
+    }
+
+    /// `ServerRosterOutcome::NoReachable` (R2/A5): the roster itself found nothing to REGISTER,
+    /// but every probe that ran is still carried to the owner and committed as registry-only
+    /// [`RegistryPlan::Probe`]s — never as a credential or a roster write, since nothing about the
+    /// disk roster changed.
+    #[test]
+    fn no_reachable_server_roster_commits_registry_only_probes_and_no_credentials() {
+        let _g = crate::testlock::serial();
+        let mut owner = SessionMachine::from_init(captured_session());
+        let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let settled = vec![
+            super::super::settled_probe_for_test("a", crate::plex::probe::Outcome::InsecureOnly,
+                Some(crate::plex::probe::Location::Local), Some("10.0.0.1".into())),
+            super::super::settled_probe_for_test("b", crate::plex::probe::Outcome::Unreachable, None, None),
+        ];
+        let envelope = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ServerRoster },
+            admission: AdmissionId(req), arrival: 1, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
+                super::super::ServerRosterProgress { epoch, expected,
+                    outcome: super::super::ServerRosterOutcome::NoReachable { settled: settled.clone() } }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        let plan = effects.iter().find_map(|fx| match fx {
+            SessionFx::Commit { plan, .. } => Some(plan),
+            _ => None,
+        }).expect("NoReachable with a non-empty settled list must still commit");
+        assert_eq!(plan.registry.len(), settled.len(), "one RegistryPlan::Probe per settled probe, no roster Install");
+        assert!(plan.registry.iter().all(|p| matches!(p, RegistryPlan::Probe(_))),
+            "NoReachable must never write RegistryPlan::Install — the roster itself is unchanged");
+        assert!(plan.credentials.is_none(), "a registry-only commit writes no credentials");
     }
 }

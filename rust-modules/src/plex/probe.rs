@@ -155,6 +155,14 @@ pub enum Outcome {
     Unauthorized,
     /// No answer: refused, timed out, or unresolvable. The only outcome the next candidate can fix.
     Unreachable,
+    /// The whole-server aggregate for [`crate::auth::Reach::InsecureOnly`] (issue #95, plan §4):
+    /// verified, provably the right server, but only over a transport this build can never put a
+    /// credential on. A single per-candidate probe never classifies to this — [`classify`] has no
+    /// arm that produces it — it exists for the coordinator's SETTLED, whole-server verdict, which
+    /// is a different question from "what did this one response say". Kept apart from
+    /// [`Self::Unreachable`] because the remedy and the words are both different: the server
+    /// answered, so telling the user it did not sends them to look at a router for nothing.
+    InsecureOnly,
 }
 
 /// A port this client could actually dial, narrowed to the `i32` the transport takes — `None` for

@@ -203,7 +203,8 @@ mod tests {
             };
             (Some(source), crate::auth::settled_probe(
                 &crate::plex::probe::plan(resource, crate::plex::CredentialPolicy::HttpsOnly),
-                crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local)))
+                crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local),
+                Some(address.into())))
         }
         fn gap(&mut self) {
             assert_eq!(self.probes, 1, "late share probing occurs after the initial Ready");

@@ -56,19 +56,20 @@ pub(crate) fn endpoint_worker_with_io(epoch: u64, session: Session, expected: ow
     lifecycle: owner::ServerLifecycle, machine_id: String, output: &dyn owner::ObservationSink,
     resources: impl FnOnce(&AccountClient) -> Option<Vec<Resource>>,
     probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe)) {
-    let fresh = probe_endpoint_work(ServerId::from_raw(lifecycle.sid), &machine_id, &session,
+    let (fresh, probe) = probe_endpoint_work(ServerId::from_raw(lifecycle.sid), &machine_id, &session,
         resources, probe, &|| output.live());
-    output.terminal(endpoint_work_fact(epoch, expected, lifecycle, machine_id, fresh));
+    output.terminal(endpoint_work_fact(epoch, expected, lifecycle, machine_id, fresh, probe));
 }
 
 /// Endpoint transport projection shared by the real worker and injected network-result tests.
 /// Admission, interest and native lifecycle validation remain in the adapter/owner protocol.
 pub(crate) fn endpoint_work_fact(epoch: u64, expected: owner::Identity,
-    lifecycle: owner::ServerLifecycle, machine_id: String, fresh: Option<SourceRef>) -> AuthProgress {
+    lifecycle: owner::ServerLifecycle, machine_id: String, fresh: Option<SourceRef>,
+    probe: SettledProbe) -> AuthProgress {
     AuthProgress::Endpoint(EndpointProgress { epoch,
         expected: SessionIdentity { client_id: expected.client_id, account_token: expected.account_token,
             profile_uuid: expected.profile_uuid },
-        id: ServerId::from_raw(lifecycle.sid), machine_id, lifecycle: None, fresh })
+        id: ServerId::from_raw(lifecycle.sid), machine_id, lifecycle: None, fresh, probe })
 }
 
 /// Application commands are the concrete owner's domain vocabulary, not global operations.
@@ -480,7 +481,11 @@ pub(crate) struct ServerRosterProgress {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) enum ServerRosterOutcome {
     Unreachable,
-    NoReachable,
+    /// Nothing was found to REGISTER, but at least the probes themselves ran (R2/A5) — `settled`
+    /// carries every one, empty only when there was truly nothing to probe (no server named at
+    /// all). The owner commits these as registry-only [`RegistryPlan::Probe`]s: the roster itself
+    /// is unchanged, so there is nothing to write to disk.
+    NoReachable { settled: Vec<SettledProbe> },
     Reconcile {
         #[serde(with = "observation::resources")]
         resources: Vec<Resource>,
@@ -497,6 +502,7 @@ pub(crate) struct EndpointProgress {
     machine_id: String,
     lifecycle: Option<ClientLifecycle>,
     fresh: Option<SourceRef>,
+    probe: SettledProbe,
 }
 
 /// The exact registry incarnation an endpoint request was issued through. `ServerId` and
@@ -809,6 +815,9 @@ fn login_worker_with_output(epoch: u64, cid: String, output: &dyn owner::Observa
                 "Couldn't reach any Plex server — check the connection.",
             )
         }
+        Discovery::InsecureOnly => {
+            return output_failed(output, epoch, DISCOVERY_INSECURE_ONLY_MESSAGE)
+        }
     };
     finish_sign_in(&ac, epoch, server, sources, output);
 }
@@ -973,6 +982,7 @@ fn rediscovery_worker_with_output(cid: String, token: String, epoch: u64,
             epoch,
             "Couldn't reach any Plex server — check the connection.",
         ),
+        Discovery::InsecureOnly => output_failed(output, epoch, DISCOVERY_INSECURE_ONLY_MESSAGE),
     }
 }
 
@@ -1201,7 +1211,21 @@ enum Discovery {
     /// refuses unauthenticated requests — an auth proxy, or `allowedNetworks` excluding this
     /// subnet. It is not a network fault and not a dead server, so it must not be worded as one.
     Refused,
+    /// At least one server verified — the identity matched — but only [`Reach::InsecureOnly`]:
+    /// over a transport this build can never put a credential on. Takes precedence over
+    /// [`Self::Refused`] (plan §4): a verified plaintext answer is a more useful fact than a
+    /// parallel/proxy 401, and points at a fixable cause (HTTPS to the server) rather than a
+    /// credential one.
+    InsecureOnly,
 }
+
+/// Copy for [`Discovery::InsecureOnly`], shared by sign-in and rediscovery so the two paths
+/// cannot say two different things about the same verdict (plan §4).
+///
+/// **Placeholder text, pending the owner's approval of the exact wording.**
+const DISCOVERY_INSECURE_ONLY_MESSAGE: &str =
+    "Found your Plex server, but couldn't connect to it securely (HTTPS). Check that your server \
+     allows secure connections, then try again.";
 
 /// The probe path. **Unauthenticated on purpose** — `/identity` answers 200 to anybody, which
 /// makes it useless as a token test and perfect as a reachability + identity one.
@@ -1517,6 +1541,9 @@ fn settle_probe_message(
             plan.name, c.address, c.port
         )),
         Outcome::Unreachable => {}
+        // `classify` never produces this — it is the whole-server AGGREGATE verdict this
+        // function's own caller derives from `result.insecure`, not a per-candidate answer.
+        Outcome::InsecureOnly => {}
     }
 }
 
@@ -1768,17 +1795,51 @@ pub(crate) struct SettledProbe {
     #[serde(with = "observation::outcome")]
     outcome: Outcome,
     tier: Option<probe::Location>,
+    /// The candidate address that answered, kept ONLY so a background application of this
+    /// verdict (`publish_settled_probe`) can derive the connection's IP generation without ever
+    /// reading `origin.host()` (R3/A3) — a `plex.direct` NAME there, not the dotted quad. `None`
+    /// whenever `tier` is: nothing verified, so there is nothing to derive from.
+    #[serde(default)]
+    address: Option<String>,
 }
 
 pub(crate) fn settled_probe(
     plan: &ProbePlan,
     outcome: Outcome,
     tier: Option<probe::Location>,
+    address: Option<String>,
 ) -> SettledProbe {
     SettledProbe {
         machine_id: plan.machine_id.clone(),
         outcome,
         tier,
+        address,
+    }
+}
+
+/// Test-only convenience: build a [`SettledProbe`] directly by machine id, for fixtures that have
+/// a `SourceRef`/machine id in hand but no [`ProbePlan`] worth constructing just to read one field
+/// off it.
+#[cfg(test)]
+pub(crate) fn settled_probe_for_test(
+    machine_id: &str,
+    outcome: Outcome,
+    tier: Option<probe::Location>,
+    address: Option<String>,
+) -> SettledProbe {
+    SettledProbe { machine_id: machine_id.to_owned(), outcome, tier, address }
+}
+
+/// Turn one settled race into what gets published and, when something verified, recorded —
+/// `resolve_roster_using` and `probe_profile_resource_live` each needed this same mapping once per
+/// server (plan §4). [`Reach::InsecureOnly`] keeps its candidate's tier and address (S9): the
+/// state itself already carries the verdict, so a diagnostic tier is not a claim of usability.
+fn probe_verdict(reach: &Reach) -> (Outcome, Option<probe::Location>, Option<String>) {
+    match reach {
+        Reach::At(c, _) => (Outcome::Reachable, Some(c.location), Some(c.address.clone())),
+        Reach::InsecureOnly(c) => (Outcome::InsecureOnly, Some(c.location), Some(c.address.clone())),
+        Reach::Refused => (Outcome::Unauthorized, None, None),
+        Reach::No => (Outcome::Unreachable, None, None),
     }
 }
 
@@ -1790,7 +1851,13 @@ fn publish_settled_probe(probe: &SettledProbe) {
         return;
     };
     if let Some(link) = probe.tier {
-        client.set_link(link);
+        // `set_connection`, not the bare `set_link` this used to call: the same pattern
+        // `RegistryPlan::Endpoint` already uses (`execute_session_registry`), and the same rule
+        // (R3) — the IP generation comes from the candidate's own ADDRESS, never from
+        // `origin.host()`, which is a `plex.direct` NAME for exactly the connections this fix is
+        // about.
+        let ip = probe.address.as_deref().and_then(crate::plex::IpVersion::of_host);
+        client.set_connection(link, ip);
     }
     crate::plex::publish_probe_result(id, probe.outcome);
 }
@@ -1853,6 +1920,8 @@ fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> R
                 ));
             }
             Outcome::Unreachable => {}
+            // `classify` never produces this; see `settle_probe_message`'s identical arm.
+            Outcome::InsecureOnly => {}
         }
     }
     if let Some(c) = insecure {
@@ -1897,7 +1966,7 @@ fn resolve_roster_using(
     policy: CredentialPolicy,
     probe_one: &mut dyn FnMut(&ProbePlan) -> Reach,
     between_servers: &mut dyn FnMut(),
-    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>),
+    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>, Option<String>),
 ) -> Resolved {
     let mut servers: Vec<&Resource> = resources.iter().filter(|r| r.is_server()).collect();
     if servers.is_empty() {
@@ -1916,18 +1985,11 @@ fn resolve_roster_using(
         }
         let plan = probe::plan(r, policy);
         let reach = probe_one(&plan);
-        let (outcome, tier) = match &reach {
-            Reach::At(c, _) => (Outcome::Reachable, Some(c.location)),
-            // step 5: InsecureOnly deserves its own Outcome variant (plan §4); folding it into
-            // Unreachable is the minimal compiling mapping for this step.
-            Reach::InsecureOnly(_) => (Outcome::Unreachable, None),
-            Reach::Refused => (Outcome::Unauthorized, None),
-            Reach::No => (Outcome::Unreachable, None),
-        };
+        let (outcome, tier, address) = probe_verdict(&reach);
         // Publish one aggregate result per server, after all of its direct/relay candidates have
         // settled. In particular a 401 remains distinct from silence, while wrong-machine-only
         // races fold to Unreachable because no address verified this server.
-        observe(&plan, outcome, tier);
+        observe(&plan, outcome, tier, address);
         match reach {
             Reach::At(c, origin) => {
                 let s = SourceRef {
@@ -1975,8 +2037,11 @@ fn resolve_roster_using(
                 ));
                 found.push(s);
             }
-            // step 5: R2 (AMENDMENTS A5) wants the verified-but-ineligible probe itself carried
-            // into a registry-only commit here; this step only records the fact for `Resolved`.
+            // The verified-but-ineligible probe itself already reached the registry through
+            // `observe` above (one `RegistryProgress::Settled`/`RegistryPlan::Probe` per server,
+            // published before this match runs) — R2/A5's registry-only commit besides. This arm
+            // only records the fact for `Resolved`'s own aggregate, which decides the user-facing
+            // `Discovery`/`ServerRosterOutcome` rather than the registry write.
             Reach::InsecureOnly(c) => {
                 log(&format!(
                     "auth: '{}' verified at {}:{} but only over plaintext — not recorded",
@@ -2049,7 +2114,7 @@ fn resolve_roster(
         policy,
         &mut probe_one,
         &mut || {},
-        &mut |_, _, _| {},
+        &mut |_, _, _, _| {},
     )
 }
 
@@ -2057,7 +2122,7 @@ fn resolve_roster_live_while(
     resources: &[Resource],
     household: &[i64],
     activate: &mut dyn FnMut(&ProbePlan, &Candidate, &Origin),
-    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>),
+    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>, Option<String>),
     live: &dyn Fn() -> bool,
 ) -> Resolved {
     let policy = CredentialPolicy::build();
@@ -2115,16 +2180,28 @@ fn probe_profile_resource_live(
     let dial: ProbeDial = Arc::new(get_identity);
     let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
     let reach = probe_server_racing(&plan, dial, &spawn, PROBE_DEADLINES, &mut |_, _, _| {});
-    let (outcome, tier) = match &reach {
-        Reach::At(c, _) => (Outcome::Reachable, Some(c.location)),
-        // step 5: same minimal mapping as `resolve_roster_using` — a dedicated Outcome variant
-        // for InsecureOnly is the next step's job (plan §4, S7's "no access" copy fix included).
-        Reach::InsecureOnly(_) => (Outcome::Unreachable, None),
-        Reach::Refused => (Outcome::Unauthorized, None),
-        Reach::No => (Outcome::Unreachable, None),
-    };
+    let (outcome, tier, address) = probe_verdict(&reach);
     let source = source_from_reach(resource, &plan, &reach, household);
-    (source, settled_probe(&plan, outcome, tier))
+    (source, settled_probe(&plan, outcome, tier, address))
+}
+
+/// Fold [`Resolved`]'s three empty-roster shapes into the [`Discovery`] outcome they map to, and
+/// leave a real roster (`Resolved::Reached`) for the caller to keep processing. Pure and pulled out
+/// of [`discover_and_store`] so the precedence rule (plan §4: `At` > `InsecureOnly` > `Refused` >
+/// `No`) is itself gradeable on the dev Mac rather than only reachable through a live worker.
+fn resolved_without_roster(resolved: Resolved) -> Result<Vec<SourceRef>, Discovery> {
+    match resolved {
+        Resolved::NoServers => Err(Discovery::NoServers),
+        // A verified-but-plaintext answer is worth more to the user than a parallel/proxy 401,
+        // because it names a fixable cause (HTTPS to the server) rather than a credential one.
+        Resolved::None { insecure: true, .. } => {
+            log("auth: at least one server verified only over plaintext (insecure-only), unusable in this build");
+            Err(Discovery::InsecureOnly)
+        }
+        Resolved::None { refused: true, insecure: false } => Err(Discovery::Refused),
+        Resolved::None { refused: false, insecure: false } => Err(Discovery::Silent),
+        Resolved::Reached(found) => Ok(found),
+    }
 }
 
 /// Discover **every** server this identity can use — ours and each share — and store the roster.
@@ -2162,11 +2239,11 @@ fn discover_and_store(ac: &AccountClient, epoch: u64, output: &dyn owner::Observ
             candidate: candidate_activation(plan, c, origin, &credit),
         }));
     };
-    let mut observe = |plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>| {
+    let mut observe = |plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>, address: Option<String>| {
         output.progress(AuthProgress::Registry(RegistryProgress::Settled {
             epoch,
             expected: None,
-            probe: settled_probe(plan, outcome, tier),
+            probe: settled_probe(plan, outcome, tier, address),
         }));
     };
     // **No household ids here, and that is a fact about the ORDER rather than an omission**: the
@@ -2178,24 +2255,9 @@ fn discover_and_store(ac: &AccountClient, epoch: u64, output: &dyn owner::Observ
     // with `refresh_roster` or the first profile switch, both of which pass the real roster.
     let resolved = resolve_roster_live_while(&resources, &[], &mut activate, &mut observe, &|| output.live());
     if !output.live() { return Discovery::Cancelled; }
-    let found = match resolved {
-        Resolved::NoServers => return Discovery::NoServers,
-        // step 5: a dedicated Discovery::InsecureOnly, with the softer rebind-hint copy plan §4
-        // proposes, is the next step's job — for now `insecure` only earns a diagnostic line, and
-        // the user-facing outcome still folds into Refused/Silent exactly as before.
-        Resolved::None { refused: true, insecure } => {
-            if insecure {
-                log("auth: at least one server verified only over plaintext (insecure-only), unusable in this build");
-            }
-            return Discovery::Refused;
-        }
-        Resolved::None { refused: false, insecure } => {
-            if insecure {
-                log("auth: at least one server verified only over plaintext (insecure-only), unusable in this build");
-            }
-            return Discovery::Silent;
-        }
-        Resolved::Reached(f) => f,
+    let found = match resolved_without_roster(resolved) {
+        Ok(found) => found,
+        Err(discovery) => return discovery,
     };
 
     let primary = primary_index(&found);
@@ -2402,8 +2464,8 @@ fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: Session
         &resources,
         &household,
         &mut activate,
-        &mut |plan, outcome, tier| {
-            let probe = settled_probe(plan, outcome, tier);
+        &mut |plan, outcome, tier, address| {
+            let probe = settled_probe(plan, outcome, tier, address);
             settled.push(probe.clone());
             output.progress(AuthProgress::Registry(RegistryProgress::Settled {
                 epoch,
@@ -2415,10 +2477,13 @@ fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: Session
     ) {
         Resolved::Reached(found) => found,
         _ => {
+            // R2/A5: a background refresh that found nothing to REGISTER may still have PROBED
+            // something worth recording — carry it rather than throwing `settled` away, so the
+            // owner can commit it as a registry-only `RegistryPlan::Probe` (`owner.rs`).
             output.terminal(AuthProgress::ServerRoster(ServerRosterProgress {
                 epoch,
                 expected,
-                outcome: ServerRosterOutcome::NoReachable,
+                outcome: ServerRosterOutcome::NoReachable { settled },
             }));
             return;
         }
@@ -2482,15 +2547,19 @@ fn probe_endpoint_work(
     resources: impl FnOnce(&AccountClient) -> Option<Vec<Resource>>,
     probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe),
     live: &dyn Fn() -> bool,
-) -> Option<SourceRef> {
-    if !live() { return None; }
+) -> (Option<SourceRef>, SettledProbe) {
+    // Nothing was actually probed on any of the early exits below — plex.tv never answered, or
+    // this machine is no longer among its resources — so there is nothing more specific than
+    // Unreachable to report; the machine id alone is enough to make it a well-formed `Probe`.
+    let unreached = || SettledProbe { machine_id: machine_id.to_owned(), outcome: Outcome::Unreachable, tier: None, address: None };
+    if !live() { return (None, unreached()); }
     let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
     let Some(resources) = resources(&ac) else {
         log(&format!(
             "auth: endpoint refresh for source {} could not reach plex.tv",
             id.raw()
         ));
-        return None;
+        return (None, unreached());
     };
     let Some(resource) = resources
         .iter()
@@ -2500,11 +2569,10 @@ fn probe_endpoint_work(
             "auth: endpoint refresh for source {} found no matching resource",
             id.raw()
         ));
-        return None;
+        return (None, unreached());
     };
-    if !live() { return None; }
-    let (fresh, _) = probe(resource, &sess.household_ids());
-    fresh
+    if !live() { return (None, unreached()); }
+    probe(resource, &sess.household_ids())
 }
 
 /// Point the persisted PRIMARY at wherever the refreshed roster says that machine now answers.
@@ -2991,15 +3059,24 @@ pub(crate) fn profile_switch_worker_with_io(
     let Some(primary) =
         selected_mid.and_then(|mid| initial.iter().find(|s| s.machine_id == mid).cloned())
     else {
+        // S7: a grant that verified but only over plaintext is not the same failure as "you were
+        // never given this server" — it names a fixable cause (HTTPS to the server), and the
+        // ordinary copy sends the user to ask their friend for access they already have.
+        let insecure_only = probes.iter().any(|p| p.outcome == Outcome::InsecureOnly);
         log(&format!(
-            "auth: switch '{}' -> no server access",
-            tile.title
+            "auth: switch '{}' -> {}",
+            tile.title,
+            if insecure_only { "verified only over plaintext" } else { "no server access" },
         ));
         output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
             epoch,
             expected,
             outcome: ProfileSwitchOutcomeProgress::Failed {
-                error: format!("{} has no access to this server", tile.title),
+                error: if insecure_only {
+                    DISCOVERY_INSECURE_ONLY_MESSAGE.to_owned()
+                } else {
+                    format!("{} has no access to this server", tile.title)
+                },
                 pin_denied: false,
             },
         }));
@@ -3962,7 +4039,7 @@ mod tests {
                 CredentialPolicy::HttpsOnly,
                 &mut probe_one,
                 &mut || {},
-                &mut |_, _, _| {},
+                &mut |_, _, _, _| {},
             );
         let Resolved::Reached(roster) = resolved else {
             panic!("the relay verifies this machine and must be recorded as reached");
@@ -3999,12 +4076,59 @@ mod tests {
                 CredentialPolicy::HttpsOnly,
                 &mut probe_one,
                 &mut || {},
-                &mut |_, _, _| {},
+                &mut |_, _, _, _| {},
             );
         assert!(
             !matches!(resolved, Resolved::Reached(_)),
             "a plaintext-only answer this build cannot use must not be reported reached"
         );
+    }
+
+    // ---- issue #95, step 5: InsecureOnly through the outcome consumers ----
+
+    /// `Resolved::None{insecure:true}` becomes `Discovery::InsecureOnly` REGARDLESS of `refused`
+    /// (plan §4's precedence: `InsecureOnly` beats `Refused`), and every other shape keeps its old
+    /// mapping. `resolved_without_roster` is the pure fold `discover_and_store` runs this through.
+    #[test]
+    fn resolved_none_insecure_outranks_refused_and_every_other_shape_is_unchanged() {
+        assert!(matches!(
+            resolved_without_roster(Resolved::NoServers),
+            Err(Discovery::NoServers)
+        ));
+        assert!(matches!(
+            resolved_without_roster(Resolved::None { refused: true, insecure: false }),
+            Err(Discovery::Refused)
+        ));
+        assert!(matches!(
+            resolved_without_roster(Resolved::None { refused: false, insecure: false }),
+            Err(Discovery::Silent)
+        ));
+        assert!(
+            matches!(
+                resolved_without_roster(Resolved::None { refused: true, insecure: true }),
+                Err(Discovery::InsecureOnly)
+            ),
+            "a verified plaintext answer outranks a parallel/proxy 401"
+        );
+        assert!(matches!(
+            resolved_without_roster(Resolved::None { refused: false, insecure: true }),
+            Err(Discovery::InsecureOnly)
+        ));
+        assert!(matches!(resolved_without_roster(Resolved::Reached(vec![])), Ok(v) if v.is_empty()));
+    }
+
+    /// Sign-in and rediscovery must say the SAME sentence for the SAME verdict — the whole point
+    /// of a shared const (plan §4) is that the two paths cannot drift apart on this copy the way
+    /// the three other Discovery failures never had a name collision to drift on. `discover_and_store`
+    /// itself needs a live plex.tv edge no host test can reach, so this pins the SHARED CONST's
+    /// content directly; the two call sites (`login_worker_with_output`, `rediscovery_worker_with_output`)
+    /// are both spelled `output_failed(output, epoch, DISCOVERY_INSECURE_ONLY_MESSAGE)` — greppable,
+    /// and unable to drift apart without a compile error renaming one identifier but not the other.
+    #[test]
+    fn insecure_only_copy_is_one_shared_const_naming_the_fixable_cause() {
+        assert!(!DISCOVERY_INSECURE_ONLY_MESSAGE.is_empty());
+        assert!(DISCOVERY_INSECURE_ONLY_MESSAGE.contains("securely"));
+        assert!(DISCOVERY_INSECURE_ONLY_MESSAGE.contains("HTTPS"));
     }
 
     // ---- issue #95, step 4: probe pinning ----
@@ -4101,7 +4225,7 @@ mod tests {
                 CredentialPolicy::HttpsOnly,
                 &mut probe_one,
                 &mut || {},
-                &mut |_, _, _| {},
+                &mut |_, _, _, _| {},
             );
         let Resolved::Reached(roster) = resolved else {
             panic!("the pinned LAN candidate verifies and must be recorded as reached");
@@ -4185,7 +4309,7 @@ mod tests {
                 Reach::No
             },
             &mut || gaps += 1,
-            &mut |_, _, _| {},
+            &mut |_, _, _, _| {},
         );
         assert!(matches!(resolved, Resolved::None { refused: false, .. }));
         assert_eq!(order, ["owned", "shared-m", "shared-u"]);
@@ -4227,7 +4351,7 @@ mod tests {
                 _ => Reach::No,
             },
             &mut || {},
-            &mut |plan, outcome, tier| observed.push((plan.machine_id.clone(), outcome, tier)),
+            &mut |plan, outcome, tier, address| observed.push((plan.machine_id.clone(), outcome, tier, address)),
         );
 
         assert!(matches!(resolved, Resolved::Reached(ref roster) if roster.len() == 1));
@@ -4237,10 +4361,11 @@ mod tests {
                 (
                     "yes".into(),
                     Outcome::Reachable,
-                    Some(probe::Location::Remote)
+                    Some(probe::Location::Remote),
+                    Some("203.0.113.9".into()),
                 ),
-                ("denied".into(), Outcome::Unauthorized, None),
-                ("off".into(), Outcome::Unreachable, None),
+                ("denied".into(), Outcome::Unauthorized, None, None),
+                ("off".into(), Outcome::Unreachable, None, None),
             ]
         );
     }
@@ -4285,16 +4410,19 @@ mod tests {
                 machine_id: "yes".into(),
                 outcome: Outcome::Reachable,
                 tier: Some(probe::Location::Remote),
+                address: Some("203.0.113.9".into()),
             },
             SettledProbe {
                 machine_id: "denied".into(),
                 outcome: Outcome::Unauthorized,
                 tier: None,
+                address: None,
             },
             SettledProbe {
                 machine_id: "off".into(),
                 outcome: Outcome::Unreachable,
                 tier: None,
+                address: None,
             },
         ]);
 
@@ -6018,6 +6146,61 @@ mod tests {
         assert!(matches!(&**b, observation::Observation::ProfileSwitch(ProfileSwitchProgress {
             epoch: 7, outcome: ProfileSwitchOutcomeProgress::Failed { pin_denied: false, .. }, ..
         })));
+    }
+
+    /// S7 (plan §4): a grant whose only settled probe is `InsecureOnly` must fail with the SHARED
+    /// discovery copy, not "has no access to this server" — the grant is real, only the transport
+    /// is unusable in this build, and the ordinary wording sends the user to ask their friend for
+    /// access they already have.
+    #[test]
+    fn a_grant_verified_only_over_plaintext_reports_the_shared_insecure_only_copy() {
+        use crate::auth::owner::{SessionArrival, SessionOp, SessionWorkKey};
+        use crate::app::adapters::session::SessionAdapter;
+        use crate::plex::account::SwitchedUser;
+        use crate::ui::machine::RequestId;
+
+        struct InsecureOnlyGrantIo;
+        impl ProfileWorkIo for InsecureOnlyGrantIo {
+            fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
+                SwitchOutcome::Switched(SwitchedUser {
+                    id: 1, uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-token".into(),
+                })
+            }
+            fn resources(&mut self, _: &AccountClient) -> Option<Vec<Resource>> {
+                Some(vec![Resource {
+                    name: "srv".into(), client_identifier: "srv".into(), provides: "server".into(),
+                    owned: true, access_token: "srv-token".into(), ..Default::default()
+                }])
+            }
+            fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<SourceRef>, SettledProbe) {
+                // No winning source (nothing this build may put a credential on), but the probe
+                // itself verified the server — over plaintext only.
+                (None, settled_probe_for_test("srv", Outcome::InsecureOnly,
+                    Some(probe::Location::Local), Some("10.0.0.5".into())))
+            }
+            fn gap(&mut self) {}
+        }
+
+        let mut a = SessionAdapter::fixture();
+        let stored = cached_session(None);
+        let expected = SessionIdentity::of(&stored);
+        let tile = UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() };
+        a.launch(RequestId(1), SessionWorkKey { epoch: 1, op: SessionOp::ProfileSwitch }, true,
+            |job| { job(); true }, move |output| {
+                profile_switch_worker_with_io(1, expected, stored, tile, None, false,
+                    &output, &mut InsecureOnlyGrantIo);
+            }).unwrap();
+        let results = a.take_results();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].terminal);
+        let SessionArrival::Data(data) = &results[0].outcome else { panic!("missing failure result") };
+        assert!(
+            matches!(&**data, observation::Observation::ProfileSwitch(ProfileSwitchProgress {
+                outcome: ProfileSwitchOutcomeProgress::Failed { error, pin_denied: false }, ..
+            }) if error == DISCOVERY_INSECURE_ONLY_MESSAGE),
+            "an InsecureOnly-only grant must report the shared discovery copy, not the generic \
+             'has no access' wording"
+        );
     }
 
     /// Extract one `fn NAME(` … `}` body, verbatim, from this file's OWN source. A tiny lexer —

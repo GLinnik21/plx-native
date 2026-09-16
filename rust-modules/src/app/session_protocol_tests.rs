@@ -1025,8 +1025,11 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
             assert_eq!(lifecycle.instance_gen, instance);
             assert_eq!(lifecycle.token_gen, token_gen);
             assert_eq!(expected.profile_uuid, "synthetic-profile");
+            let probe = crate::auth::settled_probe_for_test(&machine_id,
+                crate::plex::probe::Outcome::Reachable,
+                Some(crate::plex::probe::Location::Local), Some(fresh.address.clone()));
             assert!(output.complete(crate::auth::endpoint_work_fact(1, expected, lifecycle,
-                machine_id, Some(fresh))).is_ok());
+                machine_id, Some(fresh), probe)).is_ok());
         });
         let mut d = Dispatcher::<AppHost>::new();
         execute_session_command(&mut d, crate::auth::SessionCmd::RequestEndpoint { sid });

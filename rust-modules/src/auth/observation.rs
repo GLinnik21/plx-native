@@ -22,6 +22,9 @@ pub(crate) struct EndpointFact {
     pub sid: u16,
     pub machine_id: String,
     pub fresh: Option<SourceRef>,
+    /// What the probe itself proved, whether or not `fresh` has a source to install (R2/A5's
+    /// "publish rather than retire" applies to the endpoint worker too).
+    pub probe: SettledProbe,
 }
 
 impl Observation {
@@ -73,7 +76,7 @@ impl Observation {
                 w.u8(3).u64(progress.epoch); write_identity(w, &progress.expected);
                 match &progress.outcome {
                     ServerRosterOutcome::Unreachable => { w.u8(0); }
-                    ServerRosterOutcome::NoReachable => { w.u8(1); }
+                    ServerRosterOutcome::NoReachable { settled } => { w.u8(1); write_probes(w, settled); }
                     ServerRosterOutcome::Reconcile { resources, found, household, settled } => {
                         w.u8(2); write_resources(w, resources); write_sources(w, found);
                         w.seq(household.len()); for id in household { w.u64(*id as u64); }
@@ -85,6 +88,7 @@ impl Observation {
                 w.u8(4).u64(progress.epoch); write_identity(w, &progress.expected);
                 w.u32(u32::from(progress.sid)).str(&progress.machine_id);
                 w.option(progress.fresh.as_ref(), |w, source| write_sources(w, std::slice::from_ref(source)));
+                write_probe(w, &progress.probe);
             }
             Self::ProfileSwitch(progress) => {
                 w.u8(5).u64(progress.epoch); write_identity(w, &progress.expected);
@@ -159,7 +163,7 @@ impl Observation {
             AuthProgress::ProfileRoster(p) => Self::ProfileRoster(p),
             AuthProgress::Endpoint(p) => return (Self::Endpoint(EndpointFact {
                 epoch: p.epoch, expected: p.expected, sid: p.id.raw(),
-                machine_id: p.machine_id, fresh: p.fresh,
+                machine_id: p.machine_id, fresh: p.fresh, probe: p.probe,
             }), p.lifecycle),
         };
         (observation, None)
@@ -202,6 +206,7 @@ mod identity_canon_tests {
 fn write_probe(w: &mut crate::ui::machine::Canon, probe: &SettledProbe) {
     w.str(&probe.machine_id).u8(match probe.outcome {
         Outcome::Reachable => 0, Outcome::WrongServer => 1, Outcome::Unauthorized => 2, Outcome::Unreachable => 3,
+        Outcome::InsecureOnly => 4,
     });
     owner::write_tier(w, probe.tier);
 }
@@ -302,6 +307,7 @@ pub(super) mod outcome {
         let tag: u8 = match value {
             Outcome::Reachable => 0, Outcome::WrongServer => 1,
             Outcome::Unauthorized => 2, Outcome::Unreachable => 3,
+            Outcome::InsecureOnly => 4,
         };
         tag.serialize(serializer)
     }
@@ -309,6 +315,7 @@ pub(super) mod outcome {
         match u8::deserialize(deserializer)? {
             0 => Ok(Outcome::Reachable), 1 => Ok(Outcome::WrongServer),
             2 => Ok(Outcome::Unauthorized), 3 => Ok(Outcome::Unreachable),
+            4 => Ok(Outcome::InsecureOnly),
             _ => Err(serde::de::Error::custom("invalid Session probe outcome")),
         }
     }
@@ -357,5 +364,61 @@ pub(super) mod server_id {
     }
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<ServerId, D::Error> {
         u16::deserialize(deserializer).map(ServerId::from_raw)
+    }
+}
+
+#[cfg(test)]
+mod insecure_only_outcome_tests {
+    use super::*;
+
+    /// Issue #95 plan §4/§6: `Outcome::InsecureOnly` is APPENDED as tag/code 4 in the serde
+    /// encoding this module owns — round-trips like every other variant, and every existing tag
+    /// keeps its number (a renumbering would silently reinterpret an old recording).
+    #[test]
+    fn outcome_serde_tag_four_round_trips_and_every_old_tag_is_unchanged() {
+        let cases = [
+            (Outcome::Reachable, 0u8),
+            (Outcome::WrongServer, 1),
+            (Outcome::Unauthorized, 2),
+            (Outcome::Unreachable, 3),
+            (Outcome::InsecureOnly, 4),
+        ];
+        for (value, tag) in cases {
+            let encoded = serde_json::to_value(OutcomeWire(value)).unwrap();
+            assert_eq!(encoded, serde_json::json!(tag));
+            let restored: OutcomeWire = serde_json::from_value(encoded).unwrap();
+            assert_eq!(restored.0, value);
+        }
+        assert!(
+            serde_json::from_value::<OutcomeWire>(serde_json::json!(5)).is_err(),
+            "an unknown tag must not silently decode as some existing variant"
+        );
+    }
+
+    #[derive(PartialEq, Debug)]
+    struct OutcomeWire(Outcome);
+    impl serde::Serialize for OutcomeWire {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            outcome::serialize(&self.0, s)
+        }
+    }
+    impl<'de> serde::Deserialize<'de> for OutcomeWire {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            outcome::deserialize(d).map(OutcomeWire)
+        }
+    }
+
+    /// The Canon (`ui::machine`) hash the recorder/replay tools pin also gets a tag for
+    /// InsecureOnly, distinct from every other outcome's — a collision here would make a replay
+    /// diverge silently rather than fail loudly.
+    #[test]
+    fn write_probe_gives_insecure_only_its_own_canon_byte() {
+        use crate::ui::machine::Canon;
+        let probe = |outcome| SettledProbe { machine_id: "m".into(), outcome, tier: None, address: None };
+        let bytes = |outcome| { let mut w = Canon::new(); write_probe(&mut w, &probe(outcome)); w.finish() };
+        let insecure = bytes(Outcome::InsecureOnly);
+        for other in [Outcome::Reachable, Outcome::WrongServer, Outcome::Unauthorized, Outcome::Unreachable] {
+            assert_ne!(insecure, bytes(other), "InsecureOnly must not collide with {other:?}'s Canon bytes");
+        }
     }
 }

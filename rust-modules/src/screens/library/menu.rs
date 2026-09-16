@@ -86,6 +86,7 @@ fn stamp_state(stamp: &mut Stamp, state: crate::browse::SourceState) {
         crate::browse::SourceState::Reachable => 1,
         crate::browse::SourceState::Unauthorized => 2,
         crate::browse::SourceState::Unreachable => 3,
+        crate::browse::SourceState::InsecureOnly => 4,
     });
 }
 

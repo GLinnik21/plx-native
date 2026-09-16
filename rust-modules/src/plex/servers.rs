@@ -324,6 +324,7 @@ fn probe_code(outcome: Outcome) -> u8 {
         Outcome::Unauthorized => 2,
         Outcome::WrongServer => 3,
         Outcome::Unreachable => 4,
+        Outcome::InsecureOnly => 5,
     }
 }
 
@@ -333,6 +334,7 @@ fn probe_of_code(code: u8) -> Option<Outcome> {
         2 => Some(Outcome::Unauthorized),
         3 => Some(Outcome::WrongServer),
         4 => Some(Outcome::Unreachable),
+        5 => Some(Outcome::InsecureOnly),
         _ => None,
     }
 }
@@ -503,10 +505,16 @@ pub fn commit_reachability_if_current<R>(
     let i = current_lifecycle_index(id, expected, token_gen)?;
     let outcome = if ok {
         Outcome::Reachable
-    } else if probe_of_code(PROBES[i].load(Ordering::Acquire)) == Some(Outcome::Unauthorized) {
-        Outcome::Unauthorized
     } else {
-        Outcome::Unreachable
+        // A generic request cannot distinguish HTTP status from transport/parse failure, so it
+        // must not overwrite the more specific identity-probe verdict with a plain Unreachable —
+        // true of Unauthorized already, and equally true of InsecureOnly (issue #95): the server
+        // IS answering, just not over a transport this build can put a credential on.
+        match probe_of_code(PROBES[i].load(Ordering::Acquire)) {
+            Some(Outcome::Unauthorized) => Outcome::Unauthorized,
+            Some(Outcome::InsecureOnly) => Outcome::InsecureOnly,
+            _ => Outcome::Unreachable,
+        }
     };
     PROBES[i].store(probe_code(outcome), Ordering::Release);
     if let Some(name) = name.filter(|name| !name.is_empty()) {
@@ -1403,6 +1411,34 @@ mod tests {
             None,
             "a different profile's token starts unprobed"
         );
+    }
+
+    /// Issue #95 plan §6: `InsecureOnly` round-trips through the same `probe_code`/`probe_of_code`
+    /// table every other [`Outcome`] does — verified end to end via [`publish_probe_result`] and
+    /// [`probe_result`] rather than by re-deriving the private code number here.
+    #[test]
+    fn insecure_only_probe_result_round_trips_through_the_slot() {
+        let _g = fresh();
+        let id = reg("mach-insecure", "10.0.0.1", "tok-a");
+        publish_probe_result(id, Outcome::InsecureOnly);
+        assert_eq!(probe_result(id), Some(Outcome::InsecureOnly));
+    }
+
+    /// A generic request's failure cannot disprove a more specific identity-probe verdict — true
+    /// of `Unauthorized` already ([`aggregate_probe_results_follow_a_slot_and_reset_on_repoint`]
+    /// doesn't cover it directly either, but the doc above `commit_reachability_if_current` does),
+    /// and equally true of `InsecureOnly` (issue #95): a generic failure must not read as the
+    /// coarser Unreachable once the identity probe already knows the server answers, just not
+    /// securely.
+    #[test]
+    fn a_generic_failure_preserves_insecure_only_rather_than_widening_to_unreachable() {
+        let _g = fresh();
+        let id = reg("mach-insecure-2", "10.0.0.1", "tok-a");
+        publish_probe_result(id, Outcome::InsecureOnly);
+        let client = client_for(id).unwrap();
+        let outcome = commit_reachability_if_current(id, client, client.token_gen(), false, None, |o| o);
+        assert_eq!(outcome, Some(Outcome::InsecureOnly));
+        assert_eq!(probe_result(id), Some(Outcome::InsecureOnly));
     }
 
     /// A different server is a NEW slot, never a silent retarget of the old one — the singleton's
