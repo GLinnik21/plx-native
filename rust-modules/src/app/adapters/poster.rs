@@ -274,7 +274,10 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
         })
     };
     let s = memo.get_or_build(srv.raw(), path, w, h, png, c.token_gen(), || {
-        c.image_transcode_path(path, w as i64, h as i64, png)
+        // Supersampled simulator renders (`surface::render_scale`, 1 on a television) ask the
+        // server for the pixels they will draw; the store key stays the logical box.
+        let n = crate::surface::render_scale() as i64;
+        c.image_transcode_path(path, w as i64 * n, h as i64 * n, png)
     });
     if s.len() > KEY_MAX {
         warn_key_refused(s.len());

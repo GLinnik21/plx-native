@@ -604,11 +604,35 @@ fn glsl_preamble(ty: c_uint) -> &'static CStr {
     }
 }
 
+/// The coverage edges' antialiasing ramp is written as `smoothstep(-1.0, 1.0, d)` — one AUTHORED
+/// pixel either side, which is one physical pixel on a television and `n` of them supersampled
+/// (`surface::render_scale`, simulator only), so every rounded corner would come out `n` times
+/// softer than the render it sits in. Narrow exactly that ramp to one physical pixel. `None` —
+/// the source untouched — at scale 1, so the default simulator compiles what the television does.
+#[cfg(feature = "hostsim")]
+unsafe fn supersample_aa(src: *const c_char) -> Option<std::ffi::CString> {
+    let n = crate::surface::render_scale();
+    if n <= 1 {
+        return None;
+    }
+    let text = CStr::from_ptr(src).to_str().ok()?;
+    const EDGE: &str = "smoothstep(-1.0, 1.0, d)";
+    if !text.contains(EDGE) {
+        return None;
+    }
+    let w = 1.0 / n as f32;
+    std::ffi::CString::new(text.replace(EDGE, &format!("smoothstep(-{w:.6}, {w:.6}, d)"))).ok()
+}
+
 pub(crate) fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
     unsafe {
         let s = glCreateShader(ty);
         // Two source strings rather than a concatenation: GL joins them itself, so the preamble
         // needs no allocation and the original `&CStr` sources stay untouched.
+        #[cfg(feature = "hostsim")]
+        let supersampled = supersample_aa(src);
+        #[cfg(feature = "hostsim")]
+        let src = supersampled.as_ref().map_or(src, |c| c.as_ptr());
         let srcs: [*const c_char; 2] = [glsl_preamble(ty).as_ptr(), src];
         glShaderSource(s, 2, srcs.as_ptr(), std::ptr::null());
         glCompileShader(s);
@@ -1566,8 +1590,18 @@ pub(crate) fn draw_hero_ground(
 /// every texel across two pixels (washed glyph stems, fuzzy icon edges). Snap the FINAL
 /// composited position (after any Painter translate fold), and never apply this to scaled
 /// content — posters and animating quads legitimately move sub-pixel.
+///
+/// Under supersampling (`surface::render_scale`, simulator only) a whole PHYSICAL pixel is `1/n`
+/// of a logical one, and the textures are rasterised at `n`x to match, so that is what it snaps to.
 #[inline]
 pub(crate) fn snap(v: f32) -> f32 {
+    #[cfg(feature = "hostsim")]
+    {
+        let n = crate::surface::render_scale();
+        if n > 1 {
+            return (v * n as f32).round() / n as f32;
+        }
+    }
     v.round()
 }
 
@@ -3250,6 +3284,9 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
                 // Offsets stay in TEXELS of the texture, which the region does not change — the
                 // texture is the same size, only less of it is live.
                 note_px(Class::Blur, (tw as f64) * (th as f64));
+                // Supersampled, the chain's texels are `1/n` the authored size they are on a
+                // television; widening the offsets by `n` keeps the frosting's authored radius.
+                let tap = tap * crate::surface::render_scale() as f32;
                 glUniform2f(BL_TEXEL, tap / c.sw as f32, tap / c.sh as f32);
                 glBindTexture(GL_TEXTURE_2D, src);
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -3271,18 +3308,15 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
             use_prog(BPROG);
             glUniform4f(BL_UVRECT, 0.0, 0.0, tap_uv.0, tap_uv.1);
             note_px(Class::Blur, (r2w as f64) * (r2h as f64));
-            glUniform2f(
-                BL_TEXEL,
-                BLUR_UP_TAP / c.mw as f32,
-                BLUR_UP_TAP / c.mh as f32,
-            );
+            let up = BLUR_UP_TAP * crate::surface::render_scale() as f32;
+            glUniform2f(BL_TEXEL, up / c.mw as f32, up / c.mh as f32);
             // The Settings kernel adds an even pair of extra passes, so both the ordinary and
             // modal chains finish in `a`. The assertion at entry keeps that property structural.
             glBindTexture(GL_TEXTURE_2D, c.a);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
 
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
         let (vx, vy, vw, vh) = crate::surface::viewport();
         glViewport(vx, vy, vw, vh);
         glEnable(GL_BLEND);
@@ -3923,7 +3957,7 @@ impl Drop for DirectPass {
             CLIP_TARGET = None;
             CULL_RECT = None;
             glDisable(GL_SCISSOR_TEST);
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
             let (vx, vy, vw, vh) = crate::surface::viewport();
             glViewport(vx, vy, vw, vh);
             glEnable(GL_BLEND);
@@ -3951,7 +3985,10 @@ impl Drop for DirectPass {
 /// read the fallback from this type.
 #[inline]
 pub(crate) fn blur_direct_scale() -> Option<u32> {
-    (!unsafe { BLUR_DIRECT_OFF }).then_some(BLUR_DIRECT_SCALE)
+    // Supersampled, the drawable is `n`x the canvas, so the divisor grows by `n` to render the
+    // source at the same AUTHORED resolution a television does — the same material, not a finer one.
+    (!unsafe { BLUR_DIRECT_OFF })
+        .then_some(BLUR_DIRECT_SCALE * crate::surface::render_scale() as u32)
 }
 
 /// The region a direct source pass should be taken at THIS frame, or `None` to do nothing.
@@ -4092,7 +4129,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
         // texels, and a texel covers `scale` authored pixels, so the offsets that give the shipped
         // look at quarter resolution have to shrink in proportion at any finer divisor. Without
         // this a scale sweep changes two variables at once and measures neither.
-        let tap_k = 4.0 / scale as f32;
+        let tap_k = 4.0 * crate::surface::render_scale() as f32 / scale as f32;
         for (i, taps) in blur_taps().iter().enumerate() {
             let name = if i == 0 { "blur.tap1" } else { "blur.tap2" };
             phase(name, || {
@@ -4135,7 +4172,7 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
 
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
         let (vx, vy, vw, vh) = crate::surface::viewport();
         glViewport(vx, vy, vw, vh);
         glEnable(GL_BLEND);
@@ -4594,7 +4631,7 @@ fn fbo_target(w: c_int, h: c_int, who: &str) -> Option<(c_uint, c_uint)> {
         glBindFramebuffer(GL_FRAMEBUFFER, f);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t, 0);
         let st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
         if st != GL_FRAMEBUFFER_COMPLETE {
             log(&format!(
                 "{who}: FBO {w}x{h} incomplete (status=0x{st:x}) — {who} off"
@@ -4737,7 +4774,7 @@ pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_i
         //    FBO = frozen screen), full viewport, blend back on (func untouched). Program binding
         //    needs no restore — every draw fn binds its own lazily (use_prog); texture unit 0
         //    stays active; vertex state untouched.
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
         glViewport(0, 0, CAP_W, CAP_H);
         glEnable(GL_BLEND);
 
