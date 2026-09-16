@@ -64,9 +64,38 @@
 
 use super::client::Client;
 use super::origin::{Origin, ResolvePin};
-use super::probe::Outcome;
+use super::probe::{Location, Outcome};
+use super::IpVersion;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Mutex;
+
+/// #95 step 8 / A1: connection facts to apply to a `Client` AT REGISTRATION, atomically with
+/// whichever [`register_lazy`] branch the write lands in — never as a separate post-hoc
+/// `Client::set_connection`/`set_link` call a caller can forget, and never something a re-point
+/// (a fresh `Client`) can lose between the write and the caller's next line.
+///
+/// **`None` in either field means LEAVE UNCHANGED, never "set unknown".** A same-origin retoken
+/// (`register_lazy`'s in-place branch) must not blank a tier or IP a previous activation already
+/// proved just because this particular caller doesn't know it — `abr::bootstrap` (`probe.rs:187-
+/// 189`) reads the tier on every resolve, and a naive unconditional `LINK_UNKNOWN` write here
+/// would regress it on every plain retoken. A re-point starts the fresh `Client` at
+/// `LINK_UNKNOWN`/`IP_UNKNOWN` regardless (`Client::new`), so `None` there is simply "still
+/// unknown" — the same value it would have been with no `Connection` at all.
+///
+/// Not `plex::account::Connection` (the plex.tv resources API shape `Connection.uri`/`.address`
+/// this module's own doc talks about) — deliberately a different, narrower type so the registry
+/// write never has to reach into that wire struct.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ConnectionFacts {
+    pub tier: Option<Location>,
+    pub ip: Option<IpVersion>,
+}
+
+impl ConnectionFacts {
+    pub(crate) fn new(tier: Option<Location>, ip: Option<IpVersion>) -> Self {
+        Self { tier, ip }
+    }
+}
 
 /// Slot ceiling. A Plex account's server list is a handful (own + shared); past this, a
 /// registration is refused and logged rather than growing a table the hot path indexes.
@@ -754,9 +783,13 @@ pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerI
 /// published `Client` for the control plane and in `crate::net::resolve` for the media plane;
 /// that table is append-only, so a pin is never retracted — see its doc for why that is sound.
 /// Captured bootstrap identity: same registry/refresh path, without a lazy session-file read.
-pub(crate) fn register_captured_origin(machine_id: &str, origin: &Origin, token: &str,
-    pin: Option<&ResolvePin>, client_id: &str) -> ServerId {
-    let id = register_lazy(machine_id, origin, token, pin, &|| client_id.to_owned());
+///
+/// Carries connection facts to apply atomically (#95 step 8) — the dev-boot / captured-bootstrap
+/// twin of [`register_origin_with_connection`]. Every production caller already knows a tier (or
+/// `None`) at registration time, so there is no plain, connection-less variant to keep in sync.
+pub(crate) fn register_captured_origin_with_connection(machine_id: &str, origin: &Origin,
+    token: &str, pin: Option<&ResolvePin>, client_id: &str, connection: ConnectionFacts) -> ServerId {
+    let id = register_lazy(machine_id, origin, token, pin, connection, &|| client_id.to_owned());
     #[cfg(not(test))]
     super::serverinfo::refresh(id);
     id
@@ -768,12 +801,26 @@ pub fn register_origin(
     token: &str,
     pin: Option<&ResolvePin>,
 ) -> ServerId {
+    register_origin_with_connection(machine_id, origin, token, pin, ConnectionFacts::default())
+}
+
+/// [`register_origin`], carrying connection facts (#95 step 8) to apply to the published `Client`
+/// AT registration, in the same write that creates or re-points its slot — never as a separate
+/// post-hoc call a caller can forget or that a re-point can race. `connection`'s doc explains why
+/// `None` means "leave unchanged" rather than "unknown".
+pub(crate) fn register_origin_with_connection(
+    machine_id: &str,
+    origin: &Origin,
+    token: &str,
+    pin: Option<&ResolvePin>,
+    connection: ConnectionFacts,
+) -> ServerId {
     // The playback identity (`X-Plex-Client-Identifier`) is the persisted login identity, so it
     // comes from the session file — read LAZILY, i.e. only when a `Client` is actually built.
     // `session::load` can WRITE (it mints + persists the uuid when there is none), and the
     // commonest call here by far is the profile switch, which only swaps a token; the singleton
     // this replaced read the file exactly once, and so does this.
-    let id = register_lazy(machine_id, origin, token, pin, &|| {
+    let id = register_lazy(machine_id, origin, token, pin, connection, &|| {
         super::session::load().client_id
     });
     // Every server the app actually talks to arrives through THIS function (the `_with_client_id`
@@ -828,7 +875,22 @@ pub(crate) fn register_pinned_with_client_id(
     pin: Option<&ResolvePin>,
     client_id: &str,
 ) -> ServerId {
-    register_lazy(machine_id, origin, token, pin, &|| client_id.to_owned())
+    register_pinned_with_client_id_and_connection(machine_id, origin, token, pin, client_id,
+        ConnectionFacts::default())
+}
+
+/// [`register_pinned_with_client_id`], carrying connection facts to apply atomically — the test
+/// seam for grading [`ConnectionFacts`]'s "leave unchanged on retoken" / "sets both on re-point"
+/// semantics (#95 step 8) without going through the session-file/worker-spawning production path.
+pub(crate) fn register_pinned_with_client_id_and_connection(
+    machine_id: &str,
+    origin: &Origin,
+    token: &str,
+    pin: Option<&ResolvePin>,
+    client_id: &str,
+    connection: ConnectionFacts,
+) -> ServerId {
+    register_lazy(machine_id, origin, token, pin, connection, &|| client_id.to_owned())
 }
 
 /// [`register_with_client_id`], given the whole [`Origin`] — the seam for a test that is about the
@@ -839,7 +901,7 @@ pub(crate) fn register_origin_with_client_id(
     token: &str,
     client_id: &str,
 ) -> ServerId {
-    register_lazy(machine_id, origin, token, None, &|| client_id.to_owned())
+    register_lazy(machine_id, origin, token, None, ConnectionFacts::default(), &|| client_id.to_owned())
 }
 
 fn register_lazy(
@@ -847,6 +909,7 @@ fn register_lazy(
     origin: &Origin,
     token: &str,
     pin: Option<&ResolvePin>,
+    connection: ConnectionFacts,
     client_id: &dyn Fn() -> String,
 ) -> ServerId {
     // The registry's SLOTS/COUNT/ACTIVE/CURRENT tables are crate globals — a test reaching this
@@ -927,6 +990,14 @@ fn register_lazy(
                                 // re-arm with the new per-profile credential even on a same-origin retoken.
             ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
         }
+        // Applied AFTER either branch, against the slot's now-current `Client` — a re-point
+        // publishes a fresh pointer, so re-fetching here (rather than reusing `c`) is what makes
+        // this the client a re-pointed reader actually gets. `None` fields leave whatever that
+        // client already has (fresh: still unknown; in-place: whatever a prior activation set) —
+        // see `ConnectionFacts`'s doc (#95 step 8 / A1).
+        if let Some(fresh) = populated(id) {
+            fresh.apply_connection(connection);
+        }
         activate(id);
         return id;
     }
@@ -945,6 +1016,9 @@ fn register_lazy(
             .with_resolve_pin(pin.cloned()),
     );
     COUNT.store(n + 1, Ordering::Release); // after the pointer: a visible count implies a live slot
+    if let Some(fresh) = populated(id) {
+        fresh.apply_connection(connection);
+    }
     activate(id);
     // Address only — the machineIdentifier is a permanent household fingerprint (see `app::diagnostics`)
     // and the event log is what users send us. `log_form` rather than `base`, for the reason the
@@ -957,8 +1031,12 @@ fn register_lazy(
     id
 }
 
-/// Install for a (re)login / profile switch — the SESSION path, unchanged signature and
-/// unchanged single-server behaviour.
+/// Install for a (re)login / profile switch — the SESSION path, unchanged single-server
+/// behaviour. **Signature grew a [`ConnectionFacts`] parameter (#95 step 8)**: the caller who
+/// already knows which tier won discovery, and at what address, now hands it to the same write
+/// that registers the server rather than setting it in a second call this function's old callers
+/// sometimes skipped. `ConnectionFacts::default()` reproduces the exact old behaviour (nothing
+/// set, nothing changed).
 ///
 /// The caller has an address and no machine id (a stored session, or what the login resolved),
 /// so the same address is the same server: a second call for it swaps the token in place exactly
@@ -966,8 +1044,8 @@ fn register_lazy(
 /// a single-server session changed. A call naming a DIFFERENT address now registers a second slot
 /// and makes it current, where the singleton kept the FIRST server's address and quietly applied
 /// the new token to it (a mis-target no caller could see, because the address was frozen).
-pub fn install(origin: &Origin, token: &str, pin: Option<&ResolvePin>) {
-    let id = register_origin("", origin, token, pin);
+pub fn install(origin: &Origin, token: &str, pin: Option<&ResolvePin>, connection: ConnectionFacts) {
+    let id = register_origin_with_connection("", origin, token, pin, connection);
     set_current(id); // the session path always retargets: this is now the server we are using
                      // (`register` already refreshed this server's self-description — see its doc.)
 }
@@ -1234,6 +1312,52 @@ mod tests {
         assert_eq!(client_for(id).unwrap().resolve_pin(), Some(&p), "…now pinned");
         assert_eq!(count(), 1);
         crate::net::resolve::clear();
+    }
+
+    /// #95 step 8 / A1: `ConnectionFacts::default()` (both fields `None`) on a same-origin
+    /// retoken — `register_lazy`'s IN-PLACE branch — must LEAVE the prior tier/IP exactly as they
+    /// were, never blank them. A naive unconditional write here would regress `abr::bootstrap`
+    /// (`probe.rs:187-189`), which reads the tier on every resolve.
+    #[test]
+    fn a_same_origin_retoken_with_default_connection_preserves_the_prior_tier_and_ip() {
+        let _g = fresh();
+        let o = Origin::http("10.0.0.5", 32400);
+        let connection = ConnectionFacts::new(Some(Location::Local), Some(IpVersion::V4));
+        let id = register_pinned_with_client_id_and_connection("m1", &o, "tok", None, "cid",
+            connection);
+        let c = client_for(id).unwrap();
+        assert_eq!(c.link(), Some(Location::Local));
+        assert_eq!(c.ip_version(), Some(IpVersion::V4));
+        // Same origin, same machine id: `register_lazy` takes the in-place branch. A plain
+        // retoken (e.g. a profile switch swapping only the token) knows nothing new about the
+        // connection, so it passes `ConnectionFacts::default()`.
+        let again = register_pinned_with_client_id_and_connection("m1", &o, "tok2", None, "cid",
+            ConnectionFacts::default());
+        assert_eq!(again, id, "same slot — in place, not a re-point");
+        let c = client_for(id).unwrap();
+        assert_eq!(c.link(), Some(Location::Local), "tier survives an unrelated retoken");
+        assert_eq!(c.ip_version(), Some(IpVersion::V4), "ip survives an unrelated retoken");
+    }
+
+    /// #95 step 8: a re-point (a DIFFERENT origin — a fresh `Client`, published at `LINK_UNKNOWN`/
+    /// `IP_UNKNOWN` by `Client::new`) that carries `Some` connection facts must have BOTH applied
+    /// to the new slot in the same write, not left at their fresh-client defaults.
+    #[test]
+    fn a_repoint_with_some_connection_sets_both_tier_and_ip_on_the_fresh_client() {
+        let _g = fresh();
+        let o1 = Origin::http("10.0.0.5", 32400);
+        let id = register_pinned_with_client_id_and_connection("m1", &o1, "tok", None, "cid",
+            ConnectionFacts::new(Some(Location::Relay), Some(IpVersion::V4)));
+        assert_eq!(client_for(id).unwrap().link(), Some(Location::Relay));
+        // DHCP moved the server: a different origin for the same machine id re-points the slot.
+        let o2 = Origin::http("10.0.0.9", 32400);
+        let connection = ConnectionFacts::new(Some(Location::Local), Some(IpVersion::V6));
+        let moved = register_pinned_with_client_id_and_connection("m1", &o2, "tok", None, "cid",
+            connection);
+        assert_eq!(moved, id, "re-pointed in place (same slot id)");
+        let c = client_for(id).unwrap();
+        assert_eq!(c.link(), Some(Location::Local), "the NEW tier, not the old one");
+        assert_eq!(c.ip_version(), Some(IpVersion::V6), "the NEW ip, not the old one");
     }
 
     /// The boot gate registers the stored roster (with machine ids) and then installs the

@@ -112,12 +112,20 @@ fn envelope_props(
         ("device_model", &context.device_model),
         ("soc", &context.soc),
         ("hardware_revision", &context.hardware_revision),
-        ("server_connection", &context.server_connection),
-        ("ip_version", &context.ip_version),
         ("rtkmem", &context.rtkmem),
         ("install", &context.install),
     ] {
         properties.insert(key.into(), value.clone().into());
+    }
+    // Omitted entirely, not sent as `"unknown"`, when this event has no one server — see
+    // `UsageContext::for_server`'s doc.
+    for (key, value) in [
+        ("server_connection", &context.server_connection),
+        ("ip_version", &context.ip_version),
+    ] {
+        if let Some(value) = value {
+            properties.insert(key.into(), value.clone().into());
+        }
     }
     properties.insert("$session_id".into(), event.session_id.clone().into());
     properties.insert(ANON.into(), false.into());
@@ -529,8 +537,8 @@ mod tests {
             device_model: "m16p3s".into(),
             soc: "M19_DVB".into(),
             hardware_revision: "BOARD_PT_1ST".into(),
-            server_connection: "local".into(),
-            ip_version: "v4".into(),
+            server_connection: Some("local".into()),
+            ip_version: Some("v4".into()),
             rtkmem: "missing".into(),
             install: "devmode".into(),
         };
@@ -555,5 +563,66 @@ mod tests {
         assert_eq!(body["properties"]["rtkmem"], "missing");
         assert_eq!(body["properties"]["install"], "devmode");
         assert_eq!(body["properties"][ANON], false);
+    }
+
+    /// #95 step 8, item 1: an event with no one server (`UsageContext::for_server(None)`, which is
+    /// what every server-less `DiagEvent` captures through) must OMIT `server_connection` and
+    /// `ip_version` from the wire body entirely, never send a hardcoded `"unknown"`. Other context
+    /// fields are unaffected.
+    #[test]
+    fn a_server_less_event_omits_connection_and_ip_version() {
+        let context = UsageContext::for_server(None);
+        assert_eq!(context.server_connection, None);
+        assert_eq!(context.ip_version, None);
+        let event = UsageEnvelope::capture_with_context(
+            DiagEvent::AppLaunch,
+            1_787_961_234_567,
+            "0198f00d-1234-4567-89ab-0123456789ab",
+            context,
+        );
+        let body = parse(&captured("phc_k", "install", &event, "test"));
+        assert!(
+            body["properties"].get("server_connection").is_none(),
+            "a server-less event must not carry server_connection at all: {body}"
+        );
+        assert!(
+            body["properties"].get("ip_version").is_none(),
+            "a server-less event must not carry ip_version at all: {body}"
+        );
+        // Everything else still rides the envelope normally.
+        assert_eq!(body["event"], "app.launch");
+        assert_eq!(body["properties"][ANON], false);
+    }
+
+    /// A spooled envelope written before `server_connection`/`ip_version` could be omitted (or
+    /// before the `context` field existed at all) must still decode — `#[serde(default,
+    /// skip_serializing_if = "Option::is_none")]` on both fields is what keeps an older record
+    /// readable rather than refusing to parse.
+    #[test]
+    fn a_spooled_envelope_missing_connection_fields_still_decodes() {
+        let json = serde_json::json!({
+            "version": 1,
+            "occurred_at_ms": 1_787_961_234_567u64,
+            "session_id": "old-session",
+            "context": {
+                "app_version": "0.5.0",
+                "webos_release": "4.10.2",
+                "webos_api": "4.1.0",
+                "webos_codename": "goldilocks2-grampians",
+                "device_model": "m16p3s",
+                "soc": "M19_DVB",
+                "hardware_revision": "BOARD_PT_1ST",
+                // server_connection, ip_version, rtkmem, install all absent, as an old spool
+                // record would have them.
+            },
+            "name": "app.launch",
+            "fields": [],
+        });
+        let envelope: UsageEnvelope =
+            serde_json::from_value(json).expect("an old spooled envelope must still decode");
+        assert_eq!(envelope.context.server_connection, None);
+        assert_eq!(envelope.context.ip_version, None);
+        assert_eq!(envelope.context.rtkmem, "n/a");
+        assert_eq!(envelope.context.install, "unknown");
     }
 }

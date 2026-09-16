@@ -109,8 +109,8 @@ Every product analytics event also carries this bounded compatibility and connec
 | `device_model` | the LG model/platform class reported by nyx |
 | `soc` | the SoC/board class reported by nyx |
 | `hardware_revision` | the hardware revision class reported by nyx |
-| `server_connection` | `local` / `remote` / `relay` / `unknown` |
-| `ip_version` | `v4` / `v6` / `unknown` |
+| `server_connection` | `local` / `remote` / `relay` / `unknown` — omitted entirely on an event with no one server, such as `app.launch`, `route.entered` or a `signin.*` event |
+| `ip_version` | `v4` / `v6` / `unknown` — omitted entirely on an event with no one server, same as `server_connection` |
 | `rtkmem` | `ok` / `missing` / `n/a` — the k5lp/k3lp `/dev/rtkmem` jail pre-flight |
 | `install` | `devmode` / `homebrew` / `unknown` — never the install path |
 

@@ -43,6 +43,45 @@ static ATTEMPT: AtomicI64 = AtomicI64::new(0);
 /// Registry slot of the server this attempt addresses. Captured when the plan commits so a later
 /// server switch cannot relabel the attempt's analytics.
 static ATTEMPT_SERVER: AtomicU16 = AtomicU16::new(crate::plex::ServerId::UNSET.raw());
+/// #95 step 8, item 4: the attempt's connection facts, SNAPSHOTTED once in [`requested`] rather
+/// than read live off `ATTEMPT_SERVER`'s client at every `emit`. A live read would let a
+/// mid-attempt re-point (a fresh `Client` published over the same slot) relabel `started`/`ended`
+/// events that reported `local` a moment ago as `unknown`, or worse, as whatever the NEW server's
+/// connection happens to be — neither is the connection THIS attempt actually used.
+/// `link_code`/`ip_code` below mirror `plex::client`'s private encoding (0 = unknown).
+static ATTEMPT_LINK: AtomicU8 = AtomicU8::new(0);
+static ATTEMPT_IP: AtomicU8 = AtomicU8::new(0);
+
+fn encode_link(l: Option<crate::plex::probe::Location>) -> u8 {
+    match l {
+        None => 0,
+        Some(crate::plex::probe::Location::Local) => 1,
+        Some(crate::plex::probe::Location::Remote) => 2,
+        Some(crate::plex::probe::Location::Relay) => 3,
+    }
+}
+fn decode_link(c: u8) -> Option<crate::plex::probe::Location> {
+    match c {
+        1 => Some(crate::plex::probe::Location::Local),
+        2 => Some(crate::plex::probe::Location::Remote),
+        3 => Some(crate::plex::probe::Location::Relay),
+        _ => None,
+    }
+}
+fn encode_ip(ip: Option<crate::plex::IpVersion>) -> u8 {
+    match ip {
+        None => 0,
+        Some(crate::plex::IpVersion::V4) => 1,
+        Some(crate::plex::IpVersion::V6) => 2,
+    }
+}
+fn decode_ip(c: u8) -> Option<crate::plex::IpVersion> {
+    match c {
+        1 => Some(crate::plex::IpVersion::V4),
+        2 => Some(crate::plex::IpVersion::V6),
+        _ => None,
+    }
+}
 /// Process-local trace generation. Unlike `ATTEMPT`, this is never sent; it only prevents an
 /// outgoing demux worker from writing its late transitions into the next Play's reset trace.
 static NEXT_TRACE_GENERATION: AtomicU32 = AtomicU32::new(0);
@@ -839,6 +878,13 @@ pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: crate::plex:
     };
     ATTEMPT.store(id, Relaxed);
     ATTEMPT_SERVER.store(server.raw(), Relaxed);
+    // Snapshot the connection ONCE, here — see `ATTEMPT_LINK`/`ATTEMPT_IP`'s doc for why `emit`
+    // must never re-read the live client.
+    let (link, ip) = crate::plex::client_for(server)
+        .map(|c| (c.link(), c.ip_version()))
+        .unwrap_or((None, None));
+    ATTEMPT_LINK.store(encode_link(link), Relaxed);
+    ATTEMPT_IP.store(encode_ip(ip), Relaxed);
     SAW_START.store(false, Relaxed);
     SAW_FAIL.store(false, Relaxed);
     SAW_END.store(false, Relaxed);
@@ -866,9 +912,20 @@ pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: crate::plex:
     generation
 }
 
+/// Test-only window onto the frozen snapshot `requested` took, so a test can assert it survives a
+/// mid-attempt re-point without driving the whole consent/spool pipeline `emit` feeds.
+#[cfg(test)]
+pub(crate) fn attempt_connection_snapshot_for_test(
+) -> (Option<crate::plex::probe::Location>, Option<crate::plex::IpVersion>) {
+    (decode_link(ATTEMPT_LINK.load(Relaxed)), decode_ip(ATTEMPT_IP.load(Relaxed)))
+}
+
 fn emit(event: DiagEvent) {
     let sid = crate::plex::ServerId::from_raw(ATTEMPT_SERVER.load(Relaxed));
-    crate::diag::event_for_server(event, sid);
+    // The snapshot `requested` took, not a live `client_for(sid)` read — see `ATTEMPT_LINK`'s doc.
+    let link = decode_link(ATTEMPT_LINK.load(Relaxed));
+    let ip = decode_ip(ATTEMPT_IP.load(Relaxed));
+    crate::diag::event_for_connection(event, sid, link, ip);
 }
 
 /// Resolve an attempt before a newer Play overwrites its join key. Before first frame this is an
@@ -1242,6 +1299,53 @@ pub(crate) fn watched_class(position_ns: i64, duration_ns: i64) -> &'static str 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #95 step 8, item 4: `requested` snapshots the attempt's `(link, ip)` once; a re-point that
+    /// lands mid-attempt (a fresh `Client` published over the same slot, e.g. the roster refresh
+    /// path re-racing a working relay to LAN) must not relabel events already in flight for THIS
+    /// attempt. A live `client_for(server)` read at emit time would have.
+    #[test]
+    fn requested_snapshots_the_connection_and_a_mid_attempt_repoint_does_not_change_it() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let o = crate::plex::Origin::http("10.0.0.9", 32400);
+        let connection = crate::plex::ConnectionFacts::new(
+            Some(crate::plex::probe::Location::Local),
+            Some(crate::plex::IpVersion::V4),
+        );
+        let sid = crate::plex::register_pinned_with_client_id_and_connection(
+            "m1", &o, "tok", None, "cid", connection,
+        );
+        let ps = crate::route::PlaybackSession::default();
+        requested(&ps, sid);
+        assert_eq!(
+            attempt_connection_snapshot_for_test(),
+            (Some(crate::plex::probe::Location::Local), Some(crate::plex::IpVersion::V4)),
+            "snapshotted at requested time"
+        );
+        // Mid-attempt re-point: a DIFFERENT origin for the same machine id, e.g. a roster refresh
+        // finally reaching the LAN candidate — publishes a fresh `Client` with its own tier/ip.
+        let o2 = crate::plex::Origin::http("10.0.0.20", 32400);
+        let repoint = crate::plex::ConnectionFacts::new(
+            Some(crate::plex::probe::Location::Relay),
+            Some(crate::plex::IpVersion::V6),
+        );
+        let repointed = crate::plex::register_pinned_with_client_id_and_connection(
+            "m1", &o2, "tok", None, "cid", repoint,
+        );
+        assert_eq!(repointed, sid, "re-pointed in place — same slot id");
+        assert_eq!(
+            crate::plex::client_for(sid).unwrap().link(),
+            Some(crate::plex::probe::Location::Relay),
+            "the live client really did change"
+        );
+        assert_eq!(
+            attempt_connection_snapshot_for_test(),
+            (Some(crate::plex::probe::Location::Local), Some(crate::plex::IpVersion::V4)),
+            "the attempt's snapshot is untouched by the re-point"
+        );
+        crate::plex::reset_servers_for_test();
+    }
 
     #[test]
     fn replacing_an_attempt_always_gives_the_old_one_a_terminal_outcome() {

@@ -109,8 +109,21 @@ pub(crate) use servers::{
     register_with_client_id as register_for_test, reset_for_test as reset_servers_for_test,
     write_held_for_test,
 };
-pub(crate) use servers::register_captured_origin;
+// Only reached from `auth::register_observed_origin`'s `#[cfg(test)]` arm and from test files, so
+// a plain `cargo check --lib` (which builds no test code at all) sees no caller.
+#[allow(unused_imports)]
 pub(crate) use servers::register_pinned_with_client_id;
+// #95 step 8: connection facts applied AT registration, atomically with the registry write. See
+// `servers::ConnectionFacts`'s doc for why `None` means "leave unchanged" rather than "unknown".
+// `register_captured_origin_with_connection`/`register_origin_with_connection` are reached only
+// from production call sites that are themselves feature-conditional today; `#[allow]` keeps a
+// `--no-default-features` `cargo check` (which builds no test code) from flagging them as dead
+// while they still have a real, if narrower, production caller.
+#[allow(unused_imports)]
+pub(crate) use servers::{
+    register_captured_origin_with_connection, register_origin_with_connection,
+    register_pinned_with_client_id_and_connection, ConnectionFacts,
+};
 // The projected play-queue row + the identity rule that locates one: op-file items rather than
 // wire DTOs, so they are re-exported by name (route.rs names the row in `Plan`/`QueueInfo` — the
 // rest of `timeline` is reached through `Client`'s methods and needs none).

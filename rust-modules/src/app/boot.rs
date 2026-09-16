@@ -299,13 +299,14 @@ pub(super) fn activate_server_owned(
 pub(super) fn install_pms_owned(
     bridge: &mut super::bridge::Bridge,
     origin: &crate::plex::Origin,
+    address: &str,
     token: &str,
     tier: Option<crate::plex::probe::Location>,
     pin: Option<&crate::plex::ResolvePin>,
     install: &crate::auth::owner::ReadyInstall,
 ) -> crate::stores::EndpointRefreshSet {
     if let crate::auth::owner::ReadyInstall::PrimaryAndExtras(extras) = install {
-        crate::auth::install_captured_registry(origin, token, tier, pin, extras, None);
+        crate::auth::install_captured_registry(origin, address, token, tier, pin, extras, None);
     }
     activate_server_owned(bridge)
 }
@@ -710,8 +711,8 @@ pub(crate) unsafe fn construct(
                 pages.emit(MachineId::Nav, Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
                 pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(), rec, false);
             } else {
-                let endpoints = install_pms_owned(bridge, &ready.origin, &ready.token,
-                    ready.tier, ready.pin.as_ref(), &ready.install);
+                let endpoints = install_pms_owned(bridge, &ready.origin, &ready.address,
+                    &ready.token, ready.tier, ready.pin.as_ref(), &ready.install);
                 super::bridge::execute_endpoint_outcomes(pages, endpoints);
             }
             BootTo::Home
@@ -737,8 +738,8 @@ pub(crate) unsafe fn construct(
             pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
                 rec, false);
             if let Some(ready) = bridge.take_session_ready() {
-                let endpoints = install_pms_owned(bridge, &ready.origin, &ready.token,
-                    ready.tier, ready.pin.as_ref(), &ready.install);
+                let endpoints = install_pms_owned(bridge, &ready.origin, &ready.address,
+                    &ready.token, ready.tier, ready.pin.as_ref(), &ready.install);
                 super::bridge::execute_endpoint_outcomes(pages, endpoints);
                 // Refresh only AFTER installing the captured primary, so a fast accepted
                 // endpoint observation cannot be overwritten by that older boot snapshot.

@@ -219,6 +219,10 @@ pub struct ReadyCreds {
     /// it (`plex::origin`). Read straight off the stored [`session::ServerRef`], which is the
     /// value discovery wrote and the one `can_go_local` gates.
     pub origin: Origin,
+    /// The advertised address BEHIND `origin` — a dotted quad or v6 literal, never a
+    /// `plex.direct` hostname. `plex::IpVersion::of_host` can classify this even when `origin`'s
+    /// own host is a certificate NAME it cannot parse as an address (#95 step 8 / R3(a)).
+    pub address: String,
     pub token: String,
     /// The tier that won discovery, restored only after the main thread installs/re-points the
     /// client because a fresh client deliberately starts with an unknown link.
@@ -534,11 +538,18 @@ impl ClientLifecycle {
 pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
     match plan {
         owner::RegistryPlan::DevInstall { primary, extras, client_id } => {
-            install_captured_registry(&primary.origin(), &primary.token, primary.tier,
-                primary.resolve_pin().as_ref(), extras, Some(client_id));
+            install_captured_registry(&primary.origin(), &primary.address, &primary.token,
+                primary.tier, primary.resolve_pin().as_ref(), extras, Some(client_id));
         }
         owner::RegistryPlan::Primary { server, token } => {
-            crate::plex::install(&server.origin(), token, server.resolve_pin().as_ref());
+            // #95 step 8 / A2: carry the tier + address-derived IP into the same registration
+            // write, rather than restoring them in a later separate call the boot picker's avatar
+            // client used to skip.
+            let connection = crate::plex::ConnectionFacts::new(
+                server.tier,
+                crate::plex::IpVersion::of_host(&server.address),
+            );
+            crate::plex::install(&server.origin(), token, server.resolve_pin().as_ref(), connection);
         }
         owner::RegistryPlan::Activate { source, ipv6 } => {
             let Some(origin) = source.origin() else { return false };
@@ -557,11 +568,13 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
         }
         owner::RegistryPlan::Endpoint { expected, source } => {
             let Some(origin) = source.origin() else { return false };
-            let id = register_observed_origin(&source.machine_id, &origin, &source.token, source.resolve_pin().as_ref());
+            let connection = crate::plex::ConnectionFacts::new(
+                source.tier,
+                crate::plex::IpVersion::of_host(&source.address),
+            );
+            let id = register_observed_origin(&source.machine_id, &origin, &source.token,
+                source.resolve_pin().as_ref(), connection);
             if id.raw() != expected.sid { return false; }
-            if let (Some(tier), Some(client)) = (source.tier, crate::plex::client_for(id)) {
-                client.set_connection(tier, crate::plex::IpVersion::of_host(&source.address));
-            }
             crate::plex::describe_server(id, &source.name, &source.shared_by, source.owned);
             crate::plex::publish_probe_result(id, Outcome::Reachable);
         }
@@ -573,26 +586,40 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
 
 /// Shared resource installer. Dev boot supplies its captured device identity so registration
 /// cannot mint/read a session file; Account installation retains the existing lazy-ID behavior.
-pub(crate) fn install_captured_registry(origin: &Origin, token: &str, tier: Option<probe::Location>,
-    pin: Option<&crate::plex::ResolvePin>, extras: &[SourceRef], client_id: Option<&str>) {
-    let register = |machine: &str, origin: &Origin, token: &str, pin: Option<&crate::plex::ResolvePin>| {
-        if let Some(cid) = client_id { crate::plex::register_captured_origin(machine, origin, token, pin, cid) }
-        else { register_observed_origin(machine, origin, token, pin) }
-    };
-    let id = register("", origin, token, pin);
-    crate::plex::set_current(id);
-    if let Some(link) = tier {
-        if let Some(client) = crate::plex::client_for(id) {
-            client.set_connection(link, crate::plex::IpVersion::of_host(origin.host()));
+///
+/// `address` is the advertised address BEHIND `origin` (#95 step 8 / R3(a)): `origin.host()` is
+/// usually a `plex.direct` certificate NAME that `IpVersion::of_host` cannot parse, so deriving
+/// the IP family from it silently produced `None` on every real boot. The stored/advertised
+/// address is the one value that is actually a literal.
+pub(crate) fn install_captured_registry(origin: &Origin, address: &str, token: &str,
+    tier: Option<probe::Location>, pin: Option<&crate::plex::ResolvePin>, extras: &[SourceRef],
+    client_id: Option<&str>) {
+    // Applies `connection` atomically, inside the same registration write, on whichever branch
+    // runs (#95 step 8) — the primary and every extra used to register first and set the
+    // connection facts in a SEPARATE call afterward, which is exactly the gap `ConnectionFacts`
+    // exists to close.
+    let register = |machine: &str, origin: &Origin, token: &str,
+        pin: Option<&crate::plex::ResolvePin>, connection: crate::plex::ConnectionFacts| {
+        if let Some(cid) = client_id {
+            crate::plex::register_captured_origin_with_connection(machine, origin, token, pin, cid,
+                connection)
+        } else {
+            register_observed_origin(machine, origin, token, pin, connection)
         }
-    }
+    };
+    let primary_connection =
+        crate::plex::ConnectionFacts::new(tier, crate::plex::IpVersion::of_host(address));
+    let id = register("", origin, token, pin, primary_connection);
+    crate::plex::set_current(id);
     for source in extras {
         let Some(origin) = source.origin() else { continue };
         if source.token.is_empty() { continue; }
-        let id = register(&source.machine_id, &origin, &source.token, source.resolve_pin().as_ref());
-        if let Some(link) = source.tier {
-            if let Some(client) = crate::plex::client_for(id) { client.set_link(link); }
-        }
+        let connection = crate::plex::ConnectionFacts::new(
+            source.tier,
+            crate::plex::IpVersion::of_host(&source.address),
+        );
+        let id = register(&source.machine_id, &origin, &source.token,
+            source.resolve_pin().as_ref(), connection);
         crate::plex::describe_server(id, &source.name, &source.shared_by, source.owned);
     }
 }
@@ -686,45 +713,53 @@ pub(crate) enum LoginProgress {
 
 /// Register one accepted observed origin. Host tests use the registry's explicit no-I/O seam;
 /// shipping builds retain `register_origin`'s server-info refresh and persisted client identity.
+///
+/// `connection` (#95 step 8) is applied atomically, inside the SAME registration write, on
+/// whichever branch below runs — never as a separate call after this function returns, which is
+/// what let a re-point publish a fresh `Client` between "registered" and "connection applied" and
+/// briefly (or, if the caller forgot the follow-up, permanently) report it as unknown.
 fn register_observed_origin(
     machine_id: &str,
     origin: &Origin,
     token: &str,
     pin: Option<&crate::plex::ResolvePin>,
+    connection: crate::plex::ConnectionFacts,
 ) -> ServerId {
     #[cfg(not(test))]
     {
-        crate::plex::register_origin(machine_id, origin, token, pin)
+        crate::plex::register_origin_with_connection(machine_id, origin, token, pin, connection)
     }
     #[cfg(test)]
     {
-        crate::plex::register_pinned_with_client_id(
+        crate::plex::register_pinned_with_client_id_and_connection(
             machine_id,
             origin,
             token,
             pin,
             "auth-observation-test",
+            connection,
         )
     }
 }
 
 fn apply_candidate_activation(candidate: CandidateActivation) {
     let pin = crate::plex::ResolvePin::for_origin(&candidate.origin, &candidate.address);
+    let connection = crate::plex::ConnectionFacts::new(
+        Some(candidate.location),
+        Some(if candidate.ipv6 {
+            crate::plex::IpVersion::V6
+        } else {
+            crate::plex::IpVersion::V4
+        }),
+    );
     let id = register_observed_origin(
         &candidate.machine_id,
         &candidate.origin,
         &candidate.token,
         pin.as_ref(),
+        connection,
     );
-    if let Some(client) = crate::plex::client_for(id) {
-        client.set_connection(
-            candidate.location,
-            Some(if candidate.ipv6 {
-                crate::plex::IpVersion::V6
-            } else {
-                crate::plex::IpVersion::V4
-            }),
-        );
+    if crate::plex::client_for(id).is_some() {
         crate::plex::publish_probe_result(id, Outcome::Reachable);
     }
     crate::plex::describe_server(id, &candidate.name, &candidate.credit, candidate.owned);
@@ -1851,13 +1886,14 @@ fn publish_settled_probe(probe: &SettledProbe) {
         return;
     };
     if let Some(link) = probe.tier {
-        // `set_connection`, not the bare `set_link` this used to call: the same pattern
-        // `RegistryPlan::Endpoint` already uses (`execute_session_registry`), and the same rule
-        // (R3) — the IP generation comes from the candidate's own ADDRESS, never from
-        // `origin.host()`, which is a `plex.direct` NAME for exactly the connections this fix is
-        // about.
+        // `apply_connection`, not the bare `set_link` this used to call: the same rule (R3) — the
+        // IP generation comes from the candidate's own ADDRESS, never from `origin.host()`, which
+        // is a `plex.direct` NAME for exactly the connections this fix is about — and `None` from
+        // an unparseable address LEAVES a previously known ip alone (A1) rather than forcing it
+        // back to unknown, since this function updates an ALREADY-registered client rather than
+        // applying facts inside a fresh registration write.
         let ip = probe.address.as_deref().and_then(crate::plex::IpVersion::of_host);
-        client.set_connection(link, ip);
+        client.apply_connection(crate::plex::ConnectionFacts::new(Some(link), ip));
     }
     crate::plex::publish_probe_result(id, probe.outcome);
 }
@@ -2664,17 +2700,16 @@ fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> Vec<ServerId
         // so this `else` is unreachable today and is a `continue` rather than an `expect` because
         // a roster entry has never been allowed to cost more than itself (`de_soft_vec`).
         let Some(origin) = s.origin() else { continue };
-        let id =
-            register_observed_origin(&s.machine_id, &origin, &s.token, s.resolve_pin().as_ref());
+        // Applied atomically inside the same write (#95 step 8) — a re-pointed slot's fresh
+        // `Client` gets its connection facts from THIS call rather than a separate one after.
+        let connection =
+            crate::plex::ConnectionFacts::new(s.tier, crate::plex::IpVersion::of_host(&s.address));
+        let id = register_observed_origin(&s.machine_id, &origin, &s.token,
+            s.resolve_pin().as_ref(), connection);
         if !id.is_set() {
             continue;
         }
         installed.push(id);
-        // Registration may have re-pointed the slot by publishing a fresh Client, whose link is
-        // deliberately unknown. Restore the winner only AFTER that publication, every time.
-        if let (Some(link), Some(client)) = (s.tier, crate::plex::client_for(id)) {
-            client.set_connection(link, crate::plex::IpVersion::of_host(&s.address));
-        }
         // …and say WHOSE it is. Registering without this was the bug that made the whole shared-
         // source feature invisible on the only path a real user takes: `ServerFacts` stayed unset,
         // so every source read as owned with no handle, and each surface then correctly drew
@@ -4449,6 +4484,30 @@ mod tests {
         assert_eq!(
             crate::plex::client_for(installed[2]).unwrap().link(),
             Some(probe::Location::Relay)
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// #95 step 8 / A2: the boot primary install (`install_captured_registry`, what
+    /// `RegistryPlan::DevInstall` and the boot gate's `install_pms_owned` both call) derives the
+    /// IP family from the ADVERTISED ADDRESS, not `origin.host()` — a `plex.direct` origin's host
+    /// is a certificate NAME `IpVersion::of_host` cannot parse as a literal, which is exactly why
+    /// R3(a) found this reading unknown on every real boot before the fix. The stored tier is
+    /// applied in the same write.
+    #[test]
+    fn a_boot_primary_install_of_a_plex_direct_origin_derives_ip_from_the_stored_address() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let origin = Origin::parse("https://192-168-1-50.h4sh.plex.direct:32400").unwrap();
+        install_captured_registry(&origin, "192.168.1.50", "tok",
+            Some(probe::Location::Local), None, &[], Some("cid"));
+        let id = crate::plex::current_server();
+        let client = crate::plex::client_for(id).expect("the primary is registered and current");
+        assert_eq!(client.link(), Some(probe::Location::Local), "the stored tier");
+        assert_eq!(
+            client.ip_version(),
+            Some(crate::plex::IpVersion::V4),
+            "derived from the address, not the plex.direct hostname `origin.host()` carries"
         );
         crate::plex::reset_servers_for_test();
     }

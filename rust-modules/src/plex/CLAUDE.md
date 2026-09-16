@@ -32,8 +32,22 @@ token gets a **401** from it, and its section key `1` is a different library fro
 `client()` and `client_opt()` still mean what they always did, they just mean **the CURRENT
 server** now — which is why nothing outside `plex/` changed when the `OnceLock<Client>` singleton
 became a table. `client_for(id)` is the multi-server addition; `register_origin(machine_id,
-&Origin, token, Option<&ResolvePin>)` puts a server in the table; `install(&Origin, token,
-Option<&ResolvePin>)` is the SESSION path (boot, QR login, profile switch) and always retargets.
+&Origin, token, Option<&ResolvePin>)` puts a server in the table. **`install(&Origin, token,
+Option<&ResolvePin>, ConnectionFacts)` is the SESSION path** (boot, QR login, profile switch) and
+always retargets — it grew the fourth parameter in #95 step 8: `ConnectionFacts{tier, ip}` is
+applied to the published `Client` INSIDE the same registration write that creates or re-points its
+slot, never as a separate post-hoc `set_link`/`set_connection` call a caller could forget or a
+re-point could race. `None` in either field means **leave unchanged**, not "set unknown" — a
+same-origin retoken that knows nothing new about the connection passes `ConnectionFacts::default()`
+and the client's prior tier/IP survive; only a re-point (a genuinely fresh `Client`, which
+`Client::new` starts at `LINK_UNKNOWN`/`IP_UNKNOWN` regardless) or an explicit `Some` actually
+changes what's stored. `register_origin_with_connection`/`register_captured_origin_with_connection`
+are the `pub(crate)` seams that carry it through the other registration paths (dev boot,
+`install_captured_registry`'s primary and extras, the endpoint/roster/candidate-activation
+handlers in `auth.rs`); every one of them derives the IP family from the candidate's own advertised
+`address`, never `Origin::host()` — a `plex.direct` origin's host is a certificate NAME
+`IpVersion::of_host` cannot parse as a literal, which is why that used to read `unknown` on almost
+every real boot (issue #95's R3(a)).
 
 **A server's address is an `Origin` — scheme + host + port — and it is PARSED FROM A URL, never
 assembled from an address.** `origin.rs` is the type and the reasoning; the short version is that

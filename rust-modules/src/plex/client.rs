@@ -358,21 +358,23 @@ impl Client {
     }
     /// Record which tier of connection reached this server — for the code that ACTIVATES a
     /// candidate (`probe::candidates` ranks them; racing and dialling them lands with the
-    /// transport work). Call it once the probe has answered and the address is the one in use;
-    /// until someone does, [`Client::link`] is `None` and playback policy is unrestricted.
+    /// transport work). Until someone sets it, [`Client::link`] is `None` and playback policy is
+    /// unrestricted.
     ///
-    /// **ORDER MATTERS: register the address FIRST, then set the link on the client you get back**
-    /// (`let id = register_origin(mid, &o, tok); client_for(id).unwrap().set_link(l);`). A
-    /// `register` whose address differs RE-POINTS the slot — it publishes a fresh `Client`, which
-    /// starts at `LINK_UNKNOWN` — so a tier set before that call is simply gone, and the policy
-    /// silently reverts to unrestricted. That reset is deliberate rather than a wart: an address
-    /// change is exactly the event that can turn a LAN connection into a relay, so the old tier is
-    /// not evidence about the new one.
+    /// **Every production caller was moved onto [`Client::apply_connection`] / the registry's
+    /// [`super::servers::ConnectionFacts`] in #95 step 8** — the same "register, then set" order
+    /// this comment used to require raced a re-point (a fresh `Client` starting at
+    /// `LINK_UNKNOWN`) against the separate follow-up call, and `ConnectionFacts` is applied
+    /// atomically inside the registration write itself instead. This method remains a plain,
+    /// unconditional setter for tests that want to seed a tier directly (e.g. to grade
+    /// `finish_profile_switch` against a known-good roster) without going through the registry.
     pub fn set_link(&self, l: Location) {
         self.link.store(link_code(l), Relaxed);
     }
-    /// Publish both coarse network facts from the winning probe candidate. No address, hostname or
-    /// port survives this boundary — only the path class and IP generation analytics needs.
+    /// Publish both coarse network facts unconditionally — `ip_version: None` sets `ip_version()`
+    /// back to `None`/unknown, unlike [`Client::apply_connection`]'s "leave unchanged" semantics.
+    /// Superseded in production by `apply_connection`/`ConnectionFacts` (#95 step 8); this stays a
+    /// direct test seam.
     pub fn set_connection(&self, l: Location, ip_version: Option<IpVersion>) {
         self.set_link(l);
         self.ip_version.store(
@@ -383,6 +385,25 @@ impl Client {
             },
             Relaxed,
         );
+    }
+    /// Apply [`super::servers::ConnectionFacts`] captured AT registration (#95 step 8 / A1).
+    /// `None` in either field of `conn` is LEFT UNCHANGED — never written as unknown — so a
+    /// same-origin retoken cannot blank a tier or IP a previous activation already proved. The
+    /// registry is the only caller: it applies this inside the same write that creates or
+    /// re-points the slot, never as a separate step a caller can forget.
+    pub(crate) fn apply_connection(&self, conn: super::servers::ConnectionFacts) {
+        if let Some(tier) = conn.tier {
+            self.link.store(link_code(tier), Relaxed);
+        }
+        if let Some(ip) = conn.ip {
+            self.ip_version.store(
+                match ip {
+                    IpVersion::V4 => 1,
+                    IpVersion::V6 => 2,
+                },
+                Relaxed,
+            );
+        }
     }
     /// How this server is reached, `None` while nothing has said. Feed it to
     /// [`super::transcoder::link_policy`] rather than matching on it at a call site — a relay is
