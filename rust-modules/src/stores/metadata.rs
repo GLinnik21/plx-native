@@ -68,7 +68,16 @@
 //! Two route-unconditional per-frame landings sit beside `MetadataCmd` rather than inside it,
 //! because they are PUMPS (drain a mailbox, install what has landed) rather than requests a screen
 //! raises: [`pump_detail`], [`pump_season`], [`pump_alt_sources`] — called every frame regardless of
-//! route by `MetadataStore::step`'s `StoreEv::Pump` arm, exactly like every other store.
+//! route. `MetadataStore::step`'s `StoreEv::Pump` arm below folds all three through the same
+//! `note(StoreId::Metadata, …)` wrapper, but nothing ever SENDS a `StoreEv::Pump` to this store in
+//! production (only `Bridge`'s owned `BrowseStore` receives one, via `StoreWork::Browse`) — the
+//! arm is unreachable there. The actual per-frame callers are direct, unconditional calls in
+//! `app/run.rs`'s `update()`: `pump_detail()` and `pump_season()` sit side by side, and
+//! `pump_alt_sources_with_directory()` a few lines below. `pump_season()`'s call site was the one
+//! of the three that went missing across the phase-7 owned-screens migration (`ui/detail.rs`'s
+//! deleted route-gated `update()` used to drain it) and stayed missing — with nothing here to
+//! prove it was ever restored — until it was added back beside `pump_detail()` in `run.rs`; see
+//! `pump_wiring_tests` below for the regression pin a fixture-less `run.rs` cannot otherwise get.
 //!
 //! ## 3. `Spot`'s new location and shape
 //!
@@ -216,5 +225,46 @@ impl<H: Host> Machine<H> for MetadataStore {
             }
         }
         Handled::Yes
+    }
+}
+
+#[cfg(test)]
+mod pump_wiring_tests {
+    //! `app/run.rs`'s route-unconditional per-frame block has no host fixture — `App` needs a real
+    //! SDL/GL context, so nothing in `cargo test` ever calls its `update()`. The one thing a host
+    //! test CAN pin is that the source still contains the call, the same idiom
+    //! `app::words::focusprobe_player_overlay_delegates_to_the_shared_overlay_word_function` uses
+    //! for the identical reason (a closure/sequence local to `run()` that no test can invoke).
+    //!
+    //! This is the regression test for the missing `pump_season()` call site: the legacy
+    //! `ui/detail.rs::update()` used to drain the season mailbox every frame WHILE the Detail page
+    //! was mounted; phase 7's migration to an owned `DetailScreen` (894f20f8) deleted that whole
+    //! function and never added an equivalent call anywhere — not route-gated in the new screen,
+    //! not route-unconditional beside `pump_detail()` as this module's own doc comment (above)
+    //! already claimed it should be. With nothing draining `SEASON_RESULT`, `SEASON_DONE` never
+    //! caught up to `SEASON_GEN`: `season_loading()` read true forever after the first season
+    //! switch, wedging the episode row's spinner on and refusing every episode press for the rest
+    //! of the session (`season_loading()` gates `episodes::action`). Watched RED against the
+    //! source before the fix (no `pump_season()` call anywhere in `update()`); GREEN with it
+    //! sitting beside `pump_detail()`.
+    #[test]
+    fn the_route_unconditional_frame_update_pumps_the_season_landing_beside_detail() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+        )
+        .expect("read run.rs");
+        let detail_at = src
+            .find("crate::stores::metadata::pump_detail()")
+            .expect("run.rs must still pump the async detail landing every frame");
+        let window = &src[detail_at..(detail_at + 1500).min(src.len())];
+        assert!(
+            window.contains("crate::stores::metadata::pump_season()"),
+            "pump_season() must be called route-unconditionally beside pump_detail() in \
+             run.rs's per-frame update — its call site went missing in the phase-7 owned-screens \
+             migration (894f20f8 deleted the legacy ui/detail.rs::update() that used to drain it) \
+             and nothing replaced it, so season_loading() never clears after a season switch: the \
+             episode row's spinner spins forever and every episode press is refused (see \
+             episodes::action's season_loading() gate)."
+        );
     }
 }
