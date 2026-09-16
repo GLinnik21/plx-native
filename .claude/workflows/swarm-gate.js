@@ -342,8 +342,16 @@ const BLOCKER_ID = String(A.blockerId || '').trim()
 // separate invocations. This is the ONLY thing that routes to the one-shot Fable diagnostic below;
 // it is never looped automatically by this script, and the caller must not auto-relaunch either —
 // a failed/unavailable diagnostic or review is REVIEW_PENDING, a terminal state, not a retry.
-const EXHAUSTED = HIGH_RISK && REPLAN_COUNT >= 2
-if (HIGH_RISK) log(`high-risk package: replanCount=${REPLAN_COUNT}${BLOCKER_ID ? ` blockerId=${BLOCKER_ID}` : ''} — ${EXHAUSTED ? 'ordinary replanning EXHAUSTED, routing to one-shot Fable diagnostic' : 'Opus authors the contract directly'}`)
+const EXHAUSTED_REPLANS = HIGH_RISK && REPLAN_COUNT >= 2
+// The OTHER escalation trigger: a concrete architectural ambiguity the coordinator has already
+// established against the code, before any contract was authored. Passing it as text rather than
+// inflating replanCount keeps the ledger's retry history true — nothing was tried and rejected, so
+// nothing is counted — while still sending the question to the one place meant to settle it. It
+// must be a precise, code-grounded statement; an empty or vague one routes nowhere.
+const AMBIGUITY = String(A.architecturalAmbiguity || '').trim()
+const EXHAUSTED = EXHAUSTED_REPLANS || (HIGH_RISK && AMBIGUITY.length >= 40)
+if (A.architecturalAmbiguity && !(HIGH_RISK && AMBIGUITY.length >= 40)) log('! architecturalAmbiguity ignored: it needs highRisk and a precise statement of at least 40 characters — a vague one would buy a premium pass that settles nothing')
+if (HIGH_RISK) log(`high-risk package: replanCount=${REPLAN_COUNT}${BLOCKER_ID ? ` blockerId=${BLOCKER_ID}` : ''} — ${EXHAUSTED_REPLANS ? 'ordinary replanning EXHAUSTED, routing to one-shot Fable diagnostic' : EXHAUSTED ? 'concrete architectural ambiguity, routing to one-shot Fable diagnostic' : 'Opus authors the contract directly'}`)
 
 const hard_failures = []
 const reviews = []
@@ -575,12 +583,17 @@ if (EXHAUSTED) {
   // contract rather than a change. A shared-interface edit it finds necessary is IMPLEMENTATION
   // and belongs inside the one package's scope — never landed here as hidden contract prep.
   phase('Decompose')
-  log(`ordinary replanning exhausted (replanCount=${REPLAN_COUNT}) — ONE read-only Fable diagnostic, not another authored contract`)
+  log(EXHAUSTED_REPLANS
+    ? `ordinary replanning exhausted (replanCount=${REPLAN_COUNT}) — ONE read-only Fable diagnostic, not another authored contract`
+    : 'concrete architectural ambiguity established by the coordinator — ONE read-only Fable diagnostic before any contract is authored')
   const diag = await tryAgent(
     [
       preamble(prep), '',
       '## Your stage: DIAGNOSE (escalation, READ-ONLY). You are the only agent running.', '',
-      `This blocker${BLOCKER_ID ? ` (\`${BLOCKER_ID}\`)` : ''} has already failed pre-implementation review ${REPLAN_COUNT} time(s), in separate runs, each time because the CONTRACT was unbuildable rather than because a worker failed. You are not being asked to re-plan it again at the same level of abstraction. You are being asked to settle it against the code.`, '',
+      EXHAUSTED_REPLANS
+        ? `This blocker${BLOCKER_ID ? ` (\`${BLOCKER_ID}\`)` : ''} has already failed pre-implementation review ${REPLAN_COUNT} time(s), in separate runs, each time because the CONTRACT was unbuildable rather than because a worker failed. You are not being asked to re-plan it again at the same level of abstraction. You are being asked to settle it against the code.`
+        : `No contract has been authored for this${BLOCKER_ID ? ` (\`${BLOCKER_ID}\`)` : ''} yet, deliberately. The coordinator checked the code first and found a concrete architectural ambiguity that a contract would otherwise have to guess at — and a guessed contract for this kind of work is what cost an earlier package seven failed attempts. Settle the ambiguity against the code FIRST, then produce the contract that follows from your answer:\n\n> ${AMBIGUITY.replace(/\n/g, '\n> ')}\n\nIf the code shows the ambiguity is not real, say so plainly in \`risks\` and produce the contract anyway. If it shows the required design is genuinely undecidable from the code and the plan, say THAT in \`risks\` rather than choosing arbitrarily — a named open decision is useful; a silently chosen one is not.`,
+      '',
       ownWorktree(baseSha, 'diagnose'),
       'That worktree is THROWAWAY and you are READ-ONLY in it: commit nothing, modify nothing, land nothing. Your entire output is the contract below.', '',
       '## What to do',
@@ -746,7 +759,7 @@ for (let w = 0; w < waves.length; w++) {
       `**You own these files and only these:**\n${pkg.files_owned.map(f => `- ${f}`).join('\n')}`, '',
       pkg.prompt, '', `**Acceptance:** ${pkg.acceptance}`, '',
       EXHAUSTED
-        ? '## This contract is not a starting point — it is the instruction\nIt was produced by a read-only escalation stage that inspected the real call graph, after the ordinary planning path failed on this package repeatedly. **Implement it as written.** Do not redesign it, do not re-scope it, do not "improve" it, and do not substitute a different fix you find more natural on the way. If you become convinced it is actually wrong — a named file does not exist, a named signature does not match, the prescribed test cannot fail — STOP and report `blocked` with that specific evidence. Reporting the obstacle is useful; quietly building something else is the failure this stage exists to end.'
+        ? '## This contract is not a starting point — it is the instruction\nIt was produced by a read-only escalation stage that inspected the real call graph, because the ordinary planning path either failed on this package repeatedly or would have had to guess at an architectural question. **Implement it as written.** Do not redesign it, do not re-scope it, do not "improve" it, and do not substitute a different fix you find more natural on the way. If you become convinced it is actually wrong — a named file does not exist, a named signature does not match, the prescribed test cannot fail — STOP and report `blocked` with that specific evidence. Reporting the obstacle is useful; quietly building something else is the failure this stage exists to end.'
         : '',
       ownWorktree(baseSha, pkg.id.replace(/[^a-z0-9]+/gi, '-')), '',
       '## How you work',
