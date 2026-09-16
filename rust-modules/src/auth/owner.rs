@@ -153,6 +153,9 @@ pub(crate) enum Command {
     RefreshRoster,
     RequestEndpoint { #[serde(with = "super::observation::server_id")] sid: crate::plex::ServerId },
     TakeReady,
+    /// Answer the currently shown [`PersistenceWarning`]. A key that does not match the warning
+    /// currently held is inert — it may be stale (a newer warning replaced it).
+    AcknowledgePersistenceWarning { key: PersistenceWarningKey },
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -182,6 +185,28 @@ pub(crate) enum RegistryPlan {
     Revoke,
 }
 
+/// Which site's fresh save produced the warning being shown to the user — the discovery write
+/// that ran right after sign-in, or the final write `take_ready` issues once discovery settles.
+/// Both are `FreshReauthentication` writes; only the site differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum PersistenceWarningSite { Discovery, Final }
+
+/// Identity of the fresh write a `PersistenceWarning` is reporting on, so an acknowledgement can
+/// be checked against the exact warning it is answering rather than any warning currently shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PersistenceWarningKey { pub epoch: u64, pub req: u32 }
+
+/// A fresh-reauthentication write that did NOT confirm durable, surfaced to the owner/UI and held
+/// until the user explicitly acknowledges it — the AUTH-03 gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PersistenceWarning { pub key: PersistenceWarningKey, pub site: PersistenceWarningSite }
+
+/// A Ready handoff whose fresh final write has been admitted but not yet confirmed durable, or
+/// confirmed NOT durable and awaiting the user's acknowledgement. Nothing is emitted for it until
+/// `release_held_handoff` runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct HeldHandoff { pub epoch: u64, pub req: u32 }
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct CommitPlan {
     pub expected_disk: Identity,
@@ -193,6 +218,10 @@ pub(crate) struct CommitPlan {
     pub purpose: PersistencePurpose,
     /// Whether this commit asks storage for a durable write. Registry-only commits do not.
     pub writes_durable: bool,
+    /// `Routine` for every ordinary write; `FreshReauthentication` only for a write the owner
+    /// issues on the strength of THIS flow's own PIN authorization (a completed sign-in or
+    /// device-code exchange) — never on a discovery/rediscovery retry that merely reuses it.
+    pub authority: crate::plex::session::SaveAuthority,
 }
 
 /// Only the changes whose side effects are awaiting acknowledgement. This is not a second
@@ -241,6 +270,9 @@ pub(crate) struct PendingCommit {
     /// The purpose that admitted write was for. A background refresh is never saved-login
     /// evidence, so this is what the completion is graded against.
     pub purpose: Option<PersistencePurpose>,
+    /// Whether this commit's write is on `SaveAuthority::FreshReauthentication` — a durable
+    /// confirmation for one of these is held rather than announced until acknowledged.
+    pub fresh: bool,
 }
 
 /// Owner-side durability state of one commit consumption. Replaces the old boolean that advertised
@@ -267,6 +299,12 @@ pub(crate) struct AdmittedPersistence {
     pub revision: u64,
     /// Purpose of the admitted write, when the plan named one.
     pub purpose: Option<PersistencePurpose>,
+    /// Whether the admitted write is on `SaveAuthority::FreshReauthentication`. A non-durable
+    /// completion for a fresh write raises a `PersistenceWarning`; a routine one does not.
+    pub fresh: bool,
+    /// Which site (`Discovery` or `Final`) the fresh write belongs to, for the warning it may
+    /// raise. Meaningless when `fresh` is false.
+    pub site: PersistenceWarningSite,
 }
 
 /// Typed result of consuming a commit permit. The four cases are deliberately distinct: treating
@@ -528,6 +566,11 @@ pub(crate) struct SessionInit {
     /// Identity of the durable write this owner is waiting to hear about. Cleared once a matching
     /// completion settles it, or superseded by a newer admission. Only this identity can settle it.
     pub admitted_persistence: Option<AdmittedPersistence>,
+    /// A fresh write that did not confirm durable, held for acknowledgement (AUTH-03). While
+    /// present, `take_ready` refuses to issue a second fresh write over it.
+    pub persistence_warning: Option<PersistenceWarning>,
+    /// A Ready handoff whose fresh write is admitted but not yet released to the owner/UI.
+    pub held_handoff: Option<HeldHandoff>,
     /// One ordered erase awaiting resource completion: existing epoch and whether to sign in.
     pub pending_erase: Option<(u64, bool)>,
     pub inbox: VecDeque<SessionEnvelope>,
@@ -549,7 +592,8 @@ impl SessionInit {
             pin_denied: false, authorized_in_flow: false, signin_active: false, apply_pending: false,
             code_replaced: false, qr_gen: 0, next_qr: 0, epoch: 1, next_req: 0,
             pending: BTreeMap::new(), pending_commit: None, persistence_purpose: None,
-            commit_phase: CommitPhase { admitted: false, durable: false, proves_saved_login: false }, admitted_persistence: None, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
+            commit_phase: CommitPhase { admitted: false, durable: false, proves_saved_login: false }, admitted_persistence: None,
+            persistence_warning: None, held_handoff: None, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
             active_profile: None, profile_scope: ProfileScope(0),
             delete_leftovers: 0 }
     }
@@ -710,6 +754,13 @@ impl LogicalState for SessionInit {
         w.bool(self.commit_phase.admitted);
         w.bool(self.commit_phase.durable);
         w.bool(self.commit_phase.proves_saved_login);
+        w.option(self.persistence_warning.as_ref(), |w, warning| {
+            w.u64(warning.key.epoch).u32(warning.key.req).u8(match warning.site {
+                PersistenceWarningSite::Discovery => 0,
+                PersistenceWarningSite::Final => 1,
+            });
+        });
+        w.option(self.held_handoff.as_ref(), |w, held| { w.u64(held.epoch).u32(held.req); });
         w.option(self.pending_commit.as_ref(), |w, commit| {
             w.u32(commit.req).u64(commit.epoch).u64(commit.arrival).bool(commit.terminal)
                 .bool(commit.writes_credentials);
@@ -772,6 +823,7 @@ pub(crate) struct SessionSnapshot {
     pub profile: Option<ProfileRead>,
     pub scope: ProfileScope,
     pub delete_leftovers: usize,
+    pub persistence_warning: Option<PersistenceWarning>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -795,6 +847,7 @@ impl SessionSnapshot {
             && &*self.users == state.users.as_slice() && &*self.error == state.error.as_str()
             && self.code_replaced == state.code_replaced && self.pin_denied == state.pin_denied
             && self.scope == state.profile_scope && self.delete_leftovers == state.delete_leftovers
+            && self.persistence_warning == state.persistence_warning
             && match (&self.profile, &state.active_profile) {
                 (None, None) => true,
                 (Some(read), Some(profile)) => read.uuid == profile.uuid
@@ -822,7 +875,8 @@ impl SessionSnapshot {
             error, pin_denied: state.pin_denied,
             profile: state.active_profile.as_ref().map(|p| ProfileRead {
                 uuid: p.uuid.clone(), title: p.title.clone(), thumb: p.thumb.clone(),
-            }), scope: state.profile_scope, delete_leftovers: state.delete_leftovers }
+            }), scope: state.profile_scope, delete_leftovers: state.delete_leftovers,
+            persistence_warning: state.persistence_warning }
     }
 }
 
@@ -873,6 +927,7 @@ impl SessionMachine {
 
     pub fn needs_ready_commit(&self) -> bool {
         self.state.phase == Phase::Ready && self.state.apply_pending && self.state.pending_commit.is_none()
+            && self.state.persistence_warning.is_none()
     }
 
     pub fn publication_is_current(&self, publication: &ProfilePublication) -> bool {
@@ -924,11 +979,14 @@ impl SessionMachine {
         if pending.key.epoch != self.state.epoch { return false; }
         pending.last_arrival = Some(arrival);
         let epoch = pending.key.epoch;
+        let fresh = plan.writes_durable && plan.credentials.is_some()
+            && plan.authority == crate::plex::session::SaveAuthority::FreshReauthentication;
         self.state.pending_commit = Some(PendingCommit { req, epoch, arrival, terminal,
             writes_credentials: plan.writes_durable && plan.credentials.is_some(),
             receipt: None, delta,
             admitted_revision: None,
-            purpose: plan.writes_durable.then_some(plan.purpose) });
+            purpose: plan.writes_durable.then_some(plan.purpose),
+            fresh });
         self.state.persistence_purpose = Some(plan.purpose);
         emit(SessionFx::Commit { req, epoch, arrival, plan });
         true
@@ -937,6 +995,9 @@ impl SessionMachine {
     fn take_ready(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool {
         if self.state.phase != Phase::Ready || !self.state.apply_pending
             || self.state.pending_commit.is_some() { return false; }
+        // A discovery failure left a warning unacknowledged: the final fresh write must not run
+        // over it (AUTH-03) — acknowledging is what re-admits `needs_ready_commit`.
+        if self.state.persistence_warning.is_some() { return false; }
         let Some(req) = self.allocate(SessionOp::Ready, None) else {
             self.state.phase = Phase::Profiles;
             self.state.apply_pending = false;
@@ -947,10 +1008,15 @@ impl SessionMachine {
         let mut next = self.state.persisted.clone();
         super::remember_unprotected_active(&mut next);
         let patch = CredentialPatch::of(&next);
+        // Consumed exactly once: a discovery/rediscovery retry only PEEKS this flag
+        // (`apply_resource_observation`), so it cannot spend the authority the final write needs.
+        let authority = if std::mem::take(&mut self.state.authorized_in_flow) {
+            crate::plex::session::SaveAuthority::FreshReauthentication
+        } else { crate::plex::session::SaveAuthority::Routine };
         let plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
             credentials: Some(patch.clone()), lifecycle: None,
             registry: vec![RegistryPlan::Install { sources: next.sources.clone(), primary: None, replace: false }],
-            purpose: PersistencePurpose::Final, writes_durable: true };
+            purpose: PersistencePurpose::Final, writes_durable: true, authority };
         self.begin_commit(req, 0, true, plan, CommitDelta {
             credentials: Some(patch), activate_profile: true, ready: Some(false),
             ..Default::default()
@@ -966,7 +1032,8 @@ impl SessionMachine {
         let Some(req) = self.allocate(SessionOp::DevBoundary, None) else { return false };
         self.begin_commit(req, 0, true, CommitPlan { expected_disk: self.state.disk_identity.clone(),
             credentials: None, lifecycle: None, registry,
-            purpose: PersistencePurpose::Background, writes_durable: false }, CommitDelta {
+            purpose: PersistencePurpose::Background, writes_durable: false,
+            authority: crate::plex::session::SaveAuthority::Routine }, CommitDelta {
                 dev: Some(DevCommitDelta::Activated), ..Default::default()
             }, emit)
     }
@@ -985,7 +1052,8 @@ impl SessionMachine {
         let login_req = self.allocate(SessionOp::Login, None).expect("two-slot preflight");
         self.begin_commit(req, 0, true, CommitPlan { expected_disk: self.state.disk_identity.clone(),
             credentials: None, lifecycle: None, registry: vec![RegistryPlan::Revoke],
-            purpose: PersistencePurpose::Background, writes_durable: false }, CommitDelta {
+            purpose: PersistencePurpose::Background, writes_durable: false,
+            authority: crate::plex::session::SaveAuthority::Routine }, CommitDelta {
                 dev: Some(DevCommitDelta::StartAccount { login_req }), ..Default::default()
             }, emit);
         self.replace_publication();
@@ -1009,7 +1077,8 @@ impl SessionMachine {
             credentials: None, lifecycle: None,
             registry: vec![RegistryPlan::Install { sources: self.state.persisted.sources.clone(),
                 primary: None, replace: false }],
-            purpose: PersistencePurpose::Background, writes_durable: false };
+            purpose: PersistencePurpose::Background, writes_durable: false,
+            authority: crate::plex::session::SaveAuthority::Routine };
         self.begin_commit(req, 0, true, plan, CommitDelta {
             phase: Some(Phase::Ready), activate_profile: true, ready: Some(false),
             ..Default::default()
@@ -1025,6 +1094,7 @@ impl SessionMachine {
     fn apply_persistence_completion(
         &mut self,
         completion: crate::plex::session::async_persistence::PersistenceCompletion,
+        emit: &mut impl FnMut(SessionFx),
     ) -> bool {
         use crate::plex::session::async_persistence::CompletionOutcome;
         let Some(admitted) = self.state.admitted_persistence else { return false };
@@ -1040,6 +1110,21 @@ impl SessionMachine {
         self.state.commit_phase.durable = durable;
         self.state.commit_phase.proves_saved_login =
             durable && completion.purpose.proves_saved_login();
+        let correlation_key = PersistenceWarningKey { epoch: completion.epoch, req: completion.req };
+        if durable {
+            // Release only the handoff THIS completion is for — a routine completion arriving
+            // while an unrelated fresh handoff is held must not free it.
+            if self.state.held_handoff == Some(HeldHandoff { epoch: completion.epoch, req: completion.req }) {
+                self.release_held_handoff(emit);
+                self.replace_publication();
+            }
+        } else if admitted.fresh {
+            // The final write's own non-durable completion replaces a Discovery warning still
+            // showing (`Discovery` and `Final` never coexist: an unacknowledged Discovery warning
+            // blocks `take_ready`), so the newer one wins by direct overwrite.
+            self.state.persistence_warning = Some(PersistenceWarning { key: correlation_key, site: admitted.site });
+            self.replace_publication();
+        }
         true
     }
 
@@ -1055,7 +1140,11 @@ impl SessionMachine {
         let commit = self.state.pending_commit.take().unwrap();
         self.state.admitted_persistence = admit_revision.map(|revision| AdmittedPersistence {
             req: commit.req, epoch: commit.epoch, arrival: commit.arrival, revision,
-            purpose: admit_purpose });
+            purpose: admit_purpose, fresh: commit.fresh,
+            site: match admit_purpose {
+                Some(PersistencePurpose::Discovery) => PersistenceWarningSite::Discovery,
+                _ => PersistenceWarningSite::Final,
+            } });
         self.state.commit_phase = CommitPhase {
             admitted: admit_revision.is_some(),
             durable: false,
@@ -1134,14 +1223,13 @@ impl SessionMachine {
             emit(SessionFx::Coordinator(CoordinatorAction::SignInCompleted));
         }
         if delta.activate_profile {
-            self.publish_profile(Some(self.state.persisted.user.clone()), emit);
-            if self.state.phase == Phase::Ready {
-                emit(SessionFx::Ready { epoch: self.state.epoch, scope: self.state.profile_scope,
-                    server: self.state.persisted.server.clone(), token: self.state.persisted.pms_token().into(),
-                    install: ReadyInstall::PrimaryAndExtras(match &self.state.authority {
-                        BootstrapAuthority::Account { extras } => extras.clone(),
-                        BootstrapAuthority::DevPms { .. } => Vec::new(),
-                    }) });
+            if commit.fresh && admit_revision.is_some() {
+                // The fresh write is admitted but not yet confirmed durable: hold the handoff
+                // rather than announce Ready/publish the profile until a completion (or an
+                // acknowledged warning) releases it — the AUTH-03 gate.
+                self.state.held_handoff = Some(HeldHandoff { epoch: commit.epoch, req: commit.req });
+            } else {
+                self.release_held_handoff(emit);
             }
         }
         if commit.terminal {
@@ -1157,6 +1245,36 @@ impl SessionMachine {
     fn retire(&mut self, req: u32, emit: &mut impl FnMut(SessionFx)) {
         self.state.pending.remove(&req);
         emit(SessionFx::Retire { req });
+    }
+
+    /// The single site that publishes a profile and announces `SessionFx::Ready`. A fresh
+    /// handoff reaches it only once its write is released — durably confirmed, or its warning
+    /// acknowledged; a non-fresh (`Routine`) commit reaches it immediately, exactly as before.
+    fn release_held_handoff(&mut self, emit: &mut impl FnMut(SessionFx)) {
+        self.state.held_handoff = None;
+        self.publish_profile(Some(self.state.persisted.user.clone()), emit);
+        if self.state.phase == Phase::Ready {
+            emit(SessionFx::Ready { epoch: self.state.epoch, scope: self.state.profile_scope,
+                server: self.state.persisted.server.clone(), token: self.state.persisted.pms_token().into(),
+                install: ReadyInstall::PrimaryAndExtras(match &self.state.authority {
+                    BootstrapAuthority::Account { extras } => extras.clone(),
+                    BootstrapAuthority::DevPms { .. } => Vec::new(),
+                }) });
+        }
+    }
+
+    /// The AUTH-03 acknowledgement door: clears the warning and, if a handoff is still held for
+    /// it, releases it — exactly ONE `SessionFx::Ready` for the flow, through
+    /// [`Self::release_held_handoff`], never a second one from here.
+    fn acknowledge_persistence_warning(&mut self, key: PersistenceWarningKey,
+        emit: &mut impl FnMut(SessionFx)) -> bool {
+        if self.state.persistence_warning.map(|warning| warning.key) != Some(key) { return false; }
+        self.state.persistence_warning = None;
+        if self.state.held_handoff.is_some() {
+            self.release_held_handoff(emit);
+        }
+        self.replace_publication();
+        true
     }
 
     fn emit_work(&mut self, req: u32, input: SessionWork, emit: &mut impl FnMut(SessionFx)) {
@@ -1346,7 +1464,8 @@ impl SessionMachine {
             });
             let plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
                 credentials: None, lifecycle: None, registry,
-                purpose: PersistencePurpose::Background, writes_durable: false };
+                purpose: PersistencePurpose::Background, writes_durable: false,
+                authority: crate::plex::session::SaveAuthority::Routine };
             self.begin_commit(req, 0, true, plan, CommitDelta {
                 activate_profile: initial_profile, ..Default::default()
             }, emit);
@@ -1416,6 +1535,8 @@ impl SessionMachine {
         self.state.error.clear();
         self.state.pin_denied = false;
         self.state.authorized_in_flow = false;
+        self.state.persistence_warning = None;
+        self.state.held_handoff = None;
         self.state.code_replaced = false;
         emit(SessionFx::BackReply { to: reply, resumed: true });
         self.replace_publication();
@@ -1438,6 +1559,8 @@ impl SessionMachine {
         self.state.error.clear();
         self.state.pin_denied = false;
         self.state.authorized_in_flow = false;
+        self.state.persistence_warning = None;
+        self.state.held_handoff = None;
         self.state.signin_active = false;
         self.state.apply_pending = false;
         self.state.code_replaced = false;
@@ -1539,14 +1662,22 @@ impl SessionMachine {
         let mut delta = CommitDelta::default();
         // Purpose is decided by the op, not by whether the write happens to be a credential
         // patch: a background authorisation refresh must never read as proof of a saved login.
+        // Login/Rediscover's SignedIn write is the DISCOVERY save — the FINAL one is take_ready's,
+        // once the picker/Ready decision has been made.
         let purpose = match pending.key.op {
-            SessionOp::Login | SessionOp::Rediscover => PersistencePurpose::Final,
+            SessionOp::Login | SessionOp::Rediscover => PersistencePurpose::Discovery,
             SessionOp::ProfileSwitch => PersistencePurpose::Profile,
             _ => PersistencePurpose::Background,
         };
+        // A PEEK, never a consume: a discovery/rediscovery write must not spend the fresh
+        // authority the FINAL write (take_ready) needs (AUTH-04). Only take_ready consumes it.
+        let authority = if matches!(pending.key.op, SessionOp::Login | SessionOp::Rediscover)
+            && self.state.authorized_in_flow {
+            crate::plex::session::SaveAuthority::FreshReauthentication
+        } else { crate::plex::session::SaveAuthority::Routine };
         let mut plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
             credentials: None, registry: Vec::new(), lifecycle: pending.lifecycle,
-            purpose, writes_durable: false };
+            purpose, writes_durable: false, authority };
         match &**data {
             Observation::Login(super::LoginProgress::SignedIn { server, sources, users, .. }) => {
                 let mut next = self.state.persisted.clone();
@@ -1705,6 +1836,8 @@ impl SessionMachine {
             self.state.error.clear();
             self.state.pin_denied = false;
             self.state.authorized_in_flow = false;
+            self.state.persistence_warning = None;
+            self.state.held_handoff = None;
             self.state.apply_pending = false;
             self.state.code_replaced = false;
             self.state.qr_gen = 0;
@@ -1733,6 +1866,8 @@ impl SessionMachine {
         }
         self.state.error = message.to_owned();
         self.state.phase = Phase::Error;
+        self.state.persistence_warning = None;
+        self.state.held_handoff = None;
     }
 
     /// QR observations need no external commit. SignedIn and registry/profile facts go through
@@ -1874,6 +2009,8 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
             SessionEvent::Command(Command::StartLogin) => self.restart_login(true, &mut emit),
             SessionEvent::Command(Command::Retry) => self.restart_login(false, &mut emit),
             SessionEvent::Command(Command::TakeReady) => self.take_ready(&mut emit),
+            SessionEvent::Command(Command::AcknowledgePersistenceWarning { key }) =>
+                self.acknowledge_persistence_warning(*key, &mut emit),
             SessionEvent::Command(Command::StartSwitch(picker)) => self.start_switch(*picker, &mut emit),
             SessionEvent::Command(Command::SelectProfile { index, pin }) => self.select_profile(*index, pin.clone(), &mut emit),
             SessionEvent::Command(Command::SelectProfileWithReply { index, pin, reply }) => {
@@ -1905,7 +2042,7 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
             }
             SessionEvent::Result(envelope) => self.ingest(envelope, &mut emit),
             SessionEvent::Commit(reply) => self.apply_commit_reply(*reply, &mut emit),
-            SessionEvent::Persistence(completion) => self.apply_persistence_completion(*completion),
+            SessionEvent::Persistence(completion) => self.apply_persistence_completion(*completion, &mut emit),
             SessionEvent::Read(reply) => self.apply_read(reply, &mut emit),
             SessionEvent::Admission(reply) => self.apply_admission(*reply, &mut emit),
             SessionEvent::Erased { epoch, leftovers } => self.erased(*epoch, *leftovers, &mut emit),
@@ -2023,6 +2160,25 @@ mod tests {
         persisted.server.token = "synthetic-token".into();
         persisted.user.token = "synthetic-token".into();
         SessionInit::captured(persisted)
+    }
+
+    /// AUTH-03/AUTH-04 rig: a session mid-flow, discovering with a completed PIN authorization
+    /// already recorded (`authorized_in_flow`) and one live `Login` request awaiting its
+    /// `SignedIn` observation — the shape `restart_login`+`Authorized` would have produced, built
+    /// directly so the test owns its own state root with no disk, no fixture and no Bridge.
+    fn discovering_after_authorization() -> SessionInit {
+        let mut init = local_session();
+        let req = init.next_req.checked_add(1).unwrap();
+        init.next_req = req;
+        init.phase = Phase::Discovering;
+        init.authorized_in_flow = true;
+        init.pending.insert(req, Pending {
+            key: SessionWorkKey { epoch: init.epoch, op: SessionOp::Login },
+            expected: Identity::of(&init.persisted), lifecycle: None, last_arrival: None,
+            phase: StreamPhase::Running, capture: None,
+            admission: AdmissionState::Awaiting(AdmissionId(req)),
+        });
+        init
     }
 
     /// ACCEPTANCE SPEC 1/5. Consuming a commit returns a TYPED admission separating authority
@@ -2147,6 +2303,169 @@ mod tests {
         deliver(&mut owner, mismatched);
         assert!(!owner.state.commit_phase.durable,
             "a verdict resolved for a different purpose is not this operation's verdict");
+    }
+
+    /// AUTH-03. Port of 0.6.6's
+    /// `a_fresh_sign_in_over_an_unanswered_envelope_survives_the_next_launch`
+    /// (`plex/session.rs:8662`) into the 0.7 owner: the DISCOVERY write (the SignedIn observation)
+    /// lands durably here, so it raises no warning — it is the FINAL write, `take_ready`'s, that
+    /// fails to confirm durable, and THAT is what must be held behind an acknowledgement rather
+    /// than announced as `SessionFx::Ready`.
+    #[test]
+    fn fresh_save_warning_requires_acknowledgement_before_the_handoff() {
+        use crate::plex::session::async_persistence::{
+            CompletionOutcome, Failure, Operation, PersistOutcome, PersistenceCompletion,
+        };
+        let mut owner = SessionMachine::from_init(discovering_after_authorization());
+        let req = owner.state.next_req;
+        let epoch = owner.state.epoch;
+        assert!(owner.state.authorized_in_flow, "the rig starts with a completed PIN authorization");
+
+        // The SignedIn observation begins a DISCOVERY commit, on a PEEKED fresh authority (not
+        // consumed yet — AUTH-04's own guarantee).
+        let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+            epoch, server: Default::default(), sources: Vec::new(),
+            users: vec![UserTile { title: "Only user".into(), ..Default::default() }],
+        }, true);
+        let effects = step(&mut owner, SessionEvent::Result(signed_in));
+        let Some(SessionFx::Commit { plan, .. }) = effects.iter().find(|fx| matches!(fx, SessionFx::Commit { .. })) else {
+            panic!("SignedIn must begin a commit");
+        };
+        assert_eq!(plan.purpose, PersistencePurpose::Discovery);
+        assert_eq!(plan.authority, crate::plex::session::SaveAuthority::FreshReauthentication);
+        assert!(owner.state.authorized_in_flow, "a discovery commit only PEEKS the authority");
+
+        let discovery_reply = CommitReply { req, epoch, arrival: 1,
+            admission: CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Discovery } };
+        let effects = step(&mut owner, SessionEvent::Commit(discovery_reply));
+        assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Ready { .. })),
+            "a discovery admission never announces Ready");
+        let discovery_durable = PersistenceCompletion { req, epoch, arrival: 1, revision: 1,
+            purpose: PersistencePurpose::Discovery,
+            outcome: CompletionOutcome::Durable(Operation::Write {
+                outcome: PersistOutcome::PersistedPlaintext, verified: true, protection: None }) };
+        step(&mut owner, SessionEvent::Persistence(discovery_durable));
+        assert!(owner.state.persistence_warning.is_none(), "the discovery write DID land durably");
+
+        // take_ready now issues the FINAL commit, consuming the authority exactly once.
+        let effects = step(&mut owner, SessionEvent::Command(Command::TakeReady));
+        let Some(SessionFx::Commit { plan: final_plan, .. }) =
+            effects.iter().find(|fx| matches!(fx, SessionFx::Commit { .. })) else {
+            panic!("TakeReady must begin the final commit");
+        };
+        assert_eq!(final_plan.purpose, PersistencePurpose::Final);
+        assert_eq!(final_plan.authority, crate::plex::session::SaveAuthority::FreshReauthentication);
+        assert!(!owner.state.authorized_in_flow, "the final commit consumes the authority");
+
+        let final_req = owner.state.next_req;
+        let final_reply = CommitReply { req: final_req, epoch, arrival: 0,
+            admission: CommitAdmission::Admitted { revision: 2, purpose: PersistencePurpose::Final } };
+        let effects = step(&mut owner, SessionEvent::Commit(final_reply));
+        assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Ready { .. })),
+            "a FRESH admission is held, not announced, until its durability is known");
+        assert!(owner.state.held_handoff.is_some(), "the Ready handoff is held for this commit");
+
+        // The final write's OWN completion fails to confirm durable: this is the AUTH-03 gate.
+        let final_failed = PersistenceCompletion { req: final_req, epoch, arrival: 0, revision: 2,
+            purpose: PersistencePurpose::Final,
+            outcome: CompletionOutcome::Failed(Failure::Persistence(PersistOutcome::WriteFailed)) };
+        let effects = step(&mut owner, SessionEvent::Persistence(final_failed));
+        assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Ready { .. })),
+            "MUTATION M1 TARGET: skipping the gate would announce Ready right here");
+        assert_eq!(owner.state.persistence_warning.map(|w| w.site), Some(PersistenceWarningSite::Final));
+        assert_eq!(owner.publication().persistence_warning.map(|w| w.site), Some(PersistenceWarningSite::Final),
+            "the warning must reach the UI-facing publication, not only internal state");
+        assert!(!owner.state.commit_phase.proves_saved_login,
+            "no saved/final claim before the user acknowledges");
+
+        let warning_key = owner.state.persistence_warning.unwrap().key;
+        let wrong = PersistenceWarningKey { epoch: warning_key.epoch, req: warning_key.req + 1 };
+        assert!(!step(&mut owner, SessionEvent::Command(Command::AcknowledgePersistenceWarning { key: wrong }))
+            .iter().any(|fx| matches!(fx, SessionFx::Ready { .. })));
+        assert!(owner.state.persistence_warning.is_some(), "a mismatched key must not clear the warning");
+
+        let effects = step(&mut owner,
+            SessionEvent::Command(Command::AcknowledgePersistenceWarning { key: warning_key }));
+        assert_eq!(effects.iter().filter(|fx| matches!(fx, SessionFx::Ready { .. })).count(), 1,
+            "acknowledging releases exactly the ONE held handoff, exactly once");
+        assert!(owner.state.persistence_warning.is_none());
+        assert!(owner.state.held_handoff.is_none());
+    }
+
+    /// AUTH-04. Port of 0.6.6's
+    /// `a_routine_save_of_a_reopened_session_does_not_spend_fresh_reauthentication_authority`
+    /// (`plex/session.rs:8761`): a DISCOVERY failure must not spend the fresh authority the FINAL
+    /// write still needs, and must not let `take_ready` run at all until acknowledged.
+    #[test]
+    fn a_discovery_failure_cannot_spend_or_authorize_the_final_fresh_save() {
+        use crate::plex::session::async_persistence::{CompletionOutcome, Failure, Operation,
+            PersistOutcome, PersistenceCompletion};
+        let mut owner = SessionMachine::from_init(discovering_after_authorization());
+        let req = owner.state.next_req;
+        let epoch = owner.state.epoch;
+
+        let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+            epoch, server: Default::default(), sources: Vec::new(),
+            users: vec![UserTile { title: "Only user".into(), ..Default::default() }],
+        }, true);
+        step(&mut owner, SessionEvent::Result(signed_in));
+        let discovery_reply = CommitReply { req, epoch, arrival: 1,
+            admission: CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Discovery } };
+        step(&mut owner, SessionEvent::Commit(discovery_reply));
+        assert!(owner.state.authorized_in_flow, "the discovery admission only PEEKED the authority");
+
+        let discovery_failed = PersistenceCompletion { req, epoch, arrival: 1, revision: 1,
+            purpose: PersistencePurpose::Discovery,
+            outcome: CompletionOutcome::Failed(Failure::Persistence(PersistOutcome::WriteFailed)) };
+        step(&mut owner, SessionEvent::Persistence(discovery_failed));
+        assert_eq!(owner.state.persistence_warning.map(|w| w.site), Some(PersistenceWarningSite::Discovery));
+        assert!(owner.state.authorized_in_flow,
+            "MUTATION M3 TARGET: a discovery failure must not have spent the fresh authority");
+
+        // Blocked: an unacknowledged warning must refuse TakeReady outright.
+        assert!(!owner.needs_ready_commit(), "a live warning must suppress the ready-commit signal");
+        let effects = step(&mut owner, SessionEvent::Command(Command::TakeReady));
+        assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Commit { .. })),
+            "MUTATION M4 TARGET: take_ready must not begin a commit over an unacknowledged warning");
+
+        let warning_key = owner.state.persistence_warning.unwrap().key;
+        step(&mut owner, SessionEvent::Command(Command::AcknowledgePersistenceWarning { key: warning_key }));
+        assert!(owner.state.persistence_warning.is_none());
+
+        // Acknowledging a DISCOVERY warning (no held handoff behind it) re-admits TakeReady, and
+        // the authority the discovery failure did NOT spend is still there for the real final write.
+        let effects = step(&mut owner, SessionEvent::Command(Command::TakeReady));
+        let Some(SessionFx::Commit { plan, .. }) = effects.iter().find(|fx| matches!(fx, SessionFx::Commit { .. })) else {
+            panic!("the acknowledged flow must be able to reach its final commit");
+        };
+        assert_eq!(plan.purpose, PersistencePurpose::Final);
+        assert_eq!(plan.authority, crate::plex::session::SaveAuthority::FreshReauthentication,
+            "the authority a discovery failure never spent is still available to the final write");
+        assert!(!owner.state.authorized_in_flow, "this final commit consumes it now");
+
+        let final_req = owner.state.next_req;
+        let admitted = CommitReply { req: final_req, epoch, arrival: 0,
+            admission: CommitAdmission::Admitted { revision: 2, purpose: PersistencePurpose::Final } };
+        step(&mut owner, SessionEvent::Commit(admitted));
+        let durable = PersistenceCompletion { req: final_req, epoch, arrival: 0, revision: 2,
+            purpose: PersistencePurpose::Final,
+            outcome: CompletionOutcome::Durable(Operation::Write {
+                outcome: PersistOutcome::PersistedPlaintext, verified: true, protection: None }) };
+        let effects = step(&mut owner, SessionEvent::Persistence(durable));
+        assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Ready { .. })),
+            "a durably confirmed fresh write DOES release its held handoff as Ready");
+
+        // A LATER, ordinary Ready-op commit (a ready profile re-applying itself) must never carry
+        // fresh authority again — the flag was spent once and stays spent.
+        owner.state.apply_pending = true;
+        owner.state.phase = Phase::Ready;
+        let effects = step(&mut owner, SessionEvent::Command(Command::TakeReady));
+        let Some(SessionFx::Commit { plan: routine_plan, .. }) =
+            effects.iter().find(|fx| matches!(fx, SessionFx::Commit { .. })) else {
+            panic!("the second Ready-op commit must still be reachable");
+        };
+        assert_eq!(routine_plan.authority, crate::plex::session::SaveAuthority::Routine,
+            "the authority was spent once; a later Ready-op commit is Routine");
     }
 
     #[test]

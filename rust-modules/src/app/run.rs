@@ -1665,6 +1665,11 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                     log("login: server installed — entering Home");
                     super::bridge::nav_root(&mut app.pages, AppArg::Home);
                 }
+            } else if app.bridge.auth_read().0.persistence_warning.is_some() {
+                // A fresh save could not be confirmed durable: keep the report reachable before
+                // consent/profile routing, exactly as 0.6.6 did — the warning is answered on the
+                // login screen itself (AUTH-03), not by moving on as if it were acknowledged.
+                super::bridge::nav_root(&mut app.pages, AppArg::Login);
             } else {
                 match app.bridge.auth_read().0.phase {
                     // A Ready decision can still await its queued disk/registry ACK. Keep

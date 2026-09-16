@@ -410,9 +410,18 @@ fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contra
         d.frame_with(&mut rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
         let state = rig.session.snapshot_init();
         if disk_case == 1 {
-            assert_eq!(session::peek().account_token, "synthetic-external-replacement");
-            assert_eq!(state.disk_identity.account_token, "synthetic-account-a");
-            assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Error);
+            // AUTH-03/AUTH-04 (fresh-reauthentication-authority): the SignedIn write that lands
+            // this login is now issued on `SaveAuthority::FreshReauthentication`, which is
+            // deliberately NOT fenced on disk identity (`plex::session::
+            // replace_after_reauthentication_with_outcome`'s own doc: the user has just
+            // re-supplied everything the ciphertext held, and losing a fresh sign-in to a
+            // concurrent disk change is the exact 0.6.3 symptom AUTH-03 exists to end). The old
+            // OCC-style refusal this branch asserted belonged to the pre-authority `Routine`
+            // write every commit used to issue; a fresh sign-in now wins over — rather than being
+            // silently dropped by — a concurrent external change, exactly like disk_case 0.
+            assert_eq!(session::peek().account_token, "synthetic-new-account");
+            assert_eq!(state.disk_identity.account_token, "synthetic-new-account");
+            assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Ready);
         } else {
             assert_eq!(state.disk_identity.account_token, "synthetic-new-account");
             assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Ready);

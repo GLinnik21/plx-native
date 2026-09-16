@@ -356,12 +356,33 @@ impl SessionAdapter {
                 if let Some(patch) = &plan.credentials {
                     let mut examined = false;
                     let mut matches = false;
-                    let write = crate::plex::session::update_with_outcome(|disk| {
+                    let write = if plan.authority == crate::plex::session::SaveAuthority::FreshReauthentication {
+                        // A fresh reauthentication is a whole-record replace and is NOT fenced on
+                        // the disk identity: a Locked/Blocked disk reads as a default `Session`,
+                        // which the owner's boot-minted identity can never match, and refusing
+                        // here is exactly how a sign-in over an unopenable envelope used to live
+                        // for one run only (0.6.6's `save_after_reauthentication`).
                         examined = true;
-                        matches = plan.expected_disk.matches(disk);
-                        matches.then(|| patch.merge_into(disk))
-                    });
+                        matches = true;
+                        crate::plex::session::replace_after_reauthentication_with_outcome(
+                            |disk| patch.merge_into(disk))
+                    } else {
+                        crate::plex::session::update_with_outcome(|disk| {
+                            examined = true;
+                            matches = plan.expected_disk.matches(disk);
+                            matches.then(|| patch.merge_into(disk))
+                        })
+                    };
                     if examined && !matches { return permit.reply(CommitAdmission::StaleAuthority); }
+                    if plan.writes_durable && write.is_none()
+                        && plan.authority == crate::plex::session::SaveAuthority::FreshReauthentication {
+                        // The edit produced nothing to write (no account token to persist) —
+                        // never admit a write that never happened.
+                        return permit.reply(CommitAdmission::Rejected {
+                            revision: None,
+                            rejection: crate::plex::session::async_persistence::RejectionKind::Uninitialized,
+                        });
+                    }
                     if plan.writes_durable {
                         let revision = ordinary_revision();
                         admitted_revision = Some(revision);
@@ -416,7 +437,26 @@ impl SessionAdapter {
                     }
                 }
                 resources.registry_writes.extend(plan.registry.iter().cloned());
-                if let Some(admission) = admitted { return permit.reply(admission); }
+                if let Some(admission) = admitted {
+                    if plan.writes_durable {
+                        if let CommitAdmission::Admitted { revision, purpose } = admission {
+                            // Fixture-driven flows still need a real completion to drain — a held
+                            // handoff (AUTH-03/04) would otherwise stay held forever in a fixture
+                            // test, since nothing else produces one for this path.
+                            self.live_completion = Some(
+                                crate::plex::session::async_persistence::PersistenceCompletion {
+                                    req: permit.request(), epoch: permit.epoch(),
+                                    arrival: permit.arrival(), revision, purpose,
+                                    outcome: crate::plex::session::async_persistence::CompletionOutcome::Durable(
+                                        crate::plex::session::async_persistence::Operation::Write {
+                                            outcome: crate::plex::session::async_persistence::PersistOutcome::PersistedPlaintext,
+                                            verified: true, protection: None,
+                                        }),
+                                });
+                        }
+                    }
+                    return permit.reply(admission);
+                }
             }
         }
         permit.reply(CommitAdmission::RegistryOnly)
@@ -767,7 +807,7 @@ mod tests {
             admission: crate::auth::owner::AdmissionState::NotRequested });
         init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 0, terminal: true,
             writes_credentials: true, receipt: None, delta: CommitDelta::default(),
-            admitted_revision: None, purpose: None });
+            admitted_revision: None, purpose: None, fresh: false });
         let owner = SessionMachine::from_init(init);
 
         let mut next = disk.clone();
@@ -775,7 +815,7 @@ mod tests {
         let plan = CommitPlan { expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
             purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
-            writes_durable: true };
+            writes_durable: true, authority: crate::plex::session::SaveAuthority::Routine };
         let reply = adapter.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan);
         let admitted = reply.admission.admitted_revision()
             .expect("a durable write must be admitted, not merely accepted");
@@ -836,7 +876,7 @@ mod tests {
             admission: crate::auth::owner::AdmissionState::NotRequested });
         init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 0, terminal: true,
             writes_credentials: true, receipt: None, delta: CommitDelta::default(),
-            admitted_revision: None, purpose: None });
+            admitted_revision: None, purpose: None, fresh: false });
         let owner = SessionMachine::from_init(init);
 
         let mut next = disk.clone();
@@ -844,7 +884,7 @@ mod tests {
         let plan = CommitPlan { expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
             purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
-            writes_durable: true };
+            writes_durable: true, authority: crate::plex::session::SaveAuthority::Routine };
 
         // Make the underlying disk write genuinely fail: strip write permission on the scratch
         // session's own directory, so `write_atomic`'s temp-file create fails with EACCES and
@@ -1054,7 +1094,7 @@ mod tests {
             admission: crate::auth::owner::AdmissionState::NotRequested });
         init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 0, terminal: true,
             writes_credentials: true, receipt: None, delta: CommitDelta::default(),
-            admitted_revision: None, purpose: None });
+            admitted_revision: None, purpose: None, fresh: false });
         let owner = SessionMachine::from_init(init);
 
         let mut next = disk.clone();
@@ -1062,7 +1102,7 @@ mod tests {
         let plan = CommitPlan { expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
             purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
-            writes_durable: true };
+            writes_durable: true, authority: crate::plex::session::SaveAuthority::Routine };
 
         // Force the canonical commit under test to come back `Uncertain` at `ParentSync` — after
         // the record has actually been renamed into place (the real production seam; see
@@ -1094,6 +1134,142 @@ mod tests {
         );
     }
 
+    /// AUTH-03 (disk half). Port of 0.6.6's
+    /// `a_fresh_sign_in_over_an_unanswered_envelope_survives_the_next_launch`
+    /// (`plex/session.rs:8662`): a fresh sign-in over a LEGACY envelope this host's key service
+    /// cannot open (`keymanager::open` answers `None` off-device — there is no real
+    /// `com.webos.service.keymanager3` here) must still reach the CANONICAL authority and read
+    /// back on the next launch, rather than being silently dropped the way `update_with_outcome`
+    /// drops any write onto a disk read that comes back with no `client_id` (a Locked/Blocked/
+    /// Missing legacy read all collapse to a default `Session`).
+    ///
+    /// Isolation follows `the_bridge_reports_an_uncertain_canonical_commit_as_uncertain_not_durable`
+    /// exactly: `testlock::serial()` for the whole body, `TempCanonicalRoot` declared FIRST (so it
+    /// drops LAST, after the fallback-file restore that follows it), `TEST_FILE` snapshotted and
+    /// redirected to `None`, and the process-global `fallback_file_for_test()` bytes + mode
+    /// snapshotted up front and restored on drop.
+    ///
+    /// RED: OBSERVED under mutation M2 (see this package's report) — routing `FreshReauthentication`
+    /// through `update_with_outcome` like every other write reproduces the exact 0.6.3 symptom:
+    /// `load().account_token` on "launch 2" is empty, because the Locked legacy read's empty
+    /// `client_id` makes `update_with_outcome` refuse before `edit` ever runs.
+    #[test]
+    fn a_fresh_sign_in_over_an_unopenable_envelope_is_persisted_for_the_next_launch() {
+        use crate::auth::owner::{CommitAdmission, CommitDelta, CredentialPatch, Identity, Pending,
+            PendingCommit, SessionInit, SessionMachine, StreamPhase};
+        use crate::plex::session::async_persistence::PersistencePurpose;
+        let _serial = crate::testlock::serial();
+
+        struct TempCanonicalRoot { dir: std::path::PathBuf }
+        impl TempCanonicalRoot {
+            fn new(tag: &str) -> TempCanonicalRoot {
+                let dir = std::env::temp_dir().join(format!(
+                    "plxnative-adapter-canonical-{}-{tag}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&dir);
+                crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+                TempCanonicalRoot { dir }
+            }
+        }
+        impl Drop for TempCanonicalRoot {
+            fn drop(&mut self) {
+                crate::paths::redirect_persistent_state_root_for_test(None);
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+        // Declared FIRST so it drops LAST, after the fallback-file restore below — same ordering
+        // hazard the uncertain-verdict test above documents.
+        let _root = TempCanonicalRoot::new("unopenable-envelope");
+
+        let test_file_original = crate::plex::session::redirect_snapshot_for_test();
+        struct RestoreTestFile { original: Option<std::path::PathBuf> }
+        impl Drop for RestoreTestFile {
+            fn drop(&mut self) { crate::plex::session::redirect_for_test(self.original.clone()); }
+        }
+        let _restore_test_file = RestoreTestFile { original: test_file_original };
+        crate::plex::session::redirect_for_test(None);
+
+        use std::os::unix::fs::PermissionsExt;
+        let fallback_path = crate::plex::session::fallback_file_for_test();
+        let fallback_original = std::fs::read(&fallback_path).ok();
+        let fallback_original_mode = std::fs::metadata(&fallback_path).ok()
+            .map(|m| m.permissions().mode());
+        struct RestoreFallback { path: std::path::PathBuf, original: Option<Vec<u8>>, original_mode: Option<u32> }
+        impl Drop for RestoreFallback {
+            fn drop(&mut self) {
+                match &self.original {
+                    Some(bytes) => {
+                        let _ = std::fs::write(&self.path, bytes);
+                        if let Some(mode) = self.original_mode {
+                            let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(mode));
+                        }
+                    }
+                    None => { let _ = std::fs::remove_file(&self.path); }
+                }
+            }
+        }
+        let _restore_fallback = RestoreFallback {
+            path: fallback_path.clone(), original: fallback_original, original_mode: fallback_original_mode,
+        };
+
+        // Plant the v1 SecureEnvelope this host's key service cannot open — the exact shape
+        // `plex/session.rs`'s `SecureEnvelope`/`keymanager::Sealed` serialize as (constructed here
+        // as raw JSON since both types are private to `plex::session`/`keymanager`).
+        let envelope = br#"{"format":"plxnative-secure-session","version":1,"sealed":{"backend":"keymanager3","key":"plxnative.session.v1","iv":"AAAAAAAAAAAAAAAAAAAAAA==","data":"c2VjcmV0"}}"#;
+        std::fs::write(&fallback_path, envelope).expect("plant the unopenable legacy envelope");
+
+        // Launch 1: the legacy read is Locked (unopenable) and the canonical authority is Missing
+        // (a fresh `TempCanonicalRoot`), so there is nothing a launch could have used.
+        assert!(crate::plex::session::peek().account_token.is_empty(),
+            "setup: launch 1 has nothing usable — the legacy envelope cannot be opened");
+
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
+        assert!(adapter.take_live_completion().is_none());
+
+        let disk = crate::plex::session::peek();
+        let mut init = SessionInit::captured(disk.clone());
+        init.epoch = 1;
+        init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Login },
+            expected: Identity::of(&disk), lifecycle: None, last_arrival: Some(0),
+            phase: StreamPhase::Running, capture: None,
+            admission: crate::auth::owner::AdmissionState::NotRequested });
+        init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 0, terminal: true,
+            writes_credentials: true, receipt: None, delta: CommitDelta::default(),
+            admitted_revision: None, purpose: Some(PersistencePurpose::Final), fresh: true });
+        let owner = SessionMachine::from_init(init);
+
+        let mut next = disk.clone();
+        next.client_id = "cid-fresh".into();
+        next.account_token = "acct".into();
+        let plan = CommitPlan { expected_disk: Identity::of(&disk),
+            credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
+            purpose: PersistencePurpose::Final, writes_durable: true,
+            authority: crate::plex::session::SaveAuthority::FreshReauthentication };
+
+        crate::plex::session::reset_last_write_authority_for_test();
+        let reply = adapter.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan);
+        assert!(matches!(reply.admission, CommitAdmission::Admitted { .. }),
+            "MUTATION M2 TARGET: a fresh write over a Locked/empty-client_id disk must still be \
+             admitted, not refused as StaleAuthority");
+        assert_eq!(crate::plex::session::last_write_authority_for_test(),
+            Some(crate::plex::session::SaveAuthority::FreshReauthentication));
+
+        let completion = adapter.take_live_completion()
+            .expect("a fresh admitted write must deliver a completion");
+        assert!(matches!(completion.outcome,
+            crate::plex::session::async_persistence::CompletionOutcome::Durable(..)),
+            "the fresh write must actually reach the canonical authority: {:?}", completion.outcome);
+
+        // Launch 2: the canonical authority now has a real record, and it is read back — this is
+        // the AUTH-03 claim itself, distinct from whether a warning was shown.
+        assert_eq!(crate::plex::session::load().account_token, "acct",
+            "MUTATION M2 TARGET: the sign-in must survive the next launch");
+        assert!(matches!(crate::plex::session::persistence::load(),
+            crate::plex::session::persistence::CanonicalRead::Data { .. }
+            | crate::plex::session::persistence::CanonicalRead::Opened { .. }),
+            "the write must have reached the canonical authority, not only the legacy floor");
+    }
+
     #[test]
     fn fixture_commit_uses_latest_preferences_and_never_writes_another_adapter() {
         use crate::auth::owner::{CommitDelta, CredentialPatch, Identity, Pending, PendingCommit,
@@ -1105,7 +1281,7 @@ mod tests {
             phase: StreamPhase::Running, capture: None, admission: crate::auth::owner::AdmissionState::NotRequested });
         init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 0, terminal: true,
             writes_credentials: true, receipt: None, delta: CommitDelta::default(),
-            admitted_revision: None, purpose: None });
+            admitted_revision: None, purpose: None, fresh: false });
         let owner = SessionMachine::from_init(init);
         let mut a = SessionAdapter::fixture_with(disk.clone());
         let mut b = SessionAdapter::fixture_with(disk.clone());
@@ -1115,7 +1291,7 @@ mod tests {
         let plan = CommitPlan { expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&next)), registry: Vec::new(), lifecycle: None,
             purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
-            writes_durable: true };
+            writes_durable: true, authority: crate::plex::session::SaveAuthority::Routine };
         assert!(a.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan).admission.accepted());
         assert_eq!(a.fixture_resources().disk.account_token, "synthetic-new-token");
         assert_eq!(a.fixture_resources().disk.playback_quality, Some(crate::plex::session::PlaybackQuality::Original));
@@ -1138,7 +1314,7 @@ mod tests {
             phase: StreamPhase::Running, capture: None, admission: crate::auth::owner::AdmissionState::Accepted(AdmissionId(1)) });
         init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 1, terminal: true,
             writes_credentials: true, receipt: None, delta: CommitDelta::default(),
-            admitted_revision: None, purpose: None });
+            admitted_revision: None, purpose: None, fresh: false });
         let owner = SessionMachine::from_init(init);
         let mut adapter = SessionAdapter::fixture_with(disk.clone());
         adapter.fixture_resources().endpoints.insert(0, EndpointCapture {
@@ -1150,7 +1326,7 @@ mod tests {
         let plan = CommitPlan { expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&changed)), lifecycle: Some(lifecycle),
             purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
-            writes_durable: true,
+            writes_durable: true, authority: crate::plex::session::SaveAuthority::Routine,
             registry: vec![RegistryPlan::Endpoint { expected: lifecycle,
                 source: crate::plex::session::SourceRef { machine_id: "machine-b".into(),
                     origin_url: "http://192.0.2.2:32400".into(), ..Default::default() } }],
