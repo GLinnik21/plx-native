@@ -107,5 +107,59 @@ class StageFromHashedCargoOutput(unittest.TestCase):
         self.assertIn('python3 ci/stage-link-evidence.py $(STORAGE_BIN) $@', text)
 
 
+class StageFromBuildScriptShapedCargoOutput(unittest.TestCase):
+    """`-Z build-std` (nightly, unstable) has been observed placing a `--bin`
+    crate's own link output under `target/<triple>/release/build/<pkg>/<hash>/
+    out/<crate>` — a directory shaped like a build-script OUT_DIR — rather
+    than `target/<triple>/release/deps/<crate>-<hash>`. Seen on CI's floating
+    `rustup toolchain install nightly` (a fresh nightly pulled the day of the
+    run) while a pinned dev-machine nightly still used the `deps/` shape, so
+    the same commit built locally and failed the exact same way in CI:
+    `FileNotFoundError` on `<STORAGE_BIN>.link.map`, because the old
+    `find_evidence_by_content` only ever globbed `<source>.parent / 'deps'`.
+    This reproduces that shape with no compiler and no NDK."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='stage-link-evidence-buildshape-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.triple = self.root / 'arm-unknown-linux-gnueabi'
+        self.release = self.triple / 'release'
+        self.out = self.release / 'build' / 'plxnative-modules' / '6f340859124788dd' / 'out'
+        self.out.mkdir(parents=True)
+        self.elf_bytes = b'\x7fELF' + b'synthetic-arm-binary' * 100
+
+    def write_evidence_in_out_dir(self):
+        base = self.out / 'plxnative_storage'
+        base.write_bytes(self.elf_bytes)
+        link_map = b'LOAD src/main.rs\n'
+        link_trace = b'linker invocation trace'
+        record = {'schema': 1, 'elf_sha256': hashlib.sha256(self.elf_bytes).hexdigest(),
+                   'map_sha256': hashlib.sha256(link_map).hexdigest(),
+                   'trace_sha256': hashlib.sha256(link_trace).hexdigest(),
+                   'archive_excluded': True}
+        Path(str(base) + '.link.map').write_bytes(link_map)
+        Path(str(base) + '.link.trace').write_bytes(link_trace)
+        Path(str(base) + '.link.json').write_text(json.dumps(record))
+        return base
+
+    def run_stage(self, source, destination, extra_args=()):
+        return subprocess.run([sys.executable, str(STAGE_SCRIPT), str(source), str(destination), *extra_args],
+                               capture_output=True, text=True, timeout=20)
+
+    def test_finds_evidence_outside_deps_by_walking_the_whole_triple_tree(self):
+        self.write_evidence_in_out_dir()
+        source = self.release / 'plxnative-storage'  # cargo's own copy: no `.link.*` beside it,
+        source.write_bytes(self.elf_bytes)            # and no `deps/` sibling holds it either.
+        destination = self.root / 'pkg' / 'plxnative-storage'
+        destination.parent.mkdir()
+        destination.write_bytes(self.elf_bytes)
+        result = self.run_stage(source, destination)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        record = json.loads((self.root / 'pkg/plxnative-storage.link.json').read_text())
+        self.assertEqual(record['linked_elf_sha256'], hashlib.sha256(self.elf_bytes).hexdigest())
+        m.check_elf(destination, self.root / 'pkg/plxnative-storage')
+
+
 if __name__ == '__main__':
     unittest.main()
