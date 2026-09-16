@@ -25,7 +25,7 @@ Two routes, and one of them is better:
 
 **Developer Mode expires.** LG ends a Dev Mode session after about 1000 hours and *uninstalls the apps installed through it* when it does. dev-manager-desktop can renew the session before that happens; the Homebrew Channel has no expiry at all. This is the whole reason for the ranking.
 
-**You do not need a rooted television.** The app runs in LG's normal sandbox: an unprivileged uid, chrooted, under the stock jail profile, with no capabilities and no `requiredPermissions` declared. Root matters only for the development loop, not for using it.
+**You do not need a rooted television.** The app runs in LG's normal sandbox: an unprivileged uid, chrooted, under the stock jail profile. `appinfo.json` declares two ACGs, `database.operation` and `securitykey.operation` — both are the storage helper's, for the local DB8 keystore and the platform key manager it uses to keep your sign-in off plain disk; neither reaches the network or anything outside this app's own data. Root matters only for the development loop, not for using it.
 
 ## Checking what you downloaded
 

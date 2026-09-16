@@ -337,10 +337,11 @@ headlessly must go in **above** SDL — through `textinput`'s own buffer — not
 ### Two dead ends, so nobody spends a day on them again
 
 - **The Luna route.** There are only four `com.webos.service.ime/*` methods, and all of them sit in
-  ACGs this app does not hold: `pkg/appinfo.json` declares no `requiredPermissions` at all (and
-  `docs/distribution.md` records that this is correct — neither Kodi nor Moonlight declares one), so
-  the app is granted `["public"]`. Declaring more is not a fix; those groups are not grantable to a
-  homebrew app.
+  ACGs this app does not hold: `pkg/appinfo.json`'s `requiredPermissions` is `database.operation`
+  and `securitykey.operation` — both the storage helper's, for its DB8 keystore and the platform key
+  manager (neither an IME group; `docs/distribution.md` has the full account) — so the app is
+  granted those two plus `["public"]`, never the IME ACGs. Declaring more is not a fix; those groups
+  are not grantable to a homebrew app.
 - **A physical USB or Bluetooth keyboard.** `/dev/input` is not mounted into our jail.
   `rust-modules/src/remote.rs`'s module doc records the general case and why it generalises: on this
   build the wayland compositor (`surface-manager`) opens a **fixed** set of evdev nodes at boot and
@@ -352,7 +353,7 @@ headlessly must go in **above** SDL — through `textinput`'s own buffer — not
 
 Re-verified on the host while writing this file: the two SDL header trees and their versions, the
 window flags, `SDL_WINDOW_INPUT_FOCUS`'s value, `SDL_webOS.h`'s eight entry points, the 14-firmware
-symbol sweep, and `appinfo.json`'s absent `requiredPermissions`. Measured on the **simulator**, and
+symbol sweep, and `appinfo.json`'s `requiredPermissions` list (neither entry an IME ACG). Measured on the **simulator**, and
 so about a Mac and not a television: the boot probe read-out and the `SDL_PushEvent` crash above.
 Recorded from the device and
 disassembly work that produced `rust-modules/src/textinput.rs`'s module doc, and **not**
