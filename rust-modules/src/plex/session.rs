@@ -703,7 +703,7 @@ impl ServerRef {
     /// existed meant, and what every reader of this struct did with those two fields by hand.
     ///
     /// **TOTAL, unlike [`SourceRef::origin`].** The asymmetry is deliberate. A roster entry has
-    /// [`SourceRef::usable`] in front of every caller, so `None` there costs one entry. This is
+    /// [`SourceRef::dialable`] in front of every caller, so `None` there costs one entry. This is
     /// the PRIMARY: `app.rs`'s boot gate and `auth::cancel` read it unconditionally, gated only by
     /// [`Session::can_go_local`], so a `None` here would be a NEW refusal on a path that has never
     /// had one — a silent sign-out at boot, which is the failure this whole field exists to avoid.
@@ -801,7 +801,14 @@ impl SourceRef {
     /// hand edit, a truncated write or an older build can leave holding anything an `i64` can hold.
     /// An out-of-range port wraps in that cast; here it costs the entry instead, and `de_soft_vec`
     /// already establishes that one bad roster entry costs that entry and never the session.
-    pub fn usable(&self) -> bool {
+    ///
+    /// **This is a well-formedness check, not a credential-eligibility one.** A `true` answer says
+    /// only that there is an address, a dialable port and a non-empty token written down — it says
+    /// nothing about whether THIS BUILD may put that token on THIS origin's transport. Issue #95:
+    /// a stored `http://` entry is fully `dialable`, and a plaintext credential over it is refused
+    /// or not solely by [`CredentialPolicy`](super::CredentialPolicy) at the point of the actual
+    /// probe or request — never here.
+    pub fn dialable(&self) -> bool {
         self.origin().is_some() && !self.token.is_empty()
     }
 
@@ -811,11 +818,11 @@ impl SourceRef {
     /// entry written before the field existed, which is every entry in every session file on every
     /// television today. The port still goes through
     /// [`probe::dial_port`](super::probe::dial_port) on that path, for the reason
-    /// [`SourceRef::usable`] gives: this file is JSON on disk that a hand edit or an older build
+    /// [`SourceRef::dialable`] gives: this file is JSON on disk that a hand edit or an older build
     /// can leave holding anything an `i64` can hold, and `port as i32` WRAPS.
     ///
     /// `Option`, unlike [`ServerRef::origin`], because every caller here is already behind
-    /// [`SourceRef::usable`] — so `None` costs one roster entry, which is the rule `de_soft_vec`
+    /// [`SourceRef::dialable`] — so `None` costs one roster entry, which is the rule `de_soft_vec`
     /// establishes for this whole struct.
     pub fn origin(&self) -> Option<Origin> {
         if !self.origin_url.is_empty() {
@@ -2104,7 +2111,7 @@ mod tests {
 
         // every roster entry too, including the share on its non-default port
         assert!(
-            s.sources.iter().all(|x| x.usable()),
+            s.sources.iter().all(|x| x.dialable()),
             "{:#?}",
             s.sources.len()
         );
@@ -2424,7 +2431,7 @@ mod tests {
             let s = bad(origin);
             assert!(!s.can_go_local(), "{origin} is not something to boot on");
             assert!(
-                !s.sources[0].usable(),
+                !s.sources[0].dialable(),
                 "{origin} is not something to register"
             );
         }
@@ -2457,7 +2464,7 @@ mod tests {
             "the sharing grant, not the account token"
         );
         assert_eq!(share.shared_by, "friend");
-        assert!(!share.owned && share.usable());
+        assert!(!share.owned && share.dialable());
         assert_eq!(s.shared_sources().count(), 1);
 
         let mine = s
@@ -2542,7 +2549,7 @@ mod tests {
     /// value that is impossible.
     ///
     /// Both gates the value reaches are stated here, because they fail differently and one does not
-    /// imply the other: a bad ROSTER entry costs that entry (`usable`, which
+    /// imply the other: a bad ROSTER entry costs that entry (`dialable`, which
     /// `auth::install_roster` filters on before registering), while a bad PRIMARY costs the resume
     /// (`can_go_local`, the one gate in front of `plex::install`) and lands the app on sign-in.
     #[test]
@@ -2557,11 +2564,11 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !s.sources[0].usable(),
+            !s.sources[0].dialable(),
             "32400 is what that number wraps to — it must not be dialled"
         );
         assert!(
-            s.sources[1].usable(),
+            s.sources[1].dialable(),
             "…and the entry beside it is untouched"
         );
         assert!(

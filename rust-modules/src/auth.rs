@@ -2372,7 +2372,7 @@ fn refreshed_sources(
         // stops being credited — see `plex::servers::owner_credit` on why absence is the safe way
         // to be wrong.
         cached.shared_by = credit_of(r, household);
-        if cached.usable() {
+        if cached.dialable() {
             out.push(cached);
         }
     }
@@ -2602,7 +2602,7 @@ fn reconcile_primary(server: &mut ServerRef, found: &[SourceRef]) -> bool {
     }
     let Some(s) = found
         .iter()
-        .find(|s| s.machine_id == server.machine_id && s.usable())
+        .find(|s| s.machine_id == server.machine_id && s.dialable())
     else {
         return false;
     };
@@ -2704,7 +2704,7 @@ fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> Vec<ServerId
 /// group.
 fn registration_order(sources: &[SourceRef]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..sources.len())
-        .filter(|&i| sources[i].usable())
+        .filter(|&i| sources[i].dialable())
         .collect();
     order.sort_by_key(|&i| !sources[i].owned);
     order
@@ -3049,7 +3049,7 @@ pub(crate) fn profile_switch_worker_with_io(
         let roster = profile_sources(&stored.sources, &reached, &resources, &household);
         if roster
             .iter()
-            .any(|s| s.machine_id == resources[i].client_identifier && s.usable())
+            .any(|s| s.machine_id == resources[i].client_identifier && s.dialable())
         {
             selected_mid = Some(resources[i].client_identifier.clone());
             break;
@@ -4869,7 +4869,7 @@ mod tests {
         );
         assert_eq!(share.shared_by, "friend");
         assert!(
-            roster.iter().all(|s| s.usable()),
+            roster.iter().all(|s| s.dialable()),
             "every entry is dialable, so every one registers"
         );
 
@@ -5347,7 +5347,7 @@ mod tests {
 
         assert_eq!(next[2].machine_id, "gone");
         assert!(
-            next[2].token.is_empty() && !next[2].usable(),
+            next[2].token.is_empty() && !next[2].dialable(),
             "the old profile credential is gone"
         );
 
@@ -5359,7 +5359,7 @@ mod tests {
             )],
         );
         assert_eq!(restored[2].token, "back");
-        assert!(restored[2].usable());
+        assert!(restored[2].dialable());
 
         // a resource that came back WITHOUT a token for this profile remains inert
         let empty = vec![resource(
@@ -5434,6 +5434,34 @@ mod tests {
         assert_eq!(session.server.token, "managed-profile-token");
         assert_eq!(session.server.origin_url, "https://lan.example.test:32400");
         assert_eq!(session.sources.len(), 1, "recovery cannot add a grant");
+    }
+
+    /// Issue #95 step 6: a session stored on flash before pinning existed carries a plaintext
+    /// `http://` primary. The repair loop feeds that machine's freshly probed, eligible HTTPS
+    /// origin through the same [`apply_refreshed_endpoint`] path a moved LAN address takes — there
+    /// is no separate "upgrade the scheme" mechanism, and this is what proves the existing one
+    /// already covers it.
+    #[test]
+    fn endpoint_recovery_repairs_a_stored_plaintext_primary_to_https() {
+        let mut cached = source("ours", true, "profile-token");
+        cached.origin_url = "http://192.0.2.10:32400".into();
+        cached.tier = None;
+        let mut session = Session {
+            server: server_ref(&cached),
+            sources: vec![cached],
+            ..Default::default()
+        };
+
+        let mut pinned = source("ours", true, "profile-token");
+        pinned.origin_url = "https://192-0-2-10.example.plex.direct:32400".into();
+        pinned.tier = Some(probe::Location::Local);
+        let (landed, changed) = apply_refreshed_endpoint(&mut session, "ours", &pinned).unwrap();
+
+        assert!(changed);
+        assert_eq!(landed.origin_url, "https://192-0-2-10.example.plex.direct:32400");
+        assert_eq!(landed.tier, Some(probe::Location::Local));
+        assert_eq!(session.server.origin_url, "https://192-0-2-10.example.plex.direct:32400");
+        assert_eq!(session.sources[0].origin_url, "https://192-0-2-10.example.plex.direct:32400");
     }
 
     #[test]
@@ -5577,6 +5605,32 @@ mod tests {
         );
     }
 
+    /// Issue #95 step 6: the background roster refresh's `reached` slice is exactly the freshly
+    /// verified [`SourceRef`]s from this boot's own race — so a stored plaintext `http://` origin
+    /// is replaced outright by whatever origin actually answered this time, pinned https included,
+    /// with no separate scheme-upgrade rule.
+    #[test]
+    fn refresh_via_reached_source_repairs_a_stored_plaintext_origin() {
+        let mut stored_plain = source("ours", true, "old-own");
+        stored_plain.origin_url = "http://192.0.2.10:32400".into();
+        let stored = vec![stored_plain];
+
+        let mut reached_https = source("ours", true, "new-own");
+        reached_https.origin_url = "https://192-0-2-10.example.plex.direct:32400".into();
+        reached_https.tier = Some(probe::Location::Local);
+        let reached = vec![reached_https];
+
+        let resources = vec![resource(
+            r#"{"name":"ours-now","clientIdentifier":"ours","provides":"server","owned":true,
+                "accessToken":"new-own"}"#,
+        )];
+
+        let next = refreshed_sources(&stored, &reached, &resources, &[]);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].origin_url, "https://192-0-2-10.example.plex.direct:32400");
+        assert_eq!(next[0].tier, Some(probe::Location::Local));
+    }
+
     /// The primary in the **LEGACY shape** — see [`source`] above.
     fn primary(machine_id: &str, address: &str, port: i64, token: &str) -> ServerRef {
         ServerRef {
@@ -5640,6 +5694,32 @@ mod tests {
         anon_src.address = "10.9.9.9".into();
         assert!(!reconcile_primary(&mut anon, &[anon_src]));
         assert_eq!(anon.address, "192.168.0.10");
+    }
+
+    /// Issue #95 step 6: the address that moved is sometimes only the SCHEME — the LAN address
+    /// stays put, but a stored `http://` primary is replaced by an eligible `https://` (pinned)
+    /// origin for that same machine. `reconcile_primary` already diffs `origin_url`, so this pins
+    /// that the plaintext-to-https case is not the `learned_origin` no-op exemption (which only
+    /// fires when the stored origin was EMPTY, not when it was plaintext).
+    #[test]
+    fn a_primary_with_a_plaintext_origin_is_followed_to_https_by_reconcile_primary() {
+        let mut s = primary("aaaa1111", "192.168.0.10", 32400, "tok-own");
+        s.origin_url = "http://192.168.0.10:32400".into();
+        let mut pinned = source("aaaa1111", true, "tok-own");
+        pinned.address = "192.168.0.10".into();
+        pinned.port = 32400;
+        pinned.origin_url = "https://192-168-0-10.example.plex.direct:32400".into();
+        pinned.tier = Some(probe::Location::Local);
+
+        assert!(
+            reconcile_primary(&mut s, &[pinned.clone()]),
+            "a plaintext-to-https change is a real move, not a no-op"
+        );
+        assert_eq!(s.origin_url, "https://192-168-0-10.example.plex.direct:32400");
+        assert_eq!(s.tier, Some(probe::Location::Local));
+
+        // idempotent, same as the address-move case above
+        assert!(!reconcile_primary(&mut s, &[pinned]));
     }
 
     #[test]

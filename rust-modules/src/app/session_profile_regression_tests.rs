@@ -268,7 +268,7 @@ mod tests {
                     user: "synthetic-kid".into(), terms: vec!["newer preference".into()],
                 });
                 disk.playback_quality = Some(crate::plex::session::PlaybackQuality::Original);
-                assert!(!disk.sources.iter().any(|source| source.machine_id == "synthetic-share" && source.usable()));
+                assert!(!disk.sources.iter().any(|source| source.machine_id == "synthetic-share" && source.dialable()));
                 frame(&mut rig, &mut d, vec![roster]);
                 drain_carried(&mut rig, &mut d);
                 let disk = &rig.session_adapter.fixture_resources().disk;
@@ -280,7 +280,7 @@ mod tests {
             let disk = &rig.session_adapter.fixture_resources().disk;
             assert_eq!(disk.user.uuid, "synthetic-kid");
             assert_eq!(disk.server.address, "127.0.0.2");
-            assert!(disk.sources.iter().any(|s| s.machine_id == "synthetic-share" && s.address == "127.0.0.3" && s.usable()));
+            assert!(disk.sources.iter().any(|s| s.machine_id == "synthetic-share" && s.address == "127.0.0.3" && s.dialable()));
             let before = resources(&mut rig);
             command(&mut rig, &mut d, SessionCmd::TakeReady);
             assert!(rig.take_session_ready().is_none());

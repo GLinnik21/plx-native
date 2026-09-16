@@ -1318,7 +1318,7 @@ impl SessionMachine {
                     expected: Identity::of(&self.state.persisted), tile, pin, recently_unreachable: *recently_unreachable },
             (CaptureIntent::Endpoint { sid }, SessionReadValue::Endpoint(Some(captured)))
                 if captured.lifecycle.sid == sid && self.state.persisted.sources.iter().any(|source|
-                    source.machine_id == captured.machine_id && source.usable()) => {
+                    source.machine_id == captured.machine_id && source.dialable()) => {
                 self.state.pending.get_mut(&req).unwrap().lifecycle = Some(captured.lifecycle);
                 SessionWork::Endpoint { session: self.state.persisted.clone(), expected: Identity::of(&self.state.persisted),
                     lifecycle: captured.lifecycle, machine_id: captured.machine_id.clone() }
@@ -1512,6 +1512,13 @@ impl SessionMachine {
                             self.retire(req, emit);
                             return true;
                         };
+                        // Issue #95 step 6: this endpoint repair changes exactly the fields
+                        // `refresh_profile_record` copies into the active profile's cached
+                        // record (server/sources) — miss this and a plaintext-to-https repair
+                        // (or any other endpoint move) never reaches `Session::profiles`, so an
+                        // offline reseat of this same profile keeps dialling the stale origin
+                        // forever. `ProfileRoster`'s commit above makes the identical call.
+                        next.refresh_profile_record();
                         let patch = CredentialPatch::of(&next);
                         delta.credentials = Some(patch.clone());
                         if changed && !self.state.apply_pending { plan.credentials = Some(patch); }
@@ -1877,6 +1884,45 @@ mod tests {
             let body = rest[..end].replace("expected_disk: self.state.disk_identity.clone(),", "");
             assert!(!body.contains("disk_identity"), "comparison identity reached {name}");
         }
+    }
+
+    /// Issue #95 step 6, the owner-dedup half: a stored plaintext session's repair loop is
+    /// `pms::landed_fail` (backoff 2s, 4s, 8s, 16s, then 30s — see
+    /// `pms::the_backoff_doubles_then_holds_at_the_ceiling`) → `RequestEndpoint` on every step that
+    /// comes due. `pms.rs`'s own retry gate (`kick_with`'s `s.fetching` check) already stops a
+    /// second FETCH from starting before the backoff elapses, so this is the seam that matters
+    /// here: however many times a heartbeat's worth of `landed_fail`s re-fires `RequestEndpoint`
+    /// for the SAME sid while the previous probe is still outstanding, the owner must admit at
+    /// most one `SessionOp::Endpoint(sid)` at a time. There is no single deterministic seam that
+    /// drives both the backoff ladder and this admission gate together (the ladder lives in
+    /// `pms.rs`, on a different clock than the owner's `pending` map), so — as the plan allows —
+    /// this tests the dedup half directly; the ladder's own shape is `pms.rs`'s test above.
+    #[test]
+    fn request_endpoint_admits_at_most_one_per_sid_until_the_previous_attempt_resolves() {
+        let mut init = captured_session();
+        init.persisted.account_token = "synthetic-account".into();
+        let mut owner = SessionMachine::from_init(init);
+        let sid: u16 = 3;
+
+        // First backoff step: a fresh RequestEndpoint is admitted.
+        let fx = step(&mut owner, SessionEvent::Command(Command::RequestEndpoint {
+            sid: crate::plex::ServerId::from_raw(sid) }));
+        assert!(fx.iter().any(|f| matches!(f,
+            SessionFx::Capture { request: SessionReadRequest::Endpoint { sid: s }, .. } if *s == sid)),
+            "the first RequestEndpoint for an idle sid must be admitted");
+        assert_eq!(owner.snapshot_init().pending.values()
+            .filter(|p| p.key.op == SessionOp::Endpoint(sid)).count(), 1);
+
+        // Every re-fire while that attempt is still outstanding — exactly what a `landed_fail`
+        // during the same backoff wait produces — must be refused, not open a second probe.
+        for _ in 0..3 {
+            let fx = step(&mut owner, SessionEvent::Command(Command::RequestEndpoint {
+                sid: crate::plex::ServerId::from_raw(sid) }));
+            assert!(fx.is_empty(), "a RequestEndpoint for a sid already in flight must be a no-op");
+        }
+        assert_eq!(owner.snapshot_init().pending.values()
+            .filter(|p| p.key.op == SessionOp::Endpoint(sid)).count(), 1,
+            "still exactly one outstanding attempt for this sid — one per backoff step, not per fire");
     }
 
     #[test]

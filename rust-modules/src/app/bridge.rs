@@ -2791,6 +2791,10 @@ mod session_endpoint_policy_tests;
 mod session_stored_home_tests;
 
 #[cfg(test)]
+#[path = "session_plaintext_repair_tests.rs"]
+mod session_plaintext_repair_tests;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
