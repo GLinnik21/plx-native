@@ -780,6 +780,20 @@ mod db8_policy_tests {
         drop(store);
         let _ = std::fs::remove_dir_all(root);
     }
+
+    /// `bootstrap()` and `cleanup_after_confirmed_clear()` must search and sweep the pre-DB8
+    /// canonical JSON wrapper identically on ARM, so both funnel through this one helper rather
+    /// than each carrying its own `insert(0, path())`. This is callable unconditionally (it is
+    /// pure path arithmetic), so a host test can prove the shared assembly directly instead of
+    /// only trusting that the two ARM-gated call sites still agree.
+    #[test]
+    fn arm_candidate_assembly_puts_the_canonical_wrapper_first() {
+        let mut candidates = vec![PathBuf::from("/some/legacy/auth.json")];
+        insert_arm_canonical_wrapper(&mut candidates);
+        assert_eq!(candidates[0], path());
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[1], PathBuf::from("/some/legacy/auth.json"));
+    }
 }
 
 /// The authority-selected write used by the shared worker. ARM has exactly one authority: DB8.
@@ -1090,6 +1104,15 @@ fn retire_exact_candidate(path: &Path, expected: &[u8]) -> bool {
         .is_some_and(|directory| directory.sync_all().is_ok())
 }
 
+/// The previous canonical JSON wrapper (`path()`, the pre-DB8 `session.json`) outranks older
+/// bare candidates on ARM: it is a recognized migration source in its own right and must be
+/// searched (on boot) and swept (on sign-out) ahead of the plain legacy files. Both call sites
+/// that assemble an ARM candidate list must go through this one function so the two lists
+/// cannot drift apart again.
+fn insert_arm_canonical_wrapper(candidates: &mut Vec<PathBuf>) {
+    candidates.insert(0, path());
+}
+
 pub(crate) fn bootstrap(opener: &mut dyn LegacyOpener) -> Bootstrap {
     #[cfg(not(test))]
     let candidates = crate::paths::session_migration_candidates();
@@ -1102,9 +1125,8 @@ pub(crate) fn bootstrap(opener: &mut dyn LegacyOpener) -> Bootstrap {
         not(test)
     ))]
     {
-        // The previous canonical JSON wrapper outranks older bare candidates on ARM.
         let mut candidates = candidates;
-        candidates.insert(0, path());
+        insert_arm_canonical_wrapper(&mut candidates);
         bootstrap_with(
             &mut HelperMigration {
                 transport: &mut client::NativeTransport,
@@ -1135,6 +1157,17 @@ pub(crate) fn cleanup_after_confirmed_clear() -> bool {
     let candidates = crate::paths::session_migration_candidates();
     #[cfg(test)]
     let candidates = super::auth_paths();
+    #[cfg(all(
+        target_os = "linux",
+        target_arch = "arm",
+        not(feature = "hostsim"),
+        not(test)
+    ))]
+    let candidates = {
+        let mut candidates = candidates;
+        insert_arm_canonical_wrapper(&mut candidates);
+        candidates
+    };
     let mut complete = true;
     for candidate in candidates {
         match crate::storage::read_owned_bytes(&candidate) {

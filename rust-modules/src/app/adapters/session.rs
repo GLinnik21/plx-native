@@ -443,6 +443,15 @@ impl SessionAdapter {
         let recording_leftovers = if all_local { std::mem::take(&mut self.recording_leftovers) } else { 0 };
         recording_leftovers + match &mut self.resources {
             Resources::Live { .. } => {
+                // Plan section 2 (docs/v0.7.0-forward-port-plan.md, "Logout немедленно закрывает
+                // telemetry/access, отменяет auth workers, отзывает credentials и меняет epoch.
+                // Затем ... один Session ClearTenure") requires in-memory credential revocation
+                // and the epoch bump to happen FIRST, and only then the canonical clear. Reversing
+                // that order matters now that `clear()` holds the global `IO` lock across up to two
+                // canonical round-trips (`commit_cleared` + `cleanup_after_confirmed_clear`): for
+                // that whole window every live `plex::Client` would otherwise still answer with a
+                // valid PMS token, which is exactly the window this ordering exists to close.
+                crate::plex::revoke_all();
                 // `clear()`'s return is not decoration: a sign-out whose canonical commit did not
                 // durably land still has a live account token readable from the canonical
                 // authority on the next boot, and that is worth a log line this adapter's own
@@ -462,7 +471,6 @@ impl SessionAdapter {
                          from the canonical authority on the next boot"
                     ));
                 }
-                crate::plex::revoke_all();
                 #[cfg(test)]
                 if let Some(io) = &mut self.resource_test_io {
                     io.erase_sweeps.push(all_local);
@@ -1034,5 +1042,40 @@ mod tests {
         assert!(records[0].terminal);
         assert!(matches!(records[0].outcome, SessionArrival::Dropped));
         assert_eq!(adapter.landing.inflight(MachineId::Session), 0);
+    }
+
+    /// `revoke-after-canonical-clear-inverts-plan-order`: plan section 2
+    /// (docs/v0.7.0-forward-port-plan.md, "Logout немедленно закрывает telemetry/access, отменяет
+    /// auth workers, отзывает credentials и меняет epoch. Затем ... один Session ClearTenure")
+    /// requires `erase()` to revoke in-memory credentials and bump the epoch BEFORE the canonical
+    /// clear, not after. It matters concretely because `clear()` now holds the global `IO` lock
+    /// across up to two canonical round-trips (`commit_cleared` + `cleanup_after_confirmed_clear`)
+    /// — for that whole window every live `plex::Client` must already be tokenless, not still
+    /// answering with a valid PMS token.
+    ///
+    /// There is no instrumentation point inside `session::clear()`/`plex::revoke_all()` a host
+    /// test can hook to observe the two effects' real order live, so — in the same spirit as this
+    /// module's own `no_log_call_site_interpolates_viewing_content`-style greps elsewhere in this
+    /// repo — this reads `erase()`'s own source and fails if a future edit puts the two calls back
+    /// in the wrong order.
+    #[test]
+    fn erase_revokes_in_memory_credentials_before_the_canonical_clear() {
+        let source = include_str!("session.rs");
+        let start = source
+            .find("pub(crate) fn erase(")
+            .expect("erase() must exist in this file");
+        let body = &source[start..];
+        let revoke_at = body
+            .find("crate::plex::revoke_all()")
+            .expect("erase() must call plex::revoke_all()");
+        let clear_at = body
+            .find("crate::plex::session::clear()")
+            .expect("erase() must call session::clear()");
+        assert!(
+            revoke_at < clear_at,
+            "erase() must call plex::revoke_all() (in-memory credential/epoch revocation) BEFORE \
+             session::clear() (the canonical clear) — plan section 2's stated order \
+             (docs/v0.7.0-forward-port-plan.md)"
+        );
     }
 }

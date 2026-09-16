@@ -2334,32 +2334,6 @@ pub(crate) enum ClearOutcome {
 /// straight back, account token and all.
 pub fn clear() -> ClearOutcome {
     let _io = io();
-    // Every candidate, not just the one we happen to write today: leaving a copy at any other
-    // location would let `peek`'s search resurrect the stale session on the next boot. The `.tmp`
-    // siblings go too — `peek` cannot read one, so it is not a resurrection risk, but a sign-out
-    // that leaves a live account token in a file on a rooted television is not a sign-out.
-    for path in auth_paths() {
-        if let Some(bytes) = read_owned_regular(&path) {
-            if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
-                if envelope.format == SECURE_FORMAT && envelope.version == 1 {
-                    crate::keymanager::remove(&envelope.sealed.backend, &envelope.sealed.key);
-                }
-            }
-        }
-        remove_temp_siblings(&path);
-        let removed = std::fs::remove_file(&path).is_ok();
-        // Durability, not tidiness: on this filesystem an unlink is not durable until the parent
-        // directory entry is synced, and this file's whole reason to exist is that a live account
-        // token in it must not survive a sign-out — including one interrupted by power loss right
-        // after the unlink. `persistence::retire_exact_candidate` two modules over already does
-        // this for the same reason; a bare `remove_file` here was the one place in this function
-        // that did not.
-        if removed {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
-            }
-        }
-    }
 
     // A redirected legacy-fixture test (`TempSession`/`redirect_for_test`) must never reach the
     // real canonical authority — exactly the guard `save_locked_with_authority` and
@@ -2368,18 +2342,30 @@ pub fn clear() -> ClearOutcome {
     // under whatever else is reading it (e.g. a `make sim` simulator sharing the same instance
     // root under `make check`), which is silent because the whole suite still passes.
     #[cfg(test)]
-    if TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-        return ClearOutcome::Durable { legacy_swept: true };
-    }
+    let bypass_canonical = TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    #[cfg(not(test))]
+    let bypass_canonical = false;
 
+    // Commit the canonical Cleared record BEFORE sweeping the legacy files, not after: a
+    // canonical Cleared record already outranks any legacy file unconditionally (AUTH-09), so
+    // committing it first means the sign-out has already taken effect in the authority `load()`
+    // actually reads even if the legacy sweep below then fails partway through. The previous
+    // order did the opposite — remove the local copy, then attempt the canonical commit — so a
+    // commit that came back non-durable left the account token readable from the canonical
+    // authority with the local trace already gone and nothing on disk to show for it.
+    //
     // The canonical clear is best-effort in the sense that sign-out must still remove the legacy
-    // files above even when it does not durably land — losing the local files on report of a
-    // canonical failure would leave BOTH copies of the credentials on disk. But "best-effort" must
-    // never mean "silent": anything short of a verified Durable commit is a real security-relevant
-    // failure (the account token may still be readable from the canonical authority on next boot),
-    // so it is always logged, matching this module's existing `save`-side logging idiom, and it is
-    // reported back to the caller as [`ClearOutcome::NotDurable`] rather than discarded.
-    match persistence::commit_cleared() {
+    // files below even when it does not durably land — losing the local files on report of a
+    // canonical failure would leave BOTH copies of the credentials reachable. But "best-effort"
+    // must never mean "silent": anything short of a verified Durable commit is a real
+    // security-relevant failure (the account token may still be readable from the canonical
+    // authority on next boot), so it is always logged, matching this module's existing `save`-side
+    // logging idiom, and it is reported back to the caller as [`ClearOutcome::NotDurable`] rather
+    // than discarded.
+    let canonical_outcome = if bypass_canonical {
+        None
+    } else {
+        Some(match persistence::commit_cleared() {
         persistence::CanonicalCommit::Durable { .. } => {
             // `auth_paths()` above only ever covered `paths::session_candidates()` — the legacy
             // sign-in file and its pre-relocation predecessor. The recognized migration source set
@@ -2421,7 +2407,37 @@ pub fn clear() -> ClearOutcome {
             ));
             ClearOutcome::NotDurable
         }
+        })
+    };
+
+    // Every candidate, not just the one we happen to write today: leaving a copy at any other
+    // location would let `peek`'s search resurrect the stale session on the next boot. The `.tmp`
+    // siblings go too — `peek` cannot read one, so it is not a resurrection risk, but a sign-out
+    // that leaves a live account token in a file on a rooted television is not a sign-out.
+    for path in auth_paths() {
+        if let Some(bytes) = read_owned_regular(&path) {
+            if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
+                if envelope.format == SECURE_FORMAT && envelope.version == 1 {
+                    crate::keymanager::remove(&envelope.sealed.backend, &envelope.sealed.key);
+                }
+            }
+        }
+        remove_temp_siblings(&path);
+        let removed = std::fs::remove_file(&path).is_ok();
+        // Durability, not tidiness: on this filesystem an unlink is not durable until the parent
+        // directory entry is synced, and this file's whole reason to exist is that a live account
+        // token in it must not survive a sign-out — including one interrupted by power loss right
+        // after the unlink. `persistence::retire_exact_candidate` two modules over already does
+        // this for the same reason; a bare `remove_file` here was the one place in this function
+        // that did not.
+        if removed {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
+            }
+        }
     }
+
+    canonical_outcome.unwrap_or(ClearOutcome::Durable { legacy_swept: true })
 }
 
 /// A v4-ish UUID from `/dev/urandom` (no `uuid` crate). Only uniqueness/stability matter — plex.tv
@@ -3616,7 +3632,17 @@ mod tests {
         redirect_for_test(None);
 
         // A legacy file "reappears" (e.g. carried over from a pre-DB8 install) beside a canonical
-        // authority that has already recorded this tenure as cleared.
+        // authority that has already recorded this tenure as cleared. RAII rather than a bare
+        // statement at the end of the body: a panic between the write and the old plain
+        // `remove_file` call left a SIGNED-IN plaintext session at the process's default legacy
+        // path for every later test in the run.
+        struct RemoveFallbackFile;
+        impl Drop for RemoveFallbackFile {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(fallback_file());
+            }
+        }
+        let _remove_fallback = RemoveFallbackFile;
         std::fs::write(fallback_file(), serde_json::to_vec(&signed_in()).unwrap()).unwrap();
 
         let commit = persistence::commit_cleared();
@@ -3647,8 +3673,6 @@ mod tests {
             ),
             _ => {}
         }
-
-        let _ = std::fs::remove_file(fallback_file());
     }
 
     /// `clear-bypasses-test-file-guard`: a legacy-fixture test (`TEST_FILE` redirected, exactly
@@ -3673,11 +3697,23 @@ mod tests {
             "setup: the canonical authority must hold a real record before the fixture clear runs"
         );
 
-        // Now redirect to a legacy-fixture file, exactly like `TempSession`, and clear it.
+        // Now redirect to a legacy-fixture file, exactly like `TempSession`, and clear it. RAII
+        // rather than a bare `redirect_for_test(None)` at the end: a panic between the redirect
+        // and that restore left the crate-global `TEST_FILE` pointing at this scratch path for
+        // every later test in the run — the exact transplant hazard `redirect_for_test`'s own doc
+        // comment warns about.
         let dir = std::env::temp_dir().join(format!(
             "plxnative-session-test-file-guard-{}",
             std::process::id()
         ));
+        struct RestoreLegacyFixture(std::path::PathBuf);
+        impl Drop for RestoreLegacyFixture {
+            fn drop(&mut self) {
+                redirect_for_test(None);
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _restore_legacy = RestoreLegacyFixture(dir.clone());
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         redirect_for_test(Some(dir.join("auth.json")));
@@ -3699,8 +3735,6 @@ mod tests {
             ),
             _ => {}
         }
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `signout-leaves-token-in-unswept-candidates`: `clear()` must actually reach
@@ -3773,6 +3807,19 @@ mod tests {
             "plxnative-session-canonical-not-a-dir-{}",
             std::process::id()
         ));
+        // RAII rather than a bare restore at the end: this test does not use `TempCanonicalRoot`
+        // at all, since its whole point is a canonical root that is a regular FILE rather than a
+        // directory. A panic between the redirect and the old plain restore call left the
+        // crate-global `TEST_PERSISTENT_STATE_ROOT` pointing at a non-directory for the rest of
+        // the process, so every subsequent test's canonical store answered `StoreError::Io`.
+        struct RestoreCanonicalRoot(std::path::PathBuf);
+        impl Drop for RestoreCanonicalRoot {
+            fn drop(&mut self) {
+                crate::paths::redirect_persistent_state_root_for_test(None);
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _restore_root = RestoreCanonicalRoot(dir.clone());
         let _ = std::fs::remove_file(&dir);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::write(&dir, b"not a directory").unwrap();
@@ -3786,9 +3833,6 @@ mod tests {
             "a refused canonical commit must be reported to the caller as non-durable, not \
              silently treated as a completed sign-out"
         );
-
-        crate::paths::redirect_persistent_state_root_for_test(None);
-        let _ = std::fs::remove_file(&dir);
     }
 
     /// `cleared-readstate-edits-untested` (a): a cleared canonical tenure must seed a fresh
