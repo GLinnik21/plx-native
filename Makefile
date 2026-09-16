@@ -118,6 +118,13 @@ APPID_STABLE = com.beb.plxnative
 APPID        = $(if $(filter stable,$(FLAVOR)),$(APPID_STABLE),$(APPID_STABLE).$(FLAVOR))
 APPDIR       = /media/developer/apps/usr/palm/applications/$(APPID)
 
+# The native storage helper's LS2 service directory, installed by `ci/mkipk.py`'s
+# `stage_storage_service` beside the app under the SAME devmode prefix (`usr/palm/services/`, not
+# `usr/palm/applications/`) — `make FLAVOR=… install` is what first lays this down and writes its
+# `services.json` role manifest; `deploy` below only ever updates the BINARY already registered
+# there, never invents the directory.
+SERVICEDIR   = /media/developer/apps/usr/palm/services/$(APPID).storage
+
 # Where this install's runtime files live — the event log, the crash log, the `plxnative-*` dev
 # triggers and the remote FIFO. The app resolves this itself (`paths::resolve_runtime_dir`); this
 # is the same rule spelled for the shell, and `make print-rundir` is how every tool asks for it
@@ -869,10 +876,17 @@ pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/mkipk.py
 # prerequisites run left to right, and a cold `make deploy` spends ~2 minutes building FFmpeg
 # before it touches the television. Taking the lock first would hold the set through a build that
 # needs no television — and, on the short implicit lease, could even let it expire before the scp.
-deploy: pkg/plxnative $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release-guard tv-lock-require
+deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release-guard tv-lock-require
 	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) to $(APPID) [$(FLAVOR)]"
 	@$(SSH) 'test -d $(APPDIR)' || { \
 	  echo "$(APPDIR) does not exist on $(TV) — the $(FLAVOR) flavour is not installed."; \
+	  echo "install it once:  make FLAVOR=$(FLAVOR)$(if $(RELEASE), RELEASE=1,) install"; exit 1; }
+	# The storage helper's service directory is laid down by `make install` too (`ci/mkipk.py`'s
+	# `stage_storage_service`), never invented by `deploy` — a hand-made one would carry no
+	# `services.json` role manifest, so LS2 would refuse every call the helper makes and the
+	# failure would look like the helper crashing rather than never having been registered.
+	@$(SSH) 'test -d $(SERVICEDIR)' || { \
+	  echo "$(SERVICEDIR) does not exist on $(TV) — the storage helper was never installed for the $(FLAVOR) flavour."; \
 	  echo "install it once:  make FLAVOR=$(FLAVOR)$(if $(RELEASE), RELEASE=1,) install"; exit 1; }
 	# The descriptor and the directory it lands in must name the same app: `paths::app_id` reads
 	# the DIRECTORY, so a mismatch means the running binary and its own appinfo disagree about
@@ -894,6 +908,15 @@ deploy: pkg/plxnative $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release
 	# leaves the old process on its old inode while the next launch gets this one.
 	$(SCP) $(SENTRY_HANDLER) root@$(TV):$(APPDIR)/sentry-crash.new
 	$(SSH) 'chmod 755 $(APPDIR)/sentry-crash.new && mv $(APPDIR)/sentry-crash.new $(APPDIR)/sentry-crash'
+	# The storage helper is a registered LS2 SERVICE, not part of the app directory — `ipk` has
+	# shipped it since the service existed (`ci/stage-link-evidence.py` into
+	# `usr/palm/services/$(APPID).storage/`), but `deploy` never had a path to it at all, so an
+	# iterated fix to `storage_service/*.rs` only ever reached the TV via a full `make install`
+	# reinstall. Same `.new` + `mv` dance as the crash handler and for the same reason: LS2 may
+	# already have this service's OLD binary running (`appinstalld` execs `services.json`'s
+	# `executable` under its own uid), so `scp` straight onto that inode risks `ETXTBSY`.
+	$(SCP) pkg/plxnative-storage root@$(TV):$(SERVICEDIR)/plxnative-storage.new
+	$(SSH) 'chmod 755 $(SERVICEDIR)/plxnative-storage.new && mv $(SERVICEDIR)/plxnative-storage.new $(SERVICEDIR)/plxnative-storage'
 	# ...then retire any FFmpeg from a PREVIOUS version. `scp` only adds, so bumping the bundled
 	# release left the old majors sitting in the app directory forever — observed on the dev TV,
 	# which was carrying libavcodec-plx.so.60 and .so.58 from an earlier experiment alongside the
@@ -953,11 +976,16 @@ deploy: pkg/plxnative $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release
 # report to find weeks later. `VERIFY_FILES` is deliberately not `DEPLOY_FILES` alone: the binary,
 # the crash handler and the FFmpeg libraries take their own path to the device above and are just
 # as capable of silently drifting, so they are verified too.
-VERIFY_FILES = pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(DEPLOY_FILES) \
+VERIFY_FILES = pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(DEPLOY_FILES) pkg/plxnative-storage \
                $(if $(LAB),pkg/lab.json,)
 verify-deploy: tv-lock-require
 	@echo "verify-deploy: comparing $(words $(VERIFY_FILES)) files against $(APPID) [$(FLAVOR)]"
-	@$(SSH) 'cd $(APPDIR) && md5sum $(notdir $(VERIFY_FILES)) 2>&1' | \
+	@# The storage helper lands in $(SERVICEDIR), a different directory from everything else here —
+	@# `ci/verify-deploy.py` keys purely by basename (see its module doc), so a second `cd && md5sum`
+	@# appended to the same ssh round trip merges into one stream it already knows how to read,
+	@# rather than needing a transport of its own.
+	@$(SSH) 'cd $(APPDIR) && md5sum $(notdir $(filter-out pkg/plxnative-storage,$(VERIFY_FILES))) 2>&1; \
+	         cd $(SERVICEDIR) && md5sum plxnative-storage 2>&1' | \
 	  python3 ci/verify-deploy.py $(VERIFY_FILES)
 
 # NB (this webOS build): luna-send must stay subscribed (-i) for the launch to
