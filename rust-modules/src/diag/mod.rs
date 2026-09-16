@@ -51,22 +51,14 @@ pub(crate) fn event(e: schema::DiagEvent) {
     event_for(e, ServerContext::None);
 }
 
-/// Report an action against the exact Plex server it used, reading its connection facts LIVE at
-/// capture time. This is the only honest source for connection class in a multi-server account;
-/// generic events deliberately pass no server. **Not for a playback attempt event** — see
-/// [`event_for_connection`], the one production caller today (`player::report` migrated off this
-/// live-read form in #95 step 8, item 4). Kept as a real producer, exercised by
-/// `test_events`'s dispatch coverage, so a plain `--no-default-features cargo check` (which builds
-/// no test code) sees no caller of its own.
-#[allow(dead_code)]
-pub(crate) fn event_for_server(e: schema::DiagEvent, server: crate::plex::ServerId) {
-    event_for(e, ServerContext::Live(server));
-}
-
 /// Report an action against a server whose connection facts were captured EARLIER and are being
-/// REPLAYED, not read live (#95 step 8, item 4). `player::report` is the one caller: it snapshots
-/// `(link, ip)` once in `requested` and every later event on that attempt reports that frozen
-/// pair, so a mid-attempt re-point cannot relabel events already in flight for this attempt.
+/// REPLAYED, not read live (#95 step 8, item 4) — the one attach point for server context, so
+/// there is a single answer to "how does an event get a connection". `player::report` is the
+/// production caller: it snapshots `(link, ip)` once in `requested` and every later event on that
+/// attempt reports that frozen pair, so a mid-attempt re-point cannot relabel events already in
+/// flight for this attempt. `test_events`'s dispatch-coverage test also goes through here (with
+/// `ServerId::UNSET` and `None`/`None`), rather than through a second, live-reading producer kept
+/// only for that test.
 pub(crate) fn event_for_connection(
     e: schema::DiagEvent,
     server: crate::plex::ServerId,
@@ -76,11 +68,10 @@ pub(crate) fn event_for_connection(
     event_for(e, ServerContext::Snapshot(server, link, ip));
 }
 
-/// Which server (if any), and whether its connection facts are read live or replayed from a
-/// snapshot. See [`event_for_server`] vs [`event_for_connection`]'s docs for when to use each.
+/// Which server (if any) an event addresses. See [`event_for_connection`]'s doc for when the
+/// `Snapshot` arm applies.
 enum ServerContext {
     None,
-    Live(crate::plex::ServerId),
     Snapshot(
         crate::plex::ServerId,
         Option<crate::plex::probe::Location>,
@@ -121,9 +112,6 @@ fn event_for(e: schema::DiagEvent, server: ServerContext) {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
     let envelope = match server {
-        ServerContext::Live(server) => {
-            schema::UsageEnvelope::capture_for_server(e, occurred_at_ms, session_id, server)
-        }
         ServerContext::Snapshot(server, link, ip) => schema::UsageEnvelope::capture_for_snapshot(
             e,
             occurred_at_ms,

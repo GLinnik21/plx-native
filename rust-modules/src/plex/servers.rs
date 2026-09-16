@@ -766,7 +766,7 @@ fn activate(id: ServerId) {
 /// (otherwise there is nothing for `client()` to answer with). Use [`set_current`] to switch,
 /// or [`install`], which is the session path and always retargets.
 pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerId {
-    register_origin(machine_id, &Origin::http(host, port), token, None)
+    register_origin(machine_id, &Origin::http(host, port), token, None, ConnectionFacts::default())
 }
 
 /// [`register`], given the server's whole [`Origin`] instead of a plaintext address.
@@ -785,8 +785,8 @@ pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerI
 /// Captured bootstrap identity: same registry/refresh path, without a lazy session-file read.
 ///
 /// Carries connection facts to apply atomically (#95 step 8) — the dev-boot / captured-bootstrap
-/// twin of [`register_origin_with_connection`]. Every production caller already knows a tier (or
-/// `None`) at registration time, so there is no plain, connection-less variant to keep in sync.
+/// twin of [`register_origin`]. Every production caller already knows a tier (or `None`) at
+/// registration time, so there is no plain, connection-less variant to keep in sync.
 pub(crate) fn register_captured_origin_with_connection(machine_id: &str, origin: &Origin,
     token: &str, pin: Option<&ResolvePin>, client_id: &str, connection: ConnectionFacts) -> ServerId {
     let id = register_lazy(machine_id, origin, token, pin, connection, &|| client_id.to_owned());
@@ -795,20 +795,12 @@ pub(crate) fn register_captured_origin_with_connection(machine_id: &str, origin:
     id
 }
 
-pub fn register_origin(
-    machine_id: &str,
-    origin: &Origin,
-    token: &str,
-    pin: Option<&ResolvePin>,
-) -> ServerId {
-    register_origin_with_connection(machine_id, origin, token, pin, ConnectionFacts::default())
-}
-
-/// [`register_origin`], carrying connection facts (#95 step 8) to apply to the published `Client`
-/// AT registration, in the same write that creates or re-points its slot — never as a separate
-/// post-hoc call a caller can forget or that a re-point can race. `connection`'s doc explains why
-/// `None` means "leave unchanged" rather than "unknown".
-pub(crate) fn register_origin_with_connection(
+/// Carries connection facts (#95 step 8) to apply to the published `Client` AT registration, in
+/// the same write that creates or re-points its slot — never as a separate post-hoc call a caller
+/// can forget or that a re-point can race. `connection`'s doc explains why `None` means "leave
+/// unchanged" rather than "unknown"; a caller that genuinely knows nothing about the connection
+/// passes `ConnectionFacts::default()` explicitly (that is [`register`]'s whole body).
+pub(crate) fn register_origin(
     machine_id: &str,
     origin: &Origin,
     token: &str,
@@ -867,22 +859,11 @@ pub(crate) fn register_with_client_id(
 }
 
 /// [`register_origin_with_client_id`] with a resolve pin — the seam for the test that is about the
-/// PIN. Same contract: no session file, no worker.
+/// PIN, and for grading [`ConnectionFacts`]'s "leave unchanged on retoken" / "sets both on
+/// re-point" semantics (#95 step 8). Same contract as every `_with_client_id` seam: no session
+/// file, no worker — a caller that genuinely knows nothing about the connection passes
+/// `ConnectionFacts::default()` explicitly.
 pub(crate) fn register_pinned_with_client_id(
-    machine_id: &str,
-    origin: &Origin,
-    token: &str,
-    pin: Option<&ResolvePin>,
-    client_id: &str,
-) -> ServerId {
-    register_pinned_with_client_id_and_connection(machine_id, origin, token, pin, client_id,
-        ConnectionFacts::default())
-}
-
-/// [`register_pinned_with_client_id`], carrying connection facts to apply atomically — the test
-/// seam for grading [`ConnectionFacts`]'s "leave unchanged on retoken" / "sets both on re-point"
-/// semantics (#95 step 8) without going through the session-file/worker-spawning production path.
-pub(crate) fn register_pinned_with_client_id_and_connection(
     machine_id: &str,
     origin: &Origin,
     token: &str,
@@ -894,14 +875,16 @@ pub(crate) fn register_pinned_with_client_id_and_connection(
 }
 
 /// [`register_with_client_id`], given the whole [`Origin`] — the seam for a test that is about the
-/// SCHEME, which the `(host, port)` form cannot express. Same contract: no session file, no worker.
+/// SCHEME, which the `(host, port)` form cannot express. Identical to
+/// [`register_pinned_with_client_id`] with `pin: None`, so it forwards there rather than repeating
+/// the `register_lazy` call.
 pub(crate) fn register_origin_with_client_id(
     machine_id: &str,
     origin: &Origin,
     token: &str,
     client_id: &str,
 ) -> ServerId {
-    register_lazy(machine_id, origin, token, None, ConnectionFacts::default(), &|| client_id.to_owned())
+    register_pinned_with_client_id(machine_id, origin, token, None, client_id, ConnectionFacts::default())
 }
 
 fn register_lazy(
@@ -1045,7 +1028,7 @@ fn register_lazy(
 /// and makes it current, where the singleton kept the FIRST server's address and quietly applied
 /// the new token to it (a mis-target no caller could see, because the address was frozen).
 pub fn install(origin: &Origin, token: &str, pin: Option<&ResolvePin>, connection: ConnectionFacts) {
-    let id = register_origin_with_connection("", origin, token, pin, connection);
+    let id = register_origin("", origin, token, pin, connection);
     set_current(id); // the session path always retargets: this is now the server we are using
                      // (`register` already refreshed this server's self-description — see its doc.)
 }
@@ -1261,7 +1244,7 @@ mod tests {
         let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
         let o1 = Origin::parse("https://192-168-0-10.h4sh.plex.direct:32400").unwrap();
         let p1 = ResolvePin::for_origin(&o1, "192.168.0.10").expect("a valid pin");
-        let id = register_pinned_with_client_id("m1", &o1, "tok", Some(&p1), "cid");
+        let id = register_pinned_with_client_id("m1", &o1, "tok", Some(&p1), "cid", ConnectionFacts::default());
         assert!(id.is_set());
         assert_eq!(client_for(id).unwrap().resolve_pin(), Some(&p1), "the client carries it");
         assert_eq!(
@@ -1270,13 +1253,13 @@ mod tests {
             "the media plane can find it by host and port"
         );
         // a profile switch: same server, new token, no new entry
-        let again = register_pinned_with_client_id("m1", &o1, "tok2", Some(&p1), "cid");
+        let again = register_pinned_with_client_id("m1", &o1, "tok2", Some(&p1), "cid", ConnectionFacts::default());
         assert_eq!(again, id);
         assert_eq!(client_for(id).unwrap().resolve_pin(), Some(&p1));
         // DHCP moved the server and discovery re-pointed the slot: the old entry survives
         let o2 = Origin::parse("https://192-168-0-20.h4sh.plex.direct:32400").unwrap();
         let p2 = ResolvePin::for_origin(&o2, "192.168.0.20").unwrap();
-        let moved = register_pinned_with_client_id("m1", &o2, "tok2", Some(&p2), "cid");
+        let moved = register_pinned_with_client_id("m1", &o2, "tok2", Some(&p2), "cid", ConnectionFacts::default());
         assert_eq!(moved, id, "re-pointed in place");
         assert_eq!(client_for(id).unwrap().resolve_pin(), Some(&p2));
         assert_eq!(
@@ -1290,7 +1273,7 @@ mod tests {
         );
         // an unpinned registration carries nothing and records nothing
         let plain = Origin::http("10.0.0.7", 32400);
-        let pid = register_pinned_with_client_id("m2", &plain, "t", None, "cid");
+        let pid = register_pinned_with_client_id("m2", &plain, "t", None, "cid", ConnectionFacts::default());
         assert_eq!(client_for(pid).unwrap().resolve_pin(), None);
         assert_eq!(crate::net::resolve::lookup("10.0.0.7", 32400), None);
         crate::net::resolve::clear();
@@ -1304,10 +1287,10 @@ mod tests {
         let _g = fresh();
         crate::net::resolve::clear();
         let o = Origin::parse("https://192-168-0-10.h4sh.plex.direct:32400").unwrap();
-        let id = register_pinned_with_client_id("m1", &o, "tok", None, "cid");
+        let id = register_pinned_with_client_id("m1", &o, "tok", None, "cid", ConnectionFacts::default());
         assert_eq!(client_for(id).unwrap().resolve_pin(), None);
         let p = ResolvePin::for_origin(&o, "192.168.0.10").unwrap();
-        let again = register_pinned_with_client_id("m1", &o, "tok", Some(&p), "cid");
+        let again = register_pinned_with_client_id("m1", &o, "tok", Some(&p), "cid", ConnectionFacts::default());
         assert_eq!(again, id, "same slot");
         assert_eq!(client_for(id).unwrap().resolve_pin(), Some(&p), "…now pinned");
         assert_eq!(count(), 1);
@@ -1323,7 +1306,7 @@ mod tests {
         let _g = fresh();
         let o = Origin::http("10.0.0.5", 32400);
         let connection = ConnectionFacts::new(Some(Location::Local), Some(IpVersion::V4));
-        let id = register_pinned_with_client_id_and_connection("m1", &o, "tok", None, "cid",
+        let id = register_pinned_with_client_id("m1", &o, "tok", None, "cid",
             connection);
         let c = client_for(id).unwrap();
         assert_eq!(c.link(), Some(Location::Local));
@@ -1331,7 +1314,7 @@ mod tests {
         // Same origin, same machine id: `register_lazy` takes the in-place branch. A plain
         // retoken (e.g. a profile switch swapping only the token) knows nothing new about the
         // connection, so it passes `ConnectionFacts::default()`.
-        let again = register_pinned_with_client_id_and_connection("m1", &o, "tok2", None, "cid",
+        let again = register_pinned_with_client_id("m1", &o, "tok2", None, "cid",
             ConnectionFacts::default());
         assert_eq!(again, id, "same slot — in place, not a re-point");
         let c = client_for(id).unwrap();
@@ -1346,13 +1329,13 @@ mod tests {
     fn a_repoint_with_some_connection_sets_both_tier_and_ip_on_the_fresh_client() {
         let _g = fresh();
         let o1 = Origin::http("10.0.0.5", 32400);
-        let id = register_pinned_with_client_id_and_connection("m1", &o1, "tok", None, "cid",
+        let id = register_pinned_with_client_id("m1", &o1, "tok", None, "cid",
             ConnectionFacts::new(Some(Location::Relay), Some(IpVersion::V4)));
         assert_eq!(client_for(id).unwrap().link(), Some(Location::Relay));
         // DHCP moved the server: a different origin for the same machine id re-points the slot.
         let o2 = Origin::http("10.0.0.9", 32400);
         let connection = ConnectionFacts::new(Some(Location::Local), Some(IpVersion::V6));
-        let moved = register_pinned_with_client_id_and_connection("m1", &o2, "tok", None, "cid",
+        let moved = register_pinned_with_client_id("m1", &o2, "tok", None, "cid",
             connection);
         assert_eq!(moved, id, "re-pointed in place (same slot id)");
         let c = client_for(id).unwrap();
@@ -1369,8 +1352,8 @@ mod tests {
         let _g = fresh();
         let o = Origin::parse("https://192-168-0-10.h4sh.plex.direct:32400").unwrap();
         let p = ResolvePin::for_origin(&o, "192.168.0.10").unwrap();
-        let roster = register_pinned_with_client_id("m1", &o, "tok", Some(&p), "cid");
-        let primary = register_pinned_with_client_id("", &o, "tok", Some(&p), "cid");
+        let roster = register_pinned_with_client_id("m1", &o, "tok", Some(&p), "cid", ConnectionFacts::default());
+        let primary = register_pinned_with_client_id("", &o, "tok", Some(&p), "cid", ConnectionFacts::default());
         assert_eq!(primary, roster);
         assert_eq!(count(), 1);
         crate::net::resolve::clear();

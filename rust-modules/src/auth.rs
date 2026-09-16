@@ -727,11 +727,11 @@ fn register_observed_origin(
 ) -> ServerId {
     #[cfg(not(test))]
     {
-        crate::plex::register_origin_with_connection(machine_id, origin, token, pin, connection)
+        crate::plex::register_origin(machine_id, origin, token, pin, connection)
     }
     #[cfg(test)]
     {
-        crate::plex::register_pinned_with_client_id_and_connection(
+        crate::plex::register_pinned_with_client_id(
             machine_id,
             origin,
             token,

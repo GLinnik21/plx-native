@@ -86,7 +86,7 @@ pub use servers::{
     describe_name as describe_server_name, facts as server_facts, ids as server_ids, install,
     facts_gen as server_facts_gen, is_household, owner_credit,
     probe_result as server_probe_result, publish_probe_result, register,
-    register_origin, roster_gen as server_roster_gen, same_item, set_current, Grant, ServerFacts,
+    roster_gen as server_roster_gen, same_item, set_current, Grant, ServerFacts,
     ServerId, MAX_SERVERS,
 };
 // Sign-out. `pub(crate)` like the function itself: retiring the whole table is `auth::sign_out`'s
@@ -115,14 +115,15 @@ pub(crate) use servers::{
 pub(crate) use servers::register_pinned_with_client_id;
 // #95 step 8: connection facts applied AT registration, atomically with the registry write. See
 // `servers::ConnectionFacts`'s doc for why `None` means "leave unchanged" rather than "unknown".
-// `register_captured_origin_with_connection`/`register_origin_with_connection` are reached only
-// from production call sites that are themselves feature-conditional today; `#[allow]` keeps a
-// `--no-default-features` `cargo check` (which builds no test code) from flagging them as dead
-// while they still have a real, if narrower, production caller.
+// `register_origin` took the `ConnectionFacts` parameter directly rather than keeping a
+// connection-less twin beside it — every production caller already knows a tier (or `None`) at
+// registration time. `register_captured_origin_with_connection` is reached only from production
+// call sites that are themselves feature-conditional today; `#[allow]` keeps a
+// `--no-default-features` `cargo check` (which builds no test code) from flagging it as dead while
+// it still has a real, if narrower, production caller.
 #[allow(unused_imports)]
 pub(crate) use servers::{
-    register_captured_origin_with_connection, register_origin_with_connection,
-    register_pinned_with_client_id_and_connection, ConnectionFacts,
+    register_captured_origin_with_connection, register_origin, ConnectionFacts,
 };
 // The projected play-queue row + the identity rule that locates one: op-file items rather than
 // wire DTOs, so they are re-exported by name (route.rs names the row in `Plan`/`QueueInfo` — the

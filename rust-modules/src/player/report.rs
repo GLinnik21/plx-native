@@ -1313,7 +1313,7 @@ mod tests {
             Some(crate::plex::probe::Location::Local),
             Some(crate::plex::IpVersion::V4),
         );
-        let sid = crate::plex::register_pinned_with_client_id_and_connection(
+        let sid = crate::plex::register_pinned_with_client_id(
             "m1", &o, "tok", None, "cid", connection,
         );
         let ps = crate::route::PlaybackSession::default();
@@ -1330,7 +1330,7 @@ mod tests {
             Some(crate::plex::probe::Location::Relay),
             Some(crate::plex::IpVersion::V6),
         );
-        let repointed = crate::plex::register_pinned_with_client_id_and_connection(
+        let repointed = crate::plex::register_pinned_with_client_id(
             "m1", &o2, "tok", None, "cid", repoint,
         );
         assert_eq!(repointed, sid, "re-pointed in place — same slot id");

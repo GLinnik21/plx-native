@@ -990,7 +990,7 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
         crate::plex::reset_servers_for_test();
         let initial_origin = crate::plex::Origin::http("127.0.0.1", 9);
         let sid = crate::plex::register_pinned_with_client_id("synthetic-server", &initial_origin,
-            "synthetic-profile-token", None, "synthetic-client");
+            "synthetic-profile-token", None, "synthetic-client", crate::plex::ConnectionFacts::default());
         let client = crate::plex::client_for(sid).unwrap();
         let instance = client.instance_gen();
         let token_gen = client.token_gen();
@@ -1049,7 +1049,7 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
             2 => {
                 let newer = crate::plex::Origin::http("127.0.0.1", 10);
                 let replaced_sid = crate::plex::register_pinned_with_client_id("synthetic-server", &newer,
-                    "synthetic-new-profile-token", None, "synthetic-client");
+                    "synthetic-new-profile-token", None, "synthetic-client", crate::plex::ConnectionFacts::default());
                 assert_eq!(replaced_sid, sid);
                 assert!(!std::ptr::eq(client, crate::plex::client_for(sid).unwrap()));
                 assert_ne!(crate::plex::client_for(sid).unwrap().instance_gen(), instance);

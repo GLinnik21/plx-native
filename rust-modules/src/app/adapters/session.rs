@@ -320,7 +320,7 @@ impl SessionAdapter {
                 primary.tier,
                 crate::plex::IpVersion::of_host(&primary.address),
             );
-            let id = crate::plex::register_pinned_with_client_id_and_connection("", &origin,
+            let id = crate::plex::register_pinned_with_client_id("", &origin,
                 &primary.token, primary.resolve_pin().as_ref(), client_id, connection);
             if self.replay_resources {
                 if let Some(client) = crate::plex::client_for(id) { client.disable_data_io(); }

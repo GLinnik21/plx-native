@@ -418,25 +418,12 @@ impl UsageEnvelope {
         Self::capture_with_context(event, occurred_at_ms, session_id, UsageContext::current())
     }
 
-    pub(crate) fn capture_for_server(
-        event: DiagEvent,
-        occurred_at_ms: u64,
-        session_id: &str,
-        server: crate::plex::ServerId,
-    ) -> Self {
-        Self::capture_with_context(
-            event,
-            occurred_at_ms,
-            session_id,
-            UsageContext::for_server(Some(server)),
-        )
-    }
-
-    /// Like [`Self::capture_for_server`], but the connection facts come from an already-captured
-    /// `(link, ip)` snapshot rather than a live registry read (#95 step 8, item 4) — what a
-    /// playback attempt event wants, since `player::report::requested` snapshots the attempt's
-    /// server connection once and every later event on that attempt must report THAT connection,
-    /// not whatever the client reads as at send time after a mid-attempt re-point.
+    /// Connection facts come from an already-captured `(link, ip)` snapshot rather than a live
+    /// registry read (#95 step 8, item 4) — what a playback attempt event wants, since
+    /// `player::report::requested` snapshots the attempt's server connection once and every later
+    /// event on that attempt must report THAT connection, not whatever the client reads as at
+    /// send time after a mid-attempt re-point. The one server-addressed producer; a generic event
+    /// with no one server goes through [`Self::capture`] instead.
     pub(crate) fn capture_for_snapshot(
         event: DiagEvent,
         occurred_at_ms: u64,
