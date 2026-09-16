@@ -1025,8 +1025,20 @@ fn execute_clear() -> DiskOutcome {
             return DiskOutcome::ProtectionFailed(evidence)
         }
     };
+    // CONTRACT-FREEZE NOTE: `cleanup_after_confirmed_clear()` now returns
+    // `persistence::ClearCleanupOutcome`, distinguishing "authority read-back did not confirm
+    // Cleared" from "confirmed Cleared but a legacy candidate could not be retired" (AUTH-09
+    // Finding B). This call site still collapses both into one `cleanup_failed` bool, inheriting
+    // the same conflation Finding B fixes on the synchronous `session::clear()` path — this path
+    // is not live-wired to sign-out today (see the doc comment above), so it is not a live hole,
+    // but it is left AS-IS here deliberately rather than silently patched over: a future package
+    // wiring this path up should carry `ClearCleanupOutcome` through `ClearOutcome`/`DiskOutcome`
+    // rather than reintroduce a bool at this boundary.
     let cleanup_failed = matches!(durability, ClearDurability::Durable)
-        && !persistence::cleanup_after_confirmed_clear();
+        && !matches!(
+            persistence::cleanup_after_confirmed_clear(),
+            persistence::ClearCleanupOutcome::Confirmed
+        );
     DiskOutcome::Clear {
         outcome: ClearOutcome {
             durability,

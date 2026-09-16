@@ -2315,6 +2315,14 @@ pub(crate) enum ClearOutcome {
     /// could not retire every recognized migration candidate — the tenure is still durably
     /// cleared, so a stale candidate is a residue to retry, never a reason to reopen it.
     Durable { legacy_swept: bool },
+    /// The canonical commit itself reported durable, but the immediate authority read-back
+    /// (`persistence::cleanup_after_confirmed_clear`'s own `load()`) did NOT confirm `Cleared` —
+    /// distinct from `Durable { legacy_swept: false }`, which means the authority DID confirm
+    /// `Cleared` and only a legacy residue file survived the sweep. This variant exists so the two
+    /// failure modes AUTH-09 Finding B conflated cannot be matched as the same thing: nothing here
+    /// may treat this as a completed durable sign-out. The account token may still be readable
+    /// from the canonical authority on the next boot.
+    AuthorityNotConfirmed,
     /// The canonical clear did not durably land (uncertain, failed, or a protection failure). The
     /// account token may still be readable from the canonical authority on the next boot; the
     /// caller must not present this as a completed sign-out.
@@ -2375,15 +2383,27 @@ pub fn clear() -> ClearOutcome {
             // clean. `cleanup_after_confirmed_clear` re-reads the authority to confirm it really is
             // Cleared before retiring anything, so this can only ever remove residue, never data a
             // concurrent re-login just wrote.
-            let legacy_swept = persistence::cleanup_after_confirmed_clear();
-            if !legacy_swept {
-                crate::log(
-                    "session: canonical clear is durable but a recognized legacy migration \
-                     candidate could not be retired — it remains on disk and will be swept again \
-                     on the next sign-out or bootstrap",
-                );
+            match persistence::cleanup_after_confirmed_clear() {
+                persistence::ClearCleanupOutcome::Confirmed => {
+                    ClearOutcome::Durable { legacy_swept: true }
+                }
+                persistence::ClearCleanupOutcome::LegacyRetireFailed => {
+                    crate::log(
+                        "session: canonical clear is durable but a recognized legacy migration \
+                         candidate could not be retired — it remains on disk and will be swept \
+                         again on the next sign-out or bootstrap",
+                    );
+                    ClearOutcome::Durable { legacy_swept: false }
+                }
+                persistence::ClearCleanupOutcome::AuthorityNotConfirmed => {
+                    crate::log(
+                        "session: canonical clear reported durable but the immediate authority \
+                         read-back did not confirm Cleared — the legacy sweep was skipped and the \
+                         account token may still be readable from the canonical authority",
+                    );
+                    ClearOutcome::AuthorityNotConfirmed
+                }
             }
-            ClearOutcome::Durable { legacy_swept }
         }
         persistence::CanonicalCommit::Uncertain { stage, errno } => {
             crate::log(&format!(
@@ -3789,6 +3809,10 @@ mod tests {
                 "the unremovable candidate must be reported as an incomplete sweep, not silently \
                  treated as fully retired — clear() may not have reached \
                  `persistence::cleanup_after_confirmed_clear()` at all"
+            ),
+            ClearOutcome::AuthorityNotConfirmed => panic!(
+                "setup: the canonical authority must confirm Cleared before this test's legacy \
+                 sweep assertion is meaningful"
             ),
             ClearOutcome::NotDurable => panic!("setup: the canonical clear must durably commit"),
         }

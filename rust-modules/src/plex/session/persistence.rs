@@ -1147,11 +1147,35 @@ pub(crate) fn bootstrap(opener: &mut dyn LegacyOpener) -> Bootstrap {
     }
 }
 
+/// The result of [`cleanup_after_confirmed_clear`], distinguishing the two failure modes that a
+/// bare `bool` used to conflate (AUTH-09 Finding B): the authority read-back disagreeing with the
+/// caller's premise that the clear already landed durably, versus the read-back confirming
+/// `Cleared` but a recognized legacy migration candidate surviving the sweep. The two are not
+/// interchangeable — the first means the clear itself may not be trustworthy yet (or a concurrent
+/// re-login already overwrote it), the second means the clear is real and only a residue file is
+/// left over. `session::ClearOutcome` (session.rs) carries a distinct variant for the first case
+/// specifically so `erase()`'s `matches!(.., Durable { .. })` check cannot accidentally match it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClearCleanupOutcome {
+    /// The authority read back `Cleared` and every recognized legacy migration candidate was
+    /// retired (or was already absent).
+    Confirmed,
+    /// The authority did NOT read back `Cleared` at the moment of this call — the caller's premise
+    /// that the clear already committed durably could not be confirmed here. No legacy sweep was
+    /// attempted.
+    AuthorityNotConfirmed,
+    /// The authority read back `Cleared`, but at least one recognized legacy migration candidate
+    /// could not be retired (an unreadable, non-regular, or otherwise un-removable file). The
+    /// clear itself is real; the residue is safe and will be swept again on the next sign-out or
+    /// bootstrap.
+    LegacyRetireFailed,
+}
+
 /// Called only after ClearTenure reports durable. Re-read the authority before removing legacy
 /// residues; failure to retire a source remains visible but cannot reopen the cleared account.
-pub(crate) fn cleanup_after_confirmed_clear() -> bool {
+pub(crate) fn cleanup_after_confirmed_clear() -> ClearCleanupOutcome {
     if !matches!(load(), CanonicalRead::Cleared { .. }) {
-        return false;
+        return ClearCleanupOutcome::AuthorityNotConfirmed;
     }
     #[cfg(not(test))]
     let candidates = crate::paths::session_migration_candidates();
@@ -1178,5 +1202,9 @@ pub(crate) fn cleanup_after_confirmed_clear() -> bool {
             _ => complete = false,
         }
     }
-    complete
+    if complete {
+        ClearCleanupOutcome::Confirmed
+    } else {
+        ClearCleanupOutcome::LegacyRetireFailed
+    }
 }
