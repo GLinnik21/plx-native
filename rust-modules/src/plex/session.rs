@@ -166,6 +166,15 @@ fn fallback_file() -> std::path::PathBuf {
     .clone()
 }
 
+/// The same process-global scratch path [`fallback_file`] resolves to, exposed to other modules'
+/// test code (the adapter regression test for the Finding 1 canonical-verdict path) so it can
+/// snapshot and restore the file rather than leaving residue for whichever other test falls
+/// through to it next.
+#[cfg(test)]
+pub(crate) fn fallback_file_for_test() -> std::path::PathBuf {
+    fallback_file()
+}
+
 #[cfg(test)]
 fn auth_paths() -> Vec<std::path::PathBuf> {
     match TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
@@ -2357,6 +2366,38 @@ pub(crate) enum ClearOutcome {
     NotDurable,
 }
 
+/// Map [`persistence::ClearCleanupOutcome`] onto the [`ClearOutcome`] `clear()` reports for a
+/// canonical commit that already landed `Durable` — pulled out of `clear()`'s body (behavior
+/// unchanged, log lines and all) so the mapping itself can be pinned directly by a unit test
+/// rather than only through `clear()`'s end-to-end path, which cannot reach every arm on the
+/// host. **`AuthorityNotConfirmed` must never map to `Durable { legacy_swept: false }`** — that is
+/// exactly the conflation an earlier finding (AUTH-09 Finding B) existed to prevent:
+/// `AuthorityNotConfirmed` means the immediate authority read-back did NOT confirm `Cleared`, so
+/// the account token may still be readable from the canonical authority, which is a materially
+/// different — and worse — outcome than "cleared, but one legacy residue file survived the
+/// sweep".
+fn clear_cleanup_outcome(outcome: persistence::ClearCleanupOutcome) -> ClearOutcome {
+    match outcome {
+        persistence::ClearCleanupOutcome::Confirmed => ClearOutcome::Durable { legacy_swept: true },
+        persistence::ClearCleanupOutcome::LegacyRetireFailed => {
+            crate::log(
+                "session: canonical clear is durable but a recognized legacy migration \
+                 candidate could not be retired — it remains on disk and will be swept \
+                 again on the next sign-out or bootstrap",
+            );
+            ClearOutcome::Durable { legacy_swept: false }
+        }
+        persistence::ClearCleanupOutcome::AuthorityNotConfirmed => {
+            crate::log(
+                "session: canonical clear reported durable but the immediate authority \
+                 read-back did not confirm Cleared — the legacy sweep was skipped and the \
+                 account token may still be readable from the canonical authority",
+            );
+            ClearOutcome::AuthorityNotConfirmed
+        }
+    }
+}
+
 /// Clear the persisted session (sign-out) — removes the file; a fresh `client_id` is minted next
 /// load. The old-path copy goes too, or the migration fallback would resurrect the stale session.
 /// **And commits an explicit Cleared record to the canonical authority** — the legacy-file sweep
@@ -2411,27 +2452,7 @@ pub fn clear() -> ClearOutcome {
             // clean. `cleanup_after_confirmed_clear` re-reads the authority to confirm it really is
             // Cleared before retiring anything, so this can only ever remove residue, never data a
             // concurrent re-login just wrote.
-            match persistence::cleanup_after_confirmed_clear() {
-                persistence::ClearCleanupOutcome::Confirmed => {
-                    ClearOutcome::Durable { legacy_swept: true }
-                }
-                persistence::ClearCleanupOutcome::LegacyRetireFailed => {
-                    crate::log(
-                        "session: canonical clear is durable but a recognized legacy migration \
-                         candidate could not be retired — it remains on disk and will be swept \
-                         again on the next sign-out or bootstrap",
-                    );
-                    ClearOutcome::Durable { legacy_swept: false }
-                }
-                persistence::ClearCleanupOutcome::AuthorityNotConfirmed => {
-                    crate::log(
-                        "session: canonical clear reported durable but the immediate authority \
-                         read-back did not confirm Cleared — the legacy sweep was skipped and the \
-                         account token may still be readable from the canonical authority",
-                    );
-                    ClearOutcome::AuthorityNotConfirmed
-                }
-            }
+            clear_cleanup_outcome(persistence::cleanup_after_confirmed_clear())
         }
         persistence::CanonicalCommit::Uncertain { stage, errno } => {
             crate::log(&format!(
@@ -3845,6 +3866,45 @@ mod tests {
             ClearOutcome::NotDurable => panic!("setup: the canonical clear must durably commit"),
         }
         assert!(candidate.is_dir(), "the un-removable candidate must still be present");
+    }
+
+    /// Finding 2: pins `clear_cleanup_outcome`'s mapping directly, arm by arm — not only through
+    /// `clear()`'s end-to-end path, which cannot reach `AuthorityNotConfirmed` on the host (there
+    /// is no seam that makes a load-side read-back disagree with a commit that just landed). No
+    /// isolated runtime-state root is needed: `clear_cleanup_outcome` is a pure function with no
+    /// I/O of its own — every side effect (the log lines) is unobservable to this test, and
+    /// nothing it touches is process-global or shared.
+    ///
+    /// The `AuthorityNotConfirmed` arm is the one this finding is about:
+    /// `ClearCleanupOutcome::AuthorityNotConfirmed` must map to `ClearOutcome::
+    /// AuthorityNotConfirmed`, never to `ClearOutcome::Durable { legacy_swept: false }` — which
+    /// would silently re-commit exactly the conflation AUTH-09 Finding B existed to prevent,
+    /// while still passing `make check` today (nothing reaches this arm end to end).
+    ///
+    /// RED: OBSERVED. Temporarily changing the `AuthorityNotConfirmed` arm in
+    /// `clear_cleanup_outcome` to `ClearOutcome::Durable { legacy_swept: false }` and re-running
+    /// only this test failed on the `assert_eq!` below (`Durable { legacy_swept: false } !=
+    /// AuthorityNotConfirmed`); reverting turned it back green. This test does not merely
+    /// duplicate `clear_reports_an_incomplete_sweep_when_a_recognized_candidate_cannot_be_retired`
+    /// or the other `clear()` end-to-end tests above — none of them can reach the
+    /// `AuthorityNotConfirmed` arm at all (the same mutation leaves every one of them passing,
+    /// which is exactly the gap this finding names).
+    #[test]
+    fn clear_cleanup_outcome_maps_all_three_arms_and_never_conflates_unconfirmed_with_durable() {
+        assert_eq!(
+            clear_cleanup_outcome(persistence::ClearCleanupOutcome::Confirmed),
+            ClearOutcome::Durable { legacy_swept: true }
+        );
+        assert_eq!(
+            clear_cleanup_outcome(persistence::ClearCleanupOutcome::LegacyRetireFailed),
+            ClearOutcome::Durable { legacy_swept: false }
+        );
+        assert_eq!(
+            clear_cleanup_outcome(persistence::ClearCleanupOutcome::AuthorityNotConfirmed),
+            ClearOutcome::AuthorityNotConfirmed,
+            "AuthorityNotConfirmed must never be reported as Durable{{legacy_swept: false}} — \
+             that is the exact conflation AUTH-09 Finding B existed to prevent"
+        );
     }
 
     /// `failed-canonical-clear-is-silent`: a canonical clear that does not durably land must be
