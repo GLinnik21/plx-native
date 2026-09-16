@@ -880,6 +880,159 @@ mod tests {
             completion.outcome);
     }
 
+    /// Finding 1's regression: a canonical commit that comes back `Uncertain` must surface as
+    /// `CompletionOutcome::Uncertain`, never `Durable`, even though the legacy plaintext
+    /// fall-through write beneath it succeeds. This is the exact scenario the finding names — a
+    /// `CanonicalCommit::Uncertain` (a real state: a first sign-in where keymanager3 is absent)
+    /// falling through to a legacy write that succeeds, previously collapsed to `Some(false)` and
+    /// reported as a durable saved login.
+    ///
+    /// This must run through the REAL canonical authority, not `TempSession`'s `TEST_FILE`
+    /// bypass — `save_locked_with_authority`'s own `#[cfg(test)]` guard routes a `TEST_FILE`
+    /// redirect straight to the legacy writer and never calls `persistence::write_session` at
+    /// all, so a `TempSession`-based test cannot see this finding. Instead this redirects the
+    /// canonical persistence root (mirroring `plex::session`'s own private `TempCanonicalRoot`,
+    /// which cannot be reused across the crate boundary) and forces a real `CanonicalCommit::
+    /// Uncertain` through the production fault-injection seam `storage::
+    /// inject_next_commit_failure_for_test`, consumed only at `CommitStage::ParentSync` — after
+    /// the record has actually been renamed into place, so the write is real, just reported
+    /// uncertain, exactly the state the finding describes.
+    ///
+    /// Isolation: holds `testlock::serial()` for the whole body; owns its own canonical-root
+    /// scratch directory (RAII, restored on drop); and snapshots/restores the process-global
+    /// legacy fallback file the fall-through write lands in, so no other test in this process
+    /// observes residue from it.
+    ///
+    /// RED: OBSERVED. Before Finding 1's fix (the frozen `LiveWrite`/`classify` widening now in
+    /// `save_locked_with_authority`/`async_persistence.rs`), this exact test — run against the
+    /// pre-freeze shape of `save_locked_with_authority` (`Option<bool>`, discarding the
+    /// `CanonicalCommit`) and `commit`'s old inline `if outcome.persisted() { Durable } else {
+    /// Failed }` mapping — yielded `CompletionOutcome::Durable(..)` with the completion's
+    /// `outcome` reporting the write as persisted, because only the legacy write's boolean
+    /// result reached the adapter. Discrimination check: reverting *only* the widening (restoring
+    /// the bool-collapsing `Option<bool>` signature and the unconditional `Durable` mapping) is a
+    /// different, larger mutation than the one `the_bridge_reports_a_failed_write_as_failed_not_
+    /// durable` guards, and that pre-existing test keeps passing under it (its `TempSession`
+    /// fixture never reaches the canonical authority at all, so it cannot see this regression) —
+    /// so this test discriminates a distinct failure mode from that one.
+    #[test]
+    fn the_bridge_reports_an_uncertain_canonical_commit_as_uncertain_not_durable() {
+        use crate::auth::owner::{CommitDelta, CredentialPatch, Identity, Pending, PendingCommit,
+            SessionInit, SessionMachine, StreamPhase};
+        let _serial = crate::testlock::serial();
+
+        // Point the canonical persistence root at a directory of this test's own, and take it
+        // back on drop — same shape as `plex::session`'s private `TempCanonicalRoot`.
+        struct TempCanonicalRoot { dir: std::path::PathBuf }
+        impl TempCanonicalRoot {
+            fn new(tag: &str) -> TempCanonicalRoot {
+                let dir = std::env::temp_dir().join(format!(
+                    "plxnative-adapter-canonical-{}-{tag}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&dir);
+                crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+                TempCanonicalRoot { dir }
+            }
+        }
+        impl Drop for TempCanonicalRoot {
+            fn drop(&mut self) {
+                crate::paths::redirect_persistent_state_root_for_test(None);
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+
+        // Declared FIRST (dropped LAST, reverse declaration order) so the canonical-root redirect
+        // and directory outlive the fallback-file restore below, exactly the ordering hazard this
+        // module's own `RestorePerms`/`the_bridge_reports_a_failed_write_as_failed_not_durable`
+        // documents.
+        let _root = TempCanonicalRoot::new("uncertain-verdict");
+        crate::plex::session::redirect_for_test(None);
+
+        // The legacy fall-through write (once the injected canonical failure makes the commit
+        // non-durable) lands in the process-global `fallback_file()`. Snapshot its current bytes
+        // (or absence) up front and restore exactly that state on drop, so this test leaves no
+        // residue for any other test in the process that also falls through to it.
+        let fallback_path = crate::plex::session::fallback_file_for_test();
+        let fallback_original = std::fs::read(&fallback_path).ok();
+        struct RestoreFallback { path: std::path::PathBuf, original: Option<Vec<u8>> }
+        impl Drop for RestoreFallback {
+            fn drop(&mut self) {
+                match &self.original {
+                    Some(bytes) => { let _ = std::fs::write(&self.path, bytes); }
+                    None => { let _ = std::fs::remove_file(&self.path); }
+                }
+            }
+        }
+        let _restore_fallback = RestoreFallback { path: fallback_path, original: fallback_original };
+
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
+        assert!(adapter.take_live_completion().is_none(),
+            "nothing is outstanding before any commit");
+
+        // Seed the canonical authority with a real signed-in record BEFORE injecting any
+        // failure, so the seed commit lands genuinely Durable and `disk` below reads back for
+        // real.
+        let seed = crate::plex::session::Session {
+            client_id: "cid-uncertain-verdict".into(), account_token: "seed-token".into(),
+            ..Default::default()
+        };
+        crate::plex::session::save(&seed);
+        assert!(
+            matches!(crate::plex::session::persistence::load(),
+                crate::plex::session::persistence::CanonicalRead::Data { .. }
+                | crate::plex::session::persistence::CanonicalRead::Opened { .. }),
+            "setup: the seed save must reach the canonical authority"
+        );
+
+        let disk = crate::plex::session::peek();
+        let mut init = SessionInit::captured(disk.clone());
+        init.epoch = 1;
+        init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Ready },
+            expected: Identity::of(&disk), lifecycle: None, last_arrival: Some(0),
+            phase: StreamPhase::Running, capture: None,
+            admission: crate::auth::owner::AdmissionState::NotRequested });
+        init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 0, terminal: true,
+            writes_credentials: true, receipt: None, delta: CommitDelta::default(),
+            admitted_revision: None, purpose: None });
+        let owner = SessionMachine::from_init(init);
+
+        let mut next = disk.clone();
+        next.account_token = "synthetic-uncertain-token".into();
+        let plan = CommitPlan { expected_disk: Identity::of(&disk),
+            credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
+            purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
+            writes_durable: true };
+
+        // Force the canonical commit under test to come back `Uncertain` at `ParentSync` — after
+        // the record has actually been renamed into place (the real production seam; see
+        // `storage::JsonStore::commit`), so `save_locked_with_authority` takes the `!durable`
+        // branch and falls through to the legacy write, which succeeds.
+        crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::ParentSync);
+
+        let reply = adapter.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan);
+        // The registry/admission bookkeeping is unrelated to this finding; only the completion's
+        // outcome is under test here.
+        let _ = reply;
+
+        let completion = adapter.take_live_completion()
+            .expect("a verdict is still delivered even though the canonical commit was uncertain");
+        assert!(
+            matches!(completion.outcome,
+                crate::plex::session::async_persistence::CompletionOutcome::Uncertain {
+                    stage: crate::storage::CommitStage::ParentSync, ..
+                }),
+            "an Uncertain canonical commit must surface as Uncertain even though the legacy \
+             fall-through write succeeded — it must NEVER be reported as Durable: {:?}",
+            completion.outcome
+        );
+        assert!(
+            !matches!(completion.outcome,
+                crate::plex::session::async_persistence::CompletionOutcome::Durable(..)),
+            "the exact regression this test pins: an uncertain canonical commit reported as a \
+             durable saved login"
+        );
+    }
+
     #[test]
     fn fixture_commit_uses_latest_preferences_and_never_writes_another_adapter() {
         use crate::auth::owner::{CommitDelta, CredentialPatch, Identity, Pending, PendingCommit,
