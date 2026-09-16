@@ -487,7 +487,7 @@ struct CanonicalSessionAuth {
     extensions: OpaqueExtensions,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
 struct CanonicalSessionPreferences {
     #[serde(default, deserialize_with = "de_soft_playback_quality")]
     playback_quality: Option<PlaybackQuality>,
@@ -504,6 +504,26 @@ struct CanonicalSessionPreferences {
     /// they are not promoted into the Session domain object.
     #[serde(flatten)]
     extensions: BTreeMap<String, Value>,
+}
+
+/// `#[derive(Default)]` would give `trailer_autoplay: false` (the plain bool default), which is
+/// what `.unwrap_or_default()` falls back to when `preferences` isn't even an object (null,
+/// absent, or corrupt) — silently contradicting #92's "absence is on" contract, since a per-field
+/// `#[serde(default = "default_true", ...)]` only fires for a missing KEY inside an object being
+/// deserialized, never for the whole-value fallback used here. Every other field's honest
+/// "unknown" value happens to coincide with a bare derived default, which is why only this one
+/// needed a manual impl.
+impl Default for CanonicalSessionPreferences {
+    fn default() -> Self {
+        Self {
+            playback_quality: None,
+            auto_sign_in: false,
+            last_library: Vec::new(),
+            last_hero_blur: None,
+            trailer_autoplay: true,
+            extensions: BTreeMap::new(),
+        }
+    }
 }
 
 /// Split a typed session at the encryption boundary used by the DB8 helper.
@@ -620,6 +640,7 @@ fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
         auto_sign_in: preferences.auto_sign_in,
         last_library: preferences.last_library,
         last_hero_blur: preferences.last_hero_blur,
+        trailer_autoplay: preferences.trailer_autoplay,
         home_pins, recent_searches,
         ..Default::default()
     }
@@ -2894,6 +2915,45 @@ mod tests {
         assert!(parsed.trailer_autoplay());
         let off: Session = serde_json::from_str(r#"{"client_id":"c","trailer_autoplay":false}"#).unwrap();
         assert!(!off.trailer_autoplay());
+    }
+
+    const MINIMAL_PROTECTED_AUTH: &str = r#"{"format":"plxnative-session-auth","version":1,"account_token":"tok","server":{},"user":{},"home_users":[],"sources":[],"extensions":{}}"#;
+
+    /// #92's contract is "absence is on". `join_canonical` reconstructs a `Session` from a
+    /// canonical `PublicPayload` + a decrypted protected auth string — a null/absent
+    /// `preferences` blob must not silently turn the hero trailer off.
+    #[test]
+    fn join_canonical_with_null_preferences_keeps_trailer_autoplay_on() {
+        let public = crate::storage::state::PublicPayload::default();
+        assert_eq!(public.preferences, Value::Null);
+        let session = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+        assert!(session.trailer_autoplay());
+    }
+
+    #[test]
+    fn join_canonical_with_explicit_false_keeps_trailer_autoplay_off() {
+        let mut public = crate::storage::state::PublicPayload::default();
+        public.preferences = serde_json::json!({"trailer_autoplay": false});
+        let session = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+        assert!(!session.trailer_autoplay());
+    }
+
+    /// `public_session` is the Locked/protected-bundle snapshot constructor — it must surface the
+    /// same public preference even though it never sees the decrypted credentials.
+    #[test]
+    fn public_session_with_null_preferences_keeps_trailer_autoplay_on() {
+        let public = crate::storage::state::PublicPayload::default();
+        assert_eq!(public.preferences, Value::Null);
+        let session = public_session(&public);
+        assert!(session.trailer_autoplay());
+    }
+
+    #[test]
+    fn public_session_with_explicit_false_keeps_trailer_autoplay_off() {
+        let mut public = crate::storage::state::PublicPayload::default();
+        public.preferences = serde_json::json!({"trailer_autoplay": false});
+        let session = public_session(&public);
+        assert!(!session.trailer_autoplay());
     }
 
     #[test]
