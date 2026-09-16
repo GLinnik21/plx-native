@@ -1155,7 +1155,10 @@ pub(crate) fn refuse_name(host: &str, connect_s: c_long) -> bool {
     if nw.slow {
         std::thread::sleep(std::time::Duration::from_secs(connect_s.max(0) as u64));
     }
-    crate::log(&format!("net: nowan — refused name {host}"));
+    // `host=`, not a bare `{host}` interpolation, so `diag::scrub::scrub_local`'s host clause
+    // catches it — a private hostname reaching this line unredacted is the exact device leak
+    // `stream.rs`'s DNS-failure line had.
+    crate::log(&format!("net: nowan — refused name host={host}"));
     true
 }
 
