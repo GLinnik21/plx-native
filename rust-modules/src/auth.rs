@@ -4276,6 +4276,231 @@ mod tests {
         assert_eq!(roster[0].tier, Some(probe::Location::Local));
     }
 
+    /// RAII guard for the process-global CA override (`net::test_ca_bundle`): writes `pem` to a
+    /// scratch file, installs it as curl's trusted CAINFO for the duration, and always clears the
+    /// override (and deletes the file) on drop — including on panic/unwind — so a failing
+    /// assertion in one of the tests below can never leak a trusted CA into another test running
+    /// after it under the same `testlock::serial()` guard.
+    struct TestCaGuard(std::path::PathBuf);
+    impl TestCaGuard {
+        fn install(pem: &str, tag: &str) -> TestCaGuard {
+            let path = std::env::temp_dir().join(format!(
+                "plxnative-test-ca-{tag}-{}-{:?}.pem",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            std::fs::write(&path, pem).expect("write scratch CA bundle");
+            let path_str = path.to_string_lossy().into_owned();
+            crate::net::test_ca_bundle::set(Some(&path_str));
+            TestCaGuard(path)
+        }
+    }
+    impl Drop for TestCaGuard {
+        fn drop(&mut self) {
+            crate::net::test_ca_bundle::set(None);
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// A `Resource` fixture for the issue #95 E2E race: one LAN `plex.direct` HTTPS candidate at
+    /// `lan_port`, a dead gateway at `dead_port` (same address, a port nothing answers — pinned
+    /// exactly like the real candidate, so it proves a pin alone is not enough to win), and,
+    /// when `relay_port` is `Some`, a relay candidate over a bare-IP HTTPS uri (no pin needed:
+    /// `ResolvePin::for_origin` only fires for a `plex.direct` name).
+    fn e2e95_resource(lan_port: u16, dead_port: u16, relay_port: Option<u16>) -> Resource {
+        let relay = match relay_port {
+            Some(p) => format!(
+                r#",{{"protocol":"https","address":"127.0.0.1","port":{p},
+                     "uri":"https://127.0.0.1:{p}","local":false,"relay":true,"IPv6":false}}"#
+            ),
+            None => String::new(),
+        };
+        resource(&format!(
+            r#"{{"name":"e2e95","clientIdentifier":"e2e95mid","provides":"server","owned":true,
+                "sourceTitle":null,"publicAddressMatches":true,"httpsRequired":false,
+                "accessToken":"tok-e2e95","connections":[
+                  {{"protocol":"https","address":"127.0.0.1","port":{lan_port},
+                   "uri":"https://127-0-0-1.e2e95.plex.direct:{lan_port}","local":true,"relay":false,"IPv6":false}},
+                  {{"protocol":"https","address":"127.0.0.1","port":{dead_port},
+                   "uri":"https://127-0-0-1.e2e95dead.plex.direct:{dead_port}","local":true,"relay":false,"IPv6":false}}{relay}
+                ]}}"#
+        ))
+    }
+
+    /// **The real curl/TLS stack reaches the pinned HTTPS LAN candidate and never activates its
+    /// plaintext twin.** Issue #95's shape, driven through the PRODUCTION dial
+    /// (`get_identity` → `crate::http::request_probe` → `crate::net::request_result`) rather
+    /// than a fake [`ProbeDial`] closure: a loopback double
+    /// ([`crate::net::spawn_dual_protocol`]) answers the SAME `/identity` body over
+    /// both a real TLS handshake (against a minted self-signed cert curl is told to trust via
+    /// `net::test_ca_bundle`, the same seam `request_tls_evidence` reads `CURLOPT_CAINFO` from)
+    /// and plaintext HTTP, on one port — exactly what `probe::candidates` assumes when it
+    /// synthesizes a plaintext twin at a connection's own address and port. A relay candidate (a
+    /// second loopback double, reached over a bare `127.0.0.1` uri covered by the same cert's IP
+    /// SAN) and a dead gateway round out the fixture. Under `CredentialPolicy::HttpsOnly` the
+    /// pinned LAN candidate must win outright, and no plaintext origin may ever be activated.
+    #[test]
+    fn e2e_real_curl_race_reaches_the_pinned_https_lan_candidate_over_a_real_tls_handshake() {
+        let _serial = crate::testlock::serial();
+        if !(crate::net::global_init() && crate::net::available()) {
+            eprintln!("curl unavailable on this host; skipping");
+            return;
+        }
+        let cert = std::sync::Arc::new(crate::net::mint_cert(&[
+            "127-0-0-1.e2e95.plex.direct",
+            "127.0.0.1",
+        ]));
+        let _ca = TestCaGuard::install(&cert.pem, "lan-race");
+
+        let body = identity_json("e2e95mid");
+        let lan_port = crate::net::spawn_dual_protocol(Arc::clone(&cert), body.clone());
+        let relay_port = crate::net::spawn_dual_protocol(Arc::clone(&cert), body.clone());
+        let dead = crate::net::dead_port();
+
+        let resource = e2e95_resource(lan_port, dead, Some(relay_port));
+        let plan = probe::plan(&resource, CredentialPolicy::HttpsOnly);
+
+        let dial: ProbeDial = Arc::new(get_identity);
+        let mut activated = Vec::new();
+        let reach = probe_server_racing(
+            &plan,
+            dial,
+            &threaded_spawn,
+            test_policy(),
+            &mut |_, _, origin| activated.push(origin.clone()),
+        );
+
+        let Reach::At(candidate, origin) = reach else {
+            panic!("the pinned LAN candidate answers a real identity over real TLS and must be reached");
+        };
+        assert_eq!(origin.host(), "127-0-0-1.e2e95.plex.direct");
+        assert!(origin.is_tls());
+        assert_eq!(candidate.location, probe::Location::Local);
+        for activated_origin in &activated {
+            assert!(
+                CredentialPolicy::HttpsOnly.may_carry_credential(activated_origin),
+                "a plaintext origin must never be activated under HttpsOnly: {}",
+                activated_origin.base()
+            );
+        }
+    }
+
+    /// **The whole-roster path persists the pinned `plex.direct` origin, never the plaintext
+    /// twin, over the real dial.** Same fixture as the test above, through
+    /// `resolve_roster_using` — what a boot actually stores is `SourceRef::origin_url`.
+    #[test]
+    fn e2e_real_curl_resolve_roster_only_ever_records_the_pinned_https_origin() {
+        let _serial = crate::testlock::serial();
+        if !(crate::net::global_init() && crate::net::available()) {
+            eprintln!("curl unavailable on this host; skipping");
+            return;
+        }
+        let cert = std::sync::Arc::new(crate::net::mint_cert(&[
+            "127-0-0-1.e2e95.plex.direct",
+            "127.0.0.1",
+        ]));
+        let _ca = TestCaGuard::install(&cert.pem, "lan-roster");
+
+        let body = identity_json("e2e95mid");
+        let lan_port = crate::net::spawn_dual_protocol(Arc::clone(&cert), body.clone());
+        let dead = crate::net::dead_port();
+
+        let resources = vec![e2e95_resource(lan_port, dead, None)];
+        let dial: ProbeDial = Arc::new(get_identity);
+        let mut probe_one = |plan: &ProbePlan| {
+            probe_server_racing(
+                plan,
+                Arc::clone(&dial),
+                &threaded_spawn,
+                test_policy(),
+                &mut |_, _, _| {},
+            )
+        };
+        let resolved = resolve_roster_using(
+            &resources,
+            &[],
+            CredentialPolicy::HttpsOnly,
+            &mut probe_one,
+            &mut || {},
+            &mut |_, _, _, _| {},
+        );
+        let Resolved::Reached(roster) = resolved else {
+            panic!("the pinned LAN candidate verifies over real TLS and must be reached");
+        };
+        assert_eq!(roster.len(), 1);
+        assert_eq!(roster[0].origin_url, format!("https://127-0-0-1.e2e95.plex.direct:{lan_port}"));
+        assert_eq!(roster[0].address, "127.0.0.1");
+        assert_eq!(roster[0].tier, Some(probe::Location::Local));
+    }
+
+    /// **A real failed TLS handshake plus a real plaintext answer must settle as `InsecureOnly`,
+    /// never `Reach::At` plaintext.** The advertised HTTPS uri points at a loopback double that
+    /// only ever speaks plaintext ([`crate::net::spawn_plain_only`]) — a real curl
+    /// TLS ClientHello against it fails the handshake — while the auto-synthesized plaintext twin
+    /// on the SAME port answers 200 with a correct identity body. No relay in this fixture, so
+    /// there is nothing else to win: the only verified answer is `!credential_eligible`, and under
+    /// `CredentialPolicy::HttpsOnly` that must never become the reachable origin.
+    #[test]
+    fn e2e_real_curl_tls_failure_with_a_verified_plaintext_answer_yields_insecure_only_not_reach_at() {
+        let _serial = crate::testlock::serial();
+        if !(crate::net::global_init() && crate::net::available()) {
+            eprintln!("curl unavailable on this host; skipping");
+            return;
+        }
+        // No cert/CA override needed: this candidate never completes a TLS handshake at all.
+        // Must match `e2e95_resource`'s hardcoded `clientIdentifier` ("e2e95mid") — a mismatch
+        // here makes verification fail as a wrong-machine answer instead of exercising the
+        // insecure-plaintext path this test means to prove.
+        let body = identity_json("e2e95mid");
+        let plain_port = crate::net::spawn_plain_only(body.clone());
+        let dead = crate::net::dead_port();
+
+        let resource = e2e95_resource(plain_port, dead, None);
+        let plan = probe::plan(&resource, CredentialPolicy::HttpsOnly);
+        let dial: ProbeDial = Arc::new(get_identity);
+        let reach = probe_server_racing(
+            &plan,
+            Arc::clone(&dial),
+            &threaded_spawn,
+            test_policy(),
+            &mut |_, _, _| {},
+        );
+        assert!(
+            !matches!(reach, Reach::At(_, _)),
+            "a plaintext-only verified answer must never become Reach::At"
+        );
+
+        let resources = vec![resource];
+        let mut probe_one = |plan: &ProbePlan| {
+            probe_server_racing(
+                plan,
+                Arc::clone(&dial),
+                &threaded_spawn,
+                test_policy(),
+                &mut |_, _, _| {},
+            )
+        };
+        let resolved = resolve_roster_using(
+            &resources,
+            &[],
+            CredentialPolicy::HttpsOnly,
+            &mut probe_one,
+            &mut || {},
+            &mut |_, _, _, _| {},
+        );
+        match &resolved {
+            Resolved::None { insecure, .. } => {
+                assert!(*insecure, "the plaintext twin verified this machine and must be recorded insecure");
+            }
+            Resolved::Reached(_) => panic!("expected Resolved::None{{insecure:true}}, got a Reached roster"),
+            Resolved::NoServers => panic!("expected Resolved::None{{insecure:true}}, got NoServers"),
+        }
+        assert!(matches!(
+            resolved_without_roster(resolved),
+            Err(Discovery::InsecureOnly)
+        ));
+    }
+
     /// **A candidate whose dashed label does not encode the address stored beside it gets no
     /// pin.** A stale plex.tv cache, a re-point, or any fixture where the two simply disagree must
     /// not make `race_batch` guess — `ResolvePin::for_origin` already refuses this, and this test
