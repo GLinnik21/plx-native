@@ -149,9 +149,35 @@ unsafe extern "C" fn receive(_: *mut c_void, message: *mut c_void, context: *mut
 impl Drop for Bus {
     fn drop(&mut self) {
         let mut error = Error::new();
-        unsafe {
-            LSUnregister(self.handle, &mut error.0);
-            g_main_loop_unref(self.main_loop);
+        let unregistered = unsafe { LSUnregister(self.handle, &mut error.0) };
+        if unregistered {
+            unsafe { g_main_loop_unref(self.main_loop) };
+        } else {
+            // A handle that would not unregister is still attached to this loop, so the loop is
+            // leaked rather than freed under it — a bounded leak, once per failed teardown,
+            // against a use-after-free. Matches `webos::ls2::Registration::drop` in the main app
+            // crate; this bin crate has no `crate::log`, so it logs the same way `backend.rs`'s
+            // `stage_error` does, through syslog.
+            if let Ok(message) = CString::new(format!(
+                "plxstorage bus: unregister refused — leaking its glib main loop ({})",
+                error_text(&error.0)
+            )) {
+                unsafe {
+                    libc::syslog(
+                        libc::LOG_USER | libc::LOG_ERR,
+                        b"%s\0".as_ptr().cast(),
+                        message.as_ptr(),
+                    );
+                }
+            }
         }
     }
+}
+
+fn error_text(error: &LSError) -> String {
+    if error.message.is_null() {
+        return format!("code {}", error.error_code);
+    }
+    let msg = unsafe { CStr::from_ptr(error.message) }.to_string_lossy();
+    format!("code {}: {}", error.error_code, msg.trim())
 }
