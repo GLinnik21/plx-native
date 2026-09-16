@@ -931,6 +931,49 @@ mod tests {
         assert!(has_plain_lan(&share), "our own LAN address is always ours");
     }
 
+    /// [`Candidate::credential_eligible`], graded against [`super::origin::CredentialPolicy`]:
+    /// TLS is eligible under either policy, a plaintext twin only under `AllowPlaintext`.
+    #[test]
+    fn the_plaintext_twin_is_eligible_only_under_allow_plaintext() {
+        let https_only = candidates(&owned_server(), CredentialPolicy::HttpsOnly);
+        let https_cand = https_only
+            .iter()
+            .find(|c| c.scheme == Scheme::Https)
+            .expect("an https candidate");
+        assert!(https_cand.credential_eligible, "TLS is always eligible");
+        let http_cand = https_only
+            .iter()
+            .find(|c| c.scheme == Scheme::Http)
+            .expect("a plaintext twin");
+        assert!(
+            !http_cand.credential_eligible,
+            "a plaintext twin is ineligible under HttpsOnly"
+        );
+
+        let allow_plain = candidates(&owned_server(), CredentialPolicy::AllowPlaintext);
+        assert!(
+            allow_plain.iter().all(|c| c.credential_eligible),
+            "every candidate is eligible under AllowPlaintext: {allow_plain:#?}"
+        );
+    }
+
+    /// `policy` decides only [`Candidate::credential_eligible`] — never which candidates rule 1
+    /// (the unmatched-shared-LAN guard) or rule 2 (`httpsRequired`) keep. Same server, same list,
+    /// under either policy.
+    #[test]
+    fn credential_policy_never_changes_which_candidates_are_emitted() {
+        for res in [shared_server(), owned_server()] {
+            let https_only = candidates(&res, CredentialPolicy::HttpsOnly);
+            let allow_plain = candidates(&res, CredentialPolicy::AllowPlaintext);
+            let urls_a: Vec<&str> = https_only.iter().map(|c| c.url.as_str()).collect();
+            let urls_b: Vec<&str> = allow_plain.iter().map(|c| c.url.as_str()).collect();
+            assert_eq!(
+                urls_a, urls_b,
+                "rules 1 and 2 are unaffected by CredentialPolicy: {urls_a:?} vs {urls_b:?}"
+            );
+        }
+    }
+
     /// `is_usable` is deliberately only the mechanical gate. Candidate emission applies rule 1
     /// later because one connection can yield one safe URI and one unsafe plaintext twin.
     #[test]

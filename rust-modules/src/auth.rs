@@ -1142,11 +1142,16 @@ fn poll_for_token(w: &mut impl PinWatch, window: Duration) -> PollEnd {
 // forms of an unmatched shared-LAN address), race one server's direct candidates, and **verify
 // identity on the answer** before believing it. Servers remain serial, with relay as a second phase.
 
-/// How far one server got. Only [`Reach::At`] is a server we can use; the other two are the
+/// How far one server got. Only [`Reach::At`] is a server we can use; the others are the
 /// distinction `probe.rs`'s module doc refuses to let a caller collapse, because they send the
-/// user to two different places.
+/// user to different places.
+///
+/// **Precedence, best first: `At` > `InsecureOnly` > `Refused` > `No`.** A verified identity —
+/// even one this build cannot put a credential on — beats a 401 from a different, parallel or
+/// proxied candidate; silence is the weakest signal of all.
 enum Reach {
-    /// This address answered `/identity` **as the server we asked for**.
+    /// This address answered `/identity` **as the server we asked for**, over a transport that
+    /// can carry a credential.
     ///
     /// Two values, and the split is the point: the [`Origin`] is **what was actually dialled**, and
     /// so the only thing the roster may record as this server's address; the [`Candidate`] is kept
@@ -1155,6 +1160,14 @@ enum Reach {
     /// left exactly one gap — a plex.tv `uri` whose port disagrees with `port` would be verified at
     /// one and written down as the other — and this pairing closes it by construction.
     At(Candidate, Origin),
+    /// This address answered `/identity` **as the server we asked for**, but
+    /// [`Candidate::credential_eligible`] is `false` — a plaintext answer in a store build.
+    /// **Alive, and provably the right server, but nothing may register it or put a token on it.**
+    /// It is not [`Reach::At`], because the whole point of this app's credential guard is that a
+    /// verified-but-ineligible candidate must not read as success (`probe.rs`'s module doc); it is
+    /// not [`Reach::No`] either, because "the server did not answer" and "the server answered and
+    /// this build cannot use it" are two different facts to hand the user.
+    InsecureOnly(Candidate),
     /// One or more candidates answered 401 and no candidate verified the server. A proxy-specific
     /// 401 does not cancel parallel direct probes or the relay fallback; it survives only as the
     /// final reason when none of those proves reachability. Reporting that as generic silence would
@@ -1370,6 +1383,10 @@ struct PendingProbe {
 struct BatchResult {
     first: Option<Winner>,
     best: Option<Winner>,
+    /// The best-scored verified-but-ineligible answer in this batch — set instead of `first`/
+    /// `best` when [`Candidate::credential_eligible`] is `false`. Never activated; kept as
+    /// evidence for [`Reach::InsecureOnly`] when nothing eligible verifies.
+    insecure: Option<Winner>,
     refused: bool,
 }
 
@@ -1444,18 +1461,32 @@ fn settle_probe_message(
                 candidate: c.clone(),
                 origin,
             };
-            if result.first.is_none() {
-                // "First usable immediately" — and USABLE is the word: on a LAN the plaintext
-                // twin answers before the TLS handshake completes, and a store build refuses
-                // to put a token on it, so activating it re-pointed the live server to an
-                // origin every request then failed on until the https winner landed ~100 ms
-                // later (device, 2026-09-06: `security: refused plaintext PMS credentials`,
-                // a hub fetch and the picker's first avatar lost in the gap). The first answer
-                // still counts as reached; it just does not become the live origin unless this
-                // build can dial it with a credential.
-                if activation_allowed(&winner.origin) {
-                    activate(plan, &winner.candidate, &winner.origin);
+            if !c.credential_eligible {
+                // Verified — this really is the server we asked for — but over a transport this
+                // build can never put a credential on (a plaintext twin in a store build). It
+                // must not become `first`/`best`: those are what `activate` acts on, and
+                // activating this origin would re-point the live server to something every
+                // credentialed request then fails on (device, 2026-09-06: `security: refused
+                // plaintext PMS credentials`, a hub fetch and the picker's first avatar lost in
+                // the gap while the LAN plaintext twin answered before the TLS winner did). It
+                // is still evidence the server is alive here, so it is kept — best-scored — as
+                // `insecure`, and `probe_server_racing` decides what that means once nothing
+                // eligible has verified.
+                log(&format!(
+                    "auth: '{}' answered only over plaintext at {}",
+                    plan.name,
+                    winner.origin.log_form()
+                ));
+                if result.insecure.as_ref().is_none_or(|old| better(&winner, old)) {
+                    result.insecure = Some(winner);
                 }
+                return;
+            }
+            if result.first.is_none() {
+                // "First usable immediately" — every candidate that reaches this branch is
+                // already `credential_eligible`, so nothing here needs to ask again whether the
+                // build can put a token on it.
+                activate(plan, &winner.candidate, &winner.origin);
                 result.first = Some(winner.clone());
             }
             if result.best.as_ref().is_none_or(|old| better(&winner, old)) {
@@ -1652,17 +1683,26 @@ fn probe_server_racing(
         .collect();
 
     let mut batch = race_batch(plan, &direct, Arc::clone(&dial), spawn, policy, activate);
-    // Relay is the reachability fallback whenever no direct origin verified, including when a
-    // proxy on one direct origin answered 401. Preserve that refusal only as the final reason if
-    // relay also produces no winner; a verified identity always beats a parallel/proxy 401.
+    // Relay is the reachability fallback whenever nothing eligible verified directly — `first` is
+    // only ever set for a `credential_eligible` winner now (`settle_probe_message`), so a
+    // plaintext-only direct answer still starves nothing here — including when a proxy on one
+    // direct origin answered 401. Preserve that refusal, and the direct-only insecure answer, only
+    // as the final reason if relay also produces no eligible winner; a verified identity always
+    // beats a parallel/proxy 401.
     if batch.first.is_none() && !relay.is_empty() {
         let direct_refused = batch.refused;
+        let direct_insecure = batch.insecure.take();
         batch = race_batch(plan, &relay, dial, spawn, policy, activate);
         batch.refused |= direct_refused;
+        if batch.insecure.is_none() {
+            batch.insecure = direct_insecure;
+        }
     }
 
     let Some(best) = batch.best else {
-        return if batch.refused {
+        return if let Some(insecure) = batch.insecure {
+            Reach::InsecureOnly(insecure.candidate)
+        } else if batch.refused {
             Reach::Refused
         } else {
             Reach::No
@@ -1672,38 +1712,15 @@ fn probe_server_racing(
         .first
         .as_ref()
         .expect("a best winner is also a first winner");
-    // The final re-point to the best score — or the first activation of the best, when the
-    // first answer was one this build could not make live (see `settle_probe_message`).
-    if (first.index != best.index || !activation_allowed(&first.origin))
-        && activation_allowed(&best.origin)
-    {
+    // The final re-point to the best score. Both `first` and `best` are `credential_eligible` by
+    // construction (`settle_probe_message` never lets an ineligible winner become either), so the
+    // activation question this used to re-ask here is already settled.
+    if first.index != best.index {
         activate(plan, &best.candidate, &best.origin);
     }
     Reach::At(best.candidate, best.origin)
 }
 
-/// May this origin become the LIVE one — can the app put a credential on it in this build?
-/// TLS always; plaintext only in a developer build (`http::credential_transport_allowed`'s rule,
-/// asked before a registration instead of after a refused request).
-///
-/// **Interim shape, on its way out in the next step of this change.** `CredentialPolicy::build()`
-/// is now the one `cfg!(feature = "devtriggers")` for this rule; the `bool` seam below stays only
-/// until this function and its test callers are replaced by `CredentialPolicy` throughout.
-fn activation_allowed(origin: &Origin) -> bool {
-    activation_allowed_by_policy(
-        origin,
-        crate::plex::CredentialPolicy::build() == crate::plex::CredentialPolicy::AllowPlaintext,
-    )
-}
-
-fn activation_allowed_by_policy(origin: &Origin, allow_plaintext_credentials: bool) -> bool {
-    let policy = if allow_plaintext_credentials {
-        crate::plex::CredentialPolicy::AllowPlaintext
-    } else {
-        crate::plex::CredentialPolicy::HttpsOnly
-    };
-    crate::http::credential_transport_allowed_by_policy(origin, "/", &["X-Plex-Token: any"], policy)
-}
 
 fn candidate_activation(
     plan: &ProbePlan,
@@ -1774,6 +1791,10 @@ fn publish_settled_probes(probes: &[SettledProbe]) {
 #[cfg(test)]
 fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> Reach {
     let mut tried = 0;
+    // The same eligibility rule the racing coordinator applies (`settle_probe_message`): a
+    // verified-but-ineligible answer is kept as evidence, never returned as `Reach::At`, and the
+    // search continues past it — the next candidate may still verify AND be usable.
+    let mut insecure: Option<Candidate> = None;
     for c in plan.candidates.iter() {
         let Some(origin) = dial_target(c) else {
             continue;
@@ -1785,7 +1806,20 @@ fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> R
         // would put the transport choice back at a call site.
         let (status, body) = dial(&origin);
         match classify(status, &body, &plan.machine_id) {
-            Outcome::Reachable => return Reach::At(c.clone(), origin),
+            Outcome::Reachable => {
+                if !c.credential_eligible {
+                    log(&format!(
+                        "auth: '{}' answered only over plaintext at {}",
+                        plan.name,
+                        origin.log_form()
+                    ));
+                    if insecure.is_none() {
+                        insecure = Some(c.clone());
+                    }
+                    continue;
+                }
+                return Reach::At(c.clone(), origin);
+            }
             Outcome::Unauthorized => {
                 log(&format!(
                     "auth: '{}' answered 401 at {} — a token problem, not the network",
@@ -1804,6 +1838,9 @@ fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> R
             Outcome::Unreachable => {}
         }
     }
+    if let Some(c) = insecure {
+        return Reach::InsecureOnly(c);
+    }
     let skipped = plan.candidates.len() - tried;
     log(&format!(
         "auth: '{}' did not answer ({tried} address(es) tried, {skipped} not dialable)",
@@ -1818,8 +1855,10 @@ enum Resolved {
     /// account rather than about the network.
     NoServers,
     /// Servers were probed and none was accepted. `refused` distinguishes "at least one answered
-    /// 401" from "silence", which are two different things to tell the user.
-    None { refused: bool },
+    /// 401" from "silence", and `insecure` marks that at least one server answered
+    /// [`Reach::InsecureOnly`] — verified alive, but over a transport this build can never put a
+    /// credential on. Three different things to tell the user.
+    None { refused: bool, insecure: bool },
     /// The roster, **ours first**, each entry carrying the address that actually answered.
     Reached(Vec<SourceRef>),
 }
@@ -1853,6 +1892,7 @@ fn resolve_roster_using(
 
     let mut found: Vec<SourceRef> = Vec::new();
     let mut refused = false;
+    let mut insecure = false;
     for (server_index, r) in servers.into_iter().enumerate() {
         if server_index != 0 {
             between_servers();
@@ -1861,6 +1901,9 @@ fn resolve_roster_using(
         let reach = probe_one(&plan);
         let (outcome, tier) = match &reach {
             Reach::At(c, _) => (Outcome::Reachable, Some(c.location)),
+            // step 5: InsecureOnly deserves its own Outcome variant (plan §4); folding it into
+            // Unreachable is the minimal compiling mapping for this step.
+            Reach::InsecureOnly(_) => (Outcome::Unreachable, None),
             Reach::Refused => (Outcome::Unauthorized, None),
             Reach::No => (Outcome::Unreachable, None),
         };
@@ -1915,12 +1958,21 @@ fn resolve_roster_using(
                 ));
                 found.push(s);
             }
+            // step 5: R2 (AMENDMENTS A5) wants the verified-but-ineligible probe itself carried
+            // into a registry-only commit here; this step only records the fact for `Resolved`.
+            Reach::InsecureOnly(c) => {
+                log(&format!(
+                    "auth: '{}' verified at {}:{} but only over plaintext — not recorded",
+                    plan.name, c.address, c.port
+                ));
+                insecure = true;
+            }
             Reach::Refused => refused = true,
             Reach::No => {}
         }
     }
     if found.is_empty() {
-        Resolved::None { refused }
+        Resolved::None { refused, insecure }
     } else {
         Resolved::Reached(found)
     }
@@ -1963,17 +2015,21 @@ fn credit_for_machine(resources: &[Resource], machine_id: &str, household: &[i64
 
 /// Test seam for the pre-racing acceptance fixtures. The injected dial runs synchronously and the
 /// gap is elided; the racing coordinator has its own focused tests for completion order/refusal.
+/// `policy` is explicit, like every other pure call in this path — most callers want `HttpsOnly`
+/// (the store policy), and a fixture whose dial answers only over a plaintext twin passes
+/// `AllowPlaintext` instead of asking this seam to guess.
 #[cfg(test)]
 fn resolve_roster(
     resources: &[Resource],
     household: &[i64],
+    policy: CredentialPolicy,
     dial: &dyn Fn(&Origin) -> (i32, Vec<u8>),
 ) -> Resolved {
     let mut probe_one = |plan: &ProbePlan| probe_server(plan, dial);
     resolve_roster_using(
         resources,
         household,
-        CredentialPolicy::HttpsOnly,
+        policy,
         &mut probe_one,
         &mut || {},
         &mut |_, _, _| {},
@@ -2044,6 +2100,9 @@ fn probe_profile_resource_live(
     let reach = probe_server_racing(&plan, dial, &spawn, PROBE_DEADLINES, &mut |_, _, _| {});
     let (outcome, tier) = match &reach {
         Reach::At(c, _) => (Outcome::Reachable, Some(c.location)),
+        // step 5: same minimal mapping as `resolve_roster_using` — a dedicated Outcome variant
+        // for InsecureOnly is the next step's job (plan §4, S7's "no access" copy fix included).
+        Reach::InsecureOnly(_) => (Outcome::Unreachable, None),
         Reach::Refused => (Outcome::Unauthorized, None),
         Reach::No => (Outcome::Unreachable, None),
     };
@@ -2104,8 +2163,21 @@ fn discover_and_store(ac: &AccountClient, epoch: u64, output: &dyn owner::Observ
     if !output.live() { return Discovery::Cancelled; }
     let found = match resolved {
         Resolved::NoServers => return Discovery::NoServers,
-        Resolved::None { refused: true } => return Discovery::Refused,
-        Resolved::None { refused: false } => return Discovery::Silent,
+        // step 5: a dedicated Discovery::InsecureOnly, with the softer rebind-hint copy plan §4
+        // proposes, is the next step's job — for now `insecure` only earns a diagnostic line, and
+        // the user-facing outcome still folds into Refused/Silent exactly as before.
+        Resolved::None { refused: true, insecure } => {
+            if insecure {
+                log("auth: at least one server verified only over plaintext (insecure-only), unusable in this build");
+            }
+            return Discovery::Refused;
+        }
+        Resolved::None { refused: false, insecure } => {
+            if insecure {
+                log("auth: at least one server verified only over plaintext (insecure-only), unusable in this build");
+            }
+            return Discovery::Silent;
+        }
         Resolved::Reached(f) => f,
     };
 
@@ -3534,6 +3606,189 @@ mod tests {
         assert!(matches!(reach, Reach::At(ref c, _) if c.location == probe::Location::Remote));
     }
 
+    /// **Dev counterpart of the issue #95 fixtures: under `AllowPlaintext` the plaintext twin is
+    /// eligible, wins the race and is activated — exactly the behaviour every build had before
+    /// this credential-eligibility rule existed, and exactly what a developer build with no TLS
+    /// server of its own still needs.** Relay must never be dialled once it wins.
+    #[test]
+    fn under_allow_plaintext_the_lan_twin_wins_and_relay_is_never_dialled() {
+        let mut plan = race_plan();
+        plan.policy = CredentialPolicy::AllowPlaintext;
+        plan.candidates[0] = Candidate {
+            url: "http://192.0.2.10:32400".into(),
+            scheme: Scheme::Http,
+            location: probe::Location::Local,
+            address: "192.0.2.10".into(),
+            port: 32400,
+            ipv6: false,
+            credential_eligible: true,
+        };
+        plan.candidates.push(Candidate {
+            url: "https://relay.example.test:443".into(),
+            scheme: Scheme::Https,
+            location: probe::Location::Relay,
+            address: "relay.example.test".into(),
+            port: 443,
+            ipv6: false,
+            credential_eligible: true,
+        });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_by_dial = Arc::clone(&seen);
+        let dial: ProbeDial = Arc::new(move |origin, _| {
+            seen_by_dial.lock().unwrap().push(origin.host().to_string());
+            if origin.host() == "192.0.2.10" {
+                (200, identity_json("race-machine"))
+            } else {
+                (0, Vec::new())
+            }
+        });
+        let mut activated = Vec::new();
+        let reach = probe_server_racing(
+            &plan,
+            dial,
+            &threaded_spawn,
+            test_policy(),
+            &mut |_, _, origin| activated.push(origin.clone()),
+        );
+        assert!(matches!(reach, Reach::At(ref c, _) if c.location == probe::Location::Local));
+        assert!(
+            !seen.lock().unwrap().iter().any(|s| s.contains("relay")),
+            "relay must not be dialled once the eligible plaintext twin verifies: {:?}",
+            seen.lock().unwrap()
+        );
+        assert_eq!(activated.len(), 1);
+        assert!(!activated[0].is_tls(), "the LAN plaintext twin was activated");
+    }
+
+    /// **Precedence: `Reach::InsecureOnly` outranks `Reach::Refused`.** A verified identity —
+    /// even one this build cannot put a credential on — is stronger evidence than a 401 from a
+    /// different candidate; silence is weaker still.
+    #[test]
+    fn insecure_only_outranks_a_refusal() {
+        let mut plan = race_plan();
+        plan.candidates[0] = Candidate {
+            url: "http://192.0.2.10:32400".into(),
+            scheme: Scheme::Http,
+            location: probe::Location::Local,
+            address: "192.0.2.10".into(),
+            port: 32400,
+            ipv6: false,
+            credential_eligible: false,
+        };
+        let dial: ProbeDial = Arc::new(|origin, _| {
+            if origin.host() == "192.0.2.10" {
+                (200, identity_json("race-machine")) // verified, but ineligible
+            } else {
+                (401, Vec::new())
+            }
+        });
+        let reach = probe_server_racing(
+            &plan,
+            dial,
+            &threaded_spawn,
+            test_policy(),
+            &mut |_, _, _| {},
+        );
+        assert!(
+            matches!(reach, Reach::InsecureOnly(_)),
+            "a verified plaintext answer must outrank a parallel 401"
+        );
+    }
+
+    /// **A late eligible answer, arriving after an early ineligible one, still becomes `first`
+    /// and is activated exactly once.** The ineligible answer never occupies the `first`/`best`
+    /// slots (`settle_probe_message`), so it cannot cause a spurious re-point when the eligible
+    /// candidate settles afterwards.
+    #[test]
+    fn a_late_eligible_answer_after_an_early_plaintext_one_becomes_first_and_activates_once() {
+        let mut plan = race_plan();
+        plan.candidates[0] = Candidate {
+            url: "http://192.0.2.10:32400".into(),
+            scheme: Scheme::Http,
+            location: probe::Location::Local,
+            address: "192.0.2.10".into(),
+            port: 32400,
+            ipv6: false,
+            credential_eligible: false,
+        };
+        let dial: ProbeDial = Arc::new(|origin, _| {
+            if origin.host() == "192.0.2.10" {
+                (200, identity_json("race-machine")) // instant, but ineligible
+            } else {
+                std::thread::sleep(Duration::from_millis(30));
+                (200, identity_json("race-machine")) // eligible, and late
+            }
+        });
+        let mut activated = Vec::new();
+        let reach = probe_server_racing(
+            &plan,
+            dial,
+            &threaded_spawn,
+            test_policy(),
+            &mut |_, _, origin| activated.push(origin.clone()),
+        );
+        assert!(matches!(reach, Reach::At(ref c, _) if c.location == probe::Location::Remote));
+        assert_eq!(
+            activated.len(),
+            1,
+            "the late eligible answer becomes first, not a second re-point: {activated:?}"
+        );
+        assert!(activated[0].is_tls());
+    }
+
+    /// **Invariant: under `HttpsOnly`, every origin this coordinator ever activates, and every
+    /// `Reach::At` origin it returns, is TLS** — across several of this file's own racing
+    /// fixtures, including the issue #95 topology whose whole point is a plaintext winner that
+    /// must never surface as either.
+    #[test]
+    fn under_https_only_every_activation_and_every_reach_at_origin_is_tls() {
+        let mut activated_total = 0;
+        let mut assert_case = |plan: &ProbePlan, dial: ProbeDial| {
+            let mut activated = Vec::new();
+            let reach = probe_server_racing(
+                plan,
+                dial,
+                &threaded_spawn,
+                test_policy(),
+                &mut |_, _, origin| activated.push(origin.clone()),
+            );
+            if let Reach::At(_, ref origin) = reach {
+                assert!(
+                    origin.is_tls(),
+                    "Reach::At must be TLS under HttpsOnly: {}",
+                    origin.base()
+                );
+            }
+            for o in &activated {
+                assert!(
+                    o.is_tls(),
+                    "an activated origin must be TLS under HttpsOnly: {}",
+                    o.base()
+                );
+            }
+            activated_total += activated.len();
+        };
+
+        assert_case(
+            &race_plan(),
+            Arc::new(|origin, _| {
+                if origin.host().starts_with("192-") {
+                    (200, identity_json("race-machine"))
+                } else {
+                    (0, Vec::new())
+                }
+            }),
+        );
+        assert_case(
+            &probe::plan(&issue_95_account(true), CredentialPolicy::HttpsOnly),
+            Arc::new(issue_95_dial),
+        );
+        assert!(
+            activated_total > 0,
+            "the invariant must have been exercised by at least one activation, not vacuously true"
+        );
+    }
+
     // ---- issue #95: a plaintext-only winner is reported reached and starves the relay ----
     //
     // Reporter topology (v0.6.6, `/api/v2/resources` for one OWNED, `httpsRequired:false` server):
@@ -3600,21 +3855,16 @@ mod tests {
     /// **The direct race alone: a plaintext-only winner must not be `Reach::At`, and must not
     /// starve the relay that verifies.**
     ///
-    /// `settle_probe_message` records `result.first` the moment ANY candidate verifies —
-    /// `activation_allowed` gates only the `activate` callback, not whether the winner COUNTS as
-    /// first — so `probe_server_racing`'s `if batch.first.is_none() && !relay.is_empty()` is
-    /// already false once the LAN twin settles, and relay's own `race_batch` never runs. The
-    /// function's tail then returns `Reach::At(best.candidate, best.origin)` unconditionally:
-    /// `best` is never checked against `activation_allowed` either, so a plaintext-only "best" is
-    /// reported reached even though nothing downstream can register it.
-    ///
-    /// `activation_allowed`'s gate is `cfg!(feature = "devtriggers")`, baked in at compile time
-    /// rather than threaded through as a parameter (`probe_server_racing` has no policy input at
-    /// all) — and a plain `cargo test` compiles with `devtriggers` default-on, so this test cannot
-    /// simply flip that cfg to observe store-build activation. Instead it re-grades every
-    /// `activate` call the coordinator actually made against `activation_allowed_by_policy(_,
-    /// false)` — the STORE policy — directly, which is cfg-independent and exactly the policy issue
-    /// #95's build carries.
+    /// This is now true by construction rather than by a second cfg-independent re-grading at the
+    /// end: `Candidate::credential_eligible` is computed once, at synthesis, from the
+    /// `CredentialPolicy` this plan was built with (here `HttpsOnly`, so a plaintext twin is
+    /// ineligible regardless of `devtriggers`), and `settle_probe_message` never lets an
+    /// ineligible winner become `result.first`/`result.best` — it becomes `result.insecure`
+    /// instead, which does not stop `probe_server_racing`'s `if batch.first.is_none() &&
+    /// !relay.is_empty()` from still running the relay batch. So this test drives the fixture
+    /// through the STORE policy directly and asserts the outcome; it needs no re-grading of what
+    /// `activate` was called with, because an ineligible candidate now never reaches `activate`
+    /// at all (see `settle_probe_message`).
     #[test]
     fn issue_95_a_plaintext_only_winner_must_not_be_reach_at_and_must_not_starve_the_relay() {
         let plan = probe::plan(&issue_95_account(true), CredentialPolicy::HttpsOnly);
@@ -3656,7 +3906,7 @@ mod tests {
         );
         for origin in &activated {
             assert!(
-                activation_allowed_by_policy(origin, false),
+                CredentialPolicy::HttpsOnly.may_carry_credential(origin),
                 "activated a plaintext origin no store build can ever put a token on: {}",
                 origin.base()
             );
@@ -3761,7 +4011,7 @@ mod tests {
             &mut || gaps += 1,
             &mut |_, _, _| {},
         );
-        assert!(matches!(resolved, Resolved::None { refused: false }));
+        assert!(matches!(resolved, Resolved::None { refused: false, .. }));
         assert_eq!(order, ["owned", "shared-m", "shared-u"]);
         assert_eq!(
             gaps, 2,
@@ -4008,7 +4258,9 @@ mod tests {
     /// nothing, and only the one whose `machineIdentifier` matches is accepted.
     #[test]
     fn every_advertised_address_is_dialable_and_only_an_impossible_port_is_not() {
-        let plan = probe::plan(&a_share(), CredentialPolicy::HttpsOnly);
+        // AllowPlaintext: this test is about DIALABILITY, not credential eligibility, and its
+        // fixture answers over the plaintext twin (`203.0.113.9`, no scheme).
+        let plan = probe::plan(&a_share(), CredentialPolicy::AllowPlaintext);
         assert_eq!(
             plan.candidates.len(),
             7,
@@ -4100,7 +4352,8 @@ mod tests {
     /// `machineIdentifier` matches — which, on a server that really is at 32400, it does.
     #[test]
     fn an_undialable_port_costs_that_candidate_and_not_the_server() {
-        let mut plan = probe::plan(&a_share(), CredentialPolicy::HttpsOnly);
+        // AllowPlaintext: the fixture below answers over the plaintext twin.
+        let mut plan = probe::plan(&a_share(), CredentialPolicy::AllowPlaintext);
         let good = plan
             .candidates
             .iter()
@@ -4155,7 +4408,9 @@ mod tests {
                   {"protocol":"https","address":"192.168.0.10","port":32400,
                    "uri":"https://192-168-0-10.h.plex.direct:32400","local":true,"relay":false,"IPv6":false}]}"#,
         );
-        let plan = probe::plan(&res, CredentialPolicy::HttpsOnly);
+        // AllowPlaintext: this is the isolated-LAN case, and the whole point of the fixture is
+        // that only the plaintext twin ever answers.
+        let plan = probe::plan(&res, CredentialPolicy::AllowPlaintext);
         let d = Dialled::new(vec![
             // No plex.direct name resolves on an isolated LAN, so only the plaintext twins are
             // reachable — and both v6 ones answer too, so nothing but the ORDER decides.
@@ -4270,8 +4525,9 @@ mod tests {
             ("192.168.0.10", 200, identity_json("aaaa1111")),
             ("203.0.113.9", 200, identity_json("bbbb2222")),
         ]);
+        // AllowPlaintext: the fixture answers over the plaintext twin.
         let Resolved::Reached(roster) =
-            resolve_roster(&a_two_server_account(), &[], &|o| d.dial(o))
+            resolve_roster(&a_two_server_account(), &[], CredentialPolicy::AllowPlaintext, &|o| d.dial(o))
         else {
             panic!("both servers answer: {:?}", d.seen())
         };
@@ -4353,7 +4609,7 @@ mod tests {
             ("203-0-113-9.h.plex.direct", 200, identity_json("bbbb2222")),
         ]);
         let Resolved::Reached(roster) =
-            resolve_roster(&a_two_server_account(), &[], &|o| d.dial(o))
+            resolve_roster(&a_two_server_account(), &[], CredentialPolicy::HttpsOnly, &|o| d.dial(o))
         else {
             panic!("both servers answer over TLS: {:?}", d.seen())
         };
@@ -4408,8 +4664,9 @@ mod tests {
             ("192.168.0.10", 200, identity_json("aaaa1111")),
             ("203.0.113.9", 200, identity_json("bbbb2222")),
         ]);
+        // AllowPlaintext: this test is specifically about the plaintext twins' recorded origin.
         let Resolved::Reached(roster) =
-            resolve_roster(&a_two_server_account(), &[], &|o| d.dial(o))
+            resolve_roster(&a_two_server_account(), &[], CredentialPolicy::AllowPlaintext, &|o| d.dial(o))
         else {
             panic!("both servers answer")
         };
@@ -4440,15 +4697,15 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            resolve_roster(&players, &[], &|_| (0, Vec::new())),
+            resolve_roster(&players, &[], CredentialPolicy::HttpsOnly, &|_| (0, Vec::new())),
             Resolved::NoServers
         ));
 
         // servers that simply do not answer
         let silent = Dialled::new(vec![]);
         assert!(matches!(
-            resolve_roster(&a_two_server_account(), &[], &|o| silent.dial(o)),
-            Resolved::None { refused: false }
+            resolve_roster(&a_two_server_account(), &[], CredentialPolicy::HttpsOnly, &|o| silent.dial(o)),
+            Resolved::None { refused: false, .. }
         ));
 
         // …and one that answers 401: something in front of it refuses unauthenticated requests,
@@ -4458,15 +4715,16 @@ mod tests {
             ("203.0.113.9", 401, Vec::new()),
         ]);
         assert!(matches!(
-            resolve_roster(&a_two_server_account(), &[], &|o| refused.dial(o)),
-            Resolved::None { refused: true }
+            resolve_roster(&a_two_server_account(), &[], CredentialPolicy::HttpsOnly, &|o| refused.dial(o)),
+            Resolved::None { refused: true, .. }
         ));
 
         // a share that answers while OUR server is off still signs in — a friend's library beats
         // "no server found" — and it becomes the primary because it is the only thing there is
         let one = Dialled::new(vec![("203.0.113.9", 200, identity_json("bbbb2222"))]);
+        // AllowPlaintext: the share answers only over its plaintext twin here.
         let Resolved::Reached(roster) =
-            resolve_roster(&a_two_server_account(), &[], &|o| one.dial(o))
+            resolve_roster(&a_two_server_account(), &[], CredentialPolicy::AllowPlaintext, &|o| one.dial(o))
         else {
             panic!("the share answered")
         };
@@ -4552,15 +4810,19 @@ mod tests {
     }
 
     /// The plaintext twin may answer first, but a store build cannot make it live: only an
-    /// https origin is activated there, while a developer build keeps its lab plaintext.
+    /// https origin can carry a credential there, while a developer build keeps its lab
+    /// plaintext. Superseded `activation_allowed_by_policy`, deleted with the race-semantics
+    /// change: `CredentialPolicy::may_carry_credential` is the one place this rule lives now, and
+    /// `settle_probe_message`/`probe_server_racing` ask it once, at synthesis, through
+    /// `Candidate::credential_eligible` — not a second time here at activation.
     #[test]
     fn a_store_build_never_makes_a_plaintext_origin_live() {
         let plain = Origin::http("192.168.0.10", 32400);
         let tls = Origin::parse("https://192-168-0-10.abc.plex.direct:32400").unwrap();
-        assert!(!activation_allowed_by_policy(&plain, false));
-        assert!(activation_allowed_by_policy(&tls, false));
+        assert!(!CredentialPolicy::HttpsOnly.may_carry_credential(&plain));
+        assert!(CredentialPolicy::HttpsOnly.may_carry_credential(&tls));
         assert!(
-            activation_allowed_by_policy(&plain, true),
+            CredentialPolicy::AllowPlaintext.may_carry_credential(&plain),
             "a developer build keeps its lab server"
         );
     }
