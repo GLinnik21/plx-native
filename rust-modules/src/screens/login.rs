@@ -1759,6 +1759,57 @@ mod tests {
         )));
     }
 
+    /// Regression for `warning-routing-and-continue-untested`. Pins the UI half of the AUTH-03
+    /// gate: while `persistence_warning` is showing, the one offered control is `ContinueUnsaved`,
+    /// and activating it emits EXACTLY one `AcknowledgePersistenceWarning` carrying the shown
+    /// warning's OWN key — never `Retry`/`StartLogin`/nothing. MUTATION for this finding: make
+    /// `LoginScreen::activate`'s `Some(ControlKind::ContinueUnsaved)` arm push nothing (or push the
+    /// wrong key) — this test must then fail, because acknowledging is the only door that can ever
+    /// release a held Final handoff (`auth/owner.rs::acknowledge_persistence_warning`), so a
+    /// no-op here strands the user in front of the warning forever.
+    #[test]
+    fn the_warning_screens_one_control_acknowledges_exactly_that_warning() {
+        let key = auth::owner::PersistenceWarningKey { epoch: 3, req: 9 };
+        let warning = auth::owner::PersistenceWarning {
+            key,
+            site: auth::owner::PersistenceWarningSite::Final,
+        };
+        let mut screen = bare_screen(Phase::Ready, 0.0);
+        screen.persistence_warning = Some(warning);
+        assert_eq!(
+            screen.control_kind(),
+            Some(ControlKind::ContinueUnsaved),
+            "a live warning is the only control offered, regardless of the underlying phase"
+        );
+
+        let (_, effects) = step_ev(&mut screen, &ScreenEvent::Activate(CONTROL));
+        let acks: Vec<_> = effects
+            .iter()
+            .filter(|st| {
+                matches!(
+                    st.fx,
+                    Fx::App(AppFx::Session(auth::SessionCmd::AcknowledgePersistenceWarning { .. }))
+                )
+            })
+            .collect();
+        assert_eq!(acks.len(), 1, "exactly one acknowledgement, never zero and never a second");
+        assert!(
+            matches!(
+                acks[0].fx,
+                Fx::App(AppFx::Session(auth::SessionCmd::AcknowledgePersistenceWarning { key: acked }))
+                    if acked == key
+            ),
+            "the acknowledgement must carry the SHOWN warning's own key, not a stale or default one"
+        );
+        assert!(
+            !effects.iter().any(|st| matches!(
+                st.fx,
+                Fx::App(AppFx::Session(auth::SessionCmd::Retry | auth::SessionCmd::StartLogin))
+            )),
+            "activating the warning control must never also fire an unrelated session command"
+        );
+    }
+
     #[test]
     fn only_the_matching_accepted_restart_reply_resets_the_stalled_wait() {
         let mut screen = bare_screen(Phase::Waiting, QR_ESCAPE_AFTER_MS);

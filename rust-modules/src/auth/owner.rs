@@ -1112,12 +1112,17 @@ impl SessionMachine {
             durable && completion.purpose.proves_saved_login();
         let correlation_key = PersistenceWarningKey { epoch: completion.epoch, req: completion.req };
         if durable {
+            // 0.6.6 parity: a later FRESH write landing durably supersedes any warning still
+            // showing about an earlier fresh attempt — the failure it was reporting on no longer
+            // describes the session's current state, so holding it would strand an acknowledgement
+            // over a problem that already resolved itself.
+            let superseded = admitted.fresh && self.state.persistence_warning.is_some();
+            if superseded { self.state.persistence_warning = None; }
             // Release only the handoff THIS completion is for — a routine completion arriving
             // while an unrelated fresh handoff is held must not free it.
-            if self.state.held_handoff == Some(HeldHandoff { epoch: completion.epoch, req: completion.req }) {
-                self.release_held_handoff(emit);
-                self.replace_publication();
-            }
+            let released = self.state.held_handoff == Some(HeldHandoff { epoch: completion.epoch, req: completion.req });
+            if released { self.release_held_handoff(emit); }
+            if superseded || released { self.replace_publication(); }
         } else if admitted.fresh {
             // The final write's own non-durable completion replaces a Discovery warning still
             // showing (`Discovery` and `Final` never coexist: an unacknowledged Discovery warning
@@ -1228,7 +1233,12 @@ impl SessionMachine {
                 // rather than announce Ready/publish the profile until a completion (or an
                 // acknowledged warning) releases it — the AUTH-03 gate.
                 self.state.held_handoff = Some(HeldHandoff { epoch: commit.epoch, req: commit.req });
-            } else {
+            } else if self.state.persistence_warning.is_none() {
+                // 0.6.6 parity (`discovery-warning-not-cleared-on-retry-or-fresh-success`): a
+                // ROUTINE `activate_profile` commit (StartSwitch, resume_stored, …) must not free
+                // a handoff still held behind an unacknowledged warning — that release is
+                // `acknowledge_persistence_warning`'s alone. An unrelated held handoff with NO live
+                // warning (already superseded above, or never one to begin with) is unaffected.
                 self.release_held_handoff(emit);
             }
         }
@@ -1516,6 +1526,16 @@ impl SessionMachine {
     }
 
     fn back(&mut self, reply: ReplyTo, emit: &mut impl FnMut(SessionFx)) -> bool {
+        // AUTH-03: while an unacknowledged persistence warning is showing, BACK must not clear it
+        // or resume — clearing it here would silently re-admit `needs_ready_commit`/`take_ready`
+        // on the next frame (a second, routine save over the still-unconfirmed fresh one) and, for
+        // a held Final handoff, would release it without the explicit acknowledgement the warning
+        // exists to require. Only the labelled Continue (`acknowledge_persistence_warning`) may
+        // clear it; BACK here is the platform root press only.
+        if self.state.persistence_warning.is_some() {
+            emit(SessionFx::BackReply { to: reply, resumed: false });
+            return true;
+        }
         let stored = self.state.committed_credentials.merge_into(&self.state.persisted);
         if !super::resumable(&stored, self.state.picker) || self.state.epoch.checked_add(1).is_none() {
             emit(SessionFx::BackReply { to: reply, resumed: false });
@@ -1826,6 +1846,13 @@ impl SessionMachine {
         if discovery {
             self.state.phase = Phase::Discovering;
             self.state.error.clear();
+            // 0.6.6 parity (`discovery-warning-not-cleared-on-retry-or-fresh-success`): a restart
+            // begins a fresh discovery attempt under a NEW epoch, so a warning (or a held handoff)
+            // left over from the attempt being retried can never be released or acknowledged by
+            // anything this new epoch does — it would sit stale forever. A rediscovery restart
+            // clears both, the same way the fresh-attempt branch below already does.
+            self.state.persistence_warning = None;
+            self.state.held_handoff = None;
         } else {
             self.state.persisted = self.state.committed_credentials.merge_into(&self.state.persisted);
             self.state.phase = Phase::Creating;
@@ -2162,6 +2189,14 @@ mod tests {
         SessionInit::captured(persisted)
     }
 
+    /// A dialable `ServerRef` matching [`local_session`]'s own — for a `SignedIn` observation that
+    /// must make `can_go_local()` true afterwards (a `Default::default()` server has no address,
+    /// so `server_dialable()` refuses it regardless of the token).
+    fn local_server() -> crate::plex::session::ServerRef {
+        crate::plex::session::ServerRef { address: "127.0.0.1".into(), port: 32400,
+            token: "synthetic-token".into(), ..Default::default() }
+    }
+
     /// AUTH-03/AUTH-04 rig: a session mid-flow, discovering with a completed PIN authorization
     /// already recorded (`authorized_in_flow`) and one live `Login` request awaiting its
     /// `SignedIn` observation — the shape `restart_login`+`Authorized` would have produced, built
@@ -2179,6 +2214,66 @@ mod tests {
             admission: AdmissionState::Awaiting(AdmissionId(req)),
         });
         init
+    }
+
+    /// Same rig as [`discovering_after_authorization`], but seeded with an already-established,
+    /// UNPROTECTED profile identity (`user.uuid`/`committed_credentials`) — the "reopened session"
+    /// shape `back-bypasses-persistence-warning-ack`/AUTH-04 both describe (a Rediscover of a
+    /// session that is already fully signed in as a specific, unprotected profile), which is what
+    /// makes `super::resumable` actually answer TRUE rather than being refused on `Picker::Boot`'s
+    /// "nobody has said who they are" default (an empty `user.uuid` reads as protected
+    /// unconditionally — see [`crate::plex::session::Session::active_profile_is_protected`]).
+    fn reopened_after_authorization() -> SessionInit {
+        let mut init = discovering_after_authorization();
+        init.persisted.user.uuid = "u-1".into();
+        init.persisted.home_users = vec![crate::plex::session::HomeUserRef {
+            uuid: "u-1".into(), protected: false, ..Default::default() }];
+        init.committed_credentials = CredentialPatch::of(&init.persisted);
+        // The pending Login request's `expected` identity was captured before this mutation —
+        // recompute it, or `apply_resource_observation`'s `pending.expected.matches(&persisted)`
+        // fence silently drops the SignedIn observation this rig exists to deliver.
+        for pending in init.pending.values_mut() {
+            pending.expected = Identity::of(&init.persisted);
+        }
+        init
+    }
+
+    /// Drives a fresh sign-in all the way to a held Final handoff with an unacknowledged warning
+    /// showing (the discovery write lands durably, the final write does not) — the shared setup
+    /// behind every `discovery-warning-not-cleared-on-retry-or-fresh-success` regression below.
+    fn owner_with_held_final_warning() -> SessionMachine {
+        use crate::plex::session::async_persistence::{
+            CompletionOutcome, Failure, Operation, PersistOutcome, PersistenceCompletion,
+        };
+        let mut owner = SessionMachine::from_init(reopened_after_authorization());
+        let req = owner.state.next_req;
+        let epoch = owner.state.epoch;
+        let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+            epoch, server: local_server(), sources: Vec::new(),
+            users: vec![UserTile { uuid: "u-1".into(), protected: false,
+                title: "Only user".into(), ..Default::default() }],
+        }, true);
+        step(&mut owner, SessionEvent::Result(signed_in));
+        let discovery_reply = CommitReply { req, epoch, arrival: 1,
+            admission: CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Discovery } };
+        step(&mut owner, SessionEvent::Commit(discovery_reply));
+        let discovery_durable = PersistenceCompletion { req, epoch, arrival: 1, revision: 1,
+            purpose: PersistencePurpose::Discovery,
+            outcome: CompletionOutcome::Durable(Operation::Write {
+                outcome: PersistOutcome::PersistedPlaintext, verified: true, protection: None }) };
+        step(&mut owner, SessionEvent::Persistence(discovery_durable));
+        step(&mut owner, SessionEvent::Command(Command::TakeReady));
+        let final_req = owner.state.next_req;
+        let final_reply = CommitReply { req: final_req, epoch, arrival: 0,
+            admission: CommitAdmission::Admitted { revision: 2, purpose: PersistencePurpose::Final } };
+        step(&mut owner, SessionEvent::Commit(final_reply));
+        let final_failed = PersistenceCompletion { req: final_req, epoch, arrival: 0, revision: 2,
+            purpose: PersistencePurpose::Final,
+            outcome: CompletionOutcome::Failed(Failure::Persistence(PersistOutcome::WriteFailed)) };
+        step(&mut owner, SessionEvent::Persistence(final_failed));
+        assert!(owner.state.held_handoff.is_some(), "rig: the Ready handoff is held");
+        assert!(owner.state.persistence_warning.is_some(), "rig: a Final warning is showing");
+        owner
     }
 
     /// ACCEPTANCE SPEC 1/5. Consuming a commit returns a TYPED admission separating authority
@@ -2466,6 +2561,207 @@ mod tests {
         };
         assert_eq!(routine_plan.authority, crate::plex::session::SaveAuthority::Routine,
             "the authority was spent once; a later Ready-op commit is Routine");
+    }
+
+    /// Regression for `back-bypasses-persistence-warning-ack`: `back()` used to treat a fresh
+    /// account as `resumable` and unconditionally clear `persistence_warning`/`held_handoff` and
+    /// zero `authorized_in_flow`, which silently re-admitted `needs_ready_commit`/`take_ready` on
+    /// the very next frame (a second, ROUTINE save over a fresh write that never confirmed durable)
+    /// and, for a held Final handoff, released it without the acknowledgement the warning exists
+    /// to require. BACK while a warning is showing must be inert except for the platform root
+    /// press: `resumed: false`, warning/handoff/authority untouched, no `Commit`/`Ready` emitted.
+    /// MUTATION for `back-bypasses-persistence-warning-ack`: delete the
+    /// `if self.state.persistence_warning.is_some() { .. }` early-return this test guards at the
+    /// top of `back()` — this test must then fail (the warning clears and, in the Final-site half,
+    /// a `Ready` is emitted with no acknowledgement).
+    #[test]
+    fn back_at_root_does_not_bypass_an_unacknowledged_persistence_warning() {
+        use crate::plex::session::async_persistence::{
+            CompletionOutcome, Failure, Operation, PersistOutcome, PersistenceCompletion,
+        };
+        let reply = ReplyTo { instance: 0, correlation: 0 };
+
+        // --- Discovery-site warning: the authority is only PEEKED so far (AUTH-04's guarantee),
+        // and BACK must not spend it or clear the warning either.
+        let mut owner = SessionMachine::from_init(reopened_after_authorization());
+        let req = owner.state.next_req;
+        let epoch = owner.state.epoch;
+        let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+            epoch, server: local_server(), sources: Vec::new(),
+            users: vec![UserTile { uuid: "u-1".into(), protected: false, title: "Only user".into(), ..Default::default() }],
+        }, true);
+        step(&mut owner, SessionEvent::Result(signed_in));
+        let discovery_reply = CommitReply { req, epoch, arrival: 1,
+            admission: CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Discovery } };
+        step(&mut owner, SessionEvent::Commit(discovery_reply));
+        let discovery_failed = PersistenceCompletion { req, epoch, arrival: 1, revision: 1,
+            purpose: PersistencePurpose::Discovery,
+            outcome: CompletionOutcome::Failed(Failure::Persistence(PersistOutcome::WriteFailed)) };
+        step(&mut owner, SessionEvent::Persistence(discovery_failed));
+        assert!(owner.state.persistence_warning.is_some(), "rig: a Discovery warning is showing");
+        assert!(owner.state.authorized_in_flow, "rig: the authority is still unspent");
+        assert!(owner.state.committed_credentials.merge_into(&owner.state.persisted).can_go_local(),
+            "rig: the discovery write's own admission already published the signed-in credentials \
+             (`apply_commit_reply`'s `writes_credentials` branch runs on ADMISSION, not completion), \
+             so BACK's `resumable()` check really is exercised here rather than short-circuited");
+
+        let effects = step(&mut owner, SessionEvent::Command(Command::BackAtRoot { reply }));
+        assert!(owner.state.persistence_warning.is_some(),
+            "MUTATION TARGET: BACK must not clear an unacknowledged warning");
+        assert!(owner.state.authorized_in_flow,
+            "BACK must not spend the fresh authority the final write still needs");
+        assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Ready { .. } | SessionFx::Commit { .. })),
+            "BACK over a live warning must not begin or announce any save");
+        assert!(effects.iter().any(|fx| matches!(fx, SessionFx::BackReply { resumed: false, .. })),
+            "BACK is refused (root press only), not a resume");
+
+        // --- Final-site warning with a held handoff: acknowledging is the ONLY door that may
+        // release it (`acknowledge_persistence_warning` / `release_held_handoff`); BACK must not.
+        let mut owner = SessionMachine::from_init(reopened_after_authorization());
+        let req = owner.state.next_req;
+        let epoch = owner.state.epoch;
+        let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+            epoch, server: local_server(), sources: Vec::new(),
+            users: vec![UserTile { uuid: "u-1".into(), protected: false, title: "Only user".into(), ..Default::default() }],
+        }, true);
+        step(&mut owner, SessionEvent::Result(signed_in));
+        let discovery_reply = CommitReply { req, epoch, arrival: 1,
+            admission: CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Discovery } };
+        step(&mut owner, SessionEvent::Commit(discovery_reply));
+        let discovery_durable = PersistenceCompletion { req, epoch, arrival: 1, revision: 1,
+            purpose: PersistencePurpose::Discovery,
+            outcome: CompletionOutcome::Durable(Operation::Write {
+                outcome: PersistOutcome::PersistedPlaintext, verified: true, protection: None }) };
+        step(&mut owner, SessionEvent::Persistence(discovery_durable));
+        step(&mut owner, SessionEvent::Command(Command::TakeReady));
+        let final_req = owner.state.next_req;
+        let final_reply = CommitReply { req: final_req, epoch, arrival: 0,
+            admission: CommitAdmission::Admitted { revision: 2, purpose: PersistencePurpose::Final } };
+        step(&mut owner, SessionEvent::Commit(final_reply));
+        assert!(owner.state.held_handoff.is_some(), "rig: the Ready handoff is held for this commit");
+        let final_failed = PersistenceCompletion { req: final_req, epoch, arrival: 0, revision: 2,
+            purpose: PersistencePurpose::Final,
+            outcome: CompletionOutcome::Failed(Failure::Persistence(PersistOutcome::WriteFailed)) };
+        step(&mut owner, SessionEvent::Persistence(final_failed));
+        assert!(owner.state.persistence_warning.is_some(), "rig: a Final warning is showing");
+
+        let effects = step(&mut owner, SessionEvent::Command(Command::BackAtRoot { reply }));
+        assert!(owner.state.persistence_warning.is_some(),
+            "MUTATION TARGET: BACK must not clear an unacknowledged Final-site warning");
+        assert!(owner.state.held_handoff.is_some(),
+            "MUTATION TARGET: BACK must not release a held handoff without acknowledgement");
+        assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Ready { .. } | SessionFx::Commit { .. })),
+            "BACK over a held Final handoff must not announce Ready or begin a second save");
+        assert!(effects.iter().any(|fx| matches!(fx, SessionFx::BackReply { resumed: false, .. })));
+    }
+
+    /// Regression for `discovery-warning-not-cleared-on-retry-or-fresh-success` (0.6.6's
+    /// `persistence_warning_generation_and_attempt_bound_every_ack_and_report`), first half: a
+    /// discovery RETRY (`restart_login`'s `Retry` path) begins a brand-new attempt under a new
+    /// epoch, so a Discovery-site warning left over from the attempt being retried can never be
+    /// acknowledged by anything the new attempt does — it must be cleared at the restart, not left
+    /// to strand `take_ready` (`needs_ready_commit` refuses while any warning is live) once the
+    /// retry itself succeeds.
+    /// MUTATION TARGET: drop the `self.state.persistence_warning = None;` this test guards in
+    /// `restart_login`'s `if discovery { .. }` arm.
+    #[test]
+    fn a_discovery_retry_clears_a_stale_warning_from_the_attempt_it_replaces() {
+        use crate::plex::session::async_persistence::{
+            CompletionOutcome, Failure, PersistOutcome, PersistenceCompletion,
+        };
+        let mut owner = SessionMachine::from_init(discovering_after_authorization());
+        let req = owner.state.next_req;
+        let epoch = owner.state.epoch;
+        let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+            epoch, server: local_server(), sources: Vec::new(),
+            users: vec![UserTile { title: "Only user".into(), ..Default::default() }],
+        }, true);
+        step(&mut owner, SessionEvent::Result(signed_in));
+        let discovery_reply = CommitReply { req, epoch, arrival: 1,
+            admission: CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Discovery } };
+        step(&mut owner, SessionEvent::Commit(discovery_reply));
+        let discovery_failed = PersistenceCompletion { req, epoch, arrival: 1, revision: 1,
+            purpose: PersistencePurpose::Discovery,
+            outcome: CompletionOutcome::Failed(Failure::Persistence(PersistOutcome::WriteFailed)) };
+        step(&mut owner, SessionEvent::Persistence(discovery_failed));
+        assert!(owner.state.persistence_warning.is_some(), "rig: a Discovery warning is showing");
+        // `retry_kind` needs a phase that reads as Discovery-retriable; the rig is already
+        // `Phase::Discovering` from `discovering_after_authorization`.
+        // `retry_kind` reads `(phase, authorized_in_flow)`; a single-user `SignedIn` already
+        // advances phase to `Ready` by the time its OWN write's completion can raise a warning
+        // (`delta.phase` applies at commit ADMISSION, before any completion exists), so nothing
+        // in this crate can reach a live Discovery warning with the phase still `Discovering` —
+        // this rig sets it back deliberately to isolate `restart_login`'s DISCOVERY arm, exactly
+        // as the retry decision would see mid-flight for a *multi-worker* discovery (a resource
+        // fetch retried while the earlier attempt's OWN persistence write is still unacknowledged)
+        // rather than depending on today's one call sequence to happen to produce that phase.
+        owner.state.phase = Phase::Discovering;
+        assert_eq!(super::super::retry_kind(owner.state.phase, owner.state.authorized_in_flow),
+            super::super::RetryKind::Discovery, "rig: Retry must resolve to the DISCOVERY arm here");
+        step(&mut owner, SessionEvent::Command(Command::Retry));
+        assert!(owner.state.persistence_warning.is_none(),
+            "MUTATION TARGET: a discovery restart must clear the stale warning it is replacing");
+        assert!(owner.state.held_handoff.is_none());
+    }
+
+    /// Second half of `discovery-warning-not-cleared-on-retry-or-fresh-success`: a LATER fresh
+    /// discovery write landing durably supersedes an earlier failure warning outright (0.6.6's
+    /// "a later fresh success supersedes a failure warning"), even without going through
+    /// `restart_login` at all — pinning `apply_persistence_completion`'s own `superseded` branch
+    /// rather than only the `restart_login` door the test above exercises.
+    /// MUTATION TARGET: drop the `let superseded = …` clearing in `apply_persistence_completion`'s
+    /// `if durable { .. }` arm.
+    #[test]
+    fn a_later_durable_fresh_completion_supersedes_a_showing_warning_directly() {
+        use crate::plex::session::async_persistence::{
+            CompletionOutcome, Operation, PersistOutcome, PersistenceCompletion,
+        };
+        let mut owner = SessionMachine::from_init(discovering_after_authorization());
+        let req = owner.state.next_req;
+        let epoch = owner.state.epoch;
+        // Manufacture a showing warning directly (no restart), keeping `admitted_persistence`
+        // fenced so the very next completion below is accepted as this same operation's verdict.
+        owner.state.persistence_warning = Some(PersistenceWarning {
+            key: PersistenceWarningKey { epoch, req }, site: PersistenceWarningSite::Discovery });
+        owner.state.admitted_persistence = Some(AdmittedPersistence {
+            req, epoch, arrival: 0, revision: 1, purpose: Some(PersistencePurpose::Discovery),
+            fresh: true, site: PersistenceWarningSite::Discovery });
+        let durable = PersistenceCompletion { req, epoch, arrival: 0, revision: 1,
+            purpose: PersistencePurpose::Discovery,
+            outcome: CompletionOutcome::Durable(Operation::Write {
+                outcome: PersistOutcome::PersistedPlaintext, verified: true, protection: None }) };
+        step(&mut owner, SessionEvent::Persistence(durable));
+        assert!(owner.state.persistence_warning.is_none(),
+            "MUTATION TARGET: a later durable fresh write must supersede the earlier warning");
+    }
+
+    /// Third half of `discovery-warning-not-cleared-on-retry-or-fresh-success`: `StartSwitch` (and
+    /// by the same code path `resume_stored`) issues a ROUTINE `activate_profile` commit, whose
+    /// `apply_commit_reply` arm must not release a handoff still held behind a DIFFERENT,
+    /// unacknowledged warning — that release belongs to `acknowledge_persistence_warning` alone.
+    /// MUTATION TARGET: drop the `self.state.persistence_warning.is_none()` guard this test pins
+    /// in `apply_commit_reply`'s non-fresh `activate_profile` arm (reverting to an unconditional
+    /// `self.release_held_handoff(emit)`).
+    #[test]
+    fn start_switch_does_not_release_a_handoff_held_behind_an_unacknowledged_warning() {
+        let mut owner = owner_with_held_final_warning();
+        let held_before = owner.state.held_handoff;
+        let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::Boot)));
+        let Some((switch_req, switch_epoch)) = effects.iter().find_map(|fx| match fx {
+            SessionFx::Commit { req, epoch, .. } => Some((*req, *epoch)),
+            _ => None,
+        }) else {
+            panic!("rig: StartSwitch(Boot) must begin its own (registry-only) commit");
+        };
+        let switch_reply = CommitReply { req: switch_req, epoch: switch_epoch, arrival: 0,
+            admission: CommitAdmission::RegistryOnly };
+        let effects = step(&mut owner, SessionEvent::Commit(switch_reply));
+        assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Ready { .. })),
+            "MUTATION TARGET: no Ready may be announced for the unrelated held handoff before \
+             its own warning is acknowledged");
+        assert_eq!(owner.state.held_handoff, held_before,
+            "the handoff held behind the still-showing warning must be untouched");
+        assert!(owner.state.persistence_warning.is_some(), "the warning itself is still unanswered");
     }
 
     #[test]
