@@ -329,6 +329,12 @@ const HIGH_RISK = A.highRisk === true
 // explicitly, or after two materially different Sonnet attempts have failed on the SAME finding
 // (tracked below by how many separate fix waves re-reported the same key). Never a default fixer.
 const FABLE_MODEL = 'fable'
+// Top-level implementer override, for the OTHER shape of "concrete architectural ambiguity":
+// several Sonnet-authored task contracts in a row failing the Opus PRE-implementation review
+// (never a Sonnet WORKER attempt — no worker ever touched code) is the same escalation trigger
+// by a different route. Defaults to Sonnet; set only when that has actually happened.
+const IMPLEMENT_MODEL = (A.implementModel === 'fable') ? 'fable' : 'sonnet'
+if (IMPLEMENT_MODEL === 'fable') log('! implementModel=fable — escalating the Implement stage itself, per the escalation policy (repeated pre-implementation REPLANs on the same package)')
 
 const hard_failures = []
 const reviews = []
@@ -708,7 +714,7 @@ for (let w = 0; w < waves.length; w++) {
       'Report your branch (`git branch --show-current`), your worktree path (`git rev-parse --show-toplevel`) and the files you changed.',
       'If you cannot finish, say `partial` or `blocked` and name precisely what is missing. Do not report `done` for a stub.',
     ].join('\n'),
-    { label: `impl:${pkg.id}`, phase: 'Implement', model: 'sonnet', schema: WORK },
+    { label: `impl:${pkg.id}`, phase: 'Implement', model: IMPLEMENT_MODEL, schema: WORK },
     `package ${pkg.id}`,
   ))
 
