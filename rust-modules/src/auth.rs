@@ -3513,6 +3513,190 @@ mod tests {
         assert!(matches!(reach, Reach::At(ref c, _) if c.location == probe::Location::Remote));
     }
 
+    // ---- issue #95: a plaintext-only winner is reported reached and starves the relay ----
+    //
+    // Reporter topology (v0.6.6, `/api/v2/resources` for one OWNED, `httpsRequired:false` server):
+    // fourteen `local=1` Docker bridge gateways (172.17.0.1..172.30.0.1), each dead over both its
+    // advertised HTTPS uri and its synthesized plaintext twin; the REAL LAN connection, whose HTTPS
+    // `plex.direct` name this (internet-less) LAN cannot resolve but whose plaintext twin answers
+    // 200 with the right `machineIdentifier`; a remote custom HTTPS connection on port 443 whose
+    // HTTPS candidate is also dead and whose plaintext twin answers 400; and a relay connection
+    // that verifies over HTTPS. A store (non-`devtriggers`) build refuses to put a token on
+    // plaintext (`http::credential_transport_allowed`), so the LAN twin's 200 is a real answer this
+    // build can never use — and it must not be treated as reached, or relay never gets dialled.
+
+    /// Fourteen dead Docker bridge gateways, `local=1` in plex.tv's own (RFC1918) sense. Both
+    /// halves of each twin are wired dead in [`issue_95_dial`] — a real dial failure at every one
+    /// of them, not a fixture that never reaches these candidates at all.
+    fn issue_95_dead_gateways_json() -> String {
+        (17..=30)
+            .map(|i| {
+                format!(
+                    r#",{{"protocol":"https","address":"172.{i}.0.1","port":32400,
+                         "uri":"https://172-{i}-0-1.h.plex.direct:32400","local":true,"relay":false,"IPv6":false}}"#
+                )
+            })
+            .collect()
+    }
+
+    /// The reporter's server, `owned:true` and `httpsRequired:false` — the shape that makes
+    /// `probe::candidates` synthesize a plaintext twin for every non-relay connection at all
+    /// (`probe.rs`'s rule 2). `with_relay` lets the no-relay variant reuse the same LAN/remote
+    /// shape without the one candidate that lets the race recover.
+    fn issue_95_account(with_relay: bool) -> Resource {
+        let gateways = issue_95_dead_gateways_json();
+        let relay = if with_relay {
+            r#",{"protocol":"https","address":"relay.example.net","port":8443,
+                 "uri":"https://relay.example.net:8443","local":false,"relay":true,"IPv6":false}"#
+        } else {
+            ""
+        };
+        resource(&format!(
+            r#"{{"name":"issue-95","clientIdentifier":"issue95mid","provides":"server","owned":true,
+                "sourceTitle":null,"publicAddressMatches":true,"httpsRequired":false,
+                "accessToken":"tok-95","connections":[
+                  {{"protocol":"https","address":"192.168.1.50","port":32400,
+                   "uri":"https://192-168-1-50.h.plex.direct:32400","local":true,"relay":false,"IPv6":false}}{gateways},
+                  {{"protocol":"https","address":"custom.example.net","port":443,
+                   "uri":"https://custom.example.net:443","local":false,"relay":false,"IPv6":false}}{relay}
+                ]}}"#
+        ))
+    }
+
+    /// What actually answers each candidate the fixture above generates. Keyed on `(host, is_tls)`
+    /// because the remote custom connection's plaintext twin shares its HOST with its HTTPS
+    /// candidate — only the scheme tells them apart — while the LAN connection's twin has a
+    /// DIFFERENT host from its `plex.direct` name, exactly as a real advertised uri does.
+    fn issue_95_dial(origin: &Origin, _budget: Duration) -> (i32, Vec<u8>) {
+        match (origin.host(), origin.is_tls()) {
+            ("192.168.1.50", false) => (200, identity_json("issue95mid")),
+            ("custom.example.net", false) => (400, Vec::new()),
+            ("relay.example.net", true) => (200, identity_json("issue95mid")),
+            _ => (0, Vec::new()), // every gateway twin, and both dead-HTTPS candidates
+        }
+    }
+
+    /// **The direct race alone: a plaintext-only winner must not be `Reach::At`, and must not
+    /// starve the relay that verifies.**
+    ///
+    /// `settle_probe_message` records `result.first` the moment ANY candidate verifies —
+    /// `activation_allowed` gates only the `activate` callback, not whether the winner COUNTS as
+    /// first — so `probe_server_racing`'s `if batch.first.is_none() && !relay.is_empty()` is
+    /// already false once the LAN twin settles, and relay's own `race_batch` never runs. The
+    /// function's tail then returns `Reach::At(best.candidate, best.origin)` unconditionally:
+    /// `best` is never checked against `activation_allowed` either, so a plaintext-only "best" is
+    /// reported reached even though nothing downstream can register it.
+    ///
+    /// `activation_allowed`'s gate is `cfg!(feature = "devtriggers")`, baked in at compile time
+    /// rather than threaded through as a parameter (`probe_server_racing` has no policy input at
+    /// all) — and a plain `cargo test` compiles with `devtriggers` default-on, so this test cannot
+    /// simply flip that cfg to observe store-build activation. Instead it re-grades every
+    /// `activate` call the coordinator actually made against `activation_allowed_by_policy(_,
+    /// false)` — the STORE policy — directly, which is cfg-independent and exactly the policy issue
+    /// #95's build carries.
+    #[test]
+    fn issue_95_a_plaintext_only_winner_must_not_be_reach_at_and_must_not_starve_the_relay() {
+        let plan = probe::plan(&issue_95_account(true));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_by_dial = Arc::clone(&seen);
+        let dial: ProbeDial = Arc::new(move |origin, budget| {
+            seen_by_dial.lock().unwrap().push(origin.log_form());
+            issue_95_dial(origin, budget)
+        });
+        let mut activated = Vec::new();
+        let reach = probe_server_racing(
+            &plan,
+            dial,
+            &threaded_spawn,
+            test_policy(),
+            &mut |_, _, origin| activated.push(origin.clone()),
+        );
+
+        let Reach::At(_, ref origin) = reach else {
+            panic!(
+                "the relay verified this machine and must be reached: {:?}",
+                seen.lock().unwrap()
+            )
+        };
+        assert_eq!(
+            origin.host(),
+            "relay.example.net",
+            "a plaintext-only winner must not be the reported origin — got {} (dialled: {:?})",
+            origin.base(),
+            seen.lock().unwrap()
+        );
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|s| s.contains("relay.example.net")),
+            "relay was never dialled: {:?}",
+            seen.lock().unwrap()
+        );
+        for origin in &activated {
+            assert!(
+                activation_allowed_by_policy(origin, false),
+                "activated a plaintext origin no store build can ever put a token on: {}",
+                origin.base()
+            );
+        }
+    }
+
+    /// **The whole-roster path: a store build's roster must only ever record an origin it can put
+    /// a credential on.** Same topology, through [`resolve_roster_using`] rather than the racing
+    /// coordinator alone, because `SourceRef::origin_url` — not `Reach` — is what a boot actually
+    /// persists and re-dials from.
+    #[test]
+    fn issue_95_resolve_roster_only_ever_records_an_https_origin() {
+        let resources = vec![issue_95_account(true)];
+        let dial: ProbeDial = Arc::new(issue_95_dial);
+        let mut probe_one = |plan: &ProbePlan| {
+            probe_server_racing(
+                plan,
+                Arc::clone(&dial),
+                &threaded_spawn,
+                test_policy(),
+                &mut |_, _, _| {},
+            )
+        };
+        let resolved =
+            resolve_roster_using(&resources, &[], &mut probe_one, &mut || {}, &mut |_, _, _| {});
+        let Resolved::Reached(roster) = resolved else {
+            panic!("the relay verifies this machine and must be recorded as reached");
+        };
+        assert_eq!(roster.len(), 1);
+        assert!(
+            roster[0].origin_url.starts_with("https://"),
+            "a store build can never put a credential on the recorded origin otherwise: {}",
+            roster[0].origin_url
+        );
+    }
+
+    /// **Without a relay to fall back to, a plaintext-only answer must not be reported reached at
+    /// all** — the account has no address this build can use, and the whole point of `Reach`'s
+    /// three-way split (`probe.rs`'s module doc) is that "reachable but unusable" must not read as
+    /// success.
+    #[test]
+    fn issue_95_without_a_relay_a_plaintext_only_answer_is_not_reached() {
+        let resources = vec![issue_95_account(false)];
+        let dial: ProbeDial = Arc::new(issue_95_dial);
+        let mut probe_one = |plan: &ProbePlan| {
+            probe_server_racing(
+                plan,
+                Arc::clone(&dial),
+                &threaded_spawn,
+                test_policy(),
+                &mut |_, _, _| {},
+            )
+        };
+        let resolved =
+            resolve_roster_using(&resources, &[], &mut probe_one, &mut || {}, &mut |_, _, _| {});
+        assert!(
+            !matches!(resolved, Resolved::Reached(_)),
+            "a plaintext-only answer this build cannot use must not be reported reached"
+        );
+    }
+
     #[test]
     fn servers_are_serial_owned_then_public_match_with_one_gap_between_each() {
         let resources = vec![
