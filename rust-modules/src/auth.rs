@@ -1319,7 +1319,16 @@ fn classify(status: i32, body: &[u8], want_machine_id: &str) -> Outcome {
 /// A transport failure — nothing answered, DNS said no, the certificate would not validate — comes
 /// back as `(0, [])`, and `classify` reads that as [`Outcome::Unreachable`]. `0` is not a status any
 /// server can send, so it cannot be confused with one.
-fn get_identity(origin: &Origin, budget: Duration) -> (i32, Vec<u8>) {
+///
+/// `pin`, when [`race_batch`] built one for this candidate, is forwarded to
+/// [`crate::http::request_probe`] exactly as `apply_candidate_activation` forwards one to
+/// `register_origin` — the same [`crate::plex::ResolvePin`], used one step earlier: at the DIAL
+/// that decides the winner, not only at the registration of one already decided.
+fn get_identity(
+    origin: &Origin,
+    pin: Option<&crate::plex::ResolvePin>,
+    budget: Duration,
+) -> (i32, Vec<u8>) {
     match crate::http::request_probe(
         origin,
         IDENTITY,
@@ -1327,6 +1336,7 @@ fn get_identity(origin: &Origin, budget: Duration) -> (i32, Vec<u8>) {
         &[crate::http::ACCEPT_JSON],
         64 * 1024,
         budget.as_secs().max(1) as i32,
+        pin,
     ) {
         // `/identity` is one small MediaContainer. The ceiling is enforced by each transport
         // WHILE it reads, before a machine we have not accepted can make this worker allocate an
@@ -1352,7 +1362,9 @@ const PROBE_DEADLINES: ProbeDeadlines = ProbeDeadlines {
 };
 const SERVER_GAP: Duration = Duration::from_secs(4);
 
-type ProbeDial = Arc<dyn Fn(&Origin, Duration) -> (i32, Vec<u8>) + Send + Sync + 'static>;
+type ProbeDial = Arc<
+    dyn Fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> (i32, Vec<u8>) + Send + Sync + 'static,
+>;
 type ProbeJob = Box<dyn FnOnce() + Send + 'static>;
 
 #[derive(Clone)]
@@ -1537,8 +1549,13 @@ fn race_batch(
         let worker_state = Arc::clone(&state);
         let machine_id = plan.machine_id.clone();
         let budget = probe_deadline(c, policy);
+        // Built here, at the dial that decides a winner — not only at `apply_candidate_activation`,
+        // which pins the same way after one already has. `None` for a plaintext candidate (a pin
+        // belongs to a TLS name only) or an unmatched/undecodable label; the request then resolves
+        // through DNS exactly as before.
+        let pin = crate::plex::ResolvePin::for_origin(&origin, &c.address);
         let job = Box::new(move || {
-            let (status, body) = dial(&origin, budget);
+            let (status, body) = dial(&origin, pin.as_ref(), budget);
             let outcome = classify(status, &body, &machine_id);
             let on_time = Instant::now() <= deadline;
             // Claim completion before publishing the message. If the coordinator expires first,
@@ -3354,7 +3371,7 @@ mod tests {
     #[test]
     fn a_worse_candidate_finishing_last_never_downgrades_the_winner() {
         let plan = race_plan();
-        let dial: ProbeDial = Arc::new(|origin, _| {
+        let dial: ProbeDial = Arc::new(|origin, _, _| {
             if origin.host().starts_with("203-") {
                 std::thread::sleep(Duration::from_millis(30));
             }
@@ -3385,7 +3402,7 @@ mod tests {
     fn a_better_candidate_finishing_last_causes_exactly_one_final_repoint() {
         let mut plan = race_plan();
         plan.candidates.swap(0, 1); // remote launches first; local remains the better score
-        let dial: ProbeDial = Arc::new(|origin, _| {
+        let dial: ProbeDial = Arc::new(|origin, _, _| {
             if origin.host().starts_with("192-") {
                 std::thread::sleep(Duration::from_millis(30));
             }
@@ -3412,7 +3429,7 @@ mod tests {
     #[test]
     fn one_refused_spawn_still_settles_on_the_worker_that_exists() {
         let plan = race_plan();
-        let dial: ProbeDial = Arc::new(|_, _| (200, identity_json("race-machine")));
+        let dial: ProbeDial = Arc::new(|_, _, _| (200, identity_json("race-machine")));
         let spawn = |index: usize, job: ProbeJob| {
             if index == 0 {
                 false
@@ -3432,7 +3449,7 @@ mod tests {
     #[test]
     fn all_refused_spawns_terminate_as_failure() {
         let plan = race_plan();
-        let dial: ProbeDial = Arc::new(|_, _| panic!("a refused job must never run"));
+        let dial: ProbeDial = Arc::new(|_, _, _| panic!("a refused job must never run"));
         let mut activations = 0;
         let reach =
             probe_server_racing(&plan, dial, &|_, _| false, test_policy(), &mut |_, _, _| {
@@ -3459,7 +3476,7 @@ mod tests {
         });
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_by_dial = Arc::clone(&seen);
-        let dial: ProbeDial = Arc::new(move |origin, _| {
+        let dial: ProbeDial = Arc::new(move |origin, _, _| {
             seen_by_dial.lock().unwrap().push(origin.host().to_string());
             if origin.host() == "relay.example.test" {
                 (200, identity_json("race-machine"))
@@ -3494,7 +3511,7 @@ mod tests {
             ipv6: false,
             credential_eligible: true,
         });
-        let dial: ProbeDial = Arc::new(|origin, _| {
+        let dial: ProbeDial = Arc::new(|origin, _, _| {
             if origin.host() == "relay.example.test" {
                 (200, identity_json("race-machine"))
             } else {
@@ -3524,7 +3541,7 @@ mod tests {
             ipv6: false,
             credential_eligible: true,
         });
-        let dial: ProbeDial = Arc::new(|origin, _| {
+        let dial: ProbeDial = Arc::new(|origin, _, _| {
             if origin.host() == "relay.example.test" {
                 (0, Vec::new())
             } else {
@@ -3547,7 +3564,7 @@ mod tests {
     fn an_on_time_result_queued_before_the_deadline_survives_coordinator_delay() {
         let mut plan = race_plan();
         plan.candidates.truncate(1);
-        let dial: ProbeDial = Arc::new(|_, _| (200, identity_json("race-machine")));
+        let dial: ProbeDial = Arc::new(|_, _, _| (200, identity_json("race-machine")));
         let spawn = |_: usize, job: ProbeJob| {
             job();
             std::thread::sleep(Duration::from_millis(20));
@@ -3564,7 +3581,7 @@ mod tests {
     #[test]
     fn a_late_local_result_is_ignored_while_a_remote_deadline_remains_live() {
         let plan = race_plan();
-        let dial: ProbeDial = Arc::new(|origin, _| {
+        let dial: ProbeDial = Arc::new(|origin, _, _| {
             if origin.host().starts_with("192-") {
                 std::thread::sleep(Duration::from_millis(25));
             } else {
@@ -3589,7 +3606,7 @@ mod tests {
     #[test]
     fn a_verified_reachable_candidate_wins_over_a_parallel_401() {
         let plan = race_plan();
-        let dial: ProbeDial = Arc::new(|origin, _| {
+        let dial: ProbeDial = Arc::new(|origin, _, _| {
             if origin.host().starts_with("192-") {
                 (401, Vec::new())
             } else {
@@ -3634,7 +3651,7 @@ mod tests {
         });
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_by_dial = Arc::clone(&seen);
-        let dial: ProbeDial = Arc::new(move |origin, _| {
+        let dial: ProbeDial = Arc::new(move |origin, _, _| {
             seen_by_dial.lock().unwrap().push(origin.host().to_string());
             if origin.host() == "192.0.2.10" {
                 (200, identity_json("race-machine"))
@@ -3675,7 +3692,7 @@ mod tests {
             ipv6: false,
             credential_eligible: false,
         };
-        let dial: ProbeDial = Arc::new(|origin, _| {
+        let dial: ProbeDial = Arc::new(|origin, _, _| {
             if origin.host() == "192.0.2.10" {
                 (200, identity_json("race-machine")) // verified, but ineligible
             } else {
@@ -3711,7 +3728,7 @@ mod tests {
             ipv6: false,
             credential_eligible: false,
         };
-        let dial: ProbeDial = Arc::new(|origin, _| {
+        let dial: ProbeDial = Arc::new(|origin, _, _| {
             if origin.host() == "192.0.2.10" {
                 (200, identity_json("race-machine")) // instant, but ineligible
             } else {
@@ -3771,7 +3788,7 @@ mod tests {
 
         assert_case(
             &race_plan(),
-            Arc::new(|origin, _| {
+            Arc::new(|origin, _, _| {
                 if origin.host().starts_with("192-") {
                     (200, identity_json("race-machine"))
                 } else {
@@ -3843,7 +3860,15 @@ mod tests {
     /// because the remote custom connection's plaintext twin shares its HOST with its HTTPS
     /// candidate — only the scheme tells them apart — while the LAN connection's twin has a
     /// DIFFERENT host from its `plex.direct` name, exactly as a real advertised uri does.
-    fn issue_95_dial(origin: &Origin, _budget: Duration) -> (i32, Vec<u8>) {
+    /// Ignores `_pin` on purpose: this fixture keeps testing the UNPINNED path (the plaintext
+    /// candidate answers by its literal address already, and no `.plex.direct` host appears here),
+    /// so a pin — present or not — must not change what it returns. `issue_95_dial_pinned` below is
+    /// the pinning-specific fixture.
+    fn issue_95_dial(
+        origin: &Origin,
+        _pin: Option<&crate::plex::ResolvePin>,
+        _budget: Duration,
+    ) -> (i32, Vec<u8>) {
         match (origin.host(), origin.is_tls()) {
             ("192.168.1.50", false) => (200, identity_json("issue95mid")),
             ("custom.example.net", false) => (400, Vec::new()),
@@ -3870,9 +3895,9 @@ mod tests {
         let plan = probe::plan(&issue_95_account(true), CredentialPolicy::HttpsOnly);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_by_dial = Arc::clone(&seen);
-        let dial: ProbeDial = Arc::new(move |origin, budget| {
+        let dial: ProbeDial = Arc::new(move |origin, pin, budget| {
             seen_by_dial.lock().unwrap().push(origin.log_form());
-            issue_95_dial(origin, budget)
+            issue_95_dial(origin, pin, budget)
         });
         let mut activated = Vec::new();
         let reach = probe_server_racing(
@@ -3979,6 +4004,157 @@ mod tests {
         assert!(
             !matches!(resolved, Resolved::Reached(_)),
             "a plaintext-only answer this build cannot use must not be reported reached"
+        );
+    }
+
+    // ---- issue #95, step 4: probe pinning ----
+    //
+    // A router with DNS-rebind protection answers every `*.plex.direct` name with NXDOMAIN, so the
+    // TLS LAN candidate above never even reached a socket — only its ineligible plaintext twin did,
+    // which is what left the account stuck on relay. `race_batch` now pins that candidate exactly
+    // as `apply_candidate_activation` pins the winner it persists (`ResolvePin::for_origin`, keyed
+    // on `Candidate::address`), so the fixture below answers the SAME topology as
+    // `issue_95_account`, except the LAN TLS candidate now verifies too — but only when it is
+    // dialled with the pin `192.168.1.50` decodes to, standing in for "no resolver reached this
+    // name, but the pinned address did."
+
+    /// Identical to [`issue_95_dial`] except the LAN `plex.direct` TLS candidate now answers, and
+    /// only when dialled with the pin its own label decodes to — standing in for the DNS-rebind
+    /// router, which would otherwise make this exact candidate NXDOMAIN.
+    fn issue_95_dial_pinned(
+        origin: &Origin,
+        pin: Option<&crate::plex::ResolvePin>,
+        budget: Duration,
+    ) -> (i32, Vec<u8>) {
+        if origin.host() == "192-168-1-50.h.plex.direct" && origin.is_tls() {
+            return if pin.is_some_and(|p| p.addr() == "192.168.1.50".parse::<std::net::IpAddr>().unwrap()) {
+                (200, identity_json("issue95mid"))
+            } else {
+                (0, Vec::new()) // no resolver reaches this name on the reporter's LAN
+            };
+        }
+        issue_95_dial(origin, pin, budget)
+    }
+
+    /// **A pinned LAN `plex.direct` candidate wins outright, and the relay is never dialled.**
+    /// This is the fix for #95 itself: with the pin, the TLS candidate a DNS-rebind-protected
+    /// router used to make unreachable now verifies first — `credential_eligible`, `local` tier —
+    /// so `probe_server_racing`'s `first.is_none() && !relay.is_empty()` gate never opens.
+    #[test]
+    fn a_pinned_lan_https_candidate_wins_and_the_relay_is_never_dialled() {
+        let plan = probe::plan(&issue_95_account(true), CredentialPolicy::HttpsOnly);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_by_dial = Arc::clone(&seen);
+        let dial: ProbeDial = Arc::new(move |origin, pin, budget| {
+            seen_by_dial.lock().unwrap().push(origin.log_form());
+            issue_95_dial_pinned(origin, pin, budget)
+        });
+        let reach = probe_server_racing(
+            &plan,
+            dial,
+            &threaded_spawn,
+            test_policy(),
+            &mut |_, _, _| {},
+        );
+
+        let Reach::At(candidate, origin) = reach else {
+            panic!(
+                "the pinned LAN candidate verifies and must be reached: {:?}",
+                seen.lock().unwrap()
+            )
+        };
+        assert_eq!(origin.base(), "https://192-168-1-50.h.plex.direct:32400");
+        assert_eq!(candidate.location, probe::Location::Local);
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s.contains("relay.example.net")),
+            "the pinned LAN candidate verified; relay must not have been dialled: {:?}",
+            seen.lock().unwrap()
+        );
+    }
+
+    /// **The same fixture through the whole-roster path**: what a boot actually persists is
+    /// `SourceRef::origin_url`, and a pinned winner must persist as the `plex.direct` NAME — never
+    /// the bare address the pin dialled it at — so a later boot or data call re-derives the same
+    /// pin from the same stored address (`session.rs` re-installs through `register_origin`/
+    /// `install`, both of which take a fresh `ResolvePin::for_origin` computed the identical way).
+    #[test]
+    fn a_pinned_winner_is_recorded_as_the_plex_direct_origin_not_the_dialled_address() {
+        let resources = vec![issue_95_account(true)];
+        let dial: ProbeDial = Arc::new(issue_95_dial_pinned);
+        let mut probe_one = |plan: &ProbePlan| {
+            probe_server_racing(
+                plan,
+                Arc::clone(&dial),
+                &threaded_spawn,
+                test_policy(),
+                &mut |_, _, _| {},
+            )
+        };
+        let resolved =
+            resolve_roster_using(
+                &resources,
+                &[],
+                CredentialPolicy::HttpsOnly,
+                &mut probe_one,
+                &mut || {},
+                &mut |_, _, _| {},
+            );
+        let Resolved::Reached(roster) = resolved else {
+            panic!("the pinned LAN candidate verifies and must be recorded as reached");
+        };
+        assert_eq!(roster.len(), 1);
+        assert_eq!(roster[0].origin_url, "https://192-168-1-50.h.plex.direct:32400");
+        assert_eq!(roster[0].address, "192.168.1.50");
+        assert_eq!(roster[0].tier, Some(probe::Location::Local));
+    }
+
+    /// **A candidate whose dashed label does not encode the address stored beside it gets no
+    /// pin.** A stale plex.tv cache, a re-point, or any fixture where the two simply disagree must
+    /// not make `race_batch` guess — `ResolvePin::for_origin` already refuses this, and this test
+    /// is the boundary that would notice `race_batch` computing the pin from the wrong field.
+    #[test]
+    fn a_candidate_whose_label_does_not_encode_its_own_address_gets_no_pin() {
+        let mismatched = Candidate {
+            url: "https://192-0-2-10.h.plex.direct:32400".into(),
+            scheme: Scheme::Https,
+            location: probe::Location::Local,
+            // What plex.tv advertised beside this connection does NOT decode from the label.
+            address: "192.0.2.99".into(),
+            port: 32400,
+            ipv6: false,
+            credential_eligible: true,
+        };
+        let plan = ProbePlan {
+            machine_id: "mismatch-machine".into(),
+            token: "tok".into(),
+            owned: true,
+            name: "mismatch-server".into(),
+            source_title: None,
+            candidates: vec![mismatched],
+            policy: CredentialPolicy::HttpsOnly,
+        };
+        let seen_pin: Arc<Mutex<Option<Option<crate::plex::ResolvePin>>>> = Arc::new(Mutex::new(None));
+        let seen_pin_by_dial = Arc::clone(&seen_pin);
+        let dial: ProbeDial = Arc::new(move |_origin, pin, _budget| {
+            *seen_pin_by_dial.lock().unwrap() = Some(pin.cloned());
+            (200, identity_json("mismatch-machine"))
+        });
+        let reach = probe_server_racing(
+            &plan,
+            dial,
+            &threaded_spawn,
+            test_policy(),
+            &mut |_, _, _| {},
+        );
+        assert!(matches!(reach, Reach::At(_, _)));
+        assert_eq!(
+            seen_pin.lock().unwrap().clone(),
+            Some(None),
+            "a mismatched label must reach the dial with no pin at all"
         );
     }
 

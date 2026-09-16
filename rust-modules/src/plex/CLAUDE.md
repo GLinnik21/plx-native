@@ -65,6 +65,16 @@ hostname; `register_origin`/`install` take it, the `Client` carries it for the c
 `net::resolve` holds an append-only table the media plane (`curlio`) consults by host and port.
 TLS validation is untouched: the name stays in the URL and in SNI. `/tmp/plxnative-nowan` makes
 every unpinned name fail as a dead resolver would, which is how the case is reproduced on a desk.
+**Since issue #95 the DISCOVERY PROBE is pinned too, not only the winning `Client`.**
+`auth::race_batch` builds a `ResolvePin` for each `https://…plex.direct` candidate from the same
+`Candidate::address` this module already carries, and hands it down through `auth::get_identity` to
+`http::request_probe`'s TLS arm — the identical mechanism `register_origin`/`install` use, run one
+step earlier, at the DIAL that decides a winner rather than only after one is already decided. That
+is what turns a router's DNS-rebind protection (which answers every `*.plex.direct` name with
+NXDOMAIN, so the probe's own resolver never reaches the LAN candidate) from a permanent relay
+detour into an ordinary pinned LAN HTTPS winner; the plaintext twin's own probe is unaffected — a
+pin belongs to a TLS name, never to a literal — and a candidate whose dashed label does not encode
+its `address` simply gets no pin and resolves through DNS exactly as before.
 
 **The who's-watching pick is seated from `Session::profiles` when plex.tv does not answer.** The
 first real outage (2026-09-06, `docs/measurements/offline-picker-red-tv-2026-09-06.log`) got past
