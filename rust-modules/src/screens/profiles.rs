@@ -1753,6 +1753,7 @@ mod tests {
             profile: None,
             scope: auth::owner::ProfileScope(0),
             delete_leftovers: 0,
+            persistence_warning: None,
         }
     }
 

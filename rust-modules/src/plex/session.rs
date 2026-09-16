@@ -2003,6 +2003,25 @@ pub(crate) fn update_with_outcome(
     }
 }
 
+/// The whole-record write only a completed PIN authorization may perform (the 0.6.6
+/// `save_after_reauthentication` door). Unlike [`update_with_outcome`] it does NOT refuse when the
+/// disk reads as Locked/Blocked/Missing (those read as a default `Session`, whose empty `client_id`
+/// makes the read-modify-write a silent no-op): the user has just re-supplied everything the
+/// ciphertext held, and a sign-in nobody can read back next launch is the worst outcome available.
+/// Fresh authority without an account credential writes nothing (mirrors
+/// `async_persistence::Coordinator::admit_with`'s `account_token.is_empty()` refusal).
+pub(crate) fn replace_after_reauthentication_with_outcome(
+    edit: impl FnOnce(&Session) -> Session,
+) -> Option<async_persistence::LiveWrite> {
+    let _io = io();
+    let cur = session_from_read(read_live_locked());
+    let next = edit(&cur);
+    if next.account_token.is_empty() {
+        return None;
+    }
+    Some(save_locked_with_authority(&next, SaveAuthority::FreshReauthentication))
+}
+
 /// What the routine-authority write actually did — the canonical verdict beside the
 /// sealed/plaintext attempt's own result, without changing any caller's behavior.
 fn save_locked_outcome(s: &Session) -> async_persistence::LiveWrite {
@@ -2055,6 +2074,10 @@ fn save_locked_with_authority(
     s: &Session,
     authority: SaveAuthority,
 ) -> async_persistence::LiveWrite {
+    #[cfg(test)]
+    {
+        *LAST_WRITE_AUTHORITY.lock().unwrap_or_else(|e| e.into_inner()) = Some(authority);
+    }
     // Before the write, not after: a failed persist still means these names are live in THIS run,
     // and the log wants them redacted either way.
     publish_identities(s);
@@ -4660,9 +4683,26 @@ mod canonical_profile_regressions {
 }
 
 // Storage-facing capability only. Session owner admission is integrated in Stage B.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[allow(dead_code)]
 pub(crate) enum SaveAuthority { PublicOnly, Routine, FreshReauthentication }
+
+/// Test-only witness of the authority the last [`save_locked_with_authority`] call actually used —
+/// what a fixture cannot observe any other way, since the adapter's `LiveWrite` carries the
+/// canonical verdict but not which door produced it.
+#[cfg(test)]
+static LAST_WRITE_AUTHORITY: Mutex<Option<SaveAuthority>> = Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn last_write_authority_for_test() -> Option<SaveAuthority> {
+    *LAST_WRITE_AUTHORITY.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_last_write_authority_for_test() {
+    *LAST_WRITE_AUTHORITY.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 #[allow(dead_code)]
 pub(crate) mod persistence;
 
