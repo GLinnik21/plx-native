@@ -63,6 +63,23 @@ pub(crate) fn redirect_root_for_test(root: Option<PathBuf>) {
     crate::paths::redirect_persistent_state_root_for_test(root);
 }
 
+/// Which thread most recently ran the blocking disk/storage-helper work in [`record`] or
+/// [`forget`]. Exists only to let a test prove the *caller* of those functions never blocks on
+/// them directly — see `app::adapters::consent`'s `commit_live`/`forget_live` off-thread tests.
+#[cfg(test)]
+static LAST_CALL_THREAD: std::sync::Mutex<Option<std::thread::ThreadId>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn last_call_thread() -> Option<std::thread::ThreadId> {
+    *LAST_CALL_THREAD.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+fn note_call_thread() {
+    *LAST_CALL_THREAD.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::thread::current().id());
+}
+
 fn root() -> PathBuf {
     crate::paths::persistent_state_root()
 }
@@ -71,13 +88,23 @@ fn root() -> PathBuf {
 /// it is stable for the process; tests redirect it, so resolving it on the worker would let an old
 /// operation write into a later fixture.
 /// Persist a decision to the canonical record and, once that is durable, retire the legacy files.
+///
+/// This is blocking disk/storage-helper I/O — a genuine round trip on the television. Callers
+/// must run it off the frame thread (`crate::storage_worker`), never inline from a dispatch path;
+/// see `app::adapters::consent::commit_live`.
 pub(crate) fn record(consent: &Consent) -> PersistOutcome {
+    #[cfg(test)]
+    note_call_thread();
     record_at(consent, &super::resource_candidates(), root())
 }
 
 /// End the account's tenure over consent: a canonical Cleared tombstone, so a later load cannot
 /// resurrect the previous decision from the canonical record or from a reappeared legacy file.
+///
+/// Blocking, for the same reason as [`record`]; see `app::adapters::consent::forget_live`.
 pub(crate) fn forget() -> PersistOutcome {
+    #[cfg(test)]
+    note_call_thread();
     forget_at(&super::resource_candidates(), root())
 }
 
