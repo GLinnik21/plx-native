@@ -794,6 +794,119 @@ mod db8_policy_tests {
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[1], PathBuf::from("/some/legacy/auth.json"));
     }
+
+    /// Point the canonical persistence root at a directory of this test's own; restore the
+    /// process-shared default on drop. This is a sibling of `session.rs`'s own
+    /// `TempCanonicalRoot` (declared private, inside that module's own `#[cfg(test)] mod tests`,
+    /// so not reachable from this module's sibling test mod) built the identical way, against the
+    /// same `crate::paths::redirect_persistent_state_root_for_test` seam.
+    struct TempPersistenceRoot {
+        dir: PathBuf,
+    }
+
+    impl TempPersistenceRoot {
+        fn new(tag: &str) -> TempPersistenceRoot {
+            let dir = std::env::temp_dir().join(format!(
+                "plxnative-persistence-cleanup-outcome-{}-{tag}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+            TempPersistenceRoot { dir }
+        }
+    }
+
+    impl Drop for TempPersistenceRoot {
+        fn drop(&mut self) {
+            crate::paths::redirect_persistent_state_root_for_test(None);
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// AUTH-09 Finding B regression: `ClearCleanupOutcome::AuthorityNotConfirmed` is a genuinely
+    /// distinct outcome from `ClearCleanupOutcome::Confirmed` — the two failure/success modes a
+    /// bare `bool` used to conflate before the AUTH-09 contract freeze (commit 4a9c8a27).
+    ///
+    /// **Three similarly-named types exist in this crate and must not be conflated; spelled out
+    /// fully here so a future reader cannot confuse them:**
+    /// - `crate::plex::session::persistence::ClearCleanupOutcome::AuthorityNotConfirmed` — THIS
+    ///   enum, in THIS module: the verdict of one `cleanup_after_confirmed_clear()` call, i.e.
+    ///   whether the canonical authority read back `Cleared` before any legacy sweep was
+    ///   attempted. This is the type this test exercises.
+    /// - `crate::plex::session::ClearOutcome::AuthorityNotConfirmed` — a DIFFERENT enum, declared
+    ///   in the parent module `session.rs`, naming `clear()`'s verdict for its *whole* call.
+    ///   `clear()`'s match on this module's `ClearCleanupOutcome` maps this exact variant onto
+    ///   that one (see `session.rs`'s `clear()`), but they are two distinct types in two
+    ///   different modules that merely share a variant name.
+    /// - `crate::plex::session::async_persistence::ClearOutcome` — an unrelated, private STRUCT
+    ///   in `async_persistence.rs` with the same short type name, used for the coordinator's
+    ///   clear-completion bookkeeping. It shares nothing with either enum above beyond the name.
+    ///
+    /// **Reachability, investigated for this package:** `grep -rn
+    /// inject_next_commit_failure_for_test rust-modules/src` finds exactly one fault-injection
+    /// seam in this crate, and it is commit-stage-only — it makes a `commit()` call report
+    /// failure, which routes into `CanonicalCommit`'s own failure variants (`Uncertain`/`Failed`/
+    /// `ProtectionFailed`), never into a *load-side* discrepancy. There is no seam anywhere in the
+    /// storage layer that can make `load()` disagree with a `commit_cleared()` that just landed —
+    /// i.e. no way to reproduce, from a host test through the production `clear()` entry point,
+    /// the genuine race `AuthorityNotConfirmed` exists to describe (a commit reported durable, but
+    /// the read-back at cleanup time disagrees, e.g. because a concurrent re-login already
+    /// overwrote it). A true end-to-end `clear() -> ClearOutcome::AuthorityNotConfirmed` is
+    /// therefore NOT reachable here. This test instead proves the narrower, but still real and
+    /// non-trivial, distinction directly against `cleanup_after_confirmed_clear()`: an authority
+    /// that has never confirmed `Cleared` at all (a fresh, never-committed root — exactly what
+    /// `load()` reports before any commit ever reaches it) versus one that genuinely has. No
+    /// log-capture assertion is used; this crate has no log-capture mechanism.
+    ///
+    /// **RED state:** simulated, not historically observed — this is a new test locking in
+    /// behavior that was already correct at this commit, not a regression that was ever shipped.
+    /// Confirmed red by temporarily commenting out the early `return
+    /// ClearCleanupOutcome::AuthorityNotConfirmed;` line at the top of
+    /// `cleanup_after_confirmed_clear()` (so a fresh/`Missing` root falls through into the sweep
+    /// loop instead of returning early), running only this test via `cargo +nightly test --lib
+    /// plex::session::persistence::db8_policy_tests::cleanup_after_confirmed_clear_distinguishes_an_unconfirmed_authority_from_a_confirmed_one`,
+    /// and observing the first assertion fail — the fall-through sweep finds zero candidates,
+    /// trivially "completes", and reports `Confirmed` where the test asserts
+    /// `AuthorityNotConfirmed` — then reverting the mutation. This was actually run live with
+    /// cargo, not reasoned through: red observed on the mutated source, green after reverting.
+    #[test]
+    fn cleanup_after_confirmed_clear_distinguishes_an_unconfirmed_authority_from_a_confirmed_one() {
+        let _serial = crate::testlock::serial();
+        let _root = TempPersistenceRoot::new("clear-cleanup-outcome");
+        super::super::redirect_for_test(None);
+
+        // Fresh root: nothing has ever been committed, so the authority cannot read back
+        // `Cleared` yet — this is the "unconfirmed" premise `AuthorityNotConfirmed` exists for.
+        assert!(
+            matches!(load(), CanonicalRead::Missing),
+            "setup: a freshly redirected root must read back Missing, or the two assertions \
+             below do not isolate what they claim to"
+        );
+        assert_eq!(
+            cleanup_after_confirmed_clear(),
+            ClearCleanupOutcome::AuthorityNotConfirmed,
+            "an authority that has never confirmed Cleared must be reported distinctly from one \
+             that has, not silently treated as Confirmed"
+        );
+
+        // Now make the premise true: commit an actual durable Cleared record, and confirm the
+        // cleanup step's verdict flips to the other, genuinely distinct, variant.
+        assert!(
+            matches!(commit_cleared(), CanonicalCommit::Durable { .. }),
+            "setup: the seed commit_cleared() must land durably or the Confirmed case below \
+             proves nothing"
+        );
+        assert!(
+            matches!(load(), CanonicalRead::Cleared { .. }),
+            "setup: the authority must read back Cleared after a durable commit_cleared()"
+        );
+        assert_eq!(
+            cleanup_after_confirmed_clear(),
+            ClearCleanupOutcome::Confirmed,
+            "a confirmed Cleared authority with no unswept legacy candidate must report \
+             Confirmed, distinct from AuthorityNotConfirmed"
+        );
+    }
 }
 
 /// The authority-selected write used by the shared worker. ARM has exactly one authority: DB8.
