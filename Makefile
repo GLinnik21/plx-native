@@ -683,12 +683,27 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 
 # The helper is an independent executable: it has its own auxv implementation and must never
 # link app getauxval.o. The project linker wrapper attests its map, trace and ELF bytes too.
-STORAGE_BIN = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/release/plxnative-storage
+#
+# ITS OWN TARGET DIR, deliberately not $(RUST_TDIR): this `cargo rustc --bin ... --no-default-
+# -features` and $(RUST_LIB)'s `cargo build --lib` (default features) are two DIFFERENTLY-
+# CONFIGURED invocations of the SAME package (plxnative-modules), and `make -j` runs them
+# concurrently — exactly the hazard rust-modules/.cargo/config.toml's own comment already
+# documents ("a hand-typed cross build with a DIFFERENT ENVIRONMENT still writes the archive
+# make links... give a hand-run one its own --target-dir"). Sharing one target dir let the two
+# invocations race on the shared build-std sysroot units (std/core/alloc are never cached by
+# CI's rust-cache and so are rebuilt fresh by BOTH processes every run), which could leave
+# `cargo rustc`'s own fingerprint believing the just-linked plxnative-storage binary was still
+# fresh from the OTHER invocation's pass and skip re-invoking arm-cc.py — so no `.link.map`/
+# `.link.trace`/`.link.json` sidecar existed anywhere `stage-link-evidence.py` could find one,
+# even by its content-hash fallback (`04801c22`). A dedicated target dir makes the two cargo
+# invocations share nothing, so neither can observe the other's fingerprint state.
+STORAGE_TDIR = $(RUST_TDIR)-storage
+STORAGE_BIN = rust-modules/$(STORAGE_TDIR)/$(RUST_TARGET)/release/plxnative-storage
 pkg/plxnative-storage: LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs Makefile ci/arm-cc.py ci/check-link-evidence.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER='$(CC)' \
 	  cargo +$(RUST_NIGHTLY) rustc --release --target $(RUST_TARGET) \
-	    --bin plxnative-storage --target-dir $(RUST_TDIR) --no-default-features -- \
+	    --bin plxnative-storage --target-dir $(STORAGE_TDIR) --no-default-features -- \
 	    -C link-arg=--sysroot=$(SYSROOT) -L native=$(SYSROOT)/usr/lib \
 	    -C link-arg=-Wl,-rpath-link,$(SYSROOT)/usr/lib -C link-arg=-Wl,--build-id=sha1
 	cp $(STORAGE_BIN) $@

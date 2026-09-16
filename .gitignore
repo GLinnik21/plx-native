@@ -45,6 +45,9 @@ rust-modules/target-macapp/
 # the reason every other feature set does (cargo does not hash its output; see the Makefile).
 rust-modules/target-lab/
 rust-modules/target-sim-lab/
+# pkg/plxnative-storage's own target dir, deliberately separate from $(RUST_TDIR) — see the
+# Makefile's STORAGE_TDIR comment. One glob for every RELEASE/LAB/SYMBOLS combination.
+rust-modules/target*-storage/
 
 # dead prototype dir (code lives in rust-modules/ now)
 rust-poc/
