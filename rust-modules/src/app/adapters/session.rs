@@ -443,7 +443,25 @@ impl SessionAdapter {
         let recording_leftovers = if all_local { std::mem::take(&mut self.recording_leftovers) } else { 0 };
         recording_leftovers + match &mut self.resources {
             Resources::Live { .. } => {
-                crate::plex::session::clear();
+                // `clear()`'s return is not decoration: a sign-out whose canonical commit did not
+                // durably land still has a live account token readable from the canonical
+                // authority on the next boot, and that is worth a log line this adapter's own
+                // caller (rather than only `session`'s) can find — `all_local` says whether this
+                // was a full local-data wipe or an ordinary sign-out, which `session::clear()`
+                // itself has no way to know. Full retry/"Resetting" UX for a non-durable clear is
+                // plan section 2's stated design (docs/v0.7.0-forward-port-plan.md) but is not
+                // wired here: it needs a reducer-visible state in `auth::owner`'s session state
+                // machine, outside this adapter's scope.
+                if !matches!(
+                    crate::plex::session::clear(),
+                    crate::plex::session::ClearOutcome::Durable { .. }
+                ) {
+                    crate::log(&format!(
+                        "app/adapters/session: erase(all_local={all_local}) completed with a \
+                         non-durable canonical clear — the account token may still be readable \
+                         from the canonical authority on the next boot"
+                    ));
+                }
                 crate::plex::revoke_all();
                 #[cfg(test)]
                 if let Some(io) = &mut self.resource_test_io {
