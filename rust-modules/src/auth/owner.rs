@@ -571,6 +571,11 @@ pub(crate) struct SessionInit {
     pub persistence_warning: Option<PersistenceWarning>,
     /// A Ready handoff whose fresh write is admitted but not yet released to the owner/UI.
     pub held_handoff: Option<HeldHandoff>,
+    /// The disk identity a fresh credential write replaced at admission, until that write proves
+    /// durable. A definite failure restores it: the record never changed, and fencing the next
+    /// fresh write on the identity that never landed would refuse every retry this run.
+    #[serde(default)]
+    pub unconfirmed_fresh_prior: Option<Identity>,
     /// One ordered erase awaiting resource completion: existing epoch and whether to sign in.
     pub pending_erase: Option<(u64, bool)>,
     pub inbox: VecDeque<SessionEnvelope>,
@@ -593,7 +598,7 @@ impl SessionInit {
             code_replaced: false, qr_gen: 0, next_qr: 0, epoch: 1, next_req: 0,
             pending: BTreeMap::new(), pending_commit: None, persistence_purpose: None,
             commit_phase: CommitPhase { admitted: false, durable: false, proves_saved_login: false }, admitted_persistence: None,
-            persistence_warning: None, held_handoff: None, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
+            persistence_warning: None, held_handoff: None, unconfirmed_fresh_prior: None, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
             active_profile: None, profile_scope: ProfileScope(0),
             delete_leftovers: 0 }
     }
@@ -1107,6 +1112,10 @@ impl SessionMachine {
         if admitted.purpose.is_some_and(|purpose| purpose != completion.purpose) { return false; }
         let durable = matches!(completion.outcome, CompletionOutcome::Durable(_));
         self.state.admitted_persistence = None;
+        let prior = self.state.unconfirmed_fresh_prior.take();
+        if let (Some(prior), CompletionOutcome::Failed(_)) = (prior, &completion.outcome) {
+            if admitted.fresh { self.state.disk_identity = prior; }
+        }
         self.state.commit_phase.durable = durable;
         self.state.commit_phase.proves_saved_login =
             durable && completion.purpose.proves_saved_login();
@@ -1206,7 +1215,9 @@ impl SessionMachine {
         if let Some(patch) = delta.credentials {
             self.state.persisted = patch.merge_into(&self.state.persisted);
             if commit.writes_credentials {
-                self.state.disk_identity = patch.identity();
+                let prior = std::mem::replace(&mut self.state.disk_identity, patch.identity());
+                self.state.unconfirmed_fresh_prior =
+                    (commit.fresh && admit_revision.is_some()).then_some(prior);
                 self.state.committed_credentials = patch;
             }
         }
@@ -2702,6 +2713,36 @@ mod tests {
         assert!(owner.state.persistence_warning.is_none(),
             "MUTATION TARGET: a discovery restart must clear the stale warning it is replacing");
         assert!(owner.state.held_handoff.is_none());
+    }
+
+    /// A fresh write admitted over a READABLE record whose write then definitely failed leaves
+    /// that record on disk, so the next fresh write must be fenced on it rather than on the
+    /// identity that never landed (otherwise every retry this run is `StaleAuthority`).
+    #[test]
+    fn a_failed_fresh_write_restores_the_disk_identity_it_never_replaced() {
+        use crate::plex::session::async_persistence::{
+            CompletionOutcome, Failure, PersistOutcome, PersistenceCompletion,
+        };
+        let mut owner = SessionMachine::from_init(discovering_after_authorization());
+        owner.state.disk_identity = Identity { client_id: "synthetic-client".into(),
+            account_token: "synthetic-revoked-account".into(), profile_uuid: "old".into() };
+        let before = owner.state.disk_identity.clone();
+        let req = owner.state.next_req;
+        let epoch = owner.state.epoch;
+        let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+            epoch, server: local_server(), sources: Vec::new(),
+            users: vec![UserTile { title: "Only user".into(), ..Default::default() }],
+        }, true);
+        step(&mut owner, SessionEvent::Result(signed_in));
+        step(&mut owner, SessionEvent::Commit(CommitReply { req, epoch, arrival: 1,
+            admission: CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Discovery } }));
+        assert!(owner.state.disk_identity != before, "rig: admission re-bases on the new identity");
+        step(&mut owner, SessionEvent::Persistence(PersistenceCompletion { req, epoch, arrival: 1,
+            revision: 1, purpose: PersistencePurpose::Discovery,
+            outcome: CompletionOutcome::Failed(Failure::Persistence(PersistOutcome::WriteFailed)) }));
+        assert!(owner.state.disk_identity == before,
+            "MUTATION TARGET: a definite failure must restore the identity still on disk");
+        assert!(owner.state.persistence_warning.is_some());
     }
 
     /// Second half of `discovery-warning-not-cleared-on-retry-or-fresh-success`: a LATER fresh

@@ -74,15 +74,13 @@ fn newly_enables_errors(previous: &Consent, next: &Consent) -> bool {
     effectively_allows_errors(next) && !effectively_allows_errors(previous)
 }
 
-/// Write first, then apply prospective cleanup, publish, purge withdrawn records and synchronize
-/// the native backend. This preserves the established live ordering while making enabling
-/// detection a function of the owner's explicit transition.
+/// Apply prospective cleanup, publish, purge withdrawn records and synchronize the native backend,
+/// then persist. The canonical write is a storage-helper round trip on the television, so a
+/// withdrawal must not wait behind it with the old decision still published (0.6.6 published at
+/// once and wrote on its storage worker). A failed write is logged and still honoured for this
+/// session; enabling detection remains a function of the owner's explicit transition.
 fn commit_live(previous: &Consent, next: &Consent) {
     let enabling_errors = newly_enables_errors(previous, next);
-    let outcome = crate::telemetry::persistence::record(next);
-    if outcome.write != crate::telemetry::persistence::PersistResult::Durable {
-        crate::log(&format!("telemetry: the decision is not durably persisted: {outcome:?}"));
-    }
     if enabling_errors {
         crate::telemetry::crashreport::discard_pending_before_opt_in();
     }
@@ -92,6 +90,10 @@ fn commit_live(previous: &Consent, next: &Consent) {
     }
     crate::telemetry::spool::purge_withdrawn(next);
     crate::telemetry::native::sync_change(next);
+    let outcome = crate::telemetry::persistence::record(next);
+    if outcome.write != crate::telemetry::persistence::PersistResult::Durable {
+        crate::log(&format!("telemetry: the decision is not durably persisted: {outcome:?}"));
+    }
 }
 
 /// Publish the prospective default before touching disk, then purge withdrawn records and stop

@@ -420,7 +420,11 @@ fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contra
             assert_eq!(state.disk_identity.account_token, "synthetic-account-a");
             assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Error);
         } else {
-            assert_eq!(state.disk_identity.account_token, "synthetic-new-account");
+            // A definitely failed fresh write (case 2) never replaced the record, so the owner's
+            // disk identity stays on what is still there rather than on the account that never
+            // landed; a durable one (case 0) re-bases on the new account.
+            let on_disk = if disk_case == 2 { "synthetic-account-a" } else { "synthetic-new-account" };
+            assert_eq!(state.disk_identity.account_token, on_disk);
             assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Ready);
             if disk_case == 0 {
                 let disk = session::peek();

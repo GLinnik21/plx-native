@@ -239,6 +239,16 @@ pub(crate) fn install_activation_hint(hint: fn(&str)) -> Result<(), fn(&str)> {
     ACTIVATION_HINT.set(hint)
 }
 
+/// The helper is a dynamic LS2 service: nothing starts it but a call to it (0.6.6's
+/// `activate_storage_helper`). Without this a television with no running helper never answers.
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+fn activate(service: &str) {
+    crate::webos::activate_storage_helper(service);
+}
+
+#[cfg(all(target_os = "linux", not(all(target_arch = "arm", not(feature = "hostsim"), not(test)))))]
+fn activate(_service: &str) {}
+
 #[cfg(not(target_os = "linux"))]
 fn transact(_command: Request) -> Result<Response, ClientError> {
     Err(ClientError::Unavailable)
@@ -281,8 +291,9 @@ fn transact(command: Request) -> Result<Response, ClientError> {
             return wire::read_frame(&mut stream).map_err(|_| ClientError::Protocol);
         }
         if !hinted {
-            if let Some(hint) = ACTIVATION_HINT.get() {
-                hint(&service_name());
+            match ACTIVATION_HINT.get() {
+                Some(hint) => hint(&service_name()),
+                None => activate(&service_name()),
             }
             hinted = true;
         }

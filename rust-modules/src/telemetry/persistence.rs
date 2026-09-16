@@ -247,6 +247,8 @@ fn helper_expected(snapshot: &client::Snapshot) -> Option<(&str, state::Expected
 struct HelperCommit {
     result: PersistResult,
     verified: bool,
+    /// The helper refused a stale read revision; nothing was written.
+    conflict: bool,
 }
 
 #[cfg(any(
@@ -264,6 +266,7 @@ fn helper_commit(
             return HelperCommit {
                 result: PersistResult::Failed,
                 verified: false,
+                conflict: false,
             }
         }
     };
@@ -280,6 +283,7 @@ fn helper_commit(
         }) => HelperCommit {
             result: PersistResult::Durable,
             verified,
+            conflict: false,
         },
         Ok(Response::Reconcile {
             status: crate::storage::wire::ReconcileStatus::Applied,
@@ -288,6 +292,7 @@ fn helper_commit(
         }) => HelperCommit {
             result: PersistResult::Durable,
             verified: false,
+            conflict: false,
         },
         Ok(Response::Commit {
             status: CommitStatus::Unavailable,
@@ -299,10 +304,20 @@ fn helper_commit(
         }) => HelperCommit {
             result: PersistResult::Uncertain,
             verified: false,
+            conflict: false,
+        },
+        Ok(Response::Commit {
+            status: CommitStatus::Conflict,
+            ..
+        }) => HelperCommit {
+            result: PersistResult::Failed,
+            verified: false,
+            conflict: true,
         },
         _ => HelperCommit {
             result: PersistResult::Failed,
             verified: false,
+            conflict: false,
         },
     }
 }
@@ -817,7 +832,28 @@ fn record_helper(
             return outcome;
         }
     };
-    let commit = helper_commit(transport, &loaded, WireMutation::UpdateConsent { payload });
+    let mut commit = helper_commit(
+        transport,
+        &loaded,
+        WireMutation::UpdateConsent {
+            payload: payload.clone(),
+        },
+    );
+    if commit.conflict {
+        // Session commits run on their own worker, so one can land between this read and write.
+        // The consent update replaces only its own slots: retry once at the fresh revision, but
+        // only within the same tenure. A sign-out or fresh sign-in moved the epoch/auth
+        // generation, and this decision must not be written into the next account's record.
+        if let Ok(reloaded) = client::load_with(transport) {
+            let tenure = |load: &HelperLoad| match load {
+                HelperLoad::Missing => None,
+                HelperLoad::Present(snapshot) => Some(snapshot.state.expected()),
+            };
+            if tenure(&loaded) == tenure(&reloaded) {
+                commit = helper_commit(transport, &reloaded, WireMutation::UpdateConsent { payload });
+            }
+        }
+    }
     let cleanup = if commit.result == PersistResult::Durable && commit.verified {
         remove_legacy_sources(legacy.iter().cloned())
     } else {
@@ -1359,6 +1395,105 @@ mod upgrade_tests {
         assert_preserved("recovered launch", &second, GENERATED_DECLINE_065);
         assert!(!source.exists());
         assert_eq!(helper_load(&mut b, &[]), second);
+    }
+
+    /// Commit `interfering` through the same helper immediately before the first consent commit
+    /// reaches it, the way a Session worker commit can land between consent's read and write.
+    fn record_racing(
+        b: &mut crate::storage::backend::Backend<Db8>,
+        consent: &Consent,
+        interfering: fn(&crate::storage::client::Snapshot) -> crate::storage::wire::WireMutation,
+    ) -> PersistOutcome {
+        let mut raced = false;
+        let mut transport = |request: Request| {
+            if !raced && matches!(request, Request::Commit { .. }) {
+                raced = true;
+                let mut inner = |r: Request| Ok(b.dispatch(r));
+                let crate::storage::client::Load::Present(snapshot) =
+                    crate::storage::client::load_with(&mut inner).unwrap()
+                else {
+                    panic!("fixture is present")
+                };
+                let other = crate::storage::client::commit_with(
+                    &mut inner,
+                    Some((&snapshot.db_rev, snapshot.state.expected())),
+                    crate::storage::state::Generation::random().unwrap(),
+                    interfering(&snapshot),
+                );
+                assert!(matches!(
+                    other,
+                    Ok(crate::storage::wire::Response::Commit { applied: Some(_), .. })
+                ));
+            }
+            Ok(b.dispatch(request))
+        };
+        record_helper(&mut transport, consent, &[])
+    }
+
+    #[test]
+    fn a_session_commit_landing_mid_write_does_not_drop_the_decision() {
+        let _g = crate::testlock::serial();
+        let _dir = Dir::new("db8-race");
+        let mut b = backend(Some(db8_066()));
+        let loaded = helper_load(&mut b, &[]);
+        let next = super::super::consent::apply(&loaded, false, false, || None);
+        let outcome = record_racing(&mut b, &next, |snapshot| {
+            let mut public = snapshot.state.public.clone();
+            public.preferences["playback_quality"] = "original".into();
+            crate::storage::wire::WireMutation::UpdatePreferences {
+                payload: serde_json::to_value(public).unwrap(),
+            }
+        });
+        assert_eq!(outcome.write, PersistResult::Durable, "a same-tenure conflict is retried");
+        assert_eq!(helper_load(&mut b, &[]), next, "the withdrawal survives the next launch");
+        let mut transport = |request: Request| Ok(b.dispatch(request));
+        let crate::storage::client::Load::Present(snapshot) =
+            crate::storage::client::load_with(&mut transport).unwrap()
+        else {
+            panic!("present")
+        };
+        assert_eq!(snapshot.state.public.preferences["playback_quality"], "original");
+    }
+
+    #[test]
+    fn a_decision_racing_a_sign_out_is_not_written_into_the_cleared_tenure() {
+        let _g = crate::testlock::serial();
+        let _dir = Dir::new("db8-race-clear");
+        let mut b = backend(Some(db8_066()));
+        let loaded = helper_load(&mut b, &[]);
+        let next = super::super::consent::apply(&loaded, true, true, || Some("f".repeat(32)));
+        let outcome = record_racing(&mut b, &next, |_| crate::storage::wire::WireMutation::ClearTenure {});
+        assert_ne!(outcome.write, PersistResult::Durable);
+        let after = helper_load(&mut b, &[]);
+        assert!(!after.answered() && after.errors_id.is_none() && after.install_id.is_none());
+    }
+
+    #[test]
+    fn a_decision_racing_a_fresh_sign_in_is_not_written_into_the_new_account() {
+        let _g = crate::testlock::serial();
+        let _dir = Dir::new("db8-race-signin");
+        let mut b = backend(Some(db8_066()));
+        let loaded = helper_load(&mut b, &[]);
+        let next = super::super::consent::apply(&loaded, true, true, || Some("f".repeat(32)));
+        let outcome = record_racing(&mut b, &next, |snapshot| {
+            let account = crate::plex::session::Session {
+                client_id: "synthetic-client-id".into(),
+                account_token: "synthetic-next-account".into(),
+                ..Default::default()
+            };
+            let (mut public, protected) = crate::plex::session::split_canonical(&account).unwrap();
+            public.consent = snapshot.state.public.consent.clone();
+            public.scopes = snapshot.state.public.scopes.clone();
+            public.ids = snapshot.state.public.ids.clone();
+            crate::storage::wire::WireMutation::ReplaceAuth {
+                public: serde_json::to_value(public).unwrap(),
+                payload: crate::storage::wire::SecretString(protected),
+                protection: crate::storage::wire::ProtectionRequest::Db8AclOnlyExplicit,
+            }
+        });
+        assert_ne!(outcome.write, PersistResult::Durable);
+        let after = helper_load(&mut b, &[]);
+        assert_ne!(after.install_id.as_deref(), Some(&*"f".repeat(32)), "not written after the tenure moved");
     }
 
     #[test]
