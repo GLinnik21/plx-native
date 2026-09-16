@@ -573,11 +573,13 @@ where
     }
 }
 
-/// whether the playing item is an episode (→ "Go to Show") rather than a movie ("Go to Movie")
+/// whether the playing item is an episode (→ "Go to Show") rather than a movie ("Go to Movie").
+/// A trailer session does not install a playing-leaf descriptor, so with `now_playing` absent
+/// the loaded page is the parent — a show's trailer still says Go to Show.
 fn is_episode() -> bool {
     metadata::now_playing()
         .map(|n| n.is_episode)
-        .unwrap_or(false)
+        .unwrap_or_else(|| metadata::current().is_some_and(|d| d.is_show))
 }
 
 /// the action-button labels for the playing item. An ARRAY, not a `Vec`: the count is fixed at two
@@ -1073,5 +1075,65 @@ mod focus_tests {
             assert!(matches!(g.edge[1], EdgeRule::Screen), "down");
             assert!(matches!(g.edge[0], EdgeRule::Stop), "up");
         });
+    }
+
+    #[test]
+    fn go_to_after_a_trailer_opens_the_loaded_parent() {
+        let _g = crate::testlock::serial();
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+            rk: "parent-movie".into(),
+            kind: "movie".into(),
+            ..Default::default()
+        }));
+        let mut movie = InfoPanelState::new();
+        movie.set_focus(1);
+        assert_eq!(
+            movie.on_ok(),
+            InfoAction::GoToDetail("parent-movie".into())
+        );
+        assert!(!is_episode(), "a movie parent labels Go to Movie");
+
+        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+            rk: "parent-show".into(),
+            kind: "show".into(),
+            is_show: true,
+            ..Default::default()
+        }));
+        let mut show = InfoPanelState::new();
+        show.set_focus(1);
+        assert_eq!(show.on_ok(), InfoAction::GoToDetail("parent-show".into()));
+        assert!(is_episode(), "a show parent labels Go to Show");
+
+        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+            sid: crate::plex::ServerId::UNSET,
+            rk: "parent-show".into(),
+            kind: "show".into(),
+            is_show: true,
+            title: "Show".into(),
+            extras: vec![crate::metadata::Extra {
+                rk: "9".into(),
+                title: "Official Trailer".into(),
+                dur_ms: 120_000,
+                part: "/p".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(
+            crate::metadata::trailer_now_playing(crate::plex::ServerId::UNSET, "9"),
+        ));
+        let mut playing = InfoPanelState::new();
+        playing.set_focus(1);
+        assert_eq!(playing.on_ok(), InfoAction::GoToDetail("parent-show".into()));
+        assert!(is_episode(), "an installed show-trailer card still says Go to Show");
+        assert_eq!(
+            crate::metadata::now_playing().map(|n| n.dur_ms),
+            Some(120_000),
+            "the extra's duration, not the show's"
+        );
+
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(None);
     }
 }

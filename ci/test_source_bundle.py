@@ -297,6 +297,7 @@ class BundleTests(unittest.TestCase):
         spec.write_text(json.dumps({'dependencies': deps, 'build_environment': {'compiler': 'fixture'}}))
         for command in [['init', '-q'], ['add', '.'],
                         ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                         '-c', 'commit.gpgsign=false',
                          'commit', '-qm', 'fixture']]:
             subprocess.run(['git', '-C', str(repo)] + command, check=True, capture_output=True)
         script = str(Path(__file__).with_name('make-source-bundle.py'))

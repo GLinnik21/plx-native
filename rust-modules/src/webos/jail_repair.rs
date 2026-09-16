@@ -24,10 +24,10 @@ pub(crate) enum Failure {
     NotRoot,
     CommandFailed,
     // The simulator has no LS2 timeout; development fixtures and tests still construct it.
-    #[cfg_attr(
-        all(feature = "hostsim", not(feature = "devtriggers"), not(test)),
-        expect(dead_code)
-    )]
+    // `devtriggers` is irrelevant here: hostsim's `call_hbc` stub never constructs this variant
+    // either way, so it is dead outside `#[cfg(test)]` in every hostsim build, not only when
+    // `devtriggers` happens to be off.
+    #[cfg_attr(all(feature = "hostsim", not(test)), expect(dead_code))]
     Timeout,
     Unreadable,
     Unsupported,

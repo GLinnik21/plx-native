@@ -128,6 +128,13 @@ impl Client {
         self.get_json(&path)?.metadata.into_iter().next()
     }
 
+    /// GET /library/metadata/{rating_key}/extras → clip rows (`subtype` trailer / behindTheScenes / …).
+    /// Same playable `Media`/`Part` as `?includeExtras=1` nested under the parent (docs/pms-api.md §4).
+    /// A refused GET is `None`; an empty list is `Some` with `metadata` empty.
+    pub fn extras(&self, rating_key: &str) -> Option<MediaContainer> {
+        self.get_json(&format!("/library/metadata/{rating_key}/extras"))
+    }
+
     /// GET /library/metadata/{csv} — the FULL records of MANY items in ONE request. The answer
     /// carries one `.metadata[]` row per key, in request order; the CSV is joined HERE, because
     /// assembling path syntax is this layer's job (`plex/CLAUDE.md`: every PMS query is built here).
@@ -224,6 +231,10 @@ impl Client {
     /// The direct-play stream target: the raw part `key` GET, carrying the per-playback
     /// session id + identity so PMS keys the /status/sessions entry by session (not a
     /// token= fallback), keeping the timeline correlation consistent.
+    ///
+    /// `part_key` may already contain a query. Library parts do not; IVA extras do
+    /// (`/services/iva/assets?…`). [`QueryBuilder`] joins onto that query instead of
+    /// writing a second `?`.
     pub fn direct_play_url(&self, part_key: &str, session: &str) -> StreamUrl {
         let q = QueryBuilder::new(part_key).str("X-Plex-Session-Identifier", session);
         let path = self.playback_identity(q).build();

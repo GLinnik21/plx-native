@@ -579,6 +579,12 @@ pub(crate) struct Shared {
     /// `loadCompleted` arm can be entered many times while `Load` is in flight, and only the
     /// first should log.
     pub native_load_deferred_logged_epoch: AtomicU32,
+    /// issue #74 D.1: the elapsed milliseconds `mark_native_load_returned` measured at the moment
+    /// it flipped `load_call` to `Returned` — captured there (by `threads::load_thread`) rather
+    /// than re-derived on a later pump tick, since a later tick would over-count by however long
+    /// the pump took to run again. `pump.rs` reads this once, for the "native: Load returned
+    /// after Nms" log, exactly when it observes the deferral epoch marker above matching its own.
+    pub native_load_elapsed_ms: AtomicU64,
     /// Sparse, typed playback transitions retained only for an opted-in handled-error report.
     /// Unlike the engine fields around it this spans reloads and seeks; `report::requested` owns
     /// the attempt boundary and clears it for a genuinely new Play.
@@ -903,6 +909,7 @@ impl Shared {
             load_failed: AtomicBool::new(false),
             load_timed_out: AtomicBool::new(false),
             native_load_deferred_logged_epoch: AtomicU32::new(0),
+            native_load_elapsed_ms: AtomicU64::new(0),
             playback_trace: Mutex::new(super::report::PlaybackTrace::new()),
             desired_sub_idx: AtomicI32::new(-1),
             track_names: Mutex::new(TrackNames::new()),
@@ -1413,9 +1420,15 @@ impl Shared {
         // the centred read-out for the rest of the app's life.
         self.seen_frame.store(false, Ordering::Relaxed);
         self.load_completed.store(false, Ordering::Relaxed);
-        // The deferral diagnostic belongs only to this native epoch.
+        // issue #74 D.1: both are only ever cleared by the loadCompleted arm that consumes them
+        // (pump.rs), so a session torn down after logging the deferral but before that arm runs
+        // would otherwise leave them set — a later session's "native: Load returned after Nms"
+        // could then report a PREVIOUS session's duration, or skip its own deferral log because
+        // the epoch marker still matched. Clear both here, unconditionally, like every other
+        // per-session diagnostic above.
         self.native_load_deferred_logged_epoch
             .store(0, Ordering::Relaxed);
+        self.native_load_elapsed_ms.store(0, Ordering::Relaxed);
         *self.media_id.lock().unwrap() = None;
         *self.source_info.lock().unwrap() = None;
         self.pts_shift.store(0, Ordering::Relaxed);

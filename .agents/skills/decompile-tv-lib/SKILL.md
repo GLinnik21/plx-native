@@ -21,6 +21,18 @@ renamed payload keys between webOS 4 and 5, ships symbols that exist but are unr
 the mode we run in, and parses fields nobody outside LG has written down. Every one of those
 has already cost this project a wrong assumption. The binaries are the only authority.
 
+**Before decompiling anything to explain a crash, check `docs/known-issues.md` and this project's
+own git history for the same symptom.** A binary is the only authority on what LG's firmware does —
+it says nothing about whether the crash in front of you is already understood and fixed *in our own
+code*, on a branch nobody merged. On 2026-09-14 a crash matching `SMP loadCompleted (priming before
+Play)` on a Realtek k5lp chassis was fully decompiled — three libraries, a real Ghidra finding, a
+plausible root cause in `libpf`'s `GenericPipeline::deepElementRemovedCallback` — and the eventual,
+correct answer was a five-minute `git log -S`: the crash was issue #74, fixed in `ac305265`, shipped
+on `release/v0.6` since v0.6.1, simply never merged into `main`. The Ghidra finding was real but was
+a symptom reachable only *because of* the unfixed race, not an independent firmware defect. A quick
+`git log --all -S '<a distinctive log line from the crash>'` or a search of `docs/known-issues.md`
+costs nothing next to a decompilation session, and answers "is this new" before you spend one.
+
 `decomp.sh` is the whole interface.
 
 ```sh

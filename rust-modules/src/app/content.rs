@@ -30,7 +30,285 @@ pub(super) fn drain_item_menu_requests<R: super::playback::PlaybackResources>(
     }
 }
 
+struct HeldFeature {
+    play: crate::screens::registry::PlayIntent,
+    resume_ns: i64,
+    /// `Some` for a page navigation's own captured spot (BACK returns there); `None` for an
+    /// item-menu-initiated play, which never carried one — see [`hold_feature`].
+    ret: Option<ReturnState<u32, PageMemory>>,
+    hud_ms: u32,
+}
+
+std::thread_local! {
+    static HELD_FEATURE: std::cell::RefCell<Option<HeldFeature>> = const { std::cell::RefCell::new(None) };
+}
+
+fn halt_preview(app: &mut App) {
+    halt_preview_now(&mut app.player.session, &mut app.adapters.player);
+}
+
+/// The `&mut App`-free half of [`halt_preview`], for call sites (the item menu's own action
+/// dispatch in `app::input`) that only have the playback session and adapter, not the whole
+/// frame. Both must start abandonment before checking [`crate::player::preview::occupies`] —
+/// see [`hold_feature`]'s doc for why a still-abandoning preview needs a hold rather than a
+/// synchronous play.
+pub(super) fn halt_preview_now(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
+) {
+    crate::player::preview::halt(ps, pa);
+}
+
+/// Queue a play for [`drain_held_feature`] to perform once a still-abandoning preview's Load
+/// thread has actually released the engine. `halt_preview`/`halt_preview_now` only STARTS
+/// abandonment — the preview may still hold `pa.engine()` installed for a moment after, and
+/// starting a second Load against that installed engine hits the double-start conflict guard
+/// and refuses instead of queuing. Every caller that can reach a still-occupied preview
+/// (an ordinary page Play, and the item menu's Play Trailer) must hold through here rather
+/// than call `request_play`/`start_playback` directly.
+pub(super) fn hold_feature(
+    play: crate::screens::registry::PlayIntent,
+    resume_ns: i64,
+    ret: Option<ReturnState<u32, PageMemory>>,
+) {
+    HELD_FEATURE.with(|slot| {
+        *slot.borrow_mut() = Some(HeldFeature {
+            play,
+            resume_ns,
+            ret,
+            hud_ms: if crate::dev::scenarios::detailplay_forces_headless_hud() {
+                HUD_HEADLESS_MS
+            } else {
+                HUD_LINGER_MS
+            },
+        });
+    });
+}
+
+/// After `request_play` accepts, extras (trailers included) install an Info-card descriptor so
+/// the card names the extra rather than the parent. Feature plays leave `now_playing` alone.
+fn note_extra_now_playing(sid: crate::plex::ServerId, rk: &str, context: &str) {
+    if crate::metadata::context_omits_queue_continuous(context) {
+        crate::stores::metadata::apply(
+            crate::stores::metadata::MetadataCmd::SetNowPlaying(
+                crate::metadata::trailer_now_playing(sid, rk),
+            ),
+        );
+    }
+}
+
+pub(super) fn request_play_intent(
+    session: &mut crate::route::PlaybackSession,
+    play: &crate::screens::registry::PlayIntent,
+) -> bool {
+    match play {
+        crate::screens::registry::PlayIntent::Item {
+            sid, rk, part, vcodec, acodec, title, context,
+        } => {
+            let ok = crate::route::request_play(
+                session, *sid, rk, part, vcodec, acodec, title, context,
+            );
+            if ok {
+                note_extra_now_playing(*sid, rk, context);
+            }
+            ok
+        }
+        crate::screens::registry::PlayIntent::Movie(m) =>
+            crate::route::request_play_movie(session, m),
+    }
+}
+
+fn drain_held_feature(app: &mut App) {
+    if crate::player::preview::occupies() {
+        return;
+    }
+    let held = HELD_FEATURE.with(|slot| slot.borrow_mut().take());
+    let Some(held) = held else { return };
+    if !request_play_intent(&mut app.player.session, &held.play) {
+        return;
+    }
+    start_playback(
+        &mut app.player.session,
+        &mut app.adapters.player,
+        held.resume_ns,
+        super::playback::Origin::Here,
+        held.hud_ms,
+        held.ret,
+        &mut app.pages,
+        &mut app.bridge,
+    );
+}
+
+#[cfg(test)]
+mod held_feature_tests {
+    use super::*;
+    use crate::screens::registry::PlayIntent;
+
+    fn parent_with_extra() -> crate::metadata::Detail {
+        crate::metadata::Detail {
+            sid: crate::plex::ServerId::UNSET,
+            rk: "movie".into(),
+            kind: "movie".into(),
+            title: "Movie".into(),
+            extras: vec![crate::metadata::Extra {
+                rk: "9".into(),
+                title: "Official Trailer".into(),
+                dur_ms: 120_000,
+                part: "/p".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn leftover_episode_now_playing() -> crate::metadata::NowPlaying {
+        crate::metadata::NowPlaying {
+            is_episode: true,
+            is_real_episode: true,
+            title: "Show".into(),
+            ep_title: "Pilot".into(),
+            season: 1,
+            index: 1,
+            summary: String::new(),
+            year: 2020,
+            dur_ms: 1_800_000,
+            rating: String::new(),
+            thumb: String::new(),
+            detail_rk: "show".into(),
+        }
+    }
+
+    fn trailer_play(context: &str) -> PlayIntent {
+        PlayIntent::Item {
+            sid: crate::plex::ServerId::UNSET,
+            rk: "9".into(),
+            part: "/p".into(),
+            vcodec: String::new(),
+            acodec: String::new(),
+            title: "Official Trailer".into(),
+            context: context.into(),
+        }
+    }
+
+    fn install_held(play: PlayIntent) {
+        hold_feature(play, 0, Some(ReturnState::default()));
+    }
+
+    /// The post-accept half of [`request_play_intent`] / [`drain_held_feature`]. A full
+    /// `request_play` would leave the process-wide player in Resolving and poison parallel tests.
+    fn drain_held_play_now_playing() {
+        if crate::player::preview::occupies() {
+            return;
+        }
+        let Some(held) = HELD_FEATURE.with(|slot| slot.borrow_mut().take()) else { return };
+        if let PlayIntent::Item { sid, rk, context, .. } = &held.play {
+            note_extra_now_playing(*sid, rk, context);
+        }
+    }
+
+    #[test]
+    fn a_held_trailer_play_installs_now_playing_for_the_info_card() {
+        let _g = crate::testlock::serial();
+        crate::metadata::set_current_for_test(Some(parent_with_extra()));
+        crate::stores::metadata::apply(
+            crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(leftover_episode_now_playing())),
+        );
+        install_held(trailer_play(crate::metadata::TRAILER_CONTEXT));
+        drain_held_play_now_playing();
+        let np = crate::metadata::now_playing().expect("held trailer Play must install NowPlaying");
+        assert!(!np.is_episode);
+        assert_eq!(np.title, "Movie");
+        assert_eq!(np.ep_title, "Official Trailer");
+        assert_eq!(np.dur_ms, 120_000);
+        assert_eq!(np.detail_rk, "movie");
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(None);
+    }
+
+    #[test]
+    fn a_held_show_trailer_play_labels_the_info_card_with_the_extra() {
+        let _g = crate::testlock::serial();
+        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+            sid: crate::plex::ServerId::UNSET,
+            rk: "show".into(),
+            kind: "show".into(),
+            is_show: true,
+            title: "Show".into(),
+            extras: vec![crate::metadata::Extra {
+                rk: "9".into(),
+                title: "Official Trailer".into(),
+                dur_ms: 90_000,
+                part: "/p".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        install_held(trailer_play(crate::metadata::TRAILER_CONTEXT));
+        drain_held_play_now_playing();
+        let np = crate::metadata::now_playing().expect("held show trailer Play must install NowPlaying");
+        assert!(np.is_episode, "a show parent labels Go to Show");
+        assert_eq!(np.title, "Show");
+        assert_eq!(np.ep_title, "Official Trailer");
+        assert_eq!(np.dur_ms, 90_000);
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(None);
+    }
+
+    #[test]
+    fn a_held_extra_play_installs_now_playing_the_same_way() {
+        let _g = crate::testlock::serial();
+        crate::metadata::set_current_for_test(Some(parent_with_extra()));
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        install_held(trailer_play(crate::metadata::EXTRA_CONTEXT));
+        drain_held_play_now_playing();
+        assert_eq!(
+            crate::metadata::now_playing().map(|n| n.ep_title.as_str()),
+            Some("Official Trailer"),
+        );
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(None);
+    }
+
+    #[test]
+    fn a_held_feature_play_does_not_replace_now_playing() {
+        let _g = crate::testlock::serial();
+        crate::metadata::set_current_for_test(Some(parent_with_extra()));
+        crate::stores::metadata::apply(
+            crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(leftover_episode_now_playing())),
+        );
+        install_held(trailer_play(""));
+        drain_held_play_now_playing();
+        assert!(
+            crate::metadata::now_playing().is_some_and(|n| n.detail_rk == "show"),
+            "ordinary Play must not install a trailer descriptor"
+        );
+        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(None);
+    }
+
+    /// [`HeldFeature::ret`] widened to `Option<ReturnState<..>>` so `app::input::apply_item_action`
+    /// (which has no captured return spot — an item-menu play, unlike a page's own `ContentReq::Play`,
+    /// never had one) can hold a play too, alongside a page navigation's real captured `Some(ret)`.
+    /// A `None` must round-trip as `None`, not get coerced into a synthesized `Some(default())` —
+    /// the two reach different `enter_player` branches (`nav_push` vs `nav_push_with_return`), and
+    /// swapping one for the other would seed a BACK-return spot no item-menu play ever had.
+    #[test]
+    fn a_none_ret_round_trips_through_the_held_queue_unchanged() {
+        let _g = crate::testlock::serial();
+        hold_feature(trailer_play(crate::metadata::TRAILER_CONTEXT), 0, None);
+        let held_ret_is_none = HELD_FEATURE.with(|slot| slot.borrow().as_ref().map(|h| h.ret.is_none()));
+        assert_eq!(
+            held_ret_is_none,
+            Some(true),
+            "an item-menu hold must carry no return state at all"
+        );
+        HELD_FEATURE.with(|slot| { slot.borrow_mut().take(); });
+    }
+}
+
 pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
+    drain_held_feature(app);
     home_requests(app, fr.now);
     library_requests(app, fr.now);
     search_requests(app);
@@ -68,16 +346,21 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
         if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) { continue; }
         match request {
             ContentReq::Push(arg) => {
+                halt_preview(app);
                 // The page's own press frame captured `ret`, so it rides the request rather than
                 // being re-read at the commit: the user can still move focus during the dip, and
                 // BACK must return them to where they pressed.
                 bridge::nav_push_with_return(&mut app.pages, AppArg::Content(arg), ret);
             }
             ContentReq::Present(arg) => {
+                halt_preview(app);
                 app.pages.nav.next_style = crate::ui::containers::modal::Style::Opaque { snapshot: true };
                 app.pages.request_with_return(source, NavOp::Present(AppArg::Content(arg)), ret);
             }
-            ContentReq::Back if bridge::nav_cancel(&mut app.pages) => {}
+            ContentReq::Back if {
+                halt_preview(app);
+                bridge::nav_cancel(&mut app.pages)
+            } => {}
             ContentReq::Back if app.pages.nav.is_surface(entry) =>
                 app.pages.request_with_return(source, NavOp::Dismiss(entry), ret),
             ContentReq::Back if app.pages.nav.pending_surface().is_some() =>
@@ -86,21 +369,19 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
             // answers it itself, over the entry a `Pop` would reveal (`NavStack::continuous_for`).
             ContentReq::Back => bridge::nav_pop_with_return(&mut app.pages, ret),
             ContentReq::Play { play, resume_ns } => {
+                halt_preview(app);
+                if crate::player::preview::occupies() {
+                    hold_feature(play, resume_ns, Some(ret));
+                    continue;
+                }
                 // The PAGE decided which item; the LOOP performs the request, because
                 // `route::request_play` takes the playback session's `&mut` and a screen is only
                 // ever shown the frame's publication (§2.2). A refusal (a PMS/native route
                 // transition still owns the reducer) leaves the page exactly where it was, which
                 // is what the page's own discarded `started` bool used to decide.
-                let started = match play {
-                    crate::screens::registry::PlayIntent::Item {
-                        sid, rk, part, vcodec, acodec, title, context,
-                    } => crate::route::request_play(
-                        &mut app.player.session, sid, &rk, &part, &vcodec, &acodec, &title, &context,
-                    ),
-                    crate::screens::registry::PlayIntent::Movie(m) =>
-                        crate::route::request_play_movie(&mut app.player.session, m),
-                };
-                if !started { continue; }
+                // Held-feature drain uses this same helper: a trailer Play pressed while a
+                // preview still occupies must install the Info-card descriptor too.
+                if !request_play_intent(&mut app.player.session, &play) { continue; }
                 // The page's own `ReturnState` rides the push, so BACK out of the playback finds
                 // the spot the Play was pressed from. It was `Trail::set_top_spot` plus a
                 // second, hand-written `NavOp::Push` after the fact.
@@ -109,7 +390,33 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                     if crate::dev::scenarios::detailplay_forces_headless_hud() { HUD_HEADLESS_MS } else { HUD_LINGER_MS },
                     Some(ret), &mut app.pages, &mut app.bridge);
             }
+            ContentReq::PreviewStart { sid, rk, part, vcodec, acodec, title } => {
+                if part.is_empty() {
+                    crate::player::preview::note_no_extra(sid, &rk);
+                    continue;
+                }
+                if !matches!(
+                    crate::player::preview::request_start(sid, &rk, fr.now),
+                    crate::player::preview::Start::Accepted
+                ) {
+                    continue;
+                }
+                let ok = crate::route::request_preview(
+                    &mut app.player.session,
+                    sid,
+                    &rk,
+                    &part,
+                    &vcodec,
+                    &acodec,
+                    &title,
+                );
+                if !ok {
+                    crate::player::preview::note_admission_refused();
+                }
+            }
+            ContentReq::PreviewStop => halt_preview(app),
             ContentReq::Panel(panel) => {
+                halt_preview(app);
                 // **The SUBJECT is the page's item, and a page need not have one.** A panel that
                 // needs `(sid, rk)` — *Also available*, whose store is addressed by it — is
                 // refused rather than presented against whatever item happened to land last; a
@@ -124,6 +431,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 bridge::open_content_panel(&mut app.pages, instance, subject, panel);
             }
             ContentReq::ItemMenu => {
+                halt_preview(app);
                 // The ROUTE does not move: a surface is presented over the top page and never
                 // replaces it, which is the whole of what `Route::ItemMenu { over: MenuHost }`
                 // was arranging by hand.
@@ -388,7 +696,7 @@ mod library_publication_tests {
             section: 2,
             col: 3,
             ep_text: true,
-            saved_col: [0, 1, 3, 0, 0, 0],
+            saved_col: [0, 1, 3, 0, 0, 0, 0],
             season: Some(2),
         };
         let focus = crate::ui::machine::FocusKey { entry, elem: 3003 };

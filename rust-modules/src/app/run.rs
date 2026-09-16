@@ -100,6 +100,8 @@ impl Frame {
 /// needed a second token, and minting one is the hole `MainThread::assume` documents.
 pub(crate) unsafe fn run(app: &mut App) {
     while app.running {
+        #[cfg(all(feature = "hostsim", target_os = "linux"))]
+        let wslg_frame_budget = app.wslg_frame_pacing.then(crate::system::WslgFrameBudget::begin);
         // Resolve the control row ONCE per iteration, before the event pump, and pass this
         // value to input, update and draw alike. `player_hud::slot()` reads `playpos_ns`, which
         // LG's media thread writes and `player::pump` advances mid-iteration — deriving it per
@@ -244,7 +246,12 @@ pub(crate) unsafe fn run(app: &mut App) {
         app.rec.content_results();
         app.instr.mark(crate::diag::heartbeat::Phase::TickDrain); // tick_drain
         prepare_window(app, fr);
-        present_and_swap(app, fr);
+        present_and_swap(
+            app,
+            fr,
+            #[cfg(all(feature = "hostsim", target_os = "linux"))]
+            wslg_frame_budget,
+        );
         report(app, fr);
         heartbeat(app, fr);
     }
@@ -433,7 +440,12 @@ pub(crate) fn rig_clear_opaque_region() {
 
 /// **Draw, capture, swap — or sleep one frame period** (spec §3.3 step 10). Everything in here is
 /// inside the present gate's decision, which `prepare_window` has already taken into `fr.present`.
-unsafe fn present_and_swap(app: &mut App, fr: &mut Frame) {
+unsafe fn present_and_swap(
+    app: &mut App,
+    fr: &mut Frame,
+    #[cfg(all(feature = "hostsim", target_os = "linux"))]
+    wslg_frame_budget: Option<crate::system::WslgFrameBudget>,
+) {
     if fr.present {
         // the glyph cache's frame serial (phase 11, text.rs's hot window): a drawn frame
         crate::text::begin_frame();
@@ -475,11 +487,14 @@ unsafe fn present_and_swap(app: &mut App, fr: &mut Frame) {
         // capture; a first discovery frame may still need a second non-contained grab.
         crate::gfx::blur_frame_end();
         crate::ui::idle::note_present(fr.now);
+        #[cfg(all(feature = "hostsim", target_os = "linux"))]
+        if let Some(budget) = wslg_frame_budget {
+            budget.finish();
+        }
     } else {
-        // The swap is this loop's ONLY blocking call — there is no SDL_Delay, nanosleep
-        // or frame budget anywhere else in it. Skipping the present without sleeping here
-        // would turn a 16%-of-a-core app into a 100% spinner: strictly worse than the
-        // problem. One frame period, so input latency is exactly what it is today.
+        // Device and macOS presented frames block in swap; WSLg/X11 presented frames use the
+        // software budget above. A skipped frame reaches neither path, so sleep here to keep a
+        // settled screen from becoming a CPU spinner.
         SDL_Delay(crate::ui::idle::IDLE_POLL_MS);
     }
 }
@@ -1275,6 +1290,11 @@ fn playback_may_run(app: &App) -> bool {
 pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         if playback_may_run(app) && is_started() {
             crate::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
+            crate::player::preview::after_pump(
+                &mut app.player.session,
+                &mut app.adapters.player,
+                fr.now,
+            );
         }
         // **The ONE place the Player machine is asked whether the hardware video plane is bound**
         // (spec §9), immediately after the pump that advances the ACB bind transaction and BEFORE
@@ -2010,18 +2030,40 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     // every transport key and the EOS teardown are route-gated — so repair the
                     // invariant here rather than trust that no path can violate it. The one that
                     // could is cancelled above; this is the backstop, and it is the cheaper half.
-                    if resume_prepared
-                        && crate::player::start_bufferfeed(&mut app.player.session, &mut app.adapters.player)
-                        && !matches!(app.route(), AppArg::Player)
-                    {
-                        log("pump_play: engine started off-route → restoring AppArg::Player");
-                        // The page is being taken off screen by a LANDING, not by a navigation. It
-                        // carried a `forward_leave(app.route())` teardown here until phase 12; every
-                        // arm of that table was `None` and the pages it named are owned screens that
-                        // drop what they loaded on the container's own `Unmount` — including
-                        // Search's keyboard (`SearchScreen::step`), which is the case this line was
-                        // written for.
-                        super::bridge::show_page(&mut app.pages, AppArg::Player);
+                    // A preview is the exception: the detail page stays mounted, and an off-route
+                    // engine is the feature, not a violation.
+                    if resume_prepared {
+                        let started = crate::player::start_bufferfeed(
+                            &mut app.player.session,
+                            &mut app.adapters.player,
+                        );
+                        let preview = crate::route::is_preview(&app.player.session);
+                        if started && !matches!(app.route(), AppArg::Player) && !preview {
+                            log("pump_play: engine started off-route → restoring AppArg::Player");
+                            // The page is being taken off screen by a LANDING, not by a navigation. It
+                            // carried a `forward_leave(app.route())` teardown here until phase 12; every
+                            // arm of that table was `None` and the pages it named are owned screens that
+                            // drop what they loaded on the container's own `Unmount` — including
+                            // Search's keyboard (`SearchScreen::step`), which is the case this line was
+                            // written for.
+                            super::bridge::show_page(&mut app.pages, AppArg::Player);
+                        }
+                        if preview {
+                            // A host Load of 0 with the clock sink off is "no video path", not an
+                            // admitted slot. Counting it spends the cycle and the later failure
+                            // opens the breaker, so every later title is skipped.
+                            let seam_absent = cfg!(feature = "hostsim") && !crate::dev::flag("clocksink");
+                            if started && !seam_absent {
+                                crate::player::preview::note_admitted();
+                            } else if crate::route::url(&app.player.session).is_empty() {
+                                crate::player::preview::note_refused_direct(
+                                    crate::route::cur_sid(&app.player.session),
+                                    &crate::route::cur_rk(&app.player.session),
+                                );
+                            } else {
+                                crate::player::preview::note_admission_refused();
+                            }
+                        }
                     }
                 }
             },
@@ -2157,7 +2199,13 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // `Popover::prepare_present`, and decides whether the frozen-host
                         // snapshot still describes the page. Route-agnostic by construction —
                         // see `ui::popover::host::begin_frame`.
-                        crate::ui::popover::host::begin_frame(fr.underlay_moving);
+                        // A bound preview owns the plane the same way the player branch does: there
+                        // is no framebuffer to snapshot. Skip the door instead of tripping the
+                        // debug assertion. A popover from this page halts the preview first, so
+                        // this frame only skips while the picture is the intended ground.
+                        if !(app.player.video_plane_bound && crate::route::is_preview(&app.player.session)) {
+                            crate::ui::popover::host::begin_frame(fr.underlay_moving);
+                        }
                         // Resolve every glass owner BEFORE anything on this route draws — that is
                         // `Glass::prepare`'s contract, and the shared top tab track is an owner on
                         // every route that wears it.
@@ -2912,6 +2960,8 @@ mod lifecycle_regression_tests {
             ev: [0; 128],
             remote: Default::default(),
             win: Default::default(),
+            #[cfg(target_os = "linux")]
+            wslg_frame_pacing: false,
             t0: Default::default(),
             instr: crate::diag::heartbeat::Instruments::new(false, 22.0),
             scenarios: crate::dev::scenarios::Scenarios {

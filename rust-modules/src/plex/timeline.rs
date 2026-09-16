@@ -56,6 +56,9 @@ impl Client {
     /// screen is therefore free: it reads [`PlayQueueResult::next`] from the queue this playback
     /// already had to create, instead of asking the server what plays next.
     ///
+    /// Trailer extras omit `continuous`: a continuous extras queue can be sibling clips, and EOS
+    /// must not Up-Next into a featurette. `opt_int` drops the param when `continuous` is false.
+    ///
     /// The WHOLE window is kept, as [`QueueRow`]s — the queue this round trip already paid for is
     /// the queue a list can draw and jump around in, and throwing it away meant re-asking the
     /// server for something it had already sent.
@@ -64,6 +67,7 @@ impl Client {
         machine_id: &str,
         rating_key: &str,
         session: &str,
+        continuous: bool,
     ) -> Option<PlayQueueResult> {
         let uri = format!(
             "server://{machine_id}/com.plexapp.plugins.library/library/metadata/{rating_key}"
@@ -71,7 +75,7 @@ impl Client {
         let q = QueryBuilder::new("/playQueues")
             .str("type", "video")
             .str("uri", &uri)
-            .int("continuous", 1)
+            .opt_int("continuous", i64::from(continuous))
             .int("shuffle", 0)
             .int("repeat", 0)
             .str("X-Plex-Session-Identifier", session);
@@ -227,6 +231,22 @@ mod tests {
     }
     fn rks(items: &[QueueRow]) -> Vec<&str> {
         items.iter().map(|r| r.rk.as_str()).collect()
+    }
+
+    #[test]
+    fn trailer_play_queues_omit_continuous() {
+        use super::super::client::QueryBuilder;
+        let with = QueryBuilder::new("/playQueues")
+            .opt_int("continuous", 1)
+            .build();
+        let without = QueryBuilder::new("/playQueues")
+            .opt_int("continuous", 0)
+            .build();
+        assert!(with.contains("continuous=1"));
+        assert!(
+            !without.contains("continuous"),
+            "trailer sessions must not send continuous=1"
+        );
     }
     /// A response body through the SHIPPED mapping — the same call `create_play_queue` makes once
     /// its POST returns, so these tests cannot pass on a projection the app does not use.

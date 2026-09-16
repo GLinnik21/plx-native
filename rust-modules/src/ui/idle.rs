@@ -106,11 +106,11 @@ const KEEPALIVE_MS: u32 = 2000;
 
 /// How long the loop sleeps on a frame it decided not to present.
 ///
-/// **The swap is the loop's only blocking call** — there is no `SDL_Delay`, `nanosleep` or frame
-/// budget anywhere else in `app.rs` — so skipping it without sleeping turns a 16%-of-a-core app
-/// into a 100% spinner, which is strictly worse than the problem this module exists to solve.
-/// One frame period keeps the input poll rate (and therefore key latency) exactly where it is
-/// today; the saving being chased is the GPU and the compositor, not these few CPU percent.
+/// Device and macOS presented frames block in swap. WSLg/X11 hostsim frames are paced after its
+/// nonblocking GLX swap; other Linux backends keep their own swap behaviour. A frame skipped by
+/// this gate reaches none of those paths, so it must sleep here or a settled screen becomes a 100%
+/// CPU spinner. One frame period keeps input polling near the normal presented-frame cadence; the
+/// saving being chased is the GPU and compositor.
 pub(crate) const IDLE_POLL_MS: u32 = 16;
 
 thread_local! {
@@ -337,6 +337,26 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn take_local_damage() -> u32 {
     LOCAL_DAMAGE.with(|c| c.replace(0))
+}
+
+/// Drain leftover gate state so another module's spring test can assert a quiet frame.
+/// Callers still take [`crate::testlock::serial`] first — this is not the lock.
+#[cfg(test)]
+pub(crate) fn reset_for_test() {
+    set_enabled(true);
+    frame_begin(1.0 / 60.0);
+    DIRTY.store(false, Relaxed);
+    WAKE.store(false, Relaxed);
+    LAST_PRESENT.store(0, Relaxed);
+    PRESENTS.store(0, Relaxed);
+    DAMAGE_GEN.store(0, Relaxed);
+    PRESENT_DAMAGE_GEN.with(|c| c.set(0));
+    PRESENT_DIRTY.with(|c| c.set(false));
+    WAS_MOVING.with(|c| c.set(false));
+    OWN_DAMAGE_N.store(0, Relaxed);
+    TAKEN_GEN.store(0, Relaxed);
+    VIDEO_PLANE.store(false, Relaxed);
+    let _ = take_local_damage();
 }
 
 thread_local! {
@@ -621,20 +641,7 @@ mod tests {
     /// module-local mutex (see `lib.rs::testlock`).
     fn fresh() -> crate::testlock::Serial {
         let g = crate::testlock::serial();
-        set_enabled(true);
-        frame_begin(1.0 / 60.0);
-        DIRTY.store(false, Relaxed);
-        WAKE.store(false, Relaxed);
-        LAST_PRESENT.store(0, Relaxed);
-        PRESENTS.store(0, Relaxed);
-        DAMAGE_GEN.store(0, Relaxed);
-        PRESENT_DAMAGE_GEN.with(|c| c.set(0));
-        PRESENT_DIRTY.with(|c| c.set(false));
-        WAS_MOVING.with(|c| c.set(false));
-        OWN_DAMAGE_N.store(0, Relaxed);
-        TAKEN_GEN.store(0, Relaxed);
-        VIDEO_PLANE.store(false, Relaxed);
-        let _ = take_local_damage();
+        reset_for_test();
         g
     }
 

@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::ui::machine::{Chrome, Host, InputEvent, PressRead, ScreenId};
-use crate::ui::screen::ScreenArg;
+use crate::ui::screen::{At, Focusable, ScreenArg};
 
 #[derive(Clone, PartialEq, Eq)]
 struct TestArg;
@@ -45,7 +45,7 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 
-fn cx<'a>(measure: &'a crate::ui::fixture::FixtureMeasure, elem: Option<u32>) -> Cx<'a, TestHost> {
+fn cx<'a>(measure: &'a dyn crate::ui::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
     Cx {
         views: (),
         tick: Default::default(),
@@ -72,6 +72,18 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         local_by_key: Default::default(), return_pending: false,
         pending_season: None,
         season_settle: 0.0,
+        preview_dwell: 0.0,
+        preview_promoted: false,
+        preview_art: 1.0,
+        preview_prose: 1.0,
+        preview_synopsis: 1.0,
+        preview_chrome: 1.0,
+        preview_field: 1.0,
+        preview_base_scrim: 1.0,
+        preview_logo: Spring::at(0.0),
+        preview_played_for: None,
+        preview_started_for: None,
+        preview_had_picture: false,
         refresh: DetailRefreshPhase::None,
         restore_intent: None,
         scroll: Spring::at(0.0),
@@ -80,16 +92,18 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         tab_scroll: Spring::at(0.0),
         episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
         related: CardRow::new(),
+        extras: CardRow::new(),
         cast: CardRow::new(),
         tabs: TabStrip::new(),
         season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(),
-        disc_unfurl: [Spring::at(0.0); 2],
+        disc_unfurl: [Spring::at(0.0); 3],
         season_metrics: season::Metrics::new(),
         about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP),
         spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),
+        layout: std::cell::Cell::new(None),
     };
     screen.sync_keys();
     screen
@@ -199,7 +213,7 @@ fn logical_hash_names_the_full_restore_target() {
         section: 2,
         col: 1,
         ep_text: true,
-        saved_col: [0, 1, 2, 3, 4, 5],
+        saved_col: [0, 1, 2, 3, 4, 5, 0],
         season: Some(2),
     };
     let right = left.clone();
@@ -725,6 +739,7 @@ fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
 fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
     let before = hero::HeroSet {
         restart: true,
+        trailer: false,
         alt: false,
         mark: PosterMark::None,
     };
@@ -885,13 +900,14 @@ fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
     let y = 812.0;
     let set = hero::HeroSet {
         restart: true,
+        trailer: false,
         alt: false,
         mark: PosterMark::InProgress,
     };
     let index = hero::watch_index(set).unwrap();
     assert_eq!(hero::ctl_at(set, index - 1), Some(hero::HeroCtl::Restart));
     for unfurl in [0.2, 0.6, 1.0] {
-        let disc = hero::disc_caps_at(set, 230.0, 0.0, [0.0, unfurl], [201.0, 267.0]);
+        let disc = hero::disc_caps_at(set, 230.0, 0.0, [0.0, 0.0, unfurl], [201.0, 0.0, 267.0]);
         let widths = hero::HeroWidths {
             pill: 230.0,
             alt: 0.0,
@@ -920,78 +936,101 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
     for restart in [false, true] {
         for alt in [false, true] {
             for watched in [false, true] {
-                crate::metadata::set_current_for_test(Some(Detail {
-                    sid, rk: "hero-hit".into(), kind: "movie".into(), watched,
-                    resume_ms: if restart { 30_000 } else { 0 }, dur_ms: 120_000,
-                    ..Default::default()
-                }));
-                // The *Also available* control's gate is the STORE, addressed by the page's own
-                // pair — seeded here the way a landed cross-source resolve seeds it, never by
-                // opening the panel.
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::AltInstall {
-                    sid,
-                    rk: "hero-hit".into(),
-                    copies: if alt {
-                        vec![
-                            crate::metadata::AltCopy { sid, rk: "hero-hit".into(), ..Default::default() },
-                            crate::metadata::AltCopy { sid: other, rk: "hero-copy".into(), ..Default::default() },
-                        ]
-                    } else {
-                        Vec::new()
-                    },
-                });
-                let mut screen = bare(&_guard, sid, "hero-hit");
-                let set = screen.hero_set();
-                assert_eq!((set.restart, set.alt), (restart, alt));
-                let (controls, n) = hero::hero_ctls(set);
-                assert_eq!(n, 2 + usize::from(restart) + usize::from(alt));
-                sizes.insert(n);
-                for unfurl in [[0.0, 0.0], [0.0, 1.0], [0.3, 0.7], [1.0, 0.0]] {
-                    screen.disc_unfurl = unfurl.map(Spring::at);
-                    for scroll in [0.0, 48.0] {
-                        screen.scroll = Spring::at(scroll);
-                        let widths = hero::hero_widths(&measure, set, restart, unfurl, false);
-                        let mut stops = Vec::new();
-                        let mut drawn = Vec::new();
-                        for (i, control) in controls[..n].iter().enumerate() {
-                            let key = FocusKey { entry: EntryId(7), elem: control.elem() };
-                            let placed = Focusable::<TestHost>::place(&screen, &key.elem, &context, At::Drawn).expect("every drawn control places");
-                            // Same primitive geometry used by draw_buttons; its painter scroll
-                            // translation must match the screen-space hit placement exactly.
-                            let mut painted = hero::hero_btn_rect_at(set, i, screen.hero_chain(&crate::ui::fixture::FixtureMeasure).btn_y, widths);
-                            painted.y -= scroll;
-                            assert_eq!((placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
-                                (painted.x, painted.y, painted.w, painted.h),
-                                "set={set:?} control={control:?} unfurl={unfurl:?}");
-                            assert_eq!(placed.index, Some(i as u32));
-                            drawn.push((key, painted));
-                            stops.push(Stop { key, rect: placed.rect, rest_rect: placed.rest_rect,
-                                clip: placed.clip, hover: Hover::Focus, activate: Activate::Press });
+                for trailer in [false, true] {
+                    crate::metadata::set_current_for_test(Some(Detail {
+                        sid, rk: "hero-hit".into(), kind: "movie".into(), watched,
+                        resume_ms: if restart { 30_000 } else { 0 }, dur_ms: 120_000,
+                        extras: trailer
+                            .then(|| crate::metadata::Extra {
+                                rk: "trailer".into(),
+                                part: "/library/parts/trailer".into(),
+                                subtype: "trailer".into(),
+                                extra_type: 1,
+                                ..Default::default()
+                            })
+                            .into_iter()
+                            .collect(),
+                        ..Default::default()
+                    }));
+                    // The *Also available* control's gate is the STORE, addressed by the page's own
+                    // pair — seeded here the way a landed cross-source resolve seeds it, never by
+                    // opening the panel.
+                    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::AltInstall {
+                        sid,
+                        rk: "hero-hit".into(),
+                        copies: if alt {
+                            vec![
+                                crate::metadata::AltCopy { sid, rk: "hero-hit".into(), ..Default::default() },
+                                crate::metadata::AltCopy { sid: other, rk: "hero-copy".into(), ..Default::default() },
+                            ]
+                        } else {
+                            Vec::new()
+                        },
+                    });
+                    let mut screen = bare(&_guard, sid, "hero-hit");
+                    let set = screen.hero_set();
+                    assert_eq!(
+                        (set.restart, set.alt, set.trailer),
+                        (restart, alt, false),
+                        "the preview path replaced the Trailer disc"
+                    );
+                    let (controls, n) = hero::hero_ctls(set);
+                    assert_eq!(n, 2 + usize::from(restart) + usize::from(alt));
+                    sizes.insert(n);
+                    for unfurl in [
+                        [0.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0],
+                        [0.0, 1.0, 0.0],
+                        [0.3, 0.0, 0.7],
+                        [1.0, 0.0, 0.0],
+                        [0.0, 1.0, 1.0],
+                    ] {
+                        screen.disc_unfurl = unfurl.map(Spring::at);
+                        for scroll in [0.0, 48.0] {
+                            screen.scroll = Spring::at(scroll);
+                            let widths = hero::hero_widths(&measure, set, restart, unfurl, false);
+                            let mut stops = Vec::new();
+                            let mut drawn = Vec::new();
+                            for (i, control) in controls[..n].iter().enumerate() {
+                                let key = FocusKey { entry: EntryId(7), elem: control.elem() };
+                                let placed = Focusable::<TestHost>::place(&screen, &key.elem, &context, At::Drawn).expect("every drawn control places");
+                                // Same primitive geometry used by draw_buttons; its painter scroll
+                                // translation must match the screen-space hit placement exactly.
+                                let mut painted = hero::hero_btn_rect_at(set, i, screen.hero_chain(&crate::ui::fixture::FixtureMeasure).btn_y, widths);
+                                painted.y -= scroll;
+                                assert_eq!((placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
+                                    (painted.x, painted.y, painted.w, painted.h),
+                                    "set={set:?} control={control:?} unfurl={unfurl:?}");
+                                assert_eq!(placed.index, Some(i as u32));
+                                drawn.push((key, painted));
+                                stops.push(Stop { key, rect: placed.rect, rest_rect: placed.rest_rect,
+                                    clip: placed.clip, hover: Hover::Focus, activate: Activate::Press });
+                            }
+                            let mut hit = HitMap::new();
+                            hit.fill(stops);
+                            hit.swap();
+                            for (key, rect) in &drawn {
+                                let resolved = hit.resolve(Some(key.entry), PointerKind::Click, rect.cx(), rect.cy(), None);
+                                assert_eq!(resolved.hit, Some(*key));
+                                assert_eq!(resolved.activate.map(|(key, _)| key), Some(*key));
+                            }
+                            for pair in drawn.windows(2) {
+                                let left = pair[0].1;
+                                let right = pair[1].1;
+                                assert!(left.x + left.w < right.x, "controls must not overlap");
+                                let gutter = (left.x + left.w + right.x) * 0.5;
+                                assert!(hit.resolve(Some(pair[0].0.entry), PointerKind::Click, gutter, left.cy(), None).miss,
+                                    "the painted gutter must not activate either control");
+                            }
+                            cases += 1;
                         }
-                        let mut hit = HitMap::new();
-                        hit.fill(stops);
-                        hit.swap();
-                        for (key, rect) in &drawn {
-                            let resolved = hit.resolve(Some(key.entry), PointerKind::Click, rect.cx(), rect.cy(), None);
-                            assert_eq!(resolved.hit, Some(*key));
-                            assert_eq!(resolved.activate.map(|(key, _)| key), Some(*key));
-                        }
-                        for pair in drawn.windows(2) {
-                            let left = pair[0].1;
-                            let right = pair[1].1;
-                            assert!(left.x + left.w < right.x, "controls must not overlap");
-                            let gutter = (left.x + left.w + right.x) * 0.5;
-                            assert!(hit.resolve(Some(pair[0].0.entry), PointerKind::Click, gutter, left.cy(), None).miss,
-                                "the painted gutter must not activate either control");
-                        }
-                        cases += 1;
                     }
                 }
             }
         }
     }
     assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
-    assert_eq!(cases, 64);
+    assert_eq!(cases, 192);
     clear();
     crate::plex::reset_servers_for_test();
 }
@@ -1130,6 +1169,127 @@ fn episode_text_ok_activates_on_down_without_arming_a_holdable_press() {
         &effect.fx,
         Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Detail { rk, .. }))) if rk == "e2"
     )));
+    clear();
+}
+
+/// Both BACK and DOWN collapse full-trailer mode through the SAME shared helper
+/// (`collapse_full_trailer`), and neither one does anything unusual when it was already off — the
+/// regression this guards is the naive first draft, which duplicated the same four-line body
+/// under two different key guards instead of sharing one.
+#[test]
+fn back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    fn key_event(key: Key) -> ScreenEvent<TestHost> {
+        ScreenEvent::Input(InputEvent {
+            at: Default::default(),
+            source: crate::ui::machine::Source::Script,
+            kind: InputKind::Key { key, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+        })
+    }
+    for key in [Key::Back, Key::Down] {
+        let mut screen = bare(&_guard, sid, "show");
+        screen.preview_promoted = true;
+        let (handled, _) = step(&mut screen, &key_event(key), None);
+        assert_eq!(handled, Handled::Yes, "{key:?} must collapse full-trailer mode");
+        assert!(!screen.preview_promoted, "{key:?} left preview_promoted set");
+    }
+    // DOWN with full-trailer mode already off falls through to ordinary navigation instead of
+    // being swallowed — `collapse_full_trailer` returning `false` must not itself count as handled.
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = false;
+    let (handled, _) = step(&mut screen, &key_event(Key::Down), Some(hero::HeroCtl::Play.elem()));
+    assert_ne!(
+        handled,
+        Handled::Yes,
+        "DOWN with nothing promoted must not be swallowed by the collapse arm"
+    );
+    clear();
+}
+
+/// BACK's second stage, `collapse_background_preview`: with no live trailer picture up (the
+/// default host-test state — driving the live `player::preview` singleton is deliberately avoided
+/// here, same as `preview_completed_naturally`'s extraction reasons above), BACK must not be
+/// swallowed by the new arm and must still reach ordinary `ContentReq::Back` navigation exactly as
+/// before this stage existed.
+#[test]
+fn back_falls_through_to_navigation_when_no_background_preview_is_up() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    let event = ScreenEvent::Input(InputEvent {
+        at: Default::default(),
+        source: crate::ui::machine::Source::Script,
+        kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+    });
+    let (handled, effects) = step(&mut screen, &event, None);
+    assert_eq!(handled, Handled::Yes);
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect.fx, Fx::App(AppFx::Content(ContentReq::Back)))),
+        "BACK with no background preview up must still leave the page"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect.fx, Fx::App(AppFx::Content(ContentReq::PreviewStop)))),
+        "there is no preview to stop"
+    );
+    clear();
+}
+
+/// `preview_completed_naturally` is the pure core of §8.2's play-once suppression, extracted
+/// specifically so it is testable without driving the live, process-wide `player::preview`
+/// singleton (which needs `plex::session::peek()` file I/O to even start a Load — exactly the
+/// fragility the original plan's §5 rejected a live-Machine integration test over). This table
+/// pins the outside-voice-found ordering bug: the check must fire when full-trailer mode was
+/// active (`promoted=true`) even though `hero_active` is irrelevant there, AND when the viewer is
+/// simply sitting still (`hero_active=true`, `promoted=false`) — and must NOT fire on abandonment
+/// (`hero_active=false`, `promoted=false`) or when there was no picture to lose.
+#[test]
+fn preview_completed_naturally_covers_both_full_trailer_and_sitting_still() {
+    // (had_picture, has_picture, promoted, hero_active) -> expected
+    let cases = [
+        (true, false, true, false, true, "full-trailer-mode completion — the ordering bug's case"),
+        (true, false, false, true, true, "sitting still, unpromoted completion"),
+        (true, false, false, false, false, "abandonment (scrolled off / hero lost) must not count"),
+        (true, true, false, true, false, "still playing — no transition yet"),
+        (false, false, false, true, false, "nothing was playing to begin with"),
+        (true, false, true, true, true, "full-trailer AND still hero-active — either reason suffices"),
+    ];
+    for (had, has, promoted, hero_active, expected, why) in cases {
+        assert_eq!(
+            super::preview_completed_naturally(had, has, promoted, hero_active),
+            expected,
+            "{why}"
+        );
+    }
+}
+
+#[test]
+fn preview_already_played_is_a_plain_key_match() {
+    assert!(!super::preview_already_played(None, "rk1"));
+    assert!(!super::preview_already_played(Some("rk2"), "rk1"));
+    assert!(super::preview_already_played(Some("rk1"), "rk1"));
+}
+
+/// Closes the outside-voice-found gap: `preview_played_for`/`preview_started_for` must reset on
+/// leave, matching the existing `preview_dwell`/`preview_promoted` convention at the same call
+/// site, or §8.2's own "resets whenever you leave and re-enter" decision silently does not hold.
+#[test]
+fn leaving_the_page_resets_play_once_state_alongside_the_existing_preview_fields() {
+    let _guard = install(detail(ServerId::UNSET, "show"));
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    screen.preview_dwell = 1.5;
+    screen.preview_promoted = true;
+    screen.preview_played_for = Some("some-rk".into());
+    screen.preview_started_for = Some("some-rk".into());
+    step(&mut screen, &ScreenEvent::Unmount, None);
+    assert_eq!(screen.preview_dwell, 0.0);
+    assert!(!screen.preview_promoted);
+    assert_eq!(screen.preview_played_for, None);
+    assert_eq!(screen.preview_started_for, None);
     clear();
 }
 
@@ -1296,6 +1456,628 @@ fn the_loading_spinner_reports_motion_on_every_tick_while_unloaded() {
             "an unloaded detail page's spinner must present every frame (ms={ms})"
         );
     }
+}
+
+fn trailer_extra() -> crate::metadata::Extra {
+    crate::metadata::Extra {
+        rk: "9".into(),
+        part: "/library/parts/trailer".into(),
+        vcodec: "h264".into(),
+        acodec: "aac".into(),
+        title: "Official Trailer".into(),
+        subtype: "trailer".into(),
+        extra_type: 1,
+        dur_ms: 120_000,
+        bitrate: 2_500,
+        thumb: String::new(),
+    }
+}
+
+fn play_item(effects: &[crate::ui::machine::Stamped<TestHost>]) -> Option<(&PlayIntent, i64)> {
+    effects.iter().find_map(|effect| match &effect.fx {
+        Fx::App(AppFx::Content(ContentReq::Play { play, resume_ns })) => Some((play, *resume_ns)),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_movie_trailer_disc_plays_the_extra_from_the_start() {
+    let extra = trailer_extra();
+    let _guard = install(Detail {
+        sid: ServerId::UNSET,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        title: "Movie".into(),
+        part: "/library/parts/movie".into(),
+        extras: vec![extra.clone()],
+        ..Default::default()
+    });
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(
+        crate::metadata::NowPlaying {
+            is_episode: true,
+            is_real_episode: true,
+            title: "Show".into(),
+            ep_title: "Pilot".into(),
+            season: 1,
+            index: 1,
+            summary: String::new(),
+            year: 2020,
+            dur_ms: 1_800_000,
+            rating: String::new(),
+            thumb: String::new(),
+            detail_rk: "show".into(),
+        },
+    )));
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    assert!(!screen.hero_set().trailer, "the preview path replaced the Trailer disc");
+    let (_, effects) = step(
+        &mut screen,
+        &ScreenEvent::Activate(hero::ELEM_TRAILER),
+        Some(hero::ELEM_TRAILER),
+    );
+    let (play, resume_ns) = play_item(&effects).expect("Trailer activate emits Play");
+    match play {
+        PlayIntent::Item {
+            rk,
+            part,
+            context,
+            title,
+            ..
+        } => {
+            assert_eq!(rk, "9");
+            assert_eq!(part, "/library/parts/trailer");
+            assert_eq!(context, crate::metadata::TRAILER_CONTEXT);
+            assert_eq!(title, "Official Trailer");
+        }
+        _ => panic!("expected PlayIntent::Item for Trailer"),
+    }
+    assert_eq!(resume_ns, 0);
+    assert_eq!(crate::metadata::current().unwrap().rk, "movie");
+    assert!(
+        crate::metadata::now_playing().is_some_and(|n| n.detail_rk == "show"),
+        "activate queues Play; NowPlaying is installed only after request_play accepts"
+    );
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+    clear();
+}
+
+#[test]
+fn a_show_trailer_disc_plays_the_extra_not_the_on_deck_episode() {
+    let extra = trailer_extra();
+    let mut d = detail(ServerId::UNSET, "show");
+    d.extras = vec![extra];
+    d.on_deck = Some(crate::metadata::Episode {
+        rk: "ep".into(),
+        part: "/library/parts/ep".into(),
+        vcodec: "hevc".into(),
+        acodec: "ac3".into(),
+        title: "Episode".into(),
+        ..Default::default()
+    });
+    let _guard = install(d);
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    let (_, trailer_fx) = step(
+        &mut screen,
+        &ScreenEvent::Activate(hero::ELEM_TRAILER),
+        Some(hero::ELEM_TRAILER),
+    );
+    match play_item(&trailer_fx).unwrap() {
+        (
+            PlayIntent::Item {
+                rk,
+                part,
+                context,
+                ..
+            },
+            0,
+        ) => {
+            assert_eq!(rk, "9");
+            assert_eq!(part, "/library/parts/trailer");
+            assert_eq!(context, crate::metadata::TRAILER_CONTEXT);
+        }
+        _ => panic!("show Trailer must play the extra"),
+    }
+    let (_, play_fx) = step(
+        &mut screen,
+        &ScreenEvent::Activate(hero::ELEM_PLAY),
+        Some(hero::ELEM_PLAY),
+    );
+    match play_item(&play_fx).unwrap() {
+        (PlayIntent::Item { rk, part, context, .. }, _) => {
+            assert_ne!(rk.as_str(), "9");
+            assert_ne!(part.as_str(), "/library/parts/trailer");
+            assert_ne!(context.as_str(), crate::metadata::TRAILER_CONTEXT);
+        }
+        (PlayIntent::Movie(_), _) => {}
+    }
+    clear();
+}
+
+#[test]
+fn a_movie_without_extras_does_not_offer_a_trailer_disc() {
+    let _guard = install(Detail {
+        sid: ServerId::UNSET,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        ..Default::default()
+    });
+    let screen = bare(&_guard, ServerId::UNSET, "movie");
+    assert!(!screen.hero_set().trailer);
+    assert!(hero::index_of(screen.hero_set(), hero::HeroCtl::Trailer).is_none());
+    clear();
+}
+
+#[test]
+fn a_trailer_disc_requires_both_rk_and_part() {
+    let _guard = crate::testlock::serial();
+    let cases = [
+        crate::metadata::Extra {
+            rk: String::new(),
+            part: "/library/parts/trailer".into(),
+            ..Default::default()
+        },
+        crate::metadata::Extra {
+            rk: "9".into(),
+            part: String::new(),
+            ..Default::default()
+        },
+    ];
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(
+        crate::metadata::NowPlaying {
+            is_episode: true,
+            is_real_episode: true,
+            title: "Show".into(),
+            ep_title: "Pilot".into(),
+            season: 1,
+            index: 1,
+            summary: String::new(),
+            year: 2020,
+            dur_ms: 1_800_000,
+            rating: String::new(),
+            thumb: String::new(),
+            detail_rk: "show".into(),
+        },
+    )));
+    for extra in cases {
+        crate::metadata::set_current_for_test(Some(Detail {
+            sid: ServerId::UNSET,
+            rk: "movie".into(),
+            kind: "movie".into(),
+            extras: vec![extra],
+            ..Default::default()
+        }));
+        let screen = bare(&_guard, ServerId::UNSET, "movie");
+        assert!(
+            !screen.hero_set().trailer,
+            "visibility must match Extra::playable, not a nonempty part alone"
+        );
+        assert!(hero::index_of(screen.hero_set(), hero::HeroCtl::Trailer).is_none());
+        let mut screen = screen;
+        let (_, effects) = step(
+            &mut screen,
+            &ScreenEvent::Activate(hero::ELEM_TRAILER),
+            Some(hero::ELEM_TRAILER),
+        );
+        assert!(
+            play_item(&effects).is_none(),
+            "an unplayable extra must not emit Play"
+        );
+        assert!(
+            crate::metadata::now_playing().is_some_and(|n| n.detail_rk == "show"),
+            "a Trailer no-op must not wipe a leftover episode NowPlaying"
+        );
+    }
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+    clear();
+}
+
+#[test]
+fn extras_landing_does_not_grow_a_trailer_disc_or_move_play_identity() {
+    let sid = ServerId::UNSET;
+    let _guard = install(Detail {
+        sid,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        ..Default::default()
+    });
+    let screen = bare(&_guard, sid, "movie");
+    let before = screen.hero_set();
+    assert!(!before.trailer);
+    assert_eq!(hero::index_of(before, hero::HeroCtl::Play), Some(0));
+    let play_elem = hero::HeroCtl::Play.elem();
+    crate::metadata::set_current_for_test(Some(Detail {
+        sid,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        extras: vec![trailer_extra()],
+        ..Default::default()
+    }));
+    let after = screen.hero_set();
+    assert!(!after.trailer, "the preview path replaced the Trailer disc");
+    assert_eq!(hero::index_of(after, hero::HeroCtl::Play), Some(0));
+    assert_eq!(hero::HeroCtl::Play.elem(), play_elem);
+    clear();
+}
+
+#[test]
+fn section_tops_do_not_remeasure_per_credit() {
+    use std::cell::Cell;
+    use std::ffi::CStr;
+
+    struct CountMeasure {
+        widths: Cell<u32>,
+    }
+    impl crate::ui::machine::Measure for CountMeasure {
+        fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+            self.widths.set(self.widths.get() + 1);
+            crate::ui::fixture::FixtureMeasure.width(s, sz, bold)
+        }
+        fn cap_h(&self, sz: i32) -> f32 {
+            crate::ui::fixture::FixtureMeasure.cap_h(sz)
+        }
+        fn line_h(&self, sz: i32) -> f32 {
+            crate::ui::fixture::FixtureMeasure.line_h(sz)
+        }
+    }
+
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.summary = "word ".repeat(80);
+    d.episodes = (0..16).map(|i| episode(&format!("e{i}"), i as i64)).collect();
+    d.cast = (0..77)
+        .map(|i| crate::metadata::Cast {
+            tag: format!("Actor {i}"),
+            role: "Role".into(),
+            thumb: String::new(),
+            id: i as i64 + 1,
+            tag_key: String::new(),
+        })
+        .collect();
+    let _guard = install(d);
+    let screen = bare(&_guard, sid, "show");
+    let detail = screen.detail().expect("installed");
+    let measure = CountMeasure {
+        widths: Cell::new(0),
+    };
+    let first_top = screen.section_top(4, detail, &measure);
+    let after_first = measure.widths.get();
+    assert!(after_first > 0, "building layout must measure text");
+    for _ in 0..77 {
+        assert_eq!(screen.section_top(4, detail, &measure), first_top);
+    }
+    assert_eq!(
+        measure.widths.get(),
+        after_first,
+        "cached section tops must not remeasure per credit"
+    );
+
+    let context = cx(&measure, None);
+    for i in 0..77 {
+        let elem = screen
+            .engine_key(cast::elem(i).expect("cast elem"))
+            .expect("cast identity");
+        let placed = Focusable::<TestHost>::place(&screen, &elem, &context, At::Drawn)
+            .expect("cast credit must place");
+        assert_eq!(
+            placed.rect.y,
+            first_top + cast::LABEL_H,
+            "credit {i} must share the cached cast strip"
+        );
+    }
+    assert_eq!(
+        measure.widths.get(),
+        after_first,
+        "placing every credit must not remeasure synopsis or episode text"
+    );
+    clear();
+}
+
+#[test]
+fn cached_section_tops_match_the_stacking_walk() {
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.summary = "word ".repeat(40);
+    d.episodes = (0..8)
+        .map(|i| {
+            let mut ep = episode(&format!("e{i}"), i as i64);
+            ep.title = "A wrapping episode title with enough words to take two lines".into();
+            ep
+        })
+        .collect();
+    d.cast = vec![crate::metadata::Cast {
+        tag: "Actor".into(),
+        role: "Role".into(),
+        thumb: String::new(),
+        id: 1,
+        tag_key: String::new(),
+    }];
+    d.related = vec![Default::default()];
+    let _guard = install(d);
+    let screen = bare(&_guard, sid, "show");
+    let detail = screen.detail().expect("installed");
+    let measure = crate::ui::fixture::FixtureMeasure;
+
+    let cast_first = screen.section_top(4, detail, &measure);
+    let seasons = screen.section_top(1, detail, &measure);
+    let episodes = screen.section_top(2, detail, &measure);
+    let related = screen.section_top(3, detail, &measure);
+    let about = screen.section_top(5, detail, &measure);
+    assert_eq!(
+        screen.section_top(4, detail, &measure),
+        cast_first,
+        "asking a later section first must not change earlier tops"
+    );
+    assert_eq!(seasons, screen.content_top(&measure));
+    assert_eq!(episodes, seasons + season::ROW_H + super::TAB_EP_GAP);
+    assert_eq!(
+        cast_first,
+        episodes + screen.block_h(2, detail, &measure) + super::SECTION_GAP
+    );
+    assert_eq!(
+        related,
+        cast_first + screen.block_h(4, detail, &measure) + super::SECTION_GAP
+    );
+    assert_eq!(
+        about,
+        related + screen.block_h(3, detail, &measure) + super::SECTION_GAP
+    );
+    clear();
+}
+
+#[test]
+fn a_replaced_episode_list_moves_the_cast_row() {
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.cast = vec![crate::metadata::Cast {
+        tag: "Actor".into(),
+        role: "Role".into(),
+        thumb: String::new(),
+        id: 1,
+        tag_key: String::new(),
+    }];
+    let _guard = install(d);
+    let screen = bare(&_guard, sid, "show");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let before = screen.section_top(4, screen.detail().expect("installed"), &measure);
+
+    let mut taller = detail(sid, "show");
+    taller.cast = vec![crate::metadata::Cast {
+        tag: "Actor".into(),
+        role: "Role".into(),
+        thumb: String::new(),
+        id: 1,
+        tag_key: String::new(),
+    }];
+    taller.episodes = (0..8)
+        .map(|i| {
+            let mut ep = episode(&format!("tall{i}"), i as i64);
+            ep.title = "Wrapping title words enough to grow the filmstrip ".repeat(8);
+            ep.summary = "Wrapping episode prose that also grows the strip height. ".repeat(12);
+            ep
+        })
+        .collect();
+    crate::metadata::set_current_for_test(Some(taller));
+    let after = screen.section_top(4, screen.detail().expect("replaced"), &measure);
+    assert!(
+        after > before,
+        "replacing CURRENT must miss the cached walk, not keep the short-episode cast top ({after} vs {before})"
+    );
+    clear();
+}
+
+#[test]
+fn a_movie_without_a_filmstrip_sits_its_first_block_on_content_top() {
+    let sid = ServerId::UNSET;
+    let _guard = install(Detail {
+        sid,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        summary: "word ".repeat(40),
+        cast: vec![crate::metadata::Cast {
+            tag: "Actor".into(),
+            role: "Role".into(),
+            thumb: String::new(),
+            id: 1,
+            tag_key: String::new(),
+        }],
+        related: vec![Default::default()],
+        ..Default::default()
+    });
+    let screen = bare(&_guard, sid, "movie");
+    let detail = screen.detail().expect("installed");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let top = screen.content_top(&measure);
+    assert_eq!(screen.section_top(4, detail, &measure), top);
+    assert_eq!(
+        screen.section_top(1, detail, &measure),
+        screen.section_top(2, detail, &measure),
+        "absent filmstrip sections must share the walk's end"
+    );
+    assert!(
+        screen.section_top(1, detail, &measure) > screen.section_top(5, detail, &measure),
+        "an absent section's fallback is past About, not About's own top"
+    );
+    assert!(
+        screen.section_top(3, detail, &measure) > top,
+        "related follows cast"
+    );
+    clear();
+}
+
+#[test]
+fn ticking_the_page_allows_layout_to_remeasure() {
+    use std::cell::Cell;
+    use std::ffi::CStr;
+
+    struct CountMeasure {
+        widths: Cell<u32>,
+    }
+    impl crate::ui::machine::Measure for CountMeasure {
+        fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+            self.widths.set(self.widths.get() + 1);
+            crate::ui::fixture::FixtureMeasure.width(s, sz, bold)
+        }
+        fn cap_h(&self, sz: i32) -> f32 {
+            crate::ui::fixture::FixtureMeasure.cap_h(sz)
+        }
+        fn line_h(&self, sz: i32) -> f32 {
+            crate::ui::fixture::FixtureMeasure.line_h(sz)
+        }
+    }
+
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.summary = "word ".repeat(40);
+    let _guard = install(d);
+    let mut screen = bare(&_guard, sid, "show");
+    let measure = CountMeasure {
+        widths: Cell::new(0),
+    };
+    let detail = screen.detail().expect("installed");
+    let _ = screen.section_top(1, detail, &measure);
+    let after_first = measure.widths.get();
+    assert!(after_first > 0);
+    let _ = screen.section_top(1, detail, &measure);
+    assert_eq!(measure.widths.get(), after_first, "still cached before tick");
+    step(
+        &mut screen,
+        &ScreenEvent::Tick(crate::ui::machine::Tick {
+            ms: 16,
+            dt_us: 16_667,
+        }),
+        None,
+    );
+    let _ = screen.section_top(1, screen.detail().expect("still installed"), &measure);
+    assert!(
+        measure.widths.get() > after_first,
+        "tick must drop the walk so the next present can remeasure"
+    );
+    clear();
+}
+
+#[test]
+fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
+    let extra = crate::metadata::Extra {
+        rk: "9".into(),
+        part: "/p".into(),
+        title: "Clip".into(),
+        subtype: "behindTheScenes".into(),
+        extra_type: 5,
+        ..Default::default()
+    };
+    let mut show = detail(ServerId::UNSET, "show");
+    show.cast.push(crate::metadata::Cast {
+        tag: "Actor".into(),
+        role: "Lead".into(),
+        thumb: String::new(),
+        id: 1,
+        tag_key: String::new(),
+    });
+    show.related.push(Default::default());
+    show.extras = vec![extra.clone(), extra];
+    let _guard = install(show);
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    let loaded = screen.detail().expect("installed");
+    let (sections, n) = screen.sections(Some(loaded));
+    assert_eq!(
+        &sections[..n],
+        &[0, 1, 2, 4, 6, 3, 5],
+        "extras sits after Cast and before Related"
+    );
+    let hide = super::compact_title_hide_pos(&sections, n, true).unwrap();
+    assert_eq!(sections[hide], 4, "a show still hides the compact title at Cast");
+
+    let mut spot = crate::metadata::Spot::default();
+    spot.section = 6;
+    spot.col = 1;
+    screen.restore(&spot);
+    let key = screen.restore_focus().expect("extras column restores");
+    assert!(matches!(screen.locate(key), Some(Located::Extras(1))));
+
+    let movie = Detail {
+        sid: ServerId::UNSET,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        extras: vec![
+            crate::metadata::Extra {
+                rk: "9".into(),
+                part: "/p".into(),
+                title: "Clip".into(),
+                subtype: "behindTheScenes".into(),
+                extra_type: 5,
+                ..Default::default()
+            },
+            crate::metadata::Extra {
+                rk: "8".into(),
+                part: "/q".into(),
+                title: "Trailer".into(),
+                subtype: "trailer".into(),
+                extra_type: 1,
+                ..Default::default()
+            },
+        ],
+        cast: vec![crate::metadata::Cast {
+            tag: "Actor".into(),
+            role: "Lead".into(),
+            thumb: String::new(),
+            id: 1,
+            tag_key: String::new(),
+        }],
+        related: vec![Default::default()],
+        ..Default::default()
+    };
+    let (sections, n) = screen.sections(Some(&movie));
+    assert_eq!(&sections[..n], &[0, 4, 6, 3, 5]);
+    let hide = super::compact_title_hide_pos(&sections, n, false).unwrap();
+    assert_eq!(sections[hide], 3, "a movie still hides the compact title at Related");
+    clear();
+}
+
+/// Pins the exact hazard `docs/trailer-ux-plan.md` §8's eng review verified was already retired
+/// (the `detail-sections-array-position-traps` prior learning) with a test rather than only a
+/// source read: `LayoutCache.top`/`.seen` must be indexed by `SectionId as usize` (identity), not
+/// by the section's ARRAY-WALK position. This movie fixture puts `Cast` at array position 1 —
+/// deliberately NOT equal to `SectionId::Cast`'s own discriminant (4) — so a regression to
+/// position-indexing would write the measured Y into `top[1]`/`seen`'s bit 1 instead of `top[4]`/
+/// bit 4, leaving `section_top(SectionId::Cast.raw(), ..)` unable to find it and falling through to
+/// the "not found" fallback (`c.end`, the whole-layout height) instead of Cast's real, much smaller
+/// top position.
+#[test]
+fn cast_section_top_is_keyed_by_identity_not_array_position() {
+    let movie = Detail {
+        sid: ServerId::UNSET,
+        rk: "movie-cast-pos".into(),
+        kind: "movie".into(),
+        cast: vec![crate::metadata::Cast {
+            tag: "Actor".into(),
+            role: "Lead".into(),
+            thumb: String::new(),
+            id: 1,
+            tag_key: String::new(),
+        }],
+        related: vec![Default::default()],
+        ..Default::default()
+    };
+    let _guard = install(movie);
+    let screen = bare(&_guard, ServerId::UNSET, "movie-cast-pos");
+    let loaded = screen.detail().expect("installed");
+    let (sections, n) = screen.sections(Some(loaded));
+    assert_eq!(
+        &sections[..n],
+        &[0, 4, 3, 5],
+        "Cast sits at array position 1, three away from its own SectionId discriminant (4)"
+    );
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let cast_top = screen.section_top(section::SectionId::Cast.raw(), loaded, &measure);
+    let content_top = screen.content_top(&measure);
+    let layout_end = screen.ensure_layout(loaded, &measure).end;
+    assert!(
+        cast_top >= content_top && cast_top < layout_end,
+        "Cast's real top ({cast_top}) must lie between content_top ({content_top}) and the whole \
+         layout's end ({layout_end}) — a position-indexed regression would instead return \
+         layout_end itself (the 'not found' fallback), since slot 4 would never get written"
+    );
+    clear();
 }
 
 /// Explicit source→destination inventory. This is bookkeeping, not behavioral proof; every named

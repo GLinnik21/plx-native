@@ -22,6 +22,7 @@ synthetic): the invariants being checked — every case ends with an `rk` or a `
 skips only its owner — are properties of the tracked matrix as it actually stands, and a case added
 tomorrow that breaks one of them should fail here rather than on the television.
 """
+import http.client
 import importlib.util
 import inspect
 import io
@@ -2153,6 +2154,191 @@ class AutoNetworkProfile(unittest.TestCase):
                 self.assertIn("segment fixtures", case["skip"])
             finally:
                 run._probe_fixture = saved
+
+
+class FixtureKeepAlive(unittest.TestCase):
+    """Sequential media GETs against serve_fixtures.py must reuse one TCP connection.
+
+    The pipeline server used to force `Connection: close` on every 2xx, so keep-alive in
+    stream.rs was never exercised by the local player path. These tests bind loopback only.
+    """
+
+    def _serve(self, root):
+        srv = serve_fixtures.FixtureServer(root, 0, bind="127.0.0.1")
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        return srv
+
+    def test_sequential_gets_reuse_one_accept(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "clip.bin"), "wb") as stream:
+                stream.write(b"ABCDEFGH")
+            srv = self._serve(root)
+            try:
+                host, port = srv.server_address
+                conn = http.client.HTTPConnection(host, port, timeout=5)
+                conn.request("GET", "/clip.bin")
+                first = conn.getresponse()
+                body1 = first.read()
+                header1 = (first.getheader("Connection") or "").lower()
+                self.assertEqual(first.status, 200)
+                self.assertEqual(body1, b"ABCDEFGH")
+                self.assertNotEqual(header1, "close")
+                conn.request("GET", "/clip.bin")
+                second = conn.getresponse()
+                body2 = second.read()
+                self.assertEqual(second.status, 200)
+                self.assertEqual(body2, b"ABCDEFGH")
+                self.assertEqual(srv.n_opens, 2)
+                self.assertEqual(srv.n_accepts, 1)
+                conn.close()
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+    def test_range_get_still_answers_206_on_a_kept_alive_connection(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "clip.bin"), "wb") as stream:
+                stream.write(b"ABCDEFGH")
+            srv = self._serve(root)
+            try:
+                host, port = srv.server_address
+                conn = http.client.HTTPConnection(host, port, timeout=5)
+                conn.request("GET", "/clip.bin")
+                whole = conn.getresponse()
+                self.assertEqual(whole.status, 200)
+                self.assertEqual(whole.read(), b"ABCDEFGH")
+                conn.request("GET", "/clip.bin", headers={"Range": "bytes=4-"})
+                part = conn.getresponse()
+                self.assertEqual(part.status, 206)
+                self.assertEqual(part.read(), b"EFGH")
+                self.assertEqual(int(part.getheader("Content-Length", -1)), 4)
+                self.assertEqual(srv.n_opens, 2)
+                self.assertEqual(srv.n_ranged, 1)
+                self.assertEqual(srv.n_accepts, 1)
+                conn.close()
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+    def test_error_replies_still_close_the_connection(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "clip.bin"), "wb") as stream:
+                stream.write(b"ABCDEFGH")
+            srv = self._serve(root)
+            try:
+                host, port = srv.server_address
+                conn = http.client.HTTPConnection(host, port, timeout=5)
+                conn.request("GET", "/missing.bin")
+                missing = conn.getresponse()
+                self.assertEqual(missing.status, 404)
+                missing.read()
+                header = (missing.getheader("Connection") or "").lower()
+                self.assertEqual(header, "close")
+                conn.request("GET", "/clip.bin")
+                ok = conn.getresponse()
+                self.assertEqual(ok.status, 200)
+                self.assertEqual(ok.read(), b"ABCDEFGH")
+                self.assertEqual(srv.n_accepts, 2)
+                conn.close()
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+    def test_client_reset_while_waiting_for_the_next_request_is_not_an_error(self):
+        """A seek/teardown RST during the keep-alive wait must not traceback.
+
+        BaseHTTPRequestHandler.handle loops on readline(); the TV's RST is
+        ConnectionResetError, not the empty-line close the stdlib handles.
+        """
+        import struct
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "clip.bin"), "wb") as stream:
+                stream.write(b"ABCDEFGH")
+            notes = []
+            srv = serve_fixtures.FixtureServer(
+                root, 0, sink=notes.append, bind="127.0.0.1")
+            thread = threading.Thread(target=srv.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host, port = srv.server_address
+                conn = http.client.HTTPConnection(host, port, timeout=5)
+                conn.request("GET", "/clip.bin")
+                first = conn.getresponse()
+                self.assertEqual(first.status, 200)
+                self.assertEqual(first.read(), b"ABCDEFGH")
+                conn.sock.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                conn.close()
+                deadline = time.monotonic() + 1.0
+                while time.monotonic() < deadline and not any(
+                    "reset keep-alive" in n for n in notes
+                ):
+                    time.sleep(0.02)
+                self.assertTrue(
+                    any("reset keep-alive" in n for n in notes),
+                    f"handler did not swallow the RST; notes={notes!r}",
+                )
+                conn2 = http.client.HTTPConnection(host, port, timeout=5)
+                conn2.request("GET", "/clip.bin")
+                second = conn2.getresponse()
+                self.assertEqual(second.status, 200)
+                self.assertEqual(second.read(), b"ABCDEFGH")
+                conn2.close()
+                self.assertEqual(srv.n_accepts, 2)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+    def test_finish_raising_on_a_reset_socket_does_not_traceback(self):
+        """`finish()` runs in socketserver's own `finally`, independent of `handle()`.
+
+        StreamRequestHandler.finish() only guards its own wfile.flush() against socket.error;
+        the wfile/rfile close() calls right after it are unguarded, so closing an already-reset
+        socket's wrapped file objects can still raise there. Force that exact raise and confirm
+        FixtureHandler.finish swallows it instead of letting socketserver.ThreadingMixIn's
+        process_request_thread print an uncaught traceback — the real-TV regression a normal
+        seek/teardown exposed once keep-alive made this path live on every request, not just
+        the first.
+        """
+        import socketserver
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "clip.bin"), "wb") as stream:
+                stream.write(b"ABCDEFGH")
+            notes = []
+            srv = serve_fixtures.FixtureServer(
+                root, 0, sink=notes.append, bind="127.0.0.1")
+            thread = threading.Thread(target=srv.serve_forever, daemon=True)
+            thread.start()
+            stderr_capture = io.StringIO()
+            try:
+                with mock.patch.object(
+                    socketserver.StreamRequestHandler, "finish",
+                    side_effect=ConnectionResetError("simulated"),
+                ), mock.patch("sys.stderr", stderr_capture):
+                    host, port = srv.server_address
+                    conn = http.client.HTTPConnection(host, port, timeout=5)
+                    conn.request("GET", "/clip.bin")
+                    r = conn.getresponse()
+                    self.assertEqual(r.status, 200)
+                    self.assertEqual(r.read(), b"ABCDEFGH")
+                    conn.close()
+                    deadline = time.monotonic() + 1.0
+                    while time.monotonic() < deadline and not any(
+                        "keep-alive (finish)" in n for n in notes
+                    ):
+                        time.sleep(0.02)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+            self.assertTrue(
+                any("keep-alive (finish)" in n for n in notes),
+                f"finish() did not swallow the reset; notes={notes!r}",
+            )
+            self.assertNotIn(
+                "Traceback", stderr_capture.getvalue(),
+                "an exception from finish() must not reach socketserver's own handle_error",
+            )
 
 
 class NetcondRate(unittest.TestCase):

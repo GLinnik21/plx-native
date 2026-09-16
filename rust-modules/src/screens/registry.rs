@@ -476,6 +476,7 @@ pub(crate) enum DetailIdentity {
     Episode { sid: crate::plex::ServerId, rk: String, text: bool },
     Related { sid: crate::plex::ServerId, rk: String },
     Cast { sid: crate::plex::ServerId, key: String, guid: String, name: String, role: String },
+    Extra { sid: crate::plex::ServerId, rk: String },
 }
 
 #[derive(Clone, Debug)]
@@ -588,6 +589,7 @@ impl crate::ui::machine::LogicalState for DetailIdentity {
             Self::Episode { sid, rk, text } => { c.u32(1).u32(u32::from(sid.raw())).str(rk).bool(*text); }
             Self::Related { sid, rk } => { c.u32(2).u32(u32::from(sid.raw())).str(rk); }
             Self::Cast { sid, key, guid, name, role } => { c.u32(3).u32(u32::from(sid.raw())).str(key).str(guid).str(name).str(role); }
+            Self::Extra { sid, rk } => { c.u32(5).u32(u32::from(sid.raw())).str(rk); }
         }
     }
     fn probe(&self, out: &mut String) { out.push_str("detail_identity"); }
@@ -704,7 +706,7 @@ fn write_home_hub(hub: &HomeHubIdentity, c: &mut crate::ui::machine::Canon) {
     }
 }
 
-pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;6],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
+pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;7],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Extra(sid:u32,rk:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
 
 /// Effects cross the screen/loop boundary; screens do not poll one another's pending latches.
 pub(crate) enum ContentReq {
@@ -712,6 +714,17 @@ pub(crate) enum ContentReq {
     Present(ContentArg),
     Back,
     Play { play: PlayIntent, resume_ns: i64 },
+    /// Start a hero preview. Does not push the player route.
+    PreviewStart {
+        sid: crate::plex::ServerId,
+        rk: String,
+        part: String,
+        vcodec: String,
+        acodec: String,
+        title: String,
+    },
+    /// Stop a hero preview and stay on the page.
+    PreviewStop,
     ItemMenu,
     /// **Present one of the Detail page's own panels** on the container tree (spec §6.2's
     /// "page-owned panels"). The page names WHICH and supplies whatever the panel needs to place
@@ -1797,8 +1810,24 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 ///
 /// `#[cfg(test)]` because the pin is an ASSERTION about the array above and never a value the
 /// app reads — `state_fp()` hashes [`SCREEN_SHAPES`] itself.
+///
+/// **Trailer PlayQueue / item menu** (0x3c0b_74a7_7a48_169c → 0xeb69_f6bf_105f_697f): `screens::item_menu::SHAPE`
+/// grows `Action` with `part`/`vcodec`/`acodec`/`title` so Play Trailer can carry the extra's
+/// play fields without a second PMS GET.
+///
+/// **Extras shelf** (0xeb69_f6bf_105f_697f → 0xb462_145d_9477_05de): detail `Spot.saved_col` grows a seventh
+/// identity-keyed slot for the extras section, and `DetailIdentity` grows `Extra`. The shape
+/// string moved, so recorded fixtures need `tools/plxnative-rec rerecord` before a scenario
+/// replay is trusted. Host unit tests do not replay them.
+///
+/// **0.7 forward-port merge** (0xb462_145d_9477_05de → 0x0e66_311c_e4f1_0769): this bump is not one
+/// feature's doing — it is the union of independently-landed changes each side made to state this
+/// array reaches, recombined by `git merge origin/main` into the integration branch. Nothing here
+/// was rebaselined by hand; the value is whatever `state_fp(SCREEN_SHAPES)` actually produces over
+/// the merged tree, taken from a failing run of `the_screen_shape_inventory_is_pinned` and copied in
+/// verbatim. Re-record fixtures the same way any other bump requires.
 #[cfg(test)]
-const SCREEN_SHAPES_PIN: u64 = 0xb41d_c126_50a2_45b7;
+const SCREEN_SHAPES_PIN: u64 = 0x0e66_311c_e4f1_0769;
 
 #[cfg(test)]
 mod arg_tests {

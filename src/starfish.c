@@ -703,8 +703,9 @@ char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData) {
  * in-flight-Load gate below does NOT cover them directly — unlike the nine `sf_*` verbs above.
  * They are today bounded only indirectly, by `pump.rs`'s stage machine (every ACB call site
  * that binds or updates media requires `eng.stage >= Stage::Playing`, reached only after
- * the pump has observed Load return. Initialization and teardown are separate lifecycle paths).
- * Extending the gate itself into ACB
+ * the pump has observed Load return (this file's loadCompleted arm having already observed
+ * `LOAD_RETURNED()`) — initialization and teardown are separate lifecycle paths. Extending the
+ * gate itself into ACB
  * would need the same device verification any Starfish/ACB bind-order change needs (see
  * player/CLAUDE.md); this comment exists so "the gate covers every Starfish/ACB verb" is not
  * read as true of this block until that is done. */

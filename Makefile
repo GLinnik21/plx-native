@@ -170,7 +170,7 @@ print-tv:       ; @echo '$(TV)'
 # overridable — agents running several simulators at once keep separate target dirs, and the
 # `macapp` build has its own — so a tool that restates the path silently runs another lane's
 # binary. Same argument as `print-appdir`: ask, never restate.
-print-simbin:   ; @echo '$(SIM_BIN)'
+print-simbin:   ; @printf '%s\n' "$$SIM_MACOS_BIN_ENV"
 # The four queries `ci/test_deploy_manifest.py` asks instead of running `make -p` (which prints a
 # RECURSIVE variable's unexpanded definition — see the ban on it elsewhere in this file — and
 # would in any case hand a host test the SAME string for two different flavours). Defined once
@@ -1480,7 +1480,7 @@ SIM_PMS  ?= $(call cfg_macro,PMS_HOST)
 SIM_PORT ?= $(shell sed -n 's/^\#define[ \t]*PMS_PORT[ \t]*\([0-9]*\).*/\1/p' src/config.local.h 2>/dev/null)
 SIM_DIR  ?= /tmp/plxnative-sim
 # Its OWN target dir, per this file's rule for feature-set splits: `make check` builds default
-# features on nightly, `make sim` builds `hostsim` on the default toolchain. Sharing one dir makes
+# features on nightly, `make sim-macos` builds `hostsim` on the default toolchain. Sharing one dir makes
 # each invocation rebuild the crate the other way round.
 #
 # `?=` so it can also come from the environment: a checkout on a network or external volume
@@ -1489,7 +1489,10 @@ SIM_DIR  ?= /tmp/plxnative-sim
 # (os error 45)" before compiling anything. Point this at a local path and the checkout can stay
 # where it is:  export SIM_TDIR=$HOME/plxnative-sim-target
 SIM_TDIR  ?= rust-modules/target-sim
-SIM_BIN   = $(SIM_TDIR)$(if $(LAB),-lab,)/debug/plxnative-sim
+SIM_MACOS_BIN = $(SIM_TDIR)$(if $(LAB),-lab,)/debug/plxnative-sim
+SIM_MACOS_BIN_ENV = $(SIM_MACOS_BIN)
+SIM_LINUX_TDIR_ENV = $(SIM_TDIR)
+export SIM_MACOS_BIN_ENV SIM_LINUX_TDIR_ENV
 # Which presented frame `sim-shot` grabs. 200 is comfortably past first paint and the poster
 # fetches on a warm cache; raise it if a shot catches a screen mid-load.
 SIM_FRAME ?= 200
@@ -1510,7 +1513,7 @@ SIM_PRE = mkdir -p $(SIM_DIR); test -n "$(SIM_PMS)" || \
 # **The simulator needs its own FFmpeg, and that is what makes it able to STREAM.** `ff.rs` opens
 # the bundled libraries by absolute path out of the app directory, where they are 32-bit ARM ELF —
 # so until 2026-08-28 the entire streaming half of the app (both AVIO transports, the HLS demux,
-# the AU queues and therefore the whole adaptive controller) was device-only, and `make sim`
+# the AU queues and therefore the whole adaptive controller) was device-only, and `make sim-macos`
 # logged `ff: FFmpeg unavailable`. `HOST=1 ci/build-ffmpeg.sh` builds the SAME FFmpeg 9.0 from the
 # SAME component list for this Mac; `ci/stage-host-ffmpeg.sh` puts it in pkg/ with loader-relative
 # names. `APP_FILES` is an explicit list, so none of it can reach an .ipk or a television.
@@ -1543,21 +1546,38 @@ pkg/.ffabi-host-ok: ci/ffabi-assert.c $(FFMPEG_HOST_INC)/libavformat/avformat.h 
 #
 # The host FFmpeg is a prerequisite of BOTH configurations: a lab simulator that cannot demux
 # would exercise the upload path over a playback that never started.
-sim: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
+# Platform build targets are explicit. Keep `sim` as the compatibility spelling for the original
+# macOS simulator; new automation should name the platform it expects.
+sim: sim-macos
+
+sim-macos: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
 	PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
 
-# Interactive: opens a window. Ctrl-C to quit.
-sim-run: sim
-	@$(SIM_PRE)
-	$(SIM_ENV) $(SIM_BIN) $(SIM_PMS) $(SIM_PORT)
+# Optimized Linux UI/Plex simulator with no host FFmpeg prerequisite. It runs natively on Linux;
+# Windows/WSLg uses the same binary through `tools/sim.ps1`. Play intentionally reaches the host
+# seam's existing "no video path" result.
+sim-linux:
+	PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
+	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
+	  cargo build --release --manifest-path rust-modules/Cargo.toml --target-dir "$$SIM_LINUX_TDIR_ENV" \
+	  --features hostsim --bin plxnative-sim
 
-# Headless: boot, settle, write ONE png, exit. This is the agent-facing entry point.
-sim-shot: sim
+# Compatibility spelling used by the Windows launcher and existing documentation.
+sim-wsl: sim-linux
+
+# Explicit macOS operations. The old names remain aliases so existing scripts do not break.
+sim-run: sim-macos-run
+sim-macos-run: sim-macos
+	@$(SIM_PRE)
+	$(SIM_ENV) $(SIM_MACOS_BIN) $(SIM_PMS) $(SIM_PORT)
+
+sim-shot: sim-macos-shot
+sim-macos-shot: sim-macos
 	@$(SIM_PRE)
 	$(SIM_ENV) PLXNATIVE_SHOT=$(SIM_SHOT) PLXNATIVE_SHOT_FRAME=$(SIM_FRAME) PLXNATIVE_SHOT_EXIT=1 \
-	  $(SIM_BIN) $(SIM_PMS) $(SIM_PORT)
+	  $(SIM_MACOS_BIN) $(SIM_PMS) $(SIM_PORT)
 	@echo "wrote $(SIM_SHOT)"
 
 # Copy the owner token out of the gitignored header into this instance's root, so the simulator
@@ -1565,7 +1585,8 @@ sim-shot: sim
 # never echoed. It is a SHORTCUT, not the only way in: plex.tv QR sign-in works on the desktop as
 # of 2026-08-16 (net.rs's candidate list gained macOS's libcurl, and `dynlib!` learned to bind a
 # variadic C function correctly) — this line used to say it could not.
-sim-token:
+sim-token: sim-macos-token
+sim-macos-token:
 	@mkdir -p $(SIM_DIR)
 	@printf '%s' '$(call cfg_macro,PMS_TOKEN)' > $(SIM_DIR)/plxnative-token
 	@test -s $(SIM_DIR)/plxnative-token || { echo "no PMS_TOKEN in src/config.local.h"; rm -f $(SIM_DIR)/plxnative-token; exit 1; }
@@ -1589,7 +1610,8 @@ sim-token:
 # Needs no PMS, so it does not go through SIM_PRE. `SIM_SECS` bounds it.
 SIM_SAMPLE ?=
 SIM_SECS   ?= 20
-sim-play: sim
+sim-play: sim-macos-play
+sim-macos-play: sim-macos
 	@test -n "$(SIM_SAMPLE)" || { echo "SIM_SAMPLE=<file.h264> is required — an Annex-B elementary stream WITH access-unit delimiters, e.g."; \
 	  echo "  ffmpeg -i clip.ts -c:v copy -an -bsf:v h264_metadata=aud=insert -f h264 /tmp/sample.h264"; exit 1; }
 	@mkdir -p $(SIM_DIR)
@@ -1597,11 +1619,12 @@ sim-play: sim
 	@cp $(SIM_SAMPLE) $(SIM_DIR)/sample.h264
 	@touch $(SIM_DIR)/plxnative-clocksink $(SIM_DIR)/plxnative-autoplay $(SIM_DIR)/plxnative-stats
 	$(SIM_ENV) PLXNATIVE_SHOT=$(SIM_SHOT) PLXNATIVE_SHOT_FRAME=$$(( $(SIM_SECS) * 60 )) \
-	  PLXNATIVE_SHOT_EXIT=1 $(SIM_BIN) 127.0.0.1 32400 || true
+	  PLXNATIVE_SHOT_EXIT=1 $(SIM_MACOS_BIN) 127.0.0.1 32400 || true
 	@echo "--- $(SIM_DIR)/plxnative-events.log ---"
 	@grep -E 'clocksink|bf_split|SMP |vplane|route=player' $(SIM_DIR)/plxnative-events.log | head -20
 
-sim-clean:
+sim-clean: sim-macos-clean
+sim-macos-clean:
 	rm -rf $(SIM_DIR)
 
 # ---------------------------------------------------------------------------------------------
@@ -1681,5 +1704,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)
