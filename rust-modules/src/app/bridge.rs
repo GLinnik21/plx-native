@@ -531,8 +531,8 @@ impl Bridge {
     pub(crate) fn take_session_ready(&mut self) -> Option<crate::auth::ReadyCreds> {
         let (epoch, scope, server, token, install) = self.session_ready.take()?;
         if !self.session.ready_is_current(epoch, scope) { return None; }
-        Some(crate::auth::ReadyCreds { origin: server.origin(), token, install,
-            tier: server.tier, pin: server.resolve_pin() })
+        Some(crate::auth::ReadyCreds { origin: server.origin(), address: server.address.clone(),
+            token, install, tier: server.tier, pin: server.resolve_pin() })
     }
 
     pub(crate) fn take_content_reqs(&mut self) -> Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)> {
@@ -2791,6 +2791,10 @@ mod session_endpoint_policy_tests;
 mod session_stored_home_tests;
 
 #[cfg(test)]
+#[path = "session_plaintext_repair_tests.rs"]
+mod session_plaintext_repair_tests;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
@@ -2828,6 +2832,12 @@ mod tests {
         crate::plex::reset_servers_for_test();
     }
 
+    // Dev-only: this fixture drives a plaintext loopback PMS with a real, token-bearing registered
+    // server, which a store build's `CredentialPolicy::HttpsOnly` refuses before the library GET
+    // reaches the wire (see `http::credential_transport_allowed`) — the connection this test waits
+    // on then never arrives. The store-build case is covered instead by `auth.rs`'s
+    // `e2e_real_curl_*` HTTPS harness.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn production_bridges_do_not_share_browse_state_or_landings() {
         use std::io::{Read, Write};

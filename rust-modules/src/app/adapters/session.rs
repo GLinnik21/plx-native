@@ -312,15 +312,20 @@ impl SessionAdapter {
             };
             if !extras.is_empty() { return permit.reply(false); }
             let origin = primary.origin();
-            let id = crate::plex::register_pinned_with_client_id("", &origin, &primary.token,
-                primary.resolve_pin().as_ref(), client_id);
+            // #95 step 8 / A1+A2: apply the connection facts inside the same registration write
+            // (`ConnectionFacts::default()` is a no-op when `primary.tier` is unknown), deriving
+            // the IP family from the stored ADDRESS rather than `origin.host()` — a `plex.direct`
+            // origin's host is a certificate NAME, which `IpVersion::of_host` cannot parse.
+            let connection = crate::plex::ConnectionFacts::new(
+                primary.tier,
+                crate::plex::IpVersion::of_host(&primary.address),
+            );
+            let id = crate::plex::register_pinned_with_client_id("", &origin,
+                &primary.token, primary.resolve_pin().as_ref(), client_id, connection);
             if self.replay_resources {
                 if let Some(client) = crate::plex::client_for(id) { client.disable_data_io(); }
             }
             crate::plex::set_current(id);
-            if let (Some(tier), Some(client)) = (primary.tier, crate::plex::client_for(id)) {
-                client.set_connection(tier, crate::plex::IpVersion::of_host(origin.host()));
-            }
             return permit.reply(true);
         }
         if plan.lifecycle.is_some_and(|expected| !self.lifecycle_current(permit.request(), expected)) {

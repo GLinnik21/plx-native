@@ -83,9 +83,10 @@ mod tests {
                     ..Default::default()
                 }),
                 crate::auth::settled_probe(
-                    &crate::plex::probe::plan(resource),
+                    &crate::plex::probe::plan(resource, crate::plex::CredentialPolicy::HttpsOnly),
                     crate::plex::probe::Outcome::Reachable,
                     Some(crate::plex::probe::Location::Local),
+                    Some(address.into()),
                 ),
             )
         }
@@ -506,13 +507,17 @@ mod tests {
                             tier: Some(crate::plex::probe::Location::Local),
                             ..session.sources[0].clone()
                         };
+                        let probe = crate::auth::settled_probe_for_test(&machine_id,
+                            crate::plex::probe::Outcome::Reachable,
+                            Some(crate::plex::probe::Location::Local), Some(address.into()));
                         assert!(output
                             .complete(crate::auth::endpoint_work_fact(
                                 flow_epoch,
                                 expected,
                                 lifecycle,
                                 machine_id,
-                                Some(fresh)
+                                Some(fresh),
+                                Some(probe),
                             ))
                             .is_ok());
                     });
@@ -662,8 +667,11 @@ mod tests {
                 let stale = SourceRef { address: "127.0.0.9".into(),
                     origin_url: "http://127.0.0.9:32400".into(),
                     token: "account-token-not-authoritative".into(), ..session.sources[0].clone() };
+                let probe = crate::auth::settled_probe_for_test(&machine_id,
+                    crate::plex::probe::Outcome::Reachable,
+                    Some(crate::plex::probe::Location::Local), Some("127.0.0.9".into()));
                 output.complete(crate::auth::endpoint_work_fact(EPOCH, expected, lifecycle,
-                    machine_id, Some(stale))).unwrap();
+                    machine_id, Some(stale), Some(probe))).unwrap();
             });
             let mut d = Dispatcher::<AppHost>::new();
             command(&mut rig, &mut d, SessionCmd::RequestEndpoint { sid: id });

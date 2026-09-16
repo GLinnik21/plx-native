@@ -132,6 +132,7 @@ strip_strings_and_comments() {
     }
     print out
   }' "$1"
+}
 
 # allowed <rule> <path>: is `path` an entry of ci/allow/<rule>.txt?
 allowed() {

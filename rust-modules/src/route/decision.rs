@@ -2094,7 +2094,9 @@ fn take_active_encoder() -> String {
     std::mem::take(&mut active.id)
 }
 
-#[cfg(test)]
+// Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module's `tests`
+// submodule below (see the comment on the first one).
+#[cfg(all(test, feature = "devtriggers"))]
 fn replace_active_encoder(expected: &str, replacement: &str) -> bool {
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     let active = &mut control.active;
@@ -2157,8 +2159,10 @@ enum ActiveHlsCommitRefusal {
 /// The process route no longer belongs to the worker which tried to publish a bounded local
 /// transition. Kept separate from [`HlsCommitRefusal`]: this door changes no HLS route and has no
 /// controller-rejection or server-session arm.
+// Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module's `tests`
+// submodule below (see the comment on the first one).
+#[cfg(all(test, feature = "devtriggers"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg(test)]
 pub(crate) enum ActiveEncoderRefusal {
     RouteMoved,
 }
@@ -2168,7 +2172,9 @@ pub(crate) enum ActiveEncoderRefusal {
 /// Production enters this under the AU queue mutex, fixing the global order at AQ -> ACTIVE. The
 /// callback executes before ACTIVE is released; a check which returned `bool` and published later
 /// would reopen a gap for seek/retranscode to retire this worker between those two operations.
-#[cfg(test)]
+// Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module's `tests`
+// submodule below (see the comment on the first one).
+#[cfg(all(test, feature = "devtriggers"))]
 fn with_active_route<T>(
     expected: &RouteLease,
     publication: impl FnOnce() -> T,
@@ -2240,7 +2246,9 @@ fn active_encoder() -> String {
         .clone()
 }
 
-#[cfg(test)]
+// Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module's `tests`
+// submodule below (see the comment on the first one).
+#[cfg(all(test, feature = "devtriggers"))]
 fn active_route_lease() -> RouteLease {
     let control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     lease_of(&control.active)
@@ -2450,7 +2458,9 @@ impl HlsAbrControl {
     /// replacement decision. It does not prove that PMS preserves the old HLS cursor: observed PMS
     /// can rebind the shared resource during the raw Part read, so a successful recovery must leave
     /// from the same media boundary instead of asking that cursor for one more segment.
-    #[cfg(test)]
+    // Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module's `tests`
+    // submodule below (see the comment on the first one).
+    #[cfg(all(test, feature = "devtriggers"))]
     pub(crate) fn probe_original_while_hls(
         &self,
         expected: &WorkerTicket,
@@ -3061,7 +3071,9 @@ pub(crate) fn arm_auto_fixture(
 /// rate, which is one sample of a distribution; atomically move the route to the best HLS state
 /// that estimate sustains, then build the replacement encoder at the current movie position. The
 /// caller performs the fresh Starfish Load only when this returns a URL.
-#[cfg(test)]
+// Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module's `tests`
+// submodule below (see the comment on the first one).
+#[cfg(all(test, feature = "devtriggers"))]
 pub(crate) fn fallback_auto_to_hls(ps: &mut PlaybackSession, measured_kbps: u32, offset_secs: i64) -> Option<String> {
     let expected = worker_ticket();
     fallback_auto_to_hls_for(ps, &expected, measured_kbps, offset_secs)
@@ -6349,6 +6361,9 @@ mod tests {
     /// Duplicated from `plan::tests` (a 3-line Dolby Vision Profile 8 fixture the shared-
     /// fixture split left on both sides of the module boundary; see that module's `p8` for
     /// the sibling copy and its provenance comment).
+    // Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module (see the
+    // comment on the first one).
+    #[cfg(feature = "devtriggers")]
     fn p8() -> crate::metadata::Dovi {
         crate::metadata::Dovi {
             present: true,
@@ -6360,6 +6375,9 @@ mod tests {
     }
 
     /// Same provenance as `plan::tests::p5`: single-layer IPT-PQ with no HDR10 fallback.
+    // Dev-only: used only by the `#[cfg(feature = "devtriggers")]` tests in this module (see the
+    // comment on the first one).
+    #[cfg(feature = "devtriggers")]
     fn p5() -> crate::metadata::Dovi {
         crate::metadata::Dovi {
             present: true,
@@ -6405,6 +6423,14 @@ mod tests {
         }
     }
 
+    // Dev-only, this test and every other `#[cfg(feature = "devtriggers")]` test in this module:
+    // each drives a plaintext loopback PMS fixture (`plan_pms`/`selection_probe_pms`/`stub_pms` and
+    // their kin, below) with a real, token-bearing client, which a store build's
+    // `CredentialPolicy::HttpsOnly` refuses before the request reaches the wire (see
+    // `http::credential_transport_allowed`) — the refused call's return value fails the fixture's
+    // own assertion, or the connection the fixture waits on never arrives. The store-build case is
+    // covered instead by `auth.rs`'s `e2e_real_curl_*` HTTPS harness.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_user_contract_requested_during_resolve_survives_the_landing() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6450,6 +6476,7 @@ mod tests {
         finish_route_action(&mut ps, &action, RouteApplyResult::Prepared);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn cancelling_resolve_restores_failed_even_when_its_projection_has_a_url() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6528,6 +6555,7 @@ mod tests {
         reset_player_control_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn backgrounding_an_unproven_original_rearms_frame_proof_on_a_new_load() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6589,6 +6617,7 @@ mod tests {
         reset_player_control_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn resolve_cannot_hide_a_live_start_transaction() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6608,6 +6637,7 @@ mod tests {
         reset_player_control_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn accepted_original_load_stays_in_trial_until_a_frame_or_rollback() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6657,6 +6687,7 @@ mod tests {
         reset_player_control_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn automatic_publication_is_busy_for_the_whole_staged_user_edit() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6726,6 +6757,7 @@ mod tests {
         reset_player_control_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn quality_changed_during_resolve_cannot_land_the_old_contract() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6766,6 +6798,7 @@ mod tests {
         reset_session(&mut ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_seek_revokes_automatic_evidence_without_erasing_the_user_contract() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6798,6 +6831,7 @@ mod tests {
         assert_ne!(worker_ticket(), before_seek);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_seek_retargets_an_accepted_handoff_instead_of_erasing_its_only_producer() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6828,6 +6862,7 @@ mod tests {
         assert!(commit_user_seek());
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn rejected_transcode_seek_preserves_hls_worker_authority() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6885,6 +6920,7 @@ mod tests {
         finish_route_action(&mut ps, &automatic, RouteApplyResult::Prepared);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn rejected_user_action_preserves_old_applied_auto_handoff_without_rebinding_it_to_desired() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6940,6 +6976,7 @@ mod tests {
         reset_player_control_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn rejected_route_effect_restores_the_whole_applied_projection() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7008,6 +7045,7 @@ mod tests {
         reset_player_control_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn hls_commit_during_a_staged_user_contract_merges_only_physical_fields() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7064,6 +7102,7 @@ mod tests {
         reset_player_control_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn rejected_user_retranscode_keeps_the_physical_worker_authorized() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7096,6 +7135,7 @@ mod tests {
         reset_player_control_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn pinning_the_live_auto_hls_rung_fences_its_worker_before_projection_changes() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7155,6 +7195,7 @@ mod tests {
         reset_player_control_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn reselecting_the_exact_quality_does_not_fence_the_current_worker() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7204,6 +7245,7 @@ mod tests {
         finish_route_action(&mut ps, &action, RouteApplyResult::Prepared);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn subtitle_off_keeps_a_pending_original_recovery() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7281,6 +7323,7 @@ mod tests {
         crate::player::reset_subtitle();
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn subtitle_on_invalidates_a_pending_original_recovery() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7316,6 +7359,7 @@ mod tests {
         crate::player::reset_subtitle();
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn audio_change_invalidates_a_pending_original_recovery() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7351,6 +7395,7 @@ mod tests {
         crate::player::reset_audio_track();
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn an_original_trial_is_busy_not_stale_to_its_new_watchdog() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7373,6 +7418,7 @@ mod tests {
         reset_player_control_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn teardown_invalidates_the_worker_before_it_can_publish() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7519,6 +7565,7 @@ mod tests {
     /// Regression for the worker handoff race: a boolean ownership check followed by a mailbox
     /// store let seek replace ACTIVE in between. The callback door must both reject an already
     /// moved route without touching the mailbox and hold ACTIVE throughout an accepted store.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn source_recovery_publication_is_atomic_with_route_ownership() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7567,6 +7614,7 @@ mod tests {
     /// A semantic route change can keep the same PMS resource id: direct Original deliberately
     /// retains the HLS Streaming Resource while dropping its HLS projection. Comparing only the
     /// id therefore admits an outgoing HLS worker after ownership has changed (same-id ABA).
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_same_id_route_change_invalidates_the_outgoing_worker() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7601,6 +7649,7 @@ mod tests {
         assert_eq!(pending, None);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -7912,6 +7961,7 @@ mod tests {
     /// Pin the opposite client ordering: the finite source read borrows the exact active HLS
     /// identity and no control-plane request precedes or follows it. This proves the local route
     /// remains selected; it deliberately does not infer PMS-side cursor continuity.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -8028,6 +8078,7 @@ mod tests {
     /// PMS 1.43.4 turns an AdHoc bandwidth refusal into 500.  That status is a request failure,
     /// not a zero-rate sample, and an optional source check must never make the live HLS route
     /// fatal or replace it.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_rejected_original_probe_keeps_hls_and_produces_no_capacity_observation() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -8117,6 +8168,7 @@ mod tests {
     /// The worker may finish a bounded response after a concurrent quality change has installed a
     /// different HLS resource.  Bytes charged to the old identity are not evidence for the new
     /// route: keep the replacement intact and discard the completed sample.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -8210,6 +8262,7 @@ mod tests {
     /// Cold Auto measures the Part under the playback's durable logical owner.  The bounded read
     /// must not manufacture a `source-N` identity or exact-close the resource before the selected
     /// Original/HLS route can reuse it.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn cold_source_preflight_uses_the_playback_identity_and_does_not_close_it() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -8480,6 +8533,7 @@ mod tests {
     /// Graded on the resolve that FAILS, deliberately — it is the exit `build_stream` takes first,
     /// before any network, and a plan that carries no server is one `apply_plan` cannot install an
     /// honest `cur_sid` from. Every richer exit builds on the same field.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_plan_round_trips_the_server_the_request_captured() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -8544,16 +8598,26 @@ mod tests {
         );
     }
 
+    // Dev-only, this block through `write_json` below: MDE fixture bodies and the raw-socket
+    // helpers that feed them to a loopback PMS, used only by the `#[cfg(feature = "devtriggers")]`
+    // tests in this module (see the comment on the first one) — gated together so they don't
+    // become dead code under a store build.
+    #[cfg(feature = "devtriggers")]
     const MDE_DIRECTPLAY: &[u8] =
         br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#;
+    #[cfg(feature = "devtriggers")]
     const MDE_TRANSCODE: &[u8] =
         br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode"}]}]}]}}"#;
     /// Part.decision=transcode, video copied, audio transcoded — the measured TrueHD-only shape.
+    #[cfg(feature = "devtriggers")]
     const MDE_TRANSCODE_COPY: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"copy"},{"streamType":2,"decision":"transcode"}]}]}]}]}}"#;
     /// Part.decision=transcode AND the video lane itself is transcode (bit depth, …).
+    #[cfg(feature = "devtriggers")]
     const MDE_TRANSCODE_VIDEO: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode"}]}]}]}]}}"#;
+    #[cfg(feature = "devtriggers")]
     const EMPTY_MC: &[u8] = br#"{"MediaContainer":{}}"#;
 
+    #[cfg(feature = "devtriggers")]
     fn drain_http(socket: &mut std::net::TcpStream) -> String {
         use std::io::{BufRead, BufReader, Read};
         let mut reader = BufReader::new(socket.try_clone().expect("clone"));
@@ -8578,6 +8642,7 @@ mod tests {
     }
 
     /// Exact `key=value` on a request-line query, so `subtitleStreamID=0` cannot match `88001`.
+    #[cfg(feature = "devtriggers")]
     fn query_param<'a>(line: &'a str, key: &str) -> Option<&'a str> {
         let query = line.split_once('?')?.1;
         let query = query.split_whitespace().next().unwrap_or(query);
@@ -8587,6 +8652,7 @@ mod tests {
         })
     }
 
+    #[cfg(feature = "devtriggers")]
     fn write_json(socket: &mut std::net::TcpStream, body: &[u8]) {
         use std::io::Write;
         write!(
@@ -8598,7 +8664,11 @@ mod tests {
         socket.write_all(body).expect("body");
     }
 
+    // Dev-only: these loopback PMS fixtures (through `selection_probe_pms`, below) are used only
+    // by the `#[cfg(feature = "devtriggers")]` tests above, for the reason given on the first one
+    // — gated together so they don't become dead code under a store build.
     /// Loopback PMS that answers PlayQueue / PUT / `/decision` long enough for `build_stream`.
+    #[cfg(feature = "devtriggers")]
     fn plan_pms(
         n: usize,
         mde_body: &'static [u8],
@@ -8613,6 +8683,7 @@ mod tests {
     /// Same as [`plan_pms`], plus a bounded `start.mkv` body so Remote Auto can probe a remux.
     /// A Part GET is 503 — that is PMS 1.43 after a transcode MDE, and the test grades that we
     /// never ask.
+    #[cfg(feature = "devtriggers")]
     fn plan_pms_with_start_mkv(
         n: usize,
         mde_body: &'static [u8],
@@ -8625,6 +8696,7 @@ mod tests {
         plan_pms_inner(n, mde_body, Some(start_bytes))
     }
 
+    #[cfg(feature = "devtriggers")]
     fn plan_pms_inner(
         n: usize,
         mde_body: &'static [u8],
@@ -8714,6 +8786,7 @@ mod tests {
     }
 
     /// Selection is PMS state, not a promise made by a GET's query parameters.
+    #[cfg(feature = "devtriggers")]
     fn selection_probe_pms(
         refuse: bool,
         burn: i64,
@@ -8773,6 +8846,7 @@ mod tests {
         (port, done, handle)
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn remux_review_probe_installs_effective_selection_before_decision_and_start() {
         let mut ps = PlaybackSession::IDLE;
@@ -8815,6 +8889,7 @@ mod tests {
         crate::plex::reset_servers_for_test();
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn remux_review_http_200_refusal_never_gets_media() {
         let mut ps = PlaybackSession::IDLE;
@@ -8832,6 +8907,9 @@ mod tests {
         crate::plex::reset_servers_for_test();
     }
 
+    // Dev-only, this block through `selected_sub` below: item/stream fixtures used only by the
+    // `#[cfg(feature = "devtriggers")]` tests in this module (see the comment on the first one).
+    #[cfg(feature = "devtriggers")]
     fn fourk_item(
         sid: ServerId,
         audio: Vec<crate::metadata::Stream>,
@@ -8839,6 +8917,7 @@ mod tests {
         fourk_item_with_subs(sid, audio, Vec::new())
     }
 
+    #[cfg(feature = "devtriggers")]
     fn fourk_item_with_subs(
         sid: ServerId,
         audio: Vec<crate::metadata::Stream>,
@@ -8859,6 +8938,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "devtriggers")]
     fn eac3_track() -> crate::metadata::Stream {
         crate::metadata::Stream {
             id: 36014,
@@ -8873,6 +8953,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "devtriggers")]
     fn selected_sub(id: i64, codec: &str) -> crate::metadata::Stream {
         crate::metadata::Stream {
             id,
@@ -8887,6 +8968,7 @@ mod tests {
     /// PMS 1.43 503s a Part GET whose session has no MDE decision. A 4K HEVC+EAC3 title used
     /// to skip `/decision` because EAC3 is a direct-play audio codec; the plan URL must not
     /// be that part until MDE has registered the session.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn original_hevc_eac3_registers_mde_before_returning_the_part() {
         use std::time::Duration;
@@ -8947,6 +9029,7 @@ mod tests {
     /// Smart-DP used to skip MDE so a TrueHD default would not veto the AC3 sibling. The
     /// `/decision` query must name that sibling; otherwise PMS evaluates TrueHD and the part
     /// GET 503s or the title is sent to a video-downscaling transcode.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn smart_dp_names_the_ac3_sibling_on_mde() {
         use std::time::Duration;
@@ -9016,6 +9099,7 @@ mod tests {
     /// OpenAPI: a Part GET whose decision is a transcode is HTTP 503. Honour MDE rather than
     /// returning the part URL the local codec test would have chosen. A `/decision` body that
     /// names no video stream cannot claim the video must re-encode, so this unnamed shape remuxes.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn mde_transcode_does_not_return_the_part_url() {
         use std::time::Duration;
@@ -9070,6 +9154,7 @@ mod tests {
     /// HEVC+TrueHD with no AAC/AC3/EAC3 sibling: MDE transcodes the part (TrueHD is not in the
     /// profile) but the video can still be copied. A Part-level veto would re-encode 4K for an
     /// audio problem.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn mde_transcode_for_truehd_only_still_remuxes() {
         use std::time::Duration;
@@ -9130,6 +9215,7 @@ mod tests {
 
     /// A video-stream `transcode` (bit depth past the profile, …) is the copy veto. Remux here
     /// would ship pixels the decoder cannot take.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn mde_video_stream_transcode_forbids_remux() {
         use std::time::Duration;
@@ -9177,6 +9263,7 @@ mod tests {
 
     /// Declared Profile 5 can Original, but a remux copy carries no `DolbyHdrInfo`. MDE's
     /// video=`copy` (the measured P5 shape) must not override `no_video_copy`.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
         use std::time::Duration;
@@ -9227,6 +9314,7 @@ mod tests {
     /// Remote Auto used to probe the Part after MDE registered transcode, which 503s, so bootstrap
     /// fell through to HLS and re-encoded 4K for an audio-only veto. The probe has to sample the
     /// remux `start.mkv` we would actually play.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn remote_auto_truehd_remux_probes_start_mkv_not_the_part() {
         use std::time::Duration;
@@ -9315,6 +9403,7 @@ mod tests {
     /// TrueHD default `id=1` is what `env.audio_sid` still carries at resolve start.
     /// MDE, the remux probe, the play-path PUT, and the installed start.mkv must all name the
     /// AC3 sibling `id=2` that smart-DP will actually feed.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn remote_auto_truehd_remux_probe_names_the_ac3_sibling_not_env_audio_sid() {
         use std::time::Duration;
@@ -9426,6 +9515,7 @@ mod tests {
 
     /// 720p denies remux, so the encoder can transcode the selected DTS. Putting the smart-DP
     /// AC3 sibling here replaced English with the Russian default (reproduced on PMS 1.43.4).
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_720p_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
         use std::time::Duration;
@@ -9512,6 +9602,7 @@ mod tests {
     /// 720p with a selected flag that only echoes the Russian default must still PUT English,
     /// the same sibling smart-DP / pref-lang would copy. Treating that echo as a pick would
     /// open The Morning Show in the foreign dub at 720p.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_720p_reencode_does_not_put_a_default_echo_over_english() {
         use std::time::Duration;
@@ -9597,6 +9688,7 @@ mod tests {
 
     /// 720p can transcode unselected English DTS when the smart-DP sibling is a foreign AC3.
     /// Treating pref-lang as DP-only would keep the Russian copy the encoder does not need.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_720p_reencode_puts_pref_lang_dts_not_the_foreign_ac3_sibling() {
         use std::time::Duration;
@@ -9682,6 +9774,7 @@ mod tests {
 
     /// Relay Auto cannot Original, so bootstrap installs HLS. The play-path PUT and start.m3u8
     /// must still name selected English DTS, not the Russian AC3 sibling a remux would copy.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_auto_hls_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
         use std::time::Duration;
@@ -9771,6 +9864,7 @@ mod tests {
     /// A remux probe that registers `/decision` and then gets no `start.mkv` body must
     /// physical-stop (`closeResourceSession=0`) so the HLS `/decision` on the same identity
     /// is not 503'd. Closing the Streaming Resource would.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn remote_auto_failed_remux_sample_physical_stops_before_hls() {
         use std::time::Duration;
@@ -9850,6 +9944,7 @@ mod tests {
 
     /// An empty / unusable MDE body must not fall back to Original — that Part GET 503s on 1.43.
     /// Remux/re-encode via a separate registering decision is still allowed.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn unreachable_mde_does_not_return_the_part_url() {
         use std::time::Duration;
@@ -9905,6 +10000,7 @@ mod tests {
     /// *and* `subtitles=none`: 1.43.4 400s hasMDE+directPlay with a selected subtitle and
     /// the default `auto`. The mock PMS rejects that shape, so omitting the mode fail-closes
     /// into remux + PUT sub=0 (the selected subtitle disappears).
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn selected_embedded_srt_names_id_and_client_rendered_mode_on_mde() {
         use std::time::Duration;
@@ -9960,6 +10056,7 @@ mod tests {
 
     /// Selected PGS is client-rendered on Original; MDE must see that stream id (and the profile
     /// must list pgs) so the decision stays directplay.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn selected_pgs_names_subtitle_stream_id_on_mde() {
         use std::time::Duration;
@@ -10010,6 +10107,7 @@ mod tests {
 
     /// A selected external sidecar is not in the container — Original leaves subs off. MDE must
     /// see subtitleStreamID=0 so it does not force a burn/transcode for a sub we will not render.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn external_selected_sub_sends_subtitle_stream_id_zero_on_mde() {
         use std::time::Duration;
@@ -10069,6 +10167,7 @@ mod tests {
 
     /// Selected embedded `mov_text` (iTunes MP4) is client-rendered; the profile lists it so
     /// MDE must see the stream id and stay Original rather than re-encoding.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn selected_mov_text_names_subtitle_stream_id_on_mde() {
         use std::time::Duration;
@@ -10119,6 +10218,7 @@ mod tests {
 
     /// PMS reports DVD bitmaps as `dvd_subtitle`; listing only `dvd` would MDE-transcode and
     /// then forbid remux. The stream id must land on `/decision`.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn selected_dvd_subtitle_names_subtitle_stream_id_on_mde() {
         use std::time::Duration;
@@ -10173,6 +10273,7 @@ mod tests {
     /// copy is drawn from, and the two ends are in different modules — the menu asks
     /// `route::source_decodable()` and never evaluates `video_direct_plays` itself, deliberately,
     /// because a second evaluation could disagree with the routing decision it describes.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn the_codec_gates_verdict_is_what_the_quality_menu_reads() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -10307,6 +10408,7 @@ mod tests {
     /// The remote case carries the rung its completed source probe selected. The local case
     /// deliberately carries bootstrap's unknown-link fallback: Local admitted Original without a
     /// measurement, and source demand must not be relabelled as capacity after the open fails.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn an_unopened_auto_original_reuses_admission_evidence_instead_of_inventing_zero_rate() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -10353,6 +10455,7 @@ mod tests {
     /// file PMS started from.  An Original Dolby Vision + Atmos source that falls back to HLS is
     /// re-encoded as H.264 + AAC, so carrying its source-only Dolby flags across the handoff makes
     /// diagnostics lie and (for `immersive`) tells the system player that AAC contains Atmos.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn an_original_to_hls_handoff_drops_source_only_dolby_declarations() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -10468,6 +10571,7 @@ mod tests {
         crate::plex::reset_servers_for_test();
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn hls_controller_starts_at_the_rung_the_runtime_fallback_selected() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -10626,6 +10730,7 @@ mod tests {
     /// resurrect or mutate a stale resource and was observed in the server archive as the same
     /// `abr-N` starting twice.  The replacement must therefore be registered under a fresh key,
     /// published atomically, and the old exact key stopped only after that publication succeeds.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_transcode_seek_swaps_to_a_fresh_physical_session_and_retires_the_old_one() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -10719,6 +10824,7 @@ mod tests {
     /// A `/decision` response is preparation, not publication. PMS can close the connection or
     /// return an unparseable body after registering the proposed resource; neither outcome may
     /// rewrite Session/ACTIVE to the requested rung while the old encoder is still on screen.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_failed_retranscode_decision_leaves_the_live_route_unchanged() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -10822,6 +10928,7 @@ mod tests {
     /// Every boundary must retain the encoder/rung/URL that was ACTUALLY on screen.  Before this
     /// regression the worker updated only `ACTIVE_ENCODER`; the main-thread route still named the
     /// bootstrap URL and ceiling, so rollback reopened old media and Auto restarted at 720 kbps.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn failed_original_then_auto_keeps_the_live_adaptive_route() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -10916,6 +11023,7 @@ mod tests {
         crate::player::reset_subtitle();
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn hls_recovery_restores_the_exact_direct_source_and_rearms_its_watchdog() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -11085,6 +11193,7 @@ mod tests {
     /// `/decision` only registered a route; it did not prove that the new MKV can deliver a decoded
     /// frame.  Keep the working HLS encoder until that frame arrives. If the remux never opens,
     /// restore HLS and retire the unproven replacement rather than the stream the viewer had.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_remux_recovery_keeps_hls_until_frames_and_rolls_back_the_replacement() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -11395,6 +11504,7 @@ mod tests {
         crate::player::reset_subtitle();
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn manual_original_adopts_one_running_trial_and_revokes_its_auto_ticket_on_frame() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -11676,6 +11786,7 @@ mod tests {
         crate::player::reset_route_requests_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn audio_selected_during_original_trial_uses_the_route_that_actually_lands() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -11731,6 +11842,7 @@ mod tests {
         crate::player::reset_route_requests_for_test(&ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn an_installed_cold_direct_route_closes_its_logical_resource_at_teardown() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -11830,6 +11942,7 @@ mod tests {
     /// proves the current HTTP body, but PMS checks the resource's terminated flag again on every
     /// later Range GET. Therefore confirmation stops only the physical HLS encoder, retains that
     /// exact resource identity in the direct URL, and closes it only at final playback teardown.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -12009,6 +12122,7 @@ mod tests {
     /// `scrobble_stop` takes the retained active identity and performs the final exact close.
     /// Dropping PendingOriginal must only forget its rollback in this branch, or PMS receives two
     /// concurrent stop/close requests for the same resource.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -12140,6 +12254,7 @@ mod tests {
         crate::player::reset_subtitle();
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn direct_recovery_without_its_server_keeps_hls_instead_of_using_a_logical_alias() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -12183,6 +12298,7 @@ mod tests {
         install_active_encoder("");
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscoding() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -12260,6 +12376,7 @@ mod tests {
     /// after the user selects any fixed rung, Manual Original needs the exact direct/remux
     /// declaration to return to. Without it the Local route has no recovery target and asks for
     /// one more encoder.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn local_auto_preserves_the_candidate_needed_to_leave_a_fixed_rung() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -12314,6 +12431,7 @@ mod tests {
     /// proof" with "the source needs no feasibility check". Differential against the old route:
     /// Local alone set `auto_original = true`, selected progressive MKV, and left this AV1-shaped
     /// playback without an HLS controller after the reload.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn local_auto_keeps_hls_when_original_is_infeasible() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -12370,6 +12488,7 @@ mod tests {
     /// with a capped encoder, and Manual Original must use the preserved source candidate to
     /// return to direct play. The bad old route kept the progressive-transcode flavor and asked
     /// for one more encoder refresh, because the recovery branch only recognized Fixed HLS.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn manual_original_after_a_fixed_rung_returns_to_the_native_source() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -12465,6 +12584,7 @@ mod tests {
     /// same demux worker: Auto's worker owns an `OriginalModeController`. Merely changing the route
     /// flag leaves the already-running Manual worker alive with the `None` it captured at spawn,
     /// which is the photographed `Auto · controller idle / no adaptive session` state.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn original_to_auto_restarts_the_worker_to_arm_the_watchdog() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -12540,6 +12660,7 @@ mod tests {
         crate::plex::reset_servers_for_test();
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn auto_to_an_admitting_fixed_rung_restarts_the_worker_to_remove_the_watchdog() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -12606,6 +12727,7 @@ mod tests {
     /// Manual Original is not Auto, but it is still a zero-encode route and must be recoverable
     /// after the user temporarily selects a fixed rung. This is the Depeche Mode shape: Original
     /// direct-play → 480p burned-subtitle transcode → Original.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn manual_original_after_a_fixed_rung_with_a_subtitle_returns_to_direct_play() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -12720,6 +12842,12 @@ mod tests {
     /// channel, and answers 200 so the client's read terminates. Real sockets, like `stream.rs`'s
     /// own tests — which server a POST actually reached is the only thing the timeline routing can
     /// be graded on without a television.
+    // Dev-only, this fixture and `ordered_stub_pms` below: used only by the
+    // `#[cfg(feature = "devtriggers")]` tests that follow, for the same reason as the group above
+    // — a store build's `CredentialPolicy::HttpsOnly` refuses the plaintext, token-bearing request
+    // before it reaches this listener. The store-build case is covered instead by `auth.rs`'s
+    // `e2e_real_curl_*` HTTPS harness.
+    #[cfg(feature = "devtriggers")]
     fn stub_pms() -> (
         i32,
         std::sync::mpsc::Receiver<String>,
@@ -12741,6 +12869,7 @@ mod tests {
         (port, rx, h)
     }
 
+    #[cfg(feature = "devtriggers")]
     fn ordered_stub_pms(
         label: &'static str,
         tx: std::sync::mpsc::Sender<(&'static str, String)>,
@@ -12769,6 +12898,7 @@ mod tests {
     /// Two servers on loopback, the item playing from B, the user browsing A: the POST must land on
     /// B. The closing report to A is the control — it proves the two stubs are distinguishable, so
     /// "A heard nothing" is a fact about the routing and not about a listener that never worked.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn the_timeline_reaches_the_server_the_item_came_from_not_the_current_one() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -12865,6 +12995,7 @@ mod tests {
         reset_session(&mut ps);
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn replacement_timeline_waits_for_the_announced_old_stop_boundary() {
         let mut ps = crate::route::PlaybackSession::IDLE;
