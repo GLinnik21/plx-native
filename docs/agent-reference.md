@@ -546,6 +546,9 @@ which the linking section explains is load-bearing rather than tidy.
 - `docs/install-and-verify.md` — the invariant half a release note used to repeat every time:
   which asset is which, both install routes and why the Homebrew Channel wins, how to check the
   sha256 per platform, and what the app writes, reads and reaches on your television.
+- `site/` — the landing page (`index.html`/`styles.css`/`site.js`/`CNAME`); `.github/workflows/
+  pages.yml` stages its screenshots, logo and fonts from their existing README/app locations
+  rather than copying them into `site/`.
 - `pkg/` — deployable payload: `appinfo.json` (native app manifest), `plxnative` binary, icons,
   `appfont*.ttf`, and the prebuilt `.ipk`.
 - `ipkroot/` — ipk staging (`ctl/control`, `data/`, `debian-binary`); assembled by `make ipk`.
