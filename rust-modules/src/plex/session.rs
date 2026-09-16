@@ -2008,18 +2008,31 @@ pub(crate) fn update_with_outcome(
 /// disk reads as Locked/Blocked/Missing (those read as a default `Session`, whose empty `client_id`
 /// makes the read-modify-write a silent no-op): the user has just re-supplied everything the
 /// ciphertext held, and a sign-in nobody can read back next launch is the worst outcome available.
+///
+/// A disk that DOES hold a **readable** record (non-empty `client_id`) is still fenced against
+/// `fence`, exactly like an ordinary write — a fresh sign-in must still lose to a *readable*
+/// record a concurrent actor already replaced, the same OCC protection `update_with_outcome`'s
+/// `Routine` callers get. Only the unreadable case is deliberately left unfenced, since a
+/// Locked/Blocked/Missing read can never match anything the owner minted and refusing there is
+/// exactly the 0.6.3 symptom AUTH-03 exists to end. `fence` returning `false` refuses the write
+/// entirely (`Err`), before anything reaches disk.
+///
 /// Fresh authority without an account credential writes nothing (mirrors
 /// `async_persistence::Coordinator::admit_with`'s `account_token.is_empty()` refusal).
 pub(crate) fn replace_after_reauthentication_with_outcome(
+    fence: impl FnOnce(&Session) -> bool,
     edit: impl FnOnce(&Session) -> Session,
-) -> Option<async_persistence::LiveWrite> {
+) -> Result<Option<async_persistence::LiveWrite>, ()> {
     let _io = io();
     let cur = session_from_read(read_live_locked());
+    if !cur.client_id.is_empty() && !fence(&cur) {
+        return Err(());
+    }
     let next = edit(&cur);
     if next.account_token.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(save_locked_with_authority(&next, SaveAuthority::FreshReauthentication))
+    Ok(Some(save_locked_with_authority(&next, SaveAuthority::FreshReauthentication)))
 }
 
 /// What the routine-authority write actually did — the canonical verdict beside the

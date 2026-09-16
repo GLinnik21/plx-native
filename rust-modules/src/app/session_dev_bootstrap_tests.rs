@@ -410,18 +410,15 @@ fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contra
         d.frame_with(&mut rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
         let state = rig.session.snapshot_init();
         if disk_case == 1 {
-            // AUTH-03/AUTH-04 (fresh-reauthentication-authority): the SignedIn write that lands
-            // this login is now issued on `SaveAuthority::FreshReauthentication`, which is
-            // deliberately NOT fenced on disk identity (`plex::session::
-            // replace_after_reauthentication_with_outcome`'s own doc: the user has just
-            // re-supplied everything the ciphertext held, and losing a fresh sign-in to a
-            // concurrent disk change is the exact 0.6.3 symptom AUTH-03 exists to end). The old
-            // OCC-style refusal this branch asserted belonged to the pre-authority `Routine`
-            // write every commit used to issue; a fresh sign-in now wins over — rather than being
-            // silently dropped by — a concurrent external change, exactly like disk_case 0.
-            assert_eq!(session::peek().account_token, "synthetic-new-account");
-            assert_eq!(state.disk_identity.account_token, "synthetic-new-account");
-            assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Ready);
+            // AUTH-03/AUTH-04 (fresh-reauthentication-authority) narrowed
+            // `replace_after_reauthentication_with_outcome`'s unfenced write to the case the
+            // 0.6.3 symptom is actually about: an UNREADABLE (Locked/Blocked/Missing) disk. This
+            // disk is READABLE (a concurrent external actor replaced a record this login could
+            // actually read), so the fresh write is still fenced on disk identity exactly like a
+            // Routine write, and refuses — the external replacement survives, not the login.
+            assert_eq!(session::peek().account_token, "synthetic-external-replacement");
+            assert_eq!(state.disk_identity.account_token, "synthetic-account-a");
+            assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Error);
         } else {
             assert_eq!(state.disk_identity.account_token, "synthetic-new-account");
             assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Ready);
@@ -434,6 +431,13 @@ fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contra
                 assert!(tmp.path().is_dir(), "accepted reply did not claim a durable write");
                 let old: Session = serde_json::from_slice(&std::fs::read(tmp.path().with_file_name("preserved-a.json")).unwrap()).unwrap();
                 assert_eq!(old.account_token, "synthetic-account-a");
+                // The disk write itself failed (the candidate is a directory, not a file), so the
+                // Discovery-purpose fresh commit that was synchronously admitted must still raise
+                // a `PersistenceWarning` once its real completion lands — the AUTH-03 surface a
+                // silently-accepted-but-unwritten fresh save must not skip.
+                assert_eq!(rig.auth_read().0.persistence_warning.map(|w| w.site),
+                    Some(crate::auth::owner::PersistenceWarningSite::Discovery),
+                    "an unwritten fresh save must raise a Discovery persistence warning");
             }
         }
     }
