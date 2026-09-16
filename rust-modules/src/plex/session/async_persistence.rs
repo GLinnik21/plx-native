@@ -938,6 +938,21 @@ pub(crate) fn clear() -> Result<Receipt, AdmissionError> {
 
 /// One shared FIFO operation: resource cleanup runs before the account-wide ClearTenure.
 /// Consent may delegate to this receipt; it must not announce independent durability.
+///
+/// **Not yet wired to the live sign-out path, and that is a decision, not an oversight.**
+/// `plex::session::clear()` is the entry point `app::adapters::session::erase()` actually calls,
+/// and it stays a synchronous, [`super::IO`]-locked implementation — `commit_cleared` then, on a
+/// durable commit, `persistence::cleanup_after_confirmed_clear` — for the same reason `save()`'s
+/// live write path is still synchronous: routing sign-out through this coordinator would admit it
+/// into the same FIFO ordering as queued ordinary writes, which is the right eventual shape but
+/// needs the main loop polling a `Receipt` the way `poll_ordinary` does for writes, not a caller
+/// that blocks on it (`Receipt::wait_blocking` is `#[cfg(test)]`-only by design: "production
+/// UI/auth callers poll"). That polling integration is a separate, larger change than this
+/// package's scope. Until it lands, `clear`/`clear_after` remain exercised only by this module's
+/// own tests — deliberately kept rather than deleted, since `execute_clear`'s sequencing (clear,
+/// then sweep legacy candidates only once the clear is confirmed durable) is the shape the live
+/// path independently converged on, and the next package that adds the async handoff should
+/// delegate to this rather than re-derive it.
 pub(crate) fn clear_after(
     cleanup: impl FnOnce() -> bool + Send + 'static,
 ) -> Result<Receipt, AdmissionError> {
