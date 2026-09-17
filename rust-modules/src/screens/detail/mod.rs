@@ -1753,6 +1753,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
             d.map(|d| d.title.as_str())
                 .or_else(|| self.selected().map(|m| m.title.as_str()))
                 .unwrap_or_default(),
+            self.preview_extra().map(|e| e.title.as_str()).unwrap_or_default(),
             crate::player::preview::paused(),
             measure,
         );

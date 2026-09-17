@@ -2,8 +2,9 @@
 //!
 //! Full-trailer mode (UP with a trailer picture up and focus on the hero) takes the whole page
 //! off the screen — logo, meta, synopsis, scrims AND the action row — and puts a trailer
-//! transport in its place: the `Trailer` kicker over the item's title, the playbar, the clocks
-//! and the state read-out. Those are the player HUD's own pieces drawn through
+//! transport in its place: the `Trailer` kicker over a title ([`transport_title`] — the item's
+//! own by default, the trailer extra's when THAT says something the kicker doesn't), the playbar,
+//! the clocks and the state read-out. Those are the player HUD's own pieces drawn through
 //! `ui::player_hud::{draw_scrim, draw_title, draw_playbar}`, so the two transports cannot drift;
 //! what a trailer does NOT get is the rest of the HUD — no quality, subtitle, audio or Info
 //! control, no tabs and no track menus. A preview session has no PlayQueue, no timeline reporter
@@ -23,6 +24,21 @@ use std::ffi::CString;
 /// [`TransportMark::Play`] stands after a resume: the player HUD's own two constants, so the
 /// trailer's controls leave the screen — and its resume mark clears — on the same beat a film's do.
 use crate::ui::player_hud::{LINGER_MS, PLAY_MARK_MS};
+
+/// Which title the transport shows under the `Trailer` kicker: the FILM/SHOW title by default, so
+/// a trailer whose own PMS-scanned title is the boilerplate "Trailer" does not repeat the kicker
+/// word right underneath it — the case docs/trailer-ux-plan.md calls out as true "on most
+/// servers". The extra's own title wins only when it says something the kicker doesn't already,
+/// compared trimmed and case-insensitively so "trailer"/"Trailer "/"TRAILER" all count as the same
+/// non-information while "Official Trailer" or "Teaser 2" do not.
+pub(super) fn transport_title<'a>(film_title: &'a str, extra_title: &'a str) -> &'a str {
+    let trimmed = extra_title.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case(crate::metadata::TRAILER_CONTEXT) {
+        film_title
+    } else {
+        extra_title
+    }
+}
 
 /// What a key does while full-trailer mode owns the page. Deliberately exhaustive over the keys
 /// the mode CONSUMES: a key with no arm here is not the trailer's and falls through to the page's
@@ -203,13 +219,15 @@ impl Transport {
         )
     }
 
-    /// Draw the trailer transport. `title` is the ITEM's own (the trailer extra's parent), under a
-    /// `Trailer` kicker — the same pairing the player HUD gives a trailer played as a feature.
-    /// Nothing is drawn once it has faded out.
+    /// Draw the trailer transport. `film_title` is the ITEM's own (the trailer extra's parent);
+    /// `extra_title` is the trailer extra's own PMS title. [`transport_title`] picks which one
+    /// actually goes under the `Trailer` kicker — the same pairing the player HUD gives a trailer
+    /// played as a feature. Nothing is drawn once it has faded out.
     pub(super) fn draw(
         &self,
         p: Painter,
-        title: &str,
+        film_title: &str,
+        extra_title: &str,
         paused: bool,
         measure: &dyn crate::ui::machine::Measure,
     ) {
@@ -218,7 +236,7 @@ impl Transport {
         }
         let p = p.alpha(self.alpha);
         let kicker = CString::new(crate::metadata::TRAILER_CONTEXT).unwrap_or_default();
-        let title = CString::new(title).unwrap_or_default();
+        let title = CString::new(transport_title(film_title, extra_title)).unwrap_or_default();
         crate::ui::player_hud::draw_scrim(p);
         crate::ui::player_hud::draw_title(
             p,
@@ -269,6 +287,35 @@ pub(super) const HINT_GAP: f32 = theme::space::MD;
 mod tests {
     use super::*;
     use crate::ui::machine::Key as MKey;
+
+    /// **The "Trailer / Trailer" duplicate case.** When the extra's own PMS title is the
+    /// boilerplate "Trailer" (however it's cased/spaced — most servers scan trailers this way),
+    /// the transport must show the FILM/SHOW title instead, so it doesn't repeat the kicker word
+    /// right under it. An empty extra title (no extra resolved yet) falls back the same way.
+    #[test]
+    fn transport_title_falls_back_to_the_film_title_when_the_extras_own_title_is_the_kicker() {
+        for extra in ["Trailer", "trailer", " TRAILER ", "  Trailer  ", ""] {
+            assert_eq!(
+                transport_title("Inception", extra),
+                "Inception",
+                "extra_title={extra:?}"
+            );
+        }
+    }
+
+    /// **The informative case.** An extra with its own distinct title (a numbered teaser, an
+    /// international cut, …) says something the "Trailer" kicker doesn't, so it wins over the
+    /// film title.
+    #[test]
+    fn transport_title_uses_the_extras_own_title_when_it_differs_meaningfully_from_the_kicker() {
+        for extra in ["Official Trailer", "Teaser 2", "International Trailer"] {
+            assert_eq!(
+                transport_title("Inception", extra),
+                extra,
+                "extra_title={extra:?}"
+            );
+        }
+    }
 
     /// The key policy, key by key. `Reveal` is the default for a direction the mode owns; the two
     /// collapse keys and the three transport keys are the exceptions, and EXIT/STOP are nobody's.
