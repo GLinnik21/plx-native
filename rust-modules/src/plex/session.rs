@@ -452,6 +452,13 @@ pub struct Session {
     /// has no mute, so this is also the only sound control.
     #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
     pub(crate) trailer_autoplay: bool,
+    /// **How bright the client-rendered subtitles are drawn** — white, or a rung of the grey
+    /// ladder under it. Install-wide like [`Session::playback_quality`], because it answers a fact
+    /// about the PANEL (an HDR picture maps graphics white to a searing level) rather than about
+    /// whoever is watching. Absence is white, which is what every build before the field drew.
+    /// Soft-parsed: an unknown spelling costs the preference, never the credentials.
+    #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
+    pub(crate) subtitle_tone: SubtitleTone,
     /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
     /// rendered on this television, so a route in the Settings/first-run family that opens
     /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
@@ -499,6 +506,8 @@ struct CanonicalSessionPreferences {
     last_hero_blur: Option<[[f32; 3]; 4]>,
     #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
     trailer_autoplay: bool,
+    #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
+    subtitle_tone: SubtitleTone,
     /// Parsed only so a future preference does not make the known fields disappear. The shipping
     /// adapter merges these opaque keys from the current DB8 public payload before every rewrite;
     /// they are not promoted into the Session domain object.
@@ -521,6 +530,7 @@ impl Default for CanonicalSessionPreferences {
             last_library: Vec::new(),
             last_hero_blur: None,
             trailer_autoplay: true,
+            subtitle_tone: SubtitleTone::White,
             extensions: BTreeMap::new(),
         }
     }
@@ -560,6 +570,7 @@ fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayloa
         last_library: session.last_library.clone(),
         last_hero_blur: session.last_hero_blur,
         trailer_autoplay: session.trailer_autoplay,
+        subtitle_tone: session.subtitle_tone,
         extensions: BTreeMap::new(),
     })
     .map_err(|_| ())?;
@@ -621,6 +632,7 @@ pub(crate) fn join_canonical(
         last_library: preferences.last_library,
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
+        subtitle_tone: preferences.subtitle_tone,
         profiles,
         extensions: auth.extensions,
     })
@@ -641,6 +653,7 @@ fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
         last_library: preferences.last_library,
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
+        subtitle_tone: preferences.subtitle_tone,
         home_pins, recent_searches,
         ..Default::default()
     }
@@ -743,6 +756,16 @@ pub(crate) fn set_trailer_autoplay(on: bool) -> bool {
     })
 }
 
+/// Persist the subtitle tone. Same write door as [`set_auto_sign_in`].
+pub(crate) fn set_subtitle_tone(tone: SubtitleTone) -> bool {
+    update(|cur| {
+        if cur.subtitle_tone == tone {
+            return None;
+        }
+        Some(cur.with_subtitle_tone(tone))
+    })
+}
+
 /// The persisted playback-quality modes. The spelling on disk is explicit rather than derived
 /// from Rust variant names: these strings are a file-format contract and must survive refactors.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -781,6 +804,64 @@ impl PlaybackQuality {
         } else {
             Self::Original
         }
+    }
+}
+
+/// The persisted subtitle tones, lightest first. Like [`PlaybackQuality`] the spelling on disk is
+/// explicit: these strings are a file-format contract and must survive a variant rename.
+///
+/// A ladder of GREYS rather than a colour wheel, because the job is brightness: over an HDR
+/// picture the panel maps graphics white far above where it sits in SDR, and the only thing that
+/// makes a caption comfortable there is less light. What each rung looks like is `ui::theme`'s
+/// (`subtitle_ink`); this type only names them.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SubtitleTone {
+    #[default]
+    #[serde(rename = "white")]
+    White,
+    #[serde(rename = "grey_85")]
+    Silver,
+    #[serde(rename = "grey_70")]
+    LightGrey,
+    #[serde(rename = "grey_55")]
+    Grey,
+    #[serde(rename = "grey_40")]
+    DarkGrey,
+    #[serde(rename = "grey_28")]
+    Charcoal,
+}
+
+impl SubtitleTone {
+    /// Every rung, lightest first — the order the picker draws them in.
+    pub(crate) const LADDER: [SubtitleTone; 6] = [
+        SubtitleTone::White,
+        SubtitleTone::Silver,
+        SubtitleTone::LightGrey,
+        SubtitleTone::Grey,
+        SubtitleTone::DarkGrey,
+        SubtitleTone::Charcoal,
+    ];
+
+    /// The picker's row text — US spelling, like the rest of the product copy ("Favorite").
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            SubtitleTone::White => "White",
+            SubtitleTone::Silver => "Silver",
+            SubtitleTone::LightGrey => "Light gray",
+            SubtitleTone::Grey => "Gray",
+            SubtitleTone::DarkGrey => "Dark gray",
+            SubtitleTone::Charcoal => "Charcoal",
+        }
+    }
+
+    /// An in-memory index back to a rung — out of range is `White`, never a neighbouring rung,
+    /// for the reason `Quality::from_index` gives: the ladder can grow or shrink.
+    pub(crate) fn from_index(i: u8) -> SubtitleTone {
+        Self::LADDER.get(i as usize).copied().unwrap_or(SubtitleTone::White)
+    }
+
+    pub(crate) fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&t| t == self).unwrap_or(0) as u8
     }
 }
 
@@ -1329,6 +1410,17 @@ where
     Ok(serde_json::from_value::<Option<PlaybackQuality>>(v).unwrap_or(None))
 }
 
+/// The subtitle tone is a preference too: a spelling this build does not know degrades to white.
+fn de_soft_subtitle_tone<'de, D>(d: D) -> Result<SubtitleTone, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(SubtitleTone::White);
+    };
+    Ok(serde_json::from_value::<SubtitleTone>(v).unwrap_or_default())
+}
+
 /// A preference switch: garbage degrades to off rather than failing the enclosing [`Session`].
 fn de_soft_bool<'de, D>(d: D) -> Result<bool, D::Error>
 where
@@ -1432,6 +1524,16 @@ impl Session {
     pub(crate) fn with_trailer_autoplay(&self, on: bool) -> Self {
         let mut next = self.clone();
         next.trailer_autoplay = on;
+        next
+    }
+
+    pub(crate) fn subtitle_tone(&self) -> SubtitleTone {
+        self.subtitle_tone
+    }
+
+    pub(crate) fn with_subtitle_tone(&self, tone: SubtitleTone) -> Self {
+        let mut next = self.clone();
+        next.subtitle_tone = tone;
         next
     }
 

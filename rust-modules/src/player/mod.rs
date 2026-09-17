@@ -1357,6 +1357,34 @@ pub(crate) fn request_subtitle(idx: i32) {
         SHARED.sub_bitmaps.lock().unwrap().clear();
     }
 }
+/// The tone client-rendered subtitles are drawn in. An atomic rather than a field of [`SHARED`]
+/// because it OUTLIVES a playback — it is a preference, not session state (`route::QUALITY`'s
+/// reasoning) — and `reset_session` must not put a viewer back on white between two episodes.
+///
+/// Seeded to white, which is what every build before the preference drew.
+static SUBTITLE_TONE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The selected tone. Read once a frame by the two subtitle draws (`ui::player_hud`) and by the
+/// track menu for its checkmark.
+pub(crate) fn subtitle_tone() -> crate::plex::session::SubtitleTone {
+    crate::plex::session::SubtitleTone::from_index(SUBTITLE_TONE.load(Relaxed))
+}
+
+/// Restore the persisted preference without writing it back (boot, and the credentials handoff
+/// after a fresh sign-in — the two places `route::restore_quality` is called from).
+pub(crate) fn restore_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
+    SUBTITLE_TONE.store(tone.index(), Relaxed);
+}
+
+/// Select a tone. MAIN THREAD (it writes the session). Takes effect on the next drawn frame —
+/// the draws read the atomic — so there is nothing to reload and no cue store to touch.
+pub(crate) fn set_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
+    SUBTITLE_TONE.store(tone.index(), Relaxed);
+    let _ = crate::plex::session::set_subtitle_tone(tone);
+    // the picker's checkmark moves on this — see `route::persist_quality_choice`
+    crate::ui::idle::invalidate();
+}
+
 /// push a ready (already-clean) subtitle cue into the shared store, tagged with its 0-based
 /// track index (the demux pushes for every text track).
 /// Bounded by TIME rather than a fixed count: since every track is pushed regardless of
