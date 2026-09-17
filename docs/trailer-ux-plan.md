@@ -25,9 +25,10 @@ table in §1, §8.3, §8.4, the goal's bullet 4 and the third decision bullet):
   in full-trailer mode, `preview_field` targets 0.0 like the base scrim, and the only scrim in that
   state is the transport's own at the bottom. §2.4(c)'s device-tuning item and its `TODOS.md` entry
   go with it.
-- Background autoplay gained a hint — an up-chevron key cap reading "Press ^ for full screen" under
-  the action row (`screens::detail::trailer::hint_shown`), fading in with the picture and out on
-  promotion or collapse.
+- Background autoplay gained a hint — an up-chevron key cap reading "`[^] Full screen`" (glyph
+  first, no `Press`/`for` filler — shortened 2026-09-17) under the action row
+  (`screens::detail::trailer::hint_shown`), fading in with the picture and out on promotion or
+  collapse.
 
 The current record is `rust-modules/src/screens/detail/trailer.rs`, `player/preview.rs`'s module
 doc and `hero.rs`'s `focusable`/`visible_ctls`.

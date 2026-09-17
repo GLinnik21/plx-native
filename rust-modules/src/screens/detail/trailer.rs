@@ -258,8 +258,9 @@ impl Transport {
         );
     }
 
-    /// Draw the "press UP for full screen" hint, its line starting at `x` and centred on `cy` —
-    /// the shared [`KeyHint`], wearing the remote's own arrow rather than the word UP.
+    /// Draw the "`[^] Full screen`" hint, its line starting at `x` and centred on `cy` — the
+    /// shared [`KeyHint`], wearing the remote's own arrow rather than the word UP, glyph FIRST and
+    /// no `Press`/`for` filler (2026-09-17 shortening: same predicate, same placement, words only).
     pub(super) fn draw_hint(
         &self,
         p: Painter,
@@ -270,7 +271,7 @@ impl Transport {
         if self.hint <= 0.01 {
             return;
         }
-        KeyHint::glyph(c"Press", Icon::ChevronUp, c"for full screen").draw(
+        KeyHint::glyph(c"", Icon::ChevronUp, c"Full screen").draw(
             p.alpha(self.hint),
             x,
             cy,
