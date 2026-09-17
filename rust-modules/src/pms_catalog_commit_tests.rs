@@ -9,27 +9,30 @@ use super::test_support::*;
 #[should_panic(expected = "requires its server in the retained Browse directory")]
 fn a_directory_scoped_hubs_fixture_refuses_an_empty_browse_publication() {
     let _guard = crate::testlock::serial();
+    let mut o = Owner::default();
     let directory = crate::stores::browse::DirectorySnapshot::default();
     seed_for_directory_test(
-        ServerId::from_raw(0), 1, HubState::Ready, directory.view());
+        &mut o.state, &o.adapter, ServerId::from_raw(0), 1, HubState::Ready, directory.view());
 }
 
 #[test]
 fn every_catalog_commit_advances_the_published_generation() {
     let _guard = crate::testlock::serial();
-    reset();
-    let before = catalog_gen();
-    commit((vec![row(0, "new")], Vec::new(), Vec::new()));
-    assert_ne!(catalog_gen(), before, "an optimistic or roster commit must invalidate cached views too");
-    reset();
+    let mut o = Owner::default();
+    reset(&mut o.state, &o.adapter);
+    let before = o.state.catalog_gen;
+    commit(&mut o.state, (vec![row(0, "new")], Vec::new(), Vec::new()));
+    assert_ne!(o.state.catalog_gen, before, "an optimistic or roster commit must invalidate cached views too");
+    reset(&mut o.state, &o.adapter);
 }
 
 #[test]
 fn retained_home_publication_survives_commit_and_reset_without_copying_items() {
     let _guard = crate::testlock::serial();
-    seed_for_test(3, HubState::Ready);
-    let first = hubs_snapshot();
-    let same = hubs_snapshot();
+    let mut o = Owner::default();
+    seed_for_test(&mut o.state, &o.adapter, 3, HubState::Ready);
+    let first = hubs_snapshot(&o.state);
+    let same = hubs_snapshot(&o.state);
     assert!(Arc::ptr_eq(&first.data, &same.data), "snapshot acquisition must not clone media");
     let view = first.view();
     let title = view.hub(0).unwrap().title;
@@ -41,8 +44,8 @@ fn retained_home_publication_survives_commit_and_reset_without_copying_items() {
     assert_eq!(view.hub(0).unwrap().identity, Some(HubIdentity::ContinueWatching));
     assert_eq!(view.hub(0).unwrap().source, "");
     assert_eq!(view.hero(0).unwrap().source, "");
-    reset();
-    let empty = hubs_snapshot();
+    reset(&mut o.state, &o.adapter);
+    let empty = hubs_snapshot(&o.state);
     assert!(!Arc::ptr_eq(&first.data, &empty.data));
     assert_ne!(view.generation, empty.view().generation);
     assert_eq!(empty.view().hub_count(), 0);
@@ -134,7 +137,8 @@ fn an_episode_keeps_its_own_still_without_a_show_poster() {
 #[test]
 fn a_catalog_row_is_found_by_its_server_and_key_never_by_the_key_alone() {
     let _g = crate::testlock::serial();
-    reset();
+    let mut o = Owner::default();
+    reset(&mut o.state, &o.adapter);
     let (a, b) = (sid(0), sid(1));
     let mk = |s: ServerId, rk: &str, title: &str| PmsMovie {
         sid: s,
@@ -156,26 +160,26 @@ fn a_catalog_row_is_found_by_its_server_and_key_never_by_the_key_alone() {
         start: 0,
         len: 3,
     }];
-    commit((cat, hubs, Vec::new()));
+    commit(&mut o.state, (cat, hubs, Vec::new()));
 
-    assert_eq!(index_of_rk(a, "1"), 0);
-    assert_eq!(index_of_rk(b, "1"), 2, "the SHARE's item 1, not ours");
+    assert_eq!(index_of_rk(&o.state, a, "1"), 0);
+    assert_eq!(index_of_rk(&o.state, b, "1"), 2, "the SHARE's item 1, not ours");
     assert_eq!(
-        movie(index_of_rk(b, "1") as usize).map(|m| m.title.as_str()),
+        movie(&o.state, index_of_rk(&o.state, b, "1") as usize).map(|m| m.title.as_str()),
         Some("the friend's")
     );
-    assert_eq!(index_of_rk(a, "2"), 1);
+    assert_eq!(index_of_rk(&o.state, a, "2"), 1);
     assert_eq!(
-        index_of_rk(b, "2"),
+        index_of_rk(&o.state, b, "2"),
         -1,
         "a key our server has and the share does not is a MISS"
     );
     assert_eq!(
-        index_of_rk(ServerId::UNSET, "1"),
+        index_of_rk(&o.state, ServerId::UNSET, "1"),
         -1,
         "and an unscoped lookup answers for neither"
     );
-    reset();
+    reset(&mut o.state, &o.adapter);
 }
 
 /// `reset` is the profile-switch wipe: the previous user's shelves must not survive it, and
@@ -183,11 +187,12 @@ fn a_catalog_row_is_found_by_its_server_and_key_never_by_the_key_alone() {
 #[test]
 fn reset_wipes_the_catalog_and_re_arms_the_fetch() {
     let _g = crate::testlock::serial();
-    seed(vec![src(0, "", HubState::Ready, Some(build_test(4)))]);
-    reset();
-    assert_eq!(hub_count(), 0);
-    assert_eq!(catalog().len(), 0);
-    assert_eq!(hero_pool_len(), 0);
-    assert_eq!(hub_state(), HubState::Loading);
-    assert!(lock_srcs().is_empty());
+    let mut o = Owner::default();
+    seed(&mut o.state, vec![src(0, "", HubState::Ready, Some(build_test(4)))]);
+    reset(&mut o.state, &o.adapter);
+    assert_eq!(hub_count(&o.state), 0);
+    assert_eq!(catalog(&o.state).len(), 0);
+    assert_eq!(hero_pool_len(&o.state), 0);
+    assert_eq!(hub_state(&o.state), HubState::Loading);
+    assert!(o.state.srcs.is_empty());
 }

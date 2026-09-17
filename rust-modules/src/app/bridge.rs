@@ -363,14 +363,18 @@ impl Bridge {
         mt: &crate::task::MainThread, replay: bool) -> Self {
         static TTF: crate::text::TtfMeasure = crate::text::TtfMeasure;
         let preferences = initial.session.persisted.clone();
-        let mut bridge = Self::with_publications(&TTF, now_us, initial.session.clone(),
+        let (state, adapter) = initial.home.restore(mt).expect("validated Home initial state");
+        let mut stores = crate::stores::Stores::default();
+        stores.hubs = crate::stores::hubs::HubsStore::from_parts(state, adapter);
+        let hubs = stores.hubs.snapshot();
+        let mut bridge = Self::with_publications_and_stores(&TTF, now_us, initial.session.clone(),
             super::adapters::session::SessionAdapter::controlled_home(mt, replay),
             initial.consent.clone(), super::adapters::consent::ConsentAdapter::live(),
             StorePublications {
-                hubs:initial.home.snapshot(), listing:crate::stores::browse::ListingSnapshot::empty(),
+                hubs, listing:crate::stores::browse::ListingSnapshot::empty(),
                 directory:Default::default(), section_hubs:crate::stores::browse::HubsSnapshot::empty(),
                 search:Default::default(),
-            });
+            }, stores);
         bridge.initial_subhash = initial.hash();
         bridge.measure = if replay {
             crate::ui::rec::Measurements::Pending(Default::default())
@@ -413,7 +417,7 @@ impl Bridge {
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
             consent_adapter,
             StorePublications {
-            hubs: crate::pms::hubs_snapshot(), listing: browse.listing,
+            hubs: stores.hubs.snapshot(), listing: browse.listing,
             directory: browse.directory, section_hubs: browse.section_hubs,
             search,
         }, stores)
@@ -460,6 +464,7 @@ impl Bridge {
             })
     }
 
+    #[cfg(test)]
     fn with_publications(measure: &'static dyn Measure, now_us: fn() -> u64,
         init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: crate::telemetry::consent::Consent,
@@ -742,7 +747,7 @@ impl Bridge {
             self.search = search;
         }
         let before = (self.hubs.view().generation, self.hubs.view().state);
-        self.hubs = crate::pms::hubs_snapshot();
+        self.hubs = self.stores.hubs.snapshot();
         let after = (self.hubs.view().generation, self.hubs.view().state);
         if before != after {
             // This is queued before input deliveries. Key projections catch up to the newly
@@ -786,7 +791,7 @@ impl Bridge {
         if !matches!(entry.arg, AppArg::Home)
             || d.nav.input_owner() != Some(InputOwner::Entry(entry.id)) { return; }
         let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
-        let snapshot = crate::pms::hubs_snapshot();
+        let snapshot = self.stores.hubs.snapshot();
         let ready = snapshot.view().hub_count() > 0;
         // Retain data-dependent boot intentions until the first catalog arrives. A command
         // is addressed only after the Home body exists; no UI state is mutated by this queue.
@@ -1017,6 +1022,19 @@ impl Bridge {
         self.directory.view()
     }
 
+    /// A fresh Hubs publication captured from this owner's store, for a caller that must not read
+    /// the frame's retained `self.hubs` publication (e.g. a same-turn action after a command).
+    pub(crate) fn hubs_snapshot(&self) -> crate::pms::HubsSnapshot {
+        self.stores.hubs.snapshot()
+    }
+
+    /// Synchronous addressed Hubs command against this owner's retained Browse directory. Used by
+    /// callers outside the per-frame dispatch (server activation, boot).
+    pub(crate) fn hubs_run(&mut self, cmd: crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome {
+        let directory = self.directory.view();
+        self.stores.hubs.run_with_directory(cmd, directory)
+    }
+
     /// Refresh only the retained directory at synchronous application boundaries that must make
     /// a routing decision before the next dispatcher frame.
     pub(crate) fn refresh_browse_directory(&mut self) {
@@ -1030,6 +1048,46 @@ impl Bridge {
     ) {
         self.stores.browse.borrow_mut().seed_registered_table_for_test(sids);
         self.refresh_browse_directory();
+    }
+
+    /// Test hook: seed this owner's Hubs store directly — `stores` is private outside this file's
+    /// own descendant modules, so a fixture built outside `app::bridge` (`app::recorder`'s own
+    /// `mod tests`) reaches its owned `(state, adapter)` pair through here rather than the deleted
+    /// process-wide catalog.
+    #[cfg(test)]
+    pub(crate) fn seed_hubs_for_test(&mut self, items: usize, hub_state: crate::pms::HubState) {
+        self.stores.hubs.seed_for_test(items, hub_state);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_hubs_for_directory_test(
+        &mut self,
+        sid: crate::plex::ServerId,
+        items: usize,
+        hub_state: crate::pms::HubState,
+    ) {
+        let directory = self.directory.view();
+        self.stores.hubs.seed_for_directory_test(sid, items, hub_state, directory);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_hubs_landing_for_test(&self, items: Option<usize>) -> u32 {
+        self.stores.hubs.queue_test_landing(items)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hub_len_for_test(&self, i: usize) -> usize {
+        self.stores.hubs.hub_len_for_test(i)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hubs_catalog_gen_for_test(&self) -> u32 {
+        self.stores.hubs.state().catalog_gen
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_hubs_results_for_test(&self) -> AppResults {
+        self.take_hubs_results()
     }
 
     pub(crate) fn bind_primary(&mut self, recorded: u32) -> Result<(), &'static str> {
@@ -1190,7 +1248,9 @@ impl Rig<AppHost> for Bridge {
         if let Some(io) = &mut self.home_io {
             match msg {
                 AppMsg::Store(StoreCmd::Hubs(cmd)) => {
-                    io.hubs_with_directory(Some(cmd.clone()), 0.0, self.directory.view()).endpoints.emit(fx);
+                    let directory = self.directory.view();
+                    io.hubs_with_directory(&mut self.stores.hubs, Some(cmd.clone()), 0.0, directory)
+                        .endpoints.emit(fx);
                     return Handled::Yes;
                 }
                 AppMsg::Store(StoreCmd::Browse(crate::stores::browse::BrowseCmd::Discovery(result))) => {
@@ -1208,7 +1268,9 @@ impl Rig<AppHost> for Bridge {
                     return Handled::Yes;
                 }
                 AppMsg::StoreWork(crate::stores::StoreWork::Hubs) => {
-                    io.hubs_with_directory(None, parts.tick.dt(), self.directory.view()).endpoints.emit(fx);
+                    let directory = self.directory.view();
+                    io.hubs_with_directory(&mut self.stores.hubs, None, parts.tick.dt(), directory)
+                        .endpoints.emit(fx);
                     return Handled::Yes;
                 }
                 AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery) => {
@@ -1244,18 +1306,21 @@ impl Rig<AppHost> for Bridge {
                 Handled::Yes
             }
             AppMsg::Store(StoreCmd::Hubs(c)) => {
-                crate::stores::hubs::apply_with_directory(c.clone(), self.directory.view())
+                let directory = self.directory.view();
+                self.stores.hubs.run_with_directory(c.clone(), directory)
                     .endpoints.emit(fx);
                 Handled::Yes
             }
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
             AppMsg::HubsResult(result) => {
-                crate::stores::hubs::land_with_directory(result, self.directory.view())
+                let directory = self.directory.view();
+                self.stores.hubs.land_with_directory(result, directory)
                     .endpoints.emit(fx);
                 Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Hubs) => {
-                crate::stores::hubs::tick_with_directory(parts.tick.dt(), self.directory.view())
+                let directory = self.directory.view();
+                self.stores.hubs.tick_with_directory(parts.tick.dt(), directory)
                     .endpoints.emit(fx);
                 Handled::Yes
             }
@@ -1505,27 +1570,31 @@ pub(crate) type AppResults = Vec<(crate::ui::machine::Addr, AppMsg)>;
 /// the legacy pumps' mailboxes, so it goes through `ui::landgate`: under a replay the arrival
 /// waits for the frame the recording delivered it on (§3.3 step 3). Off a replay, one relaxed
 /// atomic load and the same call.
-pub(crate) fn take_hubs_results() -> AppResults {
-    let mut results =
-        crate::ui::landgate::take_all(StoreId::Hubs.ord(), crate::stores::hubs::take_results);
-    results.sort_by_key(|result| result.request_id());
-    results.into_iter().map(|result| (
-        crate::ui::machine::Addr {
-            to: MachineId::Store(StoreId::Hubs.ord()),
-            req: crate::ui::machine::RequestId(result.request_id()),
-        },
-        AppMsg::HubsResult(result),
-    )).collect()
-}
-
 impl Bridge {
+    /// Home's hubs — the one adapter result the dispatcher delivers, and a LANDING SITE exactly
+    /// like the legacy pumps' mailboxes, so it goes through `ui::landgate`: under a replay the
+    /// arrival waits for the frame the recording delivered it on (§3.3 step 3). Off a replay, one
+    /// relaxed atomic load and the same call.
+    fn take_hubs_results(&self) -> AppResults {
+        let mut results =
+            crate::ui::landgate::take_all(StoreId::Hubs.ord(), || self.stores.hubs.take_results());
+        results.sort_by_key(|result| result.request_id());
+        results.into_iter().map(|result| (
+            crate::ui::machine::Addr {
+                to: MachineId::Store(StoreId::Hubs.ord()),
+                req: crate::ui::machine::RequestId(result.request_id()),
+            },
+            AppMsg::HubsResult(result),
+        )).collect()
+    }
+
     fn take_live_results(&mut self) -> AppResults {
         // Landing sequence within auth is authoritative. Do not sort it by request ID:
         // profile Ready and its late roster can be separated by other requests' progress.
         let mut results: AppResults = self.session_adapter.take_results().into_iter()
             .map(|envelope| (envelope.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope))))
             .collect();
-        results.extend(take_hubs_results());
+        results.extend(self.take_hubs_results());
         if self.home_io.is_some() {
             if let Some(result) = crate::ui::landgate::take(StoreId::Browse.ord(),
                 || self.stores.browse.borrow_mut().take_discovery()) {

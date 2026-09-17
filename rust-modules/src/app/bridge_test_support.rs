@@ -101,9 +101,8 @@ pub(super) struct DirectoryPolicyCleanup;
 
 impl Drop for DirectoryPolicyCleanup {
     fn drop(&mut self) {
-        // Search is now owned per-Bridge (`rig`, dropped with the test's own stack frame), so
-        // there is no process-wide Search state left for this cleanup to reset.
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+        // Search and Hubs are now owned per-Bridge (`rig`, dropped with the test's own stack
+        // frame), so there is no process-wide store state left for this cleanup to reset.
         crate::plex::reset_servers_for_test();
         let _ = crate::stores::take_notices();
     }

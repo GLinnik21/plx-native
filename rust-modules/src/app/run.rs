@@ -1375,10 +1375,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             app.refresh_hubs_at = 0;
             super::bridge::execute_endpoint_outcomes(
                 &mut app.pages,
-                crate::stores::hubs::apply_with_directory(
-                    crate::stores::hubs::HubsCmd::RefetchHubs,
-                    app.bridge.browse_directory(),
-                ).endpoints,
+                app.bridge.hubs_run(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints,
             );
             // …and every library's OWN shelves, for the same reason and at the same moment:
             // a finished playback moves Continue Watching and watch state, so invalidate each

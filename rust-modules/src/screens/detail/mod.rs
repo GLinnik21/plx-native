@@ -157,6 +157,12 @@ pub(crate) struct DetailScreen {
     season_metrics: season::Metrics,
     about_rows: about::Rows,
     ground: AmbientWash,
+    /// The catalog row for this item, captured ONCE at [`new`](Self::new) — the same
+    /// construction-time-only snapshot [`ground`](Self::ground)'s blur envelope takes. This is a
+    /// fallback used only before/if `metadata::current()` has a `Detail` for this item (see
+    /// [`selected`](Self::selected)'s callers); it is never re-read from the catalog afterward, so
+    /// a hub republish while this page is open does not change what it reports.
+    selected: Option<crate::pms::PmsMovie>,
     /// Skeleton spinner clock, in ms — cached each tick from [`spin_phase`](Self::spin_phase)'s
     /// `advance`. Render-only, never hashed.
     spin_ms: f32,
@@ -244,11 +250,10 @@ impl LayoutStamp {
 }
 
 impl DetailScreen {
-    pub(crate) fn new(entry: EntryId, sid: ServerId, rk: String) -> Self {
-        let selected = crate::pms::movie(crate::pms::index_of_rk(sid, &rk).max(0) as usize)
-            .filter(|_| crate::pms::index_of_rk(sid, &rk) >= 0);
+    pub(crate) fn new(entry: EntryId, sid: ServerId, rk: String, hubs: crate::pms::HubsView<'_>) -> Self {
+        let selected = hubs.find(sid, &rk).cloned();
         let mut ground = AmbientWash::flat(theme::SURFACE_APP);
-        if let Some(m) = selected.filter(|m| m.has_blur) {
+        if let Some(m) = selected.as_ref().filter(|m| m.has_blur) {
             ground.jump(AmbientWash::keyed(m.blur, [AmbientWash::GROUND_W; 4]));
         }
         apply_metadata(MetadataCmd::RequestDetail {
@@ -295,6 +300,7 @@ impl DetailScreen {
             season_metrics: season::Metrics::new(),
             about_rows: about::Rows::new(),
             ground,
+            selected,
             spin_ms: 0.0,
             spin_phase: crate::ui::motion::Phase::default(),
             layout: Cell::new(None),
@@ -541,9 +547,8 @@ impl DetailScreen {
         })
     }
 
-    fn selected(&self) -> Option<&'static crate::pms::PmsMovie> {
-        let i = crate::pms::index_of_rk(self.sid, &self.rk);
-        (i >= 0).then(|| crate::pms::movie(i as usize)).flatten()
+    fn selected(&self) -> Option<&crate::pms::PmsMovie> {
+        self.selected.as_ref()
     }
 
     fn hero_chain(&self, measure: &dyn crate::ui::machine::Measure) -> crate::ui::detail_layout::HeroChain {
@@ -3075,7 +3080,7 @@ impl DetailScreen {
                     title: d.title.clone(),
                     context: String::new(),
                 },
-                PlayIntent::Movie,
+                |m| PlayIntent::Movie(m.clone()),
             );
             let resume_ns = play_resume_ns(from_start, d.resume_ms, d.dur_ms);
             self.content(fx, ContentReq::Play { play, resume_ns });

@@ -277,14 +277,10 @@ pub(super) fn activate_server_owned(
     bridge.browse_run(crate::stores::browse::BrowseCmd::Reset);
     bridge.refresh_browse_directory();
     bridge.search_run(crate::stores::search::SearchCmd::Reset);
-    let directory = bridge.browse_directory();
-    let _ = crate::stores::hubs::apply_with_directory(
-        crate::stores::hubs::HubsCmd::Reset, directory).changed;
+    let _ = bridge.hubs_run(crate::stores::hubs::HubsCmd::Reset).changed;
     bridge.person_run(crate::stores::person::PersonCmd::Reset);
     bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Reset);
-    let directory = bridge.browse_directory();
-    let mut endpoints = crate::stores::hubs::apply_with_directory(
-        crate::stores::hubs::HubsCmd::RefetchHubs, directory).endpoints;
+    let mut endpoints = bridge.hubs_run(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints;
     endpoints.merge(bridge.browse_discover_pump().endpoints);
     log("pms: catalog activation queued");
     endpoints
@@ -361,7 +357,7 @@ pub(crate) unsafe fn construct(
     let controlled = preflight.controlled();
     if let Some(initial) = &initial {
         super::bootstrap::stores::init(initial, preflight.replay());
-        initial.home.restore_boot(&mt).map_err(|_| 1)?;
+        initial.home.restore(&mt).map_err(|_| 1)?;
         crate::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| 1)?;
     }
     SDL_SetMainReady();

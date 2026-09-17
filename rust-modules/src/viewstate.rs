@@ -894,8 +894,7 @@ mod tests {
     #[test]
     fn owner_callback_receives_fanout_edits_and_the_terminal_hubs_invalidation() {
         let _g = crate::testlock::serial();
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
-        let origin = ServerId::from_raw(0);
+                let origin = ServerId::from_raw(0);
         let other = ServerId::from_raw(1);
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
@@ -930,16 +929,14 @@ mod tests {
         } if *sid == other && rk == "70"));
         assert!(matches!(browse[1], crate::stores::browse::BrowseCmd::HubsInvalidateAll));
         assert_eq!(person.len(), 1, "the fan-out reaches the supplied Person owner callback");
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
-    }
+            }
 
     #[test]
     fn endpoint_outcomes_survive_the_viewstate_refetch_pump() {
         let _g = crate::testlock::serial();
         let _session = crate::plex::session::TempSession::new("endpoint-viewstate");
         crate::plex::reset_servers_for_test();
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
-        let sid = crate::plex::register_for_test("endpoint-viewstate", "127.0.0.1", 9, "synthetic", "cid");
+                let sid = crate::plex::register_for_test("endpoint-viewstate", "127.0.0.1", 9, "synthetic", "cid");
         let mut stores = crate::stores::Stores::default();
         stores.viewstate.borrow_mut().owe_hubs_refresh_for_test();
         let directory = crate::stores::browse::DirectorySnapshot::default();
@@ -948,8 +945,7 @@ mod tests {
         assert_eq!(endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
         assert_eq!(stores.viewstate_pump(directory.view()).iter().count(), 0,
             "refetch is consumed once");
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
-        crate::plex::reset_servers_for_test();
+                crate::plex::reset_servers_for_test();
     }
     use super::*;
 
@@ -1264,14 +1260,14 @@ mod tests {
         }));
 
         edit_local_with_owners(SRV_A, "4", Write::Watched, &mut |_| false,
-            &mut |cmd| crate::stores::hubs::apply(cmd), &mut |_| false, &mut |_| false);
+            &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false);
         assert!(
             !crate::metadata::current().unwrap().watched,
             "A's 4 is not B's 4"
         );
 
         edit_local_with_owners(SRV_B, "4", Write::Watched, &mut |_| false,
-            &mut |cmd| crate::stores::hubs::apply(cmd), &mut |_| false, &mut |_| false);
+            &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false);
         assert!(crate::metadata::current().unwrap().watched);
         assert_eq!(
             crate::metadata::current().unwrap().resume_ms,
@@ -1315,7 +1311,7 @@ mod tests {
         });
 
         let _outcome = state.pump(&adapter, &mut |_| false,
-            &mut |cmd| crate::stores::hubs::apply(cmd), &mut |_| false, &mut |_| false);
+            &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false);
 
         assert!(
             crate::metadata::current().unwrap().watched,

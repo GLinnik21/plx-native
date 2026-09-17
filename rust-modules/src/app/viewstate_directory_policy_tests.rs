@@ -15,7 +15,8 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
     let _cleanup = DirectoryPolicyCleanup;
     let mut rig = Bridge::for_test(|| 0);
     rig.directory = directory_policy_fixture(sid, sid);
-    crate::pms::seed_two_library_home_for_test(sid, rig.directory.view());
+    let directory_view = rig.directory.view();
+    rig.stores.hubs.seed_two_library_home_for_test(sid, directory_view);
     rig.stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
     let _ = rig.stores.take_notices();
 
@@ -27,7 +28,7 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
         guid: String::new(),
     }));
 
-    let snapshot = crate::pms::hubs_snapshot();
+    let snapshot = rig.stores.hubs.snapshot();
     let hub = snapshot.view().hub(0).expect("the pinned library's shelf");
     assert_eq!(hub.items.iter().map(|item| item.rk.as_str()).collect::<Vec<_>>(), ["alpha"],
         "the optimistic callback cannot restore the unpinned sibling library");
@@ -339,7 +340,7 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
     let directory = rig.directory.clone();
 
     crate::pms::with_refused_fetches_for_test(|| {
-        let _ = crate::stores::hubs::apply_with_directory(
+        let _ = rig.stores.hubs.run_with_directory(
             crate::stores::hubs::HubsCmd::Reset, directory.view());
         let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
             owner: InputOwner::Entry(EntryId(0)) };
@@ -356,30 +357,30 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
         }).collect::<Vec<_>>(), [own],
             "the command must use the retained directory before landing or ticking");
         effects.clear();
-        let _ = crate::stores::take_notices();
+        let _ = rig.stores.take_notices();
 
-        crate::pms::queue_test_landing(Some(1));
-        let result = crate::stores::hubs::take_results().pop().unwrap();
-        let generation_before_landing = crate::stores::gen(StoreId::Hubs);
+        rig.stores.hubs.queue_test_landing(Some(1));
+        let result = rig.stores.hubs.take_results().pop().unwrap();
+        let generation_before_landing = rig.stores.gen(StoreId::Hubs);
         let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);
         assert_eq!(rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
             &AppMsg::HubsResult(result), &parts, &mut fx), Handled::Yes);
         drop(fx);
         assert!(effects.is_empty());
-        let generation = crate::stores::gen(StoreId::Hubs);
+        let generation = rig.stores.gen(StoreId::Hubs);
         assert_eq!(generation, generation_before_landing + 1);
-        assert_eq!(crate::stores::take_notices(), [(StoreId::Hubs, generation)],
+        assert_eq!(rig.stores.take_notices(), [(StoreId::Hubs, generation)],
             "one changed landing owes exactly one Hubs notice");
-        let sources_after_land = crate::stores::hubs::apply_with_directory(
+        let sources_after_land = rig.stores.hubs.run_with_directory(
             crate::stores::hubs::HubsCmd::Retry, directory.view());
         assert_eq!(sources_after_land.endpoints.iter().map(|request| request.sid).collect::<Vec<_>>(), [own],
             "landing must keep the retained frame directory");
 
-        let _ = crate::stores::hubs::apply_with_directory(
+        let _ = rig.stores.hubs.run_with_directory(
             crate::stores::hubs::HubsCmd::Reset, directory.view());
-        let _ = crate::stores::hubs::apply_with_directory(
+        let _ = rig.stores.hubs.run_with_directory(
             crate::stores::hubs::HubsCmd::RefetchHubs, directory.view());
-        let _ = crate::stores::take_notices();
+        let _ = rig.stores.take_notices();
         effects.clear();
         let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);
         assert_eq!(rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
@@ -387,7 +388,7 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
         drop(fx);
         assert!(effects.is_empty(),
             "tick must not admit the source excluded by this frame's retained directory");
-        assert!(crate::stores::take_notices().is_empty(),
+        assert!(rig.stores.take_notices().is_empty(),
             "an idle retained-directory tick invents no Hubs notice");
     });
 }

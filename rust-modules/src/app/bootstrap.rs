@@ -42,27 +42,33 @@ impl HomeIo {
         admitted
     }
     #[cfg(test)]
-    pub fn hubs(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32)
-        -> crate::stores::StoreOutcome {
-        self.hubs_with(cmd, dt, &mut crate::pms::spawn_fetch)
+    pub fn hubs(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
+        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32) -> crate::stores::StoreOutcome {
+        let adapter = hubs.adapter();
+        self.hubs_with(hubs, cmd, dt, &mut |request| crate::pms::spawn_fetch(&adapter, request))
     }
     #[cfg(test)]
-    fn hubs_with(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
+    fn hubs_with(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
+        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> crate::stores::StoreOutcome {
-        crate::stores::hubs::controlled(cmd, dt, &mut |request| {
+        hubs.controlled(cmd, dt, &mut |request| {
             let (epoch, req, sid, client, token_gen) = request.descriptor();
             self.admit(serde_json::json!({"kind":"hubs", "epoch":epoch,
                 "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
         })
     }
-    pub(crate) fn hubs_with_directory(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
+    pub(crate) fn hubs_with_directory(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
+        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
         directory: crate::stores::browse::DirectoryView<'_>) -> crate::stores::StoreOutcome {
-        self.hubs_with_directory_and_launch(cmd, dt, directory, &mut crate::pms::spawn_fetch)
+        let adapter = hubs.adapter();
+        self.hubs_with_directory_and_launch(hubs, cmd, dt, directory,
+            &mut |request| crate::pms::spawn_fetch(&adapter, request))
     }
-    fn hubs_with_directory_and_launch(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
+    fn hubs_with_directory_and_launch(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
+        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
         directory: crate::stores::browse::DirectoryView<'_>,
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> crate::stores::StoreOutcome {
-        crate::stores::hubs::controlled_with_directory(cmd, dt, directory, &mut |request| {
+        hubs.controlled_with_directory(cmd, dt, directory, &mut |request| {
             let (epoch, req, sid, client, token_gen) = request.descriptor();
             self.admit(serde_json::json!({"kind":"hubs", "epoch":epoch,
                 "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
@@ -188,7 +194,7 @@ impl Initial {
             automated: crate::dev::any_trigger_present(),
             settings: crate::dev::scenarios::settings_boot_value(),
             content: None,
-            home: crate::pms::initial::Initial::capture(),
+            home: crate::pms::initial::Initial::fresh(),
             triggers: crate::dev::armed_triggers(),
         };
         initial.validate()?;

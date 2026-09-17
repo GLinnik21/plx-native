@@ -139,7 +139,13 @@ pub(crate) struct RouteSurface {
 
 impl RouteSurface {
     /// A surface at `entry`/`id` (the dispatcher's, from the mounter) whose root is `root`.
-    pub(crate) fn new(entry: EntryId, id: InstanceId, kind: Family, root: SettingsPage) -> Self {
+    pub(crate) fn new(
+        entry: EntryId,
+        id: InstanceId,
+        kind: Family,
+        root: SettingsPage,
+        hubs: crate::pms::HubsView<'_>,
+    ) -> Self {
         let mut s = Self {
             entry,
             id,
@@ -147,7 +153,7 @@ impl RouteSurface {
             inner: NavStack::new(Box::new(Immediate)),
             ids: Minter::default(),
             push: Push::new(),
-            ground: if kind == Family::FirstRunConsent { super::family::pre_home_ground() } else { RouteGround::new() },
+            ground: if kind == Family::FirstRunConsent { super::family::pre_home_ground(hubs) } else { RouteGround::new() },
             ground_ready: false,
             remembered: Vec::new(),
         };

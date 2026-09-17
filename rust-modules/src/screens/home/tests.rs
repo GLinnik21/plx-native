@@ -141,8 +141,10 @@ fn top_band_focus_walks_to_the_last_section_whatever_the_count() {
 #[test]
 fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let s = screen(snapshot.view());
     let mut groups = Vec::new();
     Focusable::<TestHost>::groups(&s, &cx(snapshot.view(), None), &mut groups);
@@ -151,14 +153,15 @@ fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
     assert!(groups
         .iter()
         .all(|g| g.id != crate::ui::containers::tabs::STRIP));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn the_pager_is_not_a_focus_stop_and_the_rows_end_pages_instead() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let context = cx(
         snapshot.view(),
@@ -185,14 +188,15 @@ fn the_pager_is_not_a_focus_stop_and_the_rows_end_pages_instead() {
     assert!(s.flip(snapshot.view(), 1));
     assert_ne!(s.carousel, before);
     assert_eq!(engine.current(owner).unwrap().elem, HERO_INFO_ELEM);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn the_top_band_reports_the_chip_and_the_pills_as_one_answer() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let s = screen(snapshot.view());
     let mut links = Vec::new();
     <HomeScreen as Screen<TestHost>>::links(&s, &mut links);
@@ -206,7 +210,6 @@ fn the_top_band_reports_the_chip_and_the_pills_as_one_answer() {
         dir: Dir::Up,
         to: crate::ui::containers::tabs::STRIP
     }));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -223,8 +226,10 @@ fn the_top_band_walks_permanent_pills_not_the_section_table() {
 #[test]
 fn step_row_stays_inside_the_addressable_rows() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let s = screen(snapshot.view());
     let first = first_card(&s);
     assert!(matches!(
@@ -239,7 +244,6 @@ fn step_row_stays_inside_the_addressable_rows() {
         Focusable::<TestHost>::neighbour(&s, last, Dir::Right, &cx(snapshot.view(), Some(last))),
         Step::Edge
     ));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -251,23 +255,24 @@ fn vert_cannot_walk_past_the_shelf_array() {
 #[test]
 fn the_status_readout_tells_loading_empty_and_failed_apart() {
     let _guard = crate::testlock::serial();
-    for (state, kind, action) in [
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    for (hub_state, kind, action) in [
         (crate::pms::HubState::Loading, StatusKind::Working, false),
         (crate::pms::HubState::Failed, StatusKind::Failed, true),
         (crate::pms::HubState::Ready, StatusKind::Empty, true),
     ] {
-        crate::pms::seed_for_test(0, state);
-        let snapshot = crate::pms::hubs_snapshot();
+        crate::pms::seed_for_test(&mut state, &adapter, 0, hub_state);
+        let snapshot = crate::pms::hubs_snapshot(&state);
         let (_, got, got_action) = status_read(snapshot.view()).unwrap();
         assert_eq!(got, kind);
         assert_eq!(got_action.is_some(), action);
     }
-    for state in [crate::pms::HubState::Ready, crate::pms::HubState::Failed] {
-        crate::pms::seed_for_test(3, state);
-        assert!(status_read(crate::pms::hubs_snapshot().view()).is_none(),
+    for hub_state in [crate::pms::HubState::Ready, crate::pms::HubState::Failed] {
+        crate::pms::seed_for_test(&mut state, &adapter, 3, hub_state);
+        assert!(status_read(crate::pms::hubs_snapshot(&state).view()).is_none(),
             "a failed refresh retains playable content, not a replacement readout");
     }
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -282,8 +287,10 @@ fn no_shelves_means_no_grid_snap() {
 #[test]
 fn the_status_screen_takes_ok_but_never_the_top_band() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(0, crate::pms::HubState::Failed);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let entry = s.entry;
     let (_, retry, _) = step(
@@ -306,14 +313,13 @@ fn the_status_screen_takes_ok_but_never_the_top_band() {
         assert!(!out.iter().any(|s| matches!(&s.fx,
             Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Retry))))));
     }
-    crate::pms::seed_for_test(3, crate::pms::HubState::Failed);
-    let populated = crate::pms::hubs_snapshot();
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Failed);
+    let populated = crate::pms::hubs_snapshot(&state);
     let mut s = screen(populated.view());
     let (_, out, _) = step(&mut s, populated.view(), None, &ScreenEvent::Activate(HERO_PLAY_ELEM));
     assert!(has_home(&out, |r| matches!(r, HomeReq::Play { .. })));
     assert!(!out.iter().any(|s| matches!(&s.fx,
         Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Retry))))));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -334,8 +340,10 @@ fn pointer_hit_column_matches_the_drawn_card_at_every_snap_phase() {
 #[test]
 fn drawn_hero_geometry_follows_slide_and_the_captured_press_scale() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.outgoing = s.carousel.clone();
     assert!(s.outgoing.is_some());
@@ -368,14 +376,15 @@ fn drawn_hero_geometry_follows_slide_and_the_captured_press_scale() {
             }
         }
     }
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn status_action_geometry_does_not_inherit_the_previous_hero_pop_or_slide() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(0, crate::pms::HubState::Failed);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     for _ in 0..80 { s.hero_pop.step(Some(0), 0.016); }
     s.outgoing = Some((crate::plex::ServerId::UNSET, "old".into()));
@@ -387,14 +396,15 @@ fn status_action_geometry_does_not_inherit_the_previous_hero_pop_or_slide() {
     let drawn = Focusable::<TestHost>::place(&s, &key.elem, &context, At::Drawn).unwrap();
     assert_eq!((drawn.rect.x, drawn.rect.y, drawn.rect.w, drawn.rect.h),
         (base.x, base.y, base.w, base.h));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn drawn_card_geometry_includes_press_but_its_rest_anchor_does_not() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     for _ in 0..80 { s.grid.shelves[0].update(3, Some(0), &RowStyle::HOME, 0.016); }
@@ -410,7 +420,6 @@ fn drawn_card_geometry_includes_press_but_its_rest_anchor_does_not() {
         let opener = s.focused_rect(Some(key), &context, At::Drawn).unwrap();
         assert!((opener.w - CARD_W * s.grid.shelves[0].scale(0)).abs() < 0.01);
     }
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1134,8 +1143,10 @@ fn the_meta_lines_bound_keeps_the_run_inside_the_hero_wedge() {
 #[test]
 fn engine_links_hero_to_the_first_shelf_and_back() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let s = screen(snapshot.view());
     let owner = InputOwner::Entry(s.entry);
     let hero = FocusKey {
@@ -1151,14 +1162,15 @@ fn engine_links_hero_to_the_first_shelf_and_back() {
         panic!("hero DOWN must move")
     };
     assert_eq!(to.elem, s.rows[0].elems[0]);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let second_elem = s.elem_for(HomeItemIdentity::Item {
         hub: HomeHubIdentity::Key {
@@ -1191,14 +1203,15 @@ fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
         panic!("first-shelf DOWN must reach the second shelf");
     };
     assert_eq!(to.elem, second_elem);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn down_from_the_last_shelf_never_reenters_the_offscreen_hero() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     s.snap_target = 1.0;
@@ -1217,7 +1230,6 @@ fn down_from_the_last_shelf_never_reenters_the_offscreen_hero() {
         engine.move_dir(owner, &s, &links, Dir::Down, &context),
         Outcome::Nothing
     );
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1282,8 +1294,10 @@ fn memory_round_trip_preserves_registries_and_carousel_identity() {
 #[test]
 fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut hero_picture = screen(snapshot.view());
     let mut grid_picture = screen(snapshot.view());
     for s in [&mut hero_picture, &mut grid_picture] {
@@ -1301,14 +1315,15 @@ fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
     assert!(has_home(&b, |r| matches!(r, HomeReq::Play { rk, .. } if rk == "1")));
     assert_ne!(hero_picture.hash(), grid_picture.hash(),
         "the same input activates different items, so these cannot be the same logical state");
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn the_home_census_covers_input_motion_and_current_projection() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let baseline = screen(snapshot.view()).hash();
     let changes: &[fn(&mut HomeScreen)] = &[
         |s| s.snap.vel = 1.0,
@@ -1333,7 +1348,6 @@ fn the_home_census_covers_input_motion_and_current_projection() {
     // These extents are part of SHAPE, not merely runtime sequence lengths.
     assert_eq!(HERO_NBTN, 2);
     assert_eq!(crate::ui::card_row::MAX_ROW_ITEMS, 24);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1350,8 +1364,10 @@ fn paint_only_backdrop_and_spinner_state_do_not_change_the_canonical_hash() {
 #[test]
 fn an_explicit_hero_reseat_keeps_the_fold_animation_unlike_page_restoration() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     s.snap_target = 1.0;
@@ -1362,36 +1378,38 @@ fn an_explicit_hero_reseat_keeps_the_fold_animation_unlike_page_restoration() {
     });
     assert_eq!(s.snap_target, 0.0);
     assert_eq!(s.snap.pos, 1.0, "fresh reseating still animates the door");
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn shelf_viewports_follow_identity_across_a_catalog_reorder() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_grid_for_test(2, 24);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_grid_for_test(&mut state, &adapter, 2, 24);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let identity = s.rows[0].identity.clone();
     s.grid.shelves[0].restore_scroll(900.0, 24, &RowStyle::HOME);
-    crate::pms::reverse_test_hubs();
-    let changed = crate::pms::hubs_snapshot();
+    crate::pms::reverse_test_hubs(&mut state);
+    let changed = crate::pms::hubs_snapshot(&state);
     s.sync_catalog(&cx(changed.view(), None));
     assert_eq!(s.rows[1].identity, identity);
     assert_eq!(s.grid.shelves[1].scroll_x(), 900.0);
     assert_eq!(s.grid.shelves[0].scroll_x(), 0.0);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn an_empty_loading_publication_does_not_consume_restored_viewports() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_grid_for_test(2, 24);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_grid_for_test(&mut state, &adapter, 2, 24);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut original = screen(snapshot.view());
     original.grid.shelves[1].restore_scroll(900.0, 24, &RowStyle::HOME);
     let PageMemory::Home(memory) = <HomeScreen as Screen<TestHost>>::memory(&original) else { unreachable!() };
-    crate::pms::seed_for_test(0, crate::pms::HubState::Loading);
-    let loading = crate::pms::hubs_snapshot();
+    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Loading);
+    let loading = crate::pms::hubs_snapshot(&state);
     let mut restored = screen(loading.view());
     restored.restore(&memory);
     restored.sync_catalog(&cx(loading.view(), None));
@@ -1399,11 +1417,10 @@ fn an_empty_loading_publication_does_not_consume_restored_viewports() {
     let PageMemory::Home(pending) = <HomeScreen as Screen<TestHost>>::memory(&restored) else { unreachable!() };
     let mut restored = screen(loading.view());
     restored.restore(&pending);
-    crate::pms::seed_grid_for_test(2, 24);
-    let ready = crate::pms::hubs_snapshot();
+    crate::pms::seed_grid_for_test(&mut state, &adapter, 2, 24);
+    let ready = crate::pms::hubs_snapshot(&state);
     restored.sync_catalog(&cx(ready.view(), None));
     assert_eq!(restored.grid.shelves[1].scroll_x(), 900.0);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1419,8 +1436,10 @@ fn viewport_memory_is_canonical_because_return_reuses_it() {
 #[test]
 fn visible_tick_emits_both_store_work_requests_after_the_step() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(0, crate::pms::HubState::Loading);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Loading);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let (_, out, _) = step(
         &mut s,
@@ -1439,14 +1458,15 @@ fn visible_tick_emits_both_store_work_requests_after_the_step() {
         })
         .collect();
     assert_eq!(work, vec![StoreWork::Hubs, StoreWork::BrowseDiscovery]);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn continue_watching_commit_plays_while_an_ordinary_shelf_opens_detail() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let card = first_card(&s);
     let (_, play, _) = step(
@@ -1473,14 +1493,15 @@ fn continue_watching_commit_plays_while_an_ordinary_shelf_opens_detail() {
         &detail,
         |r| matches!(r, HomeReq::Detail { rk, .. } if rk == "1")
     ));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn holding_a_shelf_card_opens_the_item_menu_without_activation() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     s.snap_target = 1.0;
@@ -1499,14 +1520,15 @@ fn holding_a_shelf_card_opens_the_item_menu_without_activation() {
         r,
         HomeReq::Play { .. } | HomeReq::Detail { .. }
     )));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn a_partially_visible_focused_row_allows_hover_to_its_neighbors_only() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     s.grid.shelves[0].update(2, Some(0), &RowStyle::HOME, 1.0);
@@ -1523,14 +1545,15 @@ fn a_partially_visible_focused_row_allows_hover_to_its_neighbors_only() {
         assert!(stop.rest_rect.y < 40.0);
         assert_eq!(stop.hover, expected);
     }
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn drawn_stops_feed_the_real_hit_map_with_scoped_card_keys() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let card = first_card(&s);
     s.snap.jump(1.0);
@@ -1551,14 +1574,15 @@ fn drawn_stops_feed_the_real_hit_map_with_scoped_card_keys() {
     );
     assert_eq!(resolution.hit, Some(card));
     assert_eq!(resolution.activate, Some((card, Activate::Press)));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.carousel = Some((crate::plex::ServerId::UNSET, "2".into()));
     let hero = FocusKey {
@@ -1588,14 +1612,15 @@ fn quick_down_then_ok_activates_the_hero_still_visible_before_the_snap_midpoint(
         &out,
         |req| matches!(req, HomeReq::Play { rk, .. } if rk == "1")
     ));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn back_from_grid_folds_to_hero_before_root_back() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let card = first_card(&s);
     s.snap.jump(1.0);
@@ -1627,7 +1652,6 @@ fn back_from_grid_folds_to_hero_before_root_back() {
     assert!(root
         .iter()
         .any(|stamped| matches!(&stamped.fx, Fx::App(AppFx::Loop(LoopReq::BackAtRoot)))));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 fn enter_target(out: &[Stamped<TestHost>]) -> Option<FocusTarget<u32>> {
@@ -1643,8 +1667,10 @@ fn enter_target(out: &[Stamped<TestHost>]) -> Option<FocusTarget<u32>> {
 #[test]
 fn addressed_focus_commands_reseat_only_through_enter_fresh() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     let card = first_card(&s);
 
@@ -1681,14 +1707,15 @@ fn addressed_focus_commands_reseat_only_through_enter_fresh() {
         );
         assert!(matches!(enter_target(&strip), Some(FocusTarget::Elem(key)) if key.elem == elem));
     }
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn addressed_carousel_commands_mutate_the_owned_identity_not_focus() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
 
     let (handled, _, _) = step(
@@ -1709,19 +1736,20 @@ fn addressed_carousel_commands_mutate_the_owned_identity_not_focus() {
         &ScreenEvent::App(AppMsg::Home(HomeCmd::Flip(1))),
     );
     assert_ne!(s.carousel, before);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn loading_has_no_phantom_hero_and_terminal_status_has_one_action() {
     let _guard = crate::testlock::serial();
-    for (state, expected) in [
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    for (hub_state, expected) in [
         (crate::pms::HubState::Loading, 0),
         (crate::pms::HubState::Failed, 1),
         (crate::pms::HubState::Ready, 1),
     ] {
-        crate::pms::seed_for_test(0, state);
-        let snapshot = crate::pms::hubs_snapshot();
+        crate::pms::seed_for_test(&mut state, &adapter, 0, hub_state);
+        let snapshot = crate::pms::hubs_snapshot(&state);
         let s = screen(snapshot.view());
         let context = cx(snapshot.view(), None);
         let mut groups = Vec::new();
@@ -1740,22 +1768,23 @@ fn loading_has_no_phantom_hero_and_terminal_status_has_one_action() {
             None
         );
     }
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn first_catalog_landing_reseats_the_default_cta_unless_the_strip_was_chosen() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(0, crate::pms::HubState::Loading);
-    let empty = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Loading);
+    let empty = crate::pms::hubs_snapshot(&state);
     let mut automatic = screen(empty.view());
     let fallback = FocusKey {
         entry: automatic.entry,
         elem: STRIP_ACCOUNT_ELEM,
     };
 
-    crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
-    let landed = crate::pms::hubs_snapshot();
+    crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
+    let landed = crate::pms::hubs_snapshot(&state);
     let (_, out, _) = step(
         &mut automatic,
         landed.view(),
@@ -1770,8 +1799,8 @@ fn first_catalog_landing_reseats_the_default_cta_unless_the_strip_was_chosen() {
         Some(FocusTarget::ContainerGroup(HERO_GROUP))
     ));
 
-    crate::pms::seed_for_test(0, crate::pms::HubState::Loading);
-    let empty = crate::pms::hubs_snapshot();
+    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Loading);
+    let empty = crate::pms::hubs_snapshot(&state);
     let mut chosen = screen(empty.view());
     let moved = ScreenEvent::FocusMoved {
         from: None,
@@ -1779,8 +1808,8 @@ fn first_catalog_landing_reseats_the_default_cta_unless_the_strip_was_chosen() {
         by: By::Pointer,
     };
     let _ = step(&mut chosen, empty.view(), Some(fallback), &moved);
-    crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
-    let landed = crate::pms::hubs_snapshot();
+    crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
+    let landed = crate::pms::hubs_snapshot(&state);
     let (_, out, _) = step(
         &mut chosen,
         landed.view(),
@@ -1791,14 +1820,15 @@ fn first_catalog_landing_reseats_the_default_cta_unless_the_strip_was_chosen() {
         }),
     );
     assert!(enter_target(&out).is_none());
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn addressed_item_menu_uses_the_current_owned_grid_item() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let mut s = screen(snapshot.view());
     s.snap.jump(1.0);
     s.snap_target = 1.0;
@@ -1813,14 +1843,15 @@ fn addressed_item_menu_uses_the_current_owned_grid_item() {
         &out,
         |req| matches!(req, HomeReq::ItemMenu { rk, .. } if rk == "1")
     ));
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
 fn parent_read_only_api_projects_engine_focus_without_setters() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     let s = screen(snapshot.view());
     let card = first_card(&s);
     let context = cx(snapshot.view(), Some(card));
@@ -1843,7 +1874,6 @@ fn parent_read_only_api_projects_engine_focus_without_setters() {
     let empty_context = cx(snapshot.view(), None);
     let mut frame = DrawFrame::new(&empty_context, Painter::root());
     s.redraw_focused(&mut frame, None);
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }
 
 #[test]
@@ -1856,8 +1886,10 @@ fn the_hero_carousel_auto_advance_reports_motion_on_every_tick_while_armed() {
     // under `ui::idle`'s present gate, exactly like the `Xfade`/`Spinner` cases the module doc
     // already names. `tick` now notes `Motion` explicitly every frame the countdown runs.
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
-    let snapshot = crate::pms::hubs_snapshot();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
     assert!(
         snapshot.view().hero_count() > 1,
         "the auto-advance branch only arms with more than one hero slot"
@@ -1888,5 +1920,4 @@ fn the_hero_carousel_auto_advance_reports_motion_on_every_tick_while_armed() {
         }),
     );
     assert!(motion_again, "the ramp must keep reporting motion on the next tick too");
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
 }

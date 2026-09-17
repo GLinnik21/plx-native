@@ -482,7 +482,7 @@ fn home_requests(app: &mut App, now: u32) {
             HomeReq::Detail { sid, rk } =>
                 activate_home_item(app, source, entry, sid, &rk, None, ret, now),
             HomeReq::ItemMenu { sid, rk } => {
-                let snapshot = crate::pms::hubs_snapshot();
+                let snapshot = app.bridge.hubs_snapshot();
                 let Some(item) = home_item(snapshot.view(), sid, &rk)
                     .filter(|item| crate::screens::item_menu::has_actions(item)) else { continue };
                 let from_deck = home_menu_from_deck(&ret);
@@ -1513,7 +1513,7 @@ fn home_menu_from_deck(ret: &ReturnState<u32, PageMemory>) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn activate_home_item(app: &mut App, source: MachineId, entry: EntryId,
     sid: crate::plex::ServerId, rk: &str, resume_ns: Option<i64>, ret: ReturnState<u32, PageMemory>, now: u32) {
-    let snapshot = crate::pms::hubs_snapshot();
+    let snapshot = app.bridge.hubs_snapshot();
     let Some(mut item) = home_item(snapshot.view(), sid, rk).cloned() else { return };
     if let Some(resume_ns) = resume_ns { item.resume_ms = resume_ns.max(0) / 1_000_000; }
     // Home is the container's ROOT and a card press is the user acting on it, so there is nothing
