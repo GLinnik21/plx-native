@@ -19,6 +19,7 @@
 //!   PLXNATIVE_SHOT_FRAME=<n>       ALSO capture automatically at presented frame n (default: no
 //!                                  automatic capture — only the `shot` token fires one)
 //!   PLXNATIVE_SHOT_EXIT=1          exit(0) after an automatic capture — the headless one-shot mode
+//!   PLXNATIVE_SHOT_ALPHA=1         write RGBA (premultiplied, as the framebuffer holds it)
 //!
 //! The `shot` token on the remote FIFO captures on demand instead, which is what an interactive
 //! agent session uses: drive the UI, then ask for the frame. Those are NUMBERED (`shot-1.png`,
@@ -53,6 +54,7 @@ struct Cfg {
     /// `ui-sim` skill's own interactive recipe.
     frame: Option<u32>,
     exit: bool,
+    alpha: bool,
 }
 
 fn cfg() -> &'static Cfg {
@@ -67,6 +69,7 @@ fn cfg() -> &'static Cfg {
             .ok()
             .and_then(|s| s.parse().ok()),
         exit: std::env::var_os("PLXNATIVE_SHOT_EXIT").is_some(),
+        alpha: std::env::var("PLXNATIVE_SHOT_ALPHA").as_deref() == Ok("1"),
     })
 }
 
@@ -157,24 +160,35 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) {
     // its own clear colour — which is exactly what the panel shows when no video is playing. So an
     // opaque RGB image is the FAITHFUL screenshot, and the one that compares to a device capture,
     // where the TV's compositor has likewise already flattened the two planes.
+    //
+    // `PLXNATIVE_SHOT_ALPHA=1` keeps it anyway, for compositing a shot over a picture of your own:
+    // the channels are then exactly what the framebuffer holds, i.e. PREMULTIPLIED, so the
+    // composite is `out = shot.rgb + picture * (1 - shot.a)` — not the straight-alpha "over" a
+    // viewer applies to a PNG, which is why this file will look wrong opened on its own.
+    let ch = if cfg.alpha { 4 } else { 3 };
     let src_stride = w * 4;
-    let dst_stride = w * 3;
+    let dst_stride = w * ch;
     let mut rgb = vec![0u8; dst_stride * h];
     for y in 0..h {
         let src = (h - 1 - y) * src_stride;
         for x in 0..w {
             let s = src + x * 4;
-            let d = y * dst_stride + x * 3;
-            rgb[d..d + 3].copy_from_slice(&buf[s..s + 3]);
+            let d = y * dst_stride + x * ch;
+            rgb[d..d + ch].copy_from_slice(&buf[s..s + ch]);
         }
     }
+    let color = if cfg.alpha {
+        image::ColorType::Rgba8
+    } else {
+        image::ColorType::Rgb8
+    };
 
     let out = if on_demand {
         numbered(&cfg.path)
     } else {
         cfg.path.clone()
     };
-    match image::save_buffer(&out, &rgb, w as u32, h as u32, image::ColorType::Rgb8) {
+    match image::save_buffer(&out, &rgb, w as u32, h as u32, color) {
         Ok(()) => crate::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
         Err(e) => crate::log(&format!("shot: could not write {}: {e}", out.display())),
     }

@@ -468,6 +468,8 @@ unsafe fn present_and_swap(
         // Before the swap, never after: the back buffer is undefined once presented.
         #[cfg(feature = "hostsim")]
         crate::shot::maybe_capture(_vx, _vy, _vw, _vh);
+        #[cfg(feature = "hostsim")]
+        crate::surface::present_supersampled();
         SDL_GL_SwapWindow(app.win);
         app.window_activity.presented(fr.player);
         // One increment, then nothing: re-ask EGL for the back buffer's AGE after real
@@ -2453,8 +2455,10 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // costs the fps scenes nothing: they grade the once/sec heartbeat in the
                         // EVENT LOG, never the pixels, so `loop_floor`/`fps_floor`/`fps_ceiling`
                         // are unaffected by whether the digits are painted.
+                        // A supersampled simulator render (`surface::render_scale`) exists to be
+                        // captured, so it leaves the diagnostic digits out of the picture.
                         #[cfg(feature = "devtools")]
-                        {
+                        if crate::surface::render_scale() == 1 {
                             let fps_col = if app.buffer_flip_count < 30 {
                                 crate::ui::theme::DIAG_FLIP_A
                             } else {

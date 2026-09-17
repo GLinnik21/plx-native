@@ -282,7 +282,9 @@ fn tex_for(id: Icon, px: i32) -> c_uint {
         if let Some(e) = cache.iter().find(|e| e.id == id && e.px == px) {
             return e.tex;
         }
-        let target = px.clamp(8, 96);
+        // `render_scale` is the simulator's supersampling (1 on a television): the mask is
+        // rasterised at physical size and still drawn into the same logical rect.
+        let target = px.clamp(8, 96) * crate::surface::render_scale();
         let hi = target * SS;
         let tex = match crate::svg::rasterize(src(id), hi, hi) {
             Some(rgba) => {

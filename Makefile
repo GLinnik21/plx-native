@@ -1542,10 +1542,14 @@ SIM_FRAME ?= 200
 SIM_SHOT  ?= $(SIM_DIR)/shot.png
 # Shared by every sim recipe so the wiring and the error sentence have exactly one copy — the same
 # reason BOOT_SH exists for `run`/`run-stream`.
-# Window size for the simulator, in DRAWABLE pixels. Empty = fit the display (see
+# Window size for the simulator, in window POINTS (SDL's window size; the window is ALLOW_HIGHDPI,
+# so on a Retina display the drawable is twice this). Empty = fit the display (see
 # `desktop_window_size`), which on a 1x screen is half the authored canvas and therefore half the
 # resolution of every screenshot. Set both to look at the UI the size it is drawn:
 #   make sim-shot SIM_W=1920 SIM_H=1080
+# For a capture LARGER than the display can hold, set PLXNATIVE_RENDER_SCALE=<1..4> in the
+# environment instead: the frame is then rendered offscreen at that multiple of 1920x1080 (glyphs,
+# icons and artwork rasterised to match) and shots come out at that size (`surface::render_scale`).
 SIM_W ?=
 SIM_H ?=
 SIM_WIN = $(if $(and $(SIM_W),$(SIM_H)),PLXNATIVE_WIN=$(SIM_W)x$(SIM_H),)
