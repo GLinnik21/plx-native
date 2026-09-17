@@ -424,6 +424,16 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                     play,
                 );
             }
+            // Full-trailer mode's LEFT/RIGHT scrub commit. Also does not halt the preview on its
+            // own — `player::preview::seek` decides that (a refused/failed seek's own outcome),
+            // exactly as `PreviewTransport` above never halts on a bare pause.
+            ContentReq::PreviewSeek(target_ns) => {
+                crate::player::preview::seek(
+                    &mut app.player.session,
+                    &mut app.adapters.player,
+                    target_ns,
+                );
+            }
             ContentReq::Panel(panel) => {
                 halt_preview(app);
                 // **The SUBJECT is the page's item, and a page need not have one.** A panel that

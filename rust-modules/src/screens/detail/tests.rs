@@ -1399,10 +1399,12 @@ fn back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise() {
 }
 
 /// **The input arm's own claim: full-trailer mode answers a key it owns on EVERY edge, before any
-/// other arm, but only ACTS on the DOWN edge.** LEFT is the probe: `trailer::trailer_key` maps it
-/// to `Reveal`, which has no effect this test can mistake for ordinary LEFT navigation, so a
-/// `revealed()` flip after the DOWN edge (and none after the UP edge) can only have come from this
-/// arm running — and running before whatever ordinary LEFT handling exists further down.
+/// other arm, but a `Reveal`-mapped key only ACTS on the DOWN edge.** UP is the probe:
+/// `trailer::trailer_key` maps it to `Reveal`, which has no effect this test can mistake for
+/// ordinary UP navigation, so a `revealed()` flip after the DOWN edge (and none after the UP edge)
+/// can only have come from this arm running — and running before whatever ordinary UP handling
+/// exists further down. (LEFT/RIGHT now map to `Scrub`, which — unlike `Reveal` — DOES act on
+/// every edge; that contract is graded separately, by the scrub-specific tests below.)
 #[test]
 fn full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_down_edge() {
     let sid = ServerId::UNSET;
@@ -1421,15 +1423,15 @@ fn full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_do
     }
     let play = Some(hero::HeroCtl::Play.elem());
 
-    let (handled, _) = step(&mut screen, &key_event(Key::Left, Edge::Up), play);
+    let (handled, _) = step(&mut screen, &key_event(Key::Up, Edge::Up), play);
     assert_eq!(handled, Handled::Yes, "the up edge of an owned key must still be swallowed");
     assert!(!screen.trailer_ctl.revealed(), "the up edge must not act");
 
-    let (handled, _) = step(&mut screen, &key_event(Key::Left, Edge::Down), play);
+    let (handled, _) = step(&mut screen, &key_event(Key::Up, Edge::Down), play);
     assert_eq!(handled, Handled::Yes, "the down edge must be swallowed too");
     assert!(
         screen.trailer_ctl.revealed(),
-        "the down edge must act (Reveal) — proof this ran before ordinary LEFT handling"
+        "the down edge must act (Reveal) — proof this ran before ordinary UP handling"
     );
 
     crate::player::preview::reset_for_test();
@@ -1446,6 +1448,17 @@ fn trailer_act(
     screen: &mut DetailScreen,
     act: trailer::TrailerKey,
 ) -> Vec<crate::ui::machine::Stamped<TestHost>> {
+    trailer_act_edge(screen, act, Edge::Down, 0)
+}
+
+/// The edge-aware twin, for `Scrub`'s own tests below — every other variant here only ever acts
+/// on `Down`, which is what the plain [`trailer_act`] above always passes.
+fn trailer_act_edge(
+    screen: &mut DetailScreen,
+    act: trailer::TrailerKey,
+    edge: Edge,
+    now: u32,
+) -> Vec<crate::ui::machine::Stamped<TestHost>> {
     let mut effects = Vec::new();
     let mut present = crate::ui::present::Present::new();
     let mut sink = Effects::new(
@@ -1453,7 +1466,7 @@ fn trailer_act(
         crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
         &mut present,
     );
-    screen.trailer_act::<TestHost>(act, &mut sink);
+    screen.trailer_act::<TestHost>(act, edge, now, &mut sink);
     drop(sink);
     effects
 }
@@ -1470,9 +1483,21 @@ fn transport_reqs(
         .collect()
 }
 
+fn seek_reqs(effects: &[crate::ui::machine::Stamped<TestHost>]) -> Vec<i64> {
+    effects
+        .iter()
+        .filter_map(|effect| match &effect.fx {
+            Fx::App(AppFx::Content(ContentReq::PreviewSeek(target_ns))) => Some(*target_ns),
+            _ => None,
+        })
+        .collect()
+}
+
 /// **Full-trailer mode's transport keys.** OK/PLAYPAUSE ask for the toggle, the remote's dedicated
 /// PLAY and PAUSE ask for their own direction, and every one of the three leaves the controls on
-/// screen — the request carries no position, because a preview is never seeked.
+/// screen. (LEFT/RIGHT's own `Scrub` request — `ContentReq::PreviewSeek` — is graded separately,
+/// by `a_held_left_right_scrub_commits_a_preview_seek_on_key_up` below: unlike these three, it
+/// only fires once the gesture ends, and only on some edges.)
 #[test]
 fn ok_toggles_the_trailers_pause_and_play_pause_pick_a_direction() {
     let sid = ServerId::UNSET;
@@ -1492,6 +1517,84 @@ fn ok_toggles_the_trailers_pause_and_play_pause_pick_a_direction() {
         );
         assert!(screen.preview_promoted, "act={act:?} must not leave the mode");
     }
+    clear();
+}
+
+/// `trailer_act`'s `Scrub` arm reads `player::duration_ns()`/`playpos_ns()` on `Down`
+/// (`Transport::scrub_fresh`'s own doc: passed in rather than read inside `trailer.rs`, but
+/// `trailer_act` is exactly the one caller that does the reading). Those are the crate-wide
+/// `SHARED` atomics — held together with `testlock::serial()` by every caller, same as
+/// `screens::player::mod`'s own scrub `Fixture`. `duration_ns` must be positive or
+/// `scrub_fresh` is a deliberate no-op (nothing to scrub within).
+struct DurationFixture(i64, i64);
+impl DurationFixture {
+    const DUR: i64 = 100_000_000_000;
+    fn new() -> Self {
+        use std::sync::atomic::Ordering::Relaxed;
+        let was = DurationFixture(
+            crate::player::SHARED.duration_ns.load(Relaxed),
+            crate::player::SHARED.playpos_ns.load(Relaxed),
+        );
+        crate::player::SHARED.duration_ns.store(Self::DUR, Relaxed);
+        crate::player::SHARED.playpos_ns.store(0, Relaxed);
+        was
+    }
+}
+impl Drop for DurationFixture {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        crate::player::SHARED.duration_ns.store(self.0, Relaxed);
+        crate::player::SHARED.playpos_ns.store(self.1, Relaxed);
+    }
+}
+
+/// **`TrailerKey::Scrub` is dispatched on every edge, not just `Down`** — `Down` hops the fixed
+/// step, `Up` (with no repeat in between, i.e. a tap) arms the debounce rather than committing at
+/// once, and it fires a `ContentReq::PreviewSeek` — never `PreviewTransport` — once the debounce's
+/// own tick (driven by `preview_tick`, not exercised by this direct `trailer_act` harness) elapses.
+/// This proves the wiring from the key ladder into `Transport::scrub_fresh`/`scrub_release`; the
+/// gesture math itself (accumulation, the hold ramp, the lost-keyup net) is graded in
+/// `screens::detail::trailer`'s own tests.
+#[test]
+fn left_right_scrub_hops_on_down_and_asks_for_no_transport_request() {
+    let _serial = crate::testlock::serial();
+    let _dur = DurationFixture::new();
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+
+    let effects = trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Down, 0);
+
+    assert!(transport_reqs(&effects).is_empty(), "a scrub press is not a pause/resume");
+    assert!(seek_reqs(&effects).is_empty(), "a fresh press previews — it does not commit yet");
+    assert!(screen.trailer_ctl.scrubbing(), "the gesture is now tracked on the transport");
+    assert!(screen.trailer_ctl.revealed(), "any key the mode keeps re-arms the linger");
+    assert!(screen.preview_promoted, "a scrub must not leave the mode");
+    clear();
+}
+
+/// A HELD scrub commits at once on its key-up, through `ContentReq::PreviewSeek` — never
+/// `route::request_seek`'s own `PlayerReq::SeekTo`/`CommitSeek`, which is the whole point of
+/// routing a preview's seek through `player::preview::seek` instead (see `ContentReq::PreviewSeek`
+/// and `player/preview.rs`'s own module doc for the watch-state promise this keeps).
+#[test]
+fn a_held_left_right_scrub_commits_a_preview_seek_on_key_up() {
+    let _serial = crate::testlock::serial();
+    let _dur = DurationFixture::new();
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+
+    trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Down, 0);
+    trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Repeat, 0);
+    let target = screen.trailer_ctl.preview_ns_for_test();
+    let effects = trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Up, 0);
+
+    assert_eq!(seek_reqs(&effects), vec![target], "the hold's own preview position, verbatim");
+    assert!(transport_reqs(&effects).is_empty(), "a seek is not a pause/resume");
+    assert!(!screen.trailer_ctl.scrubbing(), "committing ends the gesture");
     clear();
 }
 
