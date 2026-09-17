@@ -2217,18 +2217,167 @@ pub(crate) fn account_menu(
 // the loop's navigations, as container ops
 // ---------------------------------------------------------------------------------------------
 
-/// **Go to a PEER — Home, the Library or Search** (spec §3.4 `NavOp::Root`).
+/// **Replace the WHOLE stack with `arg`** (spec §3.4 `NavOp::Root`).
+///
+/// Every entry, including the current root, leaves for good and `arg` is minted as the sole
+/// survivor — unless the stack is already exactly `[arg]`, which is a `PopTo(root)` no-op instead
+/// of empty churn. This is the sign-in/sign-out/profile-switch/onboarding-gate reset: there is no
+/// page underneath worth returning to, so none is kept. **It is NOT the shared strip's pill
+/// press** — that is [`nav_select_tab`], which covers-and-mints over the existing root rather than
+/// discarding it, so BACK off a pressed pill still lands somewhere. The two used to be one
+/// `NavOp::Root` arm, and sharing it was the bug: a per-frame `Root(Profiles)` follower asking
+/// this while Login was the un-retired root minted a fresh `Profiles` OVER Login every single
+/// frame forever, each mint orphaning whatever surface (first-run consent) had been presented in
+/// between (TV 2026-09-17).
+pub(crate) fn nav_root(d: &mut Dispatcher<AppHost>, arg: AppArg) {
+    d.request(MachineId::Nav, NavOp::Root(arg));
+}
+
+/// **Is `arg` already the settled `Root`** — the stack exactly `[arg]`, that entry MOUNTED, and
+/// nothing pending? Exactly [`NavStack::root_settled`](crate::ui::containers::stack::NavStack::root_settled),
+/// which is also `is_inert`'s own `Root` rule (§stack.rs) — shared rather than restated so the two
+/// answers to "has this landing settled" can never drift apart.
+///
+/// The per-frame Login/Profiles follower (`follow_auth_landing`, below) asks for its landing
+/// every frame of a phase, and `NavStack::request`'s own dedup already makes an
+/// exactly-redundant `Root` inert — but a caller downstream of THAT request
+/// (`maybe_ask_consent`, presenting a surface over the page this call lands on) needs to know
+/// whether the landing has actually happened yet, which the dedup alone does not expose to it.
+/// **It requires DEPTH ONE**, not merely "on top": `arg` sitting on top of a taller stack is not
+/// the reset landing this exists to detect, and answering `true` for it would let
+/// `nav_root_if_unsettled` skip a replace that was still owed.
+pub(crate) fn top_settled_on(d: &Dispatcher<AppHost>, arg: &AppArg) -> bool {
+    d.nav.tabs.stack.root_settled(arg)
+}
+
+/// **`nav_root`, made edge-triggered** — a no-op while `arg` is already the settled top.
+///
+/// `NavStack::request`'s dedup already drops the redundant request before it touches `pending` or
+/// the transition, so this adds nothing to the STACK's own correctness; what it buys the per-frame
+/// callers in `run.rs`'s Login/Profiles follower is not re-asking at all, which is what lets
+/// [`top_settled_on`] answer "has this landing happened" for them.
+pub(crate) fn nav_root_if_unsettled(d: &mut Dispatcher<AppHost>, arg: AppArg) {
+    if !top_settled_on(d, &arg) {
+        nav_root(d, arg);
+    }
+}
+
+/// **The per-frame Login/Profiles landing follower** — where the stack should stand this frame,
+/// asked every frame while the top is `Login` or `Profiles` so a slow worker's eventual answer
+/// (a credentials handoff, a persistence warning, a phase change) is caught the moment it lands.
+///
+/// This is the ONE production routing decision — `app/run.rs::land_results` calls it from the
+/// live loop, and the two tests that used to keep their own inline copy of this exact `match`
+/// (`session_picker_regression_tests.rs`'s `first_run_consent_over_the_picker_does_not_flip_
+/// mounts_every_frame` and `login_phase_follower_settles_and_does_not_recycle_the_qr_screen`) now
+/// call this function too, so a test can no longer pass by agreeing with its own copy of the bug
+/// instead of with production. (Mutation-tested 2026-09-17: reverting this function to the OLD
+/// shape — a bare `nav_root` every frame, `maybe_ask_consent` with no `top_settled_on` gate — fails
+/// the repro test; separately, making `NavStack::is_inert` always return `false` while routing
+/// `Root` through the OLD combined `Root`/`SelectTab` apply arm fails the container's own dedup
+/// tests. See the commit that added this doc for the exact runs.)
+///
+/// Guarded on the CALLER's route read (`app.route()`/`pages.top_arg()`) rather than inside: the
+/// guard is one `matches!` either way, and keeping it at the call site is what let the two tests
+/// below read `d.top_arg()` themselves before deciding whether to call this at all — asserting
+/// "outside the phase this asks nothing" needs no help from the function it is testing.
+pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut Bridge) {
+    if let Some(c) = bridge.take_session_ready() {
+        // A sign-out followed by a fresh sign-in can replace the session without restarting the
+        // process. Re-read only at this one credentials handoff so the old account's in-memory
+        // preference cannot leak into the new session.
+        let saved = crate::plex::session::peek();
+        crate::route::restore_quality(
+            crate::dev::playback_quality_override().unwrap_or_else(|| saved.playback_quality()),
+        );
+        let endpoints = super::boot::install_pms_owned(bridge, &c.origin,
+            &c.address, &c.token, c.tier, c.pin.as_ref(), &c.install);
+        execute_endpoint_outcomes(pages, endpoints);
+        // **A new user must never be able to walk BACK into the previous one's pages**, which is
+        // the fourth store an identity change must not survive beside the `browse`/`pms`/`person`
+        // resets `install_pms` performs. It was `trail.reset()`, which emptied the loop's mirror
+        // and left the CONTAINER's entries — bodies, `ReturnState`s and all — exactly where they
+        // were, because `sync_page` only ever moved the top. `reset_for_profile` is the whole tree.
+        pages.reset_for_profile();
+        // …and only NOW can the first-run question be asked: `install_pms` registers the granted
+        // roster, which is the stable input to this decision even before asynchronous section
+        // discovery lands. It is asked per PROFILE, which is why it sits after the switch rather
+        // than after the sign-in. The sign-in's question first, before any per-profile step. On a
+        // Plex Home account it was already asked at the picker below and this is a no-op; on a
+        // single-user account this is the earliest authorized moment there is.
+        super::input::maybe_ask_consent(pages);
+        bridge.refresh_browse_directory();
+        if crate::stores::browse::onboard::asks(bridge.browse_directory()) {
+            crate::log("login: server installed — asking which sources feed Home");
+            // no `enter()`: rooting the stack at the page is what mounts the owned screen
+            // (`boot.rs`), and a ROOT is right because the sweep above has just emptied the tree.
+            nav_root_if_unsettled(pages, AppArg::Onboard);
+        } else {
+            crate::log("login: server installed — entering Home");
+            nav_root_if_unsettled(pages, AppArg::Home);
+        }
+    } else if bridge.auth_read().0.persistence_warning.is_some() {
+        // A fresh save could not be confirmed durable: keep the report reachable before
+        // consent/profile routing, exactly as 0.6.6 did — the warning is answered on the login
+        // screen itself (AUTH-03), not by moving on as if it were acknowledged.
+        nav_root_if_unsettled(pages, AppArg::Login);
+    } else {
+        match bridge.auth_read().0.phase {
+            // A Ready decision can still await its queued disk/registry ACK. Keep the current
+            // flow page until the exact owner handoff is available.
+            crate::auth::Phase::Ready => {}
+            crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
+                // No `enter()`-on-change guard any more (phase 6): the picker is an owned screen,
+                // so a route that is ALREADY `Profiles` mints nothing (`bridge::frame`'s
+                // `Some(_) => {}` arm) and the existing instance's state — the roster cursor, an
+                // open PIN pad — rides across this assignment untouched, exactly as it did behind
+                // the old guard; a route that is NOT yet `Profiles` gets a fresh `ProfilesScreen`
+                // the moment the tree follows it, which is the whole of what `ui::profiles::
+                // enter()` used to reset by hand.
+                //
+                // **`nav_root_if_unsettled` is a genuine no-op once the picker is the settled
+                // root — not merely "cheap".** The old comment here claimed calling a bare
+                // `Root(Profiles)` every frame was free because `Root`'s own `PopTo(root)` arm
+                // "did nothing" when the root already matched; it still restarted the `PageDip`
+                // transition from wherever its alpha was, every single frame, so the dip never
+                // reached `Idle`. Worse, `Root` and the strip's pill press shared one arm back
+                // then, so once Login (never retired) sat under the mint, this same call retired
+                // and re-minted `Profiles` every frame too. `Root` now truly replaces (§stack.rs)
+                // and `NavStack::request` drops an exactly-redundant request before it touches the
+                // transition at all, so the guard here is what lets the NEXT line ask "has the
+                // picker actually landed" honestly.
+                nav_root_if_unsettled(pages, AppArg::Profiles);
+                // BEFORE the picker: the account is authorized, so the consent question is
+                // answerable, and the person holding the remote at this moment is the one who
+                // signed the television in. It draws over the picker's route on its own opaque
+                // ground — which means it must not be asked until Profiles is the SETTLED top:
+                // presenting it while Login is still fading out underneath would host it on the
+                // entry the `Root` above is about to retire, and the very next commit would
+                // orphan it (TV 2026-09-17's mount/unmount loop).
+                if top_settled_on(pages, &AppArg::Profiles) {
+                    super::input::maybe_ask_consent(pages);
+                }
+            }
+            _ => {
+                nav_root_if_unsettled(pages, AppArg::Login);
+            }
+        }
+    }
+}
+
+/// **Select a shared-strip PILL — Home, the Library or Search** (spec §3.4 `NavOp::SelectTab`).
 ///
 /// The three strip pills are peers of one another and all stand on Home, so arriving at one
-/// unwinds whatever was above the root: `Root` is a `PopTo(root)` when the root is already this
-/// page and a cover-and-mint otherwise. That is exactly what `Trail::reset()` + `Trail::push()`
+/// unwinds whatever was above the root: `SelectTab` is a `PopTo(root)` when the root is already
+/// this page and a cover-and-mint otherwise. That is exactly what `Trail::reset()` + `Trail::push()`
 /// spelled by hand, and what the container did NOT do before D1 — `sync_page` pushed for anything
 /// that was not a boot gate, so `Library → Search` left the container three deep while the trail
 /// said two, and BACK's destination came off the container. The trail's own doc named that
 /// divergence as the bug ("BACK off a result eventually lands on the browse grid for one user and
-/// Home for another"); one authority is what settles it.
-pub(crate) fn nav_root(d: &mut Dispatcher<AppHost>, arg: AppArg) {
-    d.request(MachineId::Nav, NavOp::Root(arg));
+/// Home for another"); one authority is what settles it. See [`nav_root`] for the other half of
+/// the split — the true replace a pill press must never do.
+pub(crate) fn nav_select_tab(d: &mut Dispatcher<AppHost>, arg: AppArg) {
+    d.request(MachineId::Nav, NavOp::SelectTab(arg));
 }
 
 /// **Put `want` on top, reusing an entry that already holds it.**
@@ -2327,13 +2476,13 @@ pub(crate) fn nav_tab(
     nav_peer(d, arg, ret);
 }
 
-/// A peer of Home: root there unless it is already the page on top.
+/// A peer of Home: select that pill unless it is already the page on top.
 fn nav_peer(d: &mut Dispatcher<AppHost>, arg: AppArg, ret: Option<ReturnState<u32, PageMemory>>) {
     use crate::ui::screen::ScreenArg;
     if d.nav.top_page().map(|e| e.arg.same_instance(&arg)).unwrap_or(false) { return; }
     match ret {
-        Some(ret) => d.request_with_return(MachineId::Nav, NavOp::Root(arg), ret),
-        None => nav_root(d, arg),
+        Some(ret) => d.request_with_return(MachineId::Nav, NavOp::SelectTab(arg), ret),
+        None => nav_select_tab(d, arg),
     }
 }
 
@@ -2374,12 +2523,20 @@ pub(crate) fn nav_pop_with_return(d: &mut Dispatcher<AppHost>, ret: ReturnState<
 /// `PopTo` is a no-op for an entry that is no longer on the stack, and a player whose origin has
 /// gone would then have no way off the screen at all — so an absent origin falls back to Home,
 /// the one page that is always there. That fallback is `return_page`'s `unwrap_or(Node::Home)`
-/// in its new home.
+/// in its new home. The fallback itself is `nav_select_tab`, not `nav_root`: Home is usually
+/// already sitting at the floor of the stack, and `Root` would retire and re-mint it (losing its
+/// focus/scroll memory) where `SelectTab` just `PopTo`s the root that is already there.
 pub(crate) fn nav_pop_to(d: &mut Dispatcher<AppHost>, entry: EntryId) {
     if d.nav.tabs.stack.entries.iter().any(|e| e.id == entry) {
         d.request(MachineId::Nav, NavOp::PopTo(entry));
     } else {
-        nav_root(d, AppArg::Home);
+        // The stale entry is gone (evicted past `CAP`, or its whole branch was torn down), but
+        // the intent behind this fallback has always been "go back to the existing Home root",
+        // not "mint a brand new one" — `NavOp::Root` now truly replaces the whole stack, retiring
+        // even a Home root that is already sitting there, which loses its focus/scroll memory for
+        // no reason: `NavOp::SelectTab` is the pill-press semantic that PopTo's an already-current
+        // root instead, exactly what this fallback wants.
+        nav_select_tab(d, AppArg::Home);
     }
 }
 

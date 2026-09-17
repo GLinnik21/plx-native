@@ -862,7 +862,7 @@ pub(crate) fn after_cancel(backed_out: bool) -> AfterCancel {
 pub(crate) fn enter_profiles_from_onboard(pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     super::bridge::execute_session_command(pages,
         crate::auth::SessionCmd::StartSwitch(crate::auth::Picker::ChangeProfile));
-    super::bridge::nav_root(pages, AppArg::Profiles);
+    super::bridge::nav_root_if_unsettled(pages, AppArg::Profiles);
 }
 
 /// Put the telemetry question on screen, if this boot is one that should see it.
@@ -933,9 +933,9 @@ pub(crate) fn enter_home_from_onboard(pages: &mut crate::ui::dispatch::Dispatche
     // write) has already bumped. Nothing to kick here; Home builds from the answer on its first
     // frame.
     //
-    // `Root(Home)` IS the reset: it unwinds every entry above the root and, the root being the
-    // onboarding gate rather than Home, covers it with the Home this lands on.
-    super::bridge::nav_root(pages, AppArg::Home);
+    // `Root(Home)` IS the reset: it retires every entry, the onboarding gate included, and mints
+    // Home as the sole survivor.
+    super::bridge::nav_root_if_unsettled(pages, AppArg::Home);
 }
 
 /// What a confirmed **Delete all local data** does next, given how many files could not be

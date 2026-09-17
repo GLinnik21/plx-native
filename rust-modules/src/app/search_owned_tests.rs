@@ -69,7 +69,9 @@ fn every_back_reachable_owned_page_is_retained_and_restored_by_identity() {
             "home" => {}
             "library" => {
                 ms += 16;
-                super::nav_root(&mut d, AppArg::Library);
+                // The Library pill, not a replace — `NavOp::Root` now truly replaces the whole
+                // stack (TV 2026-09-17's split), so this must be the same op a real press sends.
+                super::nav_select_tab(&mut d, AppArg::Library);
                 super::frame(&mut d, &mut rig, tick(ms), vec![]);
             }
             "detail" => {
@@ -156,7 +158,9 @@ fn owned_search_is_covered_for_a_result_then_unmounted_for_good_at_home() {
     super::frame(&mut d, &mut rig, tick(0), vec![]);
     let home_entry = d.nav.top_page().unwrap().id;
     let home_instance = d.nav.instance_of(home_entry).unwrap();
-    super::nav_root(&mut d, AppArg::Search);
+    // The Search pill, not a replace — see the comment on the `Root` call below, which is the
+    // one that actually needs the doc's "retires Search for good" to be true rather than vacuous.
+    super::nav_select_tab(&mut d, AppArg::Search);
     super::frame(&mut d, &mut rig, tick(1), vec![]);
     let search_entry = d.nav.top_page().unwrap().id;
     let search_instance = d.nav.instance_of(search_entry).unwrap();
@@ -188,7 +192,12 @@ fn owned_search_is_covered_for_a_result_then_unmounted_for_good_at_home() {
     assert!(d.input.keyboard);
     assert_eq!(rig.keyboard_calls, [true, false, true]);
     let mut left = OwnedLeaveTrace::default();
-    super::nav_root(&mut d, AppArg::Home);
+    // Re-pressing the Home pill: `NavOp::SelectTab(Home)` is a `PopTo(root)` because Home is
+    // already the root underneath Search — it is what retires Search for good and restores the
+    // SAME Home entry/instance captured above. A bare `Root(Home)` would now (post-split) replace
+    // the whole stack instead, minting a FRESH Home and failing the identity asserted below for a
+    // reason that has nothing to do with what this test means to grade.
+    super::nav_select_tab(&mut d, AppArg::Home);
     let (_, report) = super::frame_with_tap(&mut d, &mut rig, tick(6), vec![], &mut left);
     assert_eq!(left.for_instance(search_instance), ["will-leave-for-good", "unmount"]);
     assert!(report.unmounted.contains(&search_instance));

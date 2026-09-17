@@ -293,3 +293,158 @@ fn change_profile_then_back_cannot_restore_the_protected_profile_it_left() {
     }
     live_detachment();
 }
+
+/// **TV 2026-09-17: first-run consent and the who's-watching picker remount each other forever.**
+///
+/// Fresh install, consent never answered, QR sign-in onto a three-user Plex Home. The log then
+/// alternated `coldopen screen=settings` / `coldopen screen=profiles` about once per 1–2 frames
+/// for as long as the picker phase lasted. This drives the loop's own per-frame routing for
+/// `auth::Phase::Profiles` (`bridge::follow_auth_landing`: `nav_root_if_unsettled(Profiles)`, then
+/// `maybe_ask_consent` ONLY once Profiles is the settled top) — the same production function the
+/// live loop calls, parked AFTER the dispatcher frame exactly as the loop parks it — over the real
+/// `Bridge` + `Dispatcher`.
+///
+/// The fix has two independent halves, both exercised here: `NavOp::Root` now truly replaces the
+/// stack (so the never-retired Login root stops sitting under every later mint) and
+/// `NavStack::request` drops an exactly-redundant `Root` before it touches `pending` or the
+/// transition (so the per-frame re-ask cannot keep re-kicking a `PageDip` that never settles) —
+/// and the follower asks for the consent surface only once Profiles has actually landed, never
+/// while Login is still the entry the `Root` above is retiring.
+///
+/// Expected: the picker mounts once, the consent surface mounts once, and neither unmounts.
+///
+/// `hostsim`-only, and this is a correctness gate rather than a convenience: `paths::ENV_STEERABLE`
+/// is `cfg!(feature = "hostsim")`, so `PLXNATIVE_RUNTIME_DIR` is only honoured in that build; off
+/// it, `dev::any_trigger_present()` scans the literal shared `/tmp` regardless of the env var this
+/// test sets, and `make check`'s first (non-`hostsim`) pass grades this test against whatever
+/// stray `plxnative-*` file another process or an earlier run left there instead of a private root.
+#[cfg(feature = "hostsim")]
+#[test]
+fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
+    use super::test_support::tick;
+    let _g = crate::testlock::serial();
+    let saved_consent = crate::telemetry::consent::current();
+    crate::telemetry::consent::install(crate::telemetry::consent::Consent::default());
+    // Any `plxnative-*` file in the runtime root suppresses the question (`dev::any_trigger_present`);
+    // run under `--features hostsim` with a private `PLXNATIVE_RUNTIME_DIR`, as `make check` does.
+    assert!(!crate::dev::any_trigger_present(), "a stray trigger in {:?} suppresses the consent question",
+        crate::paths::runtime_dir());
+    assert!(crate::dev::scenarios::consent_override().is_none());
+
+    let mut account = stored(true);
+    account.user = UserRef::default();
+    account.home_users = ["owner", "adult", "kid"]
+        .iter()
+        .map(|u| HomeUserRef { uuid: (*u).into(), ..Default::default() })
+        .collect();
+    let mut rig = rig(account);
+    // Production's dispatcher (`app/boot.rs`): the PageDip route transition, not the tests' cut.
+    let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
+        crate::ui::containers::transition::PageDip::new(),
+    ));
+
+    // The QR screen was the root before the sign-in completed.
+    super::nav_root(&mut d, AppArg::Login);
+    for i in 0..20 { super::frame(&mut d, &mut rig, tick(i), vec![]); }
+    assert_eq!(d.nav.tabs.stack.entries.len(), 1, "Login is the settled root before the sign-in lands");
+    execute_session_command(&mut d, SessionCmd::StartSwitch(Picker::SignedIn));
+    super::frame(&mut d, &mut rig, tick(20), vec![]);
+    assert_eq!(rig.auth_read().0.phase, Phase::Profiles, "the sign-in raised the picker phase");
+
+    let mut mounts: Vec<(u32, &'static str)> = Vec::new();
+    // Only the picker/consent family: Login's own single, legitimate Unmount — the `Root` above
+    // truly replacing it (item 1's fix) retires the never-answered-for QR root exactly once — is
+    // a real navigation event, not a recurrence of the bug, so it is deliberately not counted
+    // here (the doc above promises "neither [picker nor consent] unmounts", not "nothing does").
+    let mut watched: std::collections::HashSet<InstanceId> = Default::default();
+    let mut unmounts = 0usize;
+    let mut cold: Vec<String> = Vec::new();
+    for i in 21..=140u32 {
+        // run.rs ~199/212: the dispatcher frame (it commits what the previous iteration parked).
+        let (_, report) = super::frame(&mut d, &mut rig, tick(i), vec![]);
+        for (id, name) in &report.mounted {
+            mounts.push((i, *name));
+            if matches!(*name, "profiles" | "settings") {
+                watched.insert(*id);
+            }
+        }
+        unmounts += report.unmounted.iter().filter(|id| watched.contains(id)).count();
+        cold.extend(d.take_cold_open_lines());
+        // The EXACT production routing function (`bridge::follow_auth_landing`), not a copy of
+        // its `match` — see that function's doc for why sharing it is what lets this test bite.
+        if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) {
+            assert!(rig.take_session_ready().is_none());
+            super::follow_auth_landing(&mut d, &mut rig);
+        }
+    }
+
+    if let Some(c) = saved_consent {
+        crate::telemetry::consent::install(c);
+    }
+    // The first-run consent surface is a Settings-family screen: its `Screen::name()` is "settings".
+    let named = |w: &str| mounts.iter().filter(|(_, n)| *n == w).count();
+    assert_eq!(
+        (named("profiles"), named("settings"), unmounts),
+        (1, 1, 0),
+        "(frame, screen) mounts {mounts:?}; {unmounts} unmounts; coldopen lines {cold:?}",
+    );
+    // The perpetual dip is invisible to the mount count above (the redundant `Root` used to keep
+    // re-kicking `PageDip`'s Out ramp forever without ever re-minting anything) — 140 frames is
+    // long past its 210 ms schedule, so anything short of 1.0 here means it is still cycling.
+    assert_eq!(d.nav.tabs.stack.page_alpha(), 1.0, "the page transition actually settled");
+}
+
+/// **Login-phase twin: the same per-frame follower over the QR screen never re-mints it either.**
+///
+/// The picker test above exercises `bridge::follow_auth_landing`'s `Phase::Profiles |
+/// Phase::Switching` arm; this exercises the OTHER arms behind the same
+/// `if matches!(app.route(), AppArg::Login | AppArg::Profiles)` guard while auth sits in
+/// `Phase::Waiting` (the QR flow, before any sign-in lands): the `persistence_warning` branch and
+/// the default `_ => nav_root_if_unsettled(Login)` arm. Both are per-frame `Root(Login)`
+/// followers of exactly the shape that broke on the Profiles side — there is just no covering
+/// surface here to make a perpetual dip visible as a remount, so this grades it directly off the
+/// mount/unmount counts and the settled alpha instead.
+///
+/// Expected: Login mounts exactly once, over the whole run, and never unmounts.
+#[test]
+fn login_phase_follower_settles_and_does_not_recycle_the_qr_screen() {
+    use super::test_support::tick;
+    let _g = crate::testlock::serial();
+
+    let mut init = SessionInit::captured(Session::default());
+    init.phase = Phase::Waiting;
+    let mut rig = Bridge::for_session_test(init);
+    // Production's dispatcher (`app/boot.rs`): the PageDip route transition, not the tests' cut.
+    let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
+        crate::ui::containers::transition::PageDip::new(),
+    ));
+
+    // `app/boot.rs`: the QR screen is minted as the root once, before the loop's first iteration.
+    super::nav_root(&mut d, AppArg::Login);
+
+    let mut mounts: Vec<(u32, &'static str)> = Vec::new();
+    let mut unmounts = 0usize;
+    for i in 0..140u32 {
+        // run.rs ~199/212: the dispatcher frame (it commits what the previous iteration parked).
+        let (_, report) = super::frame(&mut d, &mut rig, tick(i), vec![]);
+        mounts.extend(report.mounted.iter().map(|(_, n)| (i, *n)));
+        unmounts += report.unmounted.len();
+        // The EXACT production routing function (`bridge::follow_auth_landing`), not a copy of
+        // its `match` — see that function's doc for why sharing it is what lets this test bite.
+        if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) {
+            assert!(rig.take_session_ready().is_none());
+            if matches!(rig.auth_read().0.phase, Phase::Profiles | Phase::Switching) {
+                unreachable!("Phase::Waiting never advances on its own in this fixture")
+            }
+            super::follow_auth_landing(&mut d, &mut rig);
+        }
+    }
+
+    let named = |w: &str| mounts.iter().filter(|(_, n)| *n == w).count();
+    assert_eq!(
+        (named("login"), unmounts),
+        (1, 0),
+        "(frame, screen) mounts {mounts:?}; {unmounts} unmounts",
+    );
+    assert_eq!(d.nav.tabs.stack.page_alpha(), 1.0, "the page transition actually settled");
+}

@@ -838,3 +838,209 @@ fn only_a_parked_page_op_counts_as_a_pending_navigation() {
         assert!(!d.has_pending_navigation(), "…consumed at the commit");
     }
 }
+
+// =================================================================================================
+// `NavOp::Root` / `NavOp::SelectTab` split (TV 2026-09-17: a per-frame `Root(Profiles)` follower
+// remounted the picker and the first-run consent surface forever — see
+// `app::session_picker_regression_tests::first_run_consent_over_the_picker_does_not_flip_mounts_every_frame`
+// for the host-level repro). `Root` now truly replaces the stack, root included; `SelectTab` keeps
+// the old shared arm's cover-and-mint pill semantics; and `NavStack::request` drops an
+// exactly-redundant `Root`/`SelectTab`/`PopTo` before it ever touches `pending` or the transition.
+// =================================================================================================
+
+/// **`Root` retires EVERY entry, including the one under the caller's feet, and any surface
+/// covering it is swept along with it** — never left covered and alive, which is what the shared
+/// `Root`/`SelectTab` arm used to do and what let a never-retired root sit under every later mint.
+#[test]
+fn root_over_a_stacked_page_replaces_everything_and_sweeps_its_covered_surface() {
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(9)));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    let page = d.nav.top_page().unwrap().id;
+    open_modal(&mut d, &mut rig, Style::Compact, 32);
+
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Page(50)));
+    let report = d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+    d.prune(&report.unmounted);
+
+    assert_eq!(d.nav.tabs.stack.depth(), 1, "only the new root survives");
+    assert!(d.nav.top_page().is_some_and(|e| e.arg == FixtureArg::Page(50)));
+    assert!(
+        !d.nav.tabs.stack.entries.iter().any(|e| e.id == home || e.id == page),
+        "neither the old root nor the page above it survived the replace"
+    );
+    assert!(d.nav.modals.surfaces.is_empty(), "the live modal stack is fresh");
+    assert!(
+        d.nav.covered_modals.is_empty(),
+        "the surface that covered the retired page was swept with it, not stranded"
+    );
+}
+
+/// **A `Root`/`SelectTab`/`PopTo` the settled stack already satisfies is dropped before it
+/// touches `pending` OR the transition.** Without that dedup, a per-frame re-request does not
+/// quietly do nothing — it still COMMITS, in the sense that matters here: `request()` overwrites
+/// `pending` and calls `transition.request()` again, and a `PageDip` answers that by restarting
+/// its Out ramp from wherever it currently is. So re-asking it every frame (the Login/Profiles
+/// follower's own shape) never lets the transition SETTLE — it is not stalled, it is continuously
+/// RESTARTED — which is the mechanism behind the TV 2026-09-17 bug, independent of the
+/// mount/unmount churn the `Root`/`SelectTab` split fixes on its own.
+#[test]
+fn redundant_root_select_tab_and_pop_to_requests_are_inert() {
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(PageDip::new()));
+    let mut rig = FixtureRig::new();
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    for i in 0..20u32 {
+        d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap);
+    }
+    assert!(!d.nav.tabs.stack.transition.in_flight(), "the boot root settled");
+    let home = d.nav.top_page().unwrap().id;
+
+    // `Dispatcher::request` only enqueues (`has_pending_navigation` reads THAT raw queue); the
+    // op does not reach `NavStack::request` — and so `is_inert` — until the next `frame()` drains
+    // it. Checking the STACK's own `is_pending`/the transition therefore has to happen AFTER it.
+    for (i, op) in [NavOp::Root(FixtureArg::Home), NavOp::SelectTab(FixtureArg::Home), NavOp::PopTo(home)]
+        .into_iter()
+        .enumerate()
+    {
+        d.request(MachineId::Nav, op);
+        let report = d.frame(&mut rig, tick(1000 + i as u32 * 16), vec![], vec![], &mut NoTap);
+        assert!(!d.nav.tabs.stack.is_pending(), "already satisfied: never parked on the stack");
+        assert!(!d.nav.tabs.stack.transition.in_flight(), "…and never kicked the transition either");
+        assert!(report.mounted.is_empty() && report.unmounted.is_empty(), "a true no-op mounts nothing");
+    }
+    assert_eq!(d.nav.tabs.stack.depth(), 1);
+    assert_eq!(d.nav.tabs.stack.page_alpha(), 1.0, "the page never dipped");
+    let after = events_of(&d, 0);
+    assert!(!after.contains("\"uncover\""), "not even an Uncover/Restored pair was delivered: {after}");
+    assert_eq!(after.matches("\"enter\"").count(), 1, "no additional Enter either: {after}");
+}
+
+/// **An EVICTED entry is never "already satisfied", whichever op names it.** `Root` asks
+/// [`NavStack::root_settled`], which requires a body; `SelectTab` and `PopTo` used to compare only
+/// ids and `same_instance`, so a tab press or a `PopTo` returning to a root whose body `CAP`
+/// eviction had dropped was refused as redundant — and the apply arm's own `Mount` for a bodyless
+/// target (`stack.rs`'s `bodyless` branch) never ran, leaving the page permanently unmounted.
+/// (Reported by review on PR #113; the sibling property is
+/// `an_evicted_entry_keeps_its_focus_identity_on_remount`, which reaches the same remount by BACK.)
+#[test]
+fn a_select_tab_or_pop_to_naming_an_evicted_entry_remounts_it_rather_than_being_inert() {
+    for op_is_select_tab in [true, false] {
+        let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(PageDip::new()));
+        let mut rig = FixtureRig::new();
+        d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+        for i in 0..20u32 {
+            d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap);
+        }
+        let home = d.nav.top_page().unwrap().id;
+        // What `CAP` eviction leaves behind: the entry, its `ReturnState` and its id, with the
+        // body dropped and `evicted` set. Done by hand because reaching the cap here would put
+        // other pages ON TOP of Home, and the case under test is the op that names the entry
+        // that is ALREADY the top — the only shape `is_inert` can mistake for settled.
+        {
+            let e = d.nav.tabs.stack.entries.iter_mut().find(|e| e.id == home).unwrap();
+            e.inst = None;
+            e.evicted = true;
+        }
+        let op = if op_is_select_tab { NavOp::SelectTab(FixtureArg::Home) } else { NavOp::PopTo(home) };
+        d.request(MachineId::Nav, op);
+        let report = d.frame(&mut rig, tick(2000), vec![], vec![], &mut NoTap);
+        let mounted_or_pending = !report.mounted.is_empty() || d.nav.tabs.stack.is_pending();
+        assert!(
+            mounted_or_pending,
+            "select_tab={op_is_select_tab}: the request must reach the stack, not be dropped as satisfied",
+        );
+        // …and it really does come back, with the same identity.
+        for i in 0..20u32 {
+            let r = d.frame(&mut rig, tick(2016 + i * 16), vec![], vec![], &mut NoTap);
+            d.prune(&r.unmounted);
+        }
+        let e = d.nav.top_page().unwrap();
+        assert_eq!(e.id, home, "select_tab={op_is_select_tab}: the same EntryId");
+        assert!(e.inst.is_some(), "select_tab={op_is_select_tab}: remounted");
+    }
+}
+
+/// **A `Root` request while a DIFFERENT op is pending still replaces it — newest wins**, which
+/// sign-out and a profile switch both depend on (they `Root` right after asking for something
+/// else in the same breath). This is a property of `NavStack::is_inert` only refusing an
+/// exactly-redundant repeat of the SAME kind, never a differently-shaped one.
+#[test]
+fn a_root_request_while_a_different_op_is_pending_still_wins() {
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(PageDip::new()));
+    let mut rig = FixtureRig::new();
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    for i in 0..20u32 {
+        d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap);
+    }
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(9)));
+    d.frame(&mut rig, tick(1000), vec![], vec![], &mut NoTap); // drains into the stack's own pending
+    assert!(d.nav.tabs.stack.is_pending(), "the push is parked, mid fade-out");
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Page(50)));
+    for i in 1..20u32 {
+        let report = d.frame(&mut rig, tick(1000 + i * 16), vec![], vec![], &mut NoTap);
+        d.prune(&report.unmounted);
+    }
+    assert_eq!(d.nav.tabs.stack.depth(), 1, "the Root committed; the superseded Push never did");
+    assert!(d.nav.top_page().is_some_and(|e| e.arg == FixtureArg::Page(50)));
+}
+
+/// **`SelectTab` covers-and-mints over the existing root rather than replacing it, and BACK off
+/// the pressed pill returns to the SAME root entry** — the pill semantics the old shared
+/// `Root`/`SelectTab` arm had, kept exactly by the split's other half.
+#[test]
+fn select_tab_covers_the_root_rather_than_replacing_it_and_back_returns_to_it() {
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+
+    d.request(MachineId::Nav, NavOp::SelectTab(FixtureArg::Page(9)));
+    let report = d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    d.prune(&report.unmounted);
+    assert_eq!(d.nav.tabs.stack.depth(), 2, "the root is covered, not replaced");
+    assert!(d.nav.tabs.stack.entries.iter().any(|e| e.id == home), "home survives, covered");
+    assert!(d.nav.top_page().is_some_and(|e| e.arg == FixtureArg::Page(9)));
+
+    let r = d.frame(&mut rig, tick(32), vec![key(Key::Back, tick(32))], vec![], &mut NoTap);
+    d.prune(&r.unmounted);
+    assert_eq!(d.nav.tabs.stack.depth(), 1);
+    assert_eq!(d.nav.top_page().unwrap().id, home, "BACK off the pill lands on the SAME Home entry");
+
+    // Re-cover, then `SelectTab(Home)` is a `PopTo(root)` — not a fresh mint of Home.
+    d.request(MachineId::Nav, NavOp::SelectTab(FixtureArg::Page(9)));
+    let r = d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+    d.prune(&r.unmounted);
+    let covering = d.nav.top_page().unwrap().id;
+    d.request(MachineId::Nav, NavOp::SelectTab(FixtureArg::Home));
+    let r = d.frame(&mut rig, tick(64), vec![], vec![], &mut NoTap);
+    d.prune(&r.unmounted);
+    assert_eq!(d.nav.tabs.stack.depth(), 1, "SelectTab(root) unwinds back to it");
+    assert_eq!(d.nav.top_page().unwrap().id, home, "the SAME root entry survives — no remint");
+    assert!(!d.nav.tabs.stack.entries.iter().any(|e| e.id == covering), "the covering page is gone");
+}
+
+/// **`reset_for_profile` also clears the stack's own pending op and due flag.** Without this, a
+/// `Push` parked before the reset (mid fade-out, on the STACK rather than merely the dispatcher's
+/// own queue) would still apply at its own floor — some frames later — over the tree the reset
+/// just emptied, minting an entry nobody asked for post-reset.
+#[test]
+fn reset_for_profile_clears_a_pending_op_so_it_cannot_apply_over_the_emptied_tree() {
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(PageDip::new()));
+    let mut rig = FixtureRig::new();
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    for i in 0..20u32 {
+        d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap);
+    }
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(9)));
+    d.frame(&mut rig, tick(1000), vec![], vec![], &mut NoTap);
+    assert!(d.nav.tabs.stack.is_pending(), "the push reached the STACK's own pending, mid fade-out");
+
+    d.reset_for_profile();
+    assert!(!d.nav.tabs.stack.is_pending(), "the reset drops it rather than letting it apply later");
+    assert!(d.nav.tabs.stack.entries.is_empty(), "the reset itself emptied the tree");
+
+    for i in 0..20u32 {
+        let report = d.frame(&mut rig, tick(2000 + i * 16), vec![], vec![], &mut NoTap);
+        d.prune(&report.unmounted);
+    }
+    assert!(d.nav.tabs.stack.entries.is_empty(), "nothing minted itself back in behind the reset");
+}

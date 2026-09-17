@@ -636,9 +636,10 @@ pub(crate) fn apply_search_boot_trigger(
     bridge: &mut crate::app::bridge::Bridge,
 ) {
     bridge.search_run(crate::stores::search::SearchCmd::SetQuery(q.trim().to_string()));
-    // A peer of Home, exactly as an interactive press on the strip's last pill is — and a ROOT
-    // rather than a push, because at boot there is nothing above the root to stand on.
-    crate::app::bridge::nav_root(d, AppArg::Search);
+    // A peer of Home, exactly as an interactive press on the strip's last pill is: `SelectTab`,
+    // not `Root` — boot has already rooted Home, and a pill press must still leave BACK returning
+    // to it rather than discarding it.
+    crate::app::bridge::nav_select_tab(d, AppArg::Search);
 }
 
 /// `now - at >= gap_ms`, read as SIGNED so a future `at` (a `delay=` in force) correctly does not
@@ -746,7 +747,9 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
                 _ => crate::stores::browse::SecKind::Movie,
             };
             app.bridge.enter_library(kind);
-            crate::app::bridge::nav_root(&mut app.pages, AppArg::Library);
+            // Same pill semantics as the search trigger above: boot has already rooted Home,
+            // so this is `SelectTab`, not a `Root` that would discard it.
+            crate::app::bridge::nav_select_tab(&mut app.pages, AppArg::Library);
         }
         if let Some(q) = crate::dev::read("search") {
             apply_search_boot_trigger(&q, &mut app.pages, &mut app.bridge);

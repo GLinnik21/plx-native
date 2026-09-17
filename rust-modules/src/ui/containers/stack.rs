@@ -98,9 +98,42 @@ impl<H: Host> NavStack<H> {
         self.pending.is_some()
     }
 
+    /// **Is the COMMITTED stack a settled `Root(arg)`** — one entry, that entry MOUNTED (a body,
+    /// not merely a bare `Entry` waiting for the apply arm's `Mount`), `same_instance` `arg`, and
+    /// nothing pending? This is the one definition `is_inert`'s `Root` arm and
+    /// `app/bridge.rs::top_settled_on` both answer from, so a caller asking "has the reset to
+    /// `arg` actually landed" (a per-frame follower presenting a surface OVER that landing) and
+    /// the dedup deciding whether a THIRD `Root(arg)` request is redundant can never disagree
+    /// about what "settled" means.
+    pub fn root_settled(&self, arg: &H::Arg) -> bool {
+        !self.is_pending()
+            && self.entries.len() == 1
+            && self.entries[0].arg.same_instance(arg)
+            && self.entries[0].inst.is_some()
+    }
+
+    /// Withdraw whatever is parked, unconditionally — for a reset that is about to empty the
+    /// stack out from under it. A pending op that survived a reset would apply, at its own floor,
+    /// over a tree the reset already emptied (`Navigation::reset_for_profile`'s own doc: "the next
+    /// `Root` rebuilds the tree" is only true if nothing older is still queued to run first).
+    pub fn clear_pending(&mut self) {
+        self.pending = None;
+        self.due = false;
+    }
+
     /// Queue an op (§6.2): the top's `ReturnState` is captured NOW, the transition is asked to
     /// run, and the newest request wins. `ret` is what the dispatcher read off the engine.
+    ///
+    /// **A redundant request is inert** — dropped before it touches `pending` or the transition —
+    /// which is what lets a per-frame caller simply ask for what it wants every frame without
+    /// re-kicking a `PageDip` that has nothing left to do (`Popover`/`FirstRunConsent` mounting
+    /// and unmounting forever behind a repeated `Root(Profiles)` was the shape of the bug this
+    /// closes: the transition never reached `Idle`, so its own floor kept re-covering and
+    /// re-orphaning whatever was presented over it — TV 2026-09-17). See [`Self::is_inert`].
     pub fn request(&mut self, op: NavOp<H::Arg>, ret: ReturnState<H::Elem, H::Memory>) {
+        if self.is_inert(&op) {
+            return;
+        }
         let from = self.top().map(|e| e.id);
         let continuous = self.continuous_for(&op);
         if let Some(top) = self.top_mut() {
@@ -110,6 +143,46 @@ impl<H: Host> NavStack<H> {
         self.transition.request(continuous);
         if self.transition.commit_point() == CommitPoint::Immediate {
             self.due = true;
+        }
+    }
+
+    /// **Is `op` a no-op right now?** Two independent reasons, either enough on its own:
+    ///
+    /// - Nothing is pending, and the COMMITTED stack already satisfies `op` — `Root(arg)` with the
+    ///   stack exactly `[arg]` AND THAT ENTRY MOUNTED ([`Self::root_settled`] — a bodyless single
+    ///   entry is not yet the `Mount` the apply arm would still owe it, so that request is NOT
+    ///   inert), `SelectTab(arg)` with the top the root and the root `same_instance` `arg`, or
+    ///   `PopTo(id)` naming the entry already on top.
+    /// - Something IS pending, and it is the same kind of op with a `same_instance` argument — a
+    ///   third `Root(Profiles)` while a `Root(Profiles)` is already parked asks nothing new.
+    ///
+    /// A *different* pending op is never inert this way: the newest request still replaces it
+    /// (sign-out and a profile switch depend on newest-wins over whatever the previous frame
+    /// parked). Only `Root`/`SelectTab`/`PopTo` are covered — the three the redundant per-frame
+    /// followers in `app/run.rs` actually ask for; `Push`/`Replace`/`Present`/`Pop`/`Dismiss`/
+    /// `Cancel` are never asked twice in a row for the same reason, so they are never inert here.
+    fn is_inert(&self, op: &NavOp<H::Arg>) -> bool {
+        if let Some(p) = &self.pending {
+            return match (&p.op, op) {
+                (NavOp::Root(a), NavOp::Root(b)) => a.same_instance(b),
+                (NavOp::SelectTab(a), NavOp::SelectTab(b)) => a.same_instance(b),
+                (NavOp::PopTo(a), NavOp::PopTo(b)) => a == b,
+                _ => false,
+            };
+        }
+        match op {
+            NavOp::Root(arg) => self.root_settled(arg),
+            NavOp::SelectTab(arg) => {
+                let root = self.root().map(|e| e.id);
+                self.top().map(|e| e.id) == root
+                    && self.root().map_or(false, |r| {
+                        r.arg.same_instance(arg) && r.inst.is_some()
+                    })
+            }
+            NavOp::PopTo(id) => {
+                self.top().map_or(false, |t| t.id == *id && t.inst.is_some())
+            }
+            _ => false,
         }
     }
 
@@ -253,6 +326,14 @@ impl<H: Host> NavStack<H> {
                     .map(|e| e.id)
                     .collect();
                 if above.is_empty() {
+                    // Already the top: nothing to unwind — but a target whose body was dropped
+                    // still owes the same `Mount` the general path below gives it, or the op
+                    // that named it (which `is_inert` deliberately did NOT drop, precisely
+                    // because the entry is bodyless) would leave the page unmounted for good.
+                    if self.entry(target).map_or(false, |e| e.inst.is_none()) {
+                        out.push(Life::Mount(target));
+                        out.push(Life::Ev(target, ScreenEvent::Enter(Enter::Restored)));
+                    }
                     return out;
                 }
                 for id in above {
@@ -267,8 +348,38 @@ impl<H: Host> NavStack<H> {
                 out.push(Life::Ev(target, ScreenEvent::Uncover));
                 out.push(Life::Ev(target, ScreenEvent::Enter(Enter::Restored)));
             }
-            NavOp::Root(arg) | NavOp::SelectTab(arg) => {
-                // every entry above the root leaves for good, top-down
+            NavOp::Root(arg) => {
+                // A TRUE replace: every entry, including the root, leaves for good — unless the
+                // stack is already exactly `[arg]`, which is the one case with nothing to replace
+                // (a `PopTo(root)` no-op, same as below). A Login/Profiles-shaped root that a
+                // later `Root` merely COVERED (the old shared `Root`/`SelectTab` arm's behaviour)
+                // is exactly what let a never-retired first entry sit under every later mint
+                // forever; this arm is why `Root` no longer does that.
+                if self.entries.len() == 1 && self.entries[0].arg.same_instance(&arg) {
+                    let r = self.entries[0].id;
+                    let bodyless = self.entries[0].inst.is_none();
+                    if bodyless {
+                        out.push(Life::Mount(r));
+                    }
+                    out.push(Life::Ev(r, ScreenEvent::Uncover));
+                    out.push(Life::Ev(r, ScreenEvent::Enter(Enter::Restored)));
+                } else {
+                    let all: Vec<EntryId> = self.entries.iter().rev().map(|e| e.id).collect();
+                    for id in all {
+                        out.push(Life::Ev(id, ScreenEvent::WillLeave(Leave::ForGood)));
+                        out.push(Life::Unmount(id));
+                        self.retire(id);
+                    }
+                    let new = self.mint(ids, arg);
+                    out.push(Life::Mount(new));
+                    out.push(Life::Ev(new, ScreenEvent::Enter(Self::fresh(GroupId(0)))));
+                }
+            }
+            NavOp::SelectTab(arg) => {
+                // The strip's pill semantics: unwind to whatever the root already is (every entry
+                // ABOVE it leaves for good, top-down), then either restore that root (it is
+                // already `arg`) or cover-and-mint a fresh entry over it. The root itself is never
+                // retired — BACK off a pressed pill still returns to it.
                 let root = self.root().map(|e| e.id);
                 let above: Vec<EntryId> = self
                     .entries

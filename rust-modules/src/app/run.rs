@@ -1648,78 +1648,13 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
         // order before Hubs. This route follower consumes only its exact committed handoff;
         // it neither drains a process-global mailbox nor applies worker facts itself. A
         // carried credential commit keeps its flow page until the queued ACK finishes.
+        //
+        // The routing decision itself is `bridge::follow_auth_landing` — ONE production function,
+        // called from here and from the two tests that used to keep their own inline copy of this
+        // exact `match` (see that function's doc for why sharing it, rather than restating it, is
+        // what makes those tests prove anything).
         if matches!(app.route(), AppArg::Login | AppArg::Profiles) {
-            if let Some(c) = app.bridge.take_session_ready() {
-                // A sign-out followed by a fresh sign-in can replace the session without
-                // restarting the process. Re-read only at this one credentials handoff so the
-                // old account's in-memory preference cannot leak into the new session.
-                let saved = crate::plex::session::peek();
-                crate::route::restore_quality(
-                    crate::dev::playback_quality_override()
-                        .unwrap_or_else(|| saved.playback_quality()),
-                );
-                let endpoints = super::boot::install_pms_owned(&mut app.bridge, &c.origin,
-                    &c.address, &c.token, c.tier, c.pin.as_ref(), &c.install);
-                super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
-                // **A new user must never be able to walk BACK into the previous one's pages**,
-                // which is the fourth store an identity change must not survive beside the
-                // `browse`/`pms`/`person` resets `install_pms` performs. It was `trail.reset()`,
-                // which emptied the loop's mirror and left the CONTAINER's entries — bodies,
-                // `ReturnState`s and all — exactly where they were, because `sync_page` only ever
-                // moved the top. `reset_for_profile` is the whole tree.
-                app.pages.reset_for_profile();
-                // …and only NOW can the first-run question be asked: `install_pms` registers
-                // the granted roster, which is the stable input to this decision even before
-                // asynchronous section discovery lands. It is asked per PROFILE, which is why
-                // it sits after the switch rather than after the sign-in.
-                // The sign-in's question first, before any per-profile step. On a Plex Home
-                // account it was already asked at the picker below and this is a no-op; on a
-                // single-user account this is the earliest authorized moment there is.
-                maybe_ask_consent(&mut app.pages);
-                app.bridge.refresh_browse_directory();
-                if crate::stores::browse::onboard::asks(app.bridge.browse_directory()) {
-                    log("login: server installed — asking which sources feed Home");
-                    // no `enter()`: rooting the stack at the page is what mounts the owned
-                    // screen (`boot.rs`), and a ROOT is right because the sweep above has just
-                    // emptied the tree.
-                    super::bridge::nav_root(&mut app.pages, AppArg::Onboard);
-                } else {
-                    log("login: server installed — entering Home");
-                    super::bridge::nav_root(&mut app.pages, AppArg::Home);
-                }
-            } else if app.bridge.auth_read().0.persistence_warning.is_some() {
-                // A fresh save could not be confirmed durable: keep the report reachable before
-                // consent/profile routing, exactly as 0.6.6 did — the warning is answered on the
-                // login screen itself (AUTH-03), not by moving on as if it were acknowledged.
-                super::bridge::nav_root(&mut app.pages, AppArg::Login);
-            } else {
-                match app.bridge.auth_read().0.phase {
-                    // A Ready decision can still await its queued disk/registry ACK. Keep
-                    // the current flow page until the exact owner handoff is available.
-                    crate::auth::Phase::Ready => {}
-                    crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
-                        // BEFORE the picker: the account is authorized, so the consent
-                        // question is answerable, and the person holding the remote at this
-                        // moment is the one who signed the television in. It draws over the
-                        // picker's route on its own opaque ground.
-                        maybe_ask_consent(&mut app.pages);
-                        // No `enter()`-on-change guard any more (phase 6): the picker is an
-                        // owned screen, so a route that is ALREADY `Profiles` mints nothing
-                        // (`bridge::frame`'s `Some(_) => {}` arm) and the existing instance's
-                        // state — the roster cursor, an open PIN pad — rides across this
-                        // assignment untouched, exactly as it did behind the old guard; a route
-                        // that is NOT yet `Profiles` gets a fresh `ProfilesScreen` the moment the
-                        // tree follows it, which is the whole of what `ui::profiles::enter()`
-                        // used to reset by hand. `nav_root` is a no-op when the picker is
-                        // already the root (`Root`'s own `PopTo(root)` arm with nothing above
-                        // it), which is what makes calling it every frame of the phase free.
-                        super::bridge::nav_root(&mut app.pages, AppArg::Profiles);
-                    }
-                    _ => {
-                        super::bridge::nav_root(&mut app.pages, AppArg::Login);
-                    }
-                }
-            }
+            super::bridge::follow_auth_landing(&mut app.pages, &mut app.bridge);
         }
         // dev: an `acct` step on the LOAD DIAL asks for the REAL Account popover, so the
         // shipped surface and a synthetic one can be interleaved inside ONE launch. Assigning

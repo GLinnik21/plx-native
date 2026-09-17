@@ -567,7 +567,13 @@ pub(super) fn return_from_player(
     });
     match origin {
         Some(origin) if !identityless => super::bridge::nav_pop_to(pages, origin.entry),
-        _ => super::bridge::nav_root(pages, AppArg::Home),
+        // No usable origin (never recorded one, or it typed empty): fall back to the existing
+        // Home root rather than minting a fresh one. `NavOp::Root` now truly replaces the whole
+        // stack — retiring even a Home entry that is already sitting there — so a bare
+        // `nav_root` here would lose Home's focus/scroll memory on every identityless exit;
+        // `nav_select_tab` is the pill-press semantic that PopTo's the current root instead,
+        // matching what `nav_pop_to`'s own stale-entry fallback does just above.
+        _ => super::bridge::nav_select_tab(pages, AppArg::Home),
     }
 }
 
