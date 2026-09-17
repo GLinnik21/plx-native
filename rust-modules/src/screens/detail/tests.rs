@@ -1378,6 +1378,38 @@ fn the_collapse_key_leaves_the_mode_and_dismisses_the_transport() {
     clear();
 }
 
+/// The collapse's OTHER branch: `preview::paused()` true means the transport was left paused when
+/// the mode closed, so `collapse_full_trailer` asks for a resume on the way out. The empty case
+/// above (nothing paused, nothing to resume) is the only one the pure `trailer_act` path can reach
+/// on its own; `preview::paused()` reads the live singleton and `player::TX`, so this one drives
+/// both — the same `force_playing_for_test`/`reset_for_test` seam as the input-arm test above, plus
+/// `TX.commit_paused`/`TX.reset`, the same production seam `player::mod`'s own tests use.
+#[test]
+fn the_collapse_key_resumes_the_transport_when_it_was_left_paused() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    screen.trailer_ctl.reveal();
+    crate::player::preview::force_playing_for_test();
+    crate::player::TX.commit_paused(true);
+    assert!(crate::player::preview::paused(), "the fixture must actually be paused");
+
+    let effects = trailer_act(&mut screen, trailer::TrailerKey::Collapse);
+
+    assert!(!screen.preview_promoted, "the mode must be over");
+    assert!(!screen.trailer_ctl.revealed(), "the controls go with it");
+    assert_eq!(
+        transport_reqs(&effects),
+        vec![Some(true)],
+        "leaving the mode while paused must ask to resume"
+    );
+
+    crate::player::TX.reset();
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
 /// BACK's second stage, `collapse_background_preview`: with no live trailer picture up (the
 /// default host-test state — driving the live `player::preview` singleton is deliberately avoided
 /// here, same as `preview_completed_naturally`'s extraction reasons above), BACK must not be
