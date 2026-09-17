@@ -179,20 +179,26 @@ pub(crate) fn hero_ctls(set: HeroSet) -> ([HeroCtl; 5], usize) {
 /// control the mode has taken away — the exact class of bug this predicate replaced (two
 /// independent "what's visible" checks that had silently drifted apart).
 ///
-/// **Play survives as the ANCHOR, not as a visible control.** Full-trailer mode draws none of the
-/// row (`DetailScreen::draw_hero` fades the whole thing out with the rest of the chrome, and
-/// `screens::detail::trailer` puts the trailer's transport up instead) — but the engine still
-/// needs somewhere legitimate for the focus to stand while the mode is up, and an EMPTY hero group
-/// would push it into the sections below, scrolling the page out from under a trailer nobody asked
-/// to leave. Keys never reach the row anyway: the mode answers them itself, before the engine.
+/// **Play survives as the ANCHOR, not as a reachable control.** Full-trailer mode fades the whole
+/// row out together (`DetailScreen::draw_buttons` draws every control from [`hero_ctls`]
+/// regardless of this predicate — see its own doc — and lets the caller's `chrome`/`preview_chrome`
+/// alpha carry the fade; `screens::detail::trailer` puts the trailer's transport up instead) — but
+/// the engine still needs somewhere legitimate for the focus to stand while the mode is up, and an
+/// EMPTY hero group would push it into the sections below, scrolling the page out from under a
+/// trailer nobody asked to leave. Keys never reach the row anyway: the mode answers them itself,
+/// before the engine.
 pub(crate) fn focusable(ctl: HeroCtl, full_trailer: bool) -> bool {
     !full_trailer || ctl == HeroCtl::Play
 }
 
-/// [`hero_ctls`], filtered through [`focusable`] for full-trailer mode — the transient UI state
-/// where the row narrows to its Play anchor alone and everything else (Restart/Trailer/Alt/the
-/// watch toggle) leaves it entirely rather than merely losing its paint. Deliberately NOT a flag
-/// on [`HeroSet`]: that struct describes what the ITEM offers, not a screen's transient
+/// [`hero_ctls`], filtered through [`focusable`] for full-trailer mode's FOCUS/hit-testing extent
+/// only — the transient UI state where the row narrows to its Play anchor alone and everything
+/// else (Restart/Trailer/Alt/the watch toggle) stops being reachable the instant `full_trailer()`
+/// flips. **This is not what gets drawn.** `DetailScreen::draw_buttons` draws every control
+/// [`hero_ctls`] returns, full_trailer or not, so the row fades out together with the rest of the
+/// chrome instead of four pills hard-cutting a frame ahead of the one that fades (2026-09-17
+/// fix — a control losing its focus must not also lose its paint on the same frame). Deliberately
+/// NOT a flag on [`HeroSet`]: that struct describes what the ITEM offers, not a screen's transient
 /// presentation mode. Every call site that enumerates the row for focus/hit-testing extent must go
 /// through this rather than `hero_ctls` directly, or the two can disagree about which controls
 /// exist right now.
@@ -855,11 +861,15 @@ mod tests {
         }
     }
 
-    /// **Full-trailer mode always narrows the row to exactly `[Play]`, whatever the item's own
-    /// facts offer** — swept over every `HeroSet` this row can take. The property that keeps the
-    /// mode's focus anchor single and legitimate; nothing in the row is DRAWN there at all.
+    /// **Full-trailer mode always narrows the row's FOCUS/pointer extent to exactly `[Play]`,
+    /// whatever the item's own facts offer** — swept over every `HeroSet` this row can take. The
+    /// property that keeps the mode's focus anchor single and legitimate. Drawing is the OPPOSITE:
+    /// `DetailScreen::draw_buttons` always paints the full `hero_ctls` row, full-trailer or not
+    /// (2026-09-17 fix — the row fades out together with the rest of the chrome instead of four
+    /// pills hard-cutting a frame ahead of Play), so this also pins that the two predicates
+    /// genuinely diverge whenever the set has more than Play alone.
     #[test]
-    fn full_trailer_mode_always_collapses_to_play_only() {
+    fn full_trailer_mode_collapses_focus_to_play_only_but_leaves_drawing_alone() {
         for mark in [
             PosterMark::None,
             PosterMark::InProgress,
@@ -875,6 +885,16 @@ mod tests {
                         // And the non-full-trailer path must be byte-identical to `hero_ctls` —
                         // `visible_ctls` is a strict narrowing, never a second row model.
                         assert_eq!(visible_ctls(s, false), hero_ctls(s), "set={s:?}");
+                        // Drawing does not narrow with `visible_ctls` — `draw_buttons` iterates
+                        // `hero_ctls` directly — so drawing always sees strictly more than
+                        // full-trailer mode makes focusable/pointer-reachable: the watch toggle
+                        // alone (unconditional in `hero_ctls`) already outnumbers the `[Play]`
+                        // focus set, before `restart`/`alt`/`trailer` add anything further.
+                        let (_, drawn) = hero_ctls(s);
+                        assert!(
+                            drawn > n,
+                            "set={s:?}: drawing must stay decoupled from the focus narrowing"
+                        );
                     }
                 }
             }

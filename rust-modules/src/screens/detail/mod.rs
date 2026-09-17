@@ -2070,7 +2070,12 @@ impl DetailScreen {
             self.named_show(),
         );
         let current = cx.focus.current.map(|k| k.elem);
-        let (controls, n) = hero::visible_ctls(set, self.full_trailer());
+        // Deliberately `hero_ctls`, not `hero::visible_ctls`: the row's FOCUSABLE extent narrows
+        // to Play the instant `full_trailer()` flips (that gate lives in `valid`/`focusable` and
+        // is unchanged), but what's DRAWN must not narrow in the same frame — the caller already
+        // fades every button through `chrome`'s `preview_chrome` alpha (`draw_hero`), and cutting
+        // four of the five pills here a frame early defeats that fade before it can be seen.
+        let (controls, n) = hero::hero_ctls(set);
         let last = hero::hero_btn_rect_at(set, n.saturating_sub(1), y, widths);
         let row = [
             crate::ui::consts::MARGIN_X,
@@ -2875,8 +2880,11 @@ impl DetailScreen {
     /// Is full-trailer mode (UP-promoted, trailer picture up) running right now? The one
     /// predicate every site that enumerates or resolves hero focus must agree on — `groups` (via
     /// [`hero::visible_ctls`]) for the row's extent, `reconcile`/`valid` for what is FOCUSABLE,
-    /// `draw_hero` for what is drawn, and the input arm for who owns the keys. Computed fresh
-    /// rather than cached: reading
+    /// `record_stops` for what is pointer-reachable, and the input arm for who owns the keys.
+    /// `draw_buttons` deliberately does NOT gate on this: it draws every hero control regardless
+    /// and lets the eased `preview_chrome` alpha (set from this same predicate in `preview_tick`)
+    /// fade the row, so a control losing focus does not also lose its paint on the same frame.
+    /// Computed fresh rather than cached: reading
     /// `crate::player::preview::view()` live means a frame where `preview_promoted` is still true
     /// but the machine has already dropped `picture` (EOS/failure) self-corrects immediately,
     /// rather than depending on `preview_tick` having already cleared the flag this same frame.
