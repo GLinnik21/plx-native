@@ -178,7 +178,30 @@ pub(crate) enum MetadataCmd {
     AltRestampOwners,
 }
 
+#[derive(Default)]
 pub(crate) struct MetadataStore;
+
+impl MetadataStore {
+    /// Owner handle onto the write surface, Stage A of the store-ownership migration: still
+    /// reaches the crate-global mutator/statics underneath (see `run` below).
+    pub(crate) fn run(&mut self, cmd: MetadataCmd) -> bool {
+        run(cmd)
+    }
+
+    /// Route-unconditional landing/spawn pass across detail, season and alt-sources — the same
+    /// three pumps `Machine::step`'s `StoreEv::Pump` arm already drives.
+    pub(crate) fn pump(&mut self) -> bool {
+        let detail = pump_detail();
+        let season = pump_season();
+        let alt = pump_alt_sources();
+        detail || season || alt
+    }
+
+    /// Borrowed read handle, shaped like `crate::person::PersonStore::view`.
+    pub(crate) fn view(&self) -> crate::metadata::MetadataView<'_> {
+        crate::metadata::MetadataView::new()
+    }
+}
 
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
 pub(crate) fn apply(cmd: MetadataCmd) -> bool {

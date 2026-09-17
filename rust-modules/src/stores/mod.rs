@@ -85,6 +85,7 @@ pub(crate) mod viewstate;
 pub(crate) struct Stores {
     pub(crate) browse: std::rc::Rc<std::cell::RefCell<browse::BrowseStore>>,
     pub(crate) hubs: hubs::HubsStore,
+    pub(crate) metadata: metadata::MetadataStore,
     pub(crate) person: person::PersonStore,
     pub(crate) search: search::SearchStore,
     pub(crate) viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
@@ -96,6 +97,7 @@ impl Default for Stores {
         Self {
             browse,
             hubs: hubs::HubsStore::default(),
+            metadata: metadata::MetadataStore::default(),
             person: person::PersonStore::default(),
             search: search::SearchStore::default(),
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
@@ -123,6 +125,18 @@ impl Stores {
 
     pub(crate) fn person_view(&self) -> crate::person::PersonView<'_> {
         self.person.view()
+    }
+
+    pub(crate) fn metadata_run(&mut self, cmd: metadata::MetadataCmd) -> bool {
+        self.metadata.run(cmd)
+    }
+
+    pub(crate) fn metadata_pump(&mut self) -> bool {
+        self.metadata.pump()
+    }
+
+    pub(crate) fn metadata_view(&self) -> crate::metadata::MetadataView<'_> {
+        self.metadata.view()
     }
 
     pub(crate) fn search_run(

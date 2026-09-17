@@ -7,6 +7,71 @@ pub(crate) mod record;
 use std::panic::catch_unwind;
 use std::ptr::{addr_of, addr_of_mut};
 
+/// **Stage A of the store-ownership migration** (`docs/stores-as-machines.md`): a borrowed handle
+/// onto this layer's read surface, shaped like `crate::person::PersonView`. Every method here
+/// forwards to the free functions below, which still read the process-wide statics — this stage is
+/// behaviour-preserving plumbing, not a data move. The `'a` lifetime is unconstrained today (there
+/// is nothing yet to borrow); it exists so callers write the same code a later stage's real borrow
+/// will require, and so `crate::stores::metadata::MetadataStore::view(&self) -> MetadataView<'_>`
+/// already has the right shape. A future stage that moves `CURRENT`/`NOW`/`PLAYING`/`SKIPPED` onto
+/// an owned `MetadataState` will tie `'a` to that state without touching a caller's syntax.
+#[derive(Clone, Copy)]
+pub(crate) struct MetadataView<'a>(std::marker::PhantomData<&'a ()>);
+
+impl<'a> MetadataView<'a> {
+    pub(crate) fn new() -> Self {
+        Self(std::marker::PhantomData)
+    }
+    pub(crate) fn current(&self) -> Option<&'static Detail> {
+        current()
+    }
+    // The methods below are Stage A plumbing for consumers Stage A's production call-path list
+    // does not touch yet (`ui/player_hud.rs`, `ui/info_panel.rs`, `screens/player/skip_pill.rs`,
+    // `viewstate.rs` — D2/D6 of `metadata-design.md`'s binding decisions). They forward to the
+    // same free functions those modules still call directly; wiring the call sites themselves is
+    // later Stage A/B work, not invented here. `#[allow(dead_code)]` rather than deleting them
+    // keeps `MetadataView`'s shape matched to `metadata-design.md`'s read surface up front.
+    #[allow(dead_code)]
+    pub(crate) fn now_playing(&self) -> Option<&'static NowPlaying> {
+        now_playing()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn playing(&self) -> Option<&'static PlayingItem> {
+        playing()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn playing_markers(&self) -> &'static [Marker] {
+        playing_markers()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn playing_chapters(&self) -> &'static [Chapter] {
+        playing_chapters()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn detail_loading(&self) -> bool {
+        detail_loading()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn season_loading(&self) -> bool {
+        season_loading()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn detail_request_status(&self, sid: crate::plex::ServerId, rk: &str) -> Option<bool> {
+        detail_request_status(sid, rk)
+    }
+    pub(crate) fn cached_playing(&self, sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
+        cached_playing(sid, rk)
+    }
+    #[allow(dead_code)]
+    pub(crate) fn active_marker(&self, ps: &crate::route::PlaybackSession) -> Option<Marker> {
+        active_marker(ps)
+    }
+    #[allow(dead_code)]
+    pub(crate) fn synthesized_tail_marker(&self, ps: &crate::route::PlaybackSession, has_next: bool) -> Option<Marker> {
+        synthesized_tail_marker(ps, has_next)
+    }
+}
+
 /// Where the Detail page was standing — enough to put it back when BACK returns to it, and nothing
 /// more. **Moved here from `ui::detail` for restructure phase 7a** (`stores/metadata.rs`'s module
 /// doc has the full read/write contract this type is §4 of); `ui::detail` re-exported it so every

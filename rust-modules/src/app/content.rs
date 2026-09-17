@@ -87,9 +87,9 @@ pub(super) fn hold_feature(
 
 /// After `request_play` accepts, extras (trailers included) install an Info-card descriptor so
 /// the card names the extra rather than the parent. Feature plays leave `now_playing` alone.
-fn note_extra_now_playing(sid: crate::plex::ServerId, rk: &str, context: &str) {
+fn note_extra_now_playing(meta: &mut crate::stores::metadata::MetadataStore, sid: crate::plex::ServerId, rk: &str, context: &str) {
     if crate::metadata::context_omits_queue_continuous(context) {
-        crate::stores::metadata::apply(
+        meta.run(
             crate::stores::metadata::MetadataCmd::SetNowPlaying(
                 crate::metadata::trailer_now_playing(sid, rk),
             ),
@@ -99,6 +99,7 @@ fn note_extra_now_playing(sid: crate::plex::ServerId, rk: &str, context: &str) {
 
 pub(super) fn request_play_intent(
     session: &mut crate::route::PlaybackSession,
+    meta: &mut crate::stores::metadata::MetadataStore,
     play: &crate::screens::registry::PlayIntent,
 ) -> bool {
     match play {
@@ -106,15 +107,15 @@ pub(super) fn request_play_intent(
             sid, rk, part, vcodec, acodec, title, context,
         } => {
             let ok = crate::route::request_play(
-                session, *sid, rk, part, vcodec, acodec, title, context,
+                session, meta, *sid, rk, part, vcodec, acodec, title, context,
             );
             if ok {
-                note_extra_now_playing(*sid, rk, context);
+                note_extra_now_playing(meta, *sid, rk, context);
             }
             ok
         }
         crate::screens::registry::PlayIntent::Movie(m) =>
-            crate::route::request_play_movie(session, m),
+            crate::route::request_play_movie(session, meta, m),
     }
 }
 
@@ -124,7 +125,7 @@ fn drain_held_feature(app: &mut App) {
     }
     let held = HELD_FEATURE.with(|slot| slot.borrow_mut().take());
     let Some(held) = held else { return };
-    if !request_play_intent(&mut app.player.session, &held.play) {
+    if !request_play_intent(&mut app.player.session, app.bridge.metadata_mut(), &held.play) {
         return;
     }
     start_playback(
@@ -202,7 +203,7 @@ mod held_feature_tests {
         }
         let Some(held) = HELD_FEATURE.with(|slot| slot.borrow_mut().take()) else { return };
         if let PlayIntent::Item { sid, rk, context, .. } = &held.play {
-            note_extra_now_playing(*sid, rk, context);
+            note_extra_now_playing(&mut crate::stores::metadata::MetadataStore::default(), *sid, rk, context);
         }
     }
 
@@ -381,7 +382,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 // is what the page's own discarded `started` bool used to decide.
                 // Held-feature drain uses this same helper: a trailer Play pressed while a
                 // preview still occupies must install the Info-card descriptor too.
-                if !request_play_intent(&mut app.player.session, &play) { continue; }
+                if !request_play_intent(&mut app.player.session, app.bridge.metadata_mut(), &play) { continue; }
                 // The page's own `ReturnState` rides the push, so BACK out of the playback finds
                 // the spot the Play was pressed from. It was `Trail::set_top_spot` plus a
                 // second, hand-written `NavOp::Push` after the fact.
@@ -403,6 +404,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 }
                 let ok = crate::route::request_preview(
                     &mut app.player.session,
+                    app.bridge.metadata_mut(),
                     sid,
                     &rk,
                     &part,
@@ -1548,8 +1550,9 @@ pub(crate) fn restore_played_entry(app: &mut App) {
     let Some(instance) = entry.inst.as_ref().map(|i| i.id) else { return };
     let PageMemory::Detail(memory) = &entry.ret.memory else { return };
     let mut spot = memory.spot.clone();
-    let episode = crate::metadata::playing().filter(|p| p.sid == *sid)
-        .and_then(|_| crate::metadata::now_playing())
+    let meta = app.bridge.metadata_view();
+    let episode = meta.playing().filter(|p| p.sid == *sid)
+        .and_then(|_| meta.now_playing())
         .filter(|n| n.is_episode && n.detail_rk == *rk)
         .map(|n| { spot.season = Some(n.season); crate::route::cur_rk(&app.player.session) });
     if episode.is_some() {

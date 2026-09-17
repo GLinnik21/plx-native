@@ -1951,7 +1951,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                 if !playback_may_run(app) {
                     return;
                 }
-                if let Some(r) = crate::route::pump_play(&mut app.player.session) {
+                if let Some(r) = crate::route::pump_play(&mut app.player.session, app.bridge.metadata_mut()) {
                     crate::ui::idle::invalidate();
                     let resume_prepared = r <= 0
                         || matches!(
@@ -3239,6 +3239,7 @@ mod lifecycle_regression_tests {
         fn request(&mut self) {
             assert!(crate::route::request_play(
                 &mut self.app.player.session,
+                self.app.bridge.metadata_mut(),
                 self.sid,
                 "1",
                 "/library/parts/1/file.mkv",
@@ -3266,7 +3267,7 @@ mod lifecycle_regression_tests {
         fn resolve(&mut self) {
             self.release.send(()).unwrap();
             poll_until("fixture plan did not land", || {
-                crate::route::pump_play(&mut self.app.player.session).is_some()
+                crate::route::pump_play(&mut self.app.player.session, self.app.bridge.metadata_mut()).is_some()
             });
             assert_eq!(
                 crate::route::up_next(&self.app.player.session).unwrap().rk,
@@ -3576,6 +3577,7 @@ mod lifecycle_regression_tests {
 
         assert!(crate::route::request_play(
             &mut rig.app.player.session,
+            rig.app.bridge.metadata_mut(),
             rig.sid,
             "replacement",
             "/library/parts/2/file.mkv",
