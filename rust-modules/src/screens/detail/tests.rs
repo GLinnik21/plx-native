@@ -1130,6 +1130,72 @@ fn preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_an
     clear();
 }
 
+/// **Background autoplay must not fade the rows between the synopsis and Play.** `draw_hero`
+/// used to gate the identity/meta line, the ratings row, the facts row and the people column on
+/// `chrome * preview_prose` — and `preview_prose` tracks `player::preview::View::prose`, which
+/// drops to 0 the instant ANY picture is up, background autoplay included. `preview_chrome` is
+/// the value those rows are drawn through now (same as the buttons and the below-hero sections),
+/// and it only leaves 1.0 in FULL-trailer mode (`preview_promoted && picture`), not for a picture
+/// merely dwelling in the background. This pins that split: `preview_chrome` stays full while a
+/// background trailer plays even though the OLD gating value (`preview_prose`) has already
+/// dropped to zero underneath it, and only sinking into full-trailer mode (promoted) still takes
+/// it to zero.
+#[test]
+fn background_autoplay_keeps_the_rows_below_the_synopsis_full_while_full_trailer_still_hides_them() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    crate::player::preview::force_playing_for_test();
+    assert!(
+        !screen.full_trailer(),
+        "not promoted yet — this must be the background-autoplay case, not full-trailer"
+    );
+
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut sink = Effects::new(
+        &mut effects,
+        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        &mut present,
+    );
+    let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
+    let mut now = 0u32;
+    for _ in 0..300 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+    }
+    assert!(
+        screen.preview_prose < 0.01,
+        "preview_prose={} should have dropped once a picture is up — this is the OLD value, no \
+         longer read by draw_hero for these rows",
+        screen.preview_prose
+    );
+    assert!(
+        screen.preview_chrome > 0.99,
+        "preview_chrome={} must stay full during background autoplay — draw_hero now reads THIS \
+         for the identity/meta line, ratings, facts and people, so they must not fade",
+        screen.preview_chrome
+    );
+
+    // Promote to full-trailer mode: NOW everything hides, `preview_chrome` included.
+    screen.preview_promoted = true;
+    assert!(screen.full_trailer());
+    for _ in 0..300 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+    }
+    assert!(
+        screen.preview_chrome < 0.01,
+        "preview_chrome={} should still ease to 0 once full-trailer mode takes over — that part \
+         is unchanged",
+        screen.preview_chrome
+    );
+
+    drop(sink);
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
 #[test]
 fn an_item_with_no_ultrablur_keeps_the_flat_app_ground() {
     let wash = AmbientWash::flat(theme::SURFACE_APP);

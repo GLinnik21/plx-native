@@ -1916,7 +1916,6 @@ impl DetailScreen {
             .or_else(|| self.selected().map(|m| m.title.as_str()))
             .unwrap_or("Loading…");
         let chrome = p.alpha(self.preview_chrome);
-        let prose = p.alpha(self.preview_chrome * self.preview_prose);
         // NOT `self.preview_chrome * self.preview_synopsis`: synopsis_target already tracks
         // chrome_target exactly (both states — background autoplay, full-trailer — target the
         // same 1.0/0.0), so multiplying the two eased values together would fade the synopsis
@@ -1944,9 +1943,13 @@ impl DetailScreen {
         let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_view = crate::ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
         let chain = self.hero_chain(measure);
+        // `chrome`, not a `preview_prose`-gated value: these rows (identity/meta, ratings, facts,
+        // people) stay at full alpha through background autoplay and fade only in full-trailer
+        // mode, exactly like the buttons below and the logo above — the owner's "nothing between
+        // the synopsis and Play may disappear" during a background trailer preview.
         if let Some(d) = d {
-            self.draw_identity_line(prose, d, chain.meta_y, cx.measure);
-            self.draw_ratings(prose, d, chain.ratings_y, cx.measure);
+            self.draw_identity_line(chrome, d, chain.meta_y, cx.measure);
+            self.draw_ratings(chrome, d, chain.ratings_y, cx.measure);
         }
         if !synopsis.is_empty() {
             synopsis_view.draw(
@@ -1955,8 +1958,8 @@ impl DetailScreen {
             );
         }
         if let Some(d) = d {
-            hero::draw_facts(prose, d, chain.facts_y, cx.measure);
-            hero::draw_people(prose, d, chain.btn_y, measure);
+            hero::draw_facts(chrome, d, chain.facts_y, cx.measure);
+            hero::draw_people(chrome, d, chain.btn_y, measure);
         }
         // Full-trailer mode takes the action row with the rest of the page: the viewer asked for
         // the trailer and nothing else, and the transport drawn over the top
