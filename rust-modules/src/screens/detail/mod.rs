@@ -1937,8 +1937,20 @@ impl DetailScreen {
             lerp(HERO_TEXT_W, crate::ui::detail_layout::PREVIEW_LOGO_MAX_W),
             lerp(hero_band, compact_band),
         );
+        // The pinned corner spot (`t` near 1) sits well inside the below-hero flow's own reach:
+        // `content_top(measure)` — the first section's top — is under a screen height away, so the
+        // caller's `hero_alpha`/`HERO_FADE` window (400px) was still fading the mark, semi-visible,
+        // while a section (Extras, depending on order) had already scrolled up underneath it. Ties
+        // the logo's OWN extra fade to the same "how far into the below-hero flow" fraction
+        // `draw_backdrop`'s `sf` already computes, so it is fully gone by the time the flow starts
+        // and back once scrolled to the top — and only while shrunk (`t`), so a normal hero (no
+        // preview) is untouched.
+        let hero_extent = (self.content_top(measure) - crate::ui::detail_layout::TOP_MARGIN).max(1.0);
+        let logo_alpha = p.alpha(
+            self.preview_chrome * preview_logo_scroll_alpha(self.scroll.pos, hero_extent, t),
+        );
         HeroLogo::new(self.sid, &rk, title, LogoRung::lerp(LogoRung::Hero, LogoRung::Compact, t))
-            .draw(chrome, band, cx.measure);
+            .draw(logo_alpha, band, cx.measure);
 
         let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_view = crate::ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
@@ -2272,6 +2284,19 @@ fn preview_completed_naturally(had_picture: bool, has_picture: bool, promoted: b
 /// item-resolution logic.
 fn preview_already_played(played_for: Option<&str>, current_cache_rk: &str) -> bool {
     played_for == Some(current_cache_rk)
+}
+
+/// The preview-shrunk logo's own extra scroll fade, multiplied onto `chrome` in `draw_hero`.
+/// `t` is `preview_logo.pos` (0 = full hero position, 1 = pinned in the top-left corner while a
+/// trailer plays) and `hero_extent` is the scroll distance the caller already uses to fully reveal
+/// the below-hero flow (`content_top(measure) - TOP_MARGIN`, the same quantity `draw_backdrop`'s
+/// own `sf` divides by). Pure and eased (a linear ramp, not a cut) so the mark fades smoothly as
+/// `scroll_pos` rises and reappears the same way on the way back up, and it changes nothing at
+/// `t=0`: a normal (non-preview) hero already has its own `hero_alpha` fade from the caller and
+/// this must not double it.
+fn preview_logo_scroll_alpha(scroll_pos: f32, hero_extent: f32, t: f32) -> f32 {
+    let past_hero = (scroll_pos / hero_extent.max(1.0)).clamp(0.0, 1.0);
+    1.0 - t * past_hero
 }
 
 fn compact_title_hide_pos(sections: &[i32], n: usize, is_show: bool) -> Option<usize> {

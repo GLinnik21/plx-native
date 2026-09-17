@@ -1626,6 +1626,66 @@ fn preview_already_played_is_a_plain_key_match() {
     assert!(super::preview_already_played(Some("rk1"), "rk1"));
 }
 
+/// The preview logo's own scroll fade: untouched at `t=0` (a normal hero has no preview to pin
+/// into a corner, and the caller's own `hero_alpha` already governs it), full at the top even
+/// while shrunk (`t=1`, `scroll_pos=0`), eased down as `scroll_pos` climbs toward `hero_extent`
+/// (where the below-hero flow starts), pinned at 0 once past it, and — because it is a pure
+/// function of the CURRENT `scroll_pos` with no memory — back to full the moment scroll returns
+/// to 0, exactly the "come back when scrolled back up" the owner asked for.
+#[test]
+fn preview_logo_scroll_alpha_only_fades_the_shrunk_logo_past_the_hero() {
+    let extent = 800.0_f32;
+
+    // t=0: a normal hero position is untouched by this factor at any scroll.
+    for scroll in [0.0, 400.0, 800.0, 2000.0] {
+        assert_eq!(
+            super::preview_logo_scroll_alpha(scroll, extent, 0.0),
+            1.0,
+            "t=0 (no preview) must not be touched by this fade at scroll={scroll}"
+        );
+    }
+
+    // t=1: full at the very top, and monotonically non-increasing as scroll rises.
+    assert_eq!(super::preview_logo_scroll_alpha(0.0, extent, 1.0), 1.0);
+    let mut prev = 1.0;
+    let mut s = 0.0;
+    while s <= extent * 1.5 {
+        let a = super::preview_logo_scroll_alpha(s, extent, 1.0);
+        assert!((0.0..=1.0).contains(&a), "scroll={s}: alpha {a} outside 0..=1");
+        assert!(a <= prev + 1e-6, "scroll={s}: alpha rose from {prev} to {a}");
+        prev = a;
+        s += extent / 16.0;
+    }
+    assert_eq!(
+        super::preview_logo_scroll_alpha(extent, extent, 1.0),
+        0.0,
+        "fully hidden once scrolled exactly to the below-hero flow's own start"
+    );
+    assert_eq!(
+        super::preview_logo_scroll_alpha(extent * 2.0, extent, 1.0),
+        0.0,
+        "clamped, not negative, once scrolled well past it"
+    );
+
+    // Scrolling back up restores it — a pure function of the current position, no hysteresis.
+    assert_eq!(
+        super::preview_logo_scroll_alpha(extent, extent, 1.0),
+        0.0
+    );
+    assert_eq!(
+        super::preview_logo_scroll_alpha(0.0, extent, 1.0),
+        1.0,
+        "back to full the instant scroll returns to the top"
+    );
+
+    // Partway through `t` (the spring mid-travel) blends the two: half-shrunk halves the fade.
+    assert_eq!(
+        super::preview_logo_scroll_alpha(extent, extent, 0.5),
+        0.5,
+        "at t=0.5 the fully-past-hero case should only be half faded"
+    );
+}
+
 /// Closes the outside-voice-found gap: `preview_played_for`/`preview_started_for` must reset on
 /// leave, matching the existing `preview_dwell`/`preview_promoted` convention at the same call
 /// site, or §8.2's own "resets whenever you leave and re-enter" decision silently does not hold.
