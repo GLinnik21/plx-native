@@ -139,6 +139,32 @@ fn drain_held_feature(app: &mut App) {
     );
 }
 
+// TEST ONLY. This file's four test modules call `crate::metadata`'s free reads and
+// `crate::stores::metadata`'s command apply at hundreds of call sites, a shape written for the
+// old crate-global metadata statics and the deleted `stores::metadata::apply` shim — see
+// `screens::detail::tests`'s `TEST_METADATA` for the identical reasoning. The owner lives here,
+// confined to the thread each test body runs on, reached only through
+// `MetadataStore::run`/`state_mut`/`view` (the sole owner API), never a second mechanism.
+#[cfg(test)]
+thread_local! {
+    static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+        std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+}
+
+#[cfg(test)]
+fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+}
+
+/// Local wrapper matching `crate::metadata::land_detail_for_test`'s OLD 4-argument shape
+/// (before Stage B threaded `state`/`adapter` explicitly), so every multi-line call site below
+/// needs no per-site rewrite.
+#[cfg(test)]
+fn land_detail_for_test(sid: crate::plex::ServerId, rk: &str, gen: u32, detail: Option<crate::metadata::Detail>) -> bool {
+    let (state, adapter) = test_store().split_for_test();
+    crate::metadata::land_detail_for_test(state, adapter, sid, rk, gen, detail)
+}
+
 #[cfg(test)]
 mod held_feature_tests {
     use super::*;
@@ -202,33 +228,33 @@ mod held_feature_tests {
         }
         let Some(held) = HELD_FEATURE.with(|slot| slot.borrow_mut().take()) else { return };
         if let PlayIntent::Item { sid, rk, context, .. } = &held.play {
-            note_extra_now_playing(&mut crate::stores::metadata::MetadataStore::default(), *sid, rk, context);
+            note_extra_now_playing(test_store(), *sid, rk, context);
         }
     }
 
     #[test]
     fn a_held_trailer_play_installs_now_playing_for_the_info_card() {
         let _g = crate::testlock::serial();
-        crate::metadata::set_current_for_test(Some(parent_with_extra()));
-        crate::stores::metadata::apply(
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(parent_with_extra()));
+        test_store().run(
             crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(leftover_episode_now_playing())),
         );
         install_held(trailer_play(crate::metadata::TRAILER_CONTEXT));
         drain_held_play_now_playing();
-        let np = crate::metadata::now_playing().expect("held trailer Play must install NowPlaying");
+        let np = test_store().view().now_playing().expect("held trailer Play must install NowPlaying");
         assert!(!np.is_episode);
         assert_eq!(np.title, "Movie");
         assert_eq!(np.ep_title, "Official Trailer");
         assert_eq!(np.dur_ms, 120_000);
         assert_eq!(np.detail_rk, "movie");
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(None);
+        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     #[test]
     fn a_held_show_trailer_play_labels_the_info_card_with_the_extra() {
         let _g = crate::testlock::serial();
-        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
             sid: crate::plex::ServerId::UNSET,
             rk: "show".into(),
             kind: "show".into(),
@@ -243,48 +269,48 @@ mod held_feature_tests {
             }],
             ..Default::default()
         }));
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
         install_held(trailer_play(crate::metadata::TRAILER_CONTEXT));
         drain_held_play_now_playing();
-        let np = crate::metadata::now_playing().expect("held show trailer Play must install NowPlaying");
+        let np = test_store().view().now_playing().expect("held show trailer Play must install NowPlaying");
         assert!(np.is_episode, "a show parent labels Go to Show");
         assert_eq!(np.title, "Show");
         assert_eq!(np.ep_title, "Official Trailer");
         assert_eq!(np.dur_ms, 90_000);
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(None);
+        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     #[test]
     fn a_held_extra_play_installs_now_playing_the_same_way() {
         let _g = crate::testlock::serial();
-        crate::metadata::set_current_for_test(Some(parent_with_extra()));
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(parent_with_extra()));
+        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
         install_held(trailer_play(crate::metadata::EXTRA_CONTEXT));
         drain_held_play_now_playing();
         assert_eq!(
-            crate::metadata::now_playing().map(|n| n.ep_title.as_str()),
+            test_store().view().now_playing().map(|n| n.ep_title.as_str()),
             Some("Official Trailer"),
         );
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(None);
+        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     #[test]
     fn a_held_feature_play_does_not_replace_now_playing() {
         let _g = crate::testlock::serial();
-        crate::metadata::set_current_for_test(Some(parent_with_extra()));
-        crate::stores::metadata::apply(
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(parent_with_extra()));
+        test_store().run(
             crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(leftover_episode_now_playing())),
         );
         install_held(trailer_play(""));
         drain_held_play_now_playing();
         assert!(
-            crate::metadata::now_playing().is_some_and(|n| n.detail_rk == "show"),
+            test_store().view().now_playing().is_some_and(|n| n.detail_rk == "show"),
             "ordinary Play must not install a trailer descriptor"
         );
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(None);
+        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     /// [`HeldFeature::ret`] widened to `Option<ReturnState<..>>` so `app::input::apply_item_action`
@@ -767,20 +793,20 @@ mod library_publication_tests {
                 Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(
                     crate::ui::screen::Enter::Restored)))) { return; }
             self.landed = true;
-            let fresh = crate::metadata::land_detail_for_test(
+            let fresh = land_detail_for_test(
                 self.sid,
                 "detail-a",
                 self.generation,
                 self.detail.take(),
             );
             assert_eq!(fresh, self.expected_fresh);
-            assert_eq!(crate::metadata::detail_request_status(self.sid, "detail-a"), Some(false));
+            assert_eq!(test_store().view().detail_request_status(self.sid, "detail-a"), Some(false));
         }
     }
 
     fn drain_detail_workers() {
         for _ in 0..100 {
-            crate::stores::metadata::pump_detail();
+            test_store().pump_detail();
             std::thread::yield_now();
         }
     }
@@ -895,14 +921,14 @@ mod library_publication_tests {
         // Retire the constructors' real worker requests, then hold B in the same global metadata
         // slot the product uses while A's ViewState completion arrives.
         drain_detail_workers();
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+        test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
             sid,
             rk: "detail-b".into(),
             title: "Visible B".into(),
             ..Default::default()
         }));
-        let b_request = crate::metadata::begin_detail_for_test(sid, "detail-b");
+        let b_request = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "detail-b");
 
         refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
             sid,
@@ -911,33 +937,33 @@ mod library_publication_tests {
         });
         frame(&mut pages, &mut rig, &mut frame_no);
 
-        assert_eq!(crate::metadata::current().map(|detail| detail.rk.as_str()), Some("detail-b"),
+        assert_eq!(test_store().view().current().map(|detail| detail.rk.as_str()), Some("detail-b"),
             "the visible Detail keeps its loaded metadata");
-        assert_eq!(crate::metadata::detail_request_status(sid, "detail-b"), Some(true),
+        assert_eq!(test_store().view().detail_request_status(sid, "detail-b"), Some(true),
             "covered A must not supersede B's in-flight request");
-        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), None,
+        assert_eq!(test_store().view().detail_request_status(sid, "detail-a"), None,
             "A's fetch stays deferred while B owns the shared slot");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot.clone(), Some("episode-a".into()),
                 crate::screens::registry::DetailRefreshPhase::Deferred)),
             "covered A retains the addressed episode and focus spot");
 
-        assert!(crate::metadata::land_detail_for_test(sid, "detail-b", b_request,
+        assert!(land_detail_for_test(sid, "detail-b", b_request,
             Some(crate::metadata::Detail {
                 sid,
                 rk: "detail-b".into(),
                 title: "Visible B".into(),
                 ..Default::default()
             })));
-        let generation = crate::metadata::detail_generation_for_test();
+        let generation = crate::metadata::detail_generation_for_test(test_store().adapter_ref());
         let ret = pages.return_state();
         bridge::nav_pop_with_return(&mut pages, ret);
         frame(&mut pages, &mut rig, &mut frame_no);
 
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
-        assert!(crate::metadata::detail_request_status(sid, "detail-a").is_some(),
+        assert!(test_store().view().detail_request_status(sid, "detail-a").is_some(),
             "A starts its deferred metadata refresh only after Back uncovers it");
-        assert_eq!(crate::metadata::detail_generation_for_test(), generation + 2,
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), generation + 2,
             "B closes its request and A starts exactly one replacement request");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
@@ -945,13 +971,13 @@ mod library_publication_tests {
             "RestoreMemory must not overwrite the addressed episode/focus intent");
         assert_eq!(pages.focus(), Some(focus),
             "the restored engine focus remains on the addressed episode row");
-        let generation = crate::metadata::detail_generation_for_test();
+        let generation = crate::metadata::detail_generation_for_test(test_store().adapter_ref());
         frame(&mut pages, &mut rig, &mut frame_no);
-        assert_eq!(crate::metadata::detail_generation_for_test(), generation,
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), generation,
             "the deferred refresh is consumed once");
 
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(None);
+        test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
         drain_detail_workers();
     }
 
@@ -980,16 +1006,16 @@ mod library_publication_tests {
         let (spot, focus) = seed_detail_return(&mut pages, a_entry, sid, "episode-a");
 
         drain_detail_workers();
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+        test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
             sid,
             rk: "detail-a".into(),
             title: "Covered A".into(),
             watched: true,
             ..Default::default()
         }));
-        let stale_request = crate::metadata::begin_detail_for_test(sid, "detail-a");
-        let generation = crate::metadata::detail_generation_for_test();
+        let stale_request = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "detail-a");
+        let generation = crate::metadata::detail_generation_for_test(test_store().adapter_ref());
         assert_eq!(generation, stale_request);
 
         refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
@@ -1000,11 +1026,11 @@ mod library_publication_tests {
         frame(&mut pages, &mut rig, &mut frame_no);
 
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == person));
-        assert_eq!(crate::metadata::current().map(|detail| detail.rk.as_str()), Some("detail-a"),
+        assert_eq!(test_store().view().current().map(|detail| detail.rk.as_str()), Some("detail-a"),
             "the covered Detail's stale-but-visible slot is not displaced under Person");
-        assert_eq!(crate::metadata::detail_generation_for_test(), generation,
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), generation,
             "A must not refresh while Person owns the visible page");
-        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(true),
+        assert_eq!(test_store().view().detail_request_status(sid, "detail-a"), Some(true),
             "the pre-write A fetch remains in flight while its page is covered");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot.clone(), Some("episode-a".into()),
@@ -1015,10 +1041,10 @@ mod library_publication_tests {
         frame(&mut pages, &mut rig, &mut frame_no);
 
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
-        assert_eq!(crate::metadata::detail_generation_for_test(), generation + 1,
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), generation + 1,
             "uncovered A supersedes the pre-write fetch with exactly one reconciliation");
-        let reconciliation = crate::metadata::detail_generation_for_test();
-        assert!(!crate::metadata::land_detail_for_test(sid, "detail-a", stale_request,
+        let reconciliation = crate::metadata::detail_generation_for_test(test_store().adapter_ref());
+        assert!(!land_detail_for_test(sid, "detail-a", stale_request,
             Some(crate::metadata::Detail {
                 sid,
                 rk: "detail-a".into(),
@@ -1026,23 +1052,23 @@ mod library_publication_tests {
                 watched: false,
                 ..Default::default()
             })), "the superseded pre-write landing must be rejected");
-        assert!(crate::metadata::current().is_some_and(|detail|
+        assert!(test_store().view().current().is_some_and(|detail|
             detail.rk == "detail-a" && detail.watched),
             "the stale landing cannot undo A's optimistic watched state");
-        assert_eq!(crate::metadata::detail_generation_for_test(), reconciliation,
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), reconciliation,
             "rejecting the stale landing cannot replace the reconciliation generation");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
                 crate::screens::registry::DetailRefreshPhase::Requested)),
             "RestoreMemory preserves the ViewState episode/focus intent");
         assert_eq!(pages.focus(), Some(focus));
-        let generation = crate::metadata::detail_generation_for_test();
+        let generation = crate::metadata::detail_generation_for_test(test_store().adapter_ref());
         frame(&mut pages, &mut rig, &mut frame_no);
-        assert_eq!(crate::metadata::detail_generation_for_test(), generation,
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), generation,
             "the explicit pending refresh is consumed after one request");
 
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(None);
+        test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
         drain_detail_workers();
     }
 
@@ -1075,7 +1101,7 @@ mod library_publication_tests {
         let a_entry = pages.nav.top_page().expect("Detail A mounted").id;
 
         drain_detail_workers();
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+        test_store().run(crate::stores::metadata::MetadataCmd::Clear);
         let mut detail = detail_with_episode(sid, "detail-a", "Old A", true);
         detail.related.push(crate::pms::PmsMovie {
             sid, rk: "detail-b".into(), title: "Related B".into(), ..Default::default()
@@ -1083,7 +1109,7 @@ mod library_publication_tests {
         detail.related.push(crate::pms::PmsMovie {
             sid, rk: "detail-c".into(), title: "Related C".into(), ..Default::default()
         });
-        crate::metadata::set_current_for_test(Some(detail));
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(detail));
         pages.store_changed(crate::stores::StoreId::Metadata.ord(), 1);
         frame(&mut pages, &mut rig, &mut frame_no);
 
@@ -1102,7 +1128,7 @@ mod library_publication_tests {
         let spot = memory.spot;
         assert_eq!((spot.section, spot.col, spot.ep_text, spot.season), (2, 0, true, Some(2)));
 
-        let pre_refresh = crate::metadata::begin_detail_for_test(sid, "detail-a");
+        let pre_refresh = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "detail-a");
         if settled_before_refresh {
             let mut settled = detail_with_episode(sid, "detail-a", "Old A", true);
             settled.related.push(crate::pms::PmsMovie {
@@ -1111,9 +1137,9 @@ mod library_publication_tests {
             settled.related.push(crate::pms::PmsMovie {
                 sid, rk: "detail-c".into(), title: "Related C".into(), ..Default::default()
             });
-            assert!(crate::metadata::land_detail_for_test(
+            assert!(land_detail_for_test(
                 sid, "detail-a", pre_refresh, Some(settled)));
-            assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(false),
+            assert_eq!(test_store().view().detail_request_status(sid, "detail-a"), Some(false),
                 "the reviewer race begins from a normally settled page");
             let initial = crate::app::bootstrap::Initial::synthetic_home(1, 32498, None).unwrap();
             crate::app::bootstrap::stores::init(&initial, true);
@@ -1143,7 +1169,7 @@ mod library_publication_tests {
                 fn effect(&mut self, _: u64, stamped: &crate::ui::machine::Stamped<bridge::AppHost>) {
                     if self.saw_restore && !self.checked_after_restore {
                         self.checked_after_restore = true;
-                        assert_eq!(crate::metadata::detail_request_status(self.sid, "detail-a"), Some(true),
+                        assert_eq!(test_store().view().detail_request_status(self.sid, "detail-a"), Some(true),
                             "Requested must not be visible before its reconciliation request exists");
                     }
                     if matches!(&stamped.fx, Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(
@@ -1174,8 +1200,8 @@ mod library_publication_tests {
         } else {
             frame(&mut pages, &mut rig, &mut frame_no);
         }
-        let stale_a = crate::metadata::detail_generation_for_test();
-        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(true));
+        let stale_a = crate::metadata::detail_generation_for_test(test_store().adapter_ref());
+        assert_eq!(test_store().view().detail_request_status(sid, "detail-a"), Some(true));
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot.clone(), Some("episode-a".into()),
                 crate::screens::registry::DetailRefreshPhase::Requested)));
@@ -1210,11 +1236,11 @@ mod library_publication_tests {
             bridge::nav_push(&mut pages, b.clone());
         }
         frame(&mut pages, &mut rig, &mut frame_no);
-        let stale_b = crate::metadata::detail_generation_for_test();
+        let stale_b = crate::metadata::detail_generation_for_test(test_store().adapter_ref());
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == b));
-        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), None,
+        assert_eq!(test_store().view().detail_request_status(sid, "detail-a"), None,
             "opening B supersedes A's requested reconciliation");
-        assert_eq!(crate::metadata::detail_request_status(sid, "detail-b"), Some(true));
+        assert_eq!(test_store().view().detail_request_status(sid, "detail-b"), Some(true));
 
         if navigate {
             detail_key(&mut pages, &mut rig, &mut frame_no, crate::ui::machine::Key::Back,
@@ -1231,10 +1257,10 @@ mod library_publication_tests {
         frame(&mut pages, &mut rig, &mut frame_no);
 
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
-        assert_eq!(crate::metadata::detail_generation_for_test(), stale_b + 1,
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), stale_b + 1,
             "Back starts one replacement for the requested reconciliation B superseded");
-        let reconciliation = crate::metadata::detail_generation_for_test();
-        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(true));
+        let reconciliation = crate::metadata::detail_generation_for_test(test_store().adapter_ref());
+        assert_eq!(test_store().view().detail_request_status(sid, "detail-a"), Some(true));
         if !navigate {
             assert_eq!(detail_restore_target(&pages, a_entry),
                 Some((spot.clone(), Some("episode-a".into()),
@@ -1259,26 +1285,26 @@ mod library_publication_tests {
         }
 
         frame(&mut pages, &mut rig, &mut frame_no);
-        assert_eq!(crate::metadata::detail_generation_for_test(), reconciliation,
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), reconciliation,
             "the outstanding requested reconciliation is not duplicated");
 
-        assert!(!crate::metadata::land_detail_for_test(sid, "detail-a", stale_a,
+        assert!(!land_detail_for_test(sid, "detail-a", stale_a,
             Some(detail_with_episode(sid, "detail-a", "Stale A", false))),
             "A's superseded reconciliation cannot land");
-        assert!(!crate::metadata::land_detail_for_test(sid, "detail-a", pre_refresh, None),
+        assert!(!land_detail_for_test(sid, "detail-a", pre_refresh, None),
             "the pre-refresh request was superseded before its completion");
-        assert!(!crate::metadata::land_detail_for_test(sid, "detail-b", stale_b,
+        assert!(!land_detail_for_test(sid, "detail-b", stale_b,
             Some(crate::metadata::Detail {
                 sid,
                 rk: "detail-b".into(),
                 title: "Stale B".into(),
                 ..Default::default()
             })), "B's stale landing cannot replace restored A");
-        assert!(crate::metadata::current().is_some_and(|detail|
+        assert!(test_store().view().current().is_some_and(|detail|
             detail.rk == "detail-a" && detail.title == "Old A" && detail.watched));
 
         drain_detail_workers();
-        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(false));
+        assert_eq!(test_store().view().detail_request_status(sid, "detail-a"), Some(false));
         pages.store_changed(crate::stores::StoreId::Metadata.ord(), reconciliation);
         frame(&mut pages, &mut rig, &mut frame_no);
         frame(&mut pages, &mut rig, &mut frame_no);
@@ -1288,11 +1314,11 @@ mod library_publication_tests {
         assert_eq!(detail_refresh_phase(&pages, a_entry),
             crate::screens::registry::DetailRefreshPhase::None,
             "reconciliation terminates independently of focus restoration");
-        assert_eq!(crate::metadata::detail_generation_for_test(), reconciliation,
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), reconciliation,
             "settling restoration cannot start a duplicate request");
 
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(None);
+        test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
         drain_detail_workers();
     }
 
@@ -1333,8 +1359,8 @@ mod library_publication_tests {
         let a_entry = pages.nav.top_page().expect("Detail A mounted").id;
 
         drain_detail_workers();
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(Some(detail_with_episode(
+        test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(detail_with_episode(
             sid, "detail-a", "Old A", true,
         )));
         pages.store_changed(crate::stores::StoreId::Metadata.ord(), 1);
@@ -1354,15 +1380,15 @@ mod library_publication_tests {
         let PageMemory::Detail(memory) = pages.return_state().memory else { unreachable!() };
         let spot = memory.spot;
 
-        let pre_refresh = crate::metadata::begin_detail_for_test(sid, "detail-a");
+        let pre_refresh = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "detail-a");
         refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
         });
         frame(&mut pages, &mut rig, &mut frame_no);
-        assert!(!crate::metadata::land_detail_for_test(sid, "detail-a", pre_refresh, None));
-        let reconciliation = crate::metadata::begin_detail_for_test(sid, "detail-a");
+        assert!(!land_detail_for_test(sid, "detail-a", pre_refresh, None));
+        let reconciliation = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "detail-a");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
                 crate::screens::registry::DetailRefreshPhase::Requested)));
@@ -1370,7 +1396,7 @@ mod library_publication_tests {
         bridge::nav_push(&mut pages, person.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == person));
-        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(true));
+        assert_eq!(test_store().view().detail_request_status(sid, "detail-a"), Some(true));
 
         pages.nav.tabs.stack.transition =
             Box::new(crate::ui::containers::transition::Immediate);
@@ -1390,9 +1416,9 @@ mod library_publication_tests {
 
         assert!(settle.landed, "the reconciliation settles at the restored Enter boundary");
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
-        assert_eq!(crate::metadata::detail_generation_for_test(), reconciliation,
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), reconciliation,
             "Enter must not duplicate the reconciliation that already settled");
-        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(false));
+        assert_eq!(test_store().view().detail_request_status(sid, "detail-a"), Some(false));
         frame(&mut pages, &mut rig, &mut frame_no);
         assert_eq!(pages.focus(), Some(focus), "the addressed episode focus still restores");
         assert_eq!(detail_restore_target(&pages, a_entry), None,
@@ -1400,8 +1426,8 @@ mod library_publication_tests {
         assert_eq!(detail_return_waiting(&pages, a_entry), Some(false),
             "the return cannot remain waiting after the terminal reconciliation");
 
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(None);
+        test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
         drain_detail_workers();
     }
 
@@ -1426,8 +1452,8 @@ mod library_publication_tests {
         let a_entry = pages.nav.top_page().expect("Detail A mounted").id;
 
         drain_detail_workers();
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(Some(detail_with_episode(
+        test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(detail_with_episode(
             sid, "detail-a", "Old A", true,
         )));
         pages.store_changed(crate::stores::StoreId::Metadata.ord(), 1);
@@ -1447,15 +1473,15 @@ mod library_publication_tests {
         let PageMemory::Detail(memory) = pages.return_state().memory else { unreachable!() };
         let spot = memory.spot;
 
-        let pre_refresh = crate::metadata::begin_detail_for_test(sid, "detail-a");
+        let pre_refresh = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "detail-a");
         refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
         });
         frame(&mut pages, &mut rig, &mut frame_no);
-        assert!(!crate::metadata::land_detail_for_test(sid, "detail-a", pre_refresh, None));
-        let reconciliation = crate::metadata::begin_detail_for_test(sid, "detail-a");
+        assert!(!land_detail_for_test(sid, "detail-a", pre_refresh, None));
+        let reconciliation = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "detail-a");
         assert_eq!(detail_restore_target(&pages, a_entry),
             Some((spot, Some("episode-a".into()),
                 crate::screens::registry::DetailRefreshPhase::Requested)));
@@ -1463,9 +1489,9 @@ mod library_publication_tests {
         bridge::nav_push(&mut pages, person.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == person));
-        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(true));
-        crate::metadata::set_current_for_test(None);
-        assert!(crate::metadata::current().is_none(),
+        assert_eq!(test_store().view().detail_request_status(sid, "detail-a"), Some(true));
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
+        assert!(test_store().view().current().is_none(),
             "the unsuccessful reconciliation has no cached Detail to fall back to");
 
         pages.nav.tabs.stack.transition =
@@ -1486,9 +1512,9 @@ mod library_publication_tests {
 
         assert!(settle.landed, "the failed reconciliation settles at restored Enter");
         assert!(pages.nav.top_page().is_some_and(|entry| entry.id == a_entry && entry.arg == a));
-        assert_eq!(crate::metadata::detail_generation_for_test(), reconciliation,
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), reconciliation,
             "terminal failure must not be retried through the ordinary cold-body branch");
-        assert_eq!(crate::metadata::detail_request_status(sid, "detail-a"), Some(false));
+        assert_eq!(test_store().view().detail_request_status(sid, "detail-a"), Some(false));
 
         frame(&mut pages, &mut rig, &mut frame_no);
         assert_eq!(detail_restore_target(&pages, a_entry), None,
@@ -1496,11 +1522,11 @@ mod library_publication_tests {
         assert_eq!(detail_return_waiting(&pages, a_entry), Some(false),
             "failed restoration cannot remain permanently waiting");
         frame(&mut pages, &mut rig, &mut frame_no);
-        assert_eq!(crate::metadata::detail_generation_for_test(), reconciliation,
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), reconciliation,
             "settled failure cannot start a delayed duplicate request");
 
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(None);
+        test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
         drain_detail_workers();
     }
 }
