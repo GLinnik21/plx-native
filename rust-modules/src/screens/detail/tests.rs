@@ -1249,10 +1249,50 @@ fn back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise() {
     clear();
 }
 
-/// Drive one full-trailer key's EFFECT (`trailer_act`) without the live `player::preview`
-/// singleton: `full_trailer()` reads that global, so the input arm's guard cannot be reached in a
-/// host test, but what the guard leads to is this page's own method and is graded here. The key
-/// ladder that chooses the action is pure and graded in `screens::detail::trailer`.
+/// **The input arm's own claim: full-trailer mode answers a key it owns on EVERY edge, before any
+/// other arm, but only ACTS on the DOWN edge.** LEFT is the probe: `trailer::trailer_key` maps it
+/// to `Reveal`, which has no effect this test can mistake for ordinary LEFT navigation, so a
+/// `revealed()` flip after the DOWN edge (and none after the UP edge) can only have come from this
+/// arm running — and running before whatever ordinary LEFT handling exists further down.
+#[test]
+fn full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_down_edge() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    crate::player::preview::force_playing_for_test();
+    assert!(screen.full_trailer(), "the fixture must actually be in full-trailer mode");
+
+    fn key_event(key: Key, edge: Edge) -> ScreenEvent<TestHost> {
+        ScreenEvent::Input(InputEvent {
+            at: Default::default(),
+            source: crate::ui::machine::Source::Script,
+            kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false },
+        })
+    }
+    let play = Some(hero::HeroCtl::Play.elem());
+
+    let (handled, _) = step(&mut screen, &key_event(Key::Left, Edge::Up), play);
+    assert_eq!(handled, Handled::Yes, "the up edge of an owned key must still be swallowed");
+    assert!(!screen.trailer_ctl.revealed(), "the up edge must not act");
+
+    let (handled, _) = step(&mut screen, &key_event(Key::Left, Edge::Down), play);
+    assert_eq!(handled, Handled::Yes, "the down edge must be swallowed too");
+    assert!(
+        screen.trailer_ctl.revealed(),
+        "the down edge must act (Reveal) — proof this ran before ordinary LEFT handling"
+    );
+
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
+/// Drive one full-trailer key's EFFECT (`trailer_act`) directly. `full_trailer()`'s own guard
+/// (swallowing every edge, acting only on Down) is covered end to end at the input-arm level by
+/// `full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_down_edge` above,
+/// via the `player::preview::force_playing_for_test()`/`set_phase_for_test` seam; what is graded
+/// here is only this page's own per-key EFFECT, which does not need the live singleton at all. The
+/// key ladder that chooses the action is pure and graded in `screens::detail::trailer`.
 fn trailer_act(
     screen: &mut DetailScreen,
     act: trailer::TrailerKey,
