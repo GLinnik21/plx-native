@@ -2084,14 +2084,12 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             crate::ui::idle::invalidate(); // a detail landing rewrites the page under us
         }
         // Async season load: install the worker's episode list into CURRENT. Route-unconditional
-        // for the same reason as pump_detail above — this used to be pumped from the legacy
-        // `ui/detail.rs::update()`, which only ran while the Detail page was on top; the phase-7
-        // migration to an owned `DetailScreen` (894f20f8) deleted that call site and never added
-        // an equivalent one, so `pump_season()` was never invoked in production at all. Nothing
-        // drained `SEASON_RESULT`, so `SEASON_DONE` never caught up to `SEASON_GEN`:
-        // `season_loading()` stayed true forever after the first season switch, wedging the
-        // episode row's spinner on and refusing every episode press (it gates `episodes::action`)
-        // for the rest of the session. See `stores/pump_wiring_tests` for the regression pin.
+        // for the same reason as pump_detail above; see `stores/metadata.rs`'s module doc for why
+        // this call site went missing for a whole migration and how it was found.
+        // MUST run AFTER pump_detail(): a landed detail's `install_landed_detail` calls
+        // `supersede_season()`, invalidating any season fetch for the item being replaced.
+        // Pumping season first could apply a stale season landing to CURRENT in the one frame
+        // before pump_detail() replaces it.
         if crate::stores::metadata::pump_season() {
             crate::ui::idle::invalidate(); // a season landing rewrites the episode row under us
         }

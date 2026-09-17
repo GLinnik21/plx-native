@@ -486,9 +486,12 @@ mod contract_tests {
         // still process-wide globals (`stores::mod.rs`'s `NOTICES`), not owned per `Stores`
         // instance, so `take_notices()` below would otherwise fold someone else's leftover
         // bump into this test's precise assertion — the same idiom the other contract tests in
-        // this module already use before their own exact-equality check.
+        // this module already use before their own exact-equality check. ONE call is enough:
+        // the four notices are shared process-wide, not per instance, so draining them through
+        // `first` already clears them for `second` too — neither store's OWN Browse/ViewState
+        // notice has anything pending yet (seeding writes `self.state` directly and never calls
+        // `bump()`, which is exactly why the assertion below expects generation 1, not 2+).
         let _ = first.take_notices();
-        let _ = second.take_notices();
         first.browse_run(BrowseCmd::Reset);
         assert_eq!(first.take_notices(), [(StoreId::Browse, 1)]);
         assert!(second.take_notices().is_empty());
