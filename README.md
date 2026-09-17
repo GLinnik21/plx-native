@@ -3,8 +3,8 @@
 A fast, unofficial [Plex](https://www.plex.tv/) client for LG webOS televisions. Native, not a web
 page — the interface is drawn straight on the GPU at 60 fps, and video plays on the TV's own decoder.
 
-*In daily use on a 2019 LG set. Get it from the
-[latest release](https://github.com/GLinnik21/plx-native/releases/latest).*
+*In daily use on a 2019 LG set. Get started with the
+[installation guide](docs/install-and-verify.md).*
 
 ## Why this exists
 
@@ -70,23 +70,27 @@ If your set is in the middle, [tell me what happened](https://github.com/GLinnik
 
 ## Installing
 
-You need a Plex account and server, and a way to install unsigned apps: the
-[Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel) or LG Developer Mode. You do
-**not** need a rooted TV — the app runs in LG's normal sandbox like anything else on the set.
+**First time installing an app outside the LG Content Store?** Follow the
+[**step-by-step installation guide**](docs/install-and-verify.md). It starts with a regular LG
+webOS TV, a computer on the same network, and a Plex account with access to your own or a shared
+server. **No root is required.**
 
-**PlxNative is in the Homebrew Channel's app list** — install it from there directly, no manual
-`.ipk` needed. Or grab the `.ipk` from the
-[latest release](https://github.com/GLinnik21/plx-native/releases) and install it with
-[dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop).
+Set up LG Developer Mode and connect with webOS Dev Manager, then choose:
 
-**Check the download against `ipk.sha256` before you sideload it.** Nothing in this chain is
-code-signed, and pointing the Channel at a bare `.ipk` skips the hash check it would otherwise do
-for you. [docs/install-and-verify.md](docs/install-and-verify.md) has the commands, which release
-asset is which, and what the app writes, reads and reaches once it's on your set.
+- **Install PlxNative directly:** add only PlxNative to the TV; install future `.ipk` updates from
+  your computer.
+- **Install Homebrew Channel first:** get an app catalogue on the TV, then install PlxNative and
+  its updates with the remote.
 
-Installing through **Developer Mode** also means LG expires the session after 1000 hours and
-*uninstalls your apps* when it does; dev-manager-desktop can renew it. The Homebrew Channel has no
-expiry.
+**Already have Homebrew Channel?** Find [PlxNative in its catalogue](https://repo.webosbrew.org/apps/com.beb.plxnative/)
+and select **Install**. Skip the computer setup.
+
+**Developer Mode needs periodic renewal.** If it expires and LG disables Developer Mode, apps
+installed through it are removed. Installing Homebrew Channel through Developer Mode does not
+remove that requirement. The guide explains [how to renew the session](docs/install-and-verify.md#important-developer-mode-expires).
+
+For manual `.ipk` downloads, [verify the release checksum](docs/install-and-verify.md#verifying-the-package)
+before installing. Homebrew Channel verifies catalogue downloads for you.
 
 ## Privacy
 
