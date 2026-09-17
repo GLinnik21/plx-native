@@ -317,7 +317,7 @@ pub(crate) const SCRUB_MAX: f32 = 140.0;
 pub(crate) const TAP_COMMIT_MS: u32 = 450;
 pub(crate) const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
                                 // HUD auto-hide: how long the HUD lingers after the input that raised it.
-pub(crate) const HUD_LINGER_MS: u32 = 4500; // plain transport/nav input
+pub(crate) const HUD_LINGER_MS: u32 = crate::ui::player_hud::LINGER_MS; // plain transport/nav input
 pub(crate) const HUD_MENU_MS: u32 = 8000; // a modal menu is up (track/chapter nav) — longer read time
 pub(crate) const HUD_HEADLESS_MS: u32 = 60_000; // autoplay/headless runs pin the HUD up for capture
 
