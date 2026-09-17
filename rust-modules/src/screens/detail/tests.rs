@@ -1077,6 +1077,59 @@ fn full_trailer_mode_registers_no_hero_stops_at_all() {
     clear();
 }
 
+/// **The mechanism, not a special case.** `preview_chrome` is the one scalar `draw_hero` already
+/// fades the hero's own chrome through, and `draw`'s below-hero loop (season/episodes, Extras,
+/// Related, Cast & Crew, About) now hands that SAME value to every section as `below_hero`'s
+/// alpha, rather than a second predicate one of them could drift from. Proving `preview_chrome`
+/// itself eases to 0 while `full_trailer()` holds and back to 1 on collapse is proving the
+/// sections hide and reappear too — the page draws no rendering harness can drive here, but this
+/// is the one number every one of them multiplies through.
+#[test]
+fn preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_and_back() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    crate::player::preview::force_playing_for_test();
+    screen.preview_promoted = true;
+    assert!(screen.full_trailer(), "the fixture must land in full-trailer mode for this test to mean anything");
+
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut sink = Effects::new(
+        &mut effects,
+        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        &mut present,
+    );
+    let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
+    let mut now = 0u32;
+    for _ in 0..300 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+    }
+    assert!(
+        screen.preview_chrome < 0.01,
+        "preview_chrome={} should have eased to 0 in full-trailer mode — the value every \
+         below-hero section now fades through",
+        screen.preview_chrome
+    );
+
+    // Collapse: full-trailer mode ends, and every section's alpha must climb back to full.
+    screen.preview_promoted = false;
+    for _ in 0..300 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+    }
+    assert!(
+        screen.preview_chrome > 0.99,
+        "preview_chrome={} should have eased back to full once full-trailer mode collapsed",
+        screen.preview_chrome
+    );
+
+    drop(sink);
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
 #[test]
 fn an_item_with_no_ultrablur_keeps_the_flat_app_ground() {
     let wash = AmbientWash::flat(theme::SURFACE_APP);
@@ -1150,6 +1203,36 @@ fn a_long_synopsis_keeps_the_first_section_one_region_gap_below_the_buttons() {
         chain.btn_y + hero::CD + theme::space::XL
     );
     assert_eq!(screen.content_top(&crate::ui::fixture::FixtureMeasure), screen.section_top(1, detail, &crate::ui::fixture::FixtureMeasure));
+    clear();
+}
+
+/// **A landing must not move ground being read**, restated for the trailer preview: the
+/// identity/meta line, the review scores and the playback note fade to zero alpha while a
+/// trailer plays in the background (`preview_prose`/`preview_synopsis`/`preview_chrome`,
+/// `screens::detail::mod::draw_hero`'s `chrome`/`prose` painters), and back on collapse. Nothing
+/// about the hero's own Y chain may follow that fade: `compute_hero_chain` takes only the item's
+/// content (the synopsis text, whether it has ratings) and must return byte-identical geometry
+/// whichever way the same item's preview alphas sit.
+#[test]
+fn the_hero_chain_is_identical_whether_or_not_the_trailer_preview_has_faded_its_prose() {
+    let sid = ServerId::UNSET;
+    let d = detail(sid, "show");
+    let _guard = install(d);
+    let mut screen = bare(&_guard, sid, "show");
+
+    let rest = screen.compute_hero_chain(screen.detail(), &crate::ui::fixture::FixtureMeasure);
+
+    screen.preview_prose = 0.0;
+    screen.preview_synopsis = 0.0;
+    screen.preview_chrome = 0.0;
+    screen.preview_field = 0.0;
+    let faded = screen.compute_hero_chain(screen.detail(), &crate::ui::fixture::FixtureMeasure);
+
+    assert_eq!(rest.meta_y, faded.meta_y, "meta line must not move when it fades");
+    assert_eq!(rest.ratings_y, faded.ratings_y, "ratings row must not move when it fades");
+    assert_eq!(rest.syn_y, faded.syn_y, "synopsis must not move");
+    assert_eq!(rest.facts_y, faded.facts_y, "facts/playback-note line must not move when it fades");
+    assert_eq!(rest.btn_y, faded.btn_y, "the action row must not move");
     clear();
 }
 

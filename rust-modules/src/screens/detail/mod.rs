@@ -576,6 +576,7 @@ impl DetailScreen {
         crate::ui::detail_layout::hero_chain(
             synopsis_h,
             d.is_some_and(|detail| !detail.ratings.is_empty()),
+            measure,
         )
     }
 
@@ -1647,6 +1648,13 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                 .filter(|k| k.entry == self.entry)
                 .and_then(|k| self.locate(k.elem));
             let (sections, n) = self.sections(Some(d));
+            // Full-trailer mode takes the WHOLE page off screen, not just the hero: the viewer
+            // asked for the trailer and the transport drawn over it is the only thing that state
+            // shows. `preview_chrome` is already the one scalar the hero's own chrome fades
+            // through (`draw_hero`'s `chrome`), so every section below it rides the SAME fade
+            // rather than a second predicate — one mechanism, no section (Cast & Crew included)
+            // special-cased to hide on its own.
+            let below_hero = p.alpha(self.preview_chrome);
             for &section in &sections[1..n] {
                 let top = self.section_top(section, d, measure) - self.scroll.pos;
                 if top > crate::ui::consts::SCR_H || top + self.block_h(section, d, measure) < 0.0 {
@@ -1654,7 +1662,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                 }
                 match section {
                     1 => season::draw(
-                        p.translate(0.0, top),
+                        below_hero.translate(0.0, top),
                         &self.season_metrics,
                         self.tabs,
                         d.cur_season,
@@ -1667,7 +1675,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                     ),
                     2 => {
                         episodes::draw(
-                            p,
+                            below_hero,
                             d,
                             top,
                             self.episode_scroll.pos,
@@ -1686,11 +1694,11 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                             )
                             .phase(self.spin_ms as u32)
                             .tint(theme::TEXT_PRIMARY)
-                            .draw(&Env::inert(), p);
+                            .draw(&Env::inert(), below_hero);
                         }
                     }
                     6 => extras::draw(
-                        p,
+                        below_hero,
                         d,
                         &self.extras,
                         top,
@@ -1701,7 +1709,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                         f.measure,
                     ),
                     3 => related::draw(
-                        p,
+                        below_hero,
                         d,
                         &self.related,
                         top,
@@ -1712,7 +1720,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                         f.measure,
                     ),
                     4 => cast::draw(
-                        p,
+                        below_hero,
                         d,
                         &self.cast,
                         top,
@@ -1723,7 +1731,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                         f.measure,
                     ),
                     5 => self.about_rows.draw(
-                        p,
+                        below_hero,
                         d,
                         top,
                         f.focus.current.map(|k| k.elem),
@@ -1957,13 +1965,15 @@ impl DetailScreen {
         // stand and the page does not scroll itself into the sections below — it simply fades out
         // with `chrome`, like everything else the page owns.
         self.draw_buttons(chrome, cx, chain.btn_y, nav_page_alpha);
-        // The hint that UP is there, under the row it follows. Its own fade
-        // (`trailer::hint_shown`) already leaves on promotion; drawing it through `chrome` as well
-        // keeps it honest if the two ever disagree for a frame.
+        // The hint that UP is there — since 2026-09-18 a third element on the HEADER line rather
+        // than page furniture under the action row: centred on the screen, vertically centred on
+        // the same row the preview-shrunk logo/title occupies (`PREVIEW_LOGO_Y`/`compact_band`),
+        // so it neither reserves space in the hero's own stack nor grows down over the video. Its
+        // own fade (`trailer::hint_shown`) already leaves on promotion; drawing it through `chrome`
+        // as well keeps it honest if the two ever disagree for a frame.
         self.trailer_ctl.draw_hint(
             chrome,
-            crate::ui::consts::MARGIN_X,
-            chain.btn_y + hero::CD + trailer::HINT_GAP + crate::ui::widgets::KeyHint::height() * 0.5,
+            trailer::hint_cy(crate::ui::detail_layout::PREVIEW_LOGO_Y, compact_band),
             measure,
         );
     }

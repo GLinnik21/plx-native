@@ -259,7 +259,7 @@ fn the_hero_text_reads_over_bright_artwork() {
     let hc = crate::ui::detail_layout::hero_chain(
         // a two-line blurb — the shape `hero_chain`'s own doc is tuned on. Measuring is the one
         // thing the host cannot do, so the height is quoted, not computed.
-        76.0, true,
+        76.0, true, &crate::ui::fixture::FixtureMeasure,
     );
     let band = crate::ui::hero_logo::band_h(crate::ui::hero_logo::LogoRung::Hero);
     let home_col_r = MARGIN_X + crate::ui::landing_hero::COL_W; // 750 — the column's right end

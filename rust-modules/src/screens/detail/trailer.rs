@@ -110,6 +110,36 @@ pub(super) fn controls_shown(full_trailer: bool, now: u32, until: u32, paused: b
     full_trailer && (paused || now < until)
 }
 
+/// The hint's own "text drawn straight onto artwork" legibility floor — the same concern
+/// [`theme::SCRIM_TEXT_A`] already names for the hero's synopsis/title over the same backdrop, and
+/// close to the owner's ask of "roughly 60-70%" (0.72; its own doc calls 0.60 the floor that still
+/// clears 3:1 everywhere). Reused rather than a fresh magic float: the hint is exactly the case
+/// that token exists for, one more line sitting on the video.
+pub(super) const HINT_ALPHA_PEAK: f32 = theme::SCRIM_TEXT_A;
+/// The quieter alpha the hint eases down to once it has stood for one [`LINGER_MS`] without going
+/// away — half of [`HINT_ALPHA_PEAK`], so it stays legible but stops competing for attention once
+/// the viewer has had time to read it. A fraction of the peak rather than a second independent
+/// float, so retuning the peak keeps the two in proportion.
+pub(super) const HINT_ALPHA_REST: f32 = HINT_ALPHA_PEAK * 0.5;
+
+/// PURE: what the hint's eased alpha should be chasing this frame.
+///
+/// `elapsed_ms` is `None` while the hint is down (nothing to measure since) and `Some` for how
+/// long it has been continuously up otherwise ([`Transport::update`]'s `hint_since`). Full
+/// strength while it is newly up — the viewer's attention is still on it — then the dimmer
+/// [`HINT_ALPHA_REST`] once [`LINGER_MS`] has passed, the same beat the transport's own controls
+/// linger for. `hint=false` always wins to 0.0 regardless of `elapsed_ms`, which only ever has a
+/// stale reading in that case (the caller clears it on the same edge).
+pub(super) fn hint_alpha_target(hint: bool, elapsed_ms: Option<u32>) -> f32 {
+    if !hint {
+        0.0
+    } else if elapsed_ms.is_some_and(|ms| ms >= LINGER_MS) {
+        HINT_ALPHA_REST
+    } else {
+        HINT_ALPHA_PEAK
+    }
+}
+
 /// The full-trailer transport's own animation state. Presentation only — like the rest of the
 /// page's preview scalars it is not hashed into `LogicalState`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -120,8 +150,13 @@ pub(super) struct Transport {
     until_ms: u32,
     /// the transport's eased alpha
     pub(super) alpha: f32,
-    /// the UP hint's eased alpha
+    /// the UP hint's eased alpha — eases toward [`HINT_ALPHA_PEAK`] on appearing, then toward the
+    /// quieter [`HINT_ALPHA_REST`] once it has stood for one [`LINGER_MS`] without going away, and
+    /// toward 0 the moment [`hint_shown`] turns false. See [`hint_alpha_target`].
     pub(super) hint: f32,
+    /// When the hint most recently transitioned false→true, so [`hint_alpha_target`] can tell how
+    /// long it has been continuously up. `None` while it is down.
+    hint_since: Option<u32>,
     /// When the last paused→playing edge happened, so the read-out can wear
     /// [`TransportMark::Play`] for [`PLAY_MARK_MS`], exactly as the HUD's `TransportRow::play_at`
     /// makes it.
@@ -140,6 +175,7 @@ impl Transport {
         until_ms: 0,
         alpha: 0.0,
         hint: 0.0,
+        hint_since: None,
         play_at: None,
         was_paused: false,
         now_ms: 0,
@@ -197,8 +233,13 @@ impl Transport {
         {
             self.play_at = None;
         }
+        // The hint's own clock: when it stood up (false→true edge) so `hint_alpha_target` can
+        // tell how long it has been up continuously, cleared the moment it goes away so a later
+        // reappearance starts a fresh peak rather than resuming an old one.
+        self.hint_since = hint.then(|| self.hint_since.unwrap_or(now));
+        let hint_elapsed = self.hint_since.map(|since| now.wrapping_sub(since));
         let moved = super::ease(&mut self.alpha, f32::from(shown), dt)
-            | super::ease(&mut self.hint, f32::from(hint), dt);
+            | super::ease(&mut self.hint, hint_alpha_target(hint, hint_elapsed), dt);
         // A visible transport over a RUNNING trailer is a moving clock and a moving playbar, so it
         // owes the frame gate a report even when no alpha changed this tick. A paused one is
         // static and deliberately owes nothing.
@@ -258,31 +299,39 @@ impl Transport {
         );
     }
 
-    /// Draw the "`[^] Full screen`" hint, its line starting at `x` and centred on `cy` — the
-    /// shared [`KeyHint`], wearing the remote's own arrow rather than the word UP, glyph FIRST and
-    /// no `Press`/`for` filler (2026-09-17 shortening: same predicate, same placement, words only).
-    pub(super) fn draw_hint(
-        &self,
-        p: Painter,
-        x: f32,
-        cy: f32,
-        measure: &dyn crate::ui::machine::Measure,
-    ) {
+    /// Draw the "`[^] Full screen`" hint, HORIZONTALLY CENTRED on the screen and vertically
+    /// centred on `cy` — the shared [`KeyHint`], wearing the remote's own arrow rather than the
+    /// word UP, glyph FIRST and no `Press`/`for` filler (2026-09-17 shortening: same predicate,
+    /// same placement, words only). `cy` is the caller's: since 2026-09-18 it shares the header
+    /// line's own centre (the logo/title row) rather than sitting under the action row, so the
+    /// hint reads as a third element on that line — logo, hint, whatever else shares it — and not
+    /// as page furniture pushed down over the video.
+    pub(super) fn draw_hint(&self, p: Painter, cy: f32, measure: &dyn crate::ui::machine::Measure) {
         if self.hint <= 0.01 {
             return;
         }
-        KeyHint::glyph(c"", Icon::ChevronUp, c"Full screen").draw(
-            p.alpha(self.hint),
-            x,
-            cy,
-            measure,
-        );
+        let hint = KeyHint::glyph(c"", Icon::ChevronUp, c"Full screen");
+        let x = hint_cx(hint.width(measure));
+        hint.draw(p.alpha(self.hint), x, cy, measure);
     }
 }
 
-/// How much air the hint keeps between itself and the action row it follows — one block step
-/// ([`theme::space::MD`]), the same rung every other label-under-a-row in the page uses.
-pub(super) const HINT_GAP: f32 = theme::space::MD;
+/// Where the hint's LEFT edge lands for a line `width` wide, so the whole line is horizontally
+/// centred on the screen. Split out from [`Transport::draw_hint`] so the centring itself is
+/// host-testable without a `Measure` or a live draw.
+pub(super) fn hint_cx(width: f32) -> f32 {
+    (consts::SCR_W - width) * 0.5
+}
+
+/// Where the hint sits VERTICALLY: dead centre of the header row `[row_top, row_top + row_h)` —
+/// the same line the preview-shrunk logo/title occupies at the top of the screen (and, per the
+/// mock, whatever sits at that row's right edge). Centring on the row rather than anchoring to its
+/// top or bottom is what keeps a taller glyph+label stack from growing down over the video: a
+/// `KeyHint` is already vertically symmetric about its own `cy` ([`KeyHint::draw`]'s contract), so
+/// handing it the row's centre is the whole fix.
+pub(super) fn hint_cy(row_top: f32, row_h: f32) -> f32 {
+    row_top + row_h * 0.5
+}
 
 #[cfg(test)]
 mod tests {
@@ -361,6 +410,31 @@ mod tests {
         assert!(!hint_shown(true, true, true), "promoted: the hint's own mode is on");
         assert!(!hint_shown(false, false, true), "no picture, nothing to go full screen with");
         assert!(!hint_shown(true, false, false), "focus left the hero; UP means something else");
+    }
+
+    /// The hint's own anchor, pure geometry: horizontally centred on the screen for whatever
+    /// width its line measures, and vertically dead centre of the header row it now shares with
+    /// the preview-shrunk logo (and whatever the mock puts at that row's other end) — not below
+    /// the row, not growing down over the video.
+    #[test]
+    fn the_hint_is_centred_on_the_screen_and_on_the_header_rows_own_centre_line() {
+        for width in [200.0_f32, 420.0, 640.0] {
+            let x = hint_cx(width);
+            assert_eq!(
+                x + width * 0.5,
+                consts::SCR_W * 0.5,
+                "width={width}: the line's own centre must land on the screen's centre"
+            );
+        }
+        for (row_top, row_h) in [(54.0_f32, 54.0), (0.0, 100.0), (12.0, 36.0)] {
+            let cy = hint_cy(row_top, row_h);
+            assert_eq!(
+                cy, row_top + row_h * 0.5,
+                "the hint shares the header row's own centre line, not an offset below it"
+            );
+            assert!(cy > row_top, "the centre line sits inside the row, not above it");
+            assert!(cy < row_top + row_h, "…nor below it");
+        }
     }
 
     #[test]
@@ -472,8 +546,52 @@ mod tests {
         let mut t = Transport::IDLE;
         assert_eq!(t.hint, 0.0, "starts hidden");
         let (_, now) = run(&mut t, 0, 100, false, false, true);
-        assert!(t.hint > 0.9, "hint={} should have eased in", t.hint);
+        assert!(
+            t.hint > HINT_ALPHA_PEAK - 0.05,
+            "hint={} should have eased up near its peak {}", t.hint, HINT_ALPHA_PEAK
+        );
         let (_, _) = run(&mut t, now, 100, false, false, false);
         assert!(t.hint < 0.01, "hint={} should have eased back out", t.hint);
+    }
+
+    /// **The dim-after-a-few-seconds behaviour.** After standing at peak for one HUD
+    /// [`LINGER_MS`] — the same beat the transport's own controls linger for — the hint eases
+    /// DOWN to its quieter [`HINT_ALPHA_REST`] rather than staying at full strength or cutting
+    /// out, and then goes quiet for the idle gate once it has settled there (the same discipline
+    /// [`the_hint_fades_in_and_out_on_its_own_eased_clock`] already pins for the appear/leave
+    /// edges).
+    #[test]
+    fn the_hint_dims_to_its_resting_alpha_after_one_linger_and_then_goes_quiet() {
+        let mut t = Transport::IDLE;
+        // Long enough to clear one linger AND let the ease converge on the dimmer target.
+        let frames = LINGER_MS / FRAME_MS + 100;
+        let (_, now) = run(&mut t, 0, frames, false, false, true);
+        assert!(
+            (t.hint - HINT_ALPHA_REST).abs() < 0.01,
+            "hint={} should have settled on the resting alpha {}", t.hint, HINT_ALPHA_REST
+        );
+        let moved = t.update(now + FRAME_MS, FRAME_S, false, false, true);
+        assert!(!moved, "a settled hint must not hold the frame gate open");
+    }
+
+    /// A hint that goes away and comes back (focus left the hero and returned, or the picture
+    /// dropped and resumed) starts its peak/dim clock over — it does not resume dimming from
+    /// wherever the last visit left off.
+    #[test]
+    fn a_hint_that_reappears_restarts_at_peak_rather_than_resuming_its_old_dim_clock() {
+        let mut t = Transport::IDLE;
+        let frames = LINGER_MS / FRAME_MS + 100;
+        let (_, now) = run(&mut t, 0, frames, false, false, true);
+        assert!((t.hint - HINT_ALPHA_REST).abs() < 0.01, "settled dim before the gap");
+        // Hidden for a while (focus left the hero)...
+        let (_, now) = run(&mut t, now, 150, false, false, false);
+        assert!(t.hint < 0.01, "fully hidden in the gap");
+        // ...and shown again: a fresh peak, not a resumed dim.
+        let (_, _) = run(&mut t, now, 30, false, false, true);
+        assert!(
+            t.hint > HINT_ALPHA_REST + 0.05,
+            "hint={} should be climbing back toward peak, not sitting at the old resting value",
+            t.hint
+        );
     }
 }

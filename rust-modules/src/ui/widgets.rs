@@ -7323,7 +7323,7 @@ pub(crate) fn badge(
 
 /// Mark box (px). A little over the meta line's cap height so a 26-unit silhouette still resolves
 /// at couch distance — these marks carry the VERDICT, so legibility here is not cosmetic.
-const RATING_MARK_D: f32 = 30.0;
+pub(crate) const RATING_MARK_D: f32 = 30.0;
 /// Glyph → its score. They are one unit, so it stays tight.
 const RATING_GAP: f32 = 10.0;
 /// Provider caption → the first score under it.
