@@ -492,6 +492,7 @@ mod contract_tests {
         let _guard = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
         let stores = crate::stores::Stores::default();
+        let _ = stores.take_notices();
         let before = stores.browse.borrow().gen();
         let mut directory = DirectorySnapshot::default();
         {
