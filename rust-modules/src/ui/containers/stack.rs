@@ -98,6 +98,20 @@ impl<H: Host> NavStack<H> {
         self.pending.is_some()
     }
 
+    /// **Is the COMMITTED stack a settled `Root(arg)`** — one entry, that entry MOUNTED (a body,
+    /// not merely a bare `Entry` waiting for the apply arm's `Mount`), `same_instance` `arg`, and
+    /// nothing pending? This is the one definition `is_inert`'s `Root` arm and
+    /// `app/bridge.rs::top_settled_on` both answer from, so a caller asking "has the reset to
+    /// `arg` actually landed" (a per-frame follower presenting a surface OVER that landing) and
+    /// the dedup deciding whether a THIRD `Root(arg)` request is redundant can never disagree
+    /// about what "settled" means.
+    pub fn root_settled(&self, arg: &H::Arg) -> bool {
+        !self.is_pending()
+            && self.entries.len() == 1
+            && self.entries[0].arg.same_instance(arg)
+            && self.entries[0].inst.is_some()
+    }
+
     /// Withdraw whatever is parked, unconditionally — for a reset that is about to empty the
     /// stack out from under it. A pending op that survived a reset would apply, at its own floor,
     /// over a tree the reset already emptied (`Navigation::reset_for_profile`'s own doc: "the next
@@ -135,8 +149,10 @@ impl<H: Host> NavStack<H> {
     /// **Is `op` a no-op right now?** Two independent reasons, either enough on its own:
     ///
     /// - Nothing is pending, and the COMMITTED stack already satisfies `op` — `Root(arg)` with the
-    ///   stack exactly `[arg]`, `SelectTab(arg)` with the top the root and the root `same_instance`
-    ///   `arg`, or `PopTo(id)` naming the entry already on top.
+    ///   stack exactly `[arg]` AND THAT ENTRY MOUNTED ([`Self::root_settled`] — a bodyless single
+    ///   entry is not yet the `Mount` the apply arm would still owe it, so that request is NOT
+    ///   inert), `SelectTab(arg)` with the top the root and the root `same_instance` `arg`, or
+    ///   `PopTo(id)` naming the entry already on top.
     /// - Something IS pending, and it is the same kind of op with a `same_instance` argument — a
     ///   third `Root(Profiles)` while a `Root(Profiles)` is already parked asks nothing new.
     ///
@@ -155,7 +171,7 @@ impl<H: Host> NavStack<H> {
             };
         }
         match op {
-            NavOp::Root(arg) => self.entries.len() == 1 && self.entries[0].arg.same_instance(arg),
+            NavOp::Root(arg) => self.root_settled(arg),
             NavOp::SelectTab(arg) => {
                 let root = self.root().map(|e| e.id);
                 self.top().map(|e| e.id) == root

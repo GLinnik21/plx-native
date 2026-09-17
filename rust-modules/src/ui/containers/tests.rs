@@ -878,10 +878,13 @@ fn root_over_a_stacked_page_replaces_everything_and_sweeps_its_covered_surface()
 }
 
 /// **A `Root`/`SelectTab`/`PopTo` the settled stack already satisfies is dropped before it
-/// touches `pending` OR the transition.** A `PageDip` restarts its Out ramp from wherever it is on
-/// every `request()`, so re-asking it every frame (the Login/Profiles follower's own shape) would
-/// never let it reach `Idle` — which is the mechanism behind the TV 2026-09-17 bug, independent of
-/// the mount/unmount churn the `Root`/`SelectTab` split fixes on its own.
+/// touches `pending` OR the transition.** Without that dedup, a per-frame re-request does not
+/// quietly do nothing — it still COMMITS, in the sense that matters here: `request()` overwrites
+/// `pending` and calls `transition.request()` again, and a `PageDip` answers that by restarting
+/// its Out ramp from wherever it currently is. So re-asking it every frame (the Login/Profiles
+/// follower's own shape) never lets the transition SETTLE — it is not stalled, it is continuously
+/// RESTARTED — which is the mechanism behind the TV 2026-09-17 bug, independent of the
+/// mount/unmount churn the `Root`/`SelectTab` split fixes on its own.
 #[test]
 fn redundant_root_select_tab_and_pop_to_requests_are_inert() {
     let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(PageDip::new()));

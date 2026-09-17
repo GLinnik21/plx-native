@@ -299,9 +299,10 @@ fn change_profile_then_back_cannot_restore_the_protected_profile_it_left() {
 /// Fresh install, consent never answered, QR sign-in onto a three-user Plex Home. The log then
 /// alternated `coldopen screen=settings` / `coldopen screen=profiles` about once per 1–2 frames
 /// for as long as the picker phase lasted. This drives the loop's own per-frame routing for
-/// `auth::Phase::Profiles` (`run.rs`: `nav_root_if_unsettled(Profiles)`, then `maybe_ask_consent`
-/// ONLY once Profiles is the settled top, parked AFTER the dispatcher frame exactly as the loop
-/// parks them) over the real `Bridge` + `Dispatcher`.
+/// `auth::Phase::Profiles` (`bridge::follow_auth_landing`: `nav_root_if_unsettled(Profiles)`, then
+/// `maybe_ask_consent` ONLY once Profiles is the settled top) — the same production function the
+/// live loop calls, parked AFTER the dispatcher frame exactly as the loop parks it — over the real
+/// `Bridge` + `Dispatcher`.
 ///
 /// The fix has two independent halves, both exercised here: `NavOp::Root` now truly replaces the
 /// stack (so the never-retired Login root stops sitting under every later mint) and
@@ -369,17 +370,11 @@ fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
         }
         unmounts += report.unmounted.iter().filter(|id| watched.contains(id)).count();
         cold.extend(d.take_cold_open_lines());
-        // run.rs ~1654-1722: the route follower, parked for the NEXT frame's commit.
+        // The EXACT production routing function (`bridge::follow_auth_landing`), not a copy of
+        // its `match` — see that function's doc for why sharing it is what lets this test bite.
         if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) {
             assert!(rig.take_session_ready().is_none());
-            if matches!(rig.auth_read().0.phase, Phase::Profiles | Phase::Switching) {
-                super::nav_root_if_unsettled(&mut d, AppArg::Profiles);
-                // Only once Profiles is the SETTLED top — never while Login is still fading out
-                // underneath it (see the fix's doc above).
-                if super::top_settled_on(&d, &AppArg::Profiles) {
-                    super::super::input::maybe_ask_consent(&mut d);
-                }
-            }
+            super::follow_auth_landing(&mut d, &mut rig);
         }
     }
 
@@ -401,14 +396,14 @@ fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
 
 /// **Login-phase twin: the same per-frame follower over the QR screen never re-mints it either.**
 ///
-/// The picker test above exercises the `Phase::Profiles | Phase::Switching` arm of `run.rs`'s
-/// per-frame follower (~1697); this exercises the OTHER arms behind the same
+/// The picker test above exercises `bridge::follow_auth_landing`'s `Phase::Profiles |
+/// Phase::Switching` arm; this exercises the OTHER arms behind the same
 /// `if matches!(app.route(), AppArg::Login | AppArg::Profiles)` guard while auth sits in
-/// `Phase::Waiting` (the QR flow, before any sign-in lands): the `persistence_warning` branch
-/// (~1691) and the default `_ => nav_root_if_unsettled(Login)` arm (~1719/1722). Both are
-/// per-frame `Root(Login)` followers of exactly the shape that broke on the Profiles side —
-/// there is just no covering surface here to make a perpetual dip visible as a remount, so this
-/// grades it directly off the mount/unmount counts and the settled alpha instead.
+/// `Phase::Waiting` (the QR flow, before any sign-in lands): the `persistence_warning` branch and
+/// the default `_ => nav_root_if_unsettled(Login)` arm. Both are per-frame `Root(Login)`
+/// followers of exactly the shape that broke on the Profiles side — there is just no covering
+/// surface here to make a perpetual dip visible as a remount, so this grades it directly off the
+/// mount/unmount counts and the settled alpha instead.
 ///
 /// Expected: Login mounts exactly once, over the whole run, and never unmounts.
 #[test]
@@ -434,20 +429,14 @@ fn login_phase_follower_settles_and_does_not_recycle_the_qr_screen() {
         let (_, report) = super::frame(&mut d, &mut rig, tick(i), vec![]);
         mounts.extend(report.mounted.iter().map(|(_, n)| (i, *n)));
         unmounts += report.unmounted.len();
-        // run.rs ~1654-1722: the route follower, parked for the NEXT frame's commit.
+        // The EXACT production routing function (`bridge::follow_auth_landing`), not a copy of
+        // its `match` — see that function's doc for why sharing it is what lets this test bite.
         if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) {
             assert!(rig.take_session_ready().is_none());
-            if rig.auth_read().0.persistence_warning.is_some() {
-                super::nav_root_if_unsettled(&mut d, AppArg::Login);
-            } else {
-                match rig.auth_read().0.phase {
-                    Phase::Ready => {}
-                    Phase::Profiles | Phase::Switching => {
-                        unreachable!("Phase::Waiting never advances on its own in this fixture")
-                    }
-                    _ => super::nav_root_if_unsettled(&mut d, AppArg::Login),
-                }
+            if matches!(rig.auth_read().0.phase, Phase::Profiles | Phase::Switching) {
+                unreachable!("Phase::Waiting never advances on its own in this fixture")
             }
+            super::follow_auth_landing(&mut d, &mut rig);
         }
     }
 
