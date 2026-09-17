@@ -2884,3 +2884,7 @@ mod surface_navigation_tests;
 #[cfg(test)]
 #[path = "viewstate_directory_policy_tests.rs"]
 mod viewstate_directory_policy_tests;
+
+#[cfg(test)]
+#[path = "person_lifecycle_tests.rs"]
+mod person_lifecycle_tests;

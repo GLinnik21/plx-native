@@ -1619,10 +1619,20 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
                 Handled::Yes
             }
             ScreenEvent::Enter(_) | ScreenEvent::Uncover => {
-                if self.person(cx).is_none() {
-                    self.request_store(fx);
-                    fx.invalidate(Provenance::Nav);
-                }
+                // Unconditional, not gated on `self.person(cx).is_none()` (review round 1, P1):
+                // `Close` and `Open` are both deferred `AppFx::Store` effects applied AFTER this
+                // event is delivered, so a same-identity `Close` queued by an evicted/left body
+                // earlier in this SAME drain (e.g. a stack eviction's `Unmount`, or a `PopTo`
+                // that leaves a same-identity page) can land after this `Enter`/`Uncover` — and a
+                // guard reading the store NOW would see the about-to-be-closed identity and skip
+                // `Open`, leaving the store empty under a page with no pending re-request.
+                // `person::open` is idempotent on the identity it already holds (an early return
+                // before any generation bump / fetch-claim clear / rebuild — see its doc), so
+                // requesting it every time is a genuine no-op whenever the store is already
+                // correctly settled on `(self.sid, self.key)`, and issues the real request
+                // whenever it is not.
+                self.request_store(fx);
+                fx.invalidate(Provenance::Nav);
                 self.settle_return_pending(cx);
                 Handled::Yes
             }

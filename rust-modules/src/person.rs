@@ -813,6 +813,15 @@ fn set_watched_local(state: &mut PersonState, sid: ServerId, rk: &str, on: bool)
 /// `sid` is the server whose credit row this is, captured by the caller. It is where `key` means
 /// something and where the headshot comes from — but it is NOT the only server read: [`sources`]
 /// takes the whole roster, and every other entry resolves its own id from `guid` first.
+///
+/// **Idempotent on the identity already held** (review round 1, P1): a redundant `Open` for the
+/// `(sid, key)` the store already holds is a no-op — no generation bump, no fetch-claim clear, no
+/// rebuilt `Person`. This is what lets `screens::person`'s `Enter(_) | Uncover` arm call
+/// `request_store` unconditionally rather than only when its own `person(cx)` read is `None`: the
+/// two-phase `AppFx::Store` queue can deliver a same-identity `Close` (an evicted covered/stacked
+/// body's `Unmount`) ahead of a fresh page's `Open` in the same drain, and the guard below is what
+/// keeps a *genuinely* redundant Open — the store already correctly settled on this identity —
+/// from refetching or dropping in-flight work for a page that never actually lost it.
 fn open(
     state: &mut PersonState,
     adapter: &PersonAdapter,
@@ -822,6 +831,13 @@ fn open(
     name: &str,
     thumb: &str,
 ) {
+    if state
+        .current
+        .as_ref()
+        .is_some_and(|p| crate::plex::same_item((p.sid, p.key.as_str()), (sid, key)))
+    {
+        return;
+    }
     state.supersede(adapter);
     let srcs = sources(sid, key, name);
     state.current = Some(Person {
