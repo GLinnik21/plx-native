@@ -20,8 +20,6 @@
 //! `ci/check-deps.sh`'s `mutators` gate refuses the old spelling outside `stores/` and the data
 //! modules).
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-
 use crate::ui::machine::StoreOrd;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,23 +224,23 @@ impl Stores {
         match id {
             StoreId::Browse => self.browse.borrow().gen(),
             StoreId::Hubs => self.hubs.gen(),
+            StoreId::Metadata => self.metadata.gen(),
             StoreId::Person => self.person.gen(),
             StoreId::Search => self.search.gen(),
             StoreId::ViewState => self.viewstate.borrow().gen(),
-            _ => gen(id),
         }
     }
 
     pub(crate) fn take_notices(&self) -> Vec<(StoreId, u32)> {
-        let mut notices = take_notices();
-        notices.retain(|(id, _)| {
-            !matches!(id, StoreId::Browse | StoreId::Hubs | StoreId::Person | StoreId::Search | StoreId::ViewState)
-        });
+        let mut notices = Vec::new();
         if let Some(generation) = self.browse.borrow().take_notice() {
-            notices.insert(0, (StoreId::Browse, generation));
+            notices.push((StoreId::Browse, generation));
         }
         if let Some(generation) = self.hubs.take_notice() {
             notices.push((StoreId::Hubs, generation));
+        }
+        if let Some(generation) = self.metadata.take_notice() {
+            notices.push((StoreId::Metadata, generation));
         }
         if let Some(generation) = self.person.take_notice() {
             notices.push((StoreId::Person, generation));
@@ -353,86 +351,6 @@ pub(crate) enum StoreEv<C> {
     /// remaining stores retain their legacy pump callers until their ownership slices land.
     #[allow(dead_code)]
     Pump { dt: f32 },
-}
-
-/// Apply one command to a not-yet-owned store. Browse, Person and ViewState are deliberately rejected:
-/// their dispatcher and synchronous paths require the concrete [`Stores`] owner.
-pub(crate) fn apply(cmd: StoreCmd) -> StoreOutcome {
-    match cmd {
-        StoreCmd::Browse(_) => panic!("Browse commands require an explicit Stores owner"),
-        StoreCmd::Hubs(_) => panic!("Hubs commands require an explicit Stores owner"),
-        StoreCmd::Person(_) => panic!("Person commands require an explicit Stores owner"),
-        StoreCmd::Search(_) => panic!("Search commands require an explicit Stores owner"),
-        StoreCmd::ViewState(_) => panic!("ViewState commands require an explicit Stores owner"),
-        StoreCmd::Metadata(c) => StoreOutcome::changed(metadata::run(c)),
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Compatibility notices for the two not-yet-owned stores. BrowseStore, PersonStore, SearchStore
-// and ViewStateStore carry notices in the per-Bridge aggregate and have no slots in this
-// compatibility array.
-// ---------------------------------------------------------------------------------------------
-
-struct Notice {
-    gen: AtomicU32,
-    dirty: AtomicBool,
-}
-
-const fn notice() -> Notice {
-    Notice {
-        gen: AtomicU32::new(0),
-        dirty: AtomicBool::new(false),
-    }
-}
-
-/// Atomics rather than `static mut`: they are read and written on the main thread only, but an
-/// atomic needs no `unsafe` block at the ~40 call sites and is what the legacy stores already use
-/// for their own generations. Hubs moved into the per-`Bridge` `Stores` aggregate; this array
-/// carries only Metadata now.
-static NOTICES: [Notice; 1] = [notice()];
-
-fn compatibility_notice(id: StoreId) -> &'static Notice {
-    &NOTICES[match id {
-        StoreId::Metadata => 0,
-        StoreId::Hubs | StoreId::Browse | StoreId::Person | StoreId::Search | StoreId::ViewState => {
-            panic!("owned store notices require an explicit Stores owner")
-        }
-    }]
-}
-
-/// The store changed: bump its generation and owe a notice.
-pub(crate) fn bump(id: StoreId) -> u32 {
-    let n = compatibility_notice(id);
-    n.dirty.store(true, Ordering::Relaxed);
-    n.gen.fetch_add(1, Ordering::Relaxed) + 1
-}
-
-/// The store's generation — what a migrated screen keys a `Memo` on (first reader: 5b).
-#[allow(dead_code)]
-pub(crate) fn gen(id: StoreId) -> u32 {
-    compatibility_notice(id).gen.load(Ordering::Relaxed)
-}
-
-/// Drain the one compatibility notice (Metadata). `Stores::take_notices` adds owned notices and is
-/// the aggregate drain used by `app/bridge.rs` once per frame.
-pub(crate) fn take_notices() -> Vec<(StoreId, u32)> {
-    let mut out = Vec::new();
-    for id in [StoreId::Metadata] {
-        let n = compatibility_notice(id);
-        if n.dirty.swap(false, Ordering::Relaxed) {
-            out.push((id, n.gen.load(Ordering::Relaxed)));
-        }
-    }
-    out
-}
-
-/// A pump's answer folded into the notice: `true` bumps.
-fn note(id: StoreId, changed: bool) -> bool {
-    if changed {
-        bump(id);
-    }
-    changed
 }
 
 // ---------------------------------------------------------------------------------------------

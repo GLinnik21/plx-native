@@ -1559,6 +1559,13 @@ where
             ),
             AppArg::Content(ContentArg::Detail { sid, rk }) => {
                 let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone(), H::hubs(cx));
+                fx.push(crate::ui::machine::Fx::App(AppFx::Store(
+                    StoreId::Metadata,
+                    StoreCmd::Metadata(crate::stores::metadata::MetadataCmd::RequestDetail {
+                        sid: *sid,
+                        rk: rk.clone(),
+                    }),
+                )));
                 if let PageMemory::Detail(spot) = &ret.memory {
                     page.restore_memory(spot, H::metadata(cx));
                 } else if let Some(seed) = self.seed.take() {

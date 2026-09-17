@@ -507,7 +507,7 @@ impl SessionAdapter {
         }
     }
 
-    pub(crate) fn erase(&mut self, all_local: bool) -> usize {
+    pub(crate) fn erase(&mut self, all_local: bool, meta: &mut crate::stores::metadata::MetadataStore) -> usize {
         let recording_leftovers = if all_local { std::mem::take(&mut self.recording_leftovers) } else { 0 };
         recording_leftovers + match &mut self.resources {
             Resources::Live { .. } => {
@@ -548,7 +548,7 @@ impl SessionAdapter {
                 }
                 crate::imgcache::clear();
                 if all_local {
-                    let leftovers = super::super::input::delete_all_local_data();
+                    let leftovers = super::super::input::delete_all_local_data(meta);
                     if super::super::input::delete_outcome(leftovers.len()).report_leftovers {
                         crate::log(&format!("privacy: local data erased; {} file(s) could not be removed: {}",
                             leftovers.len(), leftovers.join("; ")));

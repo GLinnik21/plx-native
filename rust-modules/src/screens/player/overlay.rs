@@ -197,7 +197,7 @@ impl PlayerOverlayScreen {
             }
             OverlayKind::Info => Panel::Info(crate::ui::info_panel::InfoPanelState::new()),
             OverlayKind::Chapters => {
-                Panel::Chapters(crate::ui::chapters_panel::ChaptersState::new())
+                Panel::Chapters(crate::ui::chapters_panel::ChaptersState::new(meta))
             }
             OverlayKind::More { quality: false } => {
                 Panel::More(crate::ui::more_menu::MoreMenuState::new(ps))
@@ -335,7 +335,7 @@ impl PlayerOverlayScreen {
                 self.closing(fx);
             }
             Panel::Chapters(p) => {
-                let ns = p.on_ok();
+                let ns = p.on_ok(H::metadata(cx));
                 self.dismiss(fx);
                 if ns >= 0 {
                     Self::ask(fx, PlayerReq::SeekTo(ns));
@@ -521,7 +521,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                 match &mut self.panel {
                     Panel::Tracks(p) => p.update(dt),
                     Panel::Info(p) => p.update(dt),
-                    Panel::Chapters(p) => p.update(dt),
+                    Panel::Chapters(p) => p.update(dt, H::metadata(cx)),
                     Panel::More(p) => p.update(dt),
                 }
                 // The transport must not auto-hide out from under a panel a viewer is reading —
@@ -545,7 +545,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
 /// `state` field is `&'a StateType` rather than `&'a mut` (see each wrapper's own doc). This
 /// screen holds exactly one panel at a time, so there is no `Composed`/`layout()` here — that
 /// trait concatenates SEVERAL simultaneous parts, and these four never coexist.
-impl<H: crate::screens::registry::PlayerLike> Focusable<H> for PlayerOverlayScreen {
+impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for PlayerOverlayScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         match &self.panel {
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.groups(cx, out),
@@ -632,7 +632,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         match &mut self.panel {
             Panel::Tracks(p) => p.draw(appear, measure),
             Panel::Info(p) => p.draw(ps, appear, measure, H::metadata(f.cx)),
-            Panel::Chapters(p) => p.draw(ps, appear, measure),
+            Panel::Chapters(p) => p.draw(ps, appear, measure, H::metadata(f.cx)),
             Panel::More(p) => p.draw(appear, measure),
         }
         // Every visible row registers its own stop now (§7.6) — the same per-row geometry

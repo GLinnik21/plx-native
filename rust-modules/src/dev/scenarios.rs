@@ -1157,7 +1157,8 @@ fn marker_arm(app: &mut App, _fr: &mut Frame) {
                 } else {
                     crate::metadata::MarkerKind::Credits
                 };
-                let markers = app.bridge.metadata_view().playing_markers();
+                let meta = app.bridge.metadata_view();
+                let markers = meta.playing_markers();
                 if !markers.is_empty() {
                     app.scenarios.marker_tried = true;
                     if let Some(m) = markers.iter().find(|m| m.kind == want) {

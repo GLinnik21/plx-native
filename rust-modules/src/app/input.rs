@@ -144,7 +144,7 @@ pub(crate) unsafe fn activate_card(
                 };
                 // a show/season row's parent lives on the SAME server as the row itself
                 let sid = mm.sid;
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
+                bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
                 *menu_play_await = Some(MenuPlayAwait {
                     sid,
                     expect,
@@ -971,7 +971,7 @@ pub(crate) fn delete_outcome(leftovers: usize) -> DeleteOutcome {
 ///
 /// Extra local-file sweep after the Session adapter closes telemetry and clears credentials.
 /// Returns paths it could NOT unlink, never a decision to keep the erased account active.
-pub(crate) fn delete_all_local_data() -> Vec<String> {
+pub(crate) fn delete_all_local_data(meta: &mut crate::stores::metadata::MetadataStore) -> Vec<String> {
     let remove = |path: &std::path::Path| match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1001,7 +1001,7 @@ pub(crate) fn delete_all_local_data() -> Vec<String> {
             failures.push(e);
         }
     }
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+    meta.run(crate::stores::metadata::MetadataCmd::Clear);
     // No explicit `ClearRecents` here (phase 7 Search cutover retired the legacy screen's own
     // thin `recents::clear()` wrapper this used to call): recent Search terms
     // live INSIDE the session file (`crate::search::recents`'s doc — "profile-scoped … the

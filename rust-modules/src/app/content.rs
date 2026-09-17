@@ -89,10 +89,9 @@ pub(super) fn hold_feature(
 /// the card names the extra rather than the parent. Feature plays leave `now_playing` alone.
 fn note_extra_now_playing(meta: &mut crate::stores::metadata::MetadataStore, sid: crate::plex::ServerId, rk: &str, context: &str) {
     if crate::metadata::context_omits_queue_continuous(context) {
+        let now_playing = crate::metadata::trailer_now_playing(meta.state(), sid, rk);
         meta.run(
-            crate::stores::metadata::MetadataCmd::SetNowPlaying(
-                crate::metadata::trailer_now_playing(sid, rk),
-            ),
+            crate::stores::metadata::MetadataCmd::SetNowPlaying(now_playing),
         );
     }
 }

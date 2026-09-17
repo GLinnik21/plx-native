@@ -50,10 +50,10 @@ pub(super) fn recorder_end_frame(
 ) -> bool {
     rec.measurements(bridge);
     rec.content_end();
-    rec.end_frame(&|| super::recorder::state_hash(
+    rec.end_frame_with(&|| super::recorder::state_hash(
         press, route, overlay, focus, tree, bridge.session_subhash(), bridge.consent_subhash(),
         bridge.initial_subhash(),
-    ))
+    ), &|id| bridge.store_gen(id))
 }
 
 /// The per-iteration values that cross a phase boundary. Reset at the top of every iteration
@@ -2014,7 +2014,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // Async detail load: install the worker's item into CURRENT. Route-unconditional for
         // the same reason as pump_play — play_item_now requests a detail from Home and flips
         // straight to the player, so a Detail-gated pump would never land it.
-        if crate::stores::metadata::pump_detail() {
+        if app.bridge.metadata_pump_detail() {
             crate::ui::idle::invalidate(); // a detail landing rewrites the page under us
         }
         // Async season load: install the worker's episode list into CURRENT. Route-unconditional
@@ -2024,7 +2024,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // `supersede_season()`, invalidating any season fetch for the item being replaced.
         // Pumping season first could apply a stale season landing to CURRENT in the one frame
         // before pump_detail() replaces it.
-        if crate::stores::metadata::pump_season() {
+        if app.bridge.metadata_pump_season() {
             crate::ui::idle::invalidate(); // a season landing rewrites the episode row under us
         }
         // D7: the continuation half of `activate_card`'s show/season Play — see
@@ -2052,9 +2052,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // "Also available" appears when the other servers have answered, not when the page
         // mounts. It raises the Metadata store's notice, since a landing that grows
         // the actions row must be drawn without waiting for a keypress.
-        if crate::metadata::pump_alt_sources_with_directory(app.bridge.browse_directory()) {
-            crate::stores::bump(crate::stores::StoreId::Metadata);
-        }
+        app.bridge.metadata_pump_alt_sources();
 }
 
 /// The draw phase, entered only on a presenting frame: `clear_opaque_region` at entry, the
@@ -2549,7 +2547,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
         };
         if crate::focusprobe::armed() {
             let content = super::bridge::content_probe(&app.pages, &app.bridge);
-            crate::focusprobe::sample(&app.player.session, fr.rn, probe_screen(app), probe_hud(app), fr.ctrl, &content);
+            crate::focusprobe::sample(&app.player.session, fr.rn, probe_screen(app), probe_hud(app), fr.ctrl, &content, app.bridge.metadata_view());
         }
         // The recorder's frame tail (spec §5.3): on an event frame the logical-state hash —
         // the press machine, the route and overlay words, the focus fingerprint and, since phase
@@ -2564,7 +2562,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
         // read lazily by recorder_end_frame for both recording and replay; no raw state is logged.
         if !matches!(app.rec, super::recorder::Recplay::Off) {
             let content = super::bridge::content_probe(&app.pages, &app.bridge);
-            let focus = crate::focusprobe::line(&app.player.session, fr.rn, probe_screen(app), probe_hud(app), fr.ctrl, &content);
+            let focus = crate::focusprobe::line(&app.player.session, fr.rn, probe_screen(app), probe_hud(app), fr.ctrl, &content, app.bridge.metadata_view());
             // The bare WORD, not the heartbeat's ` overlay=<word>` spelling: the prefix is that
             // line's grammar and has no business in a state hash (phase 10 item 4).
             let ov = super::words::overlay_word(&app.pages, &app.route()).unwrap_or("");

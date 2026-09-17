@@ -368,13 +368,14 @@ pub(crate) fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
 
 /// Legacy card launches resolve media data without creating an invisible Detail screen.
 pub(crate) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore) -> Option<i64> {
-    let d = meta.view().current()?;
+    let d = meta.view().current()?.clone();
     if d.kind == "show" || !d.seasons.is_empty() {
         let started = d.on_deck.as_ref().is_some_and(|e| e.resume_ms > 0)
             || d.seasons.iter().any(|s| s.viewed_leaf_count > 0);
         let ep = (if started { d.on_deck.as_ref() } else { None })
-            .or_else(|| d.episodes.first())?;
-        request_episode(ps, meta, d, ep).then(|| crate::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
+            .or_else(|| d.episodes.first())?
+            .clone();
+        request_episode(ps, meta, &d, &ep).then(|| crate::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
     } else {
         crate::route::request_play(ps, meta, crate::route::item_sid(d.sid), &d.rk, &d.part,
             &d.vcodec, &d.acodec, &d.title, "")
@@ -383,8 +384,9 @@ pub(crate) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession, meta: 
 }
 
 pub(crate) fn request_loaded_episode(ps: &mut crate::route::PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, rk: &str) -> bool {
-    let Some(d) = meta.view().current() else { return false };
-    d.episodes.iter().find(|e| e.rk == rk).is_some_and(|ep| request_episode(ps, meta, d, ep))
+    let Some(d) = meta.view().current().cloned() else { return false };
+    let Some(ep) = d.episodes.iter().find(|e| e.rk == rk).cloned() else { return false };
+    request_episode(ps, meta, &d, &ep)
 }
 
 fn request_episode(ps: &mut crate::route::PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, d: &crate::metadata::Detail, ep: &crate::metadata::Episode) -> bool {

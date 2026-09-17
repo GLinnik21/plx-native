@@ -24,7 +24,7 @@ mod identity_tests;
 use crate::metadata::{Detail, Extra, Spot};
 use crate::screens::registry::PlayIntent;
 use crate::plex::ServerId;
-use crate::stores::metadata::{apply as apply_metadata, MetadataCmd};
+use crate::stores::metadata::MetadataCmd;
 use crate::stores::viewstate::ViewStateCmd;
 use crate::stores::{StoreCmd, StoreId};
 use crate::ui::card_row::{self, CardRow, RowStyle};
@@ -256,10 +256,6 @@ impl DetailScreen {
         if let Some(m) = selected.as_ref().filter(|m| m.has_blur) {
             ground.jump(AmbientWash::keyed(m.blur, [AmbientWash::GROUND_W; 4]));
         }
-        apply_metadata(MetadataCmd::RequestDetail {
-            sid,
-            rk: rk.clone(),
-        });
         Self {
             entry,
             sid,
@@ -475,11 +471,11 @@ impl DetailScreen {
         (!s.rk.is_empty()).then(|| (s.rk.clone(), season::watch_state(s)))
     }
 
-    pub(crate) fn focused_related(
+    pub(crate) fn focused_related<'a>(
         &self,
         focus: Option<FocusKey<u32>>,
-        meta: crate::metadata::MetadataView<'_>,
-    ) -> Option<&'static crate::pms::PmsMovie> {
+        meta: crate::metadata::MetadataView<'a>,
+    ) -> Option<&'a crate::pms::PmsMovie> {
         let key = focus.filter(|k| k.entry == self.entry)?.elem;
         related::item(self.detail(meta)?, self.locate(key, meta)?.local_key()?)
     }
@@ -547,7 +543,7 @@ impl DetailScreen {
         }
     }
 
-    fn detail(&self, meta: crate::metadata::MetadataView<'_>) -> Option<&'static Detail> {
+    fn detail<'a>(&self, meta: crate::metadata::MetadataView<'a>) -> Option<&'a Detail> {
         meta.current().filter(|d| {
             crate::plex::same_item((d.sid, d.rk.as_str()), (self.sid, self.rk.as_str()))
         })
@@ -1372,13 +1368,16 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                     || refresh == DetailRefreshPhase::None && self.detail(meta).is_none()
                         && request_status != Some(true);
                 if request && refresh == DetailRefreshPhase::None {
-                    apply_metadata(MetadataCmd::RequestDetail {
-                        sid: self.sid,
-                        rk: self.rk.clone(),
-                    });
+                    fx.push(Fx::App(AppFx::Store(
+                        StoreId::Metadata,
+                        StoreCmd::Metadata(MetadataCmd::RequestDetail {
+                            sid: self.sid,
+                            rk: self.rk.clone(),
+                        }),
+                    )));
                 }
                 if request && refresh != DetailRefreshPhase::None {
-                    self.start_reconciliation();
+                    self.start_reconciliation(fx);
                 }
                 self.reveal_focus(cx.focus.current, cx.measure, meta);
                 fx.invalidate(Provenance::Input);
@@ -1395,7 +1394,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                         self.about_rows.update(detail);
                     }
                 }
-                self.pump_restore(meta);
+                self.pump_restore(meta, fx);
                 self.reveal_focus(cx.focus.current, cx.measure, meta);
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
@@ -1545,7 +1544,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                 match refresh {
                     DetailRefreshPhase::None => {}
                     DetailRefreshPhase::Deferred => self.refresh = DetailRefreshPhase::Deferred,
-                    DetailRefreshPhase::Requested => self.start_reconciliation(),
+                    DetailRefreshPhase::Requested => self.start_reconciliation(fx),
                 }
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
@@ -1568,7 +1567,10 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                 self.refresh = DetailRefreshPhase::None;
                 self.return_pending = false;
                 if self.detail(meta).is_some() {
-                    apply_metadata(MetadataCmd::Clear);
+                    fx.push(Fx::App(AppFx::Store(
+                        StoreId::Metadata,
+                        StoreCmd::Metadata(MetadataCmd::Clear),
+                    )));
                 }
                 Handled::Yes
             }
@@ -1578,15 +1580,24 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
 }
 
 impl DetailScreen {
-    fn start_reconciliation(&mut self) {
-        // One synchronous transition: the command allocates/supersedes the addressed Metadata
-        // request before the screen publishes Requested. Its resource admission and spawn answer
-        // remain recorder-visible through `bootstrap::stores::admit`; queuing an AppFx copy here
-        // would start the non-idempotent command twice when that effect eventually drained.
-        apply_metadata(MetadataCmd::RequestDetail {
-            sid: self.sid,
-            rk: self.rk.clone(),
-        });
+    /// **T2**: the addressed Metadata request must be (re)admitted in the same step that
+    /// publishes `Requested` — never announce the phase before the command that backs it has
+    /// been queued. Metadata now crosses the same `AppFx::Store` boundary every other owned
+    /// store's commands do (compare `ViewStateCmd::Request` a few hundred lines below), so the
+    /// admission itself happens when Bridge drains this frame's effects, not inline here; this
+    /// function's obligation is only ever to enqueue the request before flipping the phase, so
+    /// the two can never observably reorder.
+    fn start_reconciliation<H: crate::screens::registry::MetadataLike>(
+        &mut self,
+        fx: &mut Effects<'_, H>,
+    ) {
+        fx.push(Fx::App(AppFx::Store(
+            StoreId::Metadata,
+            StoreCmd::Metadata(MetadataCmd::RequestDetail {
+                sid: self.sid,
+                rk: self.rk.clone(),
+            }),
+        )));
         self.refresh = DetailRefreshPhase::Requested;
     }
 
@@ -2495,7 +2506,11 @@ impl DetailScreen {
         })
     }
 
-    fn pump_restore(&mut self, meta: crate::metadata::MetadataView<'_>) {
+    fn pump_restore<H: crate::screens::registry::MetadataLike>(
+        &mut self,
+        meta: crate::metadata::MetadataView<'_>,
+        fx: &mut Effects<'_, H>,
+    ) {
         // Consume terminal reconciliation even after directional input cancelled restoration.
         match (self.refresh, meta.detail_request_status(self.sid, &self.rk)) {
             (DetailRefreshPhase::Deferred, _) | (DetailRefreshPhase::Requested, None | Some(true)) => return,
@@ -2527,7 +2542,10 @@ impl DetailScreen {
                 if let Some(intent) = self.restore_intent.as_mut() {
                     intent.season_requested = true;
                 }
-                apply_metadata(MetadataCmd::LoadSeason(index));
+                fx.push(Fx::App(AppFx::Store(
+                    StoreId::Metadata,
+                    StoreCmd::Metadata(MetadataCmd::LoadSeason(index)),
+                )));
             }
             season::RestoreStep::Retire => {
                 self.restore_intent = None;
@@ -2541,7 +2559,7 @@ impl DetailScreen {
         let meta = H::metadata(cx);
         self.layout.set(None);
         let dt = t.dt();
-        self.pump_restore(meta);
+        self.pump_restore(meta, fx);
         let d = self.detail(meta);
         let loaded = d.is_some();
         if let Some(d) = d {
@@ -2669,7 +2687,10 @@ impl DetailScreen {
                     .detail(meta)
                     .is_some_and(|d| d.cur_season != index && index < d.seasons.len())
                 {
-                    apply_metadata(MetadataCmd::LoadSeason(index));
+                    fx.push(Fx::App(AppFx::Store(
+                        StoreId::Metadata,
+                        StoreCmd::Metadata(MetadataCmd::LoadSeason(index)),
+                    )));
                 }
             }
         }
@@ -2791,7 +2812,7 @@ impl DetailScreen {
     /// `request_preview` (what to actually start) and `preview_cache_rk` (what key the started
     /// session's facts get recorded under) must agree on, or the negative-fact cache writes under
     /// one rk and reads under another and never actually blocks a known-bad trailer.
-    fn preview_extra(&self, meta: crate::metadata::MetadataView<'_>) -> Option<&Extra> {
+    fn preview_extra<'a>(&self, meta: crate::metadata::MetadataView<'a>) -> Option<&'a Extra> {
         self.detail(meta).and_then(|d| d.trailer()).filter(|e| e.playable())
     }
 
@@ -3175,7 +3196,10 @@ impl DetailScreen {
             thumb: ep.thumb.clone(),
             detail_rk: d.rk.clone(),
         };
-        apply_metadata(MetadataCmd::SetNowPlaying(Some(now_playing)));
+        fx.push(Fx::App(AppFx::Store(
+            StoreId::Metadata,
+            StoreCmd::Metadata(MetadataCmd::SetNowPlaying(Some(now_playing))),
+        )));
         let play = PlayIntent::Item {
             sid: crate::route::item_sid(sid),
             rk: play_rk,

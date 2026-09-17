@@ -1246,7 +1246,8 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
         // one page and dismissed with it, so in practice they are the same item; reading
         // `metadata::current()` keeps this module's own dependency at the store it always had
         // rather than adding a copy of the page's identity to the argument for a string it draws.
-        let Some(d) = H::metadata(f.cx).current() else { return };
+        let meta = H::metadata(f.cx);
+        let Some(d) = meta.current() else { return };
         // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`
         // for a surface, which is what this panel's own `Popover` used to hold.
         let appear = f.page_alpha;

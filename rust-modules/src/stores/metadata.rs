@@ -136,10 +136,13 @@
 //! the `EntryId` origin that replaced it. It moved with its subject in D1: it is
 //! `app::playback::player_return_tests`' now, not `app/mod.rs`'s.
 
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
+
 use crate::plex::ServerId;
 use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
 
-use super::{note, StoreEv, StoreId};
+use super::StoreEv;
 
 #[derive(Clone)]
 pub(crate) enum MetadataCmd {
@@ -178,23 +181,87 @@ pub(crate) enum MetadataCmd {
     AltRestampOwners,
 }
 
-#[derive(Default)]
-pub(crate) struct MetadataStore;
+/// One Metadata owner: logical state, the worker adapter every current fetch captures, and
+/// notice. D3: unlike Hubs' `Reset`, `Clear` must NOT rotate the adapter — a Detail page can be
+/// torn down and reopened with an alt-sources resolve still legitimately in flight for it, and
+/// the tracker's admission ledger (`metadata::record::Tracker`) lives on this same adapter, so
+/// rotating it on every `Clear` would also drop replay's in-flight bookkeeping.
+pub(crate) struct MetadataStore {
+    state: crate::metadata::MetadataState,
+    adapter: Arc<crate::metadata::MetadataAdapter>,
+    notice_gen: AtomicU32,
+    notice_dirty: AtomicBool,
+}
+
+impl Default for MetadataStore {
+    fn default() -> Self {
+        Self {
+            state: Default::default(),
+            adapter: Arc::new(Default::default()),
+            notice_gen: AtomicU32::new(0),
+            notice_dirty: AtomicBool::new(false),
+        }
+    }
+}
 
 impl MetadataStore {
-    /// Owner handle onto the write surface, Stage A of the store-ownership migration: still
-    /// reaches the crate-global mutator/statics underneath (see `run` below).
+    fn bump(&self) -> u32 {
+        self.notice_dirty.store(true, Ordering::Relaxed);
+        self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub(crate) fn gen(&self) -> u32 {
+        self.notice_gen.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn take_notice(&self) -> Option<u32> {
+        self.notice_dirty.swap(false, Ordering::Relaxed).then(|| self.gen())
+    }
+
+    pub(crate) fn state(&self) -> &crate::metadata::MetadataState { &self.state }
+
+    pub(crate) fn adapter_ref(&self) -> &crate::metadata::MetadataAdapter { &self.adapter }
+
+    /// Synchronous command path over this owner's own state/adapter. D3: no adapter rotation here
+    /// — see the struct doc.
     pub(crate) fn run(&mut self, cmd: MetadataCmd) -> bool {
-        run(cmd)
+        let changed = crate::metadata::run(&mut self.state, &self.adapter, cmd);
+        self.bump();
+        changed
     }
 
     /// Route-unconditional landing/spawn pass across detail, season and alt-sources — the same
     /// three pumps `Machine::step`'s `StoreEv::Pump` arm already drives.
     pub(crate) fn pump(&mut self) -> bool {
-        let detail = pump_detail();
-        let season = pump_season();
-        let alt = pump_alt_sources();
+        let detail = self.pump_detail();
+        let season = self.pump_season();
+        let alt = crate::metadata::pump_alt_sources(&mut self.state, &self.adapter);
+        if alt { self.bump(); }
         detail || season || alt
+    }
+
+    /// The async detail landing alone — `app/run.rs`'s own call site, pumped before season.
+    pub(crate) fn pump_detail(&mut self) -> bool {
+        let changed = crate::metadata::pump_detail(&mut self.state, &self.adapter);
+        if changed { self.bump(); }
+        changed
+    }
+
+    /// The async season landing alone — `app/run.rs`'s own call site, pumped after detail.
+    pub(crate) fn pump_season(&mut self) -> bool {
+        let changed = crate::metadata::pump_season(&mut self.state, &self.adapter);
+        if changed { self.bump(); }
+        changed
+    }
+
+    /// The cross-source alt-sources resolve, scoped by the Bridge's retained Browse directory.
+    pub(crate) fn pump_alt_sources_with_directory(
+        &mut self,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> bool {
+        let changed = crate::metadata::pump_alt_sources_with_directory(&mut self.state, &self.adapter, directory);
+        if changed { self.bump(); }
+        changed
     }
 
     /// Borrowed read handle, shaped like `crate::person::PersonStore::view`.
@@ -203,48 +270,15 @@ impl MetadataStore {
     }
 }
 
-/// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
-pub(crate) fn apply(cmd: MetadataCmd) -> bool {
-    super::apply(super::StoreCmd::Metadata(cmd)).changed
-}
-
-/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
-/// `metadata::run` — its arms called ten `pub(crate)` mutators across this module boundary;
-/// those ten are private to `metadata.rs` now and this is their only door.
-pub(super) fn run(cmd: MetadataCmd) -> bool {
-    // `crate::metadata`'s statics are a crate global reached from both `apply` above and
-    // `crate::stores::apply(StoreCmd::Metadata(..))` directly (some fixtures deliver a `StoreCmd`
-    // without going through this module's `apply`) — guard the one point both funnel through. See
-    // `lib.rs::testlock` and D5.
-    #[cfg(test)]
-    crate::testlock::assert_held("the metadata store (apply)");
-    let answer = crate::metadata::run(cmd);
-    super::bump(StoreId::Metadata);
-    answer
-}
-
-/// The three route-unconditional landings the loop runs every frame.
-pub(crate) fn pump_detail() -> bool {
-    note(StoreId::Metadata, crate::metadata::pump_detail())
-}
-pub(crate) fn pump_season() -> bool {
-    note(StoreId::Metadata, crate::metadata::pump_season())
-}
-pub(crate) fn pump_alt_sources() -> bool {
-    note(StoreId::Metadata, crate::metadata::pump_alt_sources())
-}
-
 impl<H: Host> Machine<H> for MetadataStore {
     type Ev = StoreEv<MetadataCmd>;
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             StoreEv::Cmd(c) => {
-                run(c.clone());
+                self.run(c.clone());
             }
             StoreEv::Pump { .. } => {
-                pump_detail();
-                pump_season();
-                pump_alt_sources();
+                self.pump();
             }
         }
         Handled::Yes

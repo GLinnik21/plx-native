@@ -187,11 +187,11 @@ crate::dev::latched_flag!(
 ///
 /// Call once per frame, AFTER the frame's input has been handled and the screen drawn, so what is
 /// recorded is the state a key press has already moved rather than the state it is about to.
-pub(crate) fn sample(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
+pub(crate) fn sample(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: crate::metadata::MetadataView<'_>) {
     if !armed() {
         return;
     }
-    let line = fingerprint_content(ps, route, screen, hud, ctrl, content);
+    let line = fingerprint_content(ps, route, screen, hud, ctrl, content, meta);
     static LAST: Mutex<Option<String>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if last.as_deref() == Some(line.as_str()) {
@@ -209,22 +209,22 @@ pub(crate) fn sample(ps: &crate::route::PlaybackSession, route: &str, screen: Sc
 /// one of those screens fingerprints as its route word and nothing else. `app::recorder`'s
 /// `state_hash` folds `Dispatcher::state_hash` in beside this line for exactly that reason; a
 /// replay graded on this alone would call a press that opened the wrong family page `SAME`.
-pub(crate) fn line(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
-    fingerprint_content(ps, route, screen, hud, ctrl, content)
+pub(crate) fn line(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: crate::metadata::MetadataView<'_>) -> String {
+    fingerprint_content(ps, route, screen, hud, ctrl, content, meta)
 }
 
 /// Build the line. Split out from [`sample`] so its determinism and its grammar are host-testable
 /// without a log file or a change-detection state.
 #[cfg(test)]
-fn fingerprint(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> String {
-    fingerprint_content(ps, route, screen, hud, ctrl, "")
+fn fingerprint(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, meta: crate::metadata::MetadataView<'_>) -> String {
+    fingerprint_content(ps, route, screen, hud, ctrl, "", meta)
 }
 
-fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
+fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: crate::metadata::MetadataView<'_>) -> String {
     let mut s = String::with_capacity(192);
     s.push_str("focus route=");
     s.push_str(route);
-    push_fields(ps, &mut s, screen, hud, ctrl, content);
+    push_fields(ps, &mut s, screen, hud, ctrl, content, meta);
     // The tvOS click, which is route-agnostic: an OK over a card arms a press and the activation
     // commits from the per-frame loop on the spring-back, so "a press is in flight" is a state the
     // ladder put the app into and a state the NEXT key cancels.
@@ -235,7 +235,7 @@ fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: 
 /// One screen's own fields. Split out of [`fingerprint`] so a popover ROUTE could spend it on its
 /// HOST — the popover's line is the host's state plus the panel's, and there is no other way to say
 /// that without five copies of the host arms.
-fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
+fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: crate::metadata::MetadataView<'_>) {
     match screen {
         Screen::Login { phase, has_control } => {
             // The phase is still most of this screen's state — it is a projection of the auth
@@ -272,7 +272,7 @@ fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Scree
         // (`screens::player::overlay`), and this module cannot reach into the container — the
         // caller (`app::bridge::content_probe`) builds them from the surface that is up.
         Screen::Player { overlay } => {
-            push_player(ps, s, overlay, hud, ctrl);
+            push_player(ps, s, overlay, hud, ctrl, meta);
             s.push_str(content);
         }
     }
@@ -280,7 +280,7 @@ fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Scree
 
 
 /// The player: the HUD cursor, what the control row currently holds, and each panel's own state.
-fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
+fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot, meta: crate::metadata::MetadataView<'_>) {
     // `upnext` is the PLAYER INSTANCE's countdown since phase 9, so it arrives on `content` with
     // the panels' fields rather than being read off a module global here.
     let slot = match ctrl {
@@ -317,7 +317,7 @@ fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str
     let _ = write!(
         s,
         " haschap={}",
-        b(crate::ui::chapters_panel::has_chapters())
+        b(crate::ui::chapters_panel::has_chapters(meta))
     );
 }
 

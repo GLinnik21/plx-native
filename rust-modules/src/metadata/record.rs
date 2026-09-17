@@ -1,7 +1,6 @@
 //! Complete owned detail terminals at the consumer boundary.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::Mutex;
 pub(super) mod float_bits {
     use serde::{Deserialize, Serializer, Deserializer};
     pub fn serialize<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> { s.serialize_u64(v.to_bits()) }
@@ -38,7 +37,7 @@ pub(crate) struct Reply {
 #[derive(serde::Serialize, serde::Deserialize)]
 enum ReplyLane { Data((u16, String), Option<Detail>), Dropped(u32), Refused(u32) }
 
-struct Tracker {
+pub(crate) struct Tracker {
     enabled: bool,
     seq: u64,
     active: BTreeMap<u32, bool>,
@@ -47,27 +46,20 @@ struct Tracker {
     boundary: u64,
 }
 
-static TRACKER: Mutex<Tracker> = Mutex::new(Tracker {
-    enabled: false,
-    seq: 0,
-    active: BTreeMap::new(),
-    pending: VecDeque::new(),
-    failure: None,
-    boundary: 0,
-});
-
-fn tracker() -> std::sync::MutexGuard<'static, Tracker> {
-    TRACKER.lock().unwrap_or_else(|e| e.into_inner())
+impl Tracker {
+    pub(crate) const fn new(enabled: bool) -> Self {
+        Self { enabled, seq: 0, active: BTreeMap::new(), pending: VecDeque::new(), failure: None, boundary: 0 }
+    }
 }
 
-pub(crate) fn reset(enabled: bool) {
-    *tracker() = Tracker { enabled, seq:0, active:BTreeMap::new(), pending:VecDeque::new(), failure:None, boundary:0 };
+fn tracker(adapter: &super::MetadataAdapter) -> std::sync::MutexGuard<'_, Tracker> {
+    adapter.tracker_mutex().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-pub(super) fn admit(addr: crate::ui::machine::Addr)
+pub(super) fn admit(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Addr)
     -> Result<(), crate::ui::landing::AdmissionError> {
-    let mut tracker = tracker();
-    let result = DETAIL_LANDING.admit(addr);
+    let mut tracker = tracker(adapter);
+    let result = adapter.detail_landing_ref().admit(addr);
     if result.is_ok() && tracker.enabled && tracker.active.insert(addr.req.0, false).is_some() {
         tracker.failure = Some("duplicate tracked detail admission");
     }
@@ -77,9 +69,9 @@ pub(super) fn admit(addr: crate::ui::machine::Addr)
 /// The worker and cancellation serialize on TRACKER before taking the Landing lock. Completions
 /// visible here retire NOW, before another admission, while running workers retain their slots.
 /// Record that boundary in the synchronous effect stream, not in the next pump's result batch.
-pub(super) fn cancel_all() {
+pub(super) fn cancel_all(adapter: &super::MetadataAdapter) {
     let replay = crate::app::bootstrap::stores::replaying();
-    let mut tracker = tracker();
+    let mut tracker = tracker(adapter);
     if tracker.enabled {
         tracker.boundary += 1;
         for cancelled in tracker.active.values_mut() { *cancelled = true; }
@@ -91,7 +83,7 @@ pub(super) fn cancel_all() {
             let value = crate::app::bootstrap::stores::detail_cancellation(tracker.boundary, observed)?;
             let retired: Vec<Reply> = serde_json::from_value(value).map_err(|_| "invalid detail cancellation replies")?;
             if replay {
-                publish_replies(&mut tracker, &retired)?;
+                publish_replies(adapter, &mut tracker, &retired)?;
                 if !tracker.pending.is_empty() { return Err("unrecorded local detail cancellation"); }
             } else { tracker.pending.clear(); }
             for reply in retired { tracker.active.remove(&reply.req); }
@@ -102,7 +94,7 @@ pub(super) fn cancel_all() {
             crate::app::bootstrap::stores::fail(reason);
         }
     }
-    DETAIL_LANDING.clear();
+    adapter.detail_landing_ref().clear();
 }
 
 fn push_terminal(tracker: &mut Tracker, req: u32, lane: ReplyLane) {
@@ -119,12 +111,12 @@ fn push_terminal(tracker: &mut Tracker, req: u32, lane: ReplyLane) {
     tracker.pending.push_back(Reply { seq:tracker.seq, req, terminal:true, lane });
 }
 
-pub(super) fn put(addr: crate::ui::machine::Addr, key: DetailKey, data: Option<Detail>) {
-    let mut tracker = tracker();
+pub(super) fn put(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Addr, key: DetailKey, data: Option<Detail>) {
+    let mut tracker = tracker(adapter);
     let shadow = if tracker.enabled {
         serde_json::to_value(&data).ok().and_then(|value| serde_json::from_value(value).ok())
     } else { None };
-    let result = DETAIL_LANDING.put(addr, key.clone(), data);
+    let result = adapter.detail_landing_ref().put(addr, key.clone(), data);
     let lane = if tracker.active.get(&addr.req.0).copied().unwrap_or(false)
         || result == Err(crate::ui::landing::PublishError::Full) {
         Some(ReplyLane::Dropped(addr.req.0))
@@ -137,10 +129,10 @@ pub(super) fn put(addr: crate::ui::machine::Addr, key: DetailKey, data: Option<D
     }
 }
 
-pub(super) fn refused(addr: crate::ui::machine::Addr) {
+pub(super) fn refused(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Addr) {
     let replay = crate::app::bootstrap::stores::replaying();
-    let mut tracker = tracker();
-    let result = DETAIL_LANDING.refused(addr);
+    let mut tracker = tracker(adapter);
+    let result = adapter.detail_landing_ref().refused(addr);
     let lane = if tracker.active.get(&addr.req.0).copied().unwrap_or(false) {
         ReplyLane::Dropped(addr.req.0)
     } else { ReplyLane::Refused(addr.req.0) };
@@ -206,10 +198,10 @@ pub(super) struct Drain {
     pub(super) landed: Vec<crate::ui::landing::Landed<DetailKey, Option<Detail>>>,
 }
 
-pub(super) fn drain_live(want: &Option<DetailKey>) -> Option<(Vec<Reply>, Drain)> {
-    let mut tracker = tracker();
+pub(super) fn drain_live(adapter: &super::MetadataAdapter, want: &Option<DetailKey>) -> Option<(Vec<Reply>, Drain)> {
+    let mut tracker = tracker(adapter);
     let mut out = Vec::new();
-    DETAIL_LANDING.take_for(&|_| true, &|key| want.as_ref().is_none_or(|wanted| key == wanted), &mut out);
+    adapter.detail_landing_ref().take_for(&|_| true, &|key| want.as_ref().is_none_or(|wanted| key == wanted), &mut out);
     let replies: Vec<_> = tracker.pending.drain(..).collect();
     if out.iter().any(|landed| !replies.iter().any(|reply| matches_landed(reply, landed))) {
         tracker.failure = Some("detail drain did not match recorded completion");
@@ -221,14 +213,14 @@ pub(super) fn drain_live(want: &Option<DetailKey>) -> Option<(Vec<Reply>, Drain)
 
 /// Replay denied every worker launch. Each supplied terminal must retire a reservation that the
 /// real request path admitted; publication errors are replay failures, never normalized away.
-pub(super) fn supply(replies: Vec<Reply>, want: &Option<DetailKey>)
+pub(super) fn supply(adapter: &super::MetadataAdapter, replies: Vec<Reply>, want: &Option<DetailKey>)
     -> Result<(Vec<Reply>, Drain), &'static str> {
     validate(&serde_json::to_value(&replies).map_err(|_| "invalid detail replies")?)?;
-    let mut tracker = tracker();
-    publish_replies(&mut tracker, &replies)?;
+    let mut tracker = tracker(adapter);
+    publish_replies(adapter, &mut tracker, &replies)?;
     if !tracker.pending.is_empty() { return Err("unconsumed local detail terminal"); }
     let mut out = Vec::new();
-    DETAIL_LANDING.take_for(&|_| true, &|key| want.as_ref().is_none_or(|wanted| key == wanted), &mut out);
+    adapter.detail_landing_ref().take_for(&|_| true, &|key| want.as_ref().is_none_or(|wanted| key == wanted), &mut out);
     if out.iter().any(|landed| !replies.iter().any(|reply| matches_landed(reply, landed))) {
         return Err("detail drain did not match supplied completion");
     }
@@ -236,7 +228,7 @@ pub(super) fn supply(replies: Vec<Reply>, want: &Option<DetailKey>)
     Ok((replies, Drain { landed:out }))
 }
 
-fn publish_replies(tracker: &mut Tracker, replies: &[Reply]) -> Result<(), &'static str> {
+fn publish_replies(adapter: &super::MetadataAdapter, tracker: &mut Tracker, replies: &[Reply]) -> Result<(), &'static str> {
     for reply in replies {
         if reply.seq != tracker.seq.wrapping_add(1) { return Err("incoherent detail reply sequence"); }
         let cancelled = tracker.active.get(&reply.req).copied().ok_or("unknown detail publication")?;
@@ -258,10 +250,10 @@ fn publish_replies(tracker: &mut Tracker, replies: &[Reply]) -> Result<(), &'sta
             ReplyLane::Data((sid, rk), data) => {
                 let data = serde_json::to_value(data).ok().and_then(|value| serde_json::from_value(value).ok())
                     .ok_or("invalid detail result encoding")?;
-                DETAIL_LANDING.put(addr, (crate::plex::ServerId::from_raw(*sid), rk.clone()), data)
+                adapter.detail_landing_ref().put(addr, (crate::plex::ServerId::from_raw(*sid), rk.clone()), data)
             }
-            ReplyLane::Dropped(_) => DETAIL_LANDING.dropped(addr),
-            ReplyLane::Refused(_) => DETAIL_LANDING.refused(addr),
+            ReplyLane::Dropped(_) => adapter.detail_landing_ref().dropped(addr),
+            ReplyLane::Refused(_) => adapter.detail_landing_ref().refused(addr),
         };
         result.map_err(|_| "failed detail publication")?;
         tracker.seq = reply.seq;

@@ -1057,6 +1057,30 @@ impl Bridge {
         self.stores.hubs.run_with_directory(cmd, directory)
     }
 
+    /// One store's generation, for the recorder's per-frame landing scan
+    /// (`recorder::Recplay::end_frame_with`) — every store lives on this owner's `Stores`
+    /// aggregate now, so this is the one door onto all six.
+    pub(crate) fn store_gen(&self, id: crate::stores::StoreId) -> u32 {
+        self.stores.gen(id)
+    }
+
+    /// The `MetadataStore`'s own async detail landing — `app/run.rs`'s route-unconditional pump.
+    pub(crate) fn metadata_pump_detail(&mut self) -> bool {
+        self.stores.metadata.pump_detail()
+    }
+
+    /// The `MetadataStore`'s own async season landing — `app/run.rs`'s route-unconditional pump.
+    pub(crate) fn metadata_pump_season(&mut self) -> bool {
+        self.stores.metadata.pump_season()
+    }
+
+    /// The `MetadataStore`'s cross-source alt-sources resolve, scoped by this owner's retained
+    /// Browse directory — `app/run.rs`'s route-unconditional pump.
+    pub(crate) fn metadata_pump_alt_sources(&mut self) -> bool {
+        let directory = self.directory.view();
+        self.stores.metadata.pump_alt_sources_with_directory(directory)
+    }
+
     /// Refresh only the retained directory at synchronous application boundaries that must make
     /// a routing decision before the next dispatcher frame.
     pub(crate) fn refresh_browse_directory(&mut self) {
@@ -1517,7 +1541,7 @@ impl Bridge {
             // may already have advanced the epoch, but cannot skip deleting old credentials.
             SessionFx::Erase { epoch, all_local, .. } => {
                 self.session_ready = None;
-                let leftovers = self.session_adapter.erase(all_local);
+                let leftovers = self.session_adapter.erase(all_local, &mut self.stores.metadata);
                 deliver(SessionEvent::Erased { epoch, leftovers });
             }
             SessionFx::Coordinator(action) => {
