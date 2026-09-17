@@ -489,12 +489,7 @@ pub(crate) fn player_requests(
             // The fall-through a surface cannot perform (`screens::player::overlay`'s module doc):
             // the same toggle the bare transport reaches, with the panel left untouched.
             PlayerReq::Transport(play) => {
-                let want_paused = match play {
-                    Some(true) => false,
-                    Some(false) => true,
-                    None => !paused(),
-                };
-                set_transport_paused(pa, want_paused);
+                set_transport_paused(pa, super::lifecycle::transport_target(play, paused()));
                 if let Some(player) = super::bridge::player_mut(pages) {
                     player.hud.extend(now, HUD_LINGER_MS);
                     player.publish();

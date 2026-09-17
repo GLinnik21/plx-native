@@ -1,5 +1,34 @@
 # Detail-hero trailer UX: faster autoplay, a shrinking logo, and a full-trailer mode
 
+**SUPERSEDED IN PART (2026-09-17): full-trailer mode now draws trailer CONTROLS, and the action
+row is gone.** Everything below about dwell, the logo shrink, the synopsis and the collapse keys
+still stands. What no longer holds, wherever this document says it (§2.4, the state diagram and
+table in §1, §8.3, §8.4, the goal's bullet 4 and the third decision bullet):
+
+- Full-trailer mode does NOT leave "only the Play/Resume pill" on screen. It takes the WHOLE page
+  off — the action row with it — and draws a trailer transport in its place: the `Trailer` kicker
+  over the item's title, the playbar with elapsed/remaining, and the play/pause state read-out,
+  built from `ui::player_hud`'s own `draw_scrim`/`draw_title`/`draw_playbar`. There is still no
+  quality, subtitle, audio or Info control and no track menu — that part of "there is no HUD" was
+  never about the transport, it was about the panels that write session state a preview has none of.
+- `hero::focusable`'s Play-only narrowing survives as the mode's FOCUS ANCHOR, not as something
+  drawn. §8.4's "Play/Resume stays visible and focused" is now "Play stays focusABLE".
+- OK and PLAYPAUSE pause and resume the preview session (`player::preview::transport`, performed by
+  the loop through `ContentReq::PreviewTransport`). LEFT/RIGHT do NOT seek: every non-in-place seek
+  path falls back to a fresh Starfish `Load` that `preview::Machine` never admitted, and a failed
+  reload would arm the process-wide breaker. They reveal the controls instead, which auto-hide on
+  the player HUD's own 4.5 s linger.
+- The wedge's `landing_hero::PROMOTED_FIELD` (0.4) is **deleted**. With no page ink left to protect
+  in full-trailer mode, `preview_field` targets 0.0 like the base scrim, and the only scrim in that
+  state is the transport's own at the bottom. §2.4(c)'s device-tuning item and its `TODOS.md` entry
+  go with it.
+- Background autoplay gained a hint — an up-chevron key cap reading "Press ^ for full screen" under
+  the action row (`screens::detail::trailer::hint_shown`), fading in with the picture and out on
+  promotion or collapse.
+
+The current record is `rust-modules/src/screens/detail/trailer.rs`, `player/preview.rs`'s module
+doc and `hero.rs`'s `focusable`/`visible_ctls`.
+
 **Status (2026-09-15): implemented.** All host-testable pieces below landed
 (`rust-modules/src/{player/preview.rs, screens/detail/{mod.rs,hero.rs}, ui/{hero_logo.rs,
 landing_hero.rs, detail_layout.rs}}`), `cargo test --lib` (default + `hostsim`) and
@@ -44,7 +73,8 @@ landing_hero.rs, detail_layout.rs}}`), `cargo test --lib` (default + `hostsim`) 
    shrink it, smoothly.
 3. Keep the short description/synopsis visible while it plays in the background.
 4. Pressing UP while the trailer plays opens it "full": the logo and synopsis fade out, leaving
-   only the Play/Resume button. BACK or DOWN returns to the background state.
+   only the Play/Resume button. BACK or DOWN returns to the background state. *(2026-09-17: the
+   Play/Resume button leaves too, and a trailer transport takes its place — see the banner above.)*
 
 Three explicit decisions were made with the requester before finalizing this plan (recorded so a
 reviewer does not have to re-derive them):
@@ -57,6 +87,8 @@ reviewer does not have to re-derive them):
 - **In full-trailer mode, focus collapses onto Play/Resume only** (the other controls leave the
   focus ring, not just the screen), **and the darkening layer over the video is also eased down**
   once only the Play/Resume button is left to protect, so the trailer reads brighter and cleaner.
+  *(2026-09-17: the pill is no longer drawn either, so the darkening goes to zero rather than to a
+  residual — see the banner above.)*
 
 ---
 
@@ -159,10 +191,11 @@ Four states, keyed off the same two bits the code already tracks (`view.picture`
                                                              ▼     │         │
                                                       ┌─────────────────────┐│
                                                       │  Full trailer        ││
-                                                      │  logo+synopsis→0,    ││
-                                                      │  ONLY Play/Resume    ││
-                                                      │  visible+focusable,  ││
-                                                      │  field→PROMOTED_FIELD││
+                                                      │  ALL chrome→0,       ││
+                                                      │  trailer transport   ││
+                                                      │  up; Play = the      ││
+                                                      │  focus anchor only,  ││
+                                                      │  field→0 (2026-09-17)││
                                                       └──────────┬──────────┘│
                                                                  │           │
                                                      EOS / failure / item    │
@@ -184,7 +217,7 @@ Table form of the same four states, with every visual channel spelled out:
 | **Idle / browsing** | default, or hero not focused, or scrolled off | 1.0 (full still) | Hero rung, hero position | visible | visible | visible | 1.0 | 1.0 (`base_scrim_a`'s own scroll-driven value) |
 | **Dwelling** | hero focused, unscrolled, no preview yet, dwell timer running | 1.0 | Hero rung, hero position | visible | visible | visible | 1.0 | 1.0 |
 | **Background autoplay** | `view.picture == true`, `!preview_promoted` | **0.0** (art fully yields to video) | **Compact rung, top-left**, animated in | **stays visible** (new) | **fades to 0** (unchanged) | **stays visible** (decision: unchanged from today) | 1.35 (unchanged — protects the now-larger amount of text: logo + synopsis) | 1.0 (unchanged — still protecting the action row) |
-| **Full trailer** | `view.picture == true`, `preview_promoted == true` | 0.0 | fades to 0 (from wherever the compact rung left it) | **fades to 0** (new — previously already 0, now explicit) | 0 (unchanged) | **only Play/Resume visible and focusable**, everything else leaves the row | **eased down** to a low residual (new — see §2.4) | **eased to 0.0** (§8.3, follow-up pass — was unwired at first ship, see §8) |
+| **Full trailer** | `view.picture == true`, `preview_promoted == true` | 0.0 | fades to 0 (from wherever the compact rung left it) | **fades to 0** (new — previously already 0, now explicit) | 0 (unchanged) | **nothing drawn** (2026-09-17: the row fades out with the rest of the chrome; Play stays the focus ANCHOR, and the trailer transport is drawn over the top) | **eased to 0.0** (2026-09-17: was a `PROMOTED_FIELD` residual) | **eased to 0.0** (§8.3, follow-up pass — was unwired at first ship, see §8) |
 
 Transitions:
 
@@ -390,6 +423,11 @@ follow-ups this plan is not allowed to skip:
    video content is a worse bet at every one of the three lines, not a better one at the third.
 
 ### 2.4 Full-trailer mode: only Play/Resume, focus collapses, scrim lifts
+
+> **Superseded 2026-09-17** (banner at the top of this file): the action row is not drawn in this
+> mode at all, the wedge eases to 0.0 rather than to `PROMOTED_FIELD`, and the trailer's own
+> transport is what the viewer sees. (a) and (b)'s focus mechanism still stands as the mode's
+> anchor; (c)'s residual value does not.
 
 Three changes to `preview_tick`/`draw_buttons`/`draw_hero`, all gated on the existing
 `preview_promoted && view.picture` predicate — no new trigger condition.
@@ -956,6 +994,8 @@ HERO_FADE)`:
   (`mod.rs:1815`), so IT already eases correctly between the idle/background values and
   `PROMOTED_FIELD = 0.4` in full-trailer mode. This part of the original plan's §2.4(c) is verified
   shipped as documented. The wedge is not part of this fix; only the base gradient is.
+  *(2026-09-17: the wedge now eases to 0.0 in full-trailer mode and `PROMOTED_FIELD` is deleted —
+  there is no page ink left up there to protect.)*
 
 **Fix**: a new eased scalar, alongside `preview_field`, targeting full transparency in full-trailer
 mode:
@@ -984,6 +1024,10 @@ behavior change outside the new state transition. Uses the file's existing linea
 transforms (position/scale) use `Spring` — this is an opacity multiplier, not a transform.
 
 ### 8.4 Play/Resume stays visible and focused in full-trailer mode — already correct, missing only its regression test
+
+> **Superseded 2026-09-17** (banner at the top of this file): Play stays FOCUSABLE — it anchors the
+> engine while the mode is up — but nothing in the row is drawn any more. The regression test this
+> section added still grades exactly the right property under its new name.
 
 **Verified directly against source, not assumed from this doc's "implemented" status line** (the
 same diligence the scrim item above needed, since that one turned out to be only half-implemented

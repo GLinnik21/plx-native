@@ -13,6 +13,7 @@ mod hero;
 mod related;
 mod season;
 mod section;
+mod trailer;
 #[cfg(test)]
 mod tests;
 
@@ -108,12 +109,12 @@ pub(crate) struct DetailScreen {
     preview_synopsis: f32,
     preview_chrome: f32,
     /// The hero scrim/wedge strength — chases `view.field` (1.0 idle, `PREVIEW_FIELD` once a
-    /// picture is up) but eases toward the lower `PROMOTED_FIELD` once full-trailer mode owns the
-    /// screen, since the Play/Resume pill left standing there already protects its own legibility.
+    /// picture is up) and eases to 0.0 once full-trailer mode owns the screen, where the page has
+    /// no ink left up there to protect and the transport brings its own scrim at the bottom.
     preview_field: f32,
     /// The bottom-anchored base scrim's own alpha multiplier — 1.0 normal (leaves
     /// `detail_layout::base_scrim_a`'s own scroll-driven value untouched), eased to 0.0 in
-    /// full-trailer mode since only the self-protecting Play/Resume pill is left to guard by then.
+    /// full-trailer mode for the same reason as the wedge above.
     /// A separate scalar from [`preview_field`](Self::preview_field): that one drives the corner
     /// wedge, this one the bottom gradient — distinct layers per `draw_backdrop`.
     preview_base_scrim: f32,
@@ -136,6 +137,10 @@ pub(crate) struct DetailScreen {
     /// Last tick's `view.picture`, so `preview_tick` can detect the true→false edge that means a
     /// trailer just stopped — the only way to tell "it finished" from "nothing is playing yet".
     preview_had_picture: bool,
+    /// Full-trailer mode's transport (auto-hide timer, its fade, and the UP hint's fade) and the
+    /// UP hint that leads to it — [`trailer`]. Presentation only, like the `preview_*` scalars
+    /// above, so it is not hashed into `SHAPE`.
+    trailer_ctl: trailer::Transport,
     /// Server reconciliation owed by this item, independent of cancellable focus restoration.
     /// Navigation memory cannot rewind it; only a new refresh or its terminal request changes it.
     refresh: DetailRefreshPhase,
@@ -283,6 +288,7 @@ impl DetailScreen {
             preview_played_for: None,
             preview_started_for: None,
             preview_had_picture: false,
+            trailer_ctl: trailer::Transport::IDLE,
             refresh: DetailRefreshPhase::None,
             restore_intent: None,
             scroll: Spring::at(0.0),
@@ -1127,11 +1133,11 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
     }
 
     fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, H>) -> FocusKey<u32> {
-        // Full-trailer mode collapses the hero row to Play/Resume only, and this must be the
+        // Full-trailer mode narrows the hero row to its Play anchor, and this must be the
         // FIRST check in the function: the return_pending/restore_intent short-circuit below and
         // restore_focus() can each hand back a hero elem without knowing about full-trailer mode,
         // so gating only the dedicated hero branch further down let a restored or
-        // return-pending focus land on a control the row no longer draws.
+        // return-pending focus land on a control the row no longer offers.
         if self.full_trailer() {
             if let Some(Located::Hero(ctl)) = self.locate(want.elem) {
                 if !hero::focusable(ctl, true) {
@@ -1160,7 +1166,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 elem,
             };
         }
-        // Full-trailer mode collapses the row to Play/Resume only (`hero::visible_ctls`) — a
+        // Full-trailer mode narrows the row to its Play anchor (`hero::visible_ctls`) — a
         // control that was focused the instant UP promoted must not be reconciled back onto
         // itself here just because the ITEM's facts still offer it. `hero::focusable` is the same
         // predicate `visible_ctls` and `valid` gate on, so this cannot silently drift from either.
@@ -1281,8 +1287,8 @@ impl DetailScreen {
     fn valid(&self, located: Located) -> bool {
         let d = self.detail();
         match located {
-            // A control other than Play is never valid while full-trailer mode has collapsed the
-            // row to just it — `hero::focusable` is the same predicate `reconcile` and
+            // A control other than Play is never valid while full-trailer mode has narrowed the
+            // row to its anchor — `hero::focusable` is the same predicate `reconcile` and
             // `hero::visible_ctls` gate on.
             Located::Hero(c) => {
                 hero::focusable(c, self.full_trailer()) && hero::index_of(self.hero_set(), c).is_some()
@@ -1441,6 +1447,23 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 }
             }
             ScreenEvent::Input(input) => {
+                // **Full-trailer mode answers the keys itself, before every arm below.** The page
+                // is not on screen in that state — its chrome is at zero and the trailer's own
+                // transport is what the viewer is looking at — so an OK that fell through to the
+                // engine's press machine would start the FEATURE from a control nobody can see.
+                // Taken on every edge of a key the mode owns (`trailer::trailer_key` decides
+                // which), acted on only on the DOWN edge: the Up edge of a swallowed OK must not
+                // toggle the pause a second time, and a held direction must not arm a press.
+                if self.full_trailer() {
+                    if let InputKind::Key { key, sym, wcode, edge, .. } = input.kind {
+                        if let Some(act) = trailer::trailer_key(key, sym, wcode) {
+                            if edge == Edge::Down {
+                                self.trailer_act(act, fx);
+                            }
+                            return Handled::Yes;
+                        }
+                    }
+                }
                 if matches!(input.kind, InputKind::Key { key: Key::Up | Key::Down | Key::Left | Key::Right, edge: Edge::Down, .. }) {
                     self.restore_intent = None;
                     self.return_pending = false;
@@ -1514,9 +1537,12 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 ) && crate::player::preview::view().picture
                     && cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| self.locate(k.elem)).is_some_and(|located| matches!(located, Located::Hero(_)))
                 {
-                    // UP fades this page's chrome to zero. The page stays mounted. OK still
-                    // activates the focused control. There is no HUD.
+                    // UP fades ALL of this page's chrome to zero — the action row included —
+                    // and raises the trailer's own transport in its place (`trailer`). The page
+                    // stays mounted and the route never moves. The transport starts REVEALED: the
+                    // key that entered the mode is the key that asked to see it.
                     self.preview_promoted = true;
+                    self.trailer_ctl.reveal();
                     fx.invalidate(Provenance::Input);
                     return Handled::Yes;
                 }
@@ -1547,6 +1573,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 self.season_settle = 0.0;
                 self.preview_dwell = 0.0;
                 self.preview_promoted = false;
+                self.trailer_ctl.dismiss();
                 self.preview_played_for = None;
                 self.preview_started_for = None;
                 self.content(fx, ContentReq::PreviewStop);
@@ -1716,6 +1743,19 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
             .tint(theme::TEXT_SECONDARY)
             .draw(&Env::inert(), p);
         }
+
+        // Full-trailer mode's transport, last and unscrolled: it is the page's topmost layer in
+        // that state and the only one of its surfaces that is NOT part of the hero's scrolled
+        // flow. Its own alpha draws nothing while it is hidden, so this costs a branch the rest of
+        // the time.
+        self.trailer_ctl.draw(
+            p,
+            d.map(|d| d.title.as_str())
+                .or_else(|| self.selected().map(|m| m.title.as_str()))
+                .unwrap_or_default(),
+            crate::player::preview::paused(),
+            measure,
+        );
 
         self.record_stops(f);
         // **This page draws no panel at all any more.** All three of its own — *Also available*,
@@ -1909,12 +1949,22 @@ impl DetailScreen {
             hero::draw_facts(prose, d, chain.facts_y, cx.measure);
             hero::draw_people(prose, d, chain.btn_y, measure);
         }
-        // Full-trailer mode collapses `visible_ctls` down to just Play/Resume (hero.rs's
-        // `focusable`/`visible_ctls` doc), which is meant to stay drawn at full strength the whole
-        // time — not fade out with the rest of the chrome via `preview_chrome`. Use the unscaled
-        // `p` (still carrying the outer hero-scroll alpha) rather than `chrome` in that state.
-        let buttons = if self.full_trailer() { p } else { chrome };
-        self.draw_buttons(buttons, cx, chain.btn_y, nav_page_alpha);
+        // Full-trailer mode takes the action row with the rest of the page: the viewer asked for
+        // the trailer and nothing else, and the transport drawn over the top
+        // (`trailer::Transport::draw`) is the only control that state has. The row still ANCHORS
+        // focus there — `hero::focusable` keeps Play legitimate, so the engine has somewhere to
+        // stand and the page does not scroll itself into the sections below — it simply fades out
+        // with `chrome`, like everything else the page owns.
+        self.draw_buttons(chrome, cx, chain.btn_y, nav_page_alpha);
+        // The hint that UP is there, under the row it follows. Its own fade
+        // (`trailer::hint_shown`) already leaves on promotion; drawing it through `chrome` as well
+        // keeps it honest if the two ever disagree for a frame.
+        self.trailer_ctl.draw_hint(
+            chrome,
+            crate::ui::consts::MARGIN_X,
+            chain.btn_y + hero::CD + trailer::HINT_GAP + crate::ui::widgets::KeyHint::height() * 0.5,
+            measure,
+        );
     }
 
     fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -2662,11 +2712,12 @@ impl DetailScreen {
         if moving || crate::metadata::season_loading() {
             fx.note(PresentEvent::Motion);
         }
-        self.preview_tick(dt, focused, fx);
+        self.preview_tick(t.ms, dt, focused, fx);
     }
 
     fn preview_tick<H: ContentLike>(
         &mut self,
+        now: u32,
         dt: f32,
         focused: Option<Located>,
         fx: &mut Effects<'_, H>,
@@ -2721,21 +2772,29 @@ impl DetailScreen {
         }
         let full_trailer = self.preview_promoted && view.picture;
         let chrome_target = if full_trailer { 0.0 } else { 1.0 };
-        // Synopsis stays through background autoplay and only fades once full-trailer mode
-        // collapses the rest of the chrome to just the Play/Resume pill.
+        // Synopsis stays through background autoplay and only fades once full-trailer mode takes
+        // the whole page off the screen.
         let synopsis_target = if full_trailer { 0.0 } else { 1.0 };
         // The scrim/wedge strength: `view.field` normally (1.0 idle, `PREVIEW_FIELD` once a
-        // picture is up, protecting the logo+synopsis), eased down to a low residual once only
-        // the self-protecting Play/Resume pill is left standing.
-        let field_target = if full_trailer {
-            crate::ui::landing_hero::PROMOTED_FIELD
-        } else {
-            view.field
-        };
-        // The bottom base scrim fades all the way to transparent in full-trailer mode — unlike the
-        // wedge above, nothing at the bottom needs protecting once only the self-protecting
-        // Play/Resume pill remains (`docs/trailer-ux-plan.md` §8.3).
+        // picture is up, protecting the logo+synopsis), and NOTHING in full-trailer mode — the
+        // page keeps no ink up there to protect, and the trailer's own transport brings the only
+        // scrim the state needs (`player_hud::draw_scrim`, at the bottom, under the playbar).
+        let field_target = if full_trailer { 0.0 } else { view.field };
+        // The bottom base scrim goes with it, for the same reason
+        // (`docs/trailer-ux-plan.md` §8.3).
         let base_scrim_target = if full_trailer { 0.0 } else { 1.0 };
+        // The transport's own timers and fades, and the UP hint's. `update` reports its motion the
+        // same way the `ease` block below does — a visible transport over a running trailer is a
+        // moving clock every frame, and a hidden one goes quiet.
+        if self.trailer_ctl.update(
+            now,
+            dt,
+            full_trailer,
+            crate::player::preview::paused(),
+            trailer::hint_shown(view.picture, self.preview_promoted, hero_active),
+        ) {
+            fx.note(PresentEvent::Motion);
+        }
         if ease(&mut self.preview_art, view.art, dt)
             | ease(&mut self.preview_prose, view.prose, dt)
             | ease(&mut self.preview_synopsis, synopsis_target, dt)
@@ -2804,10 +2863,11 @@ impl DetailScreen {
         );
     }
 
-    /// Is full-trailer mode (UP-promoted, trailer picture up) collapsing the hero row down to
-    /// Play/Resume only right now? The one predicate every site that enumerates or resolves hero
-    /// focus must agree on — `groups`/`draw_buttons` (via [`hero::visible_ctls`]) for what is
-    /// DRAWN, `reconcile`/`valid` for what is FOCUSABLE. Computed fresh rather than cached: reading
+    /// Is full-trailer mode (UP-promoted, trailer picture up) running right now? The one
+    /// predicate every site that enumerates or resolves hero focus must agree on — `groups` (via
+    /// [`hero::visible_ctls`]) for the row's extent, `reconcile`/`valid` for what is FOCUSABLE,
+    /// `draw_hero` for what is drawn, and the input arm for who owns the keys. Computed fresh
+    /// rather than cached: reading
     /// `crate::player::preview::view()` live means a frame where `preview_promoted` is still true
     /// but the machine has already dropped `picture` (EOS/failure) self-corrects immediately,
     /// rather than depending on `preview_tick` having already cleared the flag this same frame.
@@ -2815,16 +2875,45 @@ impl DetailScreen {
         self.preview_promoted && crate::player::preview::view().picture
     }
 
-    /// Un-promotes full-trailer mode if it was active — shared by the BACK and DOWN key arms so
-    /// the collapse itself has exactly one body. Returns whether it fired, so a caller can decide
-    /// whether to also consume the key.
+    /// Un-promotes full-trailer mode if it was active — shared by the BACK and DOWN key arms and
+    /// by the mode's own key ladder ([`Self::trailer_act`]), so the collapse itself has exactly one
+    /// body. Returns whether it fired, so a caller can decide whether to also consume the key.
     fn collapse_full_trailer<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) -> bool {
         if !self.preview_promoted {
             return false;
         }
         self.preview_promoted = false;
+        // The transport goes with the mode, and a trailer PAUSED from it is resumed on the way
+        // out: background autoplay has no control that could ever start it again, so leaving the
+        // pause behind would strand a frozen picture under the restored chrome.
+        self.trailer_ctl.dismiss();
+        if crate::player::preview::paused() {
+            self.content(fx, ContentReq::PreviewTransport(Some(true)));
+        }
         fx.invalidate(Provenance::Input);
         true
+    }
+
+    /// Perform one full-trailer key ([`trailer::trailer_key`]'s answer). The mapping is pure and
+    /// tested there; what is here is the effect each one has on this page.
+    fn trailer_act<H: ContentLike>(&mut self, act: trailer::TrailerKey, fx: &mut Effects<'_, H>) {
+        use trailer::TrailerKey;
+        match act {
+            // Both collapse keys go through the one collapse body, exactly as the BACK/DOWN arms
+            // do outside the mode.
+            TrailerKey::Collapse => {
+                self.collapse_full_trailer(fx);
+                return;
+            }
+            TrailerKey::Toggle => self.content(fx, ContentReq::PreviewTransport(None)),
+            TrailerKey::Play => self.content(fx, ContentReq::PreviewTransport(Some(true))),
+            TrailerKey::Pause => self.content(fx, ContentReq::PreviewTransport(Some(false))),
+            TrailerKey::Reveal => {}
+        }
+        // Any key the mode kept puts the controls back on screen for a fresh linger — the player
+        // HUD's rule, and the reason LEFT/RIGHT are worth consuming at all.
+        self.trailer_ctl.reveal();
+        fx.invalidate(Provenance::Input);
     }
 
     /// BACK's second stage, after `collapse_full_trailer`: while a trailer is autoplaying in the

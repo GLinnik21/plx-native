@@ -76,7 +76,15 @@ is what let first-run consent put its two answers there. The sweep is complete �
 reader's was the one that survived the first pass, so that route said where BACK went twice.
 `KeyHint` is unchanged and still correct where it lives: the read-only ALERT panels
 (`screens::about_panel`, `screens::person_bio` and `screens::tracks_panel`), which hold no control at all, so
-there the line really is the whole affordance.
+there the line really is the whole affordance. **One ROUTE draws one since 2026-09-17 and it is the
+opposite object** — `screens::detail::trailer`'s `Press [^] for full screen`, under the hero's
+control row while a trailer is playing behind the page. What the sweep removed was a line naming a
+key the viewer already knows (BACK) for a destination it could not name; this one names a key that
+does something the page gives NO other sign of, and it is drawn only in the seconds the trailer's
+picture is up, fading with it. That is the test to apply to the next one: does the hint teach an
+affordance that is otherwise invisible, or restate the remote? It reaches the cap through
+`KeyHint::glyph`, the `CapFace::Glyph` face added with it — a cap whose legend is an `Icon` centred
+in the same keyline rather than a `MICRO` word, because the chevron IS the key's face.
 
 ## What lives where
 

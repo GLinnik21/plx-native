@@ -3,11 +3,27 @@
 //! still creates Activity, which is a server write and is not a watch-state write.
 //!
 //! **Interaction, once the picture is up and the viewer presses UP.** The detail page stays
-//! mounted. Chrome fades to zero. There is no route change and the player route never adopts the
-//! engine, so there is no HUD, scrubber, subtitle, or track menu. OK still activates whatever
-//! control was focused (Play starts the feature, after this session is stopped). BACK collapses
-//! the chrome and stays on the page. A second dwell on an item that has a trailer starts from
-//! the beginning again. None of the cache facts is a replay suppressor.
+//! mounted and there is no route change — the player route never adopts this engine. ALL of the
+//! page's chrome fades to zero, the action row included, and the page draws a trailer transport
+//! in its place (`screens::detail::trailer`): the `Trailer` kicker over the item's title, the
+//! playbar and the state read-out, drawn from `ui::player_hud`'s own pieces. What a trailer does
+//! NOT get is the rest of the HUD — no quality, subtitle, audio or Info control, no tabs and no
+//! track menus: a preview has no PlayQueue, no timeline reporter and no watch state, and a
+//! control that writes one has no business on it. OK and PLAYPAUSE pause and resume it
+//! ([`transport`]); the controls auto-hide on the HUD's own linger and any key brings them back.
+//! BACK and DOWN collapse the mode back to background autoplay. A second dwell on an item that
+//! has a trailer starts from the beginning again. None of the cache facts is a replay suppressor.
+//!
+//! **A preview is never SEEKED, which is why the playbar is a read-out and LEFT/RIGHT only
+//! reveal the controls.** Every non-in-place seek path in `player::engine` falls back to
+//! `reload_at` — a fresh Starfish `Load` — and that is admission this machine never granted: it
+//! spends a 64 KiB slot outside [`CYCLE_BUDGET`]'s accounting, and a reload that then fails is
+//! observed by [`after_pump`] as an admitted-Load failure, which arms the process-wide breaker
+//! and ends trailer autoplay for every later item in the session. `route::request_seek` also
+//! writes user-seek intent and a `report::note_seek_for(playback_trace_generation())` that a
+//! preview has no generation for. Pausing has none of that: it is `player::pause`/`resume` on a
+//! live engine, and `TX.reset()` on a real stop clears the flag, so a collapsed or ended preview
+//! cannot strand it.
 //!
 //! Sound stays on. The bound Starfish surface has no mute. The Settings toggle is the only
 //! sound control, and that is a platform limit.
@@ -465,6 +481,33 @@ pub(crate) fn after_pump(
         }
         crate::route::clear_preview(ps);
     }
+}
+
+/// Is the live preview's transport paused? The engine is shared, so this is the same
+/// `player::TX.paused` the player HUD reads, qualified by a preview actually being what occupies
+/// it — with no session there is nothing paused, whatever the flag last said.
+pub(crate) fn paused() -> bool {
+    occupies() && crate::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Pause or resume the live preview session — full-trailer mode's OK/PLAY/PAUSE, performed by the
+/// loop because it needs the `MainThread` token a screen may not hold. `play` is
+/// `Some(true)`/`Some(false)` for the remote's dedicated keys and `None` for a toggle.
+///
+/// Refused unless a preview really is the live session: the detail page emits this from a key
+/// press, and a press that races the machine's own stop (EOS, an abandoned Load, a scroll that
+/// hands the plane back) must not reach whatever the engine holds next. Returns whether the
+/// transport ended up in the requested state, as `set_transport_paused` defines it.
+pub(crate) fn transport(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    play: Option<bool>,
+) -> bool {
+    if !crate::route::is_preview(ps) || !occupies() || !pa.is_live() {
+        return false;
+    }
+    let want = crate::app::lifecycle::transport_target(play, crate::app::lifecycle::paused());
+    crate::app::lifecycle::set_transport_paused(pa, want)
 }
 
 /// Stop a live preview. A Load that has not returned is abandoned rather than joined.

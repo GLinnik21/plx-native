@@ -84,6 +84,7 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         preview_played_for: None,
         preview_started_for: None,
         preview_had_picture: false,
+        trailer_ctl: trailer::Transport::IDLE,
         refresh: DetailRefreshPhase::None,
         restore_intent: None,
         scroll: Spring::at(0.0),
@@ -1213,6 +1214,95 @@ fn back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise() {
         Handled::Yes,
         "DOWN with nothing promoted must not be swallowed by the collapse arm"
     );
+    clear();
+}
+
+/// Drive one full-trailer key's EFFECT (`trailer_act`) without the live `player::preview`
+/// singleton: `full_trailer()` reads that global, so the input arm's guard cannot be reached in a
+/// host test, but what the guard leads to is this page's own method and is graded here. The key
+/// ladder that chooses the action is pure and graded in `screens::detail::trailer`.
+fn trailer_act(
+    screen: &mut DetailScreen,
+    act: trailer::TrailerKey,
+) -> Vec<crate::ui::machine::Stamped<TestHost>> {
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut sink = Effects::new(
+        &mut effects,
+        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        &mut present,
+    );
+    screen.trailer_act::<TestHost>(act, &mut sink);
+    drop(sink);
+    effects
+}
+
+fn transport_reqs(
+    effects: &[crate::ui::machine::Stamped<TestHost>],
+) -> Vec<Option<bool>> {
+    effects
+        .iter()
+        .filter_map(|effect| match &effect.fx {
+            Fx::App(AppFx::Content(ContentReq::PreviewTransport(play))) => Some(*play),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **Full-trailer mode's transport keys.** OK/PLAYPAUSE ask for the toggle, the remote's dedicated
+/// PLAY and PAUSE ask for their own direction, and every one of the three leaves the controls on
+/// screen — the request carries no position, because a preview is never seeked.
+#[test]
+fn ok_toggles_the_trailers_pause_and_play_pause_pick_a_direction() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    for (act, want) in [
+        (trailer::TrailerKey::Toggle, None),
+        (trailer::TrailerKey::Play, Some(true)),
+        (trailer::TrailerKey::Pause, Some(false)),
+    ] {
+        let mut screen = bare(&_guard, sid, "show");
+        screen.preview_promoted = true;
+        let effects = trailer_act(&mut screen, act);
+        assert_eq!(transport_reqs(&effects), vec![want], "act={act:?}");
+        assert!(
+            screen.trailer_ctl.revealed(),
+            "act={act:?} must leave the controls on screen"
+        );
+        assert!(screen.preview_promoted, "act={act:?} must not leave the mode");
+    }
+    clear();
+}
+
+/// A direction key the mode keeps only REVEALS: it asks for no transport at all, which is the
+/// whole of the "no seek on a preview session" rule at this layer.
+#[test]
+fn a_revealing_key_asks_for_no_transport() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    let effects = trailer_act(&mut screen, trailer::TrailerKey::Reveal);
+    assert!(transport_reqs(&effects).is_empty());
+    assert!(screen.trailer_ctl.revealed());
+    clear();
+}
+
+/// The mode's own collapse key goes through `collapse_full_trailer` — the one collapse body BACK
+/// and DOWN already share — and takes the transport down with it. Nothing is resumed here because
+/// nothing is paused: `preview::paused()` is false with no live session, which is exactly the
+/// state a host test is in.
+#[test]
+fn the_collapse_key_leaves_the_mode_and_dismisses_the_transport() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    screen.trailer_ctl.reveal();
+    let effects = trailer_act(&mut screen, trailer::TrailerKey::Collapse);
+    assert!(!screen.preview_promoted, "the mode must be over");
+    assert!(!screen.trailer_ctl.revealed(), "the controls go with it");
+    assert!(transport_reqs(&effects).is_empty(), "nothing was paused to resume");
     clear();
 }
 

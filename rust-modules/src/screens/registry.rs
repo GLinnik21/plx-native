@@ -725,6 +725,16 @@ pub(crate) enum ContentReq {
     },
     /// Stop a hero preview and stay on the page.
     PreviewStop,
+    /// **Pause or resume the live hero preview** — full-trailer mode's OK/PLAY/PAUSE. `Some(true)`
+    /// is the remote's PLAY key, `Some(false)` its PAUSE, `None` the PLAYPAUSE toggle, exactly as
+    /// [`PlayerReq::Transport`] carries them.
+    ///
+    /// A request rather than something the page performs, for [`PlayerReq::Transport`]'s reason:
+    /// pausing needs the `MainThread` token and the playback session's `&mut`, neither of which a
+    /// screen may name (§2.1). It carries no position — a preview is never seeked
+    /// (`player::preview`'s module doc: every fallback path is a fresh `Load` this machine never
+    /// admitted), so there is no `SeekTo` twin here and there must not be one.
+    PreviewTransport(Option<bool>),
     ItemMenu,
     /// **Present one of the Detail page's own panels** on the container tree (spec §6.2's
     /// "page-owned panels"). The page names WHICH and supplies whatever the panel needs to place

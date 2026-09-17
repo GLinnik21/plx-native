@@ -415,6 +415,15 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 }
             }
             ContentReq::PreviewStop => halt_preview(app),
+            // Full-trailer mode's transport. Unlike every neighbour here it does NOT halt the
+            // preview — it is the one request whose whole point is that the session survives it.
+            ContentReq::PreviewTransport(play) => {
+                crate::player::preview::transport(
+                    &mut app.player.session,
+                    &mut app.adapters.player,
+                    play,
+                );
+            }
             ContentReq::Panel(panel) => {
                 halt_preview(app);
                 // **The SUBJECT is the page's item, and a page need not have one.** A panel that
