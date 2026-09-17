@@ -192,10 +192,14 @@ Three things came out of that measurement and they are the current state of this
   --orphans | --incremental | --lanes | --all` reclaims. Nothing it deletes is anything but `make`
   output. Run it when a lane starts failing for space, before launching a fleet, and `--orphans`
   after tearing one down.
-- **A linked worktree no longer writes an incremental cache at all** — the Makefile sets
-  `CARGO_INCREMENTAL=0` when `.git` is a file rather than a directory, so a lane pays object code
-  and nothing else. The main checkout keeps its cache. `CARGO_INCREMENTAL=1 make check` in a lane
-  overrides it, which is the right call only for a lane genuinely doing long iterative work.
+- **A linked worktree does not write an incremental cache, and it took two rules to mean it** —
+  the Makefile sets `CARGO_INCREMENTAL=0` when `.git` is a file rather than a directory, which
+  covers the cargo runs `make` launches; every direct `cargo test`/`cargo check` a worker typed
+  escaped it, and 12.9 GB of lane caches was the measured cost on 2026-09-17. `tools/build-gc.sh`
+  now also installs `.claude/worktrees/.cargo/config.toml` with `incremental = false`, which any
+  cargo reads and which stops above the main checkout, so a lane pays object code and nothing
+  else and the main checkout keeps its cache. `CARGO_INCREMENTAL=1` in the environment still
+  overrides both — the right call only for a lane genuinely doing long iterative work.
 - **The FFmpeg build tree is machine-wide and keyed by its configure flags**, under
   `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`). See the vendor bullet below: the manual
   symlink this skill used to prescribe is no longer needed, and the hazard it carried is gone.

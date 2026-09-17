@@ -54,9 +54,13 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - After editing `rust-modules/src/**/*.rs`, also check the shipping feature set with
   `CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
   --no-default-features` when the Claude-only release hook did not run. The prefix is not
-  decoration: this command is the one cargo invocation here that does NOT go through `make`, so it
-  is the one place the Makefile's linked-worktree `CARGO_INCREMENTAL=0` cannot reach — and a
-  one-shot gate has nothing to reuse a multi-gigabyte cache for.
+  decoration: this command does not go through `make`, so the Makefile's linked-worktree
+  `CARGO_INCREMENTAL=0` cannot reach it — and a one-shot gate has nothing to reuse a
+  multi-gigabyte cache for. It is not the only such invocation, which is the point: every direct
+  `cargo` call in a lane escaped that rule, to the tune of 12.9 GB measured 2026-09-17, so
+  `tools/build-gc.sh` now installs `.claude/worktrees/.cargo/config.toml` with
+  `incremental = false` for all of them. Keep the prefix anyway — it states the intent where a
+  reader can see it, and an env var still outranks the config file.
 - **`make disk` before and after a fleet.** Build trees are per-checkout and were never collected;
   twelve lanes reached 45 GB with 3.2 GiB free on 2026-09-03. `tools/build-gc.sh
   --incremental|--lanes|--all` reclaims them and deletes nothing `make` cannot rebuild. Note what

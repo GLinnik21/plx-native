@@ -93,9 +93,12 @@ whole of what that tool exposes to the public internet, and the only gate it has
 cargo can see a python file).
 
 **It is not sub-second, and the figure that circulates is one of its five parts.** The ~0.3 s
-everybody quotes is `cargo test --lib` alone; end to end it is now well over ten seconds warm, most
-of the growth being suite size and **~7 s of the lab selftest, which is mostly two DELIBERATE
-rate-limit waits** — so a ten-second-plus pause there is the target working, not a hang. (That step
+everybody quotes is `cargo test --lib` alone, and that part is itself ~28 s now; end to end the
+gate runs in MINUTES warm. The bulk of it is `python3 tests/test_harness.py`, which shells out to
+`ci/check-deps.sh` about thirty times to prove each structure gate still catches a planted
+violation — 386 s of a 616 s run, measured 2026-09-17, and that is AFTER the 2.5× speed-up of
+`check-deps.sh` itself. The lab selftest's **~7 s is mostly two DELIBERATE rate-limit waits** — so
+a ten-second-plus pause there is the target working, not a hang. (That step
 also SSDP-probes the LAN to report whether a UPnP gateway is present; still no television, still no
 lock.) Do not write a new number here: measure it if you need one — this file has already carried a
 `3.8 s` that four separate additions made wrong.

@@ -21,7 +21,7 @@ class BuildGcTests(unittest.TestCase):
         self.root = Path(temp.name).resolve()
         self.counter = 0
 
-    def fixture(self, pid, pgid):
+    def fixture(self, pid, pgid, pgrep_body=None):
         self.counter += 1
         root = self.root / str(self.counter)
         repo, fleet, cache, tools = [root / n for n in ("repo", "fleet", "cache", "bin")]
@@ -41,7 +41,8 @@ class BuildGcTests(unittest.TestCase):
         # Suppress unrelated compiler-named processes only. PGID checks use real pgrep;
         # PID checks remain the script's actual shell kill -0 builtin.
         pgrep = tools / "pgrep"
-        pgrep.write_text("#!/bin/sh\n[ \"$1\" = -x ] && exit 1\nexec "
+        body = pgrep_body or '[ "$1" = -x ] && exit 1\n'
+        pgrep.write_text("#!/bin/sh\n" + body + "exec "
                          + shlex.quote(shutil.which("pgrep")) + ' "$@"\n')
         pgrep.chmod(0o755)
         env["PATH"] = str(tools) + os.pathsep + env.get("PATH", "")
@@ -139,6 +140,92 @@ class BuildGcTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("cannot enumerate", result.stderr)
                 self.assertTrue(all(p.exists() for p in fixture[2]))
+
+
+    # A build in ONE checkout must not veto reclaiming every OTHER tree on the volume. The guard
+    # used to be all-or-nothing: any `cargo`/`make` anywhere and the script deleted nothing. On a
+    # machine running several sessions at once that condition is essentially always true, so the
+    # tool could not run on the day the volume filled — measured 2026-09-17 at 5.0 GiB free with
+    # 34.8 GiB of collectable trees sitting in idle lanes.
+    # Report a synthetic `cargo` whose cwd names the checkout to protect. `lsof` is real, so the
+    # mapping from a pid back to a checkout is the production one, not a stub.
+    def pid_file_stub(self, path):
+        return ('if [ "$1" = -x ]; then\n'
+                '  [ "$2" = cargo ] || exit 1\n'
+                '  cat ' + shlex.quote(str(path)) + '\n'
+                '  exit 0\n'
+                'fi\n')
+
+    def test_live_checkout_is_spared_while_every_other_tree_is_reclaimed(self):
+        pidfile = self.root / "live.pid"
+        pidfile.write_text("0\n")
+        fixture = self.fixture(0, 0, pgrep_body=self.pid_file_stub(pidfile))
+        repo, _, sentinels, _ = fixture
+        live = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                                cwd=repo, stdin=subprocess.PIPE)
+        try:
+            pidfile.write_text(str(live.pid) + "\n")
+            result = self.run_gc(fixture, "--all")
+            diagnostic = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, diagnostic)
+            self.assertIn("in use, skipped", diagnostic)
+            self.assertTrue(sentinels[0].exists(), "reclaimed a tree being built: " + diagnostic)
+            for stranded in sentinels[1:]:
+                self.assertFalse(stranded.exists(), "idle tree left behind: " + diagnostic)
+        finally:
+            live.stdin.close()
+            live.wait(timeout=5)
+
+    def test_live_external_lane_tree_survives_even_with_its_worktree_gone(self):
+        # `fleet-plan` points a worker's CARGO_TARGET_DIR at $PLX_FLEET_DIR/<lane>, and the
+        # documented teardown order is: remove the worktrees, then `--orphans`. A lane whose last
+        # build is still running is then an external tree with no worktree — which is exactly what
+        # `--orphans` is built to delete. Its cwd cannot name a checkout git still lists, so the
+        # lane name has to carry the answer.
+        fixture = self.fixture(0, 0, pgrep_body=self.pid_file_stub(self.root / "live.pid"))
+        repo, _, sentinels, _ = fixture
+        pidfile = self.root / "live.pid"
+        pidfile.write_text("0\n")
+        lane = Path(str(sentinels[1])).parents[3]   # <fleet>/absent-lane
+        live = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                                cwd=lane, stdin=subprocess.PIPE)
+        try:
+            pidfile.write_text(str(live.pid) + "\n")
+            result = self.run_gc(fixture, "--all")
+            diagnostic = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, diagnostic)
+            self.assertTrue(sentinels[1].exists(),
+                            "deleted an external lane tree being built: " + diagnostic)
+            self.assertFalse(sentinels[0].exists(), "idle tree left behind: " + diagnostic)
+        finally:
+            live.stdin.close()
+            live.wait(timeout=5)
+
+    def test_own_ancestors_never_protect_the_checkout_being_cleaned(self):
+        # `make disk` runs this script from a `make` whose cwd IS the checkout to clean. That make
+        # is blocked waiting on us, not compiling; counting it protects the very tree the user
+        # asked to reclaim. The stub reports the whole ancestor chain as live `cargo` processes.
+        stub = ('if [ "$1" = -x ]; then\n'
+                '  [ "$2" = cargo ] || exit 1\n'
+                '  p=$PPID; n=0\n'
+                '  while [ "$p" -gt 1 ] && [ "$n" -lt 32 ]; do\n'
+                '    echo "$p"\n'
+                '    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d " ")\n'
+                '    case "$p" in ""|*[!0-9]*) p=0 ;; esac\n'
+                '    n=$((n + 1))\n'
+                '  done\n'
+                '  exit 0\n'
+                'fi\n')
+        fixture = self.fixture(0, 0, pgrep_body=stub)
+        repo, env, sentinels, _ = fixture
+        # An intermediate shell, so an ancestor really does have the repository as its cwd.
+        result = subprocess.run(["sh", "-c", "sh tools/build-gc.sh --all"], cwd=repo, env=env,
+                                text=True, capture_output=True, timeout=20)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertNotIn("in use, skipped", diagnostic)
+        for stranded in sentinels:
+            self.assertFalse(stranded.exists(), "ancestor mistaken for a builder: " + diagnostic)
 
 
 class MakeCheckContractTests(unittest.TestCase):

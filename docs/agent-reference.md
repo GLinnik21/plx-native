@@ -128,7 +128,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   `tools/build-gc.sh --incremental|--lanes|--all` is how you get it back. Measured 2026-09-03,
   twelve lanes in: 45 GB across the family with 3.2 GiB free on the volume — of which the cargo
   **incremental cache alone was 24 GB** and FFmpeg, the usual suspect, was 2.6 GB. A linked
-  worktree no longer writes an incremental cache at all; see the Makefile beside `RUST_FEATFLAGS`.)
+  worktree is not supposed to write an incremental cache at all — the Makefile says so beside
+  `RUST_FEATFLAGS`, but it can only say it to the cargo runs `make` launches, and a direct
+  `cargo test`/`cargo check` in a lane wrote one anyway: 12.9 GB of them, measured 2026-09-17.
+  `tools/build-gc.sh` now installs `.claude/worktrees/.cargo/config.toml` with
+  `incremental = false`, which every cargo reads and which stops above the main checkout.)
   `SYMBOLS` is in the `RUST_CFG` stamp beside `RELEASE`, and it has to be: a debuginfo build and a
   plain one produce **different build ids from identical sources**, so without the stamp
   `make RELEASE=1 ipk` followed by `make RELEASE=1 SYMBOLS=1 symbols` would hand you a `.debug`

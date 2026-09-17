@@ -135,9 +135,39 @@ strip_strings_and_comments() {
 }
 
 # allowed <rule> <path>: is `path` an entry of ci/allow/<rule>.txt?
+# The allowlists are read ONCE, by one `awk`, into a newline-delimited index of `<rule>|<path>`
+# keys, and `allowed` is then a `case` — a shell BUILTIN, which forks nothing. The old spelling
+# forked a `grep` per candidate LINE and the gates below feed it thousands of them; that, together
+# with the per-FILE `awk`+`grep` loops several gates ran over all 420 source files, is what made a
+# green run of this script cost 17 s — and `tests/test_harness.py`, which runs it 32 more times to
+# prove each gate still catches a planted violation, cost 16 MINUTES of a 20-minute `make check`.
+#
+# An allowlist entry is `path<TAB>reason`, so the old `^${path}(<TAB>|$)` regex matched exactly the
+# first tab-delimited field. That is what the index stores and what the `case` compares, so the
+# answer is unchanged — and it is now an exact string comparison rather than a regex, which for a
+# path containing `.` is strictly the stricter of the two. The skip pattern is the same one the
+# allowlist count rule at the foot of this file uses, so the two cannot disagree about what an
+# entry is.
+#
+# The index is built by `awk` rather than a `while read` + `case` loop because **bash 3.2 — what
+# macOS ships, and what `#!/usr/bin/env bash` resolves to here — cannot parse a `case` inside a
+# `$( … )` at all**: it scans for the closing paren without parsing, so the `)` ending a case
+# pattern terminates the substitution and the `;;` after it is a syntax error. One process reads
+# every list, which is what we wanted anyway.
+ALLOW_INDEX="
+$(awk -F'\t' '
+  FNR==1 { rule=FILENAME; sub(/.*\//, "", rule); sub(/\.txt$/, "", rule) }
+  /^[[:space:]]*(#|$)/ { next }
+  { print rule "|" $1 }
+' ci/allow/*.txt)
+"
 allowed() {
-  local rule="$1" path="$2"
-  grep -qE "^${path}(	|$)" "ci/allow/${rule}.txt" 2>/dev/null
+  case "$ALLOW_INDEX" in
+    *"
+$1|$2
+"*) return 0 ;;
+  esac
+  return 1
 }
 
 # wholly_test_files: paths (under $SRC) that carry NO #[cfg(test)] marker of their own but are
@@ -153,10 +183,18 @@ allowed() {
 #   (ii) `include!("<name>.rs")` found while walking INSIDE a `#[cfg(test)] mod { … }` block
 #        (`app/bridge.rs`'s own test module `include!`s `detail_panel_tests.rs` and friends).
 # Plain POSIX awk (no gawk `match(...,arr)` — this runs under BSD/one-true-awk too).
+# ONE `awk` per shape for the WHOLE tree, not seven processes per file. The previous spelling ran
+# `dirname`, two `awk`s, a `grep`, a `sed` and two `while read` subshells for each of the 420 files
+# under $SRC — roughly 2900 processes, ~2.5 s of pure fork/exec, for an answer that is the same two
+# state machines run over the same bytes. `FNR==1` gives each file its own `dir` and resets the
+# machine, which is exactly what a fresh process used to do; the `include!` extraction moved inside
+# the second `awk` because it is what the `grep -oE | sed` pair did to that `awk`'s output. The
+# trailing `/dev/null` keeps `awk` off stdin if `find` ever comes back empty, and the existence
+# filter is a `[ -f ]` builtin in ONE loop rather than a subshell per file.
 wholly_test_files() {
-  find "$SRC" -name '*.rs' | while IFS= read -r f; do
-    local dir; dir=$(dirname "$f")
-    awk -v dir="$dir" '
+  {
+    find "$SRC" -name '*.rs' -print0 | xargs -0 awk '
+      FNR==1 { dir=FILENAME; sub(/\/[^\/]*$/, "", dir); prevcfg=0; path="" }
       /^#\[cfg\(test\)\][ \t]*$/ { prevcfg=1; path=""; next }
       prevcfg==1 && /^#\[path = "[^"]+"\][ \t]*$/ {
         path=$0; sub(/^#\[path = "/,"",path); sub(/"\].*/,"",path)
@@ -167,13 +205,18 @@ wholly_test_files() {
         if (path != "") print dir "/" path; else print dir "/" line ".rs"
       }
       { prevcfg=0; path="" }
-    ' "$f" | while IFS= read -r cand; do
-      [ -f "$cand" ] && echo "$cand"
-    done
-    awk '
+    ' /dev/null
+    find "$SRC" -name '*.rs' -print0 | xargs -0 awk '
+      FNR==1 { dir=FILENAME; sub(/\/[^\/]*$/, "", dir); skip=0; depth=0; prev="" }
       skip>0 {
         n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m
-        print
+        line=$0
+        while (match(line, /include!\("[^"]+"\)/)) {
+          inc=substr(line, RSTART, RLENGTH)
+          sub(/^include!\("/, "", inc); sub(/"\)$/, "", inc)
+          print dir "/" inc
+          line=substr(line, RSTART+RLENGTH)
+        }
         if (depth<=0) skip=0
         prev=$0; next
       }
@@ -183,10 +226,28 @@ wholly_test_files() {
         prev=$0; next
       }
       { prev=$0 }
-    ' "$f" | grep -oE 'include!\("[^"]+"\)' | sed -E 's/include!\("([^"]+)"\)/\1/' | while IFS= read -r inc; do
-      [ -f "$dir/$inc" ] && echo "$dir/$inc"
-    done
+    ' /dev/null
+  } | while IFS= read -r cand; do
+    [ -f "$cand" ] && printf '%s\n' "$cand"
   done | sort -u
+}
+
+# is_wholly_test <path>: the `wholly_test` list as a builtin lookup. Three gates below asked this
+# question once per candidate file or line with `echo "$wholly_test" | grep -qxF`, which is two
+# processes an answer.
+WHOLLY_TEST_INDEX=""
+wholly_test_index_init() {
+  WHOLLY_TEST_INDEX="
+$1
+"
+}
+is_wholly_test() {
+  case "$WHOLLY_TEST_INDEX" in
+    *"
+$1
+"*) return 0;;
+  esac
+  return 1
 }
 
 # gate <rule> <pattern> <paths...>: every match must be in an allowlisted file.
@@ -485,13 +546,14 @@ fi
 # Wholly-test files (see `wholly_test_files`) are skipped like inline `#[cfg(test)]` blocks: a
 # test's reference colour maths is not logical state.
 wholly_test="$(wholly_test_files)"
+wholly_test_index_init "$wholly_test"
 libm_lines=$(grep_code '\.(exp|ln|log|powf|powi|cbrt|sin|cos|tan|atan2|hypot|mul_add|sin_cos)\(' "$SRC" \
   | grep -vE '\.log\((&|")' | grep -v "^$SRC/ui/motion.rs:")
 libm_bad=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   p="${line%%:*}"
-  if echo "$wholly_test" | grep -qxF "$p"; then continue; fi
+  if is_wholly_test "$p"; then continue; fi
   if ! allowed libm "$p"; then echo "    $line"; libm_bad=$((libm_bad+1)); fi
 done <<< "$libm_lines"
 if [ "$libm_bad" -eq 0 ]; then ok "libm"; else fail "libm: $libm_bad line(s) outside ci/allow/libm.txt"; fi
@@ -546,7 +608,7 @@ MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library
 mut_wholly_test="$wholly_test"
 mut_bad=0
 while IFS= read -r f; do
-  if echo "$mut_wholly_test" | grep -qxF "$f"; then continue; fi
+  if is_wholly_test "$f"; then continue; fi
   while IFS= read -r line; do
     [ -z "$line" ] && continue
     if ! allowed mutators "$f"; then echo "    $f:$line"; mut_bad=$((mut_bad+1)); fi
@@ -554,7 +616,10 @@ while IFS= read -r f; do
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
     prev=="#[cfg(test)]" && /^mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
     { print NR":"$0; prev=$0 }' "$f" | sed -E 's/crate::ui::[a-z_]+::[a-z_]+\(/UI_CALL(/g' | grep -E "$MUTATORS" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -v 'stores::' || true)
-done < <(find "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" -name '*.rs' | sort)
+# ...over the files that name a mutator at all. The per-file pass only subtracts (a `#[cfg(test)] mod`
+# block, a masked `crate::ui::…::…(`, a `stores::` line), so this prefilter is a superset of the files
+# that can produce a hit.
+done < <(grep -rlE --include='*.rs' "$MUTATORS" "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" 2>/dev/null | sort)
 if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use stores::<store>::apply)"; fi
 
 # mutators-visibility (D3): the call-site rule above can only ever prove "nobody currently calls
@@ -657,7 +722,8 @@ while IFS= read -r f; do
     echo "    $f: $(echo "$hits" | tr '\n' ' ')"
     sib_bad=$((sib_bad+1))
   fi
-done < <(find "$SRC/screens" -name '*.rs' | sort)
+# ...over the files that name a sibling screen at all; the rest ran four processes to find nothing.
+done < <(grep -rlE --include='*.rs' 'crate::screens::[a-z_]+' "$SRC/screens" 2>/dev/null | sort)
 if [ "$sib_bad" -eq 0 ]; then ok "sibling"
 else fail "sibling: $sib_bad file(s) name a sibling screen (use crate::screens::registry)"; fi
 
@@ -702,7 +768,9 @@ while IFS= read -r f; do
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; next }
     /impl[ \t].*Measure.*[ \t]for[ \t]/ { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; next }
     { print NR":"$0 }' "$f" | grep -E 'crate::text::(text_width|elide|cap_h)\(' | grep -vE '^[0-9]+:[[:space:]]*//' || true)
-done < <(find "$SRC" -name '*.rs' | sort)
+# ...over the files that spell a raw measurement call at all: the `awk` below only DROPS the body of
+# an `impl … Measure for …` block, so a file with no raw call has nothing for it to find.
+done < <(grep -rlE --include='*.rs' 'crate::text::(text_width|elide|cap_h)\(' "$SRC" 2>/dev/null | sort)
 if [ "$tm_bad" -eq 0 ]; then ok "textmeasure"; else fail "textmeasure: $tm_bad line(s) outside the Measure seam"; fi
 
 # dt (phase 12, D4 — ZERO now, was an allowlist): idle::dt() (deleted from ui/idle.rs entirely —
@@ -765,7 +833,11 @@ while IFS= read -r f; do
     echo "    $f:$ln:$orig"
     frame_bad=$((frame_bad+1))
   done <<< "$hits"
-done < <(find "$SRC" -name '*.rs' | sort)
+# ...over the files that name one of the three calls at all. `strip_strings_and_comments` only ever
+# REMOVES matches, so a file with no raw hit cannot fail this gate — and running its `awk` plus a
+# `grep` over all 420 files, to reach the two that mention the shape, was the single most expensive
+# rule in this script (4.8 s of its 17 s).
+done < <(grep -rlE --include='*.rs' "$frame_pat" "$SRC" 2>/dev/null | sort)
 if [ "$frame_bad" -eq 0 ]; then ok "frame"
 else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside app/run.rs"; fi
 
@@ -830,7 +902,7 @@ threads_bad=0
 while IFS= read -r f; do
   # a wholly-test file is test code exactly like an inline `#[cfg(test)] mod` block, which the
   # awk below skips — without this, splitting a test module into its own file fails the gate
-  if echo "$wholly_test" | grep -qxF "$f"; then continue; fi
+  if is_wholly_test "$f"; then continue; fi
   pat='\bthread::spawn\('
   if grep -qE '^\s*use\s+std::thread::(spawn\s*;|\{[^}]*\bspawn\b[^}]*\}\s*;)' "$f"; then
     pat='\bthread::spawn\(|\bspawn\('
@@ -842,7 +914,9 @@ while IFS= read -r f; do
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
     prev ~ /^[[:space:]]*#\[cfg\(test\)\][[:space:]]*$/ && /^[[:space:]]*mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
     { print NR":"$0; prev=$0 }' "$f" | grep -E "$pat" | grep -vE '^[0-9]+:\s*//' || true)
-done < <(find "$SRC" -name '*.rs' ! -path "$SRC/task.rs" | sort)
+# ...over the files that spell `spawn(` at all — a superset of both matched spellings, and the `awk`
+# below only drops `#[cfg(test)] mod` blocks, so the count is unchanged.
+done < <(grep -rlE --include='*.rs' '\bspawn\(' "$SRC" 2>/dev/null | grep -v "^$SRC/task.rs\$" | sort)
 threads_declared=$(sed -n 's/^# count: *//p' ci/allow/threads.txt | head -1)
 if [ "$threads_bad" -eq "${threads_declared:-0}" ]; then ok "threads"
 else fail "threads: $threads_bad line(s) outside ci/allow/threads.txt (declared count is exactly ${threads_declared:-0}, not a ceiling)"; fi

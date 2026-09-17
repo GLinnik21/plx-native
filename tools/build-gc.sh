@@ -43,6 +43,54 @@ cd "$ROOT"
 MAIN=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||')
 [ -n "$MAIN" ] || MAIN="$ROOT"
 
+
+# THE INCREMENTAL POLICY, ENFORCED WHERE IT LEAKS.
+#
+# The Makefile sets `CARGO_INCREMENTAL=0` in a linked worktree, with a long comment explaining why
+# a lane cut for one task must not pay a multi-gigabyte cache of its last build. That rule is
+# correct and it does not hold, because it lives in ONE of the several places a `cargo` runs here:
+# every agent (and `AGENTS.md`'s own `--no-default-features` gate) invokes cargo directly, and a
+# direct invocation never reads the Makefile. Measured 2026-09-17 across this machine's 113
+# worktrees: **12.9 GB of `target*/debug/incremental` inside LINKED worktrees**, on a volume with
+# 5.1 GiB free — i.e. the policy's whole stated saving, still on the disk, in the checkouts it
+# names.
+#
+# Cargo merges `.cargo/config.toml` upward from the working directory and the NEAREST setting
+# wins, so a file at the worktrees ROOT applies to every lane under it and to nothing else — the
+# main checkout sits above that directory and keeps its cache, which is exactly the Makefile's
+# rule, now written where any cargo can see it. An explicit `CARGO_INCREMENTAL=1` still wins: an
+# environment variable outranks a config file, so the documented escape hatch for a lane doing
+# genuinely long iterative work is unchanged.
+#
+# Installed from here rather than committed because `.claude/worktrees/` is gitignored — it is
+# local scratch, and this is the one tool that already owns what lives in it. Idempotent, and
+# never written if a human has put something else in that file.
+install_worktree_cargo_policy() {
+  wt_root="$MAIN/.claude/worktrees"
+  [ -d "$wt_root" ] || return 0
+  cfg="$wt_root/.cargo/config.toml"
+  if [ -f "$cfg" ] && grep -q 'plx-build-gc-policy' "$cfg" 2>/dev/null; then return 0; fi
+  [ -f "$cfg" ] && return 0     # somebody else's file; leave it alone and say so in the report
+  # `-n` writes nothing, including this. A dry run that creates a file is not a dry run.
+  if [ -n "$DRY" ]; then echo "build-gc: would install the linked-worktree incremental policy at $cfg"; return 0; fi
+  mkdir -p "$wt_root/.cargo" || return 0
+  cat > "$cfg" <<'POLICY'
+# plx-build-gc-policy — installed by tools/build-gc.sh, not tracked by git.
+#
+# Cargo merges config upward from the working directory, so this file applies to every linked
+# worktree under `.claude/worktrees/` and to NOTHING else: the main checkout lives above this
+# directory and keeps its incremental cache, which is the policy the Makefile states beside
+# `RUST_FEATFLAGS`. The Makefile can only enforce it for its own cargo invocations; an agent
+# running `cargo test` or `cargo check` by hand bypassed it, and 12.9 GB of lane incremental
+# caches is what that cost.
+#
+# `CARGO_INCREMENTAL=1` in the environment still wins — an env var outranks a config file — so a
+# lane that really is doing long iterative work can still buy the cache back for itself.
+[build]
+incremental = false
+POLICY
+  echo "build-gc: installed the linked-worktree incremental policy at $cfg"
+}
 MODE=report
 DRY=
 for a in "$@"; do
@@ -62,7 +110,10 @@ usage: tools/build-gc.sh [MODE] [-n]
 
   (no mode)       report every checkout's derived trees, the shared cache and free space
   --incremental   delete `target*/debug/incremental` everywhere. Always safe: it is a compile
-                  cache, and a linked worktree does not even write one any more.
+                  cache. A linked worktree is not supposed to write one — but the Makefile's
+                  `CARGO_INCREMENTAL=0` only reaches the cargo runs `make` launches, and 12.9 GB
+                  of them had accumulated past it by 2026-09-17, which is why this script now
+                  installs the same rule as a `.cargo/config.toml` any cargo can see.
   --lanes         delete every derived tree in the LINKED WORKTREES — cargo target dirs and the
                   vendor build trees — plus the EXTERNAL lane target dirs under $PLX_FLEET_DIR
                   (default ~/plx-fleet), which is where fleet-plan tells workers to point
@@ -277,10 +328,11 @@ owner_is_alive() {   # $1 = lock directory
   [ "$_pgid" -gt 0 ] && pgrep -g "$_pgid" >/dev/null 2>&1 && return 0
   return 1
 }
-build_is_running() {
-  for n in cargo rustc make cc1 arm-webos-linux-gnueabi-gcc; do
-    if pgrep -x "$n" >/dev/null 2>&1; then echo "a running $n"; return 0; fi
-  done
+# Split out because the two halves are answerable at DIFFERENT GRANULARITIES. A compiler runs in
+# some checkout, so "which checkout" is a question with an answer (see `live_checkouts`). A held
+# FFmpeg lock is about the SHARED cache, which belongs to no checkout at all — there is no finer
+# answer to give, so this half stays all-or-nothing exactly as it was.
+ffmpeg_lock_held() {
   c=${PLX_BUILD_CACHE-$HOME/.cache/plxnative}
   if [ -n "$c" ]; then
     for l in "$c"/ffmpeg/*.lock; do
@@ -293,18 +345,228 @@ build_is_running() {
   fi
   return 1
 }
-if [ "$MODE" != report ] && [ -z "$DRY" ]; then
-  if [ -z "$(worktrees)" ]; then
+build_is_running() {
+  for n in cargo rustc make cc1 arm-webos-linux-gnueabi-gcc; do
+    if pgrep -x "$n" >/dev/null 2>&1; then echo "a running $n"; return 0; fi
+  done
+  ffmpeg_lock_held
+}
+
+# WHICH CHECKOUTS A BUILD IS LIVE IN — the per-checkout half of the liveness question
+# `build_is_running` above answers globally.
+#
+# That global guard is right about one thing and wrong about another. It is right that a delete
+# under a live `cargo` produces a CORRUPT tree rather than an absent one. It is wrong that the only
+# safe response is to refuse EVERYTHING: on this machine several sessions run `make check` in
+# different worktrees at once, so `pgrep -x make` essentially never comes back empty — and a
+# reclaim tool that cannot run while anybody is building is one that cannot run on the day the
+# volume fills, which is the only day it is reached for. Measured 2026-09-17: 5.0 GiB free, 34.8
+# GiB of derived trees in IDLE lanes, and this script refusing to touch a byte of it because two
+# unrelated lanes happened to be compiling.
+#
+# A builder's WORKING DIRECTORY names the checkout it is building in, so the question is
+# answerable per checkout rather than per machine: collect every builder's cwd, map each back to
+# the worktree CONTAINING it (a `cargo` run from `<lane>/rust-modules` must protect `<lane>`), and
+# skip only those. Everything else is collected as before.
+#
+# Deliberately NOT an mtime test, which is the obvious wrong answer and was the first thing tried:
+# a target directory's own mtime does not move while a compiler writes into `debug/deps` beneath
+# it, so the tree being written to RIGHT NOW is precisely the one that reads as untouched for half
+# an hour.
+#
+# It FAILS CLOSED ON IGNORANCE, and only on ignorance. If `lsof` is missing, or a builder is
+# running and its cwd cannot be READ, this returns non-zero and the global refusal below stands
+# unchanged — the same answer this script has always given, now reached only when the cheaper and
+# more precise one is unavailable.
+#
+# A cwd that is read successfully and belongs to no checkout of this repository is a different
+# thing, and is deliberately NOT a refusal: it is somebody's unrelated `cargo` in an unrelated
+# project, and treating that as a reason to delete nothing here is precisely the all-or-nothing
+# behaviour this function exists to replace — one Rust project open elsewhere on the machine would
+# veto the whole reclaim. The case that looks like it and is not — a builder in a lane git has
+# stopped listing, whose EXTERNAL target dir under $FLEET_DIR would otherwise be collected as an
+# orphan — is answered by the second rule in `in_live_checkout`, not by refusing.
+#
+# Written with temp files rather than `$(…)` around the `case`, and that is not style: **bash 3.2
+# — what macOS ships, and what `#!/bin/sh` resolves to here — cannot parse a `case` inside a
+# command substitution at all.** It scans for the closing paren without parsing, so the `)` ending
+# a case pattern terminates the substitution and the `;;` after it is a syntax error.
+WT_LIST=
+LIVE_LIST=
+LIVE_CWDS=
+# THE MOST SPECIFIC CHECKOUT CONTAINING A PATH. Not any containing checkout — this repository's
+# lanes live INSIDE the main checkout (`<main>/.claude/worktrees/<lane>`), so a plain prefix test
+# says every lane on the machine is part of main and one build in main protects all of them. The
+# first run of this filter skipped five trees on the strength of two live builds for exactly that
+# reason. The longest match is the owner.
+#
+# Second rule for the same question: a lane may point `CARGO_TARGET_DIR` at `$FLEET_DIR/<lane>`
+# (that is what `fleet-plan` tells workers to do), which is under no checkout at all. Those are
+# matched back the same way the orphan test matches them — by the lane directory's basename.
+owning_checkout() {
+  [ -n "$WT_LIST" ] && [ -s "$WT_LIST" ] || return 1
+  _best=""
+  while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    case "$1" in
+      "$w"|"$w"/*)
+        if [ ${#w} -gt ${#_best} ]; then _best=$w; fi
+        ;;
+    esac
+  done < "$WT_LIST"
+  if [ -z "$_best" ] && [ -n "$FLEET_DIR" ]; then
+    case "$1" in
+      "$FLEET_DIR"/*)
+        _lane=${1#"$FLEET_DIR"/}
+        _lane=${_lane%%/*}
+        while IFS= read -r w; do
+          [ -n "$w" ] || continue
+          if [ "${w##*/}" = "$_lane" ]; then _best=$w; fi
+        done < "$WT_LIST"
+        ;;
+    esac
+  fi
+  [ -n "$_best" ] || return 1
+  printf '%s\n' "$_best"
+}
+live_checkouts() {
+  command -v lsof >/dev/null 2>&1 || return 1
+  # OUR OWN ANCESTORS ARE NOT BUILDERS. The documented way to run this is `make disk`, which means
+  # a `make` whose working directory IS the checkout being cleaned — so a naive cwd sweep protects
+  # that checkout from the command the user typed to clean it, and the tree in front of them is the
+  # one tree never collected. That `make` is not compiling anything; it is blocked waiting on this
+  # script. Walk the parent chain and exclude it. A sibling `cargo` in the same checkout is still
+  # found by its own cwd, so nothing real stops being protected.
+  _anc=" "
+  _p=$$
+  _hops=0
+  while [ "$_p" -gt 1 ] && [ "$_hops" -lt 32 ]; do
+    _anc="$_anc$_p "
+    _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ') || _p=0
+    case "$_p" in ''|*[!0-9]*) _p=0 ;; esac
+    _hops=$((_hops + 1))
+  done
+  _pids=""
+  for n in cargo rustc make cc1 arm-webos-linux-gnueabi-gcc; do
+    _found=$(pgrep -x "$n" 2>/dev/null) || true
+    for q in $_found; do
+      case "$_anc" in *" $q "*) continue ;; esac
+      _pids="$_pids $q"
+    done
+  done
+  LIVE_LIST="${TMPDIR:-/tmp}/plx-build-gc-live.$$"
+  : > "$LIVE_LIST"
+  [ -n "$_pids" ] || return 0          # nothing building: an empty protected set is the truth
+  LIVE_CWDS="${TMPDIR:-/tmp}/plx-build-gc-cwd.$$"
+  _cwds=$LIVE_CWDS
+  : > "$_cwds"
+  # Per pid, and the distinction matters: a builder that EXITED between the `pgrep` above and the
+  # `lsof` here is not a builder this run has to respect, while one that is still alive but whose
+  # working directory cannot be read is exactly the ignorance this function fails closed on. An
+  # empty answer alone cannot tell those apart — asking `kill -0` can.
+  for p in $_pids; do
+    _c=$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p') || true
+    if [ -n "$_c" ]; then
+      printf '%s\n' "$_c" >> "$_cwds"
+    elif kill -0 "$p" 2>/dev/null; then
+      rm -f "$_cwds"; LIVE_CWDS=; LIVE_LIST=; return 1
+    fi
+  done
+  WT_LIST="${TMPDIR:-/tmp}/plx-build-gc-wt.$$"
+  worktrees > "$WT_LIST"
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    if _own=$(owning_checkout "$c"); then printf '%s\n' "$_own" >> "$LIVE_LIST"; fi
+  done < "$_cwds"
+  sort -u "$LIVE_LIST" -o "$LIVE_LIST"
+  return 0
+}
+# Does this derived tree sit inside a checkout something is building in?
+#
+# Two rules, because a lane's build output does not have to be inside the lane. The second one is
+# the fleet-teardown race: `fleet-plan` points a worker's `CARGO_TARGET_DIR` at
+# `$FLEET_DIR/<lane>`, the lane's worktree is removed while its last build is still running, and
+# `--orphans` — the mode this script tells you to reach for first after tearing a fleet down — then
+# sees a target dir whose worktree is gone and deletes it out from under a live `cargo`. Rule 1
+# cannot see that: the builder's cwd maps to the MAIN checkout (the removed lane directory sits
+# under it), so main is protected and the external tree is not. Rule 2 asks the question that
+# actually identifies it — is the lane's own name a path component of some live builder's working
+# directory? — which holds whether or not git still lists the worktree.
+#
+# Rule 2 over-protects in principle: a lane named after a common directory component would spare an
+# external tree that nobody is writing. That is the safe direction, and the tree is collected on the
+# next run.
+in_live_checkout() {
+  if [ -n "$LIVE_LIST" ] && [ -s "$LIVE_LIST" ] && _own=$(owning_checkout "$1"); then
+    grep -qxF "$_own" "$LIVE_LIST" && return 0
+  fi
+  [ -n "$LIVE_CWDS" ] && [ -s "$LIVE_CWDS" ] || return 1
+  case "$1" in
+    "$FLEET_DIR"/*) ;;
+    *) return 1 ;;
+  esac
+  _lane=${1#"$FLEET_DIR"/}
+  _lane=${_lane%%/*}
+  [ -n "$_lane" ] || return 1
+  while IFS= read -r c; do
+    case "$c" in
+      *"/$_lane"|*"/$_lane"/*) return 0 ;;
+    esac
+  done < "$LIVE_CWDS"
+  return 1
+}
+# The filter every destructive mode pipes through. A skipped gigabyte is never silent.
+cleanup_live() {
+  [ -n "$LIVE_LIST" ] && rm -f "$LIVE_LIST"
+  [ -n "$WT_LIST" ] && rm -f "$WT_LIST"
+  [ -n "$LIVE_CWDS" ] && rm -f "$LIVE_CWDS"
+  return 0
+}
+skip_live() {
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    if in_live_checkout "$d"; then
+      printf '  in use, skipped  %s\n' "$d" >&2
+    else
+      printf '%s\n' "$d"
+    fi
+  done
+}
+
+install_worktree_cargo_policy
+
+if [ "$MODE" != report ]; then
+  if [ -z "$DRY" ] && [ -z "$(worktrees)" ]; then
     echo "build-gc: cannot enumerate this repository's worktrees — refusing to delete anything." >&2
     echo "          Every reclaim mode decides what is dead from that list, so an empty one is a" >&2
     echo "          reason to stop, not a licence. Check that git works here and retry." >&2
     exit 1
   fi
-  if busy=$(build_is_running); then
+  # The shared FFmpeg cache first, and unconditionally: a live `ci/build-ffmpeg.sh` is writing into
+  # a tree that sits outside every checkout, so no per-checkout reasoning can exempt anything from
+  # it. This is the refusal this script has always given for a held lock, unchanged.
+  if [ -z "$DRY" ] && busy=$(ffmpeg_lock_held); then
     echo "build-gc: $busy — refusing to delete a build tree underneath it." >&2
     echo "          Wait for it, or re-run when the fleet is idle. (-n previews regardless.)" >&2
     exit 1
   fi
+  # Ask the precise question first. `live_checkouts` succeeds when it could determine, for every
+  # running builder, which checkout it is building in — in which case those checkouts are skipped
+  # by name below and every idle one is collected. Only when it CANNOT tell does the old
+  # all-or-nothing refusal apply, which is the honest reading of what this script can see then.
+  if live_checkouts; then
+    if [ -s "$LIVE_LIST" ]; then
+      echo "build-gc: a build is live in these checkouts; their derived trees are left alone:"
+      sed 's|^|  |' "$LIVE_LIST"
+    fi
+  elif [ -z "$DRY" ] && busy=$(build_is_running); then
+    echo "build-gc: $busy, and this host cannot say which checkout it is building in" >&2
+    echo "          (no lsof, or its working directory could not be read) — refusing to delete a" >&2
+    echo "          build tree underneath it. Wait for it, or re-run when the fleet is idle." >&2
+    echo "          (-n previews regardless.)" >&2
+    exit 1
+  fi
+  trap cleanup_live EXIT
 fi
 
 # `git worktree list --porcelain` emits `worktree <path>`, and the path may contain SPACES —
@@ -368,7 +630,7 @@ incremental|all)
   # and the incremental cache is the single largest thing this script exists to reclaim, so a
   # mode advertised as clearing it cannot be blind to where a fleet actually keeps it.
   { worktrees | while IFS= read -r w; do incremental_trees "$w"; done
-    external_incremental_trees; } | sort -u | drop
+    external_incremental_trees; } | sort -u | skip_live | drop
   ;;
 esac
 
@@ -460,7 +722,7 @@ orphans)
   echo "== external lane target dirs whose worktree is gone =="
   external_trees | sort -u | while IFS= read -r d; do
     if external_is_orphan "$d"; then echo "$d"; fi
-  done | drop
+  done | skip_live | drop
   ;;
 esac
 
@@ -469,7 +731,7 @@ all)
   echo "== external lane target dirs whose worktree is gone =="
   external_trees | sort -u | while IFS= read -r d; do
     if external_is_orphan "$d"; then echo "$d"; fi
-  done | drop
+  done | skip_live | drop
   ;;
 esac
 
@@ -479,16 +741,16 @@ lanes|all)
   worktrees | while IFS= read -r w; do
     [ "$w" = "$MAIN" ] && continue
     lane_trees "$w"
-  done | drop
+  done | skip_live | drop
   echo "== external lane build trees =="
-  external_trees | sort -u | drop
+  external_trees | sort -u | skip_live | drop
   ;;
 esac
 
 case "$MODE" in
 all)
   echo "== the main checkout's vendor build trees (its target dirs are kept) =="
-  vendor_trees "$MAIN" | drop
+  vendor_trees "$MAIN" | skip_live | drop
   ;;
 esac
 

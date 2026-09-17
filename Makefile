@@ -1078,7 +1078,7 @@ clean:
 
 test: deploy run
 
-# `make check` — the HOST unit suite (~0.3s) plus `lint` below, the only correctness signal
+# `make check` — the HOST unit suite plus `lint` below, the only correctness signal
 # available without a television. Deliberately NOT a prerequisite of `all`: the normal build is a
 # cross compile for the TV and must not be made to depend on a host toolchain run succeeding (a host
 # cargo failure has nothing to do with whether the ARM staticlib is buildable, and `make deploy`
@@ -1197,8 +1197,12 @@ check: lint
 	@# handler, so `raise()` returned and the `_exit(128+sig)` beneath it ran every time.
 	cc -O1 -Wall -Wextra -Werror -Isrc -o $(CRASHTRACE_TEST_BIN) ci/crashtrace-test.c src/crashtrace.c && $(CRASHTRACE_TEST_BIN)
 	cc -O1 -Wall -Wextra -Werror -Isrc -o $(PRIVATE_LOG_TEST_BIN) ci/private-log-test.c && $(PRIVATE_LOG_TEST_BIN)
-	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest, ~0.5s — most of
-	@# it is five `run.py --list` subprocesses, not test logic; measure before budgeting). run.py
+	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest). THE MOST
+	@# EXPENSIVE STEP IN `check` BY FAR — 386 s of a 616 s run, measured 2026-09-17, and nearly
+	@# all of it is the `DepGates` class running the whole of `ci/check-deps.sh` about thirty
+	@# times over to prove each structure gate still catches a planted violation. (It was 980 s of
+	@# 1217 s before `check-deps.sh` stopped forking a process per candidate line.) Measure before
+	@# budgeting, and if this number needs to come down further, that is the place. run.py
 	@# decides WHAT gets driven on the one television and had no test of any kind until 2026-08-22.
 	@# What it pins is the code path a full manifest.local.json never enters: an `item` key this
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A

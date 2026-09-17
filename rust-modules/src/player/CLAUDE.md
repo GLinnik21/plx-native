@@ -191,7 +191,8 @@ something.
 
 ## Verifying playback changes
 
-**Start with `make check`** — the host unit suite (`cargo test --lib`, ~0.3s) covers a real
+**Start with `make check`** — the host unit suite (`cargo test --lib`, ~28 s for 3,639 tests,
+measured 2026-09-17; do not re-quote that number, `time` it) covers a real
 slice of this pipeline's pure logic: `ff.rs`'s `nal_end` bounds guard and AVCC→Annex-B conversion,
 the AVIO abort guards (a seek after teardown must not open a second connection — graded on an accept
 count), `stream.rs`'s socket lifecycle, `route/plan.rs`'s direct-play-vs-transcode selection, and
