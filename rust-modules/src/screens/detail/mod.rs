@@ -450,7 +450,7 @@ impl DetailScreen {
         &self,
         focus: Option<FocusKey<u32>>,
     ) -> Option<(String, PosterMark)> {
-        if crate::metadata::season_loading() {
+        if crate::metadata::MetadataView::new().season_loading() {
             return None;
         }
         let (i, row) = self.focused_episode_index(focus)?;
@@ -465,7 +465,7 @@ impl DetailScreen {
         &self,
         focus: Option<FocusKey<u32>>,
     ) -> Option<(String, PosterMark)> {
-        if crate::metadata::season_loading() {
+        if crate::metadata::MetadataView::new().season_loading() {
             return None;
         }
         let i = self.focused_index(focus, season::SEASON_GROUP)?;
@@ -542,7 +542,7 @@ impl DetailScreen {
     }
 
     fn detail(&self) -> Option<&'static Detail> {
-        crate::metadata::current().filter(|d| {
+        crate::metadata::MetadataView::new().current().filter(|d| {
             crate::plex::same_item((d.sid, d.rk.as_str()), (self.sid, self.rk.as_str()))
         })
     }
@@ -765,7 +765,7 @@ impl DetailScreen {
             Some(d),
             intent.spot.season,
             intent.season_requested,
-            crate::metadata::season_loading(),
+            crate::metadata::MetadataView::new().season_loading(),
         ) != season::RestoreStep::Ready
         {
             return None;
@@ -1143,8 +1143,8 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             }
         }
         let known = self.keys.iter().any(|key| key.elem == want.elem);
-        if known && (self.return_pending || self.restore_intent.is_some()) && (crate::metadata::detail_request_status(self.sid, &self.rk) == Some(true)
-            || self.detail().is_some() && (crate::metadata::season_loading() || self.return_waiting())) {
+        if known && (self.return_pending || self.restore_intent.is_some()) && (crate::metadata::MetadataView::new().detail_request_status(self.sid, &self.rk) == Some(true)
+            || self.detail().is_some() && (crate::metadata::MetadataView::new().season_loading() || self.return_waiting())) {
             return want;
         }
         if self.detail().is_some() {
@@ -1345,7 +1345,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
             }
             ScreenEvent::Enter(_) => {
                 let refresh = self.refresh;
-                let request_status = crate::metadata::detail_request_status(self.sid, &self.rk);
+                let request_status = crate::metadata::MetadataView::new().detail_request_status(self.sid, &self.rk);
                 // Deferred is newer than every request that could already occupy this address:
                 // it was armed only after the ViewState write completed. Always supersede that
                 // pre-write generation when the page becomes visible. Requested normally reuses
@@ -1651,7 +1651,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                             |i| self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0),
                             f.measure,
                         );
-                        if crate::metadata::season_loading() {
+                        if crate::metadata::MetadataView::new().season_loading() {
                             crate::ui::widgets::Spinner::new(
                                 crate::ui::consts::SCR_W * 0.5,
                                 top + episodes::H * 0.5,
@@ -1706,7 +1706,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                     _ => {}
                 }
             }
-        } else if crate::metadata::detail_loading() {
+        } else if crate::metadata::MetadataView::new().detail_loading() {
             crate::ui::widgets::Spinner::new(
                 crate::ui::consts::SCR_W * 0.5,
                 (self.content_top(measure) + crate::ui::consts::SCR_H) * 0.5 - self.scroll.pos,
@@ -2463,20 +2463,20 @@ impl DetailScreen {
         self.return_pending && self.restore_intent.as_ref().is_some_and(|intent| {
             self.refresh != DetailRefreshPhase::None || self.detail().is_none()
                 || season::restore_step(self.detail(), intent.spot.season,
-                intent.season_requested, crate::metadata::season_loading()) != season::RestoreStep::Ready
+                intent.season_requested, crate::metadata::MetadataView::new().season_loading()) != season::RestoreStep::Ready
         })
     }
 
     fn pump_restore(&mut self) {
         // Consume terminal reconciliation even after directional input cancelled restoration.
-        match (self.refresh, crate::metadata::detail_request_status(self.sid, &self.rk)) {
+        match (self.refresh, crate::metadata::MetadataView::new().detail_request_status(self.sid, &self.rk)) {
             (DetailRefreshPhase::Deferred, _) | (DetailRefreshPhase::Requested, None | Some(true)) => return,
             (DetailRefreshPhase::Requested, Some(false)) => {
                 self.refresh = DetailRefreshPhase::None;
             }
             (DetailRefreshPhase::None, _) => {}
         }
-        if self.detail().is_none() && crate::metadata::detail_request_status(self.sid, &self.rk) == Some(false) {
+        if self.detail().is_none() && crate::metadata::MetadataView::new().detail_request_status(self.sid, &self.rk) == Some(false) {
             self.restore_intent = None;
             self.return_pending = false;
             return;
@@ -2490,7 +2490,7 @@ impl DetailScreen {
                     Some(d),
                     intent.spot.season,
                     intent.season_requested,
-                    crate::metadata::season_loading(),
+                    crate::metadata::MetadataView::new().season_loading(),
                 )
             })
             .unwrap_or(season::RestoreStep::Ready);
@@ -2649,8 +2649,8 @@ impl DetailScreen {
             || self.episode_scroll.vel.abs() > 0.01
             || self.tab_scroll.vel.abs() > 0.01
             || self.disc_unfurl.iter().any(|s| s.vel.abs() > 0.01);
-        if !crate::metadata::detail_loading()
-            && !crate::metadata::season_loading()
+        if !crate::metadata::MetadataView::new().detail_loading()
+            && !crate::metadata::MetadataView::new().season_loading()
             && focused.is_some_and(|located| self.return_pending && !self.return_waiting() || self.restore_target_matches(located))
         {
             self.restore_intent = None;
@@ -2659,7 +2659,7 @@ impl DetailScreen {
         if !loaded {
             self.spin_ms = self.spin_phase.advance(t, &mut fx.present());
         }
-        if moving || crate::metadata::season_loading() {
+        if moving || crate::metadata::MetadataView::new().season_loading() {
             fx.note(PresentEvent::Motion);
         }
         self.preview_tick(dt, focused, fx);
@@ -2874,7 +2874,7 @@ impl DetailScreen {
     /// four controls' worth of geometry and three drawn) is exactly the class of bug this
     /// publication exists to remove.
     pub(crate) fn alt_available(&self) -> bool {
-        crate::metadata::alt_available(self.sid, &self.rk)
+        crate::metadata::MetadataView::new().alt_available(self.sid, &self.rk)
     }
 
     /// **Is there a file for the *Track information* sheet to describe?** — the Languages column's
@@ -2913,7 +2913,7 @@ impl DetailScreen {
             Some(Located::Episode(_, _)) => {
                 let action = self
                     .detail()
-                    .map(|d| episodes::action(d, local, crate::metadata::season_loading()))
+                    .map(|d| episodes::action(d, local, crate::metadata::MetadataView::new().season_loading()))
                     .unwrap_or(episodes::Action::None);
                 match action {
                     episodes::Action::Play(i) => {
@@ -3094,7 +3094,7 @@ impl DetailScreen {
         from_start: bool,
         fx: &mut Effects<'_, H>,
     ) -> bool {
-        if crate::metadata::season_loading() {
+        if crate::metadata::MetadataView::new().season_loading() {
             return false;
         }
         let Some(d) = self.detail() else { return false };

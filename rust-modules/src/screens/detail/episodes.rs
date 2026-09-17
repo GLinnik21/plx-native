@@ -194,7 +194,7 @@ pub(crate) fn draw(
     scale: impl Fn(usize) -> f32,
     measure: &dyn crate::ui::machine::Measure,
 ) {
-    let stale = if crate::metadata::season_loading() {
+    let stale = if crate::metadata::MetadataView::new().season_loading() {
         STALE_ALPHA
     } else {
         1.0
@@ -222,7 +222,7 @@ pub(crate) fn draw_focused(
     let Some(episode) = d.episodes.get(index) else {
         return;
     };
-    let stale = if crate::metadata::season_loading() {
+    let stale = if crate::metadata::MetadataView::new().season_loading() {
         STALE_ALPHA
     } else {
         1.0

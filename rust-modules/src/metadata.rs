@@ -25,12 +25,12 @@ impl<'a> MetadataView<'a> {
     pub(crate) fn current(&self) -> Option<&'static Detail> {
         current()
     }
-    // The methods below are Stage A plumbing for consumers Stage A's production call-path list
-    // does not touch yet (`ui/player_hud.rs`, `ui/info_panel.rs`, `screens/player/skip_pill.rs`,
-    // `viewstate.rs` — D2/D6 of `metadata-design.md`'s binding decisions). They forward to the
-    // same free functions those modules still call directly; wiring the call sites themselves is
-    // later Stage A/B work, not invented here. `#[allow(dead_code)]` rather than deleting them
-    // keeps `MetadataView`'s shape matched to `metadata-design.md`'s read surface up front.
+    // The two methods below are Stage A plumbing for consumers Stage A's production call-path list
+    // does not touch yet (`ui/player_hud.rs`, `ui/info_panel.rs`, `screens/player/skip_pill.rs` —
+    // D2 of `metadata-design.md`'s binding decisions). They forward to the same free functions
+    // those modules still call directly; wiring the call sites themselves is later Stage A/B work,
+    // not invented here. `#[allow(dead_code)]` rather than deleting them keeps `MetadataView`'s
+    // shape matched to `metadata-design.md`'s read surface up front.
     pub(crate) fn now_playing(&self) -> Option<&'static NowPlaying> {
         now_playing()
     }
@@ -45,15 +45,12 @@ impl<'a> MetadataView<'a> {
     pub(crate) fn playing_chapters(&self) -> &'static [Chapter] {
         playing_chapters()
     }
-    #[allow(dead_code)]
     pub(crate) fn detail_loading(&self) -> bool {
         detail_loading()
     }
-    #[allow(dead_code)]
     pub(crate) fn season_loading(&self) -> bool {
         season_loading()
     }
-    #[allow(dead_code)]
     pub(crate) fn detail_request_status(&self, sid: crate::plex::ServerId, rk: &str) -> Option<bool> {
         detail_request_status(sid, rk)
     }
@@ -69,7 +66,6 @@ impl<'a> MetadataView<'a> {
     pub(crate) fn alt_copies(&self, sid: crate::plex::ServerId, rk: &str) -> &'static [AltCopy] {
         alt_copies(sid, rk)
     }
-    #[allow(dead_code)]
     pub(crate) fn alt_available(&self, sid: crate::plex::ServerId, rk: &str) -> bool {
         alt_available(sid, rk)
     }

@@ -490,7 +490,7 @@ where
 /// detail page's item, which is the SHOW during an episode play (its lists are episode 1's) and
 /// can be a different item entirely when playing straight from Home.
 fn tracks() -> Option<&'static metadata::PlayingItem> {
-    metadata::playing()
+    metadata::MetadataView::new().playing()
 }
 
 fn n_audio() -> c_int {

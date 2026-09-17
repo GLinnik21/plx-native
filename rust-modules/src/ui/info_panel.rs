@@ -579,9 +579,10 @@ where
 /// A trailer session does not install a playing-leaf descriptor, so with `now_playing` absent
 /// the loaded page is the parent — a show's trailer still says Go to Show.
 fn is_episode() -> bool {
-    metadata::now_playing()
+    let meta = metadata::MetadataView::new();
+    meta.now_playing()
         .map(|n| n.is_episode)
-        .unwrap_or_else(|| metadata::current().is_some_and(|d| d.is_show))
+        .unwrap_or_else(|| meta.current().is_some_and(|d| d.is_show))
 }
 
 /// the action-button labels for the playing item. An ARRAY, not a `Vec`: the count is fixed at two
