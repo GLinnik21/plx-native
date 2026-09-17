@@ -1263,6 +1263,37 @@ fn draw_clock(
 /// so a trailer's controls leave the screen on the same beat a film's do.
 pub(crate) const LINGER_MS: u32 = 4500;
 
+// ---- scrub tuning, shared by the player HUD's scrubber and the trailer transport's own --------
+//
+// Both hold-to-scrub gestures want the same feel — a press jumps `SCRUB_STEP_NS`; holding engages
+// a continuous scrub ramping `SCRUB_BASE`→`SCRUB_MAX` (playback-seconds per real-second) — but the
+// STATE (`screens::player::input::Scrub`, and `screens::detail::trailer::Transport`'s own fields)
+// cannot live in one shared type: `ci/check-deps.sh`'s `sibling` gate forbids a file under
+// `screens/detail/` from naming `crate::screens::player` at all, the same rule that keeps
+// `LINGER_MS` above defined here rather than in `screens::player::input` for `trailer.rs` to
+// import from a sibling. `screens::player::input::Scrub::clamp_target` is a thin call-through to
+// [`scrub_clamp_target`] below so its own many call sites are untouched.
+pub(crate) const SCRUB_STEP_NS: i64 = 10_000_000_000; // 10s per press
+pub(crate) const SCRUB_BASE: f32 = 10.0;
+pub(crate) const SCRUB_ACCEL: f32 = 45.0; // added per second of hold
+pub(crate) const SCRUB_MAX: f32 = 140.0;
+// tap released → commit after this (further taps accumulate); see `screens::player::input`'s own
+// doc for why this debounce exists (coalescing a rapid tap burst into one Load/reload).
+pub(crate) const TAP_COMMIT_MS: u32 = 450;
+pub(crate) const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
+
+/// Where a scrub target may legally land: never before zero, and never inside the last three
+/// seconds, which is a seek past the point the pipeline can prime from.
+pub(crate) fn scrub_clamp_target(ns: i64, duration_ns: i64) -> i64 {
+    let cap = duration_ns - 3_000_000_000;
+    let ns = ns.max(0);
+    if cap > 0 && ns > cap {
+        cap
+    } else {
+        ns
+    }
+}
+
 /// The transport's dark ground: transparent at its top edge, `theme::scrim_black(0.86)` at the
 /// panel bottom, [`SCRIM_H`] tall. Drawn under every transport, the player's and the trailer's.
 pub(crate) fn draw_scrim(p: Painter) {

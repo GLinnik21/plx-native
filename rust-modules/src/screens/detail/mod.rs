@@ -1451,15 +1451,16 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 // is not on screen in that state — its chrome is at zero and the trailer's own
                 // transport is what the viewer is looking at — so an OK that fell through to the
                 // engine's press machine would start the FEATURE from a control nobody can see.
-                // Taken on every edge of a key the mode owns (`trailer::trailer_key` decides
-                // which), acted on only on the DOWN edge: the Up edge of a swallowed OK must not
-                // toggle the pause a second time, and a held direction must not arm a press.
+                // Every edge of a key the mode owns (`trailer::trailer_key` decides which) now
+                // reaches `trailer_act`, which itself decides which edges each variant answers:
+                // `Scrub` needs all three (`Down`/`Repeat` for the gesture, `Up` to commit), while
+                // every other variant still only acts on `Down` — the Up edge of a swallowed OK
+                // must not toggle the pause a second time, and a held direction must not arm a
+                // press.
                 if self.full_trailer() {
                     if let InputKind::Key { key, sym, wcode, edge, .. } = input.kind {
                         if let Some(act) = trailer::trailer_key(key, sym, wcode) {
-                            if edge == Edge::Down {
-                                self.trailer_act(act, fx);
-                            }
+                            self.trailer_act(act, edge, input.at.ms, fx);
                             return Handled::Yes;
                         }
                     }
@@ -2798,6 +2799,18 @@ impl DetailScreen {
         // The bottom base scrim goes with it, for the same reason
         // (`docs/trailer-ux-plan.md` §8.3).
         let base_scrim_target = if full_trailer { 0.0 } else { 1.0 };
+        // The scrub gesture's own per-frame stepping: the accelerating hold-ramp advance plus its
+        // lost-keyup safety net (`step_scrub_hold`), and the tap-commit debounce
+        // (`step_tap_commit`) that lets a rapid burst of taps coalesce into one seek. Either can
+        // hand back a commit target on any given tick, which reaches `player::preview::seek`
+        // through `ContentReq::PreviewSeek` — never `route::request_seek`'s user-intent
+        // bookkeeping, per the watch-state promise `player/preview.rs`'s module doc restates.
+        if let Some(target_ns) = self.trailer_ctl.step_scrub_hold(now, crate::player::duration_ns()) {
+            self.content(fx, ContentReq::PreviewSeek(target_ns));
+        }
+        if let Some(target_ns) = self.trailer_ctl.step_tap_commit(now) {
+            self.content(fx, ContentReq::PreviewSeek(target_ns));
+        }
         // The transport's own timers and fades, and the UP hint's. `update` reports its motion the
         // same way the `ease` block below does — a visible transport over a running trailer is a
         // moving clock every frame, and a hidden one goes quiet.
@@ -2828,6 +2841,10 @@ impl DetailScreen {
             .step(f32::from(view.picture), crate::ui::consts::K_SCALE, dt);
         if !view.picture {
             self.preview_promoted = false;
+            // A refused/failed seek (or the item swapping under a live gesture) can drop the
+            // picture out from under an in-flight scrub; leaving it armed would fire a stale
+            // `PreviewSeek` at whatever session starts next.
+            self.trailer_ctl.cancel_scrub();
         }
     }
 
@@ -2914,8 +2931,51 @@ impl DetailScreen {
 
     /// Perform one full-trailer key ([`trailer::trailer_key`]'s answer). The mapping is pure and
     /// tested there; what is here is the effect each one has on this page.
-    fn trailer_act<H: ContentLike>(&mut self, act: trailer::TrailerKey, fx: &mut Effects<'_, H>) {
+    ///
+    /// **`Scrub` is the one variant this acts on for every edge**, not just `Down`: `Down` hops
+    /// the fixed step, `Repeat` engages the hold ramp, and `Up` commits — the same three-edge
+    /// ladder `screens::player::input::Scrub` drives, ported onto `trailer_ctl` because the
+    /// `sibling` dependency gate (`ci/check-deps.sh`) forbids `screens::detail` from naming
+    /// `crate::screens::player` at all. A commit is routed through `ContentReq::PreviewSeek`,
+    /// which reaches `player::preview::seek` — never `PlayerReq::SeekTo`/`request_seek`, which
+    /// would write user-seek intent and a report trace generation a preview does not have (see
+    /// `ContentReq::PreviewSeek`'s own doc). Every other variant still only answers `Down`, exactly
+    /// as before `Scrub` existed.
+    fn trailer_act<H: ContentLike>(
+        &mut self,
+        act: trailer::TrailerKey,
+        edge: Edge,
+        now: u32,
+        fx: &mut Effects<'_, H>,
+    ) {
         use trailer::TrailerKey;
+        if let TrailerKey::Scrub(fwd) = act {
+            let commit = match edge {
+                Edge::Down => {
+                    self.trailer_ctl.scrub_fresh(
+                        fwd,
+                        now,
+                        crate::player::duration_ns(),
+                        crate::player::playpos_ns(),
+                    );
+                    None
+                }
+                Edge::Repeat => {
+                    self.trailer_ctl.scrub_repeat(now);
+                    None
+                }
+                Edge::Up => self.trailer_ctl.scrub_release(now),
+            };
+            if let Some(target_ns) = commit {
+                self.content(fx, ContentReq::PreviewSeek(target_ns));
+            }
+            self.trailer_ctl.reveal();
+            fx.invalidate(Provenance::Input);
+            return;
+        }
+        if edge != Edge::Down {
+            return;
+        }
         match act {
             // Both collapse keys go through the one collapse body, exactly as the BACK/DOWN arms
             // do outside the mode.
@@ -2927,6 +2987,7 @@ impl DetailScreen {
             TrailerKey::Play => self.content(fx, ContentReq::PreviewTransport(Some(true))),
             TrailerKey::Pause => self.content(fx, ContentReq::PreviewTransport(Some(false))),
             TrailerKey::Reveal => {}
+            TrailerKey::Scrub(_) => unreachable!("handled above, on every edge"),
         }
         // Any key the mode kept puts the controls back on screen for a fresh linger — the player
         // HUD's rule, and the reason LEFT/RIGHT are worth consuming at all.

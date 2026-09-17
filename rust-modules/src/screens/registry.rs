@@ -731,10 +731,20 @@ pub(crate) enum ContentReq {
     ///
     /// A request rather than something the page performs, for [`PlayerReq::Transport`]'s reason:
     /// pausing needs the `MainThread` token and the playback session's `&mut`, neither of which a
-    /// screen may name (§2.1). It carries no position — a preview is never seeked
-    /// (`player::preview`'s module doc: every fallback path is a fresh `Load` this machine never
-    /// admitted), so there is no `SeekTo` twin here and there must not be one.
+    /// screen may name (§2.1). It carries no position: this is the toggle only, and its `SeekTo`
+    /// twin is [`ContentReq::PreviewSeek`], below.
     PreviewTransport(Option<bool>),
+    /// **A user-driven LEFT/RIGHT seek inside a playing trailer** — the target position, in ns.
+    ///
+    /// Deliberately NOT `PlayerReq::SeekTo`/`CommitSeek`: those reach `player::request_seek`,
+    /// which writes `route::note_user_seek_intent` and
+    /// `report::note_seek_for(playback_trace_generation())` — a preview has no trace generation,
+    /// and `player::preview`'s watch-state promise (no PlayQueue, no timeline, no scrobble) covers
+    /// a seek exactly like every other write. This reaches `player::preview::seek` instead, which
+    /// carries its own budget/breaker accounting (`player::preview`'s module doc) — the same
+    /// `MainThread`/`&mut PlaybackSession` reason [`ContentReq::PreviewTransport`] is a request at
+    /// all.
+    PreviewSeek(i64),
     ItemMenu,
     /// **Present one of the Detail page's own panels** on the container tree (spec §6.2's
     /// "page-owned panels"). The page names WHICH and supplies whatever the panel needs to place
