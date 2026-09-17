@@ -383,6 +383,24 @@ pub(crate) fn abandoning() -> bool {
     with_mut(|m| m.phase == Phase::Abandoning)
 }
 
+/// Is `phase` an actual bound-or-playing session — as against merely non-Idle? A free function of
+/// `Phase` alone (not the singleton) so it is host-testable with no global/`testlock` involved, the
+/// same way every other `Machine`/`Phase` fact in this file is. See [`bound_or_playing`]'s doc for
+/// why this, and not [`occupies`]'s wider `phase != Idle`, is the question [`transport`] must ask.
+fn phase_bound_or_playing(phase: Phase) -> bool {
+    matches!(phase, Phase::Binding | Phase::Playing)
+}
+
+/// Is there a session actually bound to the plane or already showing a frame? Unlike
+/// [`occupies`] (`phase != Idle`, true for Fetching/Loading/Abandoning/Stopping too), this is
+/// specifically `Binding | Playing` — [`transport`] gates on this, not `occupies`, because a press
+/// racing the machine's own stop (an in-flight fetch, an admitted-but-unbound Load, an abandoned
+/// one) is exactly the race its own doc says must be refused, and all three of those are
+/// "occupied" without a live engine a pause/resume could reach.
+pub(crate) fn bound_or_playing() -> bool {
+    with_mut(|m| phase_bound_or_playing(m.phase))
+}
+
 pub(crate) fn request_start(sid: ServerId, rk: &str, now_ms: u32) -> Start {
     with_mut(|m| m.start(sid, rk, now_ms, enabled()))
 }
@@ -425,17 +443,23 @@ pub(crate) fn note_eos() {
     with_mut(|m| m.eos());
 }
 
-/// Test-only: force the process-wide singleton straight to "picture is up," skipping
+/// Test-only: force the process-wide singleton straight into `phase`, skipping the normal
+/// transition ladder (`start`/`admit`/`bound`/`picture`/…) so a test can probe a phase-gated
+/// predicate ([`bound_or_playing`], `DetailScreen::full_trailer()`) without wiring a live session
+/// end to end. Reset with [`reset_for_test`] before the guard (`testlock::serial()`) that must
+/// surround both calls is dropped, so no state leaks to whichever test the process runs next.
+#[cfg(test)]
+pub(crate) fn set_phase_for_test(phase: Phase) {
+    with_mut(|m| m.phase = phase);
+}
+
+/// Test-only: [`set_phase_for_test`] plus the `picture_ms` half `view()` also checks, skipping
 /// `enabled()`/session plumbing and a real Starfish Load so a screen-level test can exercise
-/// `DetailScreen::full_trailer()`-gated behavior. Reset with [`reset_for_test`] before the guard
-/// (`testlock::serial()`) that must surround both calls is dropped, so no state leaks to whichever
-/// test the process runs next.
+/// `DetailScreen::full_trailer()`-gated behavior.
 #[cfg(test)]
 pub(crate) fn force_playing_for_test() {
-    with_mut(|m| {
-        m.phase = Phase::Playing;
-        m.picture_ms = Some(0);
-    });
+    set_phase_for_test(Phase::Playing);
+    with_mut(|m| m.picture_ms = Some(0));
 }
 
 /// Test-only: undo [`force_playing_for_test`] (or any other singleton mutation) back to a fresh
@@ -518,12 +542,17 @@ pub(crate) fn paused() -> bool {
 /// press, and a press that races the machine's own stop (EOS, an abandoned Load, a scroll that
 /// hands the plane back) must not reach whatever the engine holds next. Returns whether the
 /// transport ended up in the requested state, as `set_transport_paused` defines it.
+///
+/// [`bound_or_playing`], not [`occupies`]: `occupies` is true for the whole non-Idle span,
+/// including Fetching/Loading/Abandoning/Stopping, and a press landing in any of those IS the
+/// race this doc says must be refused — there is no bound engine yet (or no longer) for a
+/// pause/resume to reach.
 pub(crate) fn transport(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
     play: Option<bool>,
 ) -> bool {
-    if !crate::route::is_preview(ps) || !occupies() || !pa.is_live() {
+    if !crate::route::is_preview(ps) || !bound_or_playing() || !pa.is_live() {
         return false;
     }
     let want = crate::app::lifecycle::transport_target(play, crate::app::lifecycle::paused());
@@ -576,6 +605,29 @@ mod tests {
         assert_eq!(m.phase(), Phase::Stopping);
         m.stopped();
         assert_eq!(m.phase(), Phase::Idle);
+    }
+
+    /// **The invariant `transport`'s own doc claims: a press racing the machine's own stop must be
+    /// refused.** `occupies()` (`phase != Idle`) would pass Fetching/Loading/Abandoning/Stopping
+    /// through — all of them mid-race, none of them a live engine a pause/resume could reach.
+    /// `bound_or_playing` (what `transport` actually gates on) must accept only Binding/Playing.
+    #[test]
+    fn bound_or_playing_excludes_every_race_occupies_would_let_through() {
+        for phase in [
+            Phase::Idle,
+            Phase::Fetching,
+            Phase::Loading,
+            Phase::Abandoning,
+            Phase::Stopping,
+        ] {
+            assert!(
+                !phase_bound_or_playing(phase),
+                "{phase:?} must not let a transport press through"
+            );
+        }
+        for phase in [Phase::Binding, Phase::Playing] {
+            assert!(phase_bound_or_playing(phase), "{phase:?} is a live, reachable session");
+        }
     }
 
     #[test]
