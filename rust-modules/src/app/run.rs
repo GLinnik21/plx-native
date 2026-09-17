@@ -2080,6 +2080,16 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         if crate::stores::metadata::pump_detail() {
             crate::ui::idle::invalidate(); // a detail landing rewrites the page under us
         }
+        // Async season load: install the worker's episode list into CURRENT. Route-unconditional
+        // for the same reason as pump_detail above; see `stores/metadata.rs`'s module doc for why
+        // this call site went missing for a whole migration and how it was found.
+        // MUST run AFTER pump_detail(): a landed detail's `install_landed_detail` calls
+        // `supersede_season()`, invalidating any season fetch for the item being replaced.
+        // Pumping season first could apply a stale season landing to CURRENT in the one frame
+        // before pump_detail() replaces it.
+        if crate::stores::metadata::pump_season() {
+            crate::ui::idle::invalidate(); // a season landing rewrites the episode row under us
+        }
         // D7: the continuation half of `activate_card`'s show/season Play — see
         // `App::menu_play_await`/`input::menu_play_tick`'s own doc. Right beside the pump above
         // for the same route-unconditional reason: the press that armed the wait may have come
