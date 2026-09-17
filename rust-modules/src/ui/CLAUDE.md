@@ -679,7 +679,8 @@ left for this note to paper over.
 ## When you're done
 
 Three signals, in ascending cost. **`make check`** first — the host unit suite (`cargo test --lib`,
-~0.3s) includes the UI geometry and focus tests: `screens/home/tests.rs`'s destination round trips,
+~28 s for 3,639 tests, measured 2026-09-17; do not re-quote that number, `time` it) includes the UI
+geometry and focus tests: `screens/home/tests.rs`'s destination round trips,
 row stepping staying inside the shelf array, and the pointer hit column matching the drawn card at
 every snap phase; and
 `card_row.rs`'s heading-clearance behaviour driven frame by frame (the regression that the heading
