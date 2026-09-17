@@ -1403,6 +1403,19 @@ pub(crate) fn rebuild_for_test(state: &mut SearchState) {
     rebuild(state);
 }
 
+/// Post one item straight to `adapter`'s mailbox for source `i` at `gen`, bypassing the worker —
+/// the seam an out-of-module owned-Bridge test needs (`app/viewstate_directory_policy_tests.rs`)
+/// to prove a landing routed into ONE adapter never reaches a pump reading a DIFFERENT one, which
+/// is the same structural claim [`land`]'s own doc makes for a retired `Arc` after `Reset`. Kept
+/// as `Item` in, not [`Projection`], so a caller outside this module never needs that private
+/// type named.
+#[cfg(test)]
+pub(crate) fn land_for_test(adapter: &SearchAdapter, i: usize, gen: u32, item: Item) {
+    let mut projection: Projection = [const { Vec::new() }; NKIND];
+    projection[0].push(item);
+    land(adapter, i, gen, Some(projection));
+}
+
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 #[path = "search_test_support.rs"]
