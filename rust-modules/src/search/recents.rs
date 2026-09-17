@@ -334,11 +334,12 @@ mod tests {
             assert!(!remember_with(first.generation(), same, || panic!("no-op submitted a write")));
             assert!(first.same_publication(&snapshot()));
         }
-        let outer = crate::search::SearchState::default().snapshot();
+        let owner = crate::search::SearchState::default();
+        let outer = owner.snapshot();
         assert!(remember_with(first.generation(), "beta", || submissions += 1));
         assert_eq!(first.terms(), &["alpha"]);
         assert_eq!(snapshot().terms(), &["beta", "alpha"]);
-        let changed = crate::search::SearchState::default().snapshot();
+        let changed = owner.snapshot();
         assert_eq!(outer.view().query_gen(), changed.view().query_gen());
         assert!(!outer.same_publication(&changed), "recents change independently of query results");
         assert_eq!(outer.view().recents().terms(), &["alpha"]);

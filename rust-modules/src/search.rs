@@ -81,9 +81,9 @@
 //! source status/backoff/answer); [`SearchAdapter`] is the `Arc`'d worker-touched half (one
 //! [`Fetch`] per registry slot — the in-flight claim plus the landing mailbox). A production
 //! `Bridge` owns exactly one of each pair through `stores::search::SearchStore`, which is what
-//! makes two `Bridge`s share neither a query, a landing nor a notice. `SearchStore::run` rotates
-//! `adapter` to a fresh `Arc` on `SearchCmd::Reset`, so a worker spawned before the reset can only
-//! ever complete into the retired mailbox it captured.
+//! makes two `Bridge`s share neither a query, a landing nor a notice.
+//! `SearchStore::run_with_directory` rotates `adapter` to a fresh `Arc` on `SearchCmd::Reset`, so
+//! a worker spawned before the reset can only ever complete into the retired mailbox it captured.
 #![allow(dead_code)]
 
 use crate::plex::ServerId;
@@ -619,8 +619,8 @@ impl SearchState {
         )
     }
 
-    /// Synchronous command path. `stores::search::SearchStore::run` is the one caller in
-    /// production and is what rotates `adapter` on `SearchCmd::Reset`.
+    /// Synchronous command path. `stores::search::SearchStore::run_with_directory` is the
+    /// production caller and is what rotates `adapter` on `SearchCmd::Reset`.
     pub(crate) fn run(
         &mut self,
         adapter: &Arc<SearchAdapter>,

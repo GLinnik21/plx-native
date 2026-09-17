@@ -34,13 +34,14 @@ read/mutation facade and storage selector with no allowlist.
 Six data modules own the application's server-derived state: `browse` (the Library table and its
 per-section paged listing), `pms` (Home's hub catalog), `metadata` (the detail page's item,
 seasons and episodes, the playing item), `search`, `person` and `viewstate` (the view-state
-WRITE queue). Browse, Person and ViewState are exceptions to the older global shape: each `Bridge` owns one
-of each store. `BrowseStore`'s state/adapter/notice and `ViewStateStore`'s queue, flight, retry and
-refresh state, worker adapter and notice are per-instance. The Browse
+WRITE queue). Browse, Person, Search and ViewState are exceptions to the older global shape: each
+`Bridge` owns one of each store. `BrowseStore`'s state/adapter/notice, `SearchStore`'s
+state/adapter/notice and `ViewStateStore`'s queue, flight, retry and refresh state, worker adapter
+and notice are per-instance. The Browse
 adapter holds Browse's page, genre, letter, source-discovery and section-hub mailboxes and
 single-flight flags. Person's adapter retains the exact `MAX_SERVERS * 3 + 2` slot numbering and
-controlled-record schema; Person and ViewState both rotate adapters on reset.
-The other three still use compatibility globals and mailboxes, with a worker
+controlled-record schema; Person, Search and ViewState all rotate adapters on reset.
+`pms` and `metadata` still use compatibility globals and mailboxes, with a worker
 spawned through `task::spawn_small`, generation atomics that supersede a late landing, and a
 once-a-frame pump in their existing callers.
 
@@ -153,27 +154,29 @@ about to establish. That fact is what decides §3 below.
 
 §14 says a legacy mutator becomes "a pure synchronous validation plus `queue(StoreCmd)`, so legacy
 and migrated callers land in the same drain". That temporary legacy-apply guidance explicitly
-excludes Browse, Person and ViewState. All three still have answers consumed in the same turn:
-owned screens emit addressed effects, `app/bridge.rs` delivers each command to the matching owned store, and
+excludes Browse, Person, Search and ViewState. All four still have answers consumed in the same
+turn: owned screens emit addressed effects, `app/bridge.rs` delivers each command to the matching owned store, and
 synchronous boot/input boundaries call the explicit Bridge/Stores owner they already hold. Both
 paths step on the main thread before the frame presents, and the aggregate drain delivers that
 owner's notice to its live screens. Preserving that timing requires no global selector or adapter;
-the other three stores retain their older compatibility arrangement until their ownership slices
+`pms` and `metadata` retain their older compatibility arrangement until their ownership slices
 land.
 
 ## 4. What is NOT in phase 4, and why
 
-- **The mailbox shapes stay.** Search's `SLOT[NSRC]` and `pms`'s `RESULTS` remain compatibility
-  globals. Person's `FETCH[]` shape is now `PersonAdapter::fetch`, owned per Bridge without changing
+- **The mailbox shapes stay.** `pms`'s `RESULTS` remains a compatibility global. Search's
+  `SLOT[NSRC]` shape is now `SearchAdapter`'s per-slot fetch claims/mailboxes, owned per Bridge
+  without changing slot ordinals or record fields. Person's `FETCH[]` shape is now
+  `PersonAdapter::fetch`, owned per Bridge without changing
   slot ordinals, claims, mailbox multiplicity or record fields. Browse's page, genre,
   letter, source-discovery and section-hub mailboxes are now fields of its per-`BrowseStore`
   `BrowseAdapter`, not process-wide `PAGE_RESULT`/`GENRE_RESULT`/`LETTER_RESULT`/`SRC_RESULT`/
-  `HUB_FETCHING` state. ViewState's `MAIL` moved into its per-owner rotated adapter. Each remaining compatibility store is single-flight by construction
+  `HUB_FETCHING` state. ViewState's `MAIL` moved into its per-owner rotated adapter. Each remaining compatibility store (`pms`, `metadata`) is single-flight by construction
   (`FETCHING`/`IN_FLIGHT` bounds the worker count), so
   the backpressure `Landing` adds is a no-op for them today, and their supersede rules are keyed on
   generations the screens read. Browse is already stepped by `app/bridge.rs` for `StoreWork::Browse`
-  and `StoreWork::BrowseDiscovery`, while ViewState's route-unconditional pump is owner-bound;
-  the other three stores retain their compatibility paths until their
+  and `StoreWork::BrowseDiscovery`, while ViewState's and Search's route-unconditional pumps are
+  owner-bound; `pms` and `metadata` retain their compatibility paths until their
   ownership slices land.
 - **The pumps stay where they are.** A route-gated pump moved to the machine's `Tick` would fetch
   behind the player, which `pms::pump`'s doc forbids for a reason. Browse's owned full and
