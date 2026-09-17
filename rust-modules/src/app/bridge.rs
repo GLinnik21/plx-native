@@ -2149,18 +2149,59 @@ pub(crate) fn account_menu(
 // the loop's navigations, as container ops
 // ---------------------------------------------------------------------------------------------
 
-/// **Go to a PEER — Home, the Library or Search** (spec §3.4 `NavOp::Root`).
+/// **Replace the WHOLE stack with `arg`** (spec §3.4 `NavOp::Root`).
+///
+/// Every entry, including the current root, leaves for good and `arg` is minted as the sole
+/// survivor — unless the stack is already exactly `[arg]`, which is a `PopTo(root)` no-op instead
+/// of empty churn. This is the sign-in/sign-out/profile-switch/onboarding-gate reset: there is no
+/// page underneath worth returning to, so none is kept. **It is NOT the shared strip's pill
+/// press** — that is [`nav_select_tab`], which covers-and-mints over the existing root rather than
+/// discarding it, so BACK off a pressed pill still lands somewhere. The two used to be one
+/// `NavOp::Root` arm, and sharing it was the bug: a per-frame `Root(Profiles)` follower asking
+/// this while Login was the un-retired root minted a fresh `Profiles` OVER Login every single
+/// frame forever, each mint orphaning whatever surface (first-run consent) had been presented in
+/// between (TV 2026-09-17).
+pub(crate) fn nav_root(d: &mut Dispatcher<AppHost>, arg: AppArg) {
+    d.request(MachineId::Nav, NavOp::Root(arg));
+}
+
+/// **Is `arg` already the settled top** — mounted, on top, and nothing parked or mid-transition?
+///
+/// The per-frame Login/Profiles follower (`run.rs`) asks for its landing every frame of a phase,
+/// and `NavStack::request`'s own dedup already makes an exactly-redundant `Root`/`SelectTab`
+/// inert — but a caller downstream of THAT request (`maybe_ask_consent`, presenting a surface
+/// over the page this call lands on) needs to know whether the landing has actually happened yet,
+/// which the dedup alone does not expose to it. This is that one shared check.
+pub(crate) fn top_settled_on(d: &Dispatcher<AppHost>, arg: &AppArg) -> bool {
+    use crate::ui::screen::ScreenArg;
+    !d.nav.tabs.stack.is_pending() && d.nav.top_page().map(|e| e.arg.same_instance(arg)).unwrap_or(false)
+}
+
+/// **`nav_root`, made edge-triggered** — a no-op while `arg` is already the settled top.
+///
+/// `NavStack::request`'s dedup already drops the redundant request before it touches `pending` or
+/// the transition, so this adds nothing to the STACK's own correctness; what it buys the per-frame
+/// callers in `run.rs`'s Login/Profiles follower is not re-asking at all, which is what lets
+/// [`top_settled_on`] answer "has this landing happened" for them.
+pub(crate) fn nav_root_if_unsettled(d: &mut Dispatcher<AppHost>, arg: AppArg) {
+    if !top_settled_on(d, &arg) {
+        nav_root(d, arg);
+    }
+}
+
+/// **Select a shared-strip PILL — Home, the Library or Search** (spec §3.4 `NavOp::SelectTab`).
 ///
 /// The three strip pills are peers of one another and all stand on Home, so arriving at one
-/// unwinds whatever was above the root: `Root` is a `PopTo(root)` when the root is already this
-/// page and a cover-and-mint otherwise. That is exactly what `Trail::reset()` + `Trail::push()`
+/// unwinds whatever was above the root: `SelectTab` is a `PopTo(root)` when the root is already
+/// this page and a cover-and-mint otherwise. That is exactly what `Trail::reset()` + `Trail::push()`
 /// spelled by hand, and what the container did NOT do before D1 — `sync_page` pushed for anything
 /// that was not a boot gate, so `Library → Search` left the container three deep while the trail
 /// said two, and BACK's destination came off the container. The trail's own doc named that
 /// divergence as the bug ("BACK off a result eventually lands on the browse grid for one user and
-/// Home for another"); one authority is what settles it.
-pub(crate) fn nav_root(d: &mut Dispatcher<AppHost>, arg: AppArg) {
-    d.request(MachineId::Nav, NavOp::Root(arg));
+/// Home for another"); one authority is what settles it. See [`nav_root`] for the other half of
+/// the split — the true replace a pill press must never do.
+pub(crate) fn nav_select_tab(d: &mut Dispatcher<AppHost>, arg: AppArg) {
+    d.request(MachineId::Nav, NavOp::SelectTab(arg));
 }
 
 /// **Put `want` on top, reusing an entry that already holds it.**
@@ -2259,13 +2300,13 @@ pub(crate) fn nav_tab(
     nav_peer(d, arg, ret);
 }
 
-/// A peer of Home: root there unless it is already the page on top.
+/// A peer of Home: select that pill unless it is already the page on top.
 fn nav_peer(d: &mut Dispatcher<AppHost>, arg: AppArg, ret: Option<ReturnState<u32, PageMemory>>) {
     use crate::ui::screen::ScreenArg;
     if d.nav.top_page().map(|e| e.arg.same_instance(&arg)).unwrap_or(false) { return; }
     match ret {
-        Some(ret) => d.request_with_return(MachineId::Nav, NavOp::Root(arg), ret),
-        None => nav_root(d, arg),
+        Some(ret) => d.request_with_return(MachineId::Nav, NavOp::SelectTab(arg), ret),
+        None => nav_select_tab(d, arg),
     }
 }
 

@@ -1685,27 +1685,22 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                     // no `enter()`: rooting the stack at the page is what mounts the owned
                     // screen (`boot.rs`), and a ROOT is right because the sweep above has just
                     // emptied the tree.
-                    super::bridge::nav_root(&mut app.pages, AppArg::Onboard);
+                    super::bridge::nav_root_if_unsettled(&mut app.pages, AppArg::Onboard);
                 } else {
                     log("login: server installed — entering Home");
-                    super::bridge::nav_root(&mut app.pages, AppArg::Home);
+                    super::bridge::nav_root_if_unsettled(&mut app.pages, AppArg::Home);
                 }
             } else if app.bridge.auth_read().0.persistence_warning.is_some() {
                 // A fresh save could not be confirmed durable: keep the report reachable before
                 // consent/profile routing, exactly as 0.6.6 did — the warning is answered on the
                 // login screen itself (AUTH-03), not by moving on as if it were acknowledged.
-                super::bridge::nav_root(&mut app.pages, AppArg::Login);
+                super::bridge::nav_root_if_unsettled(&mut app.pages, AppArg::Login);
             } else {
                 match app.bridge.auth_read().0.phase {
                     // A Ready decision can still await its queued disk/registry ACK. Keep
                     // the current flow page until the exact owner handoff is available.
                     crate::auth::Phase::Ready => {}
                     crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
-                        // BEFORE the picker: the account is authorized, so the consent
-                        // question is answerable, and the person holding the remote at this
-                        // moment is the one who signed the television in. It draws over the
-                        // picker's route on its own opaque ground.
-                        maybe_ask_consent(&mut app.pages);
                         // No `enter()`-on-change guard any more (phase 6): the picker is an
                         // owned screen, so a route that is ALREADY `Profiles` mints nothing
                         // (`bridge::frame`'s `Some(_) => {}` arm) and the existing instance's
@@ -1713,13 +1708,35 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                         // assignment untouched, exactly as it did behind the old guard; a route
                         // that is NOT yet `Profiles` gets a fresh `ProfilesScreen` the moment the
                         // tree follows it, which is the whole of what `ui::profiles::enter()`
-                        // used to reset by hand. `nav_root` is a no-op when the picker is
-                        // already the root (`Root`'s own `PopTo(root)` arm with nothing above
-                        // it), which is what makes calling it every frame of the phase free.
-                        super::bridge::nav_root(&mut app.pages, AppArg::Profiles);
+                        // used to reset by hand.
+                        //
+                        // **`nav_root_if_unsettled` is a genuine no-op once the picker is the
+                        // settled root — not merely "cheap".** The old comment here claimed
+                        // calling a bare `Root(Profiles)` every frame was free because `Root`'s
+                        // own `PopTo(root)` arm "did nothing" when the root already matched; it
+                        // still restarted the `PageDip` transition from wherever its alpha was,
+                        // every single frame, so the dip never reached `Idle`. Worse, `Root` and
+                        // the strip's pill press shared one arm back then, so once Login (never
+                        // retired) sat under the mint, this same call retired and re-minted
+                        // `Profiles` every frame too. `Root` now truly replaces (§stack.rs) and
+                        // `NavStack::request` drops an exactly-redundant request before it
+                        // touches the transition at all, so the guard here is what lets the NEXT
+                        // line ask "has the picker actually landed" honestly.
+                        super::bridge::nav_root_if_unsettled(&mut app.pages, AppArg::Profiles);
+                        // BEFORE the picker: the account is authorized, so the consent
+                        // question is answerable, and the person holding the remote at this
+                        // moment is the one who signed the television in. It draws over the
+                        // picker's route on its own opaque ground — which means it must not be
+                        // asked until Profiles is the SETTLED top: presenting it while Login is
+                        // still fading out underneath would host it on the entry the `Root`
+                        // above is about to retire, and the very next commit would orphan it
+                        // (TV 2026-09-17's mount/unmount loop).
+                        if super::bridge::top_settled_on(&app.pages, &AppArg::Profiles) {
+                            maybe_ask_consent(&mut app.pages);
+                        }
                     }
                     _ => {
-                        super::bridge::nav_root(&mut app.pages, AppArg::Login);
+                        super::bridge::nav_root_if_unsettled(&mut app.pages, AppArg::Login);
                     }
                 }
             }

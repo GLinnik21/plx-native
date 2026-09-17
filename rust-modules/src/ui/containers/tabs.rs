@@ -1,6 +1,9 @@
 //! `TabContainer` (restructure spec §6.2): the shared top strip as a `Row` group the container
 //! contributes ABOVE the page's groups, over ONE shared `NavStack<PageDip>` — Home is the single
-//! root; a pill is `NavOp::Root`. The page declares `strip_reachable()` (Home: false while snapped
+//! root; a pill is `NavOp::SelectTab`, which covers-and-mints over the existing root rather than
+//! replacing it (`NavOp::Root` is the other half of that split: a true replace, root included,
+//! for a sign-in/sign-out/profile-switch reset rather than a peer press). The page declares
+//! `strip_reachable()` (Home: false while snapped
 //! to the grid) and a `Link{STRIP, Down, <entry group>}`; both are `Screen` methods with defaults.
 //! A pill's activation is `ScreenEvent::Activate` on the page.
 //!
@@ -80,13 +83,13 @@ impl<H: Host> TabContainer<H> {
         self.stack.top().map(|e| e.id)
     }
 
-    /// Select a pill: `Root(pill)` on the shared stack; the capsule moves on the press frame.
+    /// Select a pill: `SelectTab(pill)` on the shared stack; the capsule moves on the press frame.
     pub fn select(&mut self, i: usize, ret: super::super::screen::ReturnState<H::Elem, H::Memory>) {
         let Some(arg) = self.pills.get(i).cloned() else {
             return;
         };
         self.selected = i;
         self.stack
-            .request(super::super::machine::NavOp::Root(arg), ret);
+            .request(super::super::machine::NavOp::SelectTab(arg), ret);
     }
 }

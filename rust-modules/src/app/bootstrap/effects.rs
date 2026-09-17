@@ -296,3 +296,32 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::encode;
+    use crate::screens::registry::AppArg;
+    use crate::ui::machine::{Fx, NavOp};
+
+    /// `NavOp::SelectTab` was carved out of the old combined `Root`/`SelectTab` arm (TV
+    /// 2026-09-17); this codec already had a `select_tab` case waiting (nothing decoded it —
+    /// there is no `decode` here, only recording), and it is now actually reachable from
+    /// `nav_peer`/`nav_select_tab` and the dev triggers. A pill landing on Home is the case that
+    /// exercises `argument()`'s one non-`Content` success path through that new arm.
+    #[test]
+    fn select_tab_home_encodes_as_a_pill_not_a_replace() {
+        let effect = Fx::Nav(NavOp::SelectTab(AppArg::Home));
+        assert_eq!(encode(&effect).unwrap(), serde_json::json!({"select_tab": "home"}));
+    }
+
+    /// The pre-existing `Root(Home)` special case (line above the generic `Fx::Nav(op)` match)
+    /// still encodes the same way post-split — `Root` and `SelectTab` are recorded under
+    /// different keys, so a replay fixture can tell which one actually ran.
+    #[test]
+    fn root_home_still_encodes_distinctly_from_select_tab_home() {
+        let root = encode(&Fx::Nav(NavOp::Root(AppArg::Home))).unwrap();
+        let tab = encode(&Fx::Nav(NavOp::SelectTab(AppArg::Home))).unwrap();
+        assert_eq!(root, serde_json::json!({"root": "home"}));
+        assert_ne!(root, tab);
+    }
+}

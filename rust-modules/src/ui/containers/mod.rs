@@ -407,7 +407,13 @@ impl<H: Host> Navigation<H> {
 
     /// `NavEvent::ResetForProfile` (§6.1): every entry is dropped — surfaces first, then the
     /// page stack top-down. The next `Root` rebuilds the tree.
+    ///
+    /// **Also clears the page stack's own pending op and due flag.** A `Root`/`SelectTab`/`PopTo`
+    /// parked before the reset (a per-frame follower's, say) would otherwise still be sitting
+    /// there, and apply — at its own transition's floor, some frames later — over the tree this
+    /// just emptied, minting or restoring an entry the caller never asked for post-reset.
     pub fn reset_for_profile(&mut self) -> Vec<Life<H>> {
+        self.tabs.stack.clear_pending();
         let mut out = Vec::new();
         for (_, modal) in &mut self.covered_modals {
             for surface in modal.surfaces.drain(..).rev() {
