@@ -174,6 +174,36 @@ pub(crate) struct DetailScreen {
     /// [`LayoutStamp`] no longer matches the live item (in-place season landings rewrite
     /// `CURRENT` at a stable address). Never hashed.
     layout: Cell<Option<LayoutCache>>,
+    /// Cached answer to every metadata read `spot()` needs, refreshed only where a real
+    /// [`crate::metadata::MetadataView`] is in hand (`tick`, `draw`, end of `sync_keys`). See
+    /// Opus decision D7: `memory_at` runs with no store in reach at all, so this is the only way
+    /// it can answer without constructing a throwaway empty owner. Derived, not logical state —
+    /// deliberately absent from [`SHAPE`].
+    spot_facts: SpotFacts,
+}
+
+/// Snapshot of every metadata-dependent read [`DetailScreen::spot`] needs, taken while a real
+/// [`crate::metadata::MetadataView`] is in hand. See Opus decision D7.
+#[derive(Clone, Copy, Default, PartialEq)]
+pub(crate) struct SpotFacts {
+    detail: bool,
+    tracks: bool,
+    hero: hero::HeroSet,
+    season: Option<i64>,
+}
+
+impl SpotFacts {
+    fn of(screen: &DetailScreen, meta: crate::metadata::MetadataView<'_>) -> SpotFacts {
+        SpotFacts {
+            detail: screen.detail(meta).is_some(),
+            tracks: screen.tracks_available(meta),
+            hero: screen.hero_set(meta),
+            season: screen
+                .detail(meta)
+                .and_then(|d| d.seasons.get(d.cur_season))
+                .map(|s| s.index),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -300,6 +330,7 @@ impl DetailScreen {
             spin_ms: 0.0,
             spin_phase: crate::ui::motion::Phase::default(),
             layout: Cell::new(None),
+            spot_facts: SpotFacts::default(),
         }
     }
 
@@ -394,6 +425,7 @@ impl DetailScreen {
         if let Some(key) = pending_key {
             self.pending_season = self.local_by_key.get(&key).and_then(|local| season::locate(*local));
         }
+        self.spot_facts = SpotFacts::of(self, meta);
     }
 
     pub(crate) fn restore(&mut self, spot: &Spot, meta: crate::metadata::MetadataView<'_>) {
@@ -411,13 +443,13 @@ impl DetailScreen {
         self.scroll_target = 0.0;
     }
 
-    pub(crate) fn spot(&self, focus: Option<FocusKey<u32>>, meta: crate::metadata::MetadataView<'_>) -> Spot {
+    pub(crate) fn spot(&self, focus: Option<FocusKey<u32>>, facts: SpotFacts) -> Spot {
         let (section, col, ep_text) = focus
             .filter(|k| k.entry == self.entry)
-            .and_then(|k| self.locate(k.elem, meta))
+            .and_then(|k| self.locate_with(k.elem, facts.detail, facts.tracks))
             .map(|l| {
                 let col = match l {
-                    Located::Hero(control) => hero::index_of(self.hero_set(meta), control).unwrap_or(0),
+                    Located::Hero(control) => hero::index_of(facts.hero, control).unwrap_or(0),
                     _ => l.index(),
                 };
                 (
@@ -427,10 +459,6 @@ impl DetailScreen {
                 )
             })
             .unwrap_or((0, 0, false));
-        let season = self
-            .detail(meta)
-            .and_then(|d| d.seasons.get(d.cur_season))
-            .map(|s| s.index);
         Spot {
             section,
             col,
@@ -438,7 +466,7 @@ impl DetailScreen {
             // Engine-owned remembered group cursors ride ReturnState separately. These fields stay
             // for legacy focusprobe/trail serialization only and are not a second authority.
             saved_col: [0; crate::metadata::SPOT_SECTION_SLOTS],
-            season,
+            season: facts.season,
         }
     }
 
@@ -704,16 +732,22 @@ impl DetailScreen {
     }
 
     fn locate(&self, elem: u32, meta: crate::metadata::MetadataView<'_>) -> Option<Located> {
+        self.locate_with(elem, self.detail(meta).is_some(), self.tracks_available(meta))
+    }
+
+    fn locate_with(&self, elem: u32, detail: bool, tracks: bool) -> Option<Located> {
         let local = if elem >= FIRST_ITEM_ELEM {
             // The projections describe only our currently published item.
-            self.detail(meta)?;
+            if !detail {
+                return None;
+            }
             *self.local_by_key.get(&elem)?
         } else if elem < season::SEASON_ELEM_RANGE_START || elem >= about::ABOUT_ELEM_RANGE_START {
             elem
         } else {
             return None;
         };
-        Self::locate_local(local, self.tracks_available(meta))
+        Self::locate_local(local, tracks)
     }
 
     /// `tracks` is [`Self::tracks_available`] — the page's own answer, threaded in because this is
@@ -1623,6 +1657,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
 
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let meta = H::metadata(f.cx);
+        self.spot_facts = SpotFacts::of(self, meta);
         let measure = f.cx.measure;
         let preview = crate::player::preview::view();
         if preview_punch_through(preview.picture) {
@@ -1766,13 +1801,12 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
         // `memory_at` is a fixed `Screen<H>` trait signature shared by every screen (called
         // through `dyn Screen<H>` from `ui/dispatch.rs` and `app/bridge.rs`, neither of which
         // carries a `MetadataView`), so there is no owner to thread down without widening that
-        // trait across every screen — out of this layer's scope. Construct a fresh owner here,
-        // exactly the pattern test code uses when no `cx` is in reach; the statics it still reads
-        // are the same ones `H::metadata(cx)` reads until Stage B deletes them.
-        let owned_metadata = crate::stores::metadata::MetadataStore::default();
-        let meta = owned_metadata.view();
+        // trait across every screen — out of this layer's scope. Read the cached `SpotFacts`
+        // instead (Opus decision D7): it is refreshed everywhere a real view is in hand and
+        // answers for an arbitrary elem exactly, since every metadata read behind `spot()` is
+        // elem-independent.
         PageMemory::Detail(DetailMemory {
-            spot: self.restore_intent.as_ref().filter(|_| self.return_pending).map(|intent| intent.spot.clone()).unwrap_or_else(|| self.spot(focus, meta)),
+            spot: self.restore_intent.as_ref().filter(|_| self.return_pending).map(|intent| intent.spot.clone()).unwrap_or_else(|| self.spot(focus, self.spot_facts)),
             keys: self.keys.clone(), next_elem: self.next_elem,
         })
     }
@@ -2557,6 +2591,7 @@ impl DetailScreen {
 
     fn tick<H: ContentLike + crate::screens::registry::MetadataLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let meta = H::metadata(cx);
+        self.spot_facts = SpotFacts::of(self, meta);
         self.layout.set(None);
         let dt = t.dt();
         self.pump_restore(meta, fx);
