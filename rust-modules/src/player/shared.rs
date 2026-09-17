@@ -242,14 +242,6 @@ struct HlsAutomaticOwner {
     user_sequence: u64,
 }
 
-/// Ownership of the callback function installed in one native Starfish `Load`.
-///
-/// [`Shared`] survives reloads, while the library may deliver an event on its own thread after
-/// teardown has started. Each Starfish object address is now session-unique, but Rust still needs
-/// a generation check and drain before resetting this process-long state. A check without this mutex
-/// still has a check/use race against [`Shared::reset_session`]: a callback could validate the
-/// old generation, get descheduled, and then write into the freshly reset next session. Holding
-/// this lock for the complete callback makes retirement a drain barrier as well as a token check.
 /// issue #74 D.1: whether the epoch's Starfish `Load` call has returned yet. Mirrors, on the Rust
 /// side, the `g_load_returned` flag `starfish.c`'s `sf_ready_object()` now requires alongside
 /// `SMP_READY()` — every session begins `InFlight`, and `threads::load_thread` flips it to
@@ -270,6 +262,14 @@ enum LoadCall {
     },
 }
 
+/// Ownership of the callback function installed in one native Starfish `Load`.
+///
+/// [`Shared`] survives reloads, while the library may deliver an event on its own thread after
+/// teardown has started. Each Starfish object address is now session-unique, but Rust still needs
+/// a generation check and drain before resetting this process-long state. A check without this mutex
+/// still has a check/use race against [`Shared::reset_session`]: a callback could validate the
+/// old generation, get descheduled, and then write into the freshly reset next session. Holding
+/// this lock for the complete callback makes retirement a drain barrier as well as a token check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NativeSessionPhase {
     Idle,
@@ -290,6 +290,15 @@ enum NativeSessionPhase {
     /// evidence, not a producer barrier: native callback admission is closed and drained in the C
     /// interposer before the main thread retires this phase and considers D1.
     Unloaded {
+        epoch: u32,
+    },
+    /// Teardown gave up on this epoch's `Load` while it was still in flight (the D.1.4 budget
+    /// had fired and the media thread had not returned). The native object belongs to no engine
+    /// any more: it is held by `PlayerAdapter`'s abandoned-Load slot until `sf_load` returns and
+    /// the main thread releases it. Only the firmware's UNLOADCOMPLETED is admitted (that is the
+    /// release's own lifecycle evidence); every other callback is dropped, and no new native
+    /// session may begin, because the C seam still owns exactly this one object.
+    Abandoned {
         epoch: u32,
     },
 }
@@ -988,6 +997,17 @@ impl Shared {
         }
     }
 
+    /// Publish a synchronous refusal only while this exact epoch owns the active session.
+    /// Hold the retirement/reset barrier across check and write, as callback admission does.
+    pub(crate) fn publish_native_load_failure(&self, epoch: u32) -> bool {
+        let state = self.native_session.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(state.phase, NativeSessionPhase::Active { epoch: active, .. } if epoch != 0 && active == epoch) {
+            return false;
+        }
+        self.load_failed.store(true, Ordering::Release);
+        true
+    }
+
     /// Whether `epoch`'s Starfish `Load` call has returned yet. Required by `pump.rs`'s
     /// `loadCompleted` arm before it may even poll `sf_is_load_completed` (issue #74: that poll is
     /// itself a concurrent Starfish call, and on v0.6.0 it was the FIRST thing that arm did while
@@ -1119,6 +1139,7 @@ impl Shared {
             state.phase,
             NativeSessionPhase::Active { epoch: active, .. }
                 | NativeSessionPhase::Unloaded { epoch: active }
+                | NativeSessionPhase::Abandoned { epoch: active }
                 if epoch != 0 && active == epoch
         );
         if !owns {
@@ -1126,6 +1147,31 @@ impl Shared {
         }
         state.phase = NativeSessionPhase::Idle;
         true
+    }
+
+    /// Hand `epoch`'s still-in-flight Load to the abandoned-Load release (see
+    /// [`NativeSessionPhase::Abandoned`]). `false` when `epoch` does not own the `Active` phase.
+    pub(crate) fn abandon_native_session(&self, epoch: u32) -> bool {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !matches!(state.phase, NativeSessionPhase::Active { epoch: active, .. } if epoch != 0 && active == epoch)
+        {
+            return false;
+        }
+        state.phase = NativeSessionPhase::Abandoned { epoch };
+        true
+    }
+
+    /// Test-only: drop an abandoned phase that a failing test left behind, which
+    /// [`reset_session`](Self::reset_session) deliberately preserves.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn test_force_native_idle(&self) {
+        self.native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .phase = NativeSessionPhase::Idle;
     }
 
     /// Whether this exact object crossed firmware's synchronous unload-complete callback path.
@@ -1266,6 +1312,16 @@ impl Shared {
             .native_session
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        if let NativeSessionPhase::Abandoned { epoch: abandoned } = state.phase {
+            // The release of an abandoned object needs its own UNLOADCOMPLETED evidence; nothing
+            // else from that object may reach the process-long state a later session will own.
+            if epoch == 0 || abandoned != epoch || class != NativeEventClass::UnloadCompleted {
+                return None;
+            }
+            let result = event();
+            state.phase = NativeSessionPhase::Unloaded { epoch };
+            return Some(result);
+        }
         let NativeSessionPhase::Active {
             epoch: active,
             presentation_gate,
@@ -1356,7 +1412,12 @@ impl Shared {
             .native_session
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        native.phase = NativeSessionPhase::Idle;
+        // An ABANDONED native object is not this engine's session: it outlives the engine by
+        // design until its `Load` returns and `engine::reap_abandoned_load` releases it. Clearing
+        // it here would let the next session begin while the C seam still owns that object.
+        if !matches!(native.phase, NativeSessionPhase::Abandoned { .. }) {
+            native.phase = NativeSessionPhase::Idle;
+        }
         // the diagnostics mirror is per-session too — a stale bind outcome from the last item is
         // exactly the misleading answer the read-out exists to avoid
         self.dg_stage.store(0, Ordering::Relaxed);

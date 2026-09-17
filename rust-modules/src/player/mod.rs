@@ -212,96 +212,20 @@ pub(crate) static INPLACE_SEEK_OK: AtomicBool = AtomicBool::new(true);
 static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 
 // ---- API app.rs calls (were extern "C" fns in playback.h) ----
+//
+// `start_bufferfeed`/`start_bufferfeed_tracked` gate on this device's `/dev/rtkmem` jail
+// pre-flight (community-tier finding: webosbrew/webos-homebrew-channel PR #202, 2019 Realtek
+// k5lp/k3lp sets, default Developer-Mode jailer missing that device node, known to crash native
+// A/V apps on this chassis) INSIDE `engine::start_bufferfeed_tracked` itself, latching the
+// refusal onto `ps.jail_load_blocked` — a `PlaybackSession` field, not a process-wide static —
+// so `state()` derives `PlaybackState::Error` for exactly the attempt that was refused and
+// `crate::route::cancel_play`'s `clear_play_verdict` (the same ritual that retires a `/decision`
+// refusal on leaving the player, called from `app.rs`'s `exit_player`) retires it precisely the
+// same way. See `engine.rs`'s `start_bufferfeed`/`start_bufferfeed_tracked` for the gate itself.
 pub(crate) use engine::{
-    acb_init, resume_at, stop_bufferfeed, suspend_bufferfeed, suspend_bufferfeed_if_attempt,
-    BufferfeedStartOutcome, ResumeOutcome,
+    acb_init, resume_at, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
+    suspend_bufferfeed, suspend_bufferfeed_if_attempt, BufferfeedStartOutcome, ResumeOutcome,
 };
-
-/// True while `state()` must derive `PlaybackState::Error` for THIS attempt because this
-/// device's jail is missing `/dev/rtkmem` (see [`crate::webos::jail_blocks_native_video`]).
-///
-/// The underlying device fact (does this jail have the device node) is genuinely process-wide
-/// and permanent — [`crate::webos::jail_blocks_native_video`] itself is never reset, and every
-/// future `start_bufferfeed` call is refused identically. This flag is a narrower thing: the only
-/// reason it exists is that no `Engine` is ever installed on this path, so nothing else can tell
-/// `state()` a refusal happened. Left set for the life of the process it leaked that reading onto
-/// every OTHER screen too — `state()` has no route check, so Home, the Library and every detail
-/// page read `Error` for good after one refused Play, exactly the shape `route.rs`'s
-/// `clear_play_verdict` doc already names as a bug once shipped ("a verdict left standing
-/// described the item the user walked away from"). So this is cleared by
-/// [`clear_jail_refusal_for_route_exit`] on the same ritual that retires a `/decision` refusal —
-/// leaving the player — and re-derived from scratch on the next attempt, which reaches exactly
-/// the same verdict because the device fact behind it never changed.
-static JAIL_LOAD_BLOCKED: AtomicBool = AtomicBool::new(false);
-
-/// Retire a latched jail refusal when the player route is left (BACK, Stop, EOS — the same
-/// moment [`crate::route::cancel_play`] retires a `/decision` refusal). Called from `app.rs`'s
-/// `exit_player`, the one ritual for leaving playback; see [`JAIL_LOAD_BLOCKED`]'s doc for why
-/// clearing this cannot un-refuse a real attempt — the next `start_bufferfeed` re-probes the same
-/// device fact and sets it right back before a byte of video moves.
-pub(crate) fn clear_jail_refusal_for_route_exit() {
-    JAIL_LOAD_BLOCKED.store(false, Relaxed);
-}
-
-/// Start one native Engine — gated first on this device's `/dev/rtkmem` jail pre-flight
-/// (community-tier finding: webosbrew/webos-homebrew-channel PR #202, 2019 Realtek k5lp/k3lp
-/// sets, default Developer-Mode jailer missing that device node, known to crash native A/V apps
-/// on this chassis). When the gate blocks, the native Engine is never reached at all — no
-/// `sf_load`, which is the crash this exists to avoid — and the refusal is reported through the
-/// same failure signature [`start_bufferfeed_tracked`] returns for any other refusal. When it
-/// does not block, forwards to [`engine::start_bufferfeed_tracked`] exactly as before.
-///
-/// Returns `true` (entered) rather than `false` when the gate blocks — every real caller of this
-/// bool form (`app::start_playback`, the foreground-key off-route arm, the `pump_play` off-route
-/// backstop) treats `false` as "stay on the current screen, nothing happened", which for this
-/// refusal is exactly the silent-Play-button bug this exists to fix. `false` there is meant for a
-/// transient conflict the caller can retry; a jail refusal never resolves without a firmware
-/// change, so the caller must flip to `Route::Player`, where `state()` derives
-/// `PlaybackState::Error` from [`JAIL_LOAD_BLOCKED`] with no Engine ever installed — the same
-/// no-Engine-Error shape `route::play_refused`/`route::play_resolution_failed` already produce for
-/// a pre-flight `/decision` refusal.
-pub(crate) fn start_bufferfeed(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut adapter::PlayerAdapter,
-) -> bool {
-    if crate::webos::jail_blocks_native_video() {
-        refuse_missing_rtkmem();
-        return true;
-    }
-    engine::start_bufferfeed(ps, pa)
-}
-
-/// [`start_bufferfeed`], keeping the exact `sf_load` identity for foreground recovery. See that
-/// function's doc for the jail gate.
-pub(crate) fn start_bufferfeed_tracked(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut adapter::PlayerAdapter,
-) -> BufferfeedStartOutcome {
-    if crate::webos::jail_blocks_native_video() {
-        return refuse_missing_rtkmem();
-    }
-    engine::start_bufferfeed_tracked(ps, pa)
-}
-
-/// Refuse a Load attempt without ever calling into the native Engine. Mirrors
-/// `engine::start_bufferfeed_tracked`'s own Conflict arm: abort whatever route-start ticket
-/// exists (there may be none, on a cold boot with nothing prepared yet) as `StartFailed`, which
-/// routes through the existing failure/rollback arm to the read-out — never a permanent spinner
-/// — and report `Failed`.
-fn refuse_missing_rtkmem() -> BufferfeedStartOutcome {
-    log(
-        "start_bufferfeed: refusing — this jail is missing /dev/rtkmem on this chassis \
-         (community-tier finding, webosbrew/webos-homebrew-channel PR #202)",
-    );
-    JAIL_LOAD_BLOCKED.store(true, Relaxed);
-    if let Some(route_start) = crate::route::begin_route_start() {
-        let _ = crate::route::abort_route_start(
-            route_start,
-            crate::route::RouteStartResult::StartFailed,
-        );
-    }
-    BufferfeedStartOutcome::Failed
-}
 
 pub(crate) use pump::{pump, recover_failed_foreground_original, ForegroundOriginalRecovery};
 pub(crate) use shared::PlaybackState;
@@ -582,16 +506,7 @@ pub(crate) fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState
     // that owns `pb_state` never runs. Deriving it in the one reader keeps a single writer — the
     // alternative is poking `Error` into the player's state from the frame loop. It sits BELOW the
     // resolve check because a fresh resolve is the thing that retires the last verdict.
-    if crate::route::play_refused(ps) || crate::route::play_resolution_failed(ps) {
-        return shared::PlaybackState::Error;
-    }
-    // …and so is the jail pre-flight refusal: `start_bufferfeed` now flips the route to
-    // `Route::Player` without ever building an Engine, so `pb_state` (the one thing `pump`
-    // writes, and `pump` never runs with no Engine installed) would otherwise read whatever it
-    // last held — `Idle` on a cold boot, which is the permanent-do-nothing bug this derivation
-    // closes. See `JAIL_LOAD_BLOCKED`'s doc: it is cleared on leaving the player route, not
-    // sticky for the process — the device fact behind it is what stays permanent.
-    if JAIL_LOAD_BLOCKED.load(Relaxed) {
+    if ps.jail_load_blocked || crate::route::play_refused(ps) || crate::route::play_resolution_failed(ps) {
         return shared::PlaybackState::Error;
     }
     shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
@@ -810,16 +725,18 @@ fn runtime_failure(
 /// to..." — never as a certain diagnosis, matching the community-tier evidence it is built on
 /// (see [`crate::webos::jail_blocks_native_video`]'s doc). Caption and readout are kept short for
 /// legibility from a phone photograph, same bar as every other arm here; the remedy's detail goes
-/// in `detail`.
+/// in `detail`. Unlike main's version of this screen, this fork's `Player.repair` flow (see
+/// `webos::jail_repair`) can actually attempt the Homebrew Channel service call that patches the
+/// jail profile, so the remedy text points at that confirmed in-app repair rather than at a bare
+/// reinstall.
 fn jail_error_shape() -> ErrorShape {
     ErrorShape {
         kind: FailureKind::JailMissingRtkmem,
-        caption: c"Playback failed — this TV's jail is missing a device file",
-        panel: "this install's jail is missing /dev/rtkmem, found on this chassis to crash native video (community-tier finding)",
-        readout: "This set's jail configuration is missing /dev/rtkmem",
+        caption: c"Playback failed — this TV's sandbox blocks native video",
+        panel: "this install's sandbox blocks access to /dev/rtkmem; PlxNative can offer a confirmed repair through rooted Homebrew Channel access",
+        readout: "This set's sandbox does not give the app /dev/rtkmem",
         detail: std::borrow::Cow::Borrowed(
-            "Found, on this chassis, to crash native video apps (community report: webosbrew/webos-homebrew-channel PR #202). \
-             Reinstalling through the Homebrew Channel should carry the jailer fix that adds the missing device file.",
+            "Repair requires a rooted TV and Homebrew Channel access. See github.com/GLinnik21/plx-native/issues/74 for help.",
         ),
         no_pass: false,
     }
@@ -908,14 +825,15 @@ fn error_shape(
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
-        // Same reader-facing wording as `TvPipeline` — a viewer sees the same failure either way
-        // (playback never started) — but a DIFFERENT `kind`, so a hang (issue #74 D.1.4's budget)
-        // is distinguishable from an ordinary firmware refusal on the telemetry wire.
+        // A DIFFERENT `kind` from `TvPipeline` (issue #74 D.1.4's budget is a hang, not a firmware
+        // refusal — see `RuntimeFailure::LoadTimeout`'s doc), and now its own reader-facing wording
+        // too: the pipeline never actually answered, so "rejected" would claim a firmware verdict
+        // that was never given.
         RuntimeFailure::LoadTimeout => ErrorShape {
             kind: FailureKind::LoadTimeout,
-            caption: c"Playback failed — the TV rejected the stream",
-            panel: "the television media pipeline rejected the stream",
-            readout: "This TV could not start the video stream",
+            caption: c"Playback failed — the TV did not finish starting the stream",
+            panel: "the television media pipeline did not finish starting the stream in time",
+            readout: "This TV did not finish starting the video stream in time",
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
@@ -957,7 +875,7 @@ pub(crate) fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
     // Ahead of every other cause: on an affected, unfixed set every Load this boot has been (and
     // every later one will be) refused before it reached the native Engine at all, so no other
     // signal below can be the real explanation for a playback failure.
-    if JAIL_LOAD_BLOCKED.load(Relaxed) {
+    if ps.jail_load_blocked {
         return jail_error_shape();
     }
     let demux_failed = SHARED
@@ -1940,142 +1858,10 @@ pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
 mod tests {
     use super::*;
 
-    /// Scope guard for the jail-refusal tests below: restores the process-wide latches those
-    /// tests drive by hand (`JAIL_LOAD_BLOCKED`, `webos::FORCE_JAIL_BLOCKED`) on every exit path,
-    /// including a panicking assert. Before this existed, each test restored both by hand only
-    /// AFTER its asserts, so one real regression — an assert that actually failed — left
-    /// `JAIL_LOAD_BLOCKED` (or `FORCE_JAIL_BLOCKED`) latched `true` for the rest of the process,
-    /// and every other caller of `state()` in this binary then read out `PlaybackState::Error`
-    /// too, turning one precise failure into a cascade of unrelated ones. Mirrors `engine.rs`'s
-    /// `load_in_flight_tests::Cleanup`. See finding
-    /// `jail-tests-leak-the-latched-error-state-when-an-assert-fails`.
-    struct JailTestGuard;
-    impl Drop for JailTestGuard {
-        fn drop(&mut self) {
-            JAIL_LOAD_BLOCKED.store(false, Relaxed);
-            crate::webos::FORCE_JAIL_BLOCKED.store(false, Relaxed);
-        }
-    }
-
-    /// `jail-refusal-never-reaches-the-failure-readout`: a refused Load must still read out as
-    /// `PlaybackState::Error` even though `pump.rs`'s `set_state` — the only writer of
-    /// `SHARED.pb_state` — never runs for this path (no `Engine` is ever installed, so
-    /// `player::pump` never sees a `Some(eng)` to act on). Before the fix, `state()` fell through
-    /// to the stale `pb_state` (`Idle` on a cold boot), which is exactly why pressing Play on an
-    /// affected set did nothing: `player_hud::busy_surface` never saw `PlaybackState::Error` and
-    /// so never drew the failure read-out.
-    #[test]
-    fn jail_refusal_reads_out_as_error_with_no_engine_ever_installed() {
-        let _guard = crate::testlock::serial();
-        // Isolate from any earlier test in this shared process. There IS a production reset path
-        // now (`clear_jail_refusal_for_route_exit`, called from `app.rs`'s `exit_player`), but
-        // this test drives `JAIL_LOAD_BLOCKED` directly rather than through a route exit, so it
-        // resets the static itself — and `JailTestGuard` guarantees that reset runs again on
-        // drop, panic or not, so a failing assert below cannot leak the latch into later tests.
-        let _jail_guard = JailTestGuard;
-        JAIL_LOAD_BLOCKED.store(false, Relaxed);
-        SHARED.reset_session();
-        let ps = crate::route::PlaybackSession::IDLE;
-        assert_eq!(
-            state(&ps),
-            shared::PlaybackState::Idle,
-            "sane starting point: nothing has failed yet"
-        );
-
-        refuse_missing_rtkmem();
-
-        assert!(JAIL_LOAD_BLOCKED.load(Relaxed), "the refusal must latch");
-        assert_eq!(
-            state(&ps),
-            shared::PlaybackState::Error,
-            "state() must derive Error from JAIL_LOAD_BLOCKED on its own — nothing ever calls \
-             pump.rs's set_state for a session whose Engine was never installed"
-        );
-    }
-
-    /// `jail-refusal-entered-return-has-no-regression-pin`: the OTHER half of the jail-refusal
-    /// fix, and the half the test above cannot see because it calls `refuse_missing_rtkmem()`
-    /// directly. The real caller is `app::start_playback`, which flips `*route = Route::Player`
-    /// only when `start_bufferfeed` returns `true` ("entered") — so if this ever regresses back
-    /// to `return false`, the symptom is exactly the one this whole fix exists for: press Play,
-    /// nothing happens, `make check` stays green (the test above still passes, since it never
-    /// calls `start_bufferfeed` at all). Drives the real gate through
-    /// `crate::webos::FORCE_JAIL_BLOCKED` — a test seam, since the real probe is a
-    /// process-wide `OnceLock` set once at boot and cannot be re-armed here — rather than setting
-    /// `JAIL_LOAD_BLOCKED` by hand, so it also proves `start_bufferfeed` is what latches it.
-    /// Gated on `hostsim`: `start_bufferfeed` forwards to `engine::start_bufferfeed` on the
-    /// non-blocked path, which reaches the real `sf_*`/`vp_*` extern declarations that have
-    /// no definition in a default-feature host build (only `starfish.c`, compiled for the
-    /// ARM target, provides them) — this test can only link where `ffi_host.rs` stands in.
-    #[cfg(feature = "hostsim")]
-    #[test]
-    fn start_bufferfeed_reports_entered_and_reads_out_as_error_when_the_jail_blocks_native_video()
-    {
-        let _guard = crate::testlock::serial();
-        let _jail_guard = JailTestGuard;
-        crate::webos::FORCE_JAIL_BLOCKED.store(true, Relaxed);
-        JAIL_LOAD_BLOCKED.store(false, Relaxed);
-        SHARED.reset_session();
-        let mut ps = crate::route::PlaybackSession::IDLE;
-        assert_eq!(
-            state(&ps),
-            shared::PlaybackState::Idle,
-            "sane starting point: nothing has failed yet"
-        );
-
-        let mut pa = adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
-        let entered = start_bufferfeed(&mut ps, &mut pa);
-
-        assert!(
-            entered,
-            "start_bufferfeed must report `true` (entered) on a jail refusal, or \
-             app::start_playback never flips the route to Player and the failure read-out is \
-             unreachable — the original silent-Play-button bug"
-        );
-        assert_eq!(
-            state(&ps),
-            shared::PlaybackState::Error,
-            "with `entered == true` the route is Player and the HUD must see Error, with no \
-             Engine ever installed"
-        );
-    }
-
-    /// `jail-block-latches-error-state-app-wide-for-the-process`: a jail refusal must not read
-    /// out as `Error` on every OTHER screen for the rest of the process — only for the attempt
-    /// that was actually refused. Before `clear_jail_refusal_for_route_exit` existed, nothing
-    /// retired `JAIL_LOAD_BLOCKED`, so `state()` kept answering `Error` on Home, the Library and
-    /// every detail page after the viewer had walked away from the failed Play — the exact shape
-    /// `route.rs`'s `clear_play_verdict` doc names as an already-shipped bug for the
-    /// `/decision`-refusal case.
-    /// See the previous test's doc: gated on `hostsim` for the same linking reason.
-    #[cfg(feature = "hostsim")]
-    #[test]
-    fn leaving_the_player_route_retires_a_latched_jail_refusal() {
-        let _guard = crate::testlock::serial();
-        let _jail_guard = JailTestGuard;
-        crate::webos::FORCE_JAIL_BLOCKED.store(true, Relaxed);
-        JAIL_LOAD_BLOCKED.store(false, Relaxed);
-        SHARED.reset_session();
-        let mut ps = crate::route::PlaybackSession::IDLE;
-
-        let mut pa = adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
-        let _ = start_bufferfeed(&mut ps, &mut pa);
-        assert_eq!(
-            state(&ps),
-            shared::PlaybackState::Error,
-            "sane precondition: the refusal must be visible while still on the player route"
-        );
-
-        // The leave-playback ritual (`app.rs::exit_player`) calls exactly this on BACK/Stop/EOS.
-        clear_jail_refusal_for_route_exit();
-
-        assert_eq!(
-            state(&ps),
-            shared::PlaybackState::Idle,
-            "a refusal retired on route exit must not keep describing Home, the Library or any \
-             detail page as PlaybackState::Error — the leak this test pins"
-        );
-    }
+    // The jail/rtkmem refusal (no Engine ever built, `state()` deriving `Error`, and the
+    // refusal retiring on route exit) is exercised by
+    // `native_failure_regressions::jail_refusal_enters_error_without_engine_and_retires_on_exit`
+    // below, against the real `ps.jail_load_blocked`-based gate in `engine.rs` — see that test.
 
     #[test]
     fn acb_pause_resume_cannot_overtake_the_bind_transaction() {
@@ -2686,6 +2472,42 @@ mod tests {
         );
     }
 
+    /// A firmware REFUSAL (`TvPipeline`) and a HANG (`LoadTimeout`, issue #74 D.1.4's
+    /// `NATIVE_LOAD_BUDGET`) are different events on the telemetry wire — `runtime_failures_fill_
+    /// the_existing_readout_reason_slot` above already pins the distinct `kind`/`code` — but until
+    /// now every viewer-facing string (`caption`, `panel`, `readout`) was byte-identical between
+    /// them, so a maintainer reading a photographed read-out or the diagnostics panel could not
+    /// tell "the TV said no" from "the TV never answered" apart. Pin that they now differ, and that
+    /// the timeout's own wording says something a hang actually describes (never finished /
+    /// answered), not the refusal's "rejected".
+    #[test]
+    fn load_timeout_has_its_own_wording_distinct_from_an_ordinary_tv_refusal() {
+        use crate::plex::serverinfo::Subscription as Sub;
+        let refused = error_shape(false, false, Sub::Unknown, None, RuntimeFailure::TvPipeline);
+        let timed_out = error_shape(false, false, Sub::Unknown, None, RuntimeFailure::LoadTimeout);
+        assert_ne!(
+            refused.caption, timed_out.caption,
+            "a refusal and a hang must not share a caption"
+        );
+        assert_ne!(
+            refused.panel, timed_out.panel,
+            "a refusal and a hang must not share a diagnostics panel line"
+        );
+        assert_ne!(
+            refused.readout, timed_out.readout,
+            "a refusal and a hang must not share a read-out reason"
+        );
+        let timed_out_caption = timed_out.caption.to_str().unwrap();
+        assert!(
+            timed_out_caption.contains("did not finish") || timed_out_caption.contains("never finished"),
+            "{timed_out_caption:?} should say the Load never finished, not that the TV rejected anything"
+        );
+        assert!(
+            !timed_out_caption.to_lowercase().contains("rejected"),
+            "{timed_out_caption:?} borrows the refusal's wording; a hang was never rejected"
+        );
+    }
+
     /// The PRE-FLIGHT arm: `/decision` refused the item before a byte of video moved, so the reason
     /// is the SERVER's and not our inference. Three things are asserted and each was a way to get
     /// this wrong. (1) The reason line is ours and fixed, while the detail is the server's sentence
@@ -2957,5 +2779,44 @@ mod tests {
         // (shared.rs), so a test that leaves it selected changes what the NEXT one sees
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(-1, Relaxed);
+    }
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+mod native_failure_regressions {
+    use super::*;
+    struct JailGuard;
+    impl Drop for JailGuard {
+        fn drop(&mut self) { crate::webos::FORCE_JAIL_BLOCKED.store(false, Relaxed); }
+    }
+    #[test]
+    fn jail_refusal_enters_error_without_engine_and_retires_on_exit() {
+        let _serial = crate::testlock::serial();
+        let _guard = JailGuard;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::reset_player_control_for_test(&ps);
+        SHARED.reset_session();
+        let mut pa = adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() });
+        crate::webos::FORCE_JAIL_BLOCKED.store(true, Relaxed);
+        assert!(start_bufferfeed(&mut ps, &mut pa));
+        assert!(!pa.is_live());
+        assert_eq!(state(&ps), PlaybackState::Error);
+        assert_eq!(error_now(&ps).kind, FailureKind::JailMissingRtkmem);
+        crate::route::cancel_play(&mut ps);
+        assert!(!ps.jail_load_blocked);
+        assert_ne!(state(&ps), PlaybackState::Error);
+        assert!(matches!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Failed));
+        assert!(ps.jail_load_blocked);
+        assert!(!pa.is_live());
+        crate::route::cancel_play(&mut ps);
+    }
+    #[test]
+    fn timeout_is_distinct_from_pipeline_refusal_and_resets_per_session() {
+        let _serial = crate::testlock::serial();
+        assert_eq!(runtime_failure(true, true, true, true), RuntimeFailure::LoadTimeout);
+        assert_eq!(runtime_failure(false, false, true, false), RuntimeFailure::TvPipeline);
+        SHARED.load_timed_out.store(true, Relaxed);
+        SHARED.reset_session();
+        assert!(!SHARED.load_timed_out.load(Relaxed));
     }
 }

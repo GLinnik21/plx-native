@@ -884,4 +884,159 @@ mod tests {
         );
         assert!(c.iter().all(|p| p.is_absolute()));
     }
+
+    /// `hostsim-suite-fails-on-polluted-canonical-root`: an un-redirected test must never resolve
+    /// the canonical store to the machine-wide `runtime_dir().join("state")` — that path is
+    /// `/tmp/state` by default, shared across every worktree, every concurrent `cargo test`
+    /// process and any running `make sim` on the same machine, and it is exactly where
+    /// `async_persistence`'s own suite (and any other un-redirected test) used to leave a real
+    /// `session.json` behind for the *next* test run to read as a genuine signed-in record —
+    /// which is what made `app::bridge::tests::account_to_settings_never_unfreezes_the_host` and
+    /// `app::bridge::tests::the_settings_surface_owns_input_and_walks_its_own_stack` fail on a
+    /// dirty machine while passing clean. Before the fix (reverting `persistent_state_root()` to
+    /// fall through to `runtime_dir().join("state")`/`app_dir().join("state")` whenever
+    /// `TEST_PERSISTENT_STATE_ROOT` is `None`), this assertion is false.
+    #[test]
+    fn an_unredirected_test_never_resolves_the_shared_runtime_state_dir() {
+        let _serial = crate::testlock::serial();
+        // No `redirect_persistent_state_root_for_test` call here — this is the un-redirected path
+        // every test takes unless it opts into its own directory.
+        let root = super::persistent_state_root();
+        assert_ne!(
+            root,
+            super::runtime_dir().join("state"),
+            "an un-redirected test resolved to the shared, machine-wide runtime state dir: {}",
+            root.display()
+        );
+        assert_ne!(
+            root,
+            super::app_dir().join("state"),
+            "an un-redirected test resolved to the app dir's state path: {}",
+            root.display()
+        );
+        // And it must be this same process's own scratch directory, not some other default.
+        assert_eq!(root, super::test_default_persistent_state_root());
+    }
+
+    /// The scratch default is stable within one process (so a test that calls
+    /// `persistent_state_root()` twice without redirecting sees the same directory), and it is
+    /// actually usable — created, not just named.
+    #[test]
+    fn the_scratch_default_is_stable_and_exists() {
+        let _serial = crate::testlock::serial();
+        let first = super::persistent_state_root();
+        let second = super::persistent_state_root();
+        assert_eq!(first, second);
+        assert!(first.is_dir(), "the scratch default must be created eagerly: {}", first.display());
+    }
+}
+
+/// Legacy JSON/host-simulator persistence root. The canonical ARM adapter uses helper-owned DB8;
+/// this path exists for old-record migration and for host tests that must never touch the checkout.
+///
+/// **Test builds never resolve this to the machine-wide runtime dir by accident.** A test that
+/// calls [`redirect_persistent_state_root_for_test`] gets the directory it asked for; a test that
+/// does not gets [`test_default_persistent_state_root`] — a directory keyed by this process's pid,
+/// the same idiom `session::fallback_file()` already uses for `auth.json`. Before this existed, an
+/// un-redirected test reached `runtime_dir().join("state")`, i.e. the real, shared `/tmp/state`
+/// (`ENV_STEERABLE` is `cfg!(feature = "hostsim")`, so this was every `hostsim` test) — writable by
+/// every worktree, every concurrent `cargo test` run and any running `make sim` on the same
+/// machine, and readable by an unrelated test's `session::prepare_load`/`ReadState` mapping as a
+/// real signed-in record. That cross-run pollution is what made
+/// `app::bridge::tests::account_to_settings_never_unfreezes_the_host` and
+/// `app::bridge::tests::the_settings_surface_owns_input_and_walks_its_own_stack` fail on a machine
+/// whose `/tmp/state/session.json` happened to be dirty, while the exact same suite passed clean —
+/// neither test, nor anything in this module, was wrong.
+#[allow(dead_code)] // Stage A storage root; connected by Session/Consent integration.
+pub(crate) fn persistent_state_root() -> PathBuf {
+    #[cfg(test)]
+    {
+        if let Some(root) = TEST_PERSISTENT_STATE_ROOT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            return root;
+        }
+        return test_default_persistent_state_root();
+    }
+    #[cfg(not(test))]
+    if ENV_STEERABLE {
+        runtime_dir().join("state")
+    } else {
+        app_dir().join("state")
+    }
+}
+
+/// The per-process scratch directory an un-redirected test resolves to, instead of the real,
+/// machine-wide `runtime_dir().join("state")`. Empty at first use in this process, isolated from
+/// every other checkout, worktree, and concurrently running `cargo test` invocation, and never the
+/// path a device or `make sim` build resolves to.
+#[cfg(test)]
+pub(crate) fn test_default_persistent_state_root() -> PathBuf {
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-persistent-state-fallback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    })
+    .clone()
+}
+
+#[cfg(test)]
+static TEST_PERSISTENT_STATE_ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+#[allow(dead_code)] // Stage A storage root; connected by Session/Consent integration.
+pub(crate) fn redirect_persistent_state_root_for_test(root: Option<PathBuf>) {
+    if let Some(root) = &root {
+        let _ = std::fs::create_dir_all(root);
+    }
+    *TEST_PERSISTENT_STATE_ROOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = root;
+}
+
+/// Prepare the hostsim-only state root without following a pre-existing symlink. Television code
+/// may inspect an existing directory as a migration source but never creates it as an authority.
+#[allow(dead_code)] // Stage A storage root; connected by Session/Consent integration.
+pub(crate) fn ensure_persistent_state_root() -> std::io::Result<()> {
+    if !ENV_STEERABLE {
+        return Ok(());
+    }
+    let root = persistent_state_root();
+    match std::fs::symlink_metadata(&root) {
+        Ok(meta) if meta.file_type().is_dir() => Ok(()),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "persistent state root is not a directory",
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                let mut builder = std::fs::DirBuilder::new();
+                builder.mode(0o700);
+                builder.create(&root)
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::create_dir(&root)
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+
+/// Final legacy migration order, independent of the temporary synchronous caller API.
+#[allow(dead_code)]
+pub(crate) fn session_migration_candidates() -> Vec<PathBuf> {
+    let mut candidates = session_candidates();
+    let app = in_app_dir("auth.json");
+    let index = candidates.iter().position(|path| path == &app).unwrap_or(candidates.len());
+    candidates.insert(index, in_app_dir("state").join("auth.json"));
+    candidates
 }

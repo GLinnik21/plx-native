@@ -109,6 +109,24 @@ something.
   synthetic case prints. Codec-agnostic — it is the instrument `dualsequencer:6` was only for
   Dolby Vision. Type 46 is emitted only when non-zero, and a stream shown at 13 fps reported 0
   drops: the sink does not count a frame it never presented as dropped.
+- **A constructed Starfish object is not dispatchable until synchronous `Load` returns.**
+  `sf_ready()` still answers whether the object exists; `sf_ready_object()` also requires the
+  C `LOAD_RETURNED` gate. Rust records the return on the exact native epoch before publishing
+  the route result. The pump waits before even polling `sf_is_load_completed`, with separate
+  20-second issued→return and return→loadCompleted budgets. Timeout has code `load_timeout`;
+  firmware refusal remains `tv_pipeline`. Teardown after that timeout does NOT join a media
+  thread still inside `sf_load` (that froze the SDL thread on BACK): the thread, payload and
+  epoch are parked as `engine::AbandonedLoad` (Rust phase `Abandoned`), native starts are
+  refused, and `reap_abandoned_load` runs the ordinary Unload → gate → retire → D1 release on the
+  main thread once Load returns; a Load that never returns leaks its object. A Load that has not
+  timed out is still joined. The host concurrent tests model this boundary, not
+  the firmware's native initialization. ACB dispatch is additionally constrained by stage/bind
+  ordering; the C Starfish gate does not wrap ACB calls.
+- **The k5lp/k3lp sandbox preflight refuses native playback when `/dev/rtkmem` is unreadable.**
+  The device fact is cached at boot, while the refusal belongs to `PlaybackSession` and clears
+  on exit. Explicit Repair confirmation spends `Player.repair` once for the whole app lifetime;
+  `PlayerAdapter` owns the worker receipt. Success still requires a full app relaunch. See
+  `docs/native-video-sandbox.md` for limits.
 - **Starfish `Load` must be constructed with `uid = NULL`** (`SMP_ctor(slot->object, NULL)`), and in
   buffer-feed mode the app must **not** `LSRegister` its own `com.webos.media` client — either
   collides with the pipeline's uMS connection (CONN_FIND_ERR). See the comment in `load_thread`.

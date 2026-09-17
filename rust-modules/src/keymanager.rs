@@ -94,6 +94,12 @@ pub(crate) fn remove(backend: &Backend, key: &str) {
     SELECTED.store(UNKNOWN, Ordering::Relaxed);
 }
 
+#[cfg(test)]
+pub(crate) fn reset_for_test() {
+    SELECTED.store(UNKNOWN, Ordering::Relaxed);
+    crate::log("session protection: host tests use the 0600 plaintext fixture");
+}
+
 fn succeeded(v: &Value) -> bool {
     v.get("returnValue").and_then(Value::as_bool) == Some(true)
 }

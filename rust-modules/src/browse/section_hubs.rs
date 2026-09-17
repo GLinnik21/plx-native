@@ -829,6 +829,7 @@ mod tests {
             asked: true,
             on: Vec::new(),
             off: Vec::new(),
+            extensions: Default::default(),
         });
         first.retry_cd = 120;
         first.states[1].hubs.armed = true;

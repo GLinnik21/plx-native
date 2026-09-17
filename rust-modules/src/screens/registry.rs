@@ -105,6 +105,8 @@ pub(crate) struct ItemMenuReq {
 /// So the panel decides and the loop performs, exactly as `LibraryReq` does for the Library.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum PlayerReq {
+    /// Accepted only after the owned player confirmation. Never emitted by boot or Play.
+    RepairSandbox,
     /// A transport key FELL THROUGH the panel (§ `overlay_transport_key_tests`): a viewer holding
     /// the track menu, the Info card or the Chapters strip open still expects PAUSE/PLAY to work,
     /// and the panel stays up. `true` = the key was PLAY, `false` = PAUSE; a PLAYPAUSE toggle is
@@ -1817,8 +1819,15 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// identity-keyed slot for the extras section, and `DetailIdentity` grows `Extra`. The shape
 /// string moved, so recorded fixtures need `tools/plxnative-rec rerecord` before a scenario
 /// replay is trusted. Host unit tests do not replay them.
+///
+/// **0.7 forward-port merge** (0xb462_145d_9477_05de → 0x0e66_311c_e4f1_0769): this bump is not one
+/// feature's doing — it is the union of independently-landed changes each side made to state this
+/// array reaches, recombined by `git merge origin/main` into the integration branch. Nothing here
+/// was rebaselined by hand; the value is whatever `state_fp(SCREEN_SHAPES)` actually produces over
+/// the merged tree, taken from a failing run of `the_screen_shape_inventory_is_pinned` and copied in
+/// verbatim. Re-record fixtures the same way any other bump requires.
 #[cfg(test)]
-const SCREEN_SHAPES_PIN: u64 = 0xb462_145d_9477_05de;
+const SCREEN_SHAPES_PIN: u64 = 0x0e66_311c_e4f1_0769;
 
 #[cfg(test)]
 mod arg_tests {

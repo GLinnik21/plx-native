@@ -72,6 +72,389 @@ fn a_save_lands_whole_and_leaves_no_temporary_behind() {
     assert!(!t.file().exists() && !t.tmp().exists());
 }
 
+// ---- The CANONICAL half (AUTH-08/AUTH-09): `clear()` must commit a canonical Cleared record,
+// and a Cleared record must present like Missing (not Locked/Blocked) while still shadowing a
+// reappearing legacy file. --------------------------------------------------------------------
+//
+// These exercise `persistence::load`/`write_session`/`commit_cleared` for real, not the
+// `TEST_FILE` legacy-file bypass `TempSession` above uses — under `#[cfg(test)]`,
+// `read_live_locked` short-circuits straight to `read_legacy_locked` whenever `TEST_FILE` is
+// set, which is exactly right for grading the legacy file in isolation but would make it
+// impossible to ever reach the canonical authority `clear`/`ReadState::Cleared` are about.
+// `redirect_persistent_state_root_for_test` instead redirects the canonical store itself.
+
+/// Point the canonical persistence root at a directory of this test's own, and take it back on
+/// drop.
+struct TempCanonicalRoot {
+    dir: std::path::PathBuf,
+}
+
+impl TempCanonicalRoot {
+    fn new(tag: &str) -> TempCanonicalRoot {
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-session-canonical-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+        TempCanonicalRoot { dir }
+    }
+}
+
+impl Drop for TempCanonicalRoot {
+    fn drop(&mut self) {
+        crate::paths::redirect_persistent_state_root_for_test(None);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// AUTH-08 (RED before the fix, for the real reason — not a compile error, not a fixture bug):
+/// `clear()` only ever swept the legacy on-disk candidates, never committing anything to the
+/// canonical authority. `save`/`clear` both route through `persistence::write_session`/
+/// `persistence::load` exactly as a live build does once `TEST_FILE` is left unset (see
+/// `save_locked_with_authority`'s own `TEST_FILE`-gated branch), so this is the production
+/// path, not a fixture standing in for it — it fails today because `clear()` never calls
+/// `persistence::commit_cleared()`, and the account token is still there to read back.
+#[test]
+fn clear_commits_a_canonical_cleared_record_so_the_account_token_does_not_survive_signout() {
+    let _serial = crate::testlock::serial();
+    let _root = TempCanonicalRoot::new("signout");
+    redirect_for_test(None);
+
+    save(&signed_in());
+    match persistence::load() {
+        persistence::CanonicalRead::Missing => {
+            panic!("setup: the seed save did not reach the canonical authority")
+        }
+        persistence::CanonicalRead::Cleared { .. } => {
+            panic!("setup: the canonical authority already reads as cleared before clear() ran")
+        }
+        _ => {}
+    }
+
+    let outcome = clear();
+    assert!(
+        matches!(outcome, ClearOutcome::Durable { .. }),
+        "clear() must report the canonical clear it just committed as durable: {outcome:?}"
+    );
+
+    match persistence::load() {
+        persistence::CanonicalRead::Cleared { .. } => {}
+        persistence::CanonicalRead::Missing => panic!(
+            "clear() left the canonical authority Missing rather than committing an explicit \
+             Cleared record — AUTH-09's legacy-shadow guarantee needs a real Cleared record, \
+             not mere absence"
+        ),
+        _ => panic!(
+            "AUTH-08: clear() did not commit a canonical Cleared record — the canonical \
+             authority still answers with a readable/protected tenure after sign-out, so the \
+             account token and roster survive sign-out in the authority `load()` actually reads"
+        ),
+    }
+
+    match read_live_locked() {
+        ReadState::Ready { session, .. } => panic!(
+            "the account token survived sign-out in the live read path: {:?}",
+            session.account_token
+        ),
+        _ => {}
+    }
+}
+
+/// AUTH-09 (RED before the fix, for the real reason): a canonical `Cleared` record was mapped
+/// onto the same `ReadState` as `Locked`/an unreadable `Blocked` envelope, so a cleanly
+/// signed-out device booted with locked/blocked UI framing instead of a plain signed-out Home.
+/// `prepare_load`'s `save` output is the load path's real signal for that distinction: a fresh
+/// client id is minted AND persisted for a genuinely fresh/cleared device, exactly as it is on
+/// true first boot — while a truly `Locked`/`Blocked` record must refuse to, because it might
+/// still hold the only copy of real credentials once whatever blocked it clears. Conflating
+/// `Cleared` with that policy is what fails this test today.
+#[test]
+fn a_cleared_canonical_tenure_boots_clean_and_still_shadows_a_reappearing_legacy_file() {
+    let _serial = crate::testlock::serial();
+    let _root = TempCanonicalRoot::new("boot");
+    redirect_for_test(None);
+
+    // A legacy file "reappears" (e.g. carried over from a pre-DB8 install) beside a canonical
+    // authority that has already recorded this tenure as cleared. RAII rather than a bare
+    // statement at the end of the body: a panic between the write and the old plain
+    // `remove_file` call left a SIGNED-IN plaintext session at the process's default legacy
+    // path for every later test in the run.
+    struct RemoveFallbackFile;
+    impl Drop for RemoveFallbackFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(fallback_file());
+        }
+    }
+    let _remove_fallback = RemoveFallbackFile;
+    std::fs::write(fallback_file(), serde_json::to_vec(&signed_in()).unwrap()).unwrap();
+
+    let commit = persistence::commit_cleared();
+    assert!(
+        matches!(commit, persistence::CanonicalCommit::Durable { .. }),
+        "setup: the canonical authority must accept the clear: {commit:?}"
+    );
+
+    // AUTH-09a: not locked/blocked UI framing.
+    let read = read_locked();
+    let (session, save) = prepare_load(read, || "fresh-id".to_string());
+    assert!(
+        session.account_token.is_empty(),
+        "a cleared tenure must not read back with an account token"
+    );
+    assert!(
+        save,
+        "a cleared tenure must mint and persist a fresh client id exactly like Missing; \
+         today it is conflated with Locked/Blocked, which refuses to persist a fresh id \
+         (save={save})"
+    );
+
+    // AUTH-09b (must hold both before and after the fix): the legacy shadow priority survives.
+    match read_live_locked() {
+        ReadState::Ready { .. } => panic!(
+            "a reappearing legacy file was read back over a canonical Cleared record — \
+             AUTH-09's shadow-priority guarantee was broken"
+        ),
+        _ => {}
+    }
+}
+
+/// `clear-bypasses-test-file-guard`: a legacy-fixture test (`TEST_FILE` redirected, exactly
+/// `TempSession`'s shape) must never reach the process-wide canonical authority — only the
+/// scratch legacy file it was pointed at. RED before the fix: `clear()` unconditionally called
+/// `persistence::commit_cleared()`, so a `TempSession`-based `clear()` call durably wrote a
+/// Cleared record into whatever `persistent_state_root()` resolves to for this process (which,
+/// unredirected, is the real shared instance root) — a state mutation this test can observe
+/// directly by reading the canonical authority right back with `TEST_FILE` still cleared,
+/// exactly as `read_live_locked` does once the fixture goes away.
+#[test]
+fn clear_under_a_redirected_legacy_fixture_never_touches_the_canonical_authority() {
+    let _serial = crate::testlock::serial();
+    let _root = TempCanonicalRoot::new("test-file-guard");
+    redirect_for_test(None);
+
+    // Seed the canonical authority with a real signed-in record, as if some earlier, real
+    // (non-fixture) save had happened in this process.
+    save(&signed_in());
+    assert!(
+        matches!(persistence::load(), persistence::CanonicalRead::Data { .. } | persistence::CanonicalRead::Opened { .. }),
+        "setup: the canonical authority must hold a real record before the fixture clear runs"
+    );
+
+    // Now redirect to a legacy-fixture file, exactly like `TempSession`, and clear it. RAII
+    // rather than a bare `redirect_for_test(None)` at the end: a panic between the redirect
+    // and that restore left the crate-global `TEST_FILE` pointing at this scratch path for
+    // every later test in the run — the exact transplant hazard `redirect_for_test`'s own doc
+    // comment warns about.
+    let dir = std::env::temp_dir().join(format!(
+        "plxnative-session-test-file-guard-{}",
+        std::process::id()
+    ));
+    struct RestoreLegacyFixture(std::path::PathBuf);
+    impl Drop for RestoreLegacyFixture {
+        fn drop(&mut self) {
+            redirect_for_test(None);
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _restore_legacy = RestoreLegacyFixture(dir.clone());
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    redirect_for_test(Some(dir.join("auth.json")));
+    std::fs::write(dir.join("auth.json"), serde_json::to_vec(&signed_in()).unwrap()).unwrap();
+
+    let outcome = clear();
+    assert!(
+        matches!(outcome, ClearOutcome::Durable { .. }),
+        "a legacy-fixture clear must still report success for the file it actually cleared"
+    );
+    assert!(!dir.join("auth.json").exists(), "the redirected legacy fixture must be cleared");
+
+    redirect_for_test(None);
+    match persistence::load() {
+        persistence::CanonicalRead::Cleared { .. } => panic!(
+            "clear() under a TEST_FILE redirect reached the real canonical authority and \
+             signed it out — a legacy-fixture test must never mutate the process-wide \
+             canonical store"
+        ),
+        _ => {}
+    }
+}
+
+/// `signout-leaves-token-in-unswept-candidates`: `clear()` must actually reach
+/// `persistence::cleanup_after_confirmed_clear()` after a durable canonical commit — the step
+/// that retires the full recognized migration-candidate set
+/// (`paths::session_migration_candidates()`, plus the pre-DB8 canonical JSON wrapper on ARM),
+/// which is a strict superset of the legacy `auth_paths()` list `clear()`'s own loop sweeps.
+///
+/// **On the honesty of this test**: `persistence::bootstrap`/`cleanup_after_confirmed_clear`
+/// deliberately substitute `super::auth_paths()` for the real
+/// `paths::session_migration_candidates()` under `#[cfg(test)]` (see both functions' own
+/// `#[cfg(test)]`/`#[cfg(not(test))]` split), for the same test-hermeticity reason `TempSession`
+/// exists — a host test must never touch `paths::in_app_dir`'s real on-device-shaped path. That
+/// makes the widened candidate SET itself unreachable from a host unit test; what this test
+/// verifies instead, and can only be defeated by removing the call, is that `clear()` reaches
+/// `cleanup_after_confirmed_clear()` at all and faithfully reports its verdict rather than
+/// assuming success. It does this by making the one candidate in scope (`auth_paths()`'s single
+/// entry, whatever `clear()`'s own loop swept it to) something `clear()`'s own
+/// `std::fs::remove_file` cannot remove — a directory — so `cleanup_after_confirmed_clear`'s
+/// stricter regular-file check is the only thing left that can observe it, and its answer must
+/// be `false`. Mutation-tested: replacing the real
+/// `persistence::cleanup_after_confirmed_clear()` call with a hardcoded `true` makes this test
+/// fail (expected `legacy_swept == false`, observed `true`).
+#[test]
+fn clear_reports_an_incomplete_sweep_when_a_recognized_candidate_cannot_be_retired() {
+    let _serial = crate::testlock::serial();
+    let _root = TempCanonicalRoot::new("migration-sweep");
+    redirect_for_test(None);
+
+    // Replace the legacy candidate with a directory: `clear()`'s own `remove_file` cannot
+    // remove it (it is not a regular file), so it survives that loop — exactly like a file
+    // owned by another uid or otherwise un-removable would — and only
+    // `cleanup_after_confirmed_clear`'s stricter check can see the residue.
+    let candidate = fallback_file();
+    let _ = std::fs::remove_file(&candidate);
+    let _ = std::fs::remove_dir_all(&candidate);
+    std::fs::create_dir(&candidate).expect("a directory standing in for an unremovable candidate");
+    struct RestoreFallback(std::path::PathBuf);
+    impl Drop for RestoreFallback {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _restore = RestoreFallback(candidate.clone());
+
+    save(&signed_in());
+
+    let outcome = clear();
+    match outcome {
+        ClearOutcome::Durable { legacy_swept } => assert!(
+            !legacy_swept,
+            "the unremovable candidate must be reported as an incomplete sweep, not silently \
+             treated as fully retired — clear() may not have reached \
+             `persistence::cleanup_after_confirmed_clear()` at all"
+        ),
+        ClearOutcome::AuthorityNotConfirmed => panic!(
+            "setup: the canonical authority must confirm Cleared before this test's legacy \
+             sweep assertion is meaningful"
+        ),
+        ClearOutcome::NotDurable => panic!("setup: the canonical clear must durably commit"),
+    }
+    assert!(candidate.is_dir(), "the un-removable candidate must still be present");
+}
+
+/// Finding 2: pins `clear_cleanup_outcome`'s mapping directly, arm by arm — not only through
+/// `clear()`'s end-to-end path, which cannot reach `AuthorityNotConfirmed` on the host (there
+/// is no seam that makes a load-side read-back disagree with a commit that just landed). No
+/// isolated runtime-state root is needed: `clear_cleanup_outcome` is a pure function with no
+/// I/O of its own — every side effect (the log lines) is unobservable to this test, and
+/// nothing it touches is process-global or shared.
+///
+/// The `AuthorityNotConfirmed` arm is the one this finding is about:
+/// `ClearCleanupOutcome::AuthorityNotConfirmed` must map to `ClearOutcome::
+/// AuthorityNotConfirmed`, never to `ClearOutcome::Durable { legacy_swept: false }` — which
+/// would silently re-commit exactly the conflation AUTH-09 Finding B existed to prevent,
+/// while still passing `make check` today (nothing reaches this arm end to end).
+///
+/// RED: OBSERVED. Temporarily changing the `AuthorityNotConfirmed` arm in
+/// `clear_cleanup_outcome` to `ClearOutcome::Durable { legacy_swept: false }` and re-running
+/// only this test failed on the `assert_eq!` below (`Durable { legacy_swept: false } !=
+/// AuthorityNotConfirmed`); reverting turned it back green. This test does not merely
+/// duplicate `clear_reports_an_incomplete_sweep_when_a_recognized_candidate_cannot_be_retired`
+/// or the other `clear()` end-to-end tests above — none of them can reach the
+/// `AuthorityNotConfirmed` arm at all (the same mutation leaves every one of them passing,
+/// which is exactly the gap this finding names).
+#[test]
+fn clear_cleanup_outcome_maps_all_three_arms_and_never_conflates_unconfirmed_with_durable() {
+    assert_eq!(
+        clear_cleanup_outcome(persistence::ClearCleanupOutcome::Confirmed),
+        ClearOutcome::Durable { legacy_swept: true }
+    );
+    assert_eq!(
+        clear_cleanup_outcome(persistence::ClearCleanupOutcome::LegacyRetireFailed),
+        ClearOutcome::Durable { legacy_swept: false }
+    );
+    assert_eq!(
+        clear_cleanup_outcome(persistence::ClearCleanupOutcome::AuthorityNotConfirmed),
+        ClearOutcome::AuthorityNotConfirmed,
+        "AuthorityNotConfirmed must never be reported as Durable{{legacy_swept: false}} — \
+         that is the exact conflation AUTH-09 Finding B existed to prevent"
+    );
+}
+
+/// `failed-canonical-clear-is-silent`: a canonical clear that does not durably land must be
+/// observable by `clear()`'s caller, not only by an event-log line. RED before the fix:
+/// `clear()` returned `()`, so this assertion could not even be expressed. A non-directory
+/// canonical root makes `persistence::store()`/`commit_cleared()` fail with `StoreError::Io`
+/// without touching any real path.
+#[test]
+fn clear_reports_a_non_durable_outcome_when_the_canonical_commit_is_refused() {
+    let _serial = crate::testlock::serial();
+    let dir = std::env::temp_dir().join(format!(
+        "plxnative-session-canonical-not-a-dir-{}",
+        std::process::id()
+    ));
+    // RAII rather than a bare restore at the end: this test does not use `TempCanonicalRoot`
+    // at all, since its whole point is a canonical root that is a regular FILE rather than a
+    // directory. A panic between the redirect and the old plain restore call left the
+    // crate-global `TEST_PERSISTENT_STATE_ROOT` pointing at a non-directory for the rest of
+    // the process, so every subsequent test's canonical store answered `StoreError::Io`.
+    struct RestoreCanonicalRoot(std::path::PathBuf);
+    impl Drop for RestoreCanonicalRoot {
+        fn drop(&mut self) {
+            crate::paths::redirect_persistent_state_root_for_test(None);
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _restore_root = RestoreCanonicalRoot(dir.clone());
+    let _ = std::fs::remove_file(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::write(&dir, b"not a directory").unwrap();
+    crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+    redirect_for_test(None);
+
+    let outcome = clear();
+    assert_eq!(
+        outcome,
+        ClearOutcome::NotDurable,
+        "a refused canonical commit must be reported to the caller as non-durable, not \
+         silently treated as a completed sign-out"
+    );
+}
+
+/// `cleared-readstate-edits-untested` (a): a cleared canonical tenure must seed a fresh
+/// playback quality exactly as a genuinely first-boot `Missing` device does — it must not be
+/// treated as "a persisted session exists" the way `Locked`/`Blocked` are. Mutation-tested:
+/// reverting `prepare_load`'s `persisted` to `!matches!(read, ReadState::Missing)` (dropping
+/// the `| ReadState::Cleared` arm) leaves the rest of this module's suite green.
+#[test]
+fn prepare_load_seeds_a_fresh_playback_quality_for_cleared_exactly_as_for_missing() {
+    let missing = prepare_load(ReadState::Missing, || "id-missing".to_string()).0;
+    let cleared = prepare_load(ReadState::Cleared, || "id-cleared".to_string()).0;
+    assert!(
+        missing.playback_quality.is_some(),
+        "setup: a Missing read must seed a fresh quality"
+    );
+    assert!(
+        cleared.playback_quality.is_some(),
+        "a Cleared read must seed a fresh playback quality exactly like Missing; today \
+         `persisted` conflates Cleared with Locked/Blocked and refuses to seed one"
+    );
+}
+
+/// `cleared-readstate-edits-untested` (b): `Cleared` must occupy its own identity bucket in
+/// `read_identity`, distinct from both `Missing` and the `Locked`/`Blocked` pair — otherwise a
+/// concurrent transition into or out of `Cleared` is invisible to `DeferredLoad::apply`'s
+/// identity check. Mutation-tested: collapsing `ReadState::Cleared => vec![2]` to `vec![1]`
+/// (the `Locked | Blocked` bucket) leaves the rest of this module's suite green.
+#[test]
+fn read_identity_gives_cleared_its_own_bucket_distinct_from_every_other_state() {
+    let cleared = read_identity(&ReadState::Cleared);
+    assert_ne!(cleared, read_identity(&ReadState::Missing));
+    assert_ne!(cleared, read_identity(&ReadState::Locked));
+    assert_ne!(cleared, read_identity(&ReadState::Blocked));
+}
+
 /// **The route ground's one persisted seed.** A fresh device has recorded nothing, a real
 /// hero is remembered across the read-modify-write cycle `update` uses everywhere else, and
 /// recording the SAME envelope again is a no-op rather than a second disk write.

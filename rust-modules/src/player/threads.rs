@@ -74,9 +74,7 @@ pub(crate) fn load_thread(
         // Publish it. This used to be logged and discarded, so a refused payload was
         // indistinguishable from a slow one and the pump waited on a `loadCompleted` that could
         // never come.
-        super::SHARED
-            .load_failed
-            .store(true, std::sync::atomic::Ordering::Release);
+        SHARED.publish_native_load_failure(native_epoch);
     }
 }
 

@@ -266,6 +266,7 @@ mod tests {
                 assert_eq!(disk.user.uuid, "synthetic-kid");
                 disk.recent_searches.push(crate::plex::session::RecentSearches {
                     user: "synthetic-kid".into(), terms: vec!["newer preference".into()],
+                    extensions: Default::default(),
                 });
                 disk.playback_quality = Some(crate::plex::session::PlaybackQuality::Original);
                 assert!(!disk.sources.iter().any(|source| source.machine_id == "synthetic-share" && source.dialable()));
@@ -343,7 +344,7 @@ mod tests {
             server: ServerRef { token: "synthetic-admin-token".into(), ..server.clone() },
             sources: vec![SourceRef { token: "synthetic-admin-token".into(), ..source.clone() }],
             profiles: vec![ProfileCreds { uuid: kid.uuid.clone(), user: kid, server,
-                sources: vec![source], pin: None }], ..Default::default() }
+                sources: vec![source], pin: None, extensions: Default::default() }], ..Default::default() }
     }
 
     #[test]

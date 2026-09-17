@@ -315,9 +315,13 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
     // The player's four overlays are surfaces on its own stack, so what they decide reaches the
     // loop the same way every other owned screen's decision does — as requests, drained here,
     // after the dispatcher and before the frame's own arms (`playback::player_requests`).
-    let player_reqs = app.bridge.take_player_reqs();
+    let mut player_reqs = app.bridge.take_player_reqs();
+    if remove_replayed_repairs(&mut player_reqs,
+        matches!(app.rec, super::recorder::Recplay::Replaying(_)), app.bridge.is_controlled_replay()) {
+        app.rec.refuse("replay cannot authorize sandbox repair");
+    }
     if !player_reqs.is_empty() {
-        super::playback::player_requests(&mut app.player.session,
+        super::playback::player_requests(&mut app.player.repair, &mut app.player.session,
             &mut app.adapters.player,
             player_reqs,
             fr.now,
@@ -1593,4 +1597,29 @@ pub(crate) fn refresh_content(
 fn detail_refresh_matches(arg: &AppArg, target: &crate::stores::viewstate::DetailRefresh) -> bool {
     matches!(arg, AppArg::Content(ContentArg::Detail { sid, rk })
         if *sid == target.sid && *rk == target.rk)
+}
+
+/// Refuse privileged replay before any request reaches the live PlayerAdapter.
+fn remove_replayed_repairs(reqs: &mut Vec<crate::screens::registry::PlayerReq>, legacy: bool, controlled: bool) -> bool {
+    if !legacy && !controlled { return false; }
+    let before = reqs.len();
+    reqs.retain(|req| !matches!(req, crate::screens::registry::PlayerReq::RepairSandbox));
+    before != reqs.len()
+}
+
+#[cfg(test)]
+mod repair_replay_tests {
+    use super::*;
+    use crate::screens::registry::PlayerReq;
+    #[test]
+    fn both_replay_modes_remove_repair_before_resource_dispatch_but_keep_exit() {
+        for (legacy, controlled) in [(true, false), (false, true), (true, true)] {
+            let mut reqs = vec![PlayerReq::RepairSandbox, PlayerReq::Exit];
+            assert!(remove_replayed_repairs(&mut reqs, legacy, controlled));
+            assert_eq!(reqs, vec![PlayerReq::Exit]);
+        }
+        let mut live = vec![PlayerReq::RepairSandbox, PlayerReq::Exit];
+        assert!(!remove_replayed_repairs(&mut live, false, false));
+        assert_eq!(live, vec![PlayerReq::RepairSandbox, PlayerReq::Exit]);
+    }
 }

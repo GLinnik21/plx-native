@@ -197,6 +197,7 @@ fn an_app_written_record_survives_the_parse_that_every_boot_re_saves() {
         title: "Admin".into(),
         thumb: "https://plex.tv/users/x/avatar?c=1".into(),
         token: "user-tok".into(),
+        extensions: Default::default(),
     };
     s.sources = vec![source.clone()];
     s.remember_profile(ProfileCreds {
@@ -205,6 +206,7 @@ fn an_app_written_record_survives_the_parse_that_every_boot_re_saves() {
         server,
         sources: vec![source],
         pin: Some(PinVerifier::new("1234")),
+        extensions: Default::default(),
     });
     let bytes = serde_json::to_vec_pretty(&s).unwrap();
     let back: Session = serde_json::from_slice(&bytes).unwrap();
@@ -235,4 +237,19 @@ fn a_legacy_file_has_an_empty_cache() {
         back.profiles.is_empty(),
         "a malformed entry costs the entry, not the session"
     );
+}
+
+#[test]
+fn pin_verifier_rejects_non_ascii_hex_without_panicking() {
+    let verifier = PinVerifier {
+        salt: format!("aé{}", "a".repeat(29)),
+        hash: "02".repeat(32), iters: 1, ..Default::default()
+    };
+    assert!(!verifier.verify("1234"));
+}
+
+#[test]
+fn pin_verifier_rejects_non_16_byte_salt_even_when_hash_matches() {
+    let verifier = PinVerifier::with_salt("1234", &[7; 8]);
+    assert!(!verifier.verify("1234"), "malformed persisted salt must fail closed");
 }

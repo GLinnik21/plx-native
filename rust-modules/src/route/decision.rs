@@ -70,6 +70,11 @@ struct RetryContext {
 /// asserted: a frame's draw cannot hold one across [`apply_plan`] or [`request_play`], because
 /// those take `&mut`.
 pub(crate) struct PlaybackSession {
+    /// This playback was refused by the cached device sandbox preflight. No Engine exists.
+    /// Cleared with the playback verdict on exit/reset, never a process-global error latch.
+    pub(crate) jail_load_blocked: bool,
+    /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
+    pub(crate) repair_status: crate::webos::jail_repair::State,
     /// The request which produced this attempt, retained for terminal Retry / Choose quality.
     /// Written synchronously by [`request_play`] rather than by [`apply_plan`], because the
     /// server can refuse before a playable plan exists.
@@ -325,6 +330,8 @@ impl PlaybackSession {
     /// Nothing playing: what the module holds before the first play, and the value the static is
     /// born as. Every String empty, every id 0 or `UNSET`, both HUD buffers NUL.
     pub(crate) const IDLE: PlaybackSession = PlaybackSession {
+        jail_load_blocked: false,
+        repair_status: crate::webos::jail_repair::State::Idle,
         request: None,
         requested_resume_ns: 0,
         url: String::new(),
@@ -389,6 +396,8 @@ impl PlaybackSession {
     /// it or silently dropping it.
     pub(crate) fn publication(&self) -> PlaybackSession {
         let PlaybackSession {
+            jail_load_blocked,
+            repair_status,
             request,
             requested_resume_ns,
             url,
@@ -434,6 +443,8 @@ impl PlaybackSession {
             preview: _,
         } = self;
         PlaybackSession {
+            jail_load_blocked: *jail_load_blocked,
+            repair_status: *repair_status,
             request: request.clone(),
             requested_resume_ns: *requested_resume_ns,
             url: url.clone(),
@@ -3798,6 +3809,7 @@ pub(crate) fn play_verdict(ps: &PlaybackSession) -> Option<&str> {
 fn clear_play_verdict(ps: &mut PlaybackSession) {
     { let s = &mut *ps; {
         s.play_verdict = None;
+        s.jail_load_blocked = false;
         s.resolve_failed = false;
         s.requested_resume_ns = 0;
     } }
@@ -5447,6 +5459,7 @@ fn request_play_inner(
         // the item now being resolved. `play_pending()` outranks it for this frame either way, but
         // a resolve that never lands (a refused spawn) would leave nothing else to clear it.
         s.play_verdict = None;
+        s.jail_load_blocked = false;
         s.resolve_failed = false;
     } };
     // …and the outgoing item's track/marker/chapter store, for exactly the reason above: it stays
@@ -5817,6 +5830,8 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
         let now_ms = s.now_ms;
         let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
+            jail_load_blocked: false,
+            repair_status: crate::webos::jail_repair::State::Idle,
             request,
             requested_resume_ns,
             url: plan.url,

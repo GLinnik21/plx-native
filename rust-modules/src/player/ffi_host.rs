@@ -232,6 +232,12 @@ pub(super) fn force_callback_intercepts_for_test(value: u32) {
 /// `native_load_returned_loadcompleted_never_arrives_fires_load_failed` needs. This flips only
 /// the half `sf_ready()` reads, leaving `LOADED` (and so `sf_is_load_completed()`) at its
 /// default `false`.
+/// Whether the host object is quarantined (`LIFECYCLE_BLOCKED`) — separates a D1 release from a
+/// quarantine, which both leave `sf_ready()` at 0.
+#[cfg(test)]
+pub(super) fn lifecycle_blocked_for_test() -> bool {
+    LIFECYCLE_BLOCKED.load(Relaxed)
+}
 #[cfg(test)]
 pub(super) fn force_object_ready_for_test(on: bool) {
     OBJECT_READY.store(on, Relaxed);
@@ -536,6 +542,8 @@ pub(super) unsafe fn sf_unload() {
     Clock::rewind();
 }
 pub(super) unsafe fn sf_callback_gate_retire() -> c_int {
+    #[cfg(test)]
+    note_dispatch("sf_callback_gate_retire");
     CALLBACK_GATE_RETIRED.store(true, Relaxed);
     c_int::from(
         OBJECT_READY.load(Relaxed)
@@ -547,6 +555,8 @@ pub(super) unsafe fn sf_callback_intercepts() -> c_uint {
     CALLBACK_INTERCEPTS.load(Relaxed)
 }
 pub(super) unsafe fn sf_destroy() -> c_int {
+    #[cfg(test)]
+    note_dispatch("sf_destroy");
     let safe = OBJECT_READY.load(Relaxed)
         && CALLBACK_GATE_RETIRED.load(Relaxed)
         && CALLBACK_INTERCEPTS.load(Relaxed) != 0
@@ -563,6 +573,8 @@ pub(super) unsafe fn sf_destroy() -> c_int {
     1
 }
 pub(super) unsafe fn sf_quarantine() {
+    #[cfg(test)]
+    note_dispatch("sf_quarantine");
     CALLBACK_GATE_RETIRED.store(true, Relaxed);
     LIFECYCLE_BLOCKED.store(true, Relaxed);
     OBJECT_READY.store(false, Relaxed);
@@ -590,7 +602,7 @@ pub(super) unsafe fn vp_create_window() -> *const c_char {
         std::ptr::null()
     }
 }
-/// Never NUL — contracted to return a valid string even when no window exists, and `app::diagnostics`
+/// Never NUL — contracted to return a valid string even when no window exists, and `ui::stats`
 /// reads it unconditionally.
 pub(super) unsafe fn vp_window_id() -> *const c_char {
     if enabled() {

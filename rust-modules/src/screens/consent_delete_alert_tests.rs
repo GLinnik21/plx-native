@@ -32,7 +32,7 @@ fn confirming_the_alert_asks_the_loop_to_delete_and_reseats_the_table() {
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    page.alert.open_with_body(DELETE_SCOPE);
+    page.alert.open_with_body(c"Delete all local data?", DELETE_SCOPE);
     page.alert.set_choice(AlertChoice::Destructive);
     out.clear();
     page.alert_answer(true, &mut mk_fx(&mut out, &mut present));
@@ -49,7 +49,7 @@ fn cancelling_the_alert_never_asks_the_loop_to_delete_anything() {
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
-    page.alert.open_with_body(DELETE_SCOPE);
+    page.alert.open_with_body(c"Delete all local data?", DELETE_SCOPE);
     page.alert.set_choice(AlertChoice::Cancel);
     out.clear();
     page.alert_answer(false, &mut mk_fx(&mut out, &mut present));

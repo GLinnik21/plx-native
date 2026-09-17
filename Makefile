@@ -118,6 +118,13 @@ APPID_STABLE = com.beb.plxnative
 APPID        = $(if $(filter stable,$(FLAVOR)),$(APPID_STABLE),$(APPID_STABLE).$(FLAVOR))
 APPDIR       = /media/developer/apps/usr/palm/applications/$(APPID)
 
+# The native storage helper's LS2 service directory, installed by `ci/mkipk.py`'s
+# `stage_storage_service` beside the app under the SAME devmode prefix (`usr/palm/services/`, not
+# `usr/palm/applications/`) — `make FLAVOR=… install` is what first lays this down and writes its
+# `services.json` role manifest; `deploy` below only ever updates the BINARY already registered
+# there, never invents the directory.
+SERVICEDIR   = /media/developer/apps/usr/palm/services/$(APPID).storage
+
 # Where this install's runtime files live — the event log, the crash log, the `plxnative-*` dev
 # triggers and the remote FIFO. The app resolves this itself (`paths::resolve_runtime_dir`); this
 # is the same rule spelled for the shell, and `make print-rundir` is how every tool asks for it
@@ -562,7 +569,7 @@ SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
 ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
-  $(shell mkdir -p pkg && printf '%s' '$(RUST_CFG)' > $(RUST_STAMP) && rm -f pkg/plxnative \
+  $(shell mkdir -p pkg && printf '%s' '$(RUST_CFG)' > $(RUST_STAMP) && rm -f pkg/plxnative pkg/plxnative-storage \
           vendor/ffmpeg-prefix/include/libavformat/avformat.h pkg/lib*-plx.so.* pkg/.ffabi-ok)
 endif
 endif
@@ -574,7 +581,7 @@ RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/release/libplxnative_modu
 SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c)) src/compat/getauxval.c
 OBJS = $(SRCS:.c=.o)
 
-all: pkg/plxnative
+all: pkg/plxnative pkg/plxnative-storage
 
 # per-file compile; each object depends on ALL headers so a header edit rebuilds all
 src/%.o: src/%.c $(wildcard src/*.h) Makefile
@@ -672,7 +679,36 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo +$(RUST_NIGHTLY) build --release --target $(RUST_TARGET) \
-	    --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)
+	    --lib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)
+
+# The helper is an independent executable: it has its own auxv implementation and must never
+# link app getauxval.o. The project linker wrapper attests its map, trace and ELF bytes too.
+#
+# ITS OWN TARGET DIR, deliberately not $(RUST_TDIR): this `cargo rustc --bin ... --no-default-
+# -features` and $(RUST_LIB)'s `cargo build --lib` (default features) are two DIFFERENTLY-
+# CONFIGURED invocations of the SAME package (plxnative-modules), and `make -j` runs them
+# concurrently — exactly the hazard rust-modules/.cargo/config.toml's own comment already
+# documents ("a hand-typed cross build with a DIFFERENT ENVIRONMENT still writes the archive
+# make links... give a hand-run one its own --target-dir"). Sharing one target dir let the two
+# invocations race on the shared build-std sysroot units (std/core/alloc are never cached by
+# CI's rust-cache and so are rebuilt fresh by BOTH processes every run), which could leave
+# `cargo rustc`'s own fingerprint believing the just-linked plxnative-storage binary was still
+# fresh from the OTHER invocation's pass and skip re-invoking arm-cc.py — so no `.link.map`/
+# `.link.trace`/`.link.json` sidecar existed anywhere `stage-link-evidence.py` could find one,
+# even by its content-hash fallback (`04801c22`). A dedicated target dir makes the two cargo
+# invocations share nothing, so neither can observe the other's fingerprint state.
+STORAGE_TDIR = $(RUST_TDIR)-storage
+STORAGE_BIN = rust-modules/$(STORAGE_TDIR)/$(RUST_TARGET)/release/plxnative-storage
+pkg/plxnative-storage: LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs Makefile ci/arm-cc.py ci/check-link-evidence.py
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
+	  CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER='$(CC)' \
+	  cargo +$(RUST_NIGHTLY) rustc --release --target $(RUST_TARGET) \
+	    --bin plxnative-storage --target-dir $(STORAGE_TDIR) --no-default-features -- \
+	    -C link-arg=--sysroot=$(SYSROOT) -L native=$(SYSROOT)/usr/lib \
+	    -C link-arg=-Wl,-rpath-link,$(SYSROOT)/usr/lib -C link-arg=-Wl,--build-id=sha1
+	cp $(STORAGE_BIN) $@
+	chmod 755 $@
+	python3 ci/stage-link-evidence.py $(STORAGE_BIN) $@
 
 # link C objects + the Rust staticlib. gcc pulls in libgcc_s (the ARM-EHABI
 # unwinder Rust's panic_unwind std references) + libc/pthread/dl/m/rt itself.
@@ -855,10 +891,17 @@ pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/mkipk.py
 # prerequisites run left to right, and a cold `make deploy` spends ~2 minutes building FFmpeg
 # before it touches the television. Taking the lock first would hold the set through a build that
 # needs no television — and, on the short implicit lease, could even let it expire before the scp.
-deploy: pkg/plxnative $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release-guard tv-lock-require
+deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release-guard tv-lock-require
 	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) to $(APPID) [$(FLAVOR)]"
 	@$(SSH) 'test -d $(APPDIR)' || { \
 	  echo "$(APPDIR) does not exist on $(TV) — the $(FLAVOR) flavour is not installed."; \
+	  echo "install it once:  make FLAVOR=$(FLAVOR)$(if $(RELEASE), RELEASE=1,) install"; exit 1; }
+	# The storage helper's service directory is laid down by `make install` too (`ci/mkipk.py`'s
+	# `stage_storage_service`), never invented by `deploy` — a hand-made one would carry no
+	# `services.json` role manifest, so LS2 would refuse every call the helper makes and the
+	# failure would look like the helper crashing rather than never having been registered.
+	@$(SSH) 'test -d $(SERVICEDIR)' || { \
+	  echo "$(SERVICEDIR) does not exist on $(TV) — the storage helper was never installed for the $(FLAVOR) flavour."; \
 	  echo "install it once:  make FLAVOR=$(FLAVOR)$(if $(RELEASE), RELEASE=1,) install"; exit 1; }
 	# The descriptor and the directory it lands in must name the same app: `paths::app_id` reads
 	# the DIRECTORY, so a mismatch means the running binary and its own appinfo disagree about
@@ -880,6 +923,15 @@ deploy: pkg/plxnative $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release
 	# leaves the old process on its old inode while the next launch gets this one.
 	$(SCP) $(SENTRY_HANDLER) root@$(TV):$(APPDIR)/sentry-crash.new
 	$(SSH) 'chmod 755 $(APPDIR)/sentry-crash.new && mv $(APPDIR)/sentry-crash.new $(APPDIR)/sentry-crash'
+	# The storage helper is a registered LS2 SERVICE, not part of the app directory — `ipk` has
+	# shipped it since the service existed (`ci/stage-link-evidence.py` into
+	# `usr/palm/services/$(APPID).storage/`), but `deploy` never had a path to it at all, so an
+	# iterated fix to `storage_service/*.rs` only ever reached the TV via a full `make install`
+	# reinstall. Same `.new` + `mv` dance as the crash handler and for the same reason: LS2 may
+	# already have this service's OLD binary running (`appinstalld` execs `services.json`'s
+	# `executable` under its own uid), so `scp` straight onto that inode risks `ETXTBSY`.
+	$(SCP) pkg/plxnative-storage root@$(TV):$(SERVICEDIR)/plxnative-storage.new
+	$(SSH) 'chmod 755 $(SERVICEDIR)/plxnative-storage.new && mv $(SERVICEDIR)/plxnative-storage.new $(SERVICEDIR)/plxnative-storage'
 	# ...then retire any FFmpeg from a PREVIOUS version. `scp` only adds, so bumping the bundled
 	# release left the old majors sitting in the app directory forever — observed on the dev TV,
 	# which was carrying libavcodec-plx.so.60 and .so.58 from an earlier experiment alongside the
@@ -939,11 +991,16 @@ deploy: pkg/plxnative $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release
 # report to find weeks later. `VERIFY_FILES` is deliberately not `DEPLOY_FILES` alone: the binary,
 # the crash handler and the FFmpeg libraries take their own path to the device above and are just
 # as capable of silently drifting, so they are verified too.
-VERIFY_FILES = pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(DEPLOY_FILES) \
+VERIFY_FILES = pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(DEPLOY_FILES) pkg/plxnative-storage \
                $(if $(LAB),pkg/lab.json,)
 verify-deploy: tv-lock-require
 	@echo "verify-deploy: comparing $(words $(VERIFY_FILES)) files against $(APPID) [$(FLAVOR)]"
-	@$(SSH) 'cd $(APPDIR) && md5sum $(notdir $(VERIFY_FILES)) 2>&1' | \
+	@# The storage helper lands in $(SERVICEDIR), a different directory from everything else here —
+	@# `ci/verify-deploy.py` keys purely by basename (see its module doc), so a second `cd && md5sum`
+	@# appended to the same ssh round trip merges into one stream it already knows how to read,
+	@# rather than needing a transport of its own.
+	@$(SSH) 'cd $(APPDIR) && md5sum $(notdir $(filter-out pkg/plxnative-storage,$(VERIFY_FILES))) 2>&1; \
+	         cd $(SERVICEDIR) && md5sum plxnative-storage 2>&1' | \
 	  python3 ci/verify-deploy.py $(VERIFY_FILES)
 
 # NB (this webOS build): luna-send must stay subscribed (-i) for the launch to
@@ -1017,7 +1074,7 @@ kill: tv-lock-require
 	$(SSH) '$(CLOSE_SH) echo closed $(APPID)'
 
 clean:
-	rm -f src/*.o pkg/plxnative
+	rm -f src/*.o pkg/plxnative pkg/plxnative-storage
 
 test: deploy run
 
@@ -1191,6 +1248,8 @@ check: lint
 	python3 ci/test_deploy_manifest.py
 	python3 ci/test_verify_deploy.py
 	python3 ci/test_link_evidence.py
+	python3 ci/test_storage_service_package.py
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test --bin plxnative-storage
 	python3 ci/test_packaged_elf.py
 	python3 ci/test_check_elf.py
 	python3 ci/test_build_gc.py
@@ -1285,8 +1344,8 @@ sentry-symbols: symbols
 	@SENTRY_ORG='$(SENTRY_ORG)' SENTRY_PROJECT='$(SENTRY_PROJECT)' \
 	  $(SENTRY_CLI) debug-files upload --include-sources pkg/plxnative.debug pkg/plxnative
 
-ipk: pkg/plxnative $(APPINFO) release-guard
-	python3 ci/check-link-evidence.py pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED)
+ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
+	python3 ci/check-link-evidence.py pkg/plxnative pkg/plxnative-storage $(SENTRY_HANDLER) $(FFMPEG_STAGED)
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
 	rm -rf ipkroot/data/usr && mkdir -p $(STAGE)/licenses
 	cp $(APP_FILES) $(STAGE)/
@@ -1306,6 +1365,8 @@ ipk: pkg/plxnative $(APPINFO) release-guard
 	@# Only THIS flavour's artifact — packaging one must never delete the other's.
 	rm -f pkg/$(APPID)_*_arm.ipk
 	FLAVOR=$(FLAVOR) python3 ci/mkipk.py
+	python3 ci/stage-link-evidence.py pkg/plxnative-storage ipkroot/data/usr/palm/services/$(APPID).storage/plxnative-storage \
+	  --evidence-base pkg/link-evidence/$(FLAVOR)/plxnative-storage
 	@# Emitted from INSIDE pkg/ so the line carries the bare filename. With the `pkg/` prefix
 	@# in it, `shasum -a 256 -c ipk.sha256` fails for everyone who downloads the two release
 	@# assets side by side — which is every user, and is what shipped through v0.2.1.

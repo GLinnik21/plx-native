@@ -130,6 +130,8 @@ For more connection help, see [webOSbrew's troubleshooting guide](https://www.we
 
 The installation walkthrough ends above. The sections below are a technical reference for package verification, release provenance, and what the app reads, writes, and connects to.
 
+The app runs in LG's normal sandbox: an unprivileged uid, chrooted, under the stock jail profile. `appinfo.json` declares two ACGs, `database.operation` and `securitykey.operation` — both are the storage helper's, for the local DB8 keystore and the platform key manager it uses to keep your sign-in off plain disk; neither reaches the network or anything outside this app's own data.
+
 Per-release facts — the hash, sizes, payload, and what was tested on which set — are in that version's [technical audit](https://github.com/GLinnik21/plx-native/tree/main/docs/release-audits).
 
 ### Which file to download

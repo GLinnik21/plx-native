@@ -18,7 +18,7 @@ fn dev_fixture() -> Bridge {
 
 #[test]
 fn dev_revoke_resource_completes_before_carried_ack_and_stale_ack_after_erase_is_inert() {
-    use crate::auth::owner::{BootstrapAuthority, CommitReply, SessionEvent};
+    use crate::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, SessionEvent};
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     let mut witnessed = false;
     // Cut the normal dispatcher budget at each nearby step; require the precise post-resource,
@@ -45,7 +45,8 @@ fn dev_revoke_resource_completes_before_carried_ack_and_stale_ack_after_erase_is
         let restored: crate::auth::SessionInit = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
         assert_eq!(crate::auth::SessionMachine::from_init(restored).subhash(), rig.session.subhash(),
             "pending dev delta, reserved request and disk comparison survive init roundtrip");
-        let ack = CommitReply { req: commit.req, epoch: commit.epoch, arrival: commit.arrival, accepted: true };
+        let ack = CommitReply { req: commit.req, epoch: commit.epoch, arrival: commit.arrival,
+            admission: CommitAdmission::RegistryOnly };
         frame(&mut rig, &mut d);
         assert_eq!(ran.load(Ordering::Acquire), 1);
         assert!(matches!(rig.session.snapshot_init().authority, BootstrapAuthority::Account { .. }));
@@ -91,7 +92,8 @@ fn dev_login_preflights_both_request_slots_and_coalesces_pending_intent() {
 
 #[test]
 fn dev_erase_and_signout_retire_pending_boundaries_without_reinstalling_grants() {
-    use crate::auth::owner::{BootstrapAuthority, CommitReply, CoordinatorAction, SessionEvent, SessionWork};
+    use crate::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, CoordinatorAction,
+        SessionEvent, SessionWork};
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     for sign_out in [false, true] {
         for boundary in 0..3 {
@@ -127,7 +129,8 @@ fn dev_erase_and_signout_retire_pending_boundaries_without_reinstalling_grants()
             if boundary != 0 {
                 d.emit(MachineId::Session, Fx::Deliver(MachineId::Session,
                     Delivery::Machine(AppMsg::Session(SessionEvent::Commit(CommitReply {
-                        req: 1, epoch: u64::from(boundary), arrival: 0, accepted: true,
+                        req: 1, epoch: u64::from(boundary), arrival: 0,
+                        admission: CommitAdmission::RegistryOnly,
                     })))));
                 frame(&mut rig, &mut d);
                 assert_eq!(rig.session.subhash(), before);
@@ -164,7 +167,7 @@ fn carried_dev_ready_is_not_handed_off_after_erase() {
 
 #[test]
 fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
-    use crate::auth::owner::{BootstrapAuthority, CommitReply, SessionEvent, SessionWork};
+    use crate::auth::owner::{BootstrapAuthority, CommitAdmission, CommitReply, SessionEvent, SessionWork};
     use crate::plex::session::{Session, ServerRef};
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
     let _lock = crate::testlock::serial();
@@ -185,7 +188,8 @@ fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
             // failure is claimed: this grades the ACK/UI protocol, not Revoke's infallible IO.
             d.emit(MachineId::Session, Fx::Deliver(MachineId::Session,
                 Delivery::Machine(AppMsg::Session(SessionEvent::Commit(CommitReply {
-                    req: state.next_req + 1, epoch, arrival: 0, accepted: false,
+                    req: state.next_req + 1, epoch, arrival: 0,
+                    admission: CommitAdmission::StaleAuthority,
                 })))));
             frame(&mut rig, &mut d);
             assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Error);
@@ -406,11 +410,21 @@ fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contra
         d.frame_with(&mut rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
         let state = rig.session.snapshot_init();
         if disk_case == 1 {
+            // AUTH-03/AUTH-04 (fresh-reauthentication-authority) narrowed
+            // `replace_after_reauthentication_with_outcome`'s unfenced write to the case the
+            // 0.6.3 symptom is actually about: an UNREADABLE (Locked/Blocked/Missing) disk. This
+            // disk is READABLE (a concurrent external actor replaced a record this login could
+            // actually read), so the fresh write is still fenced on disk identity exactly like a
+            // Routine write, and refuses — the external replacement survives, not the login.
             assert_eq!(session::peek().account_token, "synthetic-external-replacement");
             assert_eq!(state.disk_identity.account_token, "synthetic-account-a");
             assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Error);
         } else {
-            assert_eq!(state.disk_identity.account_token, "synthetic-new-account");
+            // A definitely failed fresh write (case 2) never replaced the record, so the owner's
+            // disk identity stays on what is still there rather than on the account that never
+            // landed; a durable one (case 0) re-bases on the new account.
+            let on_disk = if disk_case == 2 { "synthetic-account-a" } else { "synthetic-new-account" };
+            assert_eq!(state.disk_identity.account_token, on_disk);
             assert_eq!(rig.auth_read().0.phase, crate::auth::Phase::Ready);
             if disk_case == 0 {
                 let disk = session::peek();
@@ -421,6 +435,13 @@ fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contra
                 assert!(tmp.path().is_dir(), "accepted reply did not claim a durable write");
                 let old: Session = serde_json::from_slice(&std::fs::read(tmp.path().with_file_name("preserved-a.json")).unwrap()).unwrap();
                 assert_eq!(old.account_token, "synthetic-account-a");
+                // The disk write itself failed (the candidate is a directory, not a file), so the
+                // Discovery-purpose fresh commit that was synchronously admitted must still raise
+                // a `PersistenceWarning` once its real completion lands — the AUTH-03 surface a
+                // silently-accepted-but-unwritten fresh save must not skip.
+                assert_eq!(rig.auth_read().0.persistence_warning.map(|w| w.site),
+                    Some(crate::auth::owner::PersistenceWarningSite::Discovery),
+                    "an unwritten fresh save must raise a Discovery persistence warning");
             }
         }
     }

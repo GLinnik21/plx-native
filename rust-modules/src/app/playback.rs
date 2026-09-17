@@ -453,6 +453,7 @@ pub(crate) fn commit_track(
 }
 
 pub(crate) fn player_requests(
+    repair: &mut crate::player::machine::RepairAttempt,
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     reqs: Vec<crate::screens::registry::PlayerReq>,
@@ -467,6 +468,13 @@ pub(crate) fn player_requests(
     use crate::screens::registry::PlayerReq;
     for req in reqs {
         match req {
+            PlayerReq::RepairSandbox => {
+                if ps.jail_load_blocked {
+                    pa.repair_sandbox(repair, crate::webos::jail_blocks_native_video());
+                    ps.repair_status = repair.state();
+                    crate::ui::idle::invalidate();
+                }
+            }
             PlayerReq::ExtendHud(ms) => {
                 if let Some(player) = super::bridge::player_mut(pages) {
                     player.hud.extend(now, ms);
@@ -587,11 +595,10 @@ pub(crate) fn exit_player(
     // BACK during resolve has no engine for teardown to take. The exit ritual still ends that
     // attempt, so retire its in-memory trace here as the common backstop.
     crate::player::report::clear_error_trace();
-    // Same reasoning for the jail pre-flight refusal, which also has no Engine: without this,
-    // `player::state()` kept reporting `Error` on every OTHER screen too — Home, the Library,
-    // any detail page — for the rest of the process, after the viewer had already walked away
-    // from the one refused attempt.
-    crate::player::clear_jail_refusal_for_route_exit();
+    // The jail pre-flight refusal (also no Engine to teardown) is already retired above: it
+    // lives on `ps.jail_load_blocked`, and `cancel_play` at the top of this function clears it
+    // via `clear_play_verdict` the same way it clears a `/decision` refusal — see that function's
+    // doc for why a verdict left standing described the item the user walked away from.
     // **The return is a `PopTo` of the ORIGIN ENTRY** (§5.1) — the page that was on top when the
     // push was asked for, captured at the player's own mount and read back off the instance. It
     // replaces `App.play_from: Node` plus `enter_node` plus `Trail::ensure`, which between them

@@ -1,0 +1,91 @@
+{
+  "client_id": "synthetic-client-id",
+  "account_token": "synthetic-account-token",
+  "server": {
+    "name": "Server A",
+    "machine_id": "aaaa1111",
+    "address": "192.0.2.10",
+    "port": 32400,
+    "token": "synthetic-server-token",
+    "tier": null,
+    "origin": ""
+  },
+  "user": {
+    "id": 7,
+    "uuid": "u-7",
+    "title": "Profile A",
+    "thumb": "",
+    "token": "synthetic-user-token"
+  },
+  "home_users": [
+    {
+      "id": 7,
+      "uuid": "u-7",
+      "title": "Profile A",
+      "thumb": "",
+      "protected": false,
+      "admin": true
+    },
+    {
+      "id": 8,
+      "uuid": "u-8",
+      "title": "Profile B",
+      "thumb": "",
+      "protected": true,
+      "admin": false
+    }
+  ],
+  "sources": [
+    {
+      "machine_id": "aaaa1111",
+      "name": "Server A",
+      "shared_by": "",
+      "owned": true,
+      "address": "192.0.2.10",
+      "port": 32400,
+      "token": "synthetic-server-token",
+      "tier": null,
+      "origin": ""
+    },
+    {
+      "machine_id": "bbbb2222",
+      "name": "Server B",
+      "shared_by": "Friend",
+      "owned": false,
+      "address": "198.51.100.9",
+      "port": 31234,
+      "token": "synthetic-share-token",
+      "tier": null,
+      "origin": ""
+    }
+  ],
+  "home_pins": [
+    {
+      "user": "u-7",
+      "asked": true,
+      "on": [
+        {
+          "machine_id": "bbbb2222",
+          "key": 1
+        }
+      ],
+      "off": [
+        {
+          "machine_id": "aaaa1111",
+          "key": 2
+        }
+      ]
+    }
+  ],
+  "recent_searches": [
+    {
+      "user": "u-7",
+      "terms": [
+        "alpha",
+        "beta"
+      ]
+    }
+  ],
+  "playback_quality": "1080p_8_mbps",
+  "last_hero_blur": null
+}
