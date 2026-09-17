@@ -67,6 +67,7 @@ jobs:
           cp site/media/closeup-glass-narrow.jpg _site/media/closeup-glass-narrow.jpg
           cp site/media/closeup-tiles.jpg _site/media/closeup-tiles.jpg
           cp site/media/closeup-player.jpg _site/media/closeup-player.jpg
+          cp site/media/og-card.jpg _site/media/og-card.jpg
 
           cp assets/logo-master.png _site/assets/logo-master.png
 

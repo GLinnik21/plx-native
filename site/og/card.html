@@ -1,0 +1,133 @@
+<!doctype html>
+<!-- Source of site/media/og-card.png, the 1200x630 link preview (Open Graph / Twitter card).
+     Not deployed. Re-render with tools/render-og-card.sh after editing. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @font-face {
+        font-family: "PlxAppFont";
+        src: url("../../pkg/appfont.ttf") format("truetype");
+        font-weight: 400;
+      }
+      @font-face {
+        font-family: "PlxAppFont";
+        src: url("../../pkg/appfont-bold.ttf") format("truetype");
+        font-weight: 700;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1200px;
+        height: 630px;
+        overflow: hidden;
+      }
+      body {
+        position: relative;
+        font-family: "PlxAppFont", -apple-system, "Segoe UI", sans-serif;
+        color: #f7fafc;
+        -webkit-font-smoothing: antialiased;
+        background: radial-gradient(120% 120% at 0% 0%, #3a3734, transparent 62%),
+          radial-gradient(120% 120% at 100% 0%, #202022, transparent 62%),
+          radial-gradient(120% 120% at 100% 100%, #4a3120, transparent 62%),
+          radial-gradient(120% 120% at 0% 100%, #313032, transparent 62%), #202022;
+      }
+      .shot {
+        position: absolute;
+        left: 524px;
+        top: 91px; /* (630 - 448) / 2: equal space above and below, 18px under the logo's top */
+        width: 796px;
+        height: 448px;
+        border-radius: 22px;
+        background: url("../media/feel-poster.jpg") center / cover;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 40px 90px rgba(0, 0, 0, 0.6),
+          0 12px 30px rgba(0, 0, 0, 0.45);
+      }
+      .glow {
+        position: absolute;
+        left: 570px;
+        top: 120px;
+        width: 650px;
+        height: 390px;
+        background: radial-gradient(closest-side, rgba(250, 184, 46, 0.22), transparent);
+        filter: blur(40px);
+      }
+      /* The logo sits 18px above the screenshot's top so the two do not compete; the URL's
+         baseline meets the screenshot's bottom edge. The headline keeps its 44px from the brand
+         row. */
+      .copy {
+        position: absolute;
+        left: 72px;
+        top: 73px;
+        width: 440px;
+        height: 466px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 44px;
+      }
+      .mark {
+        width: 64px;
+        height: 64px;
+        border-radius: 17px;
+        background: #08080a;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+      }
+      .mark img {
+        height: 38px;
+      }
+      .name {
+        font-size: 34px;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+      }
+      h1 {
+        margin: 0 0 26px;
+        font-size: 56px;
+        line-height: 1.06;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+      }
+      h1 span {
+        color: #b8bfcc;
+      }
+      p {
+        margin: 0;
+        max-width: 400px;
+        font-size: 24px;
+        line-height: 1.45;
+        color: #cdd3dd;
+      }
+      .url {
+        font-size: 20px;
+        line-height: 1;
+        margin-bottom: -4px; /* the descender of "p": put the baseline, not the line box, on the edge */
+        color: #9499a3;
+        letter-spacing: 0.3px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="glow"></div>
+    <div class="shot"></div>
+    <div class="copy">
+      <div>
+        <div class="brand">
+          <div class="mark"><img src="../../assets/logo-master.png" alt="" /></div>
+          <div class="name">PlxNative</div>
+        </div>
+        <h1>Plex that feels fast <span>on LG&nbsp;TVs.</span></h1>
+        <p>A native, open-source Plex client for webOS&nbsp;— even older sets.</p>
+      </div>
+      <div class="url">plxnative.com</div>
+    </div>
+  </body>
+</html>
