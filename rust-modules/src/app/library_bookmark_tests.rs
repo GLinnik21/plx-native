@@ -1,3 +1,10 @@
+//! Library bookmark commands under the Bridge dispatcher.
+
+use super::*;
+#[allow(unused_imports)]
+use super::test_support::*;
+use super::test_support::{frame, frame_with_tap};
+
 #[test]
 fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
     use crate::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};

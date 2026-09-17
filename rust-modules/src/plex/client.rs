@@ -179,22 +179,41 @@ impl IpVersion {
     }
 }
 
-/// `Location` ⇄ `u8`, so the tier fits in an atomic. Written as two total matches rather than a
-/// cast: `Location`'s declaration ORDER is its preference order (`probe`'s derived `Ord` is the
+/// `Location`/`IpVersion` ⇄ `u8`, so each tier fits in an atomic. **The one encode/decode pair for
+/// both fields** — this `Client`'s own atomics and [`crate::player::report`]'s packed attempt
+/// snapshot (`ATTEMPT_CONNECTION`) both go through these rather than keeping a second private
+/// table each, which is what let the two drift apart before. Written as total matches rather than
+/// a cast: `Location`'s declaration ORDER is its preference order (`probe`'s derived `Ord` is the
 /// ranking), so a discriminant cast would silently tie the stored encoding to that ordering and
-/// break the moment a tier is inserted in the middle.
-fn link_code(l: Location) -> u8 {
+/// break the moment a tier is inserted in the middle. `0` is the shared "unknown"/`None` code for
+/// both fields.
+pub(crate) fn encode_link(l: Option<Location>) -> u8 {
     match l {
-        Location::Local => 1,
-        Location::Remote => 2,
-        Location::Relay => 3,
+        None => LINK_UNKNOWN,
+        Some(Location::Local) => 1,
+        Some(Location::Remote) => 2,
+        Some(Location::Relay) => 3,
     }
 }
-fn link_of_code(c: u8) -> Option<Location> {
+pub(crate) fn decode_link(c: u8) -> Option<Location> {
     match c {
         1 => Some(Location::Local),
         2 => Some(Location::Remote),
         3 => Some(Location::Relay),
+        _ => None,
+    }
+}
+pub(crate) fn encode_ip(ip: Option<IpVersion>) -> u8 {
+    match ip {
+        None => IP_UNKNOWN,
+        Some(IpVersion::V4) => 1,
+        Some(IpVersion::V6) => 2,
+    }
+}
+pub(crate) fn decode_ip(c: u8) -> Option<IpVersion> {
+    match c {
+        1 => Some(IpVersion::V4),
+        2 => Some(IpVersion::V6),
         _ => None,
     }
 }
@@ -358,44 +377,48 @@ impl Client {
     }
     /// Record which tier of connection reached this server — for the code that ACTIVATES a
     /// candidate (`probe::candidates` ranks them; racing and dialling them lands with the
-    /// transport work). Call it once the probe has answered and the address is the one in use;
-    /// until someone does, [`Client::link`] is `None` and playback policy is unrestricted.
+    /// transport work). Until someone sets it, [`Client::link`] is `None` and playback policy is
+    /// unrestricted.
     ///
-    /// **ORDER MATTERS: register the address FIRST, then set the link on the client you get back**
-    /// (`let id = register_origin(mid, &o, tok); client_for(id).unwrap().set_link(l);`). A
-    /// `register` whose address differs RE-POINTS the slot — it publishes a fresh `Client`, which
-    /// starts at `LINK_UNKNOWN` — so a tier set before that call is simply gone, and the policy
-    /// silently reverts to unrestricted. That reset is deliberate rather than a wart: an address
-    /// change is exactly the event that can turn a LAN connection into a relay, so the old tier is
-    /// not evidence about the new one.
+    /// **Every production caller was moved onto [`Client::apply_connection`] / the registry's
+    /// [`super::servers::ConnectionFacts`] in #95 step 8** — the same "register, then set" order
+    /// this comment used to require raced a re-point (a fresh `Client` starting at
+    /// `LINK_UNKNOWN`) against the separate follow-up call, and `ConnectionFacts` is applied
+    /// atomically inside the registration write itself instead. This method remains a plain,
+    /// unconditional setter for tests that want to seed a tier directly (e.g. to grade
+    /// `finish_profile_switch` against a known-good roster) without going through the registry.
     pub fn set_link(&self, l: Location) {
-        self.link.store(link_code(l), Relaxed);
+        self.link.store(encode_link(Some(l)), Relaxed);
     }
-    /// Publish both coarse network facts from the winning probe candidate. No address, hostname or
-    /// port survives this boundary — only the path class and IP generation analytics needs.
+    /// Publish both coarse network facts unconditionally — `ip_version: None` sets `ip_version()`
+    /// back to `None`/unknown, unlike [`Client::apply_connection`]'s "leave unchanged" semantics.
+    /// Superseded in production by `apply_connection`/`ConnectionFacts` (#95 step 8); this stays a
+    /// direct test seam.
     pub fn set_connection(&self, l: Location, ip_version: Option<IpVersion>) {
         self.set_link(l);
-        self.ip_version.store(
-            match ip_version {
-                Some(IpVersion::V4) => 1,
-                Some(IpVersion::V6) => 2,
-                None => IP_UNKNOWN,
-            },
-            Relaxed,
-        );
+        self.ip_version.store(encode_ip(ip_version), Relaxed);
+    }
+    /// Apply [`super::servers::ConnectionFacts`] captured AT registration (#95 step 8 / A1).
+    /// `None` in either field of `conn` is LEFT UNCHANGED — never written as unknown — so a
+    /// same-origin retoken cannot blank a tier or IP a previous activation already proved. The
+    /// registry is the only caller: it applies this inside the same write that creates or
+    /// re-points the slot, never as a separate step a caller can forget.
+    pub(crate) fn apply_connection(&self, conn: super::servers::ConnectionFacts) {
+        if let Some(tier) = conn.tier {
+            self.link.store(encode_link(Some(tier)), Relaxed);
+        }
+        if let Some(ip) = conn.ip {
+            self.ip_version.store(encode_ip(Some(ip)), Relaxed);
+        }
     }
     /// How this server is reached, `None` while nothing has said. Feed it to
     /// [`super::transcoder::link_policy`] rather than matching on it at a call site — a relay is
     /// not the only fact a tier could ever carry, and the policy is the one place that decides.
     pub fn link(&self) -> Option<Location> {
-        link_of_code(self.link.load(Relaxed))
+        decode_link(self.link.load(Relaxed))
     }
     pub fn ip_version(&self) -> Option<IpVersion> {
-        match self.ip_version.load(Relaxed) {
-            1 => Some(IpVersion::V4),
-            2 => Some(IpVersion::V6),
-            _ => None,
-        }
+        decode_ip(self.ip_version.load(Relaxed))
     }
 
     // ---- transport choke points: the only code that touches crate::stream ----
@@ -821,6 +844,34 @@ mod tests {
         )
     }
 
+    /// PR #104 review: `encode_link`/`decode_link` and `encode_ip`/`decode_ip` are the ONE
+    /// encode/decode pair for both fields — `Client`'s own atomics and `player::report`'s packed
+    /// attempt snapshot both go through these instead of each keeping a private copy. Every
+    /// `Location`/`IpVersion` value, plus `None`, must round-trip through its pair.
+    #[test]
+    fn link_and_ip_codes_round_trip_every_value() {
+        for l in [None, Some(Location::Local), Some(Location::Remote), Some(Location::Relay)] {
+            assert_eq!(decode_link(encode_link(l)), l, "link {l:?} did not round-trip");
+        }
+        for ip in [None, Some(IpVersion::V4), Some(IpVersion::V6)] {
+            assert_eq!(decode_ip(encode_ip(ip)), ip, "ip {ip:?} did not round-trip");
+        }
+        // `0` is the shared unknown/`None` code for both fields, and an unrecognised code decodes
+        // to `None` rather than panicking — a packed word can carry any `u8` in these bits.
+        assert_eq!(encode_link(None), 0);
+        assert_eq!(encode_ip(None), 0);
+        assert_eq!(decode_link(0), None);
+        assert_eq!(decode_ip(0), None);
+        assert_eq!(decode_link(200), None);
+        assert_eq!(decode_ip(200), None);
+    }
+
+    // Dev-only: this fixture drives a plaintext loopback PMS with a real client that carries a
+    // token, which a store build's `CredentialPolicy::HttpsOnly` refuses before the request ever
+    // reaches the wire (see `http::credential_transport_allowed`) — the connection this test
+    // waits on then never arrives. The store-build case is covered instead by `auth.rs`'s
+    // `e2e_real_curl_*` HTTPS harness.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn malformed_2xx_remains_a_response_after_its_deadline_passes() {
         use std::io::{Read, Write};

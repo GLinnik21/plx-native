@@ -1,3 +1,10 @@
+//! Library query/bookmark restore ordering.
+
+use super::*;
+#[allow(unused_imports)]
+use super::test_support::*;
+use super::test_support::{frame};
+
 #[test]
 fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookmark() {
     let _guard = crate::testlock::serial();

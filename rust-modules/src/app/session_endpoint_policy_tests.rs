@@ -63,8 +63,9 @@ mod tests {
                                 assert_eq!(scenario, 3, "early resource return must not probe");
                                 (Some(SourceRef { address: "127.0.0.9".into(),
                                     origin_url: "http://127.0.0.9:32400".into(), ..old_source }),
-                                    crate::auth::settled_probe(&crate::plex::probe::plan(resource),
-                                        crate::plex::probe::Outcome::Reachable, None))
+                                    crate::auth::settled_probe(
+                                        &crate::plex::probe::plan(resource, crate::plex::CredentialPolicy::HttpsOnly),
+                                        crate::plex::probe::Outcome::Reachable, None, Some("127.0.0.9".into())))
                             });
                     }).join().expect("endpoint worker failed");
                 });

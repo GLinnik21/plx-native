@@ -1082,6 +1082,10 @@ mod tests {
     /// who's-watching picker, so a squatted entry changes which screen this install comes up on
     /// with nothing logged anywhere. It became reachable when two installs started sharing `/tmp`
     /// — the second install's runtime root is a directory sitting right there.
+    // `is_armed_trigger` itself is compiled out entirely under `--no-default-features` (it is
+    // `devtriggers`-only, not merely dead code behind the runtime `ENABLED` check below), so this
+    // test cannot exist in that build at all rather than just skip at runtime.
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn a_directory_is_not_an_armed_trigger() {
         if !super::ENABLED {

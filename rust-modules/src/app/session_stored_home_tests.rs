@@ -52,8 +52,10 @@ fn inject_roster_terminal(rig: &mut Bridge, expected: crate::auth::SessionIdenti
         })).unwrap();
         output.progress(crate::auth::AuthProgress::Registry(crate::auth::RegistryProgress::Settled {
             epoch, expected: Some(expected.clone()),
-            probe: crate::auth::settled_probe(&crate::plex::probe::plan(&resource),
-                crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local)),
+            probe: crate::auth::settled_probe(
+                &crate::plex::probe::plan(&resource, crate::plex::CredentialPolicy::HttpsOnly),
+                crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local),
+                Some("127.0.0.4".into())),
         })).unwrap();
         let roster = serde_json::from_value(serde_json::json!({
             "epoch":epoch, "expected":terminal_expected,
@@ -118,9 +120,12 @@ fn prove_home_observations(conflicting_owner: bool) {
     let wrong_identity = crate::auth::owner::Identity::of(&disk);
     rig.session_adapter.inject_fixture_work(req, move |output, input| {
         let SessionWork::Endpoint { expected, lifecycle, machine_id, .. } = input else { panic!("endpoint capture") };
+        let probe = crate::auth::settled_probe_for_test(&machine_id,
+            crate::plex::probe::Outcome::Reachable,
+            Some(crate::plex::probe::Location::Local), Some("127.0.0.3".into()));
         output.complete(crate::auth::endpoint_work_fact(epoch,
             if conflicting_owner { wrong_identity } else { expected }, lifecycle, machine_id,
-            Some(source("127.0.0.3", "account-token-not-authoritative")))).unwrap();
+            Some(source("127.0.0.3", "account-token-not-authoritative")), Some(probe))).unwrap();
     });
     command(&mut rig, &mut d, crate::auth::SessionCmd::RequestEndpoint { sid: id });
     let records = rig.session_adapter.take_results();
@@ -205,8 +210,11 @@ fn admitted_endpoint_lifecycle_and_nonterminal_rejections_preserve_current_inter
         let epoch = rig.auth_read().0.flow_epoch;
         rig.session_adapter.inject_fixture_work(req, move |output, input| {
             let SessionWork::Endpoint { expected, lifecycle, machine_id, .. } = input else { panic!("endpoint capture") };
+            let probe = crate::auth::settled_probe_for_test(&machine_id,
+                crate::plex::probe::Outcome::Reachable,
+                Some(crate::plex::probe::Location::Local), Some("127.0.0.9".into()));
             output.complete(crate::auth::endpoint_work_fact(epoch, expected, lifecycle, machine_id,
-                Some(source("127.0.0.9", "unused-payload-token")))).unwrap();
+                Some(source("127.0.0.9", "unused-payload-token")), Some(probe))).unwrap();
         });
         command(&mut rig, &mut d, crate::auth::SessionCmd::RequestEndpoint { sid: id });
         let mut records = rig.session_adapter.take_results();

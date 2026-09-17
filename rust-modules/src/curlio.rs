@@ -1478,14 +1478,9 @@ fn media_url_allowed(url: &str) -> bool {
 }
 
 #[cfg(test)]
-fn media_url_allowed_by_policy(url: &str, allow_plaintext_credentials: bool) -> bool {
+fn media_url_allowed_by_policy(url: &str, policy: crate::plex::CredentialPolicy) -> bool {
     let (origin, path) = crate::plex::origin::split(url);
-    crate::http::credential_transport_allowed_by_policy(
-        &origin,
-        path,
-        &[],
-        allow_plaintext_credentials,
-    )
+    crate::http::credential_transport_allowed_by_policy(&origin, path, &[], policy)
 }
 
 impl Drop for CurlSource {
@@ -1726,15 +1721,15 @@ mod tests {
     fn lower_media_layer_refuses_plaintext_credentials_in_store_policy() {
         assert!(!media_url_allowed_by_policy(
             "http://192.0.2.1:32400/video.mkv?X-Plex-Token=secret",
-            false,
+            crate::plex::CredentialPolicy::HttpsOnly,
         ));
         assert!(media_url_allowed_by_policy(
             "https://example.invalid/video.mkv?X-Plex-Token=secret",
-            false,
+            crate::plex::CredentialPolicy::HttpsOnly,
         ));
         assert!(media_url_allowed_by_policy(
             "http://192.0.2.1:32400/video.mkv?X-Plex-Token=secret",
-            true,
+            crate::plex::CredentialPolicy::AllowPlaintext,
         ));
     }
 

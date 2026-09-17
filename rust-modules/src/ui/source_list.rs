@@ -86,6 +86,7 @@ fn state_word(s: SourceState) -> Option<&'static str> {
         SourceState::NotProbed | SourceState::Reachable => None,
         SourceState::Unauthorized => Some(UNAUTHORIZED),
         SourceState::Unreachable => Some(UNREACHABLE),
+        SourceState::InsecureOnly => Some(INSECURE_ONLY),
     }
 }
 
@@ -99,6 +100,10 @@ fn state_word(s: SourceState) -> Option<&'static str> {
 const UNAUTHORIZED: &str = "Not authorized";
 /// Did not answer at all — refused, timed out, or unresolvable.
 const UNREACHABLE: &str = "Not reachable";
+/// Answered, verified as the right machine, but only over a transport this build can never put a
+/// credential on (issue #95). A different kind of fault from [`UNREACHABLE`] again — the server IS
+/// there, it is the connection to it that has to change (HTTPS), not the server itself.
+const INSECURE_ONLY: &str = "Not secure";
 
 /// The word a WORKING group's connection tier is said in — `None` when there is nothing worth
 /// saying.
@@ -136,6 +141,9 @@ fn usable(g: &SrcGroup) -> bool {
     match g.state {
         SourceState::NotProbed | SourceState::Reachable | SourceState::Unreachable => g.reachable(),
         SourceState::Unauthorized => false,
+        // Verified alive, but nothing behind it is browsable in this build — same shape as
+        // Unauthorized, a different remedy (HTTPS to the server, not a fresh grant).
+        SourceState::InsecureOnly => false,
     }
 }
 
@@ -285,6 +293,24 @@ mod tests {
         assert_ne!(
             words[2], words[3],
             "the two faults are told apart, or the remedy is a guess"
+        );
+    }
+
+    /// Issue #95 plan §4/S9: `InsecureOnly` is a FIFTH sentence, told apart from `Unreachable`
+    /// (the server is alive, just not over a transport this build can use) and it dims the group
+    /// exactly as `Unauthorized` does — `reachable() == false`, unlike the two silent states.
+    #[test]
+    fn insecure_only_gets_its_own_word_and_dims_like_unauthorized() {
+        assert_eq!(
+            accessory(&group(SourceState::InsecureOnly, None, "friend")),
+            "Not secure \u{b7} friend"
+        );
+        assert!(!group(SourceState::InsecureOnly, None, "friend").reachable());
+        assert!(!usable(&group(SourceState::InsecureOnly, None, "friend")));
+        assert_ne!(
+            accessory(&group(SourceState::InsecureOnly, None, "friend")),
+            accessory(&group(SourceState::Unreachable, None, "friend")),
+            "verified-but-plaintext and never-answered must read as different faults"
         );
     }
 
