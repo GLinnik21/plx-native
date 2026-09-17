@@ -1262,7 +1262,7 @@ mod tests {
         m.part = "/library/parts/42/file.mkv".to_string();
 
         let mut screen = ItemMenuScreen::new(EntryId(7), card_arg(&m, false));
-        screen.build_rows(crate::stores::metadata::MetadataStore::default().view());
+        screen.build_rows(test_store().view());
         let elem = first_action(&screen, |a| matches!(a, Action::PlayFromStart(_)));
         let req = commit(&mut screen, elem);
         assert_eq!(
@@ -1296,7 +1296,7 @@ mod tests {
                 from_home: false,
             },
         );
-        strip.build_rows(crate::stores::metadata::MetadataStore::default().view());
+        strip.build_rows(test_store().view());
         let elem = first_action(&strip, |a| matches!(a, Action::PlayFromStart(_)));
         let req = commit(&mut strip, elem);
         assert!(
@@ -1435,11 +1435,20 @@ mod tests {
         type Init = Arg;
         type Memory = PageMemory;
     }
-    static TEST_METADATA_STORE: crate::stores::metadata::MetadataStore =
-        crate::stores::metadata::MetadataStore;
+    thread_local! {
+        // TEST ONLY: see `screens::detail::tests`'s `TEST_METADATA` for why this lives here
+        // rather than being threaded as a parameter.
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+
     impl crate::screens::registry::MetadataLike for HostFixture {
         fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
-            TEST_METADATA_STORE.view()
+            test_store().view()
         }
     }
 
@@ -1609,29 +1618,29 @@ mod tests {
     #[test]
     fn play_trailer_is_cache_only_on_the_loaded_detail() {
         let _g = crate::testlock::serial();
-        crate::metadata::set_current_for_test(None);
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
         assert!(
-            cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), crate::stores::metadata::MetadataStore::default().view()).is_none(),
+            cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), test_store().view()).is_none(),
             "no loaded Detail → no row"
         );
 
-        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
             sid: crate::plex::ServerId::UNSET,
             rk: "42".into(),
             kind: "movie".into(),
             extras: vec![extra()],
             ..Default::default()
         }));
-        let hit = cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), crate::stores::metadata::MetadataStore::default().view()).unwrap();
+        let hit = cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), test_store().view()).unwrap();
         assert_eq!(hit.rk, "99");
 
         let mut other = item(0, PosterMark::None);
         other.rk = "other".into();
         assert!(
-            cached_trailer(crate::plex::ServerId::UNSET, &other, crate::stores::metadata::MetadataStore::default().view()).is_none(),
+            cached_trailer(crate::plex::ServerId::UNSET, &other, test_store().view()).is_none(),
             "a related tile of a different item must not steal the loaded trailer"
         );
-        crate::metadata::set_current_for_test(None);
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     #[test]

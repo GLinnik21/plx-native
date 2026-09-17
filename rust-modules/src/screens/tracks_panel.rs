@@ -1843,11 +1843,20 @@ mod tests {
         type Init = FixtureArg;
         type Memory = ();
     }
-    static TEST_METADATA_STORE: crate::stores::metadata::MetadataStore =
-        crate::stores::metadata::MetadataStore;
+    thread_local! {
+        // TEST ONLY: see `screens::detail::tests`'s `TEST_METADATA` for why this lives here
+        // rather than being threaded as a parameter.
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+
     impl crate::screens::registry::MetadataLike for HostFixture {
         fn metadata<'a>(_cx: &crate::ui::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
-            TEST_METADATA_STORE.view()
+            test_store().view()
         }
     }
     fn fixture_cx(focus: Option<FocusKey<u32>>) -> crate::ui::machine::Cx<'static, HostFixture> {

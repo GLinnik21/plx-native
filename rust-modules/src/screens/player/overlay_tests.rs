@@ -45,11 +45,20 @@ impl crate::screens::registry::PlayerLike for TestHost {
     }
 }
 
-static TEST_METADATA_STORE: crate::stores::metadata::MetadataStore =
-    crate::stores::metadata::MetadataStore;
+thread_local! {
+    // TEST ONLY: see `screens::detail::tests`'s `TEST_METADATA` for why this lives here rather
+    // than being threaded as a parameter.
+    static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+        std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+}
+
+fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+}
+
 impl crate::screens::registry::MetadataLike for TestHost {
     fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
-        TEST_METADATA_STORE.view()
+        test_store().view()
     }
 }
 
