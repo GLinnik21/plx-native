@@ -220,6 +220,20 @@ impl MetadataStore {
 
     pub(crate) fn state(&self) -> &crate::metadata::MetadataState { &self.state }
 
+    /// Test seam: reach this owner's own `MetadataState` to call a `_for_test` helper (e.g.
+    /// `crate::metadata::set_current_for_test`) that needs `&mut MetadataState`. Mirrors
+    /// `HubsStore::state_mut` (`stores/hubs.rs`).
+    #[cfg(test)]
+    pub(crate) fn state_mut(&mut self) -> &mut crate::metadata::MetadataState { &mut self.state }
+
+    /// Test seam: `state_mut()` and `adapter_ref()` borrowed together, for `_for_test` helpers
+    /// (e.g. `crate::metadata::land_detail_for_test`) that take both at once — a single `&mut
+    /// self` split into its two disjoint fields, not a second way to reach either one.
+    #[cfg(test)]
+    pub(crate) fn split_for_test(&mut self) -> (&mut crate::metadata::MetadataState, &crate::metadata::MetadataAdapter) {
+        (&mut self.state, &self.adapter)
+    }
+
     pub(crate) fn adapter_ref(&self) -> &crate::metadata::MetadataAdapter { &self.adapter }
 
     /// Synchronous command path over this owner's own state/adapter. D3: no adapter rotation here
