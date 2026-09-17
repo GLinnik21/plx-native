@@ -11,7 +11,8 @@ use super::test_support::*;
 #[test]
 fn marking_an_item_watched_flips_every_row_that_names_it_and_retires_its_resume_bar() {
     let _g = crate::testlock::serial();
-    reset();
+    let mut o = Owner::default();
+    reset(&mut o.state, &o.adapter);
     let mut b = SourceBuild {
         cw: vec![CwItem {
             last_viewed_at: 9,
@@ -38,7 +39,7 @@ fn marking_an_item_watched_flips_every_row_that_names_it_and_retires_its_resume_
     // …and the reverse toggle is the exact inverse, on a container as much as on a leaf
     assert!(apply_edit(&mut b, sid(0), "7", LocalEdit::Watched(false)));
     assert!(!b.cw[0].m.watched && b.cw[0].m.unwatched);
-    reset();
+    reset(&mut o.state, &o.adapter);
 }
 
 /// An item on another server that happens to share the ratingKey is a DIFFERENT item — the rule
@@ -47,7 +48,8 @@ fn marking_an_item_watched_flips_every_row_that_names_it_and_retires_its_resume_
 #[test]
 fn an_edit_never_reaches_the_same_rating_key_on_another_server() {
     let _g = crate::testlock::serial();
-    reset();
+    let mut o = Owner::default();
+    reset(&mut o.state, &o.adapter);
     let mut b = SourceBuild {
         cw: Vec::new(),
         shelves: vec![shelf(1, "Theirs", "h", &["7"])],
@@ -57,7 +59,7 @@ fn an_edit_never_reaches_the_same_rating_key_on_another_server() {
         "nothing matched"
     );
     assert!(!b.shelves[0].items[0].watched);
-    reset();
+    reset(&mut o.state, &o.adapter);
 }
 
 /// Remove from Continue Watching is a HIDE and nothing else: the card leaves the deck, keeps its
@@ -67,7 +69,8 @@ fn an_edit_never_reaches_the_same_rating_key_on_another_server() {
 #[test]
 fn a_deck_removal_leaves_the_deck_only_and_keeps_the_resume_point() {
     let _g = crate::testlock::serial();
-    reset();
+    let mut o = Owner::default();
+    reset(&mut o.state, &o.adapter);
     let mut b = SourceBuild {
         cw: vec![
             CwItem {
@@ -101,7 +104,7 @@ fn a_deck_removal_leaves_the_deck_only_and_keeps_the_resume_point() {
         !b.shelves[0].items[0].watched,
         "…and its watch state untouched: this is a HIDE"
     );
-    reset();
+    reset(&mut o.state, &o.adapter);
 }
 
 /// The reason the edit goes through the projection and the pure `merge` rather than splicing
@@ -111,7 +114,8 @@ fn a_deck_removal_leaves_the_deck_only_and_keeps_the_resume_point() {
 #[test]
 fn a_removed_deck_card_leaves_the_shelves_behind_it_correctly_addressed() {
     let _g = crate::testlock::serial();
-    reset();
+    let mut o = Owner::default();
+    reset(&mut o.state, &o.adapter);
     let build = SourceBuild {
         cw: vec![
             CwItem {
@@ -130,20 +134,20 @@ fn a_removed_deck_card_leaves_the_shelves_behind_it_correctly_addressed() {
             &["a", "b"],
         )],
     };
-    seed(vec![src(0, "", HubState::Ready, Some(build))]);
-    assert_eq!(rks(0), vec!["7", "8"], "the deck as it stands");
-    assert_eq!(rks(1), vec!["a", "b"]);
+    seed(&mut o.state, vec![src(0, "", HubState::Ready, Some(build))]);
+    assert_eq!(rks(&o.state, 0), vec!["7", "8"], "the deck as it stands");
+    assert_eq!(rks(&o.state, 1), vec!["a", "b"]);
 
-    assert!(edit_item(sid(0), "7", LocalEdit::LeftTheDeck));
+    assert!(edit_item(&mut o.state, sid(0), "7", LocalEdit::LeftTheDeck));
 
-    assert_eq!(rks(0), vec!["8"], "the card is gone from the deck");
+    assert_eq!(rks(&o.state, 0), vec!["8"], "the card is gone from the deck");
     assert_eq!(
-        rks(1),
+        rks(&o.state, 1),
         vec!["a", "b"],
         "and the shelf behind it still names its own items"
     );
-    assert_eq!(hub_count(), 2, "no shelf appeared or vanished");
-    reset();
+    assert_eq!(hub_count(&o.state), 2, "no shelf appeared or vanished");
+    reset(&mut o.state, &o.adapter);
 }
 
 /// An item on no shelf at all — a Library-grid or Related page press — must not re-commit Home
@@ -153,23 +157,27 @@ fn a_removed_deck_card_leaves_the_shelves_behind_it_correctly_addressed() {
 #[test]
 fn an_item_on_no_shelf_reports_no_edit_and_recommits_nothing() {
     let _g = crate::testlock::serial();
-    reset();
-    seed(vec![src(0, "", HubState::Ready, Some(build_test(2)))]);
-    assert!(!edit_item(sid(0), "not-on-home", LocalEdit::Watched(true)));
-    assert_eq!(hub_len(0), 2, "Home is exactly as it was");
-    reset();
+    let mut o = Owner::default();
+    reset(&mut o.state, &o.adapter);
+    seed(&mut o.state, vec![src(0, "", HubState::Ready, Some(build_test(2)))]);
+    assert!(!edit_item(&mut o.state, sid(0), "not-on-home", LocalEdit::Watched(true)));
+    assert_eq!(hub_len(&o.state, 0), 2, "Home is exactly as it was");
+    reset(&mut o.state, &o.adapter);
 }
 
 #[test]
 fn scoped_optimistic_edit_cannot_restore_an_unpinned_sibling_library() {
     let _guard = crate::testlock::serial();
-    reset();
+    let mut o = Owner::default();
+    reset(&mut o.state, &o.adapter);
     let sid = sid(0);
     let directory = two_library_directory(sid, true);
-    seed_two_library_home_for_test(sid, directory.view());
-    assert_eq!(rks(0), ["alpha"]);
+    seed_two_library_home_for_test(&mut o.state, sid, directory.view());
+    assert_eq!(rks(&o.state, 0), ["alpha"]);
 
     let outcome = run_with_directory(
+        &mut o.state,
+        &o.adapter,
         crate::stores::hubs::HubsCmd::EditItem {
             sid,
             rk: "alpha".into(),
@@ -179,8 +187,8 @@ fn scoped_optimistic_edit_cannot_restore_an_unpinned_sibling_library() {
     );
 
     assert!(outcome.changed);
-    assert_eq!(rks(0), ["alpha"],
+    assert_eq!(rks(&o.state, 0), ["alpha"],
         "EditItem must re-merge through the retained one-pinned directory");
-    assert!(hub_item(0, 0).unwrap().watched);
-    reset();
+    assert!(hub_item(&o.state, 0, 0).unwrap().watched);
+    reset(&mut o.state, &o.adapter);
 }

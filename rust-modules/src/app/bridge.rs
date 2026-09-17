@@ -1050,6 +1050,46 @@ impl Bridge {
         self.refresh_browse_directory();
     }
 
+    /// Test hook: seed this owner's Hubs store directly — `stores` is private outside this file's
+    /// own descendant modules, so a fixture built outside `app::bridge` (`app::recorder`'s own
+    /// `mod tests`) reaches its owned `(state, adapter)` pair through here rather than the deleted
+    /// process-wide catalog.
+    #[cfg(test)]
+    pub(crate) fn seed_hubs_for_test(&mut self, items: usize, hub_state: crate::pms::HubState) {
+        self.stores.hubs.seed_for_test(items, hub_state);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_hubs_for_directory_test(
+        &mut self,
+        sid: crate::plex::ServerId,
+        items: usize,
+        hub_state: crate::pms::HubState,
+    ) {
+        let directory = self.directory.view();
+        self.stores.hubs.seed_for_directory_test(sid, items, hub_state, directory);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_hubs_landing_for_test(&self, items: Option<usize>) -> u32 {
+        self.stores.hubs.queue_test_landing(items)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hub_len_for_test(&self, i: usize) -> usize {
+        self.stores.hubs.hub_len_for_test(i)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hubs_catalog_gen_for_test(&self) -> u32 {
+        self.stores.hubs.state().catalog_gen
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_hubs_results_for_test(&self) -> AppResults {
+        self.take_hubs_results()
+    }
+
     pub(crate) fn bind_primary(&mut self, recorded: u32) -> Result<(), &'static str> {
         let resource = crate::plex::client_opt().ok_or("missing controlled primary")?;
         if resource.instance_gen() != recorded || resource.id().raw() != 0 {

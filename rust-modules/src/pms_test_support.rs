@@ -1,55 +1,77 @@
 //! Shared fixtures and helpers for the `pms` test modules split out below.
+//!
+//! `Owner` bundles one `PmsState`/`Arc<PmsAdapter>` pair — the exact shape `stores::hubs::HubsStore`
+//! owns in production — so each test builds its own catalog with nothing shared across tests, the
+//! way `search_test_support::Owner` does for Search. Every helper below is a plain function taking
+//! explicit `state`/`adapter` (or `&Owner`'s fields) rather than an inherent `&mut self` method:
+//! several tests hold a closure that borrows `owner.adapter` across an intervening mutation of
+//! `owner.state` (`fetch_retry_tests`'s request-minting closures across a `reset`), and a whole-
+//! struct `&mut self` method would force that borrow to cover all of `Owner` instead of just the
+//! one field it touches. Free functions over precise field paths keep those borrows disjoint.
 
 use super::*;
 
-/// Land whatever the workers left, then tick — the combined pass the legacy Home drove each
-/// frame. Production splits it (the adapter drains with [`take_landings`] and applies through
-/// [`apply_landing`]; the store's [`tick`] only counts down), so it survives here as the one
-/// driver these landing/back-off contracts are phrased in.
-pub(super) fn pump(dt: f32) {
-    let _outcome = pump_with_landings(dt, take_landings);
+/// One state/adapter pair — this test's own Hubs owner, sharing nothing with any other test.
+pub(super) struct Owner {
+    pub(super) state: PmsState,
+    pub(super) adapter: Arc<PmsAdapter>,
 }
 
-pub(super) fn pool() -> &'static Vec<HeroSlot> {
-    &published_home().heroes
+impl Default for Owner {
+    fn default() -> Self {
+        Self { state: PmsState::default(), adapter: Arc::new(PmsAdapter::default()) }
+    }
+}
+
+/// Land whatever the workers left, then tick — the combined pass the legacy Home drove each
+/// frame. Production splits it (the adapter drains with [`take_landings`] and applies through
+/// `apply_landing`; the store's [`tick`] only counts down), so it survives here as the one
+/// driver these landing/back-off contracts are phrased in.
+pub(super) fn pump(state: &mut PmsState, adapter: &Arc<PmsAdapter>, dt: f32) {
+    let a = Arc::clone(adapter);
+    let _outcome = pump_with_landings(state, adapter, dt, move || take_landings(&a));
+}
+
+pub(super) fn pool(state: &PmsState) -> &Vec<HeroSlot> {
+    &published_home(state).heroes
 }
 
 /// number of items in the rotating hero pool
-pub(super) fn hero_pool_len() -> usize {
-    pool().len()
+pub(super) fn hero_pool_len(state: &PmsState) -> usize {
+    pool(state).len()
 }
 
 /// hero-pool item `i`, or None
-pub(super) fn hero_pool_item(i: usize) -> Option<&'static PmsMovie> {
-    movie(pool().get(i)?.idx)
+pub(super) fn hero_pool_item(state: &PmsState, i: usize) -> Option<&PmsMovie> {
+    movie(state, pool(state).get(i)?.idx)
 }
 
 /// Handle of the server hero-pool page `i` came from ("friend"), or **empty** for the
 /// signed-in user's own — see [`HeroSlot`]. The hero's meta line draws no run at all for the
 /// empty case (`screens::home::meta_source_flow`), so a single-server library pays nothing for
 /// this.
-pub(super) fn hero_pool_source(i: usize) -> &'static str {
-    pool().get(i).map(|s| s.source.as_str()).unwrap_or("")
+pub(super) fn hero_pool_source(state: &PmsState, i: usize) -> &str {
+    pool(state).get(i).map(|s| s.source.as_str()).unwrap_or("")
 }
 
 /// title of hub `i` (e.g. "Continue Watching")
-pub(super) fn hub_title(i: usize) -> &'static str {
-    hubs().get(i).map(|h| h.title.as_str()).unwrap_or("")
+pub(super) fn hub_title(state: &PmsState, i: usize) -> &str {
+    hubs(state).get(i).map(|h| h.title.as_str()).unwrap_or("")
 }
 
 /// Handle of the server hub `i` came from ("friend"), or **empty** for the signed-in user's
 /// own server — see [`HubRow::source`].
-pub(super) fn hub_source(i: usize) -> &'static str {
-    hubs().get(i).map(|h| h.source.as_str()).unwrap_or("")
+pub(super) fn hub_source(state: &PmsState, i: usize) -> &str {
+    hubs(state).get(i).map(|h| h.source.as_str()).unwrap_or("")
 }
 
 /// whether hub `i` is the merged Continue Watching shelf (its tiles play directly on OK, so
 /// the home grid stamps the play-hint badge on them). Matched on the locale-independent
 /// hubIdentifier, through the one identity function the publication itself uses.
-pub(super) fn hub_is_continue(i: usize) -> bool {
-    hubs()
+pub(super) fn hub_is_continue(state: &PmsState, i: usize) -> bool {
+    hubs(state)
         .get(i)
-        .and_then(|h| stable_hub_identity(h, catalog()))
+        .and_then(|h| stable_hub_identity(h, catalog(state)))
         .is_some_and(|id| matches!(id, HubIdentity::ContinueWatching))
 }
 
@@ -67,29 +89,26 @@ pub(super) fn src(slot: u16, handle: &str, state: HubState, last: Option<SourceB
 
 /// Install a source table and the merge of it — the state a run of landings would have reached.
 /// Bypasses the roster, because a host test has no server registry to derive one from.
-pub(super) fn seed(srcs: Vec<Src>) {
+pub(super) fn seed(state: &mut PmsState, srcs: Vec<Src>) {
     let build = merge(&srcs);
-    *lock_srcs() = srcs;
+    state.srcs = srcs;
     // leave `sync_roster` idle — both halves, see `seed_for_test`
-    remember_roster(&BrowseScope::standalone());
-    SEEN_FACTS.store(facts_key(), Ordering::Relaxed);
-    commit(build);
+    remember_roster(state, &BrowseScope::standalone());
+    state.seen_facts = facts_key();
+    commit(state, build);
 }
 
 /// A landing from the worker this source has out right now (current generation and seq) — what
 /// a real fetch would post. `None` is a failure.
-pub(super) fn land(slot: u16, build: Option<SourceBuild>) {
+pub(super) fn land(state: &PmsState, adapter: &PmsAdapter, slot: u16, build: Option<SourceBuild>) {
     let s = sid(slot);
-    let seq = lock_srcs()
-        .iter()
-        .find(|x| x.sid == s)
-        .map(|x| x.seq)
-        .unwrap_or(0);
-    RESULTS
+    let seq = state.srcs.iter().find(|x| x.sid == s).map(|x| x.seq).unwrap_or(0);
+    adapter
+        .results
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .push(Landing {
-            gen: HUB_GEN.load(Ordering::SeqCst),
+            gen: state.hub_gen,
             seq,
             sid: s,
             client: None,
@@ -135,9 +154,9 @@ pub(super) fn built(slot: u16, cw: &[(i64, &str)], shelves: Vec<Shelf>) -> Sourc
 }
 
 /// The ratingKeys of shelf `h`, in drawn order.
-pub(super) fn rks(h: usize) -> Vec<String> {
-    (0..hub_len(h))
-        .filter_map(|c| hub_item(h, c))
+pub(super) fn rks(state: &PmsState, h: usize) -> Vec<String> {
+    (0..hub_len(state, h))
+        .filter_map(|c| hub_item(state, h, c))
         .map(|m| m.rk.clone())
         .collect()
 }

@@ -68,10 +68,6 @@ pub(crate) trait Sink {
 }
 
 impl Initial {
-    #[cfg(test)]
-    pub(crate) fn snapshot(&self) -> HubsSnapshot {
-        HubsSnapshot { data:Arc::new(self.catalog.clone()),generation:self.catalog_generation,state:HubState::Loading }
-    }
     /// An empty, pre-work Home initial state — what a fresh boot capture starts from before any
     /// store has been constructed (`bootstrap::Initial::capture_home`), and what test/hostsim
     /// synthetic boots seed explicitly.
@@ -197,27 +193,29 @@ mod tests {
     #[test]
     fn initial_contents_are_owned_round_trip_and_do_not_consume_arrivals() {
         let _guard = crate::testlock::serial();
-        seed_for_test(3, HubState::Ready);
-        { let mut s = lock_srcs(); s[0].fetching = true; s[0].seq = 19; s[0].retry_s = -0.0; s[0].retry_n = 4; }
-        queue_test_landing(Some(5));
-        let init = Initial::capture();
-        assert_eq!(take_landings().len(), 1);
+        let mut o = crate::pms::test_support::Owner::default();
+        seed_for_test(&mut o.state, &o.adapter, 3, HubState::Ready);
+        { o.state.srcs[0].fetching = true; o.state.srcs[0].seq = 19; o.state.srcs[0].retry_s = -0.0; o.state.srcs[0].retry_n = 4; }
+        queue_test_landing(&o.state, &o.adapter, Some(5));
+        let init = Initial::capture(&o.state, &o.adapter);
+        assert_eq!(take_landings(&o.adapter).len(), 1);
         let json = serde_json::to_value(&init).unwrap();
         let decoded: Initial = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(words(&init), words(&decoded));
         assert_eq!(decoded.sources[0].retry_bits, (-0.0f32).to_bits());
         assert_eq!(decoded.catalog.items.len(), 3);
         assert_eq!(decoded.sources[0].last.as_ref().unwrap().shelves[0].items.len(), 3);
-        reset();
+        reset(&mut o.state, &o.adapter);
         assert_eq!(serde_json::to_value(&init).unwrap(), json, "reset cannot mutate a captured initial state");
-        assert_ne!(words(&Initial::capture()), words(&init));
+        assert_ne!(words(&Initial::capture(&o.state, &o.adapter)), words(&init));
     }
 
     #[test]
     fn canonical_initial_state_includes_hidden_retry_and_request_fields() {
         let _guard = crate::testlock::serial();
-        seed_for_test(2, HubState::Ready);
-        let initial = Initial::capture();
+        let mut o = crate::pms::test_support::Owner::default();
+        seed_for_test(&mut o.state, &o.adapter, 2, HubState::Ready);
+        let initial = Initial::capture(&o.state, &o.adapter);
         let value = serde_json::to_value(&initial).unwrap();
         for field in ["seq", "retry_bits", "retry_n", "token_gen", "state"] {
             let mut changed = value.clone();
@@ -229,6 +227,6 @@ mod tests {
         assert!(serde_json::from_value::<Initial>(bad).is_err());
         let mut bad = value; bad["sources"][0]["state"] = serde_json::json!(3);
         assert!(serde_json::from_value::<Initial>(bad).is_err());
-        reset();
+        reset(&mut o.state, &o.adapter);
     }
 }

@@ -78,8 +78,10 @@ impl Mounter<InnerHost> for SurfaceMounter {
         match arg {
             SettingsPage::About => mount_page(entry, SettingsPage::About, cx, fx),
             SettingsPage::ConsentStage(stage) => Box::new(RouteSurface::new(entry, id,
-                Family::FirstRunConsent, SettingsPage::ConsentStage(*stage))),
-            other => Box::new(RouteSurface::new(entry, id, Family::Settings, *other)),
+                Family::FirstRunConsent, SettingsPage::ConsentStage(*stage),
+                crate::pms::HubsSnapshot::empty_for_test().view())),
+            other => Box::new(RouteSurface::new(entry, id, Family::Settings, *other,
+                crate::pms::HubsSnapshot::empty_for_test().view())),
         }
     }
 }

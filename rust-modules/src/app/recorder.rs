@@ -123,8 +123,8 @@ impl crate::pms::initial::Sink for Canon {
 }
 
 #[cfg(test)]
-fn initial_header(app: &AppInit) -> Header {
-    let hubs = crate::pms::initial::Initial::capture();
+fn initial_header(app: &AppInit, state: &crate::pms::PmsState, adapter: &crate::pms::PmsAdapter) -> Header {
+    let hubs = crate::pms::initial::Initial::capture(state, adapter);
     let mut header = Header::new(state_fp(), &RecordedInit { app, hubs: &hubs });
     header.init_data = json!({"app": app, "hubs": hubs});
     header
@@ -1724,10 +1724,12 @@ mod tests {
     #[test]
     fn recording_header_contains_home_boot_contents_and_hashes_hidden_state() {
         let _guard = crate::testlock::serial();
-        crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
+        let mut state = crate::pms::PmsState::default();
+        let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+        crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
         let app = AppInit { route: "home", session: false, servers: 1, consent_asked: 0,
             consent_errors: false, consent_usage: false, seed: 0 };
-        let header = initial_header(&app);
+        let header = initial_header(&app, &state, &adapter);
         assert_eq!(header.init_data["hubs"]["catalog"]["items"].as_array().unwrap().len(), 2);
         let mut data = header.init_data["hubs"].clone();
         let original: crate::pms::initial::Initial = serde_json::from_value(data.clone()).unwrap();
@@ -1735,7 +1737,6 @@ mod tests {
         data["sources"][0]["retry_n"] = json!(123);
         let changed: crate::pms::initial::Initial = serde_json::from_value(data).unwrap();
         assert_ne!(RecordedInit { app: &app, hubs: &changed }.hash(), header.init_hash);
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -1744,10 +1745,12 @@ mod tests {
         use crate::ui::machine::{Addr, MachineId, RequestId};
         use crate::screens::registry::AppMsg;
         let _guard = crate::testlock::serial();
-        crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
-        crate::pms::queue_test_landing(Some(2));
-        crate::pms::queue_test_landing(Some(3));
-        let results = crate::stores::hubs::take_results();
+        let mut state = crate::pms::PmsState::default();
+        let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+        crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
+        crate::pms::queue_test_landing(&state, &adapter, Some(2));
+        crate::pms::queue_test_landing(&state, &adapter, Some(3));
+        let results = crate::pms::take_landings(&adapter);
         let addr = Addr { to: MachineId::Store(crate::stores::StoreId::Hubs.ord()), req: RequestId(results[0].request_id()) };
         let expected: Vec<_> = results.iter().map(|r| json!({ "f": 0, "t": "async",
             "to": machine_name(addr.to), "req": addr.req.0, "payload": crate::pms::record::encode(r) })).collect();
@@ -1817,7 +1820,6 @@ mod tests {
         assert_eq!(r.graded, 2);
         assert_eq!(r.result_diffs, 1, "the next frame starts at result ordinal zero");
         assert!(!r.same());
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -1826,7 +1828,6 @@ mod tests {
         struct Cleanup;
         impl Drop for Cleanup {
             fn drop(&mut self) {
-                crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
                 crate::plex::reset_servers_for_test();
             }
         }
@@ -1841,8 +1842,7 @@ mod tests {
         rig.seed_registered_browse_for_test([own, shared]);
         assert!(!rig.browse_directory().sections().is_empty(),
             "a Bridge Hubs landing fixture requires its retained Browse bootstrap");
-        crate::pms::seed_for_directory_test(
-            own, 1, crate::pms::HubState::Ready, rig.browse_directory());
+        rig.seed_hubs_for_directory_test(own, 1, crate::pms::HubState::Ready);
         let init = AppInit { route: "home", session: false, servers: 1, consent_asked: 0,
             consent_errors: false, consent_usage: false, seed: 0 };
         let sink = crate::ui::rec::MemSink::default();
@@ -1851,7 +1851,7 @@ mod tests {
         let mut rec = Recplay::Recording(Rec { w: writer, f: 0, focus: None, events: false, spent_ns: 0, failure: None });
         let mut d = crate::ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
         rec.tick(0, 0.016);
-        let request = crate::pms::queue_test_landing(Some(3));
+        let request = rig.queue_hubs_landing_for_test(Some(3));
         super::super::bridge::show_page(&mut d, super::super::AppArg::Home);
         super::super::bridge::frame_with_tap(&mut d, &mut rig,
             Tick { ms: 0, dt_us: 16000 }, vec![], &mut rec);
@@ -1885,13 +1885,13 @@ mod tests {
             effect_diffs: 0, started: false, failure: None,
         });
         let supplied = replay.replay_results(|_| None).unwrap().unwrap();
-        crate::pms::queue_test_landing(Some(9));
-        let before = crate::pms::catalog_gen();
+        rig.queue_hubs_landing_for_test(Some(9));
+        let before = rig.hubs_catalog_gen_for_test();
         super::super::bridge::frame_with_results(&mut d, &mut rig,
             Tick { ms: 16, dt_us: 16000 }, vec![], || supplied, &mut replay);
-        assert!(crate::pms::catalog_gen() > before, "the supplied result was applied");
-        assert_eq!(crate::pms::hub_len(0), 3);
-        assert_eq!(crate::stores::hubs::take_results().len(), 1, "live arrivals were not consumed");
+        assert!(rig.hubs_catalog_gen_for_test() > before, "the supplied result was applied");
+        assert_eq!(rig.hub_len_for_test(0), 3);
+        assert_eq!(rig.take_hubs_results_for_test().len(), 1, "live arrivals were not consumed");
         let Recplay::Replaying(r) = replay else { unreachable!() };
         assert_eq!(r.result_at, 1);
         assert_eq!(r.result_diffs, 0);
@@ -1995,8 +1995,9 @@ mod tests {
     #[test]
     fn a_hubs_landing_is_delivered_on_its_recorded_frame_during_replay() {
         let _guard = crate::testlock::serial();
-        crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
-        let _ = crate::stores::hubs::take_results();
+        let mut rig = super::super::bridge::Bridge::for_test(|| 0);
+        rig.seed_hubs_for_test(1, crate::pms::HubState::Ready);
+        let _ = rig.take_hubs_results_for_test();
         // a recording in which Hubs landed on FRAME 2 and nowhere else
         let manifest = format!(r#"{{"schema": {}, "state_fp": {}}}"#, crate::ui::rec::SCHEMA, state_fp());
         let seg = b"{\"f\":0,\"t\":\"tick\",\"ms\":0,\"dt_us\":16000}\n                    {\"f\":1,\"t\":\"tick\",\"ms\":16,\"dt_us\":16000}\n                    {\"f\":2,\"t\":\"tick\",\"ms\":32,\"dt_us\":16000}\n                    {\"f\":2,\"t\":\"land\",\"ord\":1,\"gen\":3,\"n\":1}\n";
@@ -2005,18 +2006,17 @@ mod tests {
         let _armed = crate::ui::landgate::Armed;
         crate::ui::landgate::arm_sparse_replay(rec.land_schedule());
         // the worker's answer is in the mailbox from frame 0
-        crate::pms::queue_test_landing(Some(4));
+        rig.queue_hubs_landing_for_test(Some(4));
         let mut seen = Vec::new();
         for f in 0..4u64 {
             crate::ui::landgate::begin_frame(f);
-            if !super::super::bridge::take_hubs_results().is_empty() {
+            if !rig.take_hubs_results_for_test().is_empty() {
                 seen.push(f);
             }
         }
         assert_eq!(seen, vec![2], "the live arrival waited for its recorded frame");
         assert!(crate::ui::landgate::take_diffs().is_empty());
         assert!(crate::ui::landgate::unmatched().is_empty());
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     /// …and a landing the recording never saw is delivered at once and counted, so the gate can
@@ -2024,18 +2024,18 @@ mod tests {
     #[test]
     fn a_hubs_landing_the_recording_never_saw_is_delivered_at_once_and_counted() {
         let _guard = crate::testlock::serial();
-        crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
-        let _ = crate::stores::hubs::take_results();
+        let mut rig = super::super::bridge::Bridge::for_test(|| 0);
+        rig.seed_hubs_for_test(1, crate::pms::HubState::Ready);
+        let _ = rig.take_hubs_results_for_test();
         let _armed = crate::ui::landgate::Armed;
         crate::ui::landgate::arm_replay(vec![]);
-        crate::pms::queue_test_landing(Some(4));
+        rig.queue_hubs_landing_for_test(Some(4));
         crate::ui::landgate::begin_frame(5);
-        assert_eq!(super::super::bridge::take_hubs_results().len(), 1);
+        assert_eq!(rig.take_hubs_results_for_test().len(), 1);
         assert_eq!(
             crate::ui::landgate::take_diffs(),
             vec![(5, crate::stores::StoreId::Hubs.ord().0, crate::ui::landgate::Diff::Extra)]
         );
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]

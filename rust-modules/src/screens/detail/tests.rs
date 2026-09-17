@@ -101,9 +101,12 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         season_metrics: season::Metrics::new(),
         about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP),
-        selected: crate::pms::movie(crate::pms::index_of_rk(sid, rk).max(0) as usize)
-            .filter(|_| crate::pms::index_of_rk(sid, rk) >= 0)
-            .cloned(),
+        selected: {
+            let pms_state = crate::pms::PmsState::default();
+            crate::pms::movie(&pms_state, crate::pms::index_of_rk(&pms_state, sid, rk).max(0) as usize)
+                .filter(|_| crate::pms::index_of_rk(&pms_state, sid, rk) >= 0)
+                .cloned()
+        },
         spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),
         layout: std::cell::Cell::new(None),
@@ -623,7 +626,8 @@ fn tracks_availability_is_detail_state_not_surface_state() {
     let _guard = install(elsewhere);
 
     // This page is standing on a different item and its own fetch has not landed.
-    let screen = DetailScreen::new(EntryId(7), ServerId::UNSET, "here".into());
+    let screen = DetailScreen::new(EntryId(7), ServerId::UNSET, "here".into(),
+        crate::pms::HubsSnapshot::empty_for_test().view());
     assert!(
         !screen.tracks_available(),
         "the page has no item of its own yet, so there is no file it can describe"
@@ -657,11 +661,14 @@ fn tracks_availability_is_detail_state_not_surface_state() {
 #[test]
 fn opening_a_catalog_row_mounts_on_it_without_blocking_on_the_fetch() {
     let _guard = crate::testlock::serial();
-    crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
+    let mut pms_state = crate::pms::PmsState::default();
+    let pms_adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut pms_state, &pms_adapter, 3, crate::pms::HubState::Ready);
     apply_metadata(MetadataCmd::Clear);
-    let row = crate::pms::movie(1).expect("seeded catalog row");
+    let row = crate::pms::movie(&pms_state, 1).expect("seeded catalog row");
     let (sid, rk) = (row.sid, row.rk.clone());
-    let screen = DetailScreen::new(EntryId(7), sid, rk.clone());
+    let hubs_snap = crate::pms::hubs_snapshot(&pms_state);
+    let screen = DetailScreen::new(EntryId(7), sid, rk.clone(), hubs_snap.view());
     assert_eq!((screen.sid, screen.rk.as_str()), (sid, rk.as_str()));
     assert!(
         crate::metadata::current().is_none(),
@@ -672,7 +679,6 @@ fn opening_a_catalog_row_mounts_on_it_without_blocking_on_the_fetch() {
         "the asynchronous request is in flight"
     );
     apply_metadata(MetadataCmd::Clear);
-    crate::pms::seed_for_test(0, crate::pms::HubState::Ready);
 }
 
 #[test]

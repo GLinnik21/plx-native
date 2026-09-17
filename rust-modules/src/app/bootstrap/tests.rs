@@ -219,15 +219,16 @@ fn controlled_hubs_commands_preserve_normal_store_notice_bookkeeping() {
     let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
     let mut io = HomeIo { replay:true,preferences:Default::default(),requests:Vec::new(),admissions:Default::default(),
         failure:None,profile:publisher.snapshot() };
+    let mut hubs = crate::stores::hubs::HubsStore::default();
     for command in [crate::stores::hubs::HubsCmd::Reset,crate::stores::hubs::HubsCmd::RefetchHubs,
         crate::stores::hubs::HubsCmd::Retry] {
-        let before = crate::stores::gen(crate::stores::StoreId::Hubs);
-        let normal = crate::stores::hubs::apply(command.clone());
-        let delta = crate::stores::gen(crate::stores::StoreId::Hubs).wrapping_sub(before);
-        let before = crate::stores::gen(crate::stores::StoreId::Hubs);
-        let controlled = io.hubs(Some(command),0.0);
+        let before = hubs.gen();
+        let normal = hubs.run(command.clone());
+        let delta = hubs.gen().wrapping_sub(before);
+        let before = hubs.gen();
+        let controlled = io.hubs(&mut hubs, Some(command),0.0);
         assert_eq!(controlled.changed,normal.changed);
-        assert_eq!(crate::stores::gen(crate::stores::StoreId::Hubs).wrapping_sub(before),delta,
+        assert_eq!(hubs.gen().wrapping_sub(before),delta,
             "controlled resource execution must not drop the Store machine's notice");
     }
 }
@@ -253,17 +254,17 @@ fn controlled_admission_records_real_discovery_spawn_refusal() {
 fn controlled_admission_records_real_hubs_spawn_refusal() {
     let _serial = crate::testlock::serial();
     crate::plex::reset_servers_for_test();
-    assert!(crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed);
+    let mut hubs = crate::stores::hubs::HubsStore::default();
+    assert!(hubs.run(crate::stores::hubs::HubsCmd::Reset).changed);
     let sid = crate::plex::register_for_test("s00000001", "127.0.0.1", 9, "s00000002", "s00000003");
     assert!(crate::plex::set_current(sid));
     let mt = unsafe { crate::task::MainThread::assume() };
     let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
     let mut io = HomeIo { replay:false,preferences:Default::default(),requests:Vec::new(),admissions:Default::default(),
         failure:None,profile:publisher.snapshot() };
-    assert!(crate::pms::with_refused_fetches_for_test(|| io.hubs(Some(crate::stores::hubs::HubsCmd::RefetchHubs), 0.0)).changed);
+    assert!(crate::pms::with_refused_fetches_for_test(|| io.hubs(&mut hubs, Some(crate::stores::hubs::HubsCmd::RefetchHubs), 0.0)).changed);
     assert_eq!(io.requests.len(), 1);
     assert_eq!(io.requests[0]["admitted"], serde_json::json!(false), "real refusal must be recorded");
-    assert!(crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed);
     crate::plex::reset_servers_for_test();
 }
 
@@ -281,7 +282,8 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
     let mut completion = None;
     let mut parsed: Option<crate::ui::rec::Recording> = None;
     for replay in [false, true] {
-        initial.restore_boot(&mt).unwrap();
+        let (state, adapter) = initial.restore(&mt).unwrap();
+        let mut hubs = crate::stores::hubs::HubsStore::from_parts(state, adapter);
         let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
         let mut io = HomeIo { replay,preferences:Default::default(),requests:Vec::new(),
             admissions:Default::default(),failure:None,profile:publisher.snapshot() };
@@ -296,7 +298,7 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
                     .map(|effect| effect["payload"].clone()).collect();
             }
             let command = (frame == 0).then_some(crate::stores::hubs::HubsCmd::RefetchHubs);
-            let outcome = io.hubs_with(command, 0.05, &mut |request| {
+            let outcome = io.hubs_with(&mut hubs, command, 0.05, &mut |request| {
                 assert!(!replay, "no live executor during replay");
                 attempts += 1;
                 if attempts == 1 { return false; }
@@ -310,10 +312,12 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
                 if *at == frame {
                     let result = crate::pms::record::decode(wire.clone(), |id|
                         (id == client.instance_gen()).then_some(client)).unwrap();
-                    assert!(crate::pms::land(&result).endpoints.iter().next().is_none());
+                    let adapter = hubs.adapter();
+                    assert!(crate::pms::land(hubs.state_mut(), &adapter, &result).endpoints.iter().next().is_none());
                 }
             }
-            let state = serde_json::to_value(crate::pms::initial::Initial::capture()).unwrap();
+            let adapter = hubs.adapter_for_test();
+            let state = serde_json::to_value(crate::pms::initial::Initial::capture(hubs.state(), &adapter)).unwrap();
             assert!(io.failure.is_none() && io.admissions.is_empty());
             let requests = std::mem::take(&mut io.requests);
             if replay {
@@ -338,7 +342,6 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
     }
     assert_eq!(transcript[0][0]["admitted"],serde_json::json!(false));
     assert_eq!(transcript.iter().flatten().filter(|r| r["admitted"] == true).count(),1);
-    assert!(crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed);
     crate::plex::reset_servers_for_test();
 }
 
