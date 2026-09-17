@@ -1133,7 +1133,7 @@ impl<H: PlayerLike> Screen<H> for PlayerScreen {
         // the middle, and the lift follows the panel rather than the transport there.
         let subs_lift = hud_up || self.lifted;
         self.draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
-        crate::ui::player_hud::draw_subtitles(subs_lift);
+        crate::ui::player_hud::draw_subtitles(subs_lift, crate::route::is_transcoding(ps));
         // Every hit-testable region drawn this frame is REGISTERED through `DrawFrame::stop`
         // (restructure phase 12, D2 Part B) rather than left for a caller to re-derive from raw
         // pointer coordinates via `icon_hit`/`scrub_hit`/`failure_quality_hit` — that geometry is

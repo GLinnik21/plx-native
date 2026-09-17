@@ -220,6 +220,27 @@ impl Client {
     /// on the stream URL does NOT change them, only this PUT does). `subtitleStreamID` is
     /// always sent — 0 keeps subs OFF (suppresses a default-selected burn); `audioStreamID`
     /// only when the user switched. Returns the HTTP status (route logs it).
+    /// Fetch a SIDECAR subtitle (`Stream.key`, i.e. `/library/streams/{id}`) for the client
+    /// renderer. The endpoint takes `encoding` and `format` (docs/plex-openapi.json), so the first
+    /// ask is for UTF-8 SubRip whatever the file on disk is — that is what turns a Windows-1250
+    /// `.srt` or an `.ass` into something one parser reads. The two fallbacks exist because the
+    /// conversion is the server's and has been seen refusing a FORMAT before (`.vtt` → 501):
+    /// without `format` PMS re-encodes only, and the bare key is the file as it lies on disk.
+    /// `player::sidecar::parse` reads whichever of the three comes back.
+    pub fn sidecar_subtitle(&self, key: &str) -> Option<Vec<u8>> {
+        if !key.starts_with("/library/streams/") {
+            return None; // a key is server data: only ever the path this method is for
+        }
+        let sep = if key.contains('?') { '&' } else { '?' };
+        [
+            format!("{key}{sep}encoding=utf-8&format=srt"),
+            format!("{key}{sep}encoding=utf-8"),
+            key.to_string(),
+        ]
+        .iter()
+        .find_map(|path| self.get_bytes(path).filter(|b| !b.is_empty()))
+    }
+
     pub fn select_streams(&self, sel: &StreamSelection) -> i32 {
         let q = QueryBuilder::new(format!("/library/parts/{}", sel.part_id))
             .int("allParts", 1)

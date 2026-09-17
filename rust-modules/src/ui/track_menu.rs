@@ -40,7 +40,11 @@ pub(crate) struct TrackMenuState {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum TrackCommit {
     Audio { ordinal: c_int, codec: String, stream_id: i64 },
-    Subtitle { render_ordinal: c_int, stream_id: i64 },
+    /// `sidecar_key` is `Some` when the pick is an EXTERNAL text subtitle the client can draw
+    /// on direct play (`metadata::Stream::sidecar_renderable`): it has no demuxer ordinal
+    /// (`render_ordinal` is -1), so the loop hands it to `player::sidecar` beside the unchanged
+    /// route commit. `None` — Off, or an embedded track — deselects any sidecar.
+    Subtitle { render_ordinal: c_int, stream_id: i64, sidecar_key: Option<String> },
 }
 
 impl TrackMenuState {
@@ -140,7 +144,12 @@ impl TrackMenuState {
                     .flatten()
                     .or_else(|| t.audio.iter().position(|s| s.default))
                     .unwrap_or(0) as c_int;
-                let ssid = crate::route::cur_sub_sid(ps);
+                // the route's id first; a sidecar RESTORED at start of play lives outside the
+                // route (see `route::apply_plan`), so its own selection is the fallback
+                let ssid = match crate::route::cur_sub_sid(ps) {
+                    0 => crate::player::sidecar::selected_stream_id(),
+                    id => id,
+                };
                 let sub = (ssid > 0)
                     .then(|| t.subs.iter().position(|s| s.id == ssid))
                     .flatten()
@@ -229,9 +238,15 @@ impl TrackMenuState {
                     feature: crate::diag::schema::Feature::SubtitleTrack,
                 });
             }
+            let sidecar_key = tracks()
+                .filter(|_| new_sub >= 0)
+                .and_then(|t| t.subs.get(new_sub as usize))
+                .filter(|s| s.sidecar_renderable())
+                .map(|s| s.key.clone());
             Some(TrackCommit::Subtitle {
                 render_ordinal: ridx,
                 stream_id: self.sub_stream_id(),
+                sidecar_key,
             })
         }
     }
@@ -308,6 +323,9 @@ impl TrackMenuState {
                 }
                 if s.sdh {
                     row = row.badge(Badge::Sdh);
+                }
+                if s.external {
+                    row = row.badge(Badge::Text("EXTERNAL".to_string()));
                 }
                 if is_image_sub_codec(&s.codec) {
                     row = row.badge(Badge::Text(s.codec.to_uppercase()));
@@ -496,16 +514,19 @@ fn tracks() -> Option<&'static metadata::PlayingItem> {
 fn n_audio() -> c_int {
     tracks().map(|t| t.audio.len()).unwrap_or(0) as c_int
 }
-/// Subtitle rows currently offered, as indices into the playing subs list. External/sidecar
-/// subs are NOT in the container, so the client renderer can't show them on direct-play —
-/// they're listed only while transcoding (the server can burn them).
+/// Subtitle rows currently offered, as indices into the playing subs list. An external/sidecar
+/// sub is NOT in the container: on direct play it is offered only when `player::sidecar` can
+/// fetch and draw it (a TEXT format — `Stream::sidecar_renderable`); while transcoding every
+/// sidecar is offered, because the server can burn any of them.
 fn visible_subs(ps: &crate::route::PlaybackSession) -> Vec<usize> {
     tracks()
         .map(|t| {
             t.subs
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| !s.external || crate::route::is_transcoding(ps))
+                .filter(|(_, s)| {
+                    !s.external || s.sidecar_renderable() || crate::route::is_transcoding(ps)
+                })
                 .map(|(i, _)| i)
                 .collect()
         })

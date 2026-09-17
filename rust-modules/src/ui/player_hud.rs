@@ -61,8 +61,16 @@ fn wrap(s: &str, max: usize) -> Vec<String> {
 /// client-rendered subtitle line(s), bottom-center, synced to the video clock. Drawn
 /// every frame independent of the transport HUD; hidden when subtitles are off or no
 /// cue is active at the current position.
-pub(crate) fn draw_subtitles(hud_up: bool) {
-    let text = match crate::player::active_subtitle(crate::player::playpos_ns()) {
+///
+/// TWO producers, one renderer: an external (sidecar) selection is asked first — it is no
+/// demuxer track, so `desired_sub_idx` is -1 while one is up and the embedded store answers
+/// nothing — then the embedded cue store. `transcoding` silences the sidecar, because a
+/// transcode BURNS the selection into the picture and drawing it too would double the line.
+pub(crate) fn draw_subtitles(hud_up: bool, transcoding: bool) {
+    let now_ns = crate::player::playpos_ns();
+    let cue = crate::player::sidecar::active(now_ns, transcoding)
+        .or_else(|| crate::player::active_subtitle(now_ns));
+    let text = match cue {
         Some(t) if !t.trim().is_empty() => t,
         _ => return,
     };

@@ -159,6 +159,10 @@ something.
   canvas off the decoder (via `avcodec_parameters_from_context`, no raw struct offset; the ABI proof
   is in its doc comment) and `player_hud::sub_screen_rect` scales the whole display set into the
   video rect. Assuming 1080p unconditionally is what made VobSub render as a corner postage stamp.
+  **An EXTERNAL text subtitle (the `.srt` beside the film) is a third producer, `sidecar.rs`:** the
+  demuxer never sees it, so it is fetched whole from PMS, parsed, and looked up by time from its OWN
+  store — not `SHARED.sub_cues`, which is a window the demuxer refills and a backward seek would
+  empty. It is silent while transcoding (the server burns the selection instead).
 - **A seek NEVER interrupts the demuxer.** The pump publishes the target in `seek_to_ns` and the
   demux thread — the only thread that touches the `AVFormatContext` — `av_seek_frame`s on it
   between two reads. Do not reintroduce an interrupt: the pump used to `shutdown(2)` the socket to

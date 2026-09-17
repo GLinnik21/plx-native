@@ -23,6 +23,7 @@ mod ffi;
 mod pump;
 pub(crate) mod report;
 mod shared;
+pub(crate) mod sidecar;
 pub(crate) mod threads;
 
 use crate::task::MainThread;
@@ -1283,6 +1284,7 @@ pub(crate) fn reset_audio_track() {
 /// instead of silently turning subtitles off.
 pub(crate) fn reset_subtitle() {
     SHARED.desired_sub_idx.store(-1, Relaxed);
+    sidecar::reset(); // …and the previous item's external subtitle file with it
 }
 /// select the audio stream index the demuxer feeds at the FIRST Load (before start_bufferfeed) —
 /// used by the decision to direct-play a non-default direct-playable track (e.g. an AC3 track on

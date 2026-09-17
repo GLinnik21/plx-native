@@ -474,9 +474,13 @@ pub(crate) struct Stream {
     pub(crate) ad: bool,
     pub(crate) forced: bool,
     pub(crate) default: bool, // the file's default track (drives the "Original:" audio label)
-    /// external/sidecar stream (downloaded .srt etc. — NOT inside the container). The client
-    /// renderer can't reach it on direct-play; only a server transcode can burn it.
+    /// external/sidecar stream (downloaded .srt etc. — NOT inside the container). The DEMUXER
+    /// cannot reach it; on direct play a TEXT sidecar is fetched and drawn by `player::sidecar`
+    /// instead ([`Stream::sidecar_renderable`]), and a transcode burns it.
     pub(crate) external: bool,
+    /// PMS `Stream.key` — the sidecar's delivery path (`/library/streams/{id}`). Empty for every
+    /// embedded stream, which is exactly how `external` is derived.
+    pub(crate) key: String,
     /// PMS `Stream.selected` — the server's CURRENT pick for this part, i.e. the track a user
     /// chose on ANY Plex client (phone, web, another TV) and the one `select_streams` writes.
     /// `route`'s selection ladder prefers it over its own defaults, which is what makes a pick
@@ -489,6 +493,20 @@ pub(crate) struct Stream {
 }
 
 impl Stream {
+    /// Can the CLIENT draw this sidecar on direct play? Only a TEXT format: `player::sidecar`
+    /// asks PMS for it as UTF-8 SubRip and parses SubRip/WebVTT/ASS. An image sidecar
+    /// (`.idx`/`.sub` VobSub, `.sup` PGS) has no such path — only a server burn can show it, so
+    /// it stays a transcode-only row. An allow-list rather than "not an image codec", so a
+    /// format nobody here has met is hidden instead of offered and then silently blank.
+    pub(crate) fn sidecar_renderable(&self) -> bool {
+        self.external
+            && !self.key.is_empty()
+            && matches!(
+                self.codec.to_ascii_lowercase().as_str(),
+                "srt" | "subrip" | "ass" | "ssa" | "vtt" | "webvtt" | "smi" | "sami"
+            )
+    }
+
     /// Does this audio track carry **Dolby Atmos**?
     ///
     /// **The answer is in `profile`, and only there** — probed live against the dev server
@@ -1705,6 +1723,7 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> Streams {
             title: s.title.clone(),
             // embedded container streams carry no delivery key; sidecars do
             external: s.stream_type == 3 && !s.key.is_empty(),
+            key: s.key.clone(),
             // the server's current pick for this part (a track chosen on another client)
             selected: s.selected != 0,
         };

@@ -5914,6 +5914,13 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
             plan.sub_sid
         ));
         crate::player::request_subtitle(ord);
+    } else if !is_transcoding(ps) {
+        // …and the EXTERNAL twin: `pick_dp_subtitle` leaves a server-selected sidecar alone
+        // because the demuxer cannot render it, but `player::sidecar` can — on direct play only.
+        // It rides outside the plan on purpose: a sidecar is no demuxer ordinal and no burn, so
+        // nothing in the route contract changes; the track menu reads the selection back from
+        // `sidecar::selected_stream_id`.
+        crate::player::sidecar::restore_server_selection(cur_sid(ps));
     }
     // A landing is a DISCRETE change to what is on screen, so it owes the present gate a poke —
     // `ui::idle::invalidate`'s call-site list is that module's correctness argument. The caller
