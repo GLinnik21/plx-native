@@ -141,15 +141,15 @@ fn snapshot_pins(directory: DirectoryView<'_>) -> Vec<(usize, bool)> {
 
 impl OnboardScreen {
     /// First run's page.
-    pub(crate) fn first_run(entry: EntryId, directory: DirectoryView<'_>) -> Self {
-        Self::new(entry, false, directory)
+    pub(crate) fn first_run(entry: EntryId, directory: DirectoryView<'_>, hubs: crate::pms::HubsView<'_>) -> Self {
+        Self::new(entry, false, directory, super::family::pre_home_ground(hubs))
     }
     /// The Settings editor.
     pub(crate) fn settings(entry: EntryId, directory: DirectoryView<'_>) -> Self {
-        Self::new(entry, true, directory)
+        Self::new(entry, true, directory, RouteGround::new())
     }
 
-    fn new(entry: EntryId, settings: bool, directory: DirectoryView<'_>) -> Self {
+    fn new(entry: EntryId, settings: bool, directory: DirectoryView<'_>, ground: RouteGround) -> Self {
         let base = snapshot_pins(directory);
         let mut s = Self {
             entry,
@@ -163,7 +163,7 @@ impl OnboardScreen {
             phase_ms: 0.0,
             phase_clock: crate::ui::motion::Phase::default(),
             pop: CtlPop::new(),
-            ground: if settings { RouteGround::new() } else { super::family::pre_home_ground() },
+            ground,
             state: OnboardState {
                 settings,
                 band: false, // overwritten by `rebuild` below, before anything reads it

@@ -250,10 +250,8 @@ impl LayoutStamp {
 }
 
 impl DetailScreen {
-    pub(crate) fn new(entry: EntryId, sid: ServerId, rk: String) -> Self {
-        let selected = crate::pms::movie(crate::pms::index_of_rk(sid, &rk).max(0) as usize)
-            .filter(|_| crate::pms::index_of_rk(sid, &rk) >= 0)
-            .cloned();
+    pub(crate) fn new(entry: EntryId, sid: ServerId, rk: String, hubs: crate::pms::HubsView<'_>) -> Self {
+        let selected = hubs.find(sid, &rk).cloned();
         let mut ground = AmbientWash::flat(theme::SURFACE_APP);
         if let Some(m) = selected.as_ref().filter(|m| m.has_blur) {
             ground.jump(AmbientWash::keyed(m.blur, [AmbientWash::GROUND_W; 4]));

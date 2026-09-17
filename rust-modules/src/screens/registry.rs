@@ -1551,7 +1551,7 @@ where
                 crate::screens::person_bio::PersonBioScreen::new(entry),
             ),
             AppArg::Content(ContentArg::Detail { sid, rk }) => {
-                let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone());
+                let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone(), H::hubs(cx));
                 if let PageMemory::Detail(spot) = &ret.memory {
                     page.restore_memory(spot);
                 } else if let Some(seed) = self.seed.take() {
@@ -1573,7 +1573,7 @@ where
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
             // word stays the loop's while the loop still names the page
             AppArg::Onboard => Box::new(crate::screens::onboard::OnboardScreen::first_run(
-                entry, H::directory(cx))),
+                entry, H::directory(cx), H::hubs(cx))),
             // Phase 6: the QR sign-in and the who's-watching picker are OWNED screens too, mounted
             // exactly the same way — the route word is still the loop's (`route_word`), and
             // naming the route is the whole of (re)mounting either: a fresh instance is built
@@ -1628,12 +1628,15 @@ where
             // `AppArg::Content`. Phase 12's fold deleted the two values with the enum, so the
             // match is exhaustive over pages that can really mount and there is no unreachable
             // arm left to keep honest.
-            AppArg::Settings(root) => Box::new(RouteSurface::new(entry, id, Family::Settings, *root)),
+            AppArg::Settings(root) => {
+                Box::new(RouteSurface::new(entry, id, Family::Settings, *root, H::hubs(cx)))
+            }
             AppArg::FirstRunConsent(stage) => Box::new(RouteSurface::new(
                 entry,
                 id,
                 Family::FirstRunConsent,
                 SettingsPage::ConsentStage(*stage),
+                H::hubs(cx),
             )),
         }
     }

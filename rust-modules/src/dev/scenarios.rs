@@ -698,7 +698,12 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
                 let pidx = crate::dev::read("playidx")
                     .and_then(|s| s.parse::<c_int>().ok())
                     .unwrap_or(0);
-                if let Some(pmm) = usize::try_from(pidx).ok().and_then(|i| crate::pms::hub_item(i / crate::app::COLS as usize, i % crate::app::COLS as usize)) {
+                let snapshot = app.bridge.hubs_snapshot();
+                let pmm = usize::try_from(pidx).ok().and_then(|i| {
+                    let (hub, col) = (i / crate::app::COLS as usize, i % crate::app::COLS as usize);
+                    snapshot.view().hub(hub).and_then(|h| h.items.get(col))
+                });
+                if let Some(pmm) = pmm {
                     let requested = crate::route::request_play_movie(&mut app.player.session, pmm);
                     if requested {
                         // ASYNC (phase 11): nothing here reads `metadata::current()` — the play

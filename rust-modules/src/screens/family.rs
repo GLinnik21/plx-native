@@ -19,9 +19,8 @@ use super::registry::{AppFx, AppMsg, DirectoryLike};
 /// Only first-run pages use this seed: no Home instance is behind them yet, so its first hero
 /// is the future Home's initial selection. Settings over a live Home samples the rendered host.
 /// Capture once at mount, including persistence, rather than doing file I/O from a UI draw.
-pub(crate) fn pre_home_ground() -> crate::ui::route_screen::RouteGround {
-    let snapshot = crate::pms::hubs_snapshot();
-    let seed = snapshot.view().hero(0).filter(|hero| hero.item.has_blur).map(|hero| hero.item.blur);
+pub(crate) fn pre_home_ground(hubs: crate::pms::HubsView<'_>) -> crate::ui::route_screen::RouteGround {
+    let seed = hubs.hero(0).filter(|hero| hero.item.has_blur).map(|hero| hero.item.blur);
     let seed = if let Some(blur) = seed {
         crate::plex::session::record_last_hero(blur);
         Some(blur)

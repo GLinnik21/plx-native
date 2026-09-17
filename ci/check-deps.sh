@@ -454,6 +454,32 @@ else
   fail "search-owner: retired Search compatibility surface returned"
 fi
 
+# hubs-owner: Home's hub catalog model (`PmsState`) and its rotated worker mailbox/minter
+# (`Arc<PmsAdapter>`) belong to one `HubsStore` per Bridge (`app/bridge.rs`'s `hubs_run`/
+# `hubs_snapshot`, `app/bootstrap.rs`'s `HomeIo::hubs_with_directory`). Zero tolerance, no
+# allowlist: any free process-wide selector or module-level dispatcher reconnects those owners and
+# lets an unaddressed reset or landing cross the Bridge boundary — exactly the pre-port shape
+# `crate::stores::hubs::apply`/`apply_with_directory`/`controlled`/`controlled_with_directory` had,
+# each a free function reading/writing process-wide `pms.rs` statics instead of one owner's
+# `PmsState`/`Arc<PmsAdapter>` pair. `hubs_snapshot`/`run`/`run_with_directory`/
+# `land_with_directory`/`tick_with_directory`/`controlled_work`/`controlled_work_with_directory`
+# are deliberately NOT listed: `pms.rs` keeps the current explicit-parameter architecture, taking
+# `state`/`adapter` in, exactly like search's own `reset(state, adapter)`.
+hubs_facades='apply|apply_with_directory|controlled|controlled_with_directory'
+hubs_selectors='RESULTS|NEXT_REQUEST|HUB_GEN|CATALOG_GEN|LAST_SECTIONS_GEN|ACTIVE|OWNER|LEGACY_ADAPTER'
+hubs_owner_matches=$({
+  owner_declarations "$hubs_facades" "$hubs_selectors" \
+    'PmsState|PmsAdapter|HubsStore|Landing|Src|SourceBuild' \
+    "$SRC/pms.rs" "$SRC/pms/initial.rs" "$SRC/stores/hubs.rs"
+  grep_code "(crate::pms|crate::stores::hubs|stores::hubs)::($hubs_facades)\(" "$SRC"
+} | sort -u)
+if [ -z "$hubs_owner_matches" ]; then
+  ok "hubs-owner: zero global storage, transport, selectors, and free facades"
+else
+  echo "$hubs_owner_matches" | sed 's/^/    /'
+  fail "hubs-owner: retired Hubs compatibility surface returned"
+fi
+
 # libm: the method-call spelling, OUTSIDE ui/motion.rs (which owns the integrators and their
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
 # Wholly-test files (see `wholly_test_files`) are skipped like inline `#[cfg(test)]` blocks: a

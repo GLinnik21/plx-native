@@ -68,10 +68,13 @@ pub(crate) trait Sink {
 }
 
 impl Initial {
+    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> HubsSnapshot {
         HubsSnapshot { data:Arc::new(self.catalog.clone()),generation:self.catalog_generation,state:HubState::Loading }
     }
-    #[cfg(any(test, feature = "hostsim"))]
+    /// An empty, pre-work Home initial state — what a fresh boot capture starts from before any
+    /// store has been constructed (`bootstrap::Initial::capture_home`), and what test/hostsim
+    /// synthetic boots seed explicitly.
     pub(crate) fn fresh() -> Self {
         Self { version:1,generation:0,next_request:1,seen:u64::MAX,seen_facts:u32::MAX,
             sections_generation:0,catalog_generation:0,sources:Vec::new(),catalog:HomeCatalog::default() }
@@ -81,33 +84,42 @@ impl Initial {
             && self.catalog.heroes.is_empty()
     }
 
-    /// Restore the validated pre-work inputs, never a mid-flight checkpoint or live mailbox.
-    pub(crate) fn restore_boot(&self, _mt: &crate::task::MainThread) -> Result<(), &'static str> {
+    /// Restore the validated pre-work inputs into a fresh owner, never a mid-flight checkpoint or
+    /// live mailbox. Runs before any `Bridge`/`Stores` exists (`app/boot.rs::construct()`), so it
+    /// produces the `(PmsState, PmsAdapter)` pair rather than mutating anything global.
+    pub(crate) fn restore(&self, _mt: &crate::task::MainThread)
+        -> Result<(super::PmsState, super::PmsAdapter), &'static str> {
         if !self.validate_boot() { return Err("Home initial state contains work or content"); }
-        HUB_GEN.store(self.generation, Ordering::SeqCst);
-        NEXT_REQUEST.store(self.next_request, Ordering::Relaxed);
-        SEEN.store(self.seen, Ordering::Relaxed);
-        SEEN_FACTS.store(self.seen_facts, Ordering::Relaxed);
-        LAST_SECTIONS_GEN.store(self.sections_generation, Ordering::SeqCst);
-        CATALOG_GEN.store(self.catalog_generation, Ordering::SeqCst);
-        *lock_srcs() = Vec::new();
-        unsafe { *std::ptr::addr_of_mut!(PUBLISHED_HOME) = Some(Arc::new(self.catalog.clone())); }
-        Ok(())
+        let state = super::PmsState {
+            published: Some(Arc::new(self.catalog.clone())),
+            srcs: Vec::new(),
+            seen: self.seen,
+            seen_facts: self.seen_facts,
+            hub_gen: self.generation,
+            last_sections_gen: self.sections_generation,
+            catalog_gen: self.catalog_generation,
+        };
+        let adapter = super::PmsAdapter {
+            results: Mutex::new(Vec::new()),
+            next_request: AtomicU32::new(self.next_request),
+        };
+        Ok((state, adapter))
     }
 
-    pub(crate) fn capture() -> Self {
-        let sources = lock_srcs().iter().map(|s| {
+    #[cfg(test)]
+    pub(crate) fn capture(state: &PmsState, adapter: &PmsAdapter) -> Self {
+        let sources = state.srcs.iter().map(|s| {
             let Src { sid, client, token_gen, handle, state, fetching, seq, retry_s, retry_n, last } = s;
             Source { sid: *sid, client: client.map(|c| c.instance_gen()), token_gen: *token_gen,
                 handle: handle.clone(), state: match state { HubState::Loading => 0, HubState::Ready => 1, HubState::Failed => 2 },
                 fetching: *fetching, seq: *seq, retry_bits: retry_s.to_bits(), retry_n: *retry_n, last: last.clone() }
         }).collect();
-        Self { version: 1, generation: HUB_GEN.load(Ordering::SeqCst),
-            next_request: NEXT_REQUEST.load(Ordering::Relaxed), seen: SEEN.load(Ordering::Relaxed),
-            seen_facts: SEEN_FACTS.load(Ordering::Relaxed),
-            sections_generation: LAST_SECTIONS_GEN.load(Ordering::SeqCst),
-            catalog_generation: CATALOG_GEN.load(Ordering::SeqCst), sources,
-            catalog: published_home().as_ref().clone() }
+        Self { version: 1, generation: state.hub_gen,
+            next_request: adapter.next_request.load(Ordering::Relaxed), seen: state.seen,
+            seen_facts: state.seen_facts,
+            sections_generation: state.last_sections_gen,
+            catalog_generation: state.catalog_gen, sources,
+            catalog: published_home(state).as_ref().clone() }
     }
 
     pub(crate) fn write(&self, w: &mut impl Sink) {

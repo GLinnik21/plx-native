@@ -1,6 +1,8 @@
-//! Home's hub catalog store boundary over `crate::pms` (`docs/stores-as-machines.md`).
+//! Home's hub catalog store boundary over `crate::pms` (`docs/stores-as-machines.md`). Each
+//! production `Bridge` owns one [`HubsStore`]; no free selector can connect two Bridges.
 
-use super::StoreId;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub(crate) enum HubsCmd {
@@ -16,88 +18,139 @@ pub(crate) enum HubsCmd {
 
 pub(crate) use crate::pms::Landing as HubsResult;
 
-/// The adapter boundary: drain owned results without applying any store state.
-pub(crate) fn take_results() -> Vec<HubsResult> {
-    crate::pms::take_landings()
+/// One Hubs owner: logical state, the worker adapter all current fetches capture, and notice.
+pub(crate) struct HubsStore {
+    state: crate::pms::PmsState,
+    adapter: Arc<crate::pms::PmsAdapter>,
+    notice_gen: AtomicU32,
+    notice_dirty: AtomicBool,
 }
 
-pub(crate) fn land_with_directory(
-    result: &HubsResult,
-    directory: crate::stores::browse::DirectoryView<'_>,
-) -> super::StoreOutcome {
-    let outcome = crate::pms::land_with_directory(result, directory);
-    super::note(StoreId::Hubs, outcome.changed);
-    outcome
+impl Default for HubsStore {
+    fn default() -> Self {
+        Self {
+            state: Default::default(),
+            adapter: Arc::new(Default::default()),
+            notice_gen: AtomicU32::new(0),
+            notice_dirty: AtomicBool::new(false),
+        }
+    }
 }
 
-pub(crate) fn tick_with_directory(
-    dt: f32,
-    directory: crate::stores::browse::DirectoryView<'_>,
-) -> super::StoreOutcome {
-    let before = crate::pms::catalog_gen();
-    let endpoints = crate::pms::tick_with_directory(dt, directory);
-    let changed = super::note(StoreId::Hubs, crate::pms::catalog_gen() != before);
-    super::StoreOutcome { changed, endpoints }
-}
+impl HubsStore {
+    /// Seed a fresh owner from restored boot initial conditions (`pms::initial::Initial::restore`),
+    /// before any `Bridge`/`Stores` exists.
+    pub(crate) fn from_parts(state: crate::pms::PmsState, adapter: crate::pms::PmsAdapter) -> Self {
+        Self { state, adapter: Arc::new(adapter), notice_gen: AtomicU32::new(0), notice_dirty: AtomicBool::new(false) }
+    }
 
-/// Test-only standalone shape for bootstrap fixtures with no Browse directory.
-#[cfg(test)]
-pub(crate) fn controlled(cmd: Option<HubsCmd>, dt: f32,
-    launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
-    crate::testlock::assert_held("controlled hubs store");
-    let command = cmd.is_some();
-    let outcome = crate::pms::controlled_work(cmd, dt, launch);
-    if command { super::bump(StoreId::Hubs); }
-    else { super::note(StoreId::Hubs, outcome.changed); }
-    outcome
-}
+    fn bump(&self) -> u32 {
+        self.notice_dirty.store(true, Ordering::Relaxed);
+        self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1
+    }
 
-/// Controlled Home work scoped by the Bridge's retained Browse directory. The retained view is
-/// the decision input for this frame.
-pub(crate) fn controlled_with_directory(cmd: Option<HubsCmd>, dt: f32,
-    directory: crate::stores::browse::DirectoryView<'_>,
-    launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
+    pub(crate) fn gen(&self) -> u32 {
+        self.notice_gen.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn take_notice(&self) -> Option<u32> {
+        self.notice_dirty.swap(false, Ordering::Relaxed).then(|| self.gen())
+    }
+
+    pub(crate) fn snapshot(&self) -> crate::pms::HubsSnapshot {
+        crate::pms::hubs_snapshot(&self.state)
+    }
+
     #[cfg(test)]
-    crate::testlock::assert_held("controlled hubs store with Browse owner");
-    let command = cmd.is_some();
-    let outcome = crate::pms::controlled_work_with_directory(cmd, dt, directory, launch);
-    if command { super::bump(StoreId::Hubs); }
-    else { super::note(StoreId::Hubs, outcome.changed); }
-    outcome
-}
+    pub(crate) fn state(&self) -> &crate::pms::PmsState { &self.state }
 
-/// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
-#[cfg(test)]
-pub(crate) fn apply(cmd: HubsCmd) -> super::StoreOutcome {
-    super::apply(super::StoreCmd::Hubs(cmd))
-}
-
-pub(crate) fn apply_with_directory(
-    cmd: HubsCmd,
-    directory: crate::stores::browse::DirectoryView<'_>,
-) -> super::StoreOutcome {
     #[cfg(test)]
-    crate::testlock::assert_held("the hubs store (owned apply)");
-    let answer = crate::pms::run_with_directory(cmd, directory);
-    super::bump(StoreId::Hubs);
-    answer
-}
+    pub(crate) fn adapter_for_test(&self) -> Arc<crate::pms::PmsAdapter> { Arc::clone(&self.adapter) }
 
-/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
-/// `pms::run` — its four arms called `pub(crate)` mutators across this module boundary, which is
-/// exactly what a new screen could have done too; the mutators are private to `pms.rs` now and
-/// this is their only door.
-pub(super) fn run(cmd: HubsCmd) -> super::StoreOutcome {
-    // `crate::pms`'s statics are a crate global reached from both `apply` above and
-    // `crate::stores::apply(StoreCmd::Hubs(..))` directly (some fixtures deliver a `StoreCmd`
-    // without going through this module's `apply`) — guard the one point both funnel through, even
-    // though `pms::run`'s own arms each delegate to a `crate::pms` function that asserts on its
-    // own. See `lib.rs::testlock` and D5.
+    /// A clone of this owner's current worker adapter, for a caller that must spawn its own
+    /// fetch (`crate::pms::spawn_fetch`) rather than go through `controlled_with_directory`'s
+    /// default launcher. Capture it BEFORE calling into this store again — see the module doc
+    /// on why an old worker landing into a retired `Arc` is the whole point of rotation.
+    pub(crate) fn adapter(&self) -> Arc<crate::pms::PmsAdapter> { Arc::clone(&self.adapter) }
+
+    /// The adapter boundary: drain owned results without applying any store state.
+    pub(crate) fn take_results(&self) -> Vec<HubsResult> {
+        crate::pms::take_landings(&self.adapter)
+    }
+
+    pub(crate) fn land_with_directory(
+        &mut self,
+        result: &HubsResult,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> super::StoreOutcome {
+        let outcome = crate::pms::land_with_directory(&mut self.state, &self.adapter, result, directory);
+        if outcome.changed { self.bump(); }
+        outcome
+    }
+
+    pub(crate) fn tick_with_directory(
+        &mut self,
+        dt: f32,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> super::StoreOutcome {
+        let before = self.state.catalog_gen;
+        let endpoints = crate::pms::tick_with_directory(&mut self.state, &self.adapter, dt, directory);
+        let changed = self.state.catalog_gen != before;
+        if changed { self.bump(); }
+        super::StoreOutcome { changed, endpoints }
+    }
+
+    /// Test-only standalone shape for bootstrap fixtures with no Browse directory.
     #[cfg(test)]
-    crate::testlock::assert_held("the hubs store (apply)");
-    let answer = crate::pms::run(cmd);
-    super::bump(StoreId::Hubs);
-    answer
+    pub(crate) fn controlled(&mut self, cmd: Option<HubsCmd>, dt: f32,
+        launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
+        crate::testlock::assert_held("controlled hubs store");
+        let command = cmd.is_some();
+        let outcome = crate::pms::controlled_work(&mut self.state, &self.adapter, cmd, dt, launch);
+        if command || outcome.changed { self.bump(); }
+        outcome
+    }
+
+    /// Controlled Home work scoped by the Bridge's retained Browse directory. The retained view is
+    /// the decision input for this frame.
+    pub(crate) fn controlled_with_directory(&mut self, cmd: Option<HubsCmd>, dt: f32,
+        directory: crate::stores::browse::DirectoryView<'_>,
+        launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
+        #[cfg(test)]
+        crate::testlock::assert_held("controlled hubs store with Browse owner");
+        let command = cmd.is_some();
+        let outcome = crate::pms::controlled_work_with_directory(&mut self.state, &self.adapter, cmd, dt, directory, launch);
+        if command || outcome.changed { self.bump(); }
+        outcome
+    }
+
+    /// Synchronous addressed command path. Reset rotates the adapter before clearing state, so an
+    /// old worker can only finish into the retired mailbox it captured.
+    #[cfg(test)]
+    pub(crate) fn run(&mut self, cmd: HubsCmd) -> super::StoreOutcome {
+        if matches!(&cmd, HubsCmd::Reset) {
+            self.adapter = Arc::new(Default::default());
+        }
+        let answer = crate::pms::run(&mut self.state, &self.adapter, cmd);
+        self.bump();
+        answer
+    }
+
+    /// Synchronous command path with the Browse owner publication captured by the application.
+    /// Reset rotates the adapter before clearing state, so an old worker can only finish into the
+    /// retired mailbox it captured.
+    pub(crate) fn run_with_directory(
+        &mut self,
+        cmd: HubsCmd,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> super::StoreOutcome {
+        if matches!(&cmd, HubsCmd::Reset) {
+            self.adapter = Arc::new(Default::default());
+        }
+        let answer = crate::pms::run_with_directory(&mut self.state, &self.adapter, cmd, directory);
+        self.bump();
+        answer
+    }
 }
 
 #[cfg(test)]
