@@ -226,11 +226,13 @@ impl MetadataStore {
     #[cfg(test)]
     pub(crate) fn state_mut(&mut self) -> &mut crate::metadata::MetadataState { &mut self.state }
 
-    /// Test seam: `state_mut()` and `adapter_ref()` borrowed together, for `_for_test` helpers
-    /// (e.g. `crate::metadata::land_detail_for_test`) that take both at once — a single `&mut
-    /// self` split into its two disjoint fields, not a second way to reach either one.
+    /// Test seam: state and the OWNING `Arc<MetadataAdapter>` borrowed together, for `_for_test`
+    /// helpers (e.g. `crate::metadata::land_detail_for_test`, which forwards into
+    /// `pump_detail`'s `install_landed_detail` -> `request_alt_sources`, and that last one
+    /// clones the Arc to spawn a resolve worker) — a single `&mut self` split into its two
+    /// disjoint fields, not a second way to reach either one.
     #[cfg(test)]
-    pub(crate) fn split_for_test(&mut self) -> (&mut crate::metadata::MetadataState, &crate::metadata::MetadataAdapter) {
+    pub(crate) fn split_for_test(&mut self) -> (&mut crate::metadata::MetadataState, &Arc<crate::metadata::MetadataAdapter>) {
         (&mut self.state, &self.adapter)
     }
 

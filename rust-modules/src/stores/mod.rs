@@ -410,28 +410,12 @@ mod tests {
     }
     use super::*;
 
-    #[test]
-    fn a_command_raises_one_notice_and_a_steady_store_none() {
-        let _g = crate::testlock::serial();
-        let _ = take_notices();
-        let before = gen(StoreId::Metadata);
-        assert!(apply(StoreCmd::Metadata(metadata::MetadataCmd::Clear)).changed);
-        let n = take_notices();
-        assert!(n.contains(&(StoreId::Metadata, before + 1)), "{n:?}");
-        assert!(take_notices().is_empty(), "drained once");
-    }
-
-    #[test]
-    fn generic_dispatch_rejects_all_physically_owned_stores() {
-        for command in [
-            StoreCmd::Browse(browse::BrowseCmd::Reset),
-            StoreCmd::Person(person::PersonCmd::Reset),
-            StoreCmd::Search(search::SearchCmd::Reset),
-            StoreCmd::ViewState(viewstate::ViewStateCmd::Reset),
-        ] {
-            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply(command))).is_err());
-        }
-    }
+    // `a_command_raises_one_notice_and_a_steady_store_none` (the global `apply(StoreCmd::Metadata
+    // (Clear))` regression) and `generic_dispatch_rejects_all_physically_owned_stores` (which
+    // proved the same global `apply` panicked for the already-owned stores) are deleted: the
+    // free `apply`/`take_notices`/`gen` dispatcher they tested no longer exists anywhere in
+    // production code. Every store — Metadata included, as of this layer — now dispatches
+    // through its own per-owner `run`/`step`, so there is no shared router left to grade.
 
     #[test]
     fn the_ordinal_round_trips_for_every_store() {

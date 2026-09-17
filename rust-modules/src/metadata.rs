@@ -2535,7 +2535,7 @@ pub(crate) fn detail_generation_for_test(adapter: &MetadataAdapter) -> u32 {
 }
 
 #[cfg(test)]
-pub(crate) fn land_detail_for_test(state: &mut MetadataState, adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
+pub(crate) fn land_detail_for_test(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: crate::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
     crate::testlock::assert_held("the detail store (land_detail_for_test)");
     land_detail(adapter, sid, rk, gen, detail);
     pump_detail(state, adapter)
@@ -4164,7 +4164,8 @@ mod trailer_tests {
     #[test]
     fn trailer_now_playing_keeps_the_parent_and_the_extra_duration() {
         let _g = crate::testlock::serial();
-        set_current_for_test(Some(Detail {
+        let mut state = MetadataState::default();
+        set_current_for_test(&mut state, Some(Detail {
             sid: crate::plex::ServerId::UNSET,
             rk: "movie".into(),
             kind: "movie".into(),
@@ -4182,7 +4183,7 @@ mod trailer_tests {
             }],
             ..Default::default()
         }));
-        let np = trailer_now_playing(crate::plex::ServerId::UNSET, "9").unwrap();
+        let np = trailer_now_playing(&state, crate::plex::ServerId::UNSET, "9").unwrap();
         assert!(!np.is_episode);
         assert!(!np.is_real_episode, "an extra is never a real episode leaf");
         assert_eq!(np.title, "Movie");
@@ -4190,8 +4191,8 @@ mod trailer_tests {
         assert_eq!(np.dur_ms, 120_000);
         assert_eq!(np.detail_rk, "movie");
         assert_eq!(np.thumb, "/art");
-        assert!(trailer_now_playing(crate::plex::ServerId::UNSET, "other").is_none());
-        set_current_for_test(Some(Detail {
+        assert!(trailer_now_playing(&state, crate::plex::ServerId::UNSET, "other").is_none());
+        set_current_for_test(&mut state, Some(Detail {
             sid: crate::plex::ServerId::UNSET,
             rk: "show".into(),
             kind: "show".into(),
@@ -4206,7 +4207,7 @@ mod trailer_tests {
             }],
             ..Default::default()
         }));
-        let show = trailer_now_playing(crate::plex::ServerId::UNSET, "9").unwrap();
+        let show = trailer_now_playing(&state, crate::plex::ServerId::UNSET, "9").unwrap();
         assert!(show.is_episode, "a show parent labels Go to Show");
         assert!(
             !show.is_real_episode,
@@ -4217,7 +4218,7 @@ mod trailer_tests {
         assert_eq!(show.ep_title, "Show");
         assert_eq!(show.dur_ms, 90_000);
         assert_eq!(show.detail_rk, "show");
-        set_current_for_test(None);
+        set_current_for_test(&mut state, None);
     }
 }
 
