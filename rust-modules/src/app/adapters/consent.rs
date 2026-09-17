@@ -74,20 +74,17 @@ fn newly_enables_errors(previous: &Consent, next: &Consent) -> bool {
     effectively_allows_errors(next) && !effectively_allows_errors(previous)
 }
 
-/// Write first, then apply prospective cleanup, publish, purge withdrawn records and synchronize
-/// the native backend. This preserves the established live ordering while making enabling
-/// detection a function of the owner's explicit transition.
+/// Apply prospective cleanup, publish, purge withdrawn records and synchronize the native backend,
+/// then persist. The canonical write is a storage-helper round trip on the television, so a
+/// withdrawal must not wait behind it with the old decision still published (0.6.6 published at
+/// once and wrote on its storage worker) — **and neither may this function's own caller**, the
+/// frame loop's message dispatch (`app::bridge::AppRig::deliver`). The write itself is queued onto
+/// `crate::storage_worker` for exactly that reason, same as `release/v0.6`'s
+/// `record_with_receipt`; only the in-memory publish above and the spool/native side effects run
+/// inline. A failed or refused write is logged and still honoured for this session; enabling
+/// detection remains a function of the owner's explicit transition.
 fn commit_live(previous: &Consent, next: &Consent) {
     let enabling_errors = newly_enables_errors(previous, next);
-    let Ok(json) = serde_json::to_vec_pretty(next) else {
-        return;
-    };
-    let stored = crate::telemetry::resource_candidates()
-        .iter()
-        .any(|path| crate::plex::session::write_atomic(path, &json));
-    if !stored {
-        crate::log("telemetry: could not persist the decision to ANY candidate path");
-    }
     if enabling_errors {
         crate::telemetry::crashreport::discard_pending_before_opt_in();
     }
@@ -97,30 +94,57 @@ fn commit_live(previous: &Consent, next: &Consent) {
     }
     crate::telemetry::spool::purge_withdrawn(next);
     crate::telemetry::native::sync_change(next);
+    persist_record_off_thread(next.clone());
+}
+
+/// Submit the canonical write to the shared persistence worker rather than running it on the
+/// caller's thread. Dropping the returned ticket only cancels the caller's interest in the
+/// result — per `storage_worker`'s own contract ("Dropping a ticket cancels interest, not an
+/// already accepted durable write") — the job still runs to completion.
+fn persist_record_off_thread(next: Consent) {
+    let submitted = crate::storage_worker::submit(move || {
+        let outcome = crate::telemetry::persistence::record(&next);
+        if outcome.write != crate::telemetry::persistence::PersistResult::Durable {
+            crate::log(&format!("telemetry: the decision is not durably persisted: {outcome:?}"));
+        }
+    });
+    if submitted.is_err() {
+        crate::log("telemetry: the decision could not be queued for persistence");
+    }
+    // Tests want the write's effect (and `persistence::last_call_thread()`) settled before the
+    // next assertion; production has no such deadline and never drains.
+    #[cfg(test)]
+    crate::storage_worker::drain_for_test();
 }
 
 /// Publish the prospective default before touching disk, then purge withdrawn records and stop
-/// native capture. The crash mark deliberately remains untouched by this path.
+/// native capture. The crash mark deliberately remains untouched by this path. The canonical
+/// clear, like `commit_live`'s write, is queued off the frame thread rather than run inline.
 fn forget_live(_prior: &Consent) {
     let next = Consent::default();
     crate::telemetry::consent::install(next.clone());
     crate::player::report::clear_error_trace();
-    for path in crate::telemetry::resource_candidates() {
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                let overwritten = serde_json::to_vec_pretty(&next)
-                    .map(|json| crate::plex::session::write_atomic(&path, &json))
-                    .unwrap_or(false);
-                crate::log(&format!(
-                    "telemetry: sign-out could not unlink the decision ({error}); overwritten={overwritten}"
-                ));
-            }
-        }
-    }
     crate::telemetry::spool::purge_withdrawn(&next);
     crate::telemetry::native::sync_change(&next);
+    persist_forget_off_thread();
+}
+
+fn persist_forget_off_thread() {
+    let submitted = crate::storage_worker::submit(|| {
+        let outcome = crate::telemetry::persistence::forget();
+        if !matches!(
+            outcome.write,
+            crate::telemetry::persistence::PersistResult::Durable
+                | crate::telemetry::persistence::PersistResult::Delegated
+        ) {
+            crate::log(&format!("telemetry: sign-out could not durably clear the decision: {outcome:?}"));
+        }
+    });
+    if submitted.is_err() {
+        crate::log("telemetry: sign-out could not be queued for persistence");
+    }
+    #[cfg(test)]
+    crate::storage_worker::drain_for_test();
 }
 
 #[cfg(test)]
@@ -135,6 +159,7 @@ mod tests {
             usage: false,
             install_id: None,
             errors_id: Some(id.into()),
+            ..Default::default()
         }
     }
 
@@ -210,6 +235,56 @@ mod tests {
         adapter.forget(&next);
 
         assert!(!file.exists());
+    }
+
+    /// Copilot review on PR #105, finding 6. `commit_live`/`forget_live` call
+    /// `telemetry::persistence::record`/`forget` — a genuine storage-helper round trip on the
+    /// television — and must not run that call on the caller's own thread, since the caller here
+    /// is the frame loop's message dispatch (`app::bridge::AppRig::deliver`). `release/v0.6`'s
+    /// equivalent (`telemetry::mod.rs::record_with_receipt`/`forget_with_receipt`) submitted the
+    /// same work to `crate::storage_worker` for exactly this reason; this test pins the live
+    /// adapter to the same off-thread contract.
+    #[test]
+    fn commit_live_persists_off_the_calling_thread() {
+        struct Redirect(std::path::PathBuf);
+        impl Drop for Redirect {
+            fn drop(&mut self) {
+                crate::telemetry::redirect_for_test(None);
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let _serial = crate::testlock::serial();
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-consent-adapter-live-thread-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _redirect = Redirect(dir.clone());
+        let file = dir.join("telemetry.json");
+        crate::telemetry::redirect_for_test(Some(file));
+
+        let caller_thread = std::thread::current().id();
+        let previous = decision("owned");
+        let next = Consent::default();
+        let mut adapter = ConsentAdapter::live();
+
+        adapter.commit(&previous, &next);
+        crate::storage_worker::drain_for_test();
+        assert_ne!(
+            crate::telemetry::persistence::last_call_thread(),
+            Some(caller_thread),
+            "commit_live must persist off the frame thread, not inline"
+        );
+
+        adapter.forget(&next);
+        crate::storage_worker::drain_for_test();
+        assert_ne!(
+            crate::telemetry::persistence::last_call_thread(),
+            Some(caller_thread),
+            "forget_live must persist off the frame thread, not inline"
+        );
     }
 
     #[test]

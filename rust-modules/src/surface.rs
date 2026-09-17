@@ -125,6 +125,160 @@ fn recompute() {
     VY.store((dh - h) / 2, Ordering::Relaxed);
 }
 
+/// **Supersampled rendering for high-resolution simulator captures** — `PLXNATIVE_RENDER_SCALE=<n>`,
+/// an integer 1..=4, read once. The simulator only: a television always renders at 1.
+///
+/// At n > 1 the frame is drawn into an offscreen `n*1920 x n*1080` framebuffer ([`default_fb`])
+/// instead of the window, so a shot is a real `n`x render rather than an upscale — the window's own
+/// drawable is capped by the display it sits on. The rasterised caches that assume 1:1 texels
+/// (glyphs, icon masks, poster requests) consult this to rasterise at `n`x and draw at the same
+/// logical size; layout never sees it.
+#[cfg(feature = "hostsim")]
+pub(crate) fn render_scale() -> i32 {
+    static S: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *S.get_or_init(|| {
+        std::env::var("PLXNATIVE_RENDER_SCALE")
+            .ok()
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .filter(|n| (1..=4).contains(n))
+            .unwrap_or(1)
+    })
+}
+#[cfg(not(feature = "hostsim"))]
+#[inline]
+pub(crate) const fn render_scale() -> i32 {
+    1
+}
+
+/// The framebuffer a frame is drawn into — what every "back to the screen" bind must name instead
+/// of a literal 0. The supersampling target when [`render_scale`] is above 1, else 0.
+#[cfg(feature = "hostsim")]
+#[inline]
+pub(crate) fn default_fb() -> u32 {
+    SS_FBO.load(Ordering::Relaxed)
+}
+#[cfg(not(feature = "hostsim"))]
+#[inline]
+pub(crate) const fn default_fb() -> u32 {
+    0
+}
+
+#[cfg(feature = "hostsim")]
+static SS_FBO: AtomicU32 = AtomicU32::new(0);
+/// The WINDOW's own mapping while supersampling: the rect the offscreen frame is blitted into and
+/// the scale pointer coordinates are converted with. Unused (and zero) when [`SS_FBO`] is 0.
+#[cfg(feature = "hostsim")]
+static WIN_VIEW: [AtomicI32; 4] = [const { AtomicI32::new(0) }; 4];
+#[cfg(feature = "hostsim")]
+static WIN_SCALE_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+
+#[cfg(feature = "hostsim")]
+extern "C" {
+    fn glGenTextures(n: c_int, textures: *mut u32);
+    fn glBindTexture(target: u32, texture: u32);
+    fn glTexParameteri(target: u32, pname: u32, param: c_int);
+    fn glTexImage2D(
+        target: u32,
+        level: c_int,
+        ifmt: c_int,
+        w: c_int,
+        h: c_int,
+        border: c_int,
+        format: u32,
+        ty: u32,
+        pixels: *const c_void,
+    );
+    fn glGenFramebuffers(n: c_int, ids: *mut u32);
+    fn glBindFramebuffer(target: u32, framebuffer: u32);
+    fn glFramebufferTexture2D(target: u32, attachment: u32, textarget: u32, texture: u32, level: c_int);
+    fn glCheckFramebufferStatus(target: u32) -> u32;
+    fn glBlitFramebuffer(
+        sx0: c_int,
+        sy0: c_int,
+        sx1: c_int,
+        sy1: c_int,
+        dx0: c_int,
+        dy0: c_int,
+        dx1: c_int,
+        dy1: c_int,
+        mask: u32,
+        filter: u32,
+    );
+    fn glDisable(cap: u32);
+}
+
+/// Create the `n`x offscreen target and leave it bound. `None` (and nothing bound) if the driver
+/// refuses it, in which case the caller renders to the window as it always did.
+#[cfg(feature = "hostsim")]
+unsafe fn create_supersample_fb(w: c_int, h: c_int) -> Option<u32> {
+    const TEX_2D: u32 = 0x0DE1;
+    const FB: u32 = 0x8D40;
+    let mut t = 0;
+    glGenTextures(1, &mut t);
+    glBindTexture(TEX_2D, t);
+    glTexParameteri(TEX_2D, 0x2801, 0x2601); // MIN_FILTER LINEAR
+    glTexParameteri(TEX_2D, 0x2800, 0x2601); // MAG_FILTER LINEAR
+    glTexImage2D(TEX_2D, 0, 0x8058 /* RGBA8 */, w, h, 0, 0x1908, 0x1401, std::ptr::null());
+    glBindTexture(TEX_2D, 0);
+    let mut f = 0;
+    glGenFramebuffers(1, &mut f);
+    glBindFramebuffer(FB, f);
+    glFramebufferTexture2D(FB, 0x8CE0, TEX_2D, t, 0);
+    if glCheckFramebufferStatus(FB) != 0x8CD5 {
+        glBindFramebuffer(FB, 0);
+        return None;
+    }
+    Some(f)
+}
+
+/// Downscale the finished offscreen frame into the window so the loop still presents something to
+/// look at, then rebind the offscreen target for the next frame. Call after the shot, before the
+/// swap. A no-op unless supersampling.
+#[cfg(feature = "hostsim")]
+pub(crate) fn present_supersampled() {
+    let fbo = default_fb();
+    if fbo == 0 {
+        return;
+    }
+    let (vx, vy, vw, vh) = viewport();
+    let w: Vec<i32> = WIN_VIEW.iter().map(|a| a.load(Ordering::Relaxed)).collect();
+    unsafe {
+        // The blit honours the scissor test; a clip left armed would crop the window copy.
+        glDisable(0x0C11);
+        glBindFramebuffer(0x8CA8, fbo); // READ
+        glBindFramebuffer(0x8CA9, 0); // DRAW
+        glBlitFramebuffer(
+            vx,
+            vy,
+            vx + vw,
+            vy + vh,
+            w[0],
+            w[1],
+            w[0] + w[2],
+            w[1] + w[3],
+            0x4000,
+            0x2601,
+        );
+        glBindFramebuffer(0x8D40, fbo);
+    }
+}
+
+/// `(scale, vx, vy)` from window pixels to the canvas — the viewport's own unless supersampling,
+/// when the frame is drawn offscreen and the pointer still lives in the window.
+#[inline]
+fn pointer_map() -> (f32, i32, i32) {
+    #[cfg(feature = "hostsim")]
+    if default_fb() != 0 {
+        return (
+            f32::from_bits(WIN_SCALE_BITS.load(Ordering::Relaxed)),
+            WIN_VIEW[0].load(Ordering::Relaxed),
+            WIN_VIEW[1].load(Ordering::Relaxed),
+        );
+    }
+    let (vx, vy, _, _) = viewport();
+    (scale(), vx, vy)
+}
+
 /// Physical window pixels -> the authored 1920x1080 canvas: the exact inverse of [`viewport`].
 ///
 /// SDL reports pointer positions in window pixels, and the UI compares them against layout
@@ -135,8 +289,7 @@ fn recompute() {
 /// as a resolution problem.
 #[inline]
 pub(crate) fn to_logical(px: f32, py: f32) -> (f32, f32) {
-    let s = scale();
-    let (vx, vy, _, _) = viewport();
+    let (s, vx, vy) = pointer_map();
     ((px - vx as f32) / s, (py - vy as f32) / s)
 }
 
@@ -146,8 +299,7 @@ pub(crate) fn to_logical(px: f32, py: f32) -> (f32, f32) {
 /// back. Without this the synthetic path would be transformed once too often on a scaled surface.
 #[inline]
 pub(crate) fn to_physical(lx: f32, ly: f32) -> (f32, f32) {
-    let s = scale();
-    let (vx, vy, _, _) = viewport();
+    let (s, vx, vy) = pointer_map();
     (lx * s + vx as f32, ly * s + vy as f32)
 }
 
@@ -167,6 +319,35 @@ pub(crate) fn probe(win: *mut c_void) {
         if dw <= 0 || dh <= 0 {
             dw = ww;
             dh = wh;
+        }
+        #[cfg(feature = "hostsim")]
+        if render_scale() > 1 && dw > 0 && dh > 0 {
+            let n = render_scale();
+            let (sw, sh) = (LOGICAL_W as i32 * n, LOGICAL_H as i32 * n);
+            match create_supersample_fb(sw, sh) {
+                Some(f) => {
+                    // The window's mapping first, computed exactly as the viewport would be.
+                    DRAWABLE_W.store(dw, Ordering::Relaxed);
+                    DRAWABLE_H.store(dh, Ordering::Relaxed);
+                    recompute();
+                    let (vx, vy, vw, vh) = viewport();
+                    for (a, v) in WIN_VIEW.iter().zip([vx, vy, vw, vh]) {
+                        a.store(v, Ordering::Relaxed);
+                    }
+                    WIN_SCALE_BITS.store(scale().to_bits(), Ordering::Relaxed);
+                    SS_FBO.store(f, Ordering::Relaxed);
+                    log(&format!(
+                        "surface: supersampling x{n} — drawing into an offscreen {sw}x{sh} \
+                         framebuffer, shown downscaled in the {dw}x{dh} window"
+                    ));
+                    dw = sw;
+                    dh = sh;
+                }
+                None => log(&format!(
+                    "surface: PLXNATIVE_RENDER_SCALE={n} refused — {sw}x{sh} framebuffer \
+                     incomplete; rendering to the window"
+                )),
+            }
         }
         if dw > 0 && dh > 0 {
             DRAWABLE_W.store(dw, Ordering::Relaxed);

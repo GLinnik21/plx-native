@@ -416,10 +416,16 @@ pub const CONTROL_CAST_FOCUS: [(f32, f32, f32); 2] = [(5.0, 32.0, 0.34), (1.0, 6
 /// MEDIUM gray, deliberately not near-black: the focused-card drop-shadow only reads against a base
 /// this light (on the old near-black 25,25,29 a black shadow had almost nothing to darken).
 pub const SURFACE_APP: [f32; 4] = NEUTRAL_500;
+/// Opaque sheet drawn over the hardware video plane when a detail page scrolls the hero away.
+/// Same stop as [`SURFACE_APP`] so the rising page and the cover are one surface. Different role:
+/// this hides the plane. It is not atmosphere, so [`scrim`] is the wrong token.
+pub const PLANE_COVER: [f32; 4] = SURFACE_APP;
 /// GL clear color — 3-float (`frame_clear` takes r,g,b, no alpha). The app's DEFAULT base, and
-/// [`SURFACE_APP`] itself rather than a second copy of its code: every non-player screen clears to
-/// the Apple-TV gray (the player clears transparent separately), which is what makes a route change
-/// read as a seamless dip. Home overdraws it with `SURFACE_APP` (the identical gray).
+/// [`SURFACE_APP`] itself rather than a second copy of its code: browsing screens clear to the
+/// Apple-TV gray, which is what makes a route change read as a seamless dip. Home overdraws it
+/// with `SURFACE_APP` (the identical gray). Two punches through to the hardware video plane use
+/// transparent black instead: the player route, and the detail page while a trailer preview has
+/// presented a frame (`gfx::frame_clear_through`).
 pub const CLEAR_RGB: (f32, f32, f32) = (SURFACE_APP[0], SURFACE_APP[1], SURFACE_APP[2]);
 /// Opaque menu panel / fade mask / badge knockout interior.
 pub const SURFACE_PANEL: [f32; 4] = NEUTRAL_650;

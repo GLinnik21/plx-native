@@ -649,6 +649,67 @@ The picker must iterate `Media[]` and choose by codec/resolution, not take `[0]`
 Episode container metadata also carries `grandparentTitle`/`grandparentThumb` at the
 `MediaContainer` level for header rendering.
 
+### Extras / trailers (verified live 2026-09-12, PMS 1.43)
+
+Movie and show metadata can name a primary trailer and a list of extras. The Trailer control
+reads **one playable trailer** from that list (`Detail::trailer()`). The detail page draws
+every extras row, trailer included, as an Extras shelf (`Detail.extras`). `trailer()` only
+picks which of those rows the background preview and Play Trailer use. The hero Trailer disc
+is not drawn.
+
+```
+GET /library/metadata/{rk}?includeChapters=1&includeMarkers=1&includeOnDeck=1&includeExtras=1
+GET /library/metadata/{rk}/extras
+```
+
+Verified against this household's PMS (no titles recorded here):
+
+| | movie | show |
+|---|---|---|
+| metadata GET (today's flags, no extras) | ~25 KB | ~21 KB |
+| same GET with `includeExtras=1` | ~45 KB (+20 KB) | ~29 KB (+8 KB) |
+| dedicated `GET …/extras` | ~21 KB | ~9 KB |
+| extras rows | 14 | 3 |
+| playable `subtype=trailer` rows | 2 | 3 |
+
+`?includeExtras=1` nests the **same playable rows** as `/extras` under `Metadata[0].Extras.Metadata[]`
+(a dict with a `Metadata` array, not a bare array). Each extra is `type: "clip"` and already
+carries `Media[]` / `Part[0].key` / `videoCodec` / `audioCodec` / `duration` — not identity-only.
+`Part.key` is a PMS-absolute path that is **not** `/library/parts/…` (online trailer assets);
+it still has a part id, a container (`mp4`), and a `Stream[]`. Empty-`Part` extras were not
+observed on this server. Folding extras onto the existing metadata GET therefore adds no serial
+hop; a dedicated `/extras` GET is the same payload as a second trip.
+
+The client still issues `/extras` **in parallel with** `/related` on movie and show detail only,
+rather than `includeExtras=1` on every `metadata()` call: episode and season pages must not pay
+the extras blob, and a refused extras GET must not fail the whole page. Serial depth stays 2
+(movie) / 5 (show).
+
+**`primaryExtraKey`** is the path `/library/metadata/{rk}` (OpenAPI's spelling; a bare rk was
+not observed). It matches both `extra.ratingKey` (the path tail) and `extra.key`. On this
+library it named a trailer that was also in the extras list.
+
+**`subtype` / `extraType`** seen together:
+
+| subtype | extraType |
+|---|---|
+| `trailer` | 1 |
+| `behindTheScenes` | 5 |
+| `sceneOrSample` | 6 |
+
+Either `subtype == "trailer"` or `extraType == 1` is enough to count as a trailer. Behind-the-
+scenes / featurettes / interviews are not this control.
+
+**PlayQueue for an extra.** `POST /playQueues?uri=/library/metadata/{extraRk}&type=video&continuous=1`
+returned **HTTP 400** on the simple uri form; the app's real POST uses
+`server://{machineIdentifier}/com.plexapp.plugins.library/library/metadata/{rk}`. Sibling extras
+under `continuous=1` would be the Up-Next hazard, so trailer sessions **omit `continuous`**
+rather than filtering a queue after the fact. `up_next_of` is already episode-gated (`kind ==
+"episode"`), so a clip successor would not arm the tile even if a queue came back larger than 1.
+
+Shows carry no `Media` of their own; a show-level trailer still has its extra's `Part`. Episode
+and season `/extras` are not requested.
+
 ---
 
 ## 5. Images (poster / art)

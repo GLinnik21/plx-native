@@ -1,3 +1,10 @@
+//! Detail page's own panel parking across a push/pop.
+
+use super::*;
+#[allow(unused_imports)]
+use super::test_support::*;
+use super::test_support::{frame};
+
 /// **A Detail page's own panel PARKS across a push and comes back the same instance.**
 ///
 /// The property that makes a page-owned surface page-owned (spec §6.2, `Navigation.covered_modals`):

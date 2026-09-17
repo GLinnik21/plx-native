@@ -1,3 +1,10 @@
+//! Library shelf physical-hold engine item capture.
+
+use super::*;
+#[allow(unused_imports)]
+use super::test_support::*;
+use super::test_support::{frame};
+
 #[test]
 fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
     let _guard = crate::testlock::serial();

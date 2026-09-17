@@ -245,6 +245,18 @@ still unpushed on `main`. The spelling that works from either state of `main`:
 gh workflow run release.yml --ref release/vX.Y -f version=X.Y.Z -f line=release/vX.Y
 ```
 
+**This procedure has no step that merges a patch back into `main`, and that gap has already cost a
+device session.** `release/v0.6` accumulated 37 commits across v0.6.1 through v0.6.6 — real fixes
+among them, not just version bumps — that never reached `main` or any branch cut from it. One of
+those fixes (issue #74, `ac305265`) closed a crash that then got independently re-investigated and
+misdiagnosed as an LG firmware defect on 2026-09-14, entirely because nobody had checked whether
+`main` was behind its own maintenance line. See `docs/known-issues.md` for the full account.
+**After a patch lands on a `release/vX.Y` line, cherry-pick or merge its real fixes back onto
+`main`** (skip the version-bump and release-audit commits — they don't apply to trunk) before
+considering the patch done. There is no tooling for this yet; do it by hand and note in
+`docs/known-issues.md` if a fix's port needs anything nontrivial, so the next person doesn't
+re-derive it.
+
 **There is no flavour input here, and you do not want one.** `release.yml` pins `FLAVOR: stable` in
 the build job's `env`, which is the right place for it: CI is the one context where the Makefile's
 `FLAVOR ?= debug` default is always wrong, and a value nobody can forget to type beats one they

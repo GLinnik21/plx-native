@@ -846,7 +846,9 @@ pub(crate) fn draw_readout(
         // ("lands at the same y in all three variants, so a user who has seen it once recognises
         // it before reading") and the caption's suffix is re-derived as the reason.
         draw_failed_readout(ps, Painter::root(), measure);
-        stops.push((ELEM_FAILURE_OK, failure_ok_hit_rect()));
+        if crate::player::error_now(ps).kind != crate::player::FailureKind::JailMissingRtkmem || ps.repair_status == crate::webos::jail_repair::State::Idle {
+            stops.push((ELEM_FAILURE_OK, failure_ok_hit_rect()));
+        }
         return;
     }
     StatusOverlay::new(readout_frame(), caption, kind)
@@ -991,7 +993,17 @@ fn draw_failed_readout(
     p: Painter,
     measure: &dyn crate::ui::machine::Measure,
 ) {
-    let e = crate::player::error_now(ps);
+    let mut e = crate::player::error_now(ps);
+    let jail = e.kind == crate::player::FailureKind::JailMissingRtkmem;
+    if jail {
+        use crate::webos::jail_repair::State;
+        match ps.repair_status {
+            State::Idle => {},
+            State::Running => { e.readout = "Repairing this app’s sandbox…"; e.detail = "Wait for the result before closing the app.".into(); },
+            State::Repaired => { e.readout = "Sandbox repair completed"; e.detail = "Close and reopen PlxNative before playing video.".into(); },
+            State::Failed(reason) => { e.readout = "Sandbox repair could not be confirmed"; e.detail = reason.message().into(); },
+        }
+    }
     // The GROUND, first: `Player Screen.dc.html` gives the failed variant `inset:0; background:#000`
     // — a full-bleed opaque black — and it is one quad. Without it this layout stood on whatever the
     // video plane happened to be holding: `app.rs` clears the graphics plane to alpha 0 on the player
@@ -1072,14 +1084,9 @@ fn draw_failed_readout(
     }
     // Both exits stay visible.  OK enters the shared quality ladder (selecting the current rung is
     // a plain retry); BACK still leaves the player.  The key caps are what survive a phone photo.
-    draw_hint_with_keycap(
-        p,
-        c"Press",
-        c"OK",
-        c"to choose quality or retry",
-        FR_HINT_TOP,
-        measure,
-    );
+    if !jail || ps.repair_status == crate::webos::jail_repair::State::Idle {
+        draw_hint_with_keycap(p, c"Press", c"OK", if jail { c"to review sandbox repair" } else { c"to choose quality or retry" }, FR_HINT_TOP, measure);
+    }
     draw_hint_with_keycap(
         p,
         c"Press",
@@ -1312,8 +1319,12 @@ pub(crate) fn draw_hud(
 
     if transport {
         // title block under the playbar: for an episode, "S1, E1 · Episode Name" (white) sits above the
-        // SHOW title; for a movie, the route ctxline over the movie title. (Apple-TV layout.)
-        if let Some(n) = crate::metadata::now_playing().filter(|n| n.is_episode) {
+        // SHOW title; for a movie (or any extra, trailers included), the route ctxline over the movie
+        // title. (Apple-TV layout.) Gated on `is_real_episode`, not `is_episode` — a show's trailer
+        // has `is_episode == true` (it still labels "Go to Show" elsewhere) but no real S#/E# address,
+        // so it takes this same "Trailer" ctxline + title treatment a movie trailer already gets,
+        // instead of a fabricated `S0 · E0` kicker.
+        if let Some(n) = crate::metadata::now_playing().filter(|n| n.is_real_episode) {
             // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
             // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
             // caption already read it, and the whole point is that all three say the same thing).

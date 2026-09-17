@@ -23,6 +23,8 @@ use super::probe::Location;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Mutex;
+use std::collections::BTreeMap;
+use serde_json::Value;
 
 /// The signed-in profile, in-memory for the UI (the Home profile chip reads this). Set by the boot
 /// gate (from the stored session) and on every profile switch, so it survives an offline boot.
@@ -164,6 +166,15 @@ fn fallback_file() -> std::path::PathBuf {
     .clone()
 }
 
+/// The same process-global scratch path [`fallback_file`] resolves to, exposed to other modules'
+/// test code (the adapter regression test for the Finding 1 canonical-verdict path) so it can
+/// snapshot and restore the file rather than leaving residue for whichever other test falls
+/// through to it next.
+#[cfg(test)]
+pub(crate) fn fallback_file_for_test() -> std::path::PathBuf {
+    fallback_file()
+}
+
 #[cfg(test)]
 fn auth_paths() -> Vec<std::path::PathBuf> {
     match TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
@@ -195,6 +206,13 @@ fn auth_paths() -> Vec<std::path::PathBuf> {
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
     let _io = io();
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
+}
+
+/// Snapshot the current [`TEST_FILE`] redirect so a caller can restore it exactly with
+/// `redirect_for_test`, rather than assuming `None` is always the value to go back to.
+#[cfg(test)]
+pub(crate) fn redirect_snapshot_for_test() -> Option<std::path::PathBuf> {
+    TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// **A signed-in session at a scratch path, taken back on drop — THE guard, not one of several.**
@@ -276,6 +294,23 @@ impl Drop for TempSession {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
+
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct OpaqueExtensions(pub(crate) BTreeMap<String, Value>);
+
+impl OpaqueExtensions {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for OpaqueExtensions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<opaque extensions>")
+    }
+}
+
 
 /// The full persisted session. Empty fields mean "not logged in yet" for that stage.
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -387,7 +422,7 @@ pub struct Session {
     /// [`PinVerifier`] for exactly what is.
     ///
     /// Soft-parsed like every list in this struct: an entry costs itself, never the credentials.
-    #[serde(default, deserialize_with = "de_soft_vec")]
+    #[serde(default, deserialize_with = "de_profile_cache")]
     pub profiles: Vec<ProfileCreds>,
     /// The install's playback-quality preference. `None` is deliberately distinct from an
     /// explicit value: every session written before this field existed lands there and must keep
@@ -411,6 +446,12 @@ pub struct Session {
     /// credentials.
     #[serde(default, deserialize_with = "de_soft_bool")]
     pub(crate) auto_sign_in: bool,
+    /// **Hero trailer autoplay.** Detail default is on. Absence is on, so a session written
+    /// before this field existed does not silently lose the preview. Explicit `false` stays off.
+    /// Soft-parsed to on rather than failing the credentials file. The bound Starfish surface
+    /// has no mute, so this is also the only sound control.
+    #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
+    pub(crate) trailer_autoplay: bool,
     /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
     /// rendered on this television, so a route in the Settings/first-run family that opens
     /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
@@ -422,8 +463,235 @@ pub struct Session {
     /// Not keyed by profile: it says nothing about content history, only about what colour light
     /// this SET last showed, which is why it lives beside `client_id` rather than in a per-profile
     /// section like [`Session::home_pins`].
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_soft_hero_blur")]
     pub(crate) last_hero_blur: Option<[[f32; 3]; 4]>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalSessionAuth {
+    format: String,
+    version: u32,
+    #[serde(default)]
+    profiles: Option<Value>,
+    account_token: String,
+    server: ServerRef,
+    user: UserRef,
+    home_users: Vec<HomeUserRef>,
+    sources: Vec<SourceRef>,
+    /// Unknown top-level fields may contain credentials introduced by a newer client.  Protect
+    /// them by default instead of guessing that an unfamiliar value is a harmless preference.
+    extensions: OpaqueExtensions,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CanonicalSessionPreferences {
+    #[serde(default, deserialize_with = "de_soft_playback_quality")]
+    playback_quality: Option<PlaybackQuality>,
+    #[serde(default, deserialize_with = "de_soft_bool")]
+    auto_sign_in: bool,
+    #[serde(default, deserialize_with = "de_soft_vec")]
+    last_library: Vec<LastLibrary>,
+    #[serde(default, deserialize_with = "de_soft_hero_blur")]
+    last_hero_blur: Option<[[f32; 3]; 4]>,
+    #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
+    trailer_autoplay: bool,
+    /// Parsed only so a future preference does not make the known fields disappear. The shipping
+    /// adapter merges these opaque keys from the current DB8 public payload before every rewrite;
+    /// they are not promoted into the Session domain object.
+    #[serde(flatten)]
+    extensions: BTreeMap<String, Value>,
+}
+
+/// `#[derive(Default)]` would give `trailer_autoplay: false` (the plain bool default), which is
+/// what `.unwrap_or_default()` falls back to when `preferences` isn't even an object (null,
+/// absent, or corrupt) — silently contradicting #92's "absence is on" contract, since a per-field
+/// `#[serde(default = "default_true", ...)]` only fires for a missing KEY inside an object being
+/// deserialized, never for the whole-value fallback used here. Every other field's honest
+/// "unknown" value happens to coincide with a bare derived default, which is why only this one
+/// needed a manual impl.
+impl Default for CanonicalSessionPreferences {
+    fn default() -> Self {
+        Self {
+            playback_quality: None,
+            auto_sign_in: false,
+            last_library: Vec::new(),
+            last_hero_blur: None,
+            trailer_autoplay: true,
+            extensions: BTreeMap::new(),
+        }
+    }
+}
+
+/// Split a typed session at the encryption boundary used by the DB8 helper.
+///
+/// The returned public object is still protected by the helper-owned private DB8 kind, but it is
+/// deliberately readable while Keymanager is unavailable.  The returned string contains every
+/// credential and all unknown extensions and must only cross the authenticated helper socket.
+#[allow(dead_code)] // Connected by the Stage B Session adapter.
+pub(crate) fn split_canonical(
+    session: &Session,
+) -> Result<(crate::storage::state::PublicPayload, String), ()> {
+    // `profiles` in a v1 extension is opaque, never an active credential cache. Refuse an
+    // ambiguous v2 write; only the typed field is permitted to carry active credentials.
+    if session.extensions.0.contains_key("profiles") { return Err(()); }
+    let auth = serde_json::to_string(&CanonicalSessionAuth {
+        format: "plxnative-session-auth".into(),
+        version: 2,
+        profiles: Some(serde_json::to_value(valid_profiles(session.profiles.clone())).map_err(|_| ())?),
+        account_token: session.account_token.clone(),
+        server: session.server.clone(),
+        user: session.user.clone(),
+        home_users: session.home_users.clone(),
+        sources: session.sources.clone(),
+        extensions: session.extensions.clone(),
+    })
+    .map_err(|_| ())?;
+    Ok((split_public(session)?, auth))
+}
+
+fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayload, ()> {
+    let preferences = serde_json::to_value(CanonicalSessionPreferences {
+        playback_quality: session.playback_quality,
+        auto_sign_in: session.auto_sign_in,
+        last_library: session.last_library.clone(),
+        last_hero_blur: session.last_hero_blur,
+        trailer_autoplay: session.trailer_autoplay,
+        extensions: BTreeMap::new(),
+    })
+    .map_err(|_| ())?;
+    let pins = serde_json::to_value(&session.home_pins).map_err(|_| ())?;
+    let recents = serde_json::to_value(&session.recent_searches).map_err(|_| ())?;
+    Ok(crate::storage::state::PublicPayload {
+            preferences,
+            client_id: (!session.client_id.is_empty()).then(|| session.client_id.clone()),
+            // Profile/server bootstrap metadata is personal and only useful together with its
+            // token, so it stays in CanonicalSessionAuth rather than being duplicated here.
+            profile: Value::Null,
+            pins,
+            recents,
+            consent: Value::Null,
+            scopes: Value::Null,
+            ids: Value::Null,
+            account_extensions: Value::Null,
+        })
+}
+
+/// Reassemble the domain type after the helper has opened the protected auth payload.
+///
+/// Public preferences degrade independently: one malformed optional setting must not discard a
+/// valid token bundle.  The protected half is strict because accepting the wrong auth schema as a
+/// session would turn corruption into an authenticated state.
+#[allow(dead_code)] // Connected by the Stage B Session adapter.
+pub(crate) fn join_canonical(
+    public: &crate::storage::state::PublicPayload,
+    protected: &str,
+) -> Result<Session, ()> {
+    let auth: CanonicalSessionAuth = serde_json::from_str(protected).map_err(|_| ())?;
+    if auth.format != "plxnative-session-auth" || !matches!(auth.version, 1 | 2) {
+        return Err(());
+    }
+    let profiles = match (auth.version, auth.profiles) {
+        (1, None) => Vec::new(),
+        (2, Some(Value::Array(entries))) if !auth.extensions.0.contains_key("profiles") => {
+            parse_profiles(entries)
+        }
+        _ => return Err(()),
+    };
+    let preferences = serde_json::from_value::<CanonicalSessionPreferences>(
+        public.preferences.clone(),
+    )
+    .unwrap_or_default();
+    let home_pins = serde_json::from_value(public.pins.clone()).unwrap_or_default();
+    let recent_searches = serde_json::from_value(public.recents.clone()).unwrap_or_default();
+    Ok(Session {
+        client_id: public.client_id.clone().unwrap_or_default(),
+        account_token: auth.account_token,
+        server: auth.server,
+        user: auth.user,
+        home_users: auth.home_users,
+        sources: auth.sources,
+        home_pins,
+        recent_searches,
+        playback_quality: preferences.playback_quality,
+        auto_sign_in: preferences.auto_sign_in,
+        last_library: preferences.last_library,
+        last_hero_blur: preferences.last_hero_blur,
+        trailer_autoplay: preferences.trailer_autoplay,
+        profiles,
+        extensions: auth.extensions,
+    })
+}
+
+/// Public snapshot for a locked protected bundle. It deliberately contains no offline credentials.
+fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
+    let preferences = serde_json::from_value::<CanonicalSessionPreferences>(
+        public.preferences.clone(),
+    )
+    .unwrap_or_default();
+    let home_pins = serde_json::from_value(public.pins.clone()).unwrap_or_default();
+    let recent_searches = serde_json::from_value(public.recents.clone()).unwrap_or_default();
+    Session {
+        client_id: public.client_id.clone().unwrap_or_default(),
+        playback_quality: preferences.playback_quality,
+        auto_sign_in: preferences.auto_sign_in,
+        last_library: preferences.last_library,
+        last_hero_blur: preferences.last_hero_blur,
+        trailer_autoplay: preferences.trailer_autoplay,
+        home_pins, recent_searches,
+        ..Default::default()
+    }
+}
+
+fn de_soft_hero_blur<'de, D: Deserializer<'de>>(d: D) -> Result<Option<[[f32; 3]; 4]>, D::Error> {
+    let value = Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
+fn de_profile_cache<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ProfileCreds>, D::Error> {
+    let value = Value::deserialize(d)?;
+    Ok(match value { Value::Array(entries) => parse_profiles(entries), _ => Vec::new() })
+}
+
+fn parse_profiles(entries: Vec<Value>) -> Vec<ProfileCreds> {
+    let mut counts = BTreeMap::new();
+    for entry in &entries {
+        if let Some(uuid) = entry.get("uuid").and_then(Value::as_str) {
+            *counts.entry(uuid.to_owned()).or_insert(0usize) += 1;
+        }
+    }
+    valid_profiles(entries.into_iter().filter(|entry| {
+        entry.get("uuid").and_then(Value::as_str).is_some_and(|uuid| counts.get(uuid) == Some(&1))
+    }).filter_map(|entry| serde_json::from_value(entry).ok()).collect())
+}
+
+/// Compare protected domain data across v1/v2 encodings without manufacturing an auth write.
+/// Public-only edits preserve the original protected bytes, including v1 opaque extensions.
+fn protected_fields(session: &Session) -> Result<Value, serde_json::Error> {
+    serde_json::to_value((&session.account_token, &session.server, &session.user,
+        &session.home_users, &session.sources, &session.profiles, &session.extensions))
+}
+fn protected_fields_equal(left: &Session, right: &Session) -> bool {
+    matches!((protected_fields(left), protected_fields(right)), (Ok(left), Ok(right)) if left == right)
+}
+fn protected_matches(session: &Session, protected: &str) -> bool {
+    join_canonical(&crate::storage::state::PublicPayload::default(), protected)
+        .is_ok_and(|previous| protected_fields_equal(&previous, session))
+}
+
+/// Invalid credentials cost only their offline entry. Duplicate identities invalidate every
+/// matching entry, so input order can never choose which token/PIN becomes authoritative.
+fn valid_profiles(profiles: Vec<ProfileCreds>) -> Vec<ProfileCreds> {
+    let mut counts = BTreeMap::new();
+    for profile in &profiles { *counts.entry(profile.uuid.clone()).or_insert(0usize) += 1; }
+    profiles.into_iter().filter(|profile| {
+        !profile.uuid.trim().is_empty() && profile.uuid == profile.user.uuid
+            && counts.get(&profile.uuid) == Some(&1)
+            && profile.pin.as_ref().is_none_or(PinVerifier::valid_shape)
+    }).collect()
 }
 
 /// Remember the hero envelope Home is showing right now, best-effort, for [`Session::last_hero_blur`].
@@ -462,6 +730,16 @@ pub(crate) fn set_auto_sign_in(on: bool) -> bool {
             return None;
         }
         Some(cur.with_auto_sign_in(on))
+    })
+}
+
+/// Persist hero trailer autoplay. Same write door as [`set_auto_sign_in`].
+pub(crate) fn set_trailer_autoplay(on: bool) -> bool {
+    update(|cur| {
+        if cur.trailer_autoplay == on {
+            return None;
+        }
+        Some(cur.with_trailer_autoplay(on))
     })
 }
 
@@ -518,6 +796,9 @@ pub struct RecentSearches {
     /// credit*, which covers the household's server and an unnamed share as well as our own.
     pub user: String,
     pub terms: Vec<String>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 /// One persisted who's-watching tile (avatar + PIN flag; no tokens live here).
@@ -543,6 +824,9 @@ pub struct HomeUserRef {
     pub thumb: String,
     pub protected: bool,
     pub admin: bool,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 /// One entry of [`Session::profiles`]: what a successful online switch to this profile resolved,
@@ -561,6 +845,9 @@ pub struct ProfileCreds {
     /// switch predates this field, which [`Session::cached_profile`] treats as "cannot verify",
     /// never as "no PIN".
     pub pin: Option<PinVerifier>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 /// A Plex Home PIN as something a PIN can be checked against, never the PIN: PBKDF2-HMAC-SHA-256
@@ -580,9 +867,18 @@ pub struct PinVerifier {
     /// Lower-case hex, the 32-byte PBKDF2 output.
     pub hash: String,
     pub iters: u32,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 impl PinVerifier {
+    fn valid_shape(&self) -> bool {
+        self.salt.len() == 32 && unhex(&self.salt).is_some_and(|v| v.len() == 16)
+            && self.hash.len() == 64 && unhex(&self.hash).is_some_and(|v| v.len() == 32)
+            && (1..=Self::MAX_ITERS).contains(&self.iters)
+    }
+
     pub const ITERS: u32 = 20_000;
     /// The largest count [`PinVerifier::verify`] will run. A record is this app's own writing,
     /// so anything past a few times [`PinVerifier::ITERS`] is a hand edit or a newer build's
@@ -601,6 +897,7 @@ impl PinVerifier {
             salt: hex(salt),
             hash: hex(&hash),
             iters: Self::ITERS,
+        extensions: Default::default(),
         }
     }
 
@@ -610,7 +907,7 @@ impl PinVerifier {
         let (Some(salt), Some(hash)) = (unhex(&self.salt), unhex(&self.hash)) else {
             return false;
         };
-        if salt.is_empty() || hash.len() != 32 || self.iters == 0 || self.iters > Self::MAX_ITERS {
+        if salt.len() != 16 || hash.len() != 32 || self.iters == 0 || self.iters > Self::MAX_ITERS {
             return false;
         }
         let got = crate::sha256::pbkdf2_hmac_sha256(pin.as_bytes(), &salt, self.iters);
@@ -623,7 +920,7 @@ fn hex(b: &[u8]) -> String {
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if s.len() % 2 != 0 || !s.is_ascii() {
         return None;
     }
     (0..s.len())
@@ -679,6 +976,9 @@ pub struct ServerRef {
     /// every use. The FILE's key stays `origin`, which is what a human editing it reads.
     #[serde(default, rename = "origin")]
     pub origin_url: String,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 impl ServerRef {
@@ -687,7 +987,7 @@ impl ServerRef {
     /// existed meant, and what every reader of this struct did with those two fields by hand.
     ///
     /// **TOTAL, unlike [`SourceRef::origin`].** The asymmetry is deliberate. A roster entry has
-    /// [`SourceRef::usable`] in front of every caller, so `None` there costs one entry. This is
+    /// [`SourceRef::dialable`] in front of every caller, so `None` there costs one entry. This is
     /// the PRIMARY: `app.rs`'s boot gate and `auth::cancel` read it unconditionally, gated only by
     /// [`Session::can_go_local`], so a `None` here would be a NEW refusal on a path that has never
     /// had one — a silent sign-out at boot, which is the failure this whole field exists to avoid.
@@ -757,6 +1057,9 @@ pub struct SourceRef {
     /// for why that fallback exists at all, and [`ServerRef::origin_url`] for the `_url` suffix.
     #[serde(default, rename = "origin")]
     pub origin_url: String,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 impl SourceRef {
@@ -785,7 +1088,14 @@ impl SourceRef {
     /// hand edit, a truncated write or an older build can leave holding anything an `i64` can hold.
     /// An out-of-range port wraps in that cast; here it costs the entry instead, and `de_soft_vec`
     /// already establishes that one bad roster entry costs that entry and never the session.
-    pub fn usable(&self) -> bool {
+    ///
+    /// **This is a well-formedness check, not a credential-eligibility one.** A `true` answer says
+    /// only that there is an address, a dialable port and a non-empty token written down — it says
+    /// nothing about whether THIS BUILD may put that token on THIS origin's transport. Issue #95:
+    /// a stored `http://` entry is fully `dialable`, and a plaintext credential over it is refused
+    /// or not solely by [`CredentialPolicy`](super::CredentialPolicy) at the point of the actual
+    /// probe or request — never here.
+    pub fn dialable(&self) -> bool {
         self.origin().is_some() && !self.token.is_empty()
     }
 
@@ -795,11 +1105,11 @@ impl SourceRef {
     /// entry written before the field existed, which is every entry in every session file on every
     /// television today. The port still goes through
     /// [`probe::dial_port`](super::probe::dial_port) on that path, for the reason
-    /// [`SourceRef::usable`] gives: this file is JSON on disk that a hand edit or an older build
+    /// [`SourceRef::dialable`] gives: this file is JSON on disk that a hand edit or an older build
     /// can leave holding anything an `i64` can hold, and `port as i32` WRAPS.
     ///
     /// `Option`, unlike [`ServerRef::origin`], because every caller here is already behind
-    /// [`SourceRef::usable`] — so `None` costs one roster entry, which is the rule `de_soft_vec`
+    /// [`SourceRef::dialable`] — so `None` costs one roster entry, which is the rule `de_soft_vec`
     /// establishes for this whole struct.
     pub fn origin(&self) -> Option<Origin> {
         if !self.origin_url.is_empty() {
@@ -830,6 +1140,9 @@ impl SourceRef {
 pub struct PinnedLib {
     pub machine_id: String,
     pub key: i64,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 /// One profile's last-browsed library per content type. See [`Session::last_library`].
@@ -840,6 +1153,9 @@ pub struct LastLibrary {
     /// the same convention [`HomePins`] and [`RecentSearches`] use, and for the same reason.
     pub user: String,
     pub libs: Vec<TypedLib>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 /// One remembered library, tagged with the TYPE whose tab it answers for.
@@ -853,6 +1169,9 @@ pub struct TypedLib {
     pub kind: String,
     pub machine_id: String,
     pub key: i64,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 impl LastLibrary {
@@ -878,6 +1197,7 @@ impl LastLibrary {
             kind: kind.to_string(),
             machine_id: machine_id.to_string(),
             key,
+        extensions: Default::default(),
         });
     }
 }
@@ -914,6 +1234,9 @@ pub struct HomePins {
     pub on: Vec<PinnedLib>,
     /// … and the ones it turned OFF. See the type doc: absent from both is "never answered for".
     pub off: Vec<PinnedLib>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 impl HomePins {
@@ -946,6 +1269,9 @@ pub struct UserRef {
     pub title: String,
     pub thumb: String,
     pub token: String,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+
 }
 
 /// A list that degrades **element by element** instead of taking the whole [`Session`] with it.
@@ -1014,6 +1340,22 @@ where
     Ok(v.as_bool().unwrap_or(false))
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// Same soft parse as [`de_soft_bool`], but garbage and a missing value stay on. Used where the
+/// product default is on ([`Session::trailer_autoplay`]).
+fn de_soft_bool_on<'de, D>(d: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(true);
+    };
+    Ok(v.as_bool().unwrap_or(true))
+}
+
 impl Session {
     /// Record (or replace) the cached credentials for one profile — the online switch's write.
     pub fn remember_profile(&mut self, creds: ProfileCreds) {
@@ -1080,6 +1422,16 @@ impl Session {
     pub(crate) fn with_auto_sign_in(&self, on: bool) -> Self {
         let mut next = self.clone();
         next.auto_sign_in = on;
+        next
+    }
+
+    pub(crate) fn trailer_autoplay(&self) -> bool {
+        self.trailer_autoplay
+    }
+
+    pub(crate) fn with_trailer_autoplay(&self, on: bool) -> Self {
+        let mut next = self.clone();
+        next.trailer_autoplay = on;
         next
     }
 
@@ -1313,6 +1665,7 @@ impl Session {
             self.recent_searches.push(RecentSearches {
                 user: user.to_string(),
                 terms,
+            extensions: Default::default(),
             });
         }
     }
@@ -1401,9 +1754,15 @@ pub(crate) fn forget_pins_for_test(user: &str) {
 
 /// [`peek`] with the lock already held — the read half every entry point here shares.
 fn peek_locked() -> Session {
-    match read_locked() {
+    session_from_read(read_live_locked())
+}
+
+fn session_from_read(read: ReadState) -> Session {
+    match read {
         ReadState::Ready { session, .. } => session,
-        ReadState::Missing | ReadState::Locked => Session::default(),
+        ReadState::Missing | ReadState::Locked | ReadState::Blocked | ReadState::Cleared => {
+            Session::default()
+        }
     }
 }
 
@@ -1426,10 +1785,74 @@ enum ReadState {
     /// It must shadow every lower-priority candidate: treating it as corrupt and then writing a
     /// fresh client id would destroy the only copy of the credentials.
     Locked,
+    /// The canonical authority could not answer safely. It shadows legacy candidates exactly as
+    /// `Locked` does, so a fresh client id can never overwrite the only copy of the credentials.
+    Blocked,
+    /// The canonical authority answered with an explicit cleared/signed-out tenure record — this
+    /// device really did sign out, and the authority durably recorded that. For load/lock
+    /// semantics it must behave exactly like [`Missing`](ReadState::Missing): no locked/blocked UI
+    /// framing, and a fresh client id is minted and persisted normally. It is still its own
+    /// variant rather than `Missing` itself for the one property it does NOT share with `Missing`:
+    /// it must still shadow a reappearing legacy file, exactly as `Locked`/`Blocked` do, so a
+    /// stale pre-DB8 `auth.json` can never resurrect a tenure this device already cleared.
+    Cleared,
 }
 
-/// The first usable candidate, retaining whether an encrypted file exists but cannot be opened.
+/// The canonical authority's answer, retaining whether protected data exists but cannot be opened.
 fn read_locked() -> ReadState {
+    match persistence::load() {
+        persistence::CanonicalRead::Opened { session, .. } => ReadState::Ready {
+            session,
+            plaintext: false,
+        },
+        persistence::CanonicalRead::Data { payload, .. } => {
+            match serde_json::from_str::<Session>(&payload) {
+                Ok(session) => ReadState::Ready {
+                    session,
+                    plaintext: true,
+                },
+                Err(error) => {
+                    crate::log(&format!("session: canonical record is invalid: {error}"));
+                    ReadState::Blocked
+                }
+            }
+        }
+        persistence::CanonicalRead::Missing => ReadState::Missing,
+        // A cleared tenure is deliberately not Missing: it must shadow a reappearing legacy file.
+        // It is also deliberately not Blocked/Locked: those carry locked/blocked UI framing that a
+        // cleanly signed-out device must not present. `ReadState::Cleared` is its own variant so
+        // downstream `match`es are forced to decide, rather than silently inheriting either policy.
+        persistence::CanonicalRead::Cleared { .. } => ReadState::Cleared,
+        persistence::CanonicalRead::Locked { .. } => ReadState::Locked,
+        persistence::CanonicalRead::Pending { .. } => ReadState::Blocked,
+        persistence::CanonicalRead::Blocked(_) => ReadState::Blocked,
+    }
+}
+
+/// Prefer the canonical record, but never let a legacy file outrank an unopenable canonical
+/// state. On ARM `read_legacy_locked` is absent by configuration, so the canonical store is the
+/// only authority a live read can consult.
+fn read_live_locked() -> ReadState {
+    #[cfg(test)]
+    if TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        // A redirected scratch path is an explicit host fixture. It is also deliberately not
+        // behind the process-wide canonical root: dozens of existing tests grade the exact
+        // scratch bytes, including recovery from states the canonical store cannot represent.
+        return read_legacy_locked();
+    }
+    match read_locked() {
+        ReadState::Missing => read_legacy_locked(),
+        canonical => canonical,
+    }
+}
+
+/// The legacy file reader: host/test fixtures, and on ARM the migration INPUT.
+///
+/// It is deliberately available on every target. On ARM a pre-DB8 install has no canonical record
+/// yet, so `read_live_locked` falls through to here exactly once and the bootstrap/migration path
+/// then moves the contents into DB8; removing this reader on ARM would make an existing 0.6.x
+/// `auth.json` unreadable instead of migrated, and would also orphan `keymanager::open`.
+fn read_legacy_locked() -> ReadState {
     for path in auth_paths() {
         let Some(bytes) = read_owned_regular(&path) else {
             continue;
@@ -1461,6 +1884,7 @@ fn read_locked() -> ReadState {
     }
     ReadState::Missing
 }
+
 
 fn identifies_secure_envelope(bytes: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(bytes)
@@ -1539,7 +1963,11 @@ pub(crate) struct DeferredLoad {
 fn read_identity(read: &ReadState) -> Vec<u8> {
     match read {
         ReadState::Missing => vec![0],
-        ReadState::Locked => vec![1],
+        ReadState::Locked | ReadState::Blocked => vec![1],
+        // Its own bucket, distinct from both Missing and Locked/Blocked: a concurrent transition
+        // into or out of Cleared must be detectable by `DeferredLoad::apply`'s identity check, not
+        // silently matched against whichever of those two buckets it happens to share a vec! with.
+        ReadState::Cleared => vec![2],
         ReadState::Ready { session, .. } => serde_json::to_vec(session).expect("Session serialization"),
     }
 }
@@ -1548,7 +1976,7 @@ impl DeferredLoad {
     /// a writer between capture and attachment is not overwritten by an obsolete snapshot.
     pub(crate) fn apply(self) -> Result<(), &'static str> {
         let _io = io();
-        if read_identity(&read_locked()) != self.expected { return Err("session changed during capture"); }
+        if read_identity(&read_live_locked()) != self.expected { return Err("session changed during capture"); }
         if self.save { save_locked(&self.session); }
         publish_identities(&self.session);
         Ok(())
@@ -1558,7 +1986,7 @@ impl DeferredLoad {
 /// Read/mint inputs only: no save, plaintext migration or identity publication before capture.
 pub(crate) fn load_capturing_entropy() -> (Session, Option<[u8; 16]>, DeferredLoad) {
     let _io = io();
-    let read = read_locked();
+    let read = read_live_locked();
     let expected = read_identity(&read);
     let mut captured = None;
     let (session, save) = prepare_load(read, || {
@@ -1572,7 +2000,7 @@ pub(crate) fn load_capturing_entropy() -> (Session, Option<[u8; 16]>, DeferredLo
 
 fn load_with_id(mint: impl FnOnce() -> String) -> Session {
     let _io = io();
-    let read = read_locked();
+    let read = read_live_locked();
     let (s, save) = prepare_load(read, mint);
     if save { save_locked(&s); }
     publish_identities(&s);
@@ -1580,8 +2008,11 @@ fn load_with_id(mint: impl FnOnce() -> String) -> Session {
 }
 
 fn prepare_load(read: ReadState, mint: impl FnOnce() -> String) -> (Session, bool) {
-    let persisted = !matches!(read, ReadState::Missing);
-    let locked = matches!(read, ReadState::Locked);
+    // A cleared tenure is grouped with Missing here, deliberately not with Locked/Blocked: it is
+    // not "a persisted session exists" (there is nothing to preserve), and — the actual fix this
+    // exists for — it must not be `locked`, which is what drives locked/blocked UI/boot framing.
+    let persisted = !matches!(read, ReadState::Missing | ReadState::Cleared);
+    let locked = matches!(read, ReadState::Locked | ReadState::Blocked);
     let plaintext = matches!(
         read,
         ReadState::Ready {
@@ -1591,7 +2022,13 @@ fn prepare_load(read: ReadState, mint: impl FnOnce() -> String) -> (Session, boo
     );
     let mut s = match read {
         ReadState::Ready { session, .. } => session,
-        ReadState::Missing | ReadState::Locked => Session::default(),
+        ReadState::Missing | ReadState::Locked | ReadState::Blocked | ReadState::Cleared => {
+            let mut fresh = Session::default();
+            // Product default is on. `Default` for a bool is off, and this is the path that
+            // writes the first file, so set it before that save.
+            fresh.trailer_autoplay = true;
+            fresh
+        }
     };
     seed_fresh_quality(&mut s, persisted, crate::route::auto_quality_ready());
     let fresh = s.client_id.is_empty();
@@ -1618,18 +2055,68 @@ fn prepare_load(read: ReadState, mint: impl FnOnce() -> String) -> (Session, boo
 /// no session on disk simply keeps its change in memory for the run, which is what both of today's
 /// callers already wanted.
 pub fn update(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
+    update_with_outcome(edit).is_some()
+}
+
+/// [`update`], but reporting what the durable write actually did.
+///
+/// The live adapter writes synchronously, so durability is already decided by the time the call
+/// returns. Callers that must not conflate "the write was attempted" with "the write reached disk"
+/// use this; the typed persistence completion is built from this real outcome rather than assumed.
+///
+/// It hands back the whole [`async_persistence::LiveWrite`] — the canonical verdict as well as the
+/// legacy write's result — because collapsing the two into one "persisted" bool is exactly how an
+/// `Uncertain` canonical commit used to be reported as a durable login.
+pub(crate) fn update_with_outcome(
+    edit: impl FnOnce(&Session) -> Option<Session>,
+) -> Option<async_persistence::LiveWrite> {
     let _io = io();
-    let cur = peek_locked();
+    let cur = session_from_read(read_live_locked());
     if cur.client_id.is_empty() {
-        return false;
+        return None;
     }
     match edit(&cur) {
-        Some(next) => {
-            save_locked(&next);
-            true
-        }
-        None => false,
+        Some(next) => Some(save_locked_outcome(&next)),
+        None => None,
     }
+}
+
+/// The whole-record write only a completed PIN authorization may perform (the 0.6.6
+/// `save_after_reauthentication` door). Unlike [`update_with_outcome`] it does NOT refuse when the
+/// disk reads as Locked/Blocked/Missing (those read as a default `Session`, whose empty `client_id`
+/// makes the read-modify-write a silent no-op): the user has just re-supplied everything the
+/// ciphertext held, and a sign-in nobody can read back next launch is the worst outcome available.
+///
+/// A disk that DOES hold a **readable** record (non-empty `client_id`) is still fenced against
+/// `fence`, exactly like an ordinary write — a fresh sign-in must still lose to a *readable*
+/// record a concurrent actor already replaced, the same OCC protection `update_with_outcome`'s
+/// `Routine` callers get. Only the unreadable case is deliberately left unfenced, since a
+/// Locked/Blocked/Missing read can never match anything the owner minted and refusing there is
+/// exactly the 0.6.3 symptom AUTH-03 exists to end. `fence` returning `false` refuses the write
+/// entirely (`Err`), before anything reaches disk.
+///
+/// Fresh authority without an account credential writes nothing (mirrors
+/// `async_persistence::Coordinator::admit_with`'s `account_token.is_empty()` refusal).
+pub(crate) fn replace_after_reauthentication_with_outcome(
+    fence: impl FnOnce(&Session) -> bool,
+    edit: impl FnOnce(&Session) -> Session,
+) -> Result<Option<async_persistence::LiveWrite>, ()> {
+    let _io = io();
+    let cur = session_from_read(read_live_locked());
+    if !cur.client_id.is_empty() && !fence(&cur) {
+        return Err(());
+    }
+    let next = edit(&cur);
+    if next.account_token.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(save_locked_with_authority(&next, SaveAuthority::FreshReauthentication)))
+}
+
+/// What the routine-authority write actually did — the canonical verdict beside the
+/// sealed/plaintext attempt's own result, without changing any caller's behavior.
+fn save_locked_outcome(s: &Session) -> async_persistence::LiveWrite {
+    save_locked_with_authority(s, SaveAuthority::Routine)
 }
 
 /// Persist the session (best-effort; a write failure is non-fatal — we just re-login next boot).
@@ -1652,16 +2139,90 @@ pub fn update(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
 /// in a permissive mode, which a chmod after the write cannot promise.
 pub fn save(s: &Session) {
     let _io = io();
-    save_locked(s);
+    let _ = save_locked_with_authority(s, SaveAuthority::FreshReauthentication);
 }
 
-/// [`save`] with the lock already held.
+pub(crate) fn save_fresh_reauthentication(s: &Session) {
+    let _io = io();
+    let _ = save_locked_with_authority(s, SaveAuthority::FreshReauthentication);
+}
+
+/// [`save`] with the lock already held. Ordinary read-modify-writes never ask for fresh login
+/// authority; only [`save`] and its confirmed-auth adapter may do so.
 fn save_locked(s: &Session) {
+    let _ = save_locked_with_authority(s, SaveAuthority::Routine);
+}
+
+/// Write the session, reporting BOTH verdicts the write produced.
+///
+/// The canonical authority's [`persistence::CanonicalCommit`] is carried out of here rather than
+/// reduced to "sealed / plaintext / nothing" on the way: a non-durable canonical commit with no
+/// protected authority falls through to the legacy write below, that write succeeds, and a caller
+/// holding only the bool cannot tell that apart from a commit the store confirmed. The typed
+/// completion the live adapter publishes is built from the pair by
+/// [`async_persistence::LiveWrite::classify`].
+fn save_locked_with_authority(
+    s: &Session,
+    authority: SaveAuthority,
+) -> async_persistence::LiveWrite {
+    #[cfg(test)]
+    {
+        *LAST_WRITE_AUTHORITY.lock().unwrap_or_else(|e| e.into_inner()) = Some(authority);
+    }
     // Before the write, not after: a failed persist still means these names are live in THIS run,
     // and the log wants them redacted either way.
     publish_identities(s);
+    #[cfg(test)]
+    if TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        return async_persistence::LiveWrite::legacy(save_legacy_locked(s));
+    }
+    let protected_before = has_protected_authority();
+    let commit = persistence::write_session(s, authority);
+    let durable = matches!(commit, persistence::CanonicalCommit::Durable { .. });
+    if !durable {
+        match &commit {
+            persistence::CanonicalCommit::Durable { .. } => unreachable!(),
+            persistence::CanonicalCommit::Uncertain { stage, errno } => {
+                crate::log(&format!("session: canonical write is uncertain stage={stage:?} errno={errno}"));
+            }
+            persistence::CanonicalCommit::Failed(error) => {
+                crate::log(&format!("session: canonical write failed: {error:?}"));
+            }
+            persistence::CanonicalCommit::ProtectionFailed(failure) => {
+                crate::log(&format!(
+                    "session: canonical protection failed: {:?}, commit_verified={}",
+                    failure.failure, failure.db8_commit_verified
+                ));
+            }
+        }
+    }
+    let protected_after = has_protected_authority();
+    if durable {
+        return async_persistence::LiveWrite::canonical(
+            commit,
+            Some(protected_before || protected_after),
+        );
+    }
+    let legacy = save_legacy_fallback_locked(s, protected_before, protected_after);
+    async_persistence::LiveWrite::canonical(commit, legacy)
+}
+
+/// The pre-canonical sealed/plaintext write, run only where the canonical commit did NOT land.
+///
+/// Split out of [`save_locked_with_authority`] so that function can return the canonical verdict
+/// alongside this one; the body is unchanged, including every refusal to downgrade a protected
+/// record. `Some(true)` sealed, `Some(false)` plaintext, `None` nothing was written.
+fn save_legacy_fallback_locked(
+    s: &Session,
+    protected_before: bool,
+    protected_after: bool,
+) -> Option<bool> {
+    if protected_before || protected_after || has_secure_locked() {
+        crate::log("session: preserving the existing protected record; refusing an unprotected downgrade");
+        return None;
+    }
     let Ok(json) = serde_json::to_vec_pretty(s) else {
-        return;
+        return None;
     };
     if let Some(sealed) = crate::keymanager::seal(&json) {
         let envelope = SecureEnvelope {
@@ -1670,7 +2231,7 @@ fn save_locked(s: &Session) {
             sealed,
         };
         let Ok(protected) = serde_json::to_vec_pretty(&envelope) else {
-            return;
+            return None;
         };
         for winner in auth_paths() {
             if write_atomic(&winner, &protected) {
@@ -1680,29 +2241,76 @@ fn save_locked(s: &Session) {
                     remove_temp_siblings(&stale);
                     let _ = std::fs::remove_file(stale);
                 }
-                return;
+                return Some(true);
             }
         }
         crate::log("session: key manager succeeded but the protected file could not be written");
-        return;
+        return None;
     }
     // Never turn an already protected session back into plaintext because a service was
     // temporarily unavailable during a save. Preserve the previous ciphertext instead.
     if has_secure_locked() {
         crate::log("session: preserving the existing secure file; refusing a plaintext downgrade");
-        return;
+        return None;
     }
     // Try each candidate; the first that accepts the write wins. A total failure is still
     // non-fatal — but it is LOGGED, because the symptom (sign in again, every boot, forever) is
     // otherwise indistinguishable from a server-side auth problem and impossible to report.
     for path in auth_paths() {
         if write_atomic(&path, &json) {
-            return;
+            return Some(false);
         }
     }
     crate::log(
         "session: could not persist to ANY candidate path — login will not survive a reboot",
     );
+    None
+}
+
+#[cfg(test)]
+fn save_legacy_locked(s: &Session) -> Option<bool> {
+    let Ok(json) = serde_json::to_vec_pretty(s) else {
+        return None;
+    };
+    crate::keymanager::reset_for_test();
+    if let Some(sealed) = crate::keymanager::seal(&json) {
+        let envelope = SecureEnvelope {
+            format: SECURE_FORMAT.to_string(),
+            version: 1,
+            sealed,
+        };
+        let Ok(protected) = serde_json::to_vec_pretty(&envelope) else {
+            return None;
+        };
+        for winner in auth_paths() {
+            if write_atomic(&winner, &protected) {
+                for stale in auth_paths().into_iter().filter(|p| p != &winner) {
+                    remove_temp_siblings(&stale);
+                    let _ = std::fs::remove_file(stale);
+                }
+                return Some(true);
+            }
+        }
+        return None;
+    }
+    if has_secure_locked() {
+        return None;
+    }
+    for path in auth_paths() {
+        if write_atomic(&path, &json) {
+            return Some(false);
+        }
+    }
+    None
+}
+
+fn has_protected_authority() -> bool {
+    match persistence::load() {
+        persistence::CanonicalRead::Locked { protection, .. } => protection.is_some_and(|outcome| {
+            !matches!(outcome.class, crate::storage::wire::ProtectionClass::Db8AclOnly)
+        }),
+        _ => false,
+    }
 }
 
 /// Write `json` to `path` so that whatever reads it sees the WHOLE previous file or the WHOLE new
@@ -1854,14 +2462,164 @@ fn tmp_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
     Some(path.with_file_name(name))
 }
 
+/// What [`clear`] found out about the canonical authority. Distinct from a bare `()` return
+/// because a sign-out that fails to durably reach the canonical authority is a real
+/// security-relevant outcome — the account token may still be readable on the next boot — and a
+/// caller that cannot see that has no way to react to it (finding `failed-canonical-clear-is-silent`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClearOutcome {
+    /// The canonical authority committed a durable Cleared record. `legacy_swept` is false only
+    /// when the post-clear legacy-candidate sweep ([`persistence::cleanup_after_confirmed_clear`])
+    /// could not retire every recognized migration candidate — the tenure is still durably
+    /// cleared, so a stale candidate is a residue to retry, never a reason to reopen it.
+    Durable { legacy_swept: bool },
+    /// The canonical commit itself reported durable, but the immediate authority read-back
+    /// (`persistence::cleanup_after_confirmed_clear`'s own `load()`) did NOT confirm `Cleared` —
+    /// distinct from `Durable { legacy_swept: false }`, which means the authority DID confirm
+    /// `Cleared` and only a legacy residue file survived the sweep. This variant exists so the two
+    /// failure modes AUTH-09 Finding B conflated cannot be matched as the same thing: nothing here
+    /// may treat this as a completed durable sign-out. The account token may still be readable
+    /// from the canonical authority on the next boot.
+    AuthorityNotConfirmed,
+    /// The canonical clear did not durably land (uncertain, failed, or a protection failure). The
+    /// account token may still be readable from the canonical authority on the next boot; the
+    /// caller must not present this as a completed sign-out.
+    NotDurable,
+}
+
+/// Map [`persistence::ClearCleanupOutcome`] onto the [`ClearOutcome`] `clear()` reports for a
+/// canonical commit that already landed `Durable` — pulled out of `clear()`'s body (behavior
+/// unchanged, log lines and all) so the mapping itself can be pinned directly by a unit test
+/// rather than only through `clear()`'s end-to-end path, which cannot reach every arm on the
+/// host. **`AuthorityNotConfirmed` must never map to `Durable { legacy_swept: false }`** — that is
+/// exactly the conflation an earlier finding (AUTH-09 Finding B) existed to prevent:
+/// `AuthorityNotConfirmed` means the immediate authority read-back did NOT confirm `Cleared`, so
+/// the account token may still be readable from the canonical authority, which is a materially
+/// different — and worse — outcome than "cleared, but one legacy residue file survived the
+/// sweep".
+fn clear_cleanup_outcome(outcome: persistence::ClearCleanupOutcome) -> ClearOutcome {
+    match outcome {
+        persistence::ClearCleanupOutcome::Confirmed => ClearOutcome::Durable { legacy_swept: true },
+        persistence::ClearCleanupOutcome::LegacyRetireFailed => {
+            crate::log(
+                "session: canonical clear is durable but a recognized legacy migration \
+                 candidate could not be retired — it remains on disk and will be swept \
+                 again on the next sign-out or bootstrap",
+            );
+            ClearOutcome::Durable { legacy_swept: false }
+        }
+        persistence::ClearCleanupOutcome::AuthorityNotConfirmed => {
+            crate::log(
+                "session: canonical clear reported durable but the immediate authority \
+                 read-back did not confirm Cleared — the legacy sweep was skipped and the \
+                 account token may still be readable from the canonical authority",
+            );
+            ClearOutcome::AuthorityNotConfirmed
+        }
+    }
+}
+
 /// Clear the persisted session (sign-out) — removes the file; a fresh `client_id` is minted next
 /// load. The old-path copy goes too, or the migration fallback would resurrect the stale session.
+/// **And commits an explicit Cleared record to the canonical authority** — the legacy-file sweep
+/// below only ever touches pre-DB8 candidates; on a build where `persistence::load`/`write_session`
+/// actually read/write the canonical store (DB8 or its host/ARM equivalent), that store is a
+/// SEPARATE copy of the account token and roster, and clearing only the legacy files would leave a
+/// clean-looking sign-out that the canonical authority still hands back on the next boot.
 ///
 /// Takes [`IO`] like every other entry point, and that is not tidiness: a sign-out racing an
 /// in-flight worker's read-modify-write would otherwise delete the file and have the worker put it
 /// straight back, account token and all.
-pub fn clear() {
+pub fn clear() -> ClearOutcome {
     let _io = io();
+
+    // A redirected legacy-fixture test (`TempSession`/`redirect_for_test`) must never reach the
+    // real canonical authority — exactly the guard `save_locked_with_authority` and
+    // `read_live_locked` already carry for the same fixture. Without it, a test that only means to
+    // grade the scratch legacy file instead signs this PROCESS'S real canonical store out from
+    // under whatever else is reading it (e.g. a `make sim` simulator sharing the same instance
+    // root under `make check`), which is silent because the whole suite still passes.
+    #[cfg(test)]
+    let bypass_canonical = TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    #[cfg(not(test))]
+    let bypass_canonical = false;
+
+    // Commit the canonical Cleared record BEFORE sweeping the legacy files, not after: a
+    // canonical Cleared record already outranks any legacy file unconditionally (AUTH-09), so
+    // committing it first means the sign-out has already taken effect in the authority `load()`
+    // actually reads even if the legacy sweep below then fails partway through. The previous
+    // order did the opposite — remove the local copy, then attempt the canonical commit — so a
+    // commit that came back non-durable left the account token readable from the canonical
+    // authority with the local trace already gone and nothing on disk to show for it.
+    //
+    // The canonical clear is best-effort in the sense that sign-out must still remove the legacy
+    // files below even when it does not durably land — losing the local files on report of a
+    // canonical failure would leave BOTH copies of the credentials reachable. But "best-effort"
+    // must never mean "silent": anything short of a verified Durable commit is a real
+    // security-relevant failure (the account token may still be readable from the canonical
+    // authority on next boot), so it is always logged, matching this module's existing `save`-side
+    // logging idiom, and it is reported back to the caller as [`ClearOutcome::NotDurable`] rather
+    // than discarded.
+    let canonical_outcome = if bypass_canonical {
+        None
+    } else {
+        Some(match persistence::commit_cleared() {
+        persistence::CanonicalCommit::Durable { .. } => {
+            // `auth_paths()` above only ever covered `paths::session_candidates()` — the legacy
+            // sign-in file and its pre-relocation predecessor. The recognized migration source set
+            // is bigger (`paths::session_migration_candidates()`, plus the pre-DB8 canonical JSON
+            // wrapper on ARM), and a candidate this sweep never visits is a live account token left
+            // on a rooted, world-readable install prefix after a sign-out that otherwise looked
+            // clean. `cleanup_after_confirmed_clear` re-reads the authority to confirm it really is
+            // Cleared before retiring anything, so this can only ever remove residue, never data a
+            // concurrent re-login just wrote.
+            #[allow(unused_mut)] // only mutated on the ARM cfg arm below
+            let mut outcome = clear_cleanup_outcome(persistence::cleanup_after_confirmed_clear());
+            // Telemetry/consent's own legacy files are a SEPARATE candidate set from the session
+            // auth-token sweep above (`persistence::cleanup_after_confirmed_clear` never touches
+            // them — see `paths::telemetry_candidates` vs `paths::session_migration_candidates`).
+            // On ARM, `telemetry::persistence::forget_at` defers their removal to exactly this
+            // moment, once this canonical commit is confirmed durable (Copilot review on PR #105,
+            // finding 7; ported from `release/v0.6`'s `telemetry::cleanup_after_account_clear`,
+            // called here in that release).
+            #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+            if !crate::telemetry::cleanup_after_account_clear() {
+                crate::log(
+                    "session: canonical clear is durable but a telemetry/consent legacy \
+                     candidate could not be retired — it remains on disk and will be swept \
+                     again on the next sign-out",
+                );
+                if let ClearOutcome::Durable { legacy_swept } = &mut outcome {
+                    *legacy_swept = false;
+                }
+            }
+            outcome
+        }
+        persistence::CanonicalCommit::Uncertain { stage, errno } => {
+            crate::log(&format!(
+                "session: canonical clear is uncertain stage={stage:?} errno={errno} — the \
+                 account token may still be readable from the canonical authority"
+            ));
+            ClearOutcome::NotDurable
+        }
+        persistence::CanonicalCommit::Failed(error) => {
+            crate::log(&format!(
+                "session: canonical clear failed: {error:?} — the account token may still be \
+                 readable from the canonical authority"
+            ));
+            ClearOutcome::NotDurable
+        }
+        persistence::CanonicalCommit::ProtectionFailed(failure) => {
+            crate::log(&format!(
+                "session: canonical clear protection failed: {:?}, commit_verified={} — the \
+                 account token may still be readable from the canonical authority",
+                failure.failure, failure.db8_commit_verified
+            ));
+            ClearOutcome::NotDurable
+        }
+        })
+    };
+
     // Every candidate, not just the one we happen to write today: leaving a copy at any other
     // location would let `peek`'s search resurrect the stale session on the next boot. The `.tmp`
     // siblings go too — `peek` cannot read one, so it is not a resurrection risk, but a sign-out
@@ -1875,8 +2633,21 @@ pub fn clear() {
             }
         }
         remove_temp_siblings(&path);
-        let _ = std::fs::remove_file(path);
+        let removed = std::fs::remove_file(&path).is_ok();
+        // Durability, not tidiness: on this filesystem an unlink is not durable until the parent
+        // directory entry is synced, and this file's whole reason to exist is that a live account
+        // token in it must not survive a sign-out — including one interrupted by power loss right
+        // after the unlink. `persistence::retire_exact_candidate` two modules over already does
+        // this for the same reason; a bare `remove_file` here was the one place in this function
+        // that did not.
+        if removed {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
+            }
+        }
     }
+
+    canonical_outcome.unwrap_or(ClearOutcome::Durable { legacy_swept: true })
 }
 
 /// A v4-ish UUID from `/dev/urandom` (no `uuid` crate). Only uniqueness/stability matter — plex.tv
@@ -1963,1655 +2734,55 @@ impl Session {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn profile_publication_has_one_writer_and_no_resource_scope_allocator() {
-        let source = include_str!("session.rs");
-        let publication = source.split("/// Session file locations").next().unwrap();
-        assert!(!publication.contains("pub fn set_current("));
-        assert!(!publication.contains("wrapping_add("));
-        assert!(!publication.contains("fetch_add("));
-        assert_eq!(publication.matches("*CURRENT.lock()").count(), 1);
-        let writer = publication.split("impl ProfilePublisher {").nth(1).unwrap()
-            .split("/// Resource fixtures").next().unwrap();
-        assert!(writer.contains("*CURRENT.lock()"));
-        assert!(writer.contains("CurrentProfile { user, generation }"));
-    }
-
-    #[test]
-    fn profile_publication_retains_owner_assigned_generation_with_old_read() {
-        let _guard = crate::testlock::serial();
-        let old = super::current_snapshot();
-        let mt = unsafe { crate::task::MainThread::assume() };
-        let mut publisher = super::ProfilePublisher::new(&mt);
-        publisher.publish(Some(super::UserRef { uuid: "owner-a".into(), ..Default::default() }), 17);
-        let a = super::current_snapshot();
-        publisher.publish(Some(super::UserRef { uuid: "owner-b".into(), ..Default::default() }), 3);
-        let b = super::current_snapshot();
-        publisher.publish(old.user.clone(), old.generation);
-        assert_eq!(a.generation, 17);
-        assert_eq!(a.user.as_ref().unwrap().uuid, "owner-a");
-        assert_eq!(b.generation, 3, "resource publishes the supplied scope; it never increments one");
-        assert_eq!(b.user.as_ref().unwrap().uuid, "owner-b");
-    }
-
-    use super::*;
-
-    /// The file a signed-in device holds today, once discovery has reached two servers. Written
-    /// as literal JSON rather than by serialising a `Session`, because the thing under test is
-    /// what happens when the bytes on disk are not what this build expects.
-    fn two_server_json() -> &'static str {
-        r#"{"client_id":"cid-1","account_token":"acct",
-            "server":{"name":"Mac mini","machine_id":"aaaa1111","address":"192.168.0.10",
-                      "port":32400,"token":"tok-own"},
-            "user":{"id":7,"uuid":"u-7","title":"Gleb","thumb":"","token":"tok-user"},
-            "home_users":[{"uuid":"u-7","title":"Gleb","thumb":"","protected":false,"admin":true}],
-            "sources":[
-              {"machine_id":"aaaa1111","name":"Mac mini","shared_by":"","owned":true,
-               "address":"192.168.0.10","port":32400,"token":"tok-own"},
-              {"machine_id":"bbbb2222","name":"nas-home","shared_by":"friend","owned":false,
-               "address":"203.0.113.9","port":31234,"token":"tok-share"}],
-            "home_pins":[{"user":"u-7","asked":true,
-                          "on":[{"machine_id":"bbbb2222","key":1}],
-                          "off":[{"machine_id":"aaaa1111","key":1}]}]}"#
-    }
-
-    /// **THE COMPATIBILITY GATE: a session file written by 0.4.1 must still boot.**
-    ///
-    /// That build knew nothing about origins — it wrote `address` and `port` and no more — and
-    /// every signed-in television in the world is holding one of these files right now. If
-    /// `Session::server` failed to carry through, the cost is not a degraded feature: `app.rs`'s
-    /// boot gate runs on `can_go_local()`, so the app would land on the QR sign-in screen on
-    /// **every boot for every existing user**, which is a silent sign-out that no test above this
-    /// one can see (the roster lists are soft-parsed — `de_soft_vec` — but the primary is not a
-    /// disposable entry, and nothing soft-parses a MISSING field into a different meaning).
-    ///
-    /// Written as literal 0.4.1-shaped JSON rather than by serialising a `Session`, because the
-    /// thing under test is precisely that today's struct is not what wrote those bytes.
-    #[test]
-    fn a_session_file_written_before_origins_existed_still_boots_as_plain_http() {
-        // Byte-for-byte the shape 0.4.1 wrote: no `origin` on the primary, none on any source.
-        let v041 = r#"{"client_id":"cid-1","account_token":"acct",
-            "server":{"name":"Mac mini","machine_id":"aaaa1111","address":"192.168.0.10",
-                      "port":32400,"token":"tok-own"},
-            "user":{"id":7,"uuid":"u-7","title":"Gleb","thumb":"","token":"tok-user"},
-            "sources":[
-              {"machine_id":"aaaa1111","name":"Mac mini","shared_by":"","owned":true,
-               "address":"192.168.0.10","port":32400,"token":"tok-own"},
-              {"machine_id":"bbbb2222","name":"nas-home","shared_by":"friend","owned":false,
-               "address":"203.0.113.9","port":31234,"token":"tok-share"}]}"#;
-        let s: Session = serde_json::from_str(v041).expect("a 0.4.1 session file still parses");
-
-        // the boot gate itself — this is the assertion whose failure is the silent sign-out
-        assert!(
-            s.can_go_local(),
-            "a 0.4.1 session must still reach Home without a QR code"
-        );
-
-        // …and it boots against exactly the address it always did, as plain http
-        let o = s.server.origin();
-        assert_eq!(o.base(), "http://192.168.0.10:32400");
-        assert_eq!((o.host(), o.port()), ("192.168.0.10", 32400));
-        assert!(!o.is_tls(), "nothing in that file ever meant TLS");
-
-        // every roster entry too, including the share on its non-default port
-        assert!(
-            s.sources.iter().all(|x| x.usable()),
-            "{:#?}",
-            s.sources.len()
-        );
-        assert_eq!(
-            s.owned_source().unwrap().origin().unwrap().base(),
-            "http://192.168.0.10:32400"
-        );
-        assert_eq!(
-            s.source("bbbb2222").unwrap().origin().unwrap().base(),
-            "http://203.0.113.9:31234"
-        );
-    }
-
-    /// Tier persistence is additive: old files have no field, and a value written by a future
-    /// build must not make the PRIMARY fail to parse (which would route a signed-in TV to QR).
-    #[test]
-    fn a_stored_tier_round_trips_and_unknown_tiers_degrade_to_unknown() {
-        let legacy: Session =
-            serde_json::from_str(two_server_json()).expect("the legacy shape parses");
-        assert_eq!(legacy.server.tier, None);
-        assert!(legacy.sources.iter().all(|s| s.tier.is_none()));
-
-        let json = r#"{"client_id":"c","server":{"address":"192.0.2.10","port":32400,
-                      "token":"t","tier":"future-tier"},
-                    "sources":[{"machine_id":"m","address":"192.0.2.10","port":32400,
-                      "token":"t","tier":"relay"}]}"#;
-        let s: Session =
-            serde_json::from_str(json).expect("an unknown primary tier is soft metadata");
-        assert!(
-            s.can_go_local(),
-            "unknown tier metadata cannot silently sign the device out"
-        );
-        assert_eq!(s.server.tier, None);
-        assert_eq!(
-            s.sources[0].tier,
-            Some(super::super::probe::Location::Relay)
-        );
-
-        let encoded = serde_json::to_value(ServerRef {
-            tier: Some(super::super::probe::Location::Remote),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(
-            encoded["tier"], "remote",
-            "the file stays human-readable and stable"
-        );
-    }
-
-    /// A missing quality field is an OLD install, not an invitation to adopt a new default. The
-    /// literal is deliberately pre-feature JSON; serialising today's `Session` would always write
-    /// whatever today's struct thinks and could not grade the migration boundary.
-    #[test]
-    fn a_legacy_session_with_no_quality_stays_original() {
-        let s: Session = serde_json::from_str(two_server_json()).expect("the legacy file parses");
-        assert_eq!(
-            s.playback_quality, None,
-            "absence remains distinguishable on disk"
-        );
-        assert_eq!(
-            s.playback_quality(),
-            PlaybackQuality::Original,
-            "legacy playback does not become Auto"
-        );
-    }
-
-    /// Quality is a preference beside credentials, never a reason to discard them. This is the
-    /// scalar counterpart of the roster/tier soft parsers: unknown future names, null and the
-    /// wrong JSON shape all keep the session and conservatively mean Original.
-    #[test]
-    fn invalid_or_future_quality_is_soft_and_conservative() {
-        for value in [r#""future_auto_v2""#, "null", r#"{"mode":"auto"}"#, "42"] {
-            let json = format!(
-                r#"{{"client_id":"c","account_token":"acct",
-                     "server":{{"address":"192.168.0.10","port":32400,"token":"t"}},
-                     "playback_quality":{value}}}"#
-            );
-            let s: Session = serde_json::from_str(&json)
-                .expect("bad preference metadata cannot fail credentials");
-            assert_eq!(s.account_token, "acct");
-            assert!(s.can_go_local());
-            assert_eq!(s.playback_quality(), PlaybackQuality::Original, "{value}");
-        }
-    }
-
-    #[test]
-    fn every_explicit_quality_mode_round_trips_by_stable_name() {
-        let cases = [
-            (PlaybackQuality::Auto, "auto"),
-            (PlaybackQuality::Original, "original"),
-            (PlaybackQuality::P1080High, "1080p_20_mbps"),
-            (PlaybackQuality::P1080, "1080p_8_mbps"),
-            (PlaybackQuality::P720, "720p_4_mbps"),
-            (PlaybackQuality::P720Low, "720p_2_mbps"),
-            (PlaybackQuality::P480, "480p_720_kbps"),
-        ];
-        for (quality, wire) in cases {
-            let s = Session {
-                playback_quality: Some(quality),
-                ..Session::default()
-            };
-            let json = serde_json::to_value(&s).unwrap();
-            assert_eq!(json["playback_quality"], wire);
-            let again: Session = serde_json::from_value(json).unwrap();
-            assert_eq!(again.playback_quality(), quality);
-        }
-    }
-
-    #[test]
-    fn a_fresh_install_defaults_to_auto_only_after_readiness() {
-        assert_eq!(
-            PlaybackQuality::fresh_default(false),
-            PlaybackQuality::Original
-        );
-        assert_eq!(PlaybackQuality::fresh_default(true), PlaybackQuality::Auto);
-
-        let mut absent = Session::default();
-        seed_fresh_quality(&mut absent, false, true);
-        assert_eq!(
-            absent.playback_quality,
-            Some(PlaybackQuality::Auto),
-            "only the no-file path may adopt a newly ready Auto default"
-        );
-
-        // Literal legacy JSON with neither field. Its empty client id will be repaired by `load`,
-        // but that is not evidence of a fresh install and must not seed Auto even after readiness.
-        let mut legacy: Session =
-            serde_json::from_str(r#"{"account_token":"still-a-real-file"}"#).unwrap();
-        seed_fresh_quality(&mut legacy, true, true);
-        assert!(legacy.client_id.is_empty());
-        assert_eq!(legacy.playback_quality, None);
-        assert_eq!(legacy.playback_quality(), PlaybackQuality::Original);
-    }
-
-    /// A missing Automatically Sign In field is today's picker, not an invitation to skip it.
-    #[test]
-    fn a_legacy_session_with_no_auto_sign_in_stays_off() {
-        let s: Session = serde_json::from_str(two_server_json()).expect("the legacy file parses");
-        assert!(
-            !s.auto_sign_in(),
-            "absence is off, which is the picker every existing television already knows"
-        );
-    }
-
-    /// Garbage on a preference switch must not sign the device out.
-    #[test]
-    fn invalid_auto_sign_in_is_soft_and_off() {
-        for value in [r#""yes""#, "null", "1", r#"{"on":true}"#] {
-            let json = format!(
-                r#"{{"client_id":"c","account_token":"acct",
-                     "server":{{"address":"192.168.0.10","port":32400,"token":"t"}},
-                     "auto_sign_in":{value}}}"#
-            );
-            let s: Session = serde_json::from_str(&json)
-                .expect("bad preference metadata cannot fail credentials");
-            assert_eq!(s.account_token, "acct");
-            assert!(s.can_go_local());
-            assert!(!s.auto_sign_in(), "{value}");
-        }
-    }
-
-    fn dialable_home(users: usize, uuid: &str, auto: bool) -> Session {
-        let home_users = (0..users)
-            .map(|i| HomeUserRef {
-                uuid: format!("u-{i}"),
-                title: format!("User {i}"),
-                protected: i == 0,
-                admin: i == 0,
-                ..Default::default()
-            })
-            .collect();
-        Session {
-            client_id: "c".into(),
-            account_token: "acct".into(),
-            server: ServerRef {
-                address: "192.168.0.10".into(),
-                port: 32400,
-                token: "t".into(),
-                ..Default::default()
-            },
-            user: UserRef {
-                uuid: uuid.into(),
-                token: "ut".into(),
-                ..Default::default()
-            },
-            home_users,
-            auto_sign_in: auto,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn boot_shows_picker_table() {
-        let multi_off = dialable_home(2, "u-0", false);
-        assert!(
-            multi_off.boot_shows_picker(false, false),
-            "multi-user interactive still raises the picker when the switch is off"
-        );
-        assert!(
-            !multi_off.boot_shows_picker(true, false),
-            "an automated boot still skips the picker"
-        );
-        assert!(
-            multi_off.boot_shows_picker(true, true),
-            "pickuser forces the picker even on an automated boot"
-        );
-
-        let multi_on = dialable_home(2, "u-0", true);
-        assert!(
-            multi_on.home_users[0].protected,
-            "u-0 is the PIN-protected admin in this fixture"
-        );
-        assert!(
-            !multi_on.boot_shows_picker(false, false),
-            "the switch skips the picker when a profile is seated, PIN included"
-        );
-        assert!(
-            multi_on.boot_shows_picker(false, true),
-            "pickuser still forces the picker when the switch is on"
-        );
-
-        let abandoned = dialable_home(2, "", true);
-        assert!(
-            abandoned.boot_shows_picker(false, false),
-            "an empty uuid still raises the picker so the owner's token is not handed out"
-        );
-
-        let gone = dialable_home(2, "u-gone", true);
-        assert!(
-            gone.boot_shows_picker(false, false),
-            "a uuid no longer on the roster still raises the picker — leftover tokens are not a seat"
-        );
-
-        let solo = dialable_home(1, "u-0", false);
-        assert!(
-            !solo.boot_shows_picker(false, false),
-            "a one-person account already skips the picker"
-        );
-        assert!(!dialable_home(1, "u-0", true).boot_shows_picker(false, false));
-
-        let mut undialable = dialable_home(2, "u-0", false);
-        undialable.server = ServerRef::default();
-        assert!(
-            !undialable.boot_shows_picker(false, false),
-            "this helper is not the QR path: no local session, no picker"
-        );
-    }
-
-    /// The other side of the gate: once an origin IS written down it is what gets dialled, and it
-    /// beats the address pair beside it. That is not a tie-break for its own sake — for an https
-    /// server the two genuinely differ (the certificate is issued for the `plex.direct` NAME, not
-    /// for the quad), so reading the pair would connect and then fail validation.
-    #[test]
-    fn a_stored_origin_beats_the_address_pair_beside_it() {
-        let json = r#"{"client_id":"c","account_token":"a",
-            "server":{"machine_id":"aaaa1111","address":"203.0.113.9","port":31234,"token":"t",
-                      "origin":"https://203-0-113-9.hash.plex.direct:31234"},
-            "sources":[{"machine_id":"aaaa1111","owned":true,"address":"203.0.113.9","port":31234,
-                        "token":"t","origin":"https://203-0-113-9.hash.plex.direct:31234"}]}"#;
-        let s: Session = serde_json::from_str(json).expect("parses");
-
-        let o = s.server.origin();
-        assert_eq!(
-            o.host(),
-            "203-0-113-9.hash.plex.direct",
-            "the name TLS validates against"
-        );
-        assert!(o.is_tls());
-        assert_eq!(
-            s.server.address, "203.0.113.9",
-            "…and the quad survives as the diagnostic half"
-        );
-        assert!(
-            s.can_go_local(),
-            "an https primary is still a session this device holds"
-        );
-        assert_eq!(
-            s.sources[0].origin().unwrap(),
-            o,
-            "the roster entry says the same thing"
-        );
-
-        // and it round-trips: what we write back is what we would read next boot
-        let again: Session =
-            serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).expect("re-read");
-        assert_eq!(again.server.origin(), o);
-    }
-
-    /// A stored origin that cannot be dialled is refused rather than silently repaired. The port
-    /// is the case that really arrives — the session file is JSON on disk that a hand edit or an
-    /// older build can leave holding anything an `i64` can hold, and `4_294_999_696 as i32` is
-    /// **32400**, so "repair it to the default" means dialling a port nobody wrote down.
-    #[test]
-    fn an_undialable_stored_origin_is_refused_not_repaired() {
-        let bad = |origin: &str| {
-            let json = format!(
-                r#"{{"client_id":"c","account_token":"a",
-                     "server":{{"address":"192.168.0.10","port":32400,"token":"t","origin":"{origin}"}},
-                     "sources":[{{"machine_id":"m","address":"192.168.0.10","port":32400,"token":"t",
-                                  "origin":"{origin}"}}]}}"#
-            );
-            serde_json::from_str::<Session>(&json).expect("the file still parses")
-        };
-        for origin in [
-            "http://192.168.0.10:4294999696",
-            "ftp://192.168.0.10:21",
-            "http://",
-        ] {
-            let s = bad(origin);
-            assert!(!s.can_go_local(), "{origin} is not something to boot on");
-            assert!(
-                !s.sources[0].usable(),
-                "{origin} is not something to register"
-            );
-        }
-    }
-
-    /// The roster survives a write/read cycle intact — including the two facts that make a share
-    /// usable at all: its OWN address (never the owner's LAN one) and its OWN token.
-    #[test]
-    fn the_roster_round_trips_through_the_session_file_format() {
-        let s: Session = serde_json::from_str(two_server_json()).expect("a normal session parses");
-        let s: Session = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).expect("re-read");
-
-        assert_eq!(s.sources.len(), 2);
-        let own = s.owned_source().expect("our own server is in the roster");
-        assert_eq!(
-            (own.machine_id.as_str(), own.address.as_str()),
-            ("aaaa1111", "192.168.0.10")
-        );
-        assert!(
-            own.shared_by.is_empty(),
-            "an owned server has no owner to name"
-        );
-
-        let share = s
-            .source("bbbb2222")
-            .expect("keyed by machineIdentifier, not by index");
-        assert_eq!((share.address.as_str(), share.port), ("203.0.113.9", 31234));
-        assert_eq!(
-            share.token, "tok-share",
-            "the sharing grant, not the account token"
-        );
-        assert_eq!(share.shared_by, "friend");
-        assert!(!share.owned && share.usable());
-        assert_eq!(s.shared_sources().count(), 1);
-
-        let mine = s
-            .pins_for("u-7")
-            .expect("the Home selection is keyed by PROFILE");
-        assert!(mine.asked);
-        assert_eq!(mine.answer("bbbb2222", 1), Some(true));
-        // section keys are server-local: both servers have a section 1, so the key alone matches
-        // nothing on its own
-        assert_eq!(
-            mine.answer("aaaa1111", 1),
-            Some(false),
-            "an answer names a server AND a key"
-        );
-        assert_eq!(
-            mine.answer("bbbb2222", 9),
-            None,
-            "a library nobody was asked about"
-        );
-        assert!(
-            s.pins_for("u-9").is_none(),
-            "another profile has an answer of its own, or none"
-        );
-        assert!(s.source("").is_none() && s.source("nope").is_none());
-
-        // and the token is not printable by accident — `describe` is the only formatter there is
-        assert!(
-            !share.describe().contains("tok-share"),
-            "{}",
-            share.describe()
-        );
-        assert!(share.describe().contains("friend") && share.describe().contains("203.0.113.9"));
-    }
-
-    /// **The sign-out bug this list is shaped to avoid.** A `sources` array that is corrupt, the
-    /// wrong type, or absent entirely must cost the roster and nothing else — `#[serde(default)]`
-    /// alone does not do that, because it covers an ABSENT field and not a present, malformed one,
-    /// and the failure mode is not "an empty roster" but a `Session` that will not parse: no
-    /// account token, no server, a freshly minted client id, and a QR code to scan on every boot.
-    #[test]
-    fn a_corrupt_or_absent_roster_never_costs_the_session() {
-        // one entry with a hand-mangled port, beside a perfectly good one
-        let mixed = r#"{"client_id":"cid-1","account_token":"acct",
-            "server":{"name":"m","machine_id":"aaaa1111","address":"192.168.0.10","port":32400,"token":"t"},
-            "sources":[{"machine_id":"aaaa1111","port":{"oops":true}},
-                       {"machine_id":"bbbb2222","name":"nas-home","owned":false,
-                        "address":"203.0.113.9","port":31234,"token":"tok-share"}],
-            "home_pins":"not a list"}"#;
-        let s: Session = serde_json::from_str(mixed).expect("a bad entry must not fail the file");
-        assert_eq!(s.account_token, "acct", "the credentials are still here");
-        assert!(s.can_go_local(), "and the device can still stream");
-        assert_eq!(
-            s.sources.len(),
-            1,
-            "the malformed entry dropped, the good one landed"
-        );
-        assert_eq!(s.sources[0].machine_id, "bbbb2222");
-        assert!(
-            s.home_pins.is_empty(),
-            "a string where a list belongs is no list, not an error"
-        );
-
-        // the whole field as an explicit null, and the whole field missing (every session file
-        // written before this landed) — both are simply a session with no roster yet
-        for json in [
-            r#"{"client_id":"c","server":{"address":"192.168.0.10","port":32400,"token":"t"},"sources":null}"#,
-            r#"{"client_id":"c","server":{"address":"192.168.0.10","port":32400,"token":"t"}}"#,
-        ] {
-            let s: Session = serde_json::from_str(json).expect("null and absent both parse");
-            assert!(s.sources.is_empty() && s.home_pins.is_empty());
-            assert!(
-                s.can_go_local(),
-                "the primary server is what boot runs on, roster or not"
-            );
-        }
-    }
-
-    /// **A port is `i64` on disk and `i32` at the socket, and the narrowing used to be a bare
-    /// cast.** `4_294_999_696 as i32` is **32400** — the most ordinary port there is — so a session
-    /// file holding a number no port can be would have had the app quietly dial a server nobody
-    /// wrote down. `#[serde(default)]` cannot catch it either: the field parses fine, it is the
-    /// value that is impossible.
-    ///
-    /// Both gates the value reaches are stated here, because they fail differently and one does not
-    /// imply the other: a bad ROSTER entry costs that entry (`usable`, which
-    /// `auth::install_roster` filters on before registering), while a bad PRIMARY costs the resume
-    /// (`can_go_local`, the one gate in front of `plex::install`) and lands the app on sign-in.
-    #[test]
-    fn a_port_no_socket_could_take_is_refused_rather_than_wrapped() {
-        let s: Session = serde_json::from_str(
-            r#"{"client_id":"cid-1","account_token":"acct",
-                "server":{"machine_id":"aaaa1111","address":"192.168.0.10","port":32400,"token":"t"},
-                "sources":[{"machine_id":"aaaa1111","owned":true,"address":"192.168.0.10",
-                            "port":4294999696,"token":"tok-own"},
-                           {"machine_id":"bbbb2222","owned":false,"address":"203.0.113.9",
-                            "port":31234,"token":"tok-share"}]}"#,
-        )
-        .unwrap();
-        assert!(
-            !s.sources[0].usable(),
-            "32400 is what that number wraps to — it must not be dialled"
-        );
-        assert!(
-            s.sources[1].usable(),
-            "…and the entry beside it is untouched"
-        );
-        assert!(
-            s.can_go_local(),
-            "the PRIMARY is fine, so boot still resumes"
-        );
-
-        // …and the same number on the primary costs the resume instead, rather than dialling 32400
-        let bad: Session = serde_json::from_str(
-            r#"{"client_id":"c","server":{"address":"192.168.0.10","port":4294999696,"token":"t"}}"#,
-        )
-        .unwrap();
-        assert!(
-            !bad.can_go_local(),
-            "an undialable primary sends the user to sign-in, honestly"
-        );
-        // an absent port is the same answer for the same reason: it could never have connected
-        let none: Session = serde_json::from_str(
-            r#"{"client_id":"c","server":{"address":"192.168.0.10","token":"t"}}"#,
-        )
-        .unwrap();
-        assert!(!none.can_go_local());
-    }
-
-    /// One server must behave exactly as it did before the roster existed: the primary
-    /// `server`/`user` pair is what `can_go_local` and `pms_token` read, and the roster is a
-    /// record beside it, never a second source of truth that could disagree.
-    #[test]
-    fn a_single_server_session_behaves_as_it_always_has() {
-        let mut s: Session = serde_json::from_str(
-            r#"{"client_id":"cid-1","account_token":"acct",
-                "server":{"name":"Mac mini","machine_id":"aaaa1111","address":"192.168.0.10",
-                          "port":32400,"token":"tok-own"},
-                "sources":[{"machine_id":"aaaa1111","name":"Mac mini","owned":true,
-                            "address":"192.168.0.10","port":32400,"token":"tok-own"}]}"#,
-        )
-        .unwrap();
-        assert!(s.can_go_local());
-        assert_eq!(
-            s.pms_token(),
-            "tok-own",
-            "no managed user picked yet → the server token"
-        );
-        s.user.token = "tok-user".into();
-        assert_eq!(
-            s.pms_token(),
-            "tok-user",
-            "a switched profile's token wins, as before"
-        );
-        // the roster agrees with the primary rather than competing with it
-        assert_eq!(
-            s.owned_source().map(|x| x.address.as_str()),
-            Some(s.server.address.as_str())
-        );
-        assert_eq!(s.shared_sources().count(), 0);
-        assert!(s.account(None).signed_in && s.account(None).can_switch);
-    }
-
-    /// The Search screen's recent terms are ordinary session content: they survive a write/read
-    /// cycle in order, including the non-ASCII ones this household actually searches.
-    #[test]
-    fn the_recent_search_terms_round_trip_through_the_session_file_format() {
-        let s: Session = serde_json::from_str(
-            r#"{"client_id":"cid-1","recent_searches":[
-                 {"user":"uu-1","terms":["wallace","Гладиатор","the curse"]}]}"#,
-        )
-        .expect("a session carrying terms parses");
-        let s: Session = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).expect("re-read");
-        assert_eq!(
-            s.recents_for("uu-1"),
-            ["wallace", "Гладиатор", "the curse"],
-            "most recent first, in order"
-        );
-
-        // absent entirely — every session file written before this landed
-        let s: Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
-        assert!(s.recent_searches.is_empty());
-    }
-
-    /// **One profile cannot read another's history, and cannot delete it either.** A search
-    /// history is as personal as watch state, and a television is the one place several people
-    /// share an install — so this is scoped rather than cleared on a switch, which would have
-    /// stopped the leak at the price of losing your own list every time you handed the remote over.
-    #[test]
-    fn a_profiles_search_history_is_its_own() {
-        let mut s = Session {
-            client_id: "cid".into(),
-            ..Default::default()
-        };
-        s.set_recents_for("uu-a", vec!["gromit".into()]);
-        s.set_recents_for("uu-b", vec!["эдем".into()]);
-
-        assert_eq!(s.recents_for("uu-a"), ["gromit"]);
-        assert_eq!(s.recents_for("uu-b"), ["эдем"]);
-        assert!(
-            s.recents_for("uu-never-searched").is_empty(),
-            "an unknown profile reads empty, not someone else's"
-        );
-        // the owner with no Plex Home selection keys on "" and is nobody else
-        assert!(s.recents_for("").is_empty());
-
-        // …and a write for one leaves the others intact — the bug `set_recents_for` exists to make
-        // unwriteable, since the obvious `Session { recent_searches: mine, ..s }` deletes everybody.
-        s.set_recents_for("uu-a", vec!["wallace".into(), "gromit".into()]);
-        assert_eq!(s.recents_for("uu-a"), ["wallace", "gromit"]);
-        assert_eq!(
-            s.recents_for("uu-b"),
-            ["эдем"],
-            "the other profile's history survived the write"
-        );
-    }
-
-    /// And they degrade the same way every other list here does: one malformed term costs that
-    /// term, never the credentials sitting beside it. A search term must never be able to sign the
-    /// device out.
-    #[test]
-    fn a_corrupt_search_term_costs_that_term_and_not_the_session() {
-        let s: Session = serde_json::from_str(
-            r#"{"client_id":"cid-1","account_token":"acct",
-                "server":{"address":"192.168.0.10","port":32400,"token":"t"},
-                "recent_searches":[{"user":"u","terms":["wallace","gromit"]},null,42,"nope"]}"#,
-        )
-        .expect("a bad term must not fail the file");
-        assert_eq!(
-            s.recents_for("u"),
-            ["wallace", "gromit"],
-            "the three bad entries dropped"
-        );
-        assert_eq!(s.account_token, "acct");
-        assert!(s.can_go_local(), "and the device can still stream");
-
-        // the whole field the wrong type is no list, not an error
-        let s: Session = serde_json::from_str(r#"{"client_id":"c","recent_searches":"wallace"}"#)
-            .expect("a string where a list belongs parses");
-        assert!(s.recent_searches.is_empty());
-    }
-
-    /// **Whose token is `account_token`, and is that who is watching?** It is the account OWNER's,
-    /// written once by the QR sign-in and never replaced by a profile switch — so a roster refresh
-    /// made with it answers about the owner, and installing those per-server tokens while a managed
-    /// profile is signed in swaps identities under them. For a RESTRICTED profile it also re-adds
-    /// the shares `auth::retoken` had correctly made tokenless, which is a re-grant and not a refresh.
-    #[test]
-    fn only_the_account_owners_own_profile_may_refresh_the_roster_with_the_account_token() {
-        let home = |uuid: &str| Session {
-            client_id: "cid".into(),
-            account_token: "acct".into(),
-            user: UserRef {
-                uuid: uuid.into(),
-                ..Default::default()
-            },
-            home_users: vec![
-                HomeUserRef {
-                    uuid: "u-owner".into(),
-                    title: "Gleb".into(),
-                    admin: true,
-                    ..Default::default()
-                },
-                HomeUserRef {
-                    uuid: "u-kid".into(),
-                    title: "Kid".into(),
-                    admin: false,
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-        assert!(
-            home("u-owner").active_profile_is_admin(),
-            "the owner's own tile"
-        );
-        assert!(
-            !home("u-kid").active_profile_is_admin(),
-            "a managed profile is not the account"
-        );
-
-        // An account with no Plex Home never writes a profile at all — auth's single-user path
-        // enters Home on the owner's server token — so an empty uuid IS the owner.
-        let solo = Session {
-            client_id: "cid".into(),
-            account_token: "acct".into(),
-            ..Default::default()
-        };
-        assert!(solo.active_profile_is_admin());
-
-        // …but an unknown uuid is NOT the owner. `home_users` is empty for "never fetched" as much
-        // as for "no Plex Home" (see `Session::account`), and on a question whose wrong answer is
-        // somebody else's credentials, "cannot prove it" must not read as "yes".
-        let mut unknown = home("u-kid");
-        unknown.home_users.clear();
-        assert!(!unknown.active_profile_is_admin());
-        assert!(!home("u-nobody").active_profile_is_admin());
-    }
-
-    /// **Who lives in this house** — the ids the "Shared by …" rule asks
-    /// `plex::servers::is_household` with, which is the Plex Home ROSTER and nothing else.
-    ///
-    /// The rule falls back to plex.tv's undocumented `home` flag exactly when this list is empty,
-    /// so emptiness has to mean one thing — *the roster could not answer* — and every case below
-    /// is about keeping it meaning that.
-    #[test]
-    fn the_household_is_the_home_roster_and_emptiness_means_it_could_not_answer() {
-        let s = Session {
-            user: UserRef {
-                id: 333_333,
-                uuid: "u-kid".into(),
-                ..Default::default()
-            },
-            home_users: vec![
-                HomeUserRef {
-                    id: 111_111,
-                    uuid: "u-owner".into(),
-                    admin: true,
-                    ..Default::default()
-                },
-                HomeUserRef {
-                    id: 222_222,
-                    uuid: "u-guest".into(),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-        assert_eq!(
-            s.household_ids(),
-            vec![111_111, 222_222],
-            "the roster, and NOT `user.id` — see the case below and the function's own doc"
-        );
-
-        // **`0` is filtered, and that is the compatibility case rather than a tidy-up.** A roster
-        // read off a file written before `HomeUserRef::id` existed is all zeroes, and our own
-        // server's `ownerId` is `0` too — letting those two meet would suppress a credit by
-        // accident, on evidence that is only the absence of evidence.
-        let legacy = Session {
-            home_users: vec![HomeUserRef {
-                uuid: "u-owner".into(),
-                admin: true,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        assert!(
-            legacy.household_ids().is_empty(),
-            "an un-enumerable house is empty, not a house containing nobody-id-zero"
-        );
-
-        // **The upgraded managed session, and the reason `user.id` is not in this list.** Every
-        // roster id is still the legacy `0`, and the `/switch` that chose this profile wrote a real
-        // `user.id` long ago. Including it made the answer NON-empty — which
-        // `plex::servers::is_household` reads as "the house can speak for itself" and uses to
-        // silence the `home` fallback — while the one id that could have decided the case, the
-        // ADMIN's, was among the zeroes that get filtered. The result was the reported bug
-        // surviving on exactly the sessions the fallback was added for.
-        let upgraded = Session {
-            user: UserRef {
-                id: 333_333,
-                uuid: "u-kid".into(),
-                ..Default::default()
-            },
-            home_users: vec![
-                HomeUserRef {
-                    uuid: "u-owner".into(),
-                    admin: true,
-                    ..Default::default()
-                },
-                HomeUserRef {
-                    uuid: "u-kid".into(),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-        assert!(
-            upgraded.household_ids().is_empty(),
-            "a roster of zeroes cannot enumerate the house, whoever is watching"
-        );
-    }
-
-    /// **The stored profile's PIN flag — what the boot picker's BACK is gated on.** The escalation
-    /// it exists to close: the adult profile carries the PIN, the app is signed in as them, a child
-    /// boots it, and BACK out of the who's-watching picker reinstated that session with no code
-    /// entered at all (`auth::cancel`).
-    ///
-    /// The two "the roster cannot say" answers deliberately disagree with the test above's. An
-    /// unknown uuid is NOT the owner, because that question's wrong answer is somebody else's
-    /// credentials; the same uuid IS treated as protected, because this question's wrong answer is
-    /// a bypassed PIN and being wrong the other way costs one profile pick.
-    #[test]
-    fn a_stored_profile_behind_a_pin_is_reported_as_protected() {
-        let home = |uuid: &str| Session {
-            client_id: "cid".into(),
-            account_token: "acct".into(),
-            user: UserRef {
-                uuid: uuid.into(),
-                ..Default::default()
-            },
-            home_users: vec![
-                HomeUserRef {
-                    uuid: "u-owner".into(),
-                    title: "Gleb".into(),
-                    admin: true,
-                    protected: true,
-                    ..Default::default()
-                },
-                HomeUserRef {
-                    uuid: "u-kid".into(),
-                    title: "Kid".into(),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-        assert!(
-            home("u-owner").active_profile_is_protected(),
-            "the adult tile carries the PIN"
-        );
-        assert!(
-            !home("u-kid").active_profile_is_protected(),
-            "a managed profile with no PIN"
-        );
-
-        // **A session that names NO profile answers protected too**, which is the half that reads
-        // as harmless and is not: it is what a sign-in abandoned at the picker leaves on disk (the
-        // account token, the server and the roster are persisted the moment they exist; the pick
-        // never happened), and `pms_token()` on it is the OWNER's server token. The very next boot
-        // raises a picker over that file — a roster of >1 is exactly what it has — so answering
-        // "not protected" here put the owner's credentials behind BACK by a second road.
-        let mut abandoned = home("u-owner");
-        abandoned.user = UserRef::default();
-        assert!(
-            abandoned.active_profile_is_protected(),
-            "no profile chosen is not 'no PIN to be behind'"
-        );
-        let solo = Session {
-            client_id: "cid".into(),
-            account_token: "acct".into(),
-            ..Default::default()
-        };
-        assert!(solo.active_profile_is_protected());
-
-        // …and a uuid the roster does not name is treated as protected.
-        let mut unknown = home("u-owner");
-        unknown.home_users.clear();
-        assert!(unknown.active_profile_is_protected());
-        assert!(home("u-nobody").active_profile_is_protected());
-    }
-
-    // ---- The FILE half: one writer at a time, and a whole file or none of it -------------------
-    //
-    // Everything below drives the real `save`/`peek`/`update` against a real file, so it needs a
-    // file it may have. `TempSession` redirects [`TEST_FILE`] — a crate global, which is why every
-    // test here holds `crate::testlock::serial()` for its whole body (`src/lib.rs`): several
-    // modules call `session::load` indirectly, and one running in parallel would read and WRITE
-    // the file being graded.
-
-    /// Point this module's file at a directory of this test's own, and take it back on drop.
-    struct TempSession {
-        dir: std::path::PathBuf,
-    }
-
-    impl TempSession {
-        fn new(tag: &str) -> TempSession {
-            // `env::temp_dir()` is right HERE and wrong in `dev.rs` (whose test warns against it):
-            // there a literal path stops meeting a read that resolves its own root, while this
-            // test is choosing the path that BOTH halves resolve to.
-            let dir = std::env::temp_dir()
-                .join(format!("plxnative-session-{}-{tag}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir); // a previous run that died mid-test
-            std::fs::create_dir_all(&dir).expect("a writable temp dir");
-            super::redirect_for_test(Some(dir.join("auth.json")));
-            TempSession { dir }
-        }
-        fn file(&self) -> std::path::PathBuf {
-            self.dir.join("auth.json")
-        }
-        fn tmp(&self) -> std::path::PathBuf {
-            self.dir.join("auth.json.tmp")
-        }
-    }
-
-    impl Drop for TempSession {
-        fn drop(&mut self) {
-            super::redirect_for_test(None);
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
-
-    fn signed_in() -> Session {
-        Session {
-            client_id: "cid-1".into(),
-            account_token: "acct".into(),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn recording_capture_fresh_identity_has_no_persistence_before_attachment() {
-        let _serial = crate::testlock::serial();
-        let root = TempSession::new("capture-fresh");
-        let (saved, entropy, deferred) = load_capturing_entropy();
-        assert!(!saved.client_id.is_empty());
-        assert!(entropy.is_some());
-        assert!(!root.file().exists(), "capturing inputs must not persist before recorder attachment");
-        deferred.apply().unwrap();
-        assert!(root.file().exists(), "normal fresh persistence executes after attachment");
-    }
-
-    #[test]
-    fn recording_capture_plaintext_does_not_migrate_before_attachment() {
-        use std::os::unix::fs::MetadataExt;
-        let _serial = crate::testlock::serial();
-        let root = TempSession::new("capture-plaintext");
-        let before = serde_json::to_vec(&signed_in()).unwrap();
-        std::fs::write(root.file(), &before).unwrap();
-        let inode = std::fs::metadata(root.file()).unwrap().ino();
-        let (saved, entropy, deferred) = load_capturing_entropy();
-        assert!(!saved.client_id.is_empty());
-        assert!(entropy.is_none());
-        assert!(std::fs::read(root.file()).unwrap() == before, "capture must leave plaintext bytes unchanged");
-        assert_eq!(std::fs::metadata(root.file()).unwrap().ino(), inode);
-        deferred.apply().unwrap();
-        assert_ne!(std::fs::metadata(root.file()).unwrap().ino(), inode, "normal atomic migration runs afterwards");
-    }
-
-    #[test]
-    fn deferred_capture_never_overwrites_a_newer_session() {
-        let _serial = crate::testlock::serial();
-        let root = TempSession::new("capture-superseded");
-        let (_, _, deferred) = load_capturing_entropy();
-        save(&signed_in());
-        let before = std::fs::read(root.file()).unwrap();
-        assert!(deferred.apply().is_err());
-        assert!(std::fs::read(root.file()).unwrap() == before);
-    }
-
-    /// A save lands as a WHOLE file — written to a sibling tmp and renamed over — leaving nothing
-    /// behind, and the credentials are never on disk in a mode another uid can read (this box is
-    /// rooted and `/media/developer` is world-readable). The tmp is where the secret exists first,
-    /// so the 0600 rule has to reach it too.
-    #[test]
-    fn a_save_lands_whole_and_leaves_no_temporary_behind() {
-        use std::os::unix::fs::PermissionsExt;
-        let _g = crate::testlock::serial();
-        let t = TempSession::new("whole");
-
-        save(&signed_in());
-        assert_eq!(peek().account_token, "acct", "and it reads back");
-        assert!(
-            !t.tmp().exists(),
-            "the tmp file is renamed, not left beside the session"
-        );
-        let mode = std::fs::metadata(t.file()).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "credentials at rest");
-
-        // a sign-out takes the tmp with it: `peek` cannot read one, but a live account token left
-        // in a file on a rooted television is not a sign-out
-        std::fs::write(t.tmp(), b"{}").unwrap();
-        clear();
-        assert!(!t.file().exists() && !t.tmp().exists());
-    }
-
-    /// **The route ground's one persisted seed.** A fresh device has recorded nothing, a real
-    /// hero is remembered across the read-modify-write cycle `update` uses everywhere else, and
-    /// recording the SAME envelope again is a no-op rather than a second disk write.
-    #[test]
-    fn last_hero_blur_round_trips_and_skips_a_redundant_write() {
-        let _g = crate::testlock::serial();
-        let _t = TempSession::new("last-hero");
-        save(&signed_in());
-        assert_eq!(last_hero(), None, "a fresh device has shown no hero yet");
-
-        let envelope = [[0.1, 0.2, 0.3]; 4];
-        assert!(record_last_hero(envelope), "a new envelope is a real write");
-        assert_eq!(last_hero(), Some(envelope));
-
-        assert!(
-            !record_last_hero(envelope),
-            "recording the same envelope again must not touch the file"
-        );
-
-        let second = [[0.9, 0.8, 0.7]; 4];
-        assert!(
-            record_last_hero(second),
-            "a genuinely different hero writes"
-        );
-        assert_eq!(last_hero(), Some(second), "…and replaces the stored one");
-    }
-
-    /// A temporary LS2/key-store failure must never turn ciphertext back into plaintext or make
-    /// `load` overwrite it with a newly minted, logged-out client id. The host has no Luna bus,
-    /// which is the exact unavailable-key condition this policy has to survive.
-    #[test]
-    fn an_unopenable_secure_session_is_preserved_without_plaintext_downgrade() {
-        let _g = crate::testlock::serial();
-        let t = TempSession::new("secure-locked");
-        let envelope = SecureEnvelope {
-            format: SECURE_FORMAT.to_string(),
-            version: 1,
-            sealed: crate::keymanager::Sealed {
-                backend: crate::keymanager::Backend::Keymanager3,
-                key: "plxnative.session.v1".to_string(),
-                iv: "AAAAAAAAAAAAAAAAAAAAAA==".to_string(),
-                data: "c2VjcmV0".to_string(),
-            },
-        };
-        let original = serde_json::to_vec_pretty(&envelope).unwrap();
-        std::fs::write(t.file(), &original).unwrap();
-
-        let (captured, entropy, deferred) = load_capturing_entropy();
-        assert!(!captured.client_id.is_empty() && entropy.is_some());
-        assert!(std::fs::read(t.file()).unwrap() == original);
-        deferred.apply().unwrap();
-        assert!(std::fs::read(t.file()).unwrap() == original, "deferred load preserves locked ciphertext too");
-        let loaded = load();
-        assert!(
-            !loaded.client_id.is_empty(),
-            "the run still gets an ephemeral id"
-        );
-        assert_eq!(std::fs::read(t.file()).unwrap(), original);
-
-        save(&signed_in());
-        assert_eq!(
-            std::fs::read(t.file()).unwrap(),
-            original,
-            "an unavailable service cannot leak the replacement session as plaintext"
-        );
-    }
-
-    #[test]
-    fn an_unknown_secure_envelope_version_is_locked_and_never_rewritten_as_plaintext() {
-        let _g = crate::testlock::serial();
-        let t = TempSession::new("secure-future-version");
-        let original = br#"{
-  "format": "plxnative-secure-session",
-  "version": 2,
-  "sealed": {
-    "backend": "keymanager3",
-    "key": "plxnative.session.v2",
-    "iv": "future-iv",
-    "data": "future-ciphertext"
-  }
-}"#;
-        std::fs::write(t.file(), original).unwrap();
-
-        let loaded = load();
-        assert!(
-            !loaded.client_id.is_empty(),
-            "the run still gets an ephemeral id"
-        );
-        assert_eq!(
-            std::fs::read(t.file()).unwrap(),
-            original,
-            "rollback must preserve an envelope it does not understand"
-        );
-
-        save(&signed_in());
-        assert_eq!(
-            std::fs::read(t.file()).unwrap(),
-            original,
-            "a future secure envelope must shadow every plaintext replacement"
-        );
-    }
-
-    #[test]
-    fn a_precreated_tmp_symlink_cannot_redirect_session_bytes() {
-        use std::os::unix::fs::symlink;
-        let _g = crate::testlock::serial();
-        let t = TempSession::new("tmp-symlink");
-        let victim = t.dir.join("attacker-readable");
-        std::fs::write(&victim, b"unchanged").unwrap();
-        symlink(&victim, t.tmp()).unwrap();
-
-        save(&signed_in());
-
-        assert_eq!(std::fs::read(&victim).unwrap(), b"unchanged");
-        assert_eq!(peek().account_token, "acct");
-    }
-
-    #[test]
-    fn a_quality_choice_persists_without_replacing_other_session_state() {
-        let _g = crate::testlock::serial();
-        let _t = TempSession::new("quality");
-        let mut s = signed_in();
-        s.sources.push(SourceRef {
-            machine_id: "server-a".into(),
-            token: "server-token".into(),
-            address: "192.168.0.10".into(),
-            port: 32400,
-            ..Default::default()
-        });
-        save(&s);
-
-        assert!(update(|cur| Some(
-            cur.with_playback_quality(PlaybackQuality::P720)
-        )));
-        let landed = peek();
-        assert_eq!(landed.playback_quality(), PlaybackQuality::P720);
-        assert_eq!(landed.account_token, "acct");
-        assert_eq!(landed.sources.len(), 1);
-        assert_eq!(landed.sources[0].machine_id, "server-a");
-    }
-
-    #[test]
-    fn auto_sign_in_persists_without_replacing_other_session_state() {
-        let _g = crate::testlock::serial();
-        let _t = TempSession::new("auto-sign-in");
-        let mut s = signed_in();
-        s.user.uuid = "u-kid".into();
-        s.sources.push(SourceRef {
-            machine_id: "server-a".into(),
-            token: "server-token".into(),
-            address: "192.168.0.10".into(),
-            port: 32400,
-            ..Default::default()
-        });
-        save(&s);
-        assert!(!peek().auto_sign_in());
-
-        assert!(set_auto_sign_in(true));
-        let landed = peek();
-        assert!(landed.auto_sign_in());
-        assert_eq!(landed.account_token, "acct");
-        assert_eq!(landed.user.uuid, "u-kid");
-        assert_eq!(landed.sources.len(), 1);
-
-        assert!(
-            !set_auto_sign_in(true),
-            "setting the same value again must not touch the file"
-        );
-        assert!(set_auto_sign_in(false));
-        assert!(!peek().auto_sign_in());
-    }
-
-    /// `take_ready` / a profile switch `save` a whole snapshot they loaded at the start of the
-    /// flow. That snapshot must carry the switch, or the next boot forgets it.
-    #[test]
-    fn a_full_save_of_a_switch_snapshot_keeps_auto_sign_in() {
-        let _g = crate::testlock::serial();
-        let _t = TempSession::new("auto-sign-in-save");
-        let mut s = signed_in();
-        s.user.uuid = "u-admin".into();
-        save(&s);
-        assert!(set_auto_sign_in(true));
-
-        let mut snap = peek();
-        snap.user.uuid = "u-kid".into();
-        save(&snap);
-
-        let landed = peek();
-        assert!(
-            landed.auto_sign_in(),
-            "a whole-file replace of a loaded snapshot must not drop the switch"
-        );
-        assert_eq!(landed.user.uuid, "u-kid");
-        assert_eq!(landed.account_token, "acct");
-    }
-
-    #[test]
-    fn loading_legacy_json_without_an_id_repairs_only_the_id_not_the_quality() {
-        let _g = crate::testlock::serial();
-        let t = TempSession::new("legacy-no-id");
-        std::fs::write(t.file(), br#"{"account_token":"legacy-account"}"#).unwrap();
-
-        let loaded = load();
-        assert!(
-            !loaded.client_id.is_empty(),
-            "the ordinary identifier repair still happens"
-        );
-        assert_eq!(loaded.account_token, "legacy-account");
-        assert_eq!(loaded.playback_quality(), PlaybackQuality::Original);
-        assert_eq!(
-            loaded.playback_quality, None,
-            "a parsable old file is not fresh and must not acquire a default choice"
-        );
-
-        let saved: Session = serde_json::from_slice(&std::fs::read(t.file()).unwrap()).unwrap();
-        assert_eq!(saved.playback_quality(), PlaybackQuality::Original);
-        assert_eq!(saved.playback_quality, None);
-    }
-
-    #[test]
-    fn loading_with_no_file_records_the_gated_fresh_default() {
-        let _g = crate::testlock::serial();
-        let t = TempSession::new("fresh-quality");
-        assert!(!t.file().exists());
-
-        let loaded = load();
-        assert_eq!(
-            loaded.playback_quality,
-            Some(PlaybackQuality::Auto),
-            "the production readiness gate gives only a genuinely fresh install Auto"
-        );
-        let saved: Session = serde_json::from_slice(&std::fs::read(t.file()).unwrap()).unwrap();
-        assert_eq!(
-            saved.playback_quality,
-            Some(PlaybackQuality::Auto),
-            "freshness is decided once and stored explicitly"
-        );
-    }
-
-    /// **Two writers, one file, and neither may lose the other's work.** Each thread runs exactly
-    /// the read-modify-write cycle the two real writers run — `auth`'s roster refresh growing
-    /// `sources`, the search-recents worker growing one profile's terms — and when they are done
-    /// every update from both must be in the file.
-    ///
-    /// This is the bug in its own shape: the roster worker re-read the file, a profile pick landed
-    /// after that read, and its save put the pre-switch profile back — the next boot resuming as
-    /// the wrong person. `update` makes the read and the write one step under one lock, so the
-    /// interleaving that loses an update cannot be constructed.
-    #[test]
-    fn concurrent_read_modify_writes_never_lose_an_update() {
-        let _g = crate::testlock::serial();
-        let _t = TempSession::new("lost-update");
-        save(&signed_in());
-
-        // A dozen each is plenty and is deliberately not more: every cycle ends in the `sync_all`
-        // that makes the rename mean something, and on this host that is an `F_FULLFSYNC` — the
-        // whole host suite is meant to cost well under a second.
-        const N: usize = 12;
-        std::thread::scope(|sc| {
-            sc.spawn(|| {
-                for i in 0..N {
-                    update(|s| {
-                        let mut next = s.clone();
-                        next.sources.push(SourceRef {
-                            machine_id: format!("m{i}"),
-                            address: "192.168.0.10".into(),
-                            port: 32400,
-                            token: "tok".into(),
-                            ..Default::default()
-                        });
-                        Some(next)
-                    });
-                }
-            });
-            sc.spawn(|| {
-                for i in 0..N {
-                    update(|s| {
-                        let mut next = s.clone();
-                        let mut terms = next.recents_for("uu-1").to_vec();
-                        terms.push(format!("term-{i}"));
-                        next.set_recents_for("uu-1", terms);
-                        Some(next)
-                    });
-                }
-            });
-        });
-
-        let s = peek();
-        assert_eq!(s.client_id, "cid-1", "the credentials survived every cycle");
-        assert_eq!(s.account_token, "acct");
-        assert_eq!(
-            s.sources.len(),
-            N,
-            "a roster entry was overwritten by the other writer"
-        );
-        assert_eq!(
-            s.recents_for("uu-1").len(),
-            N,
-            "a search term was overwritten by the other writer"
-        );
-    }
-
-    /// **A reader outside the lock never sees half a session.** The reader here deliberately does
-    /// NOT go through `peek` — that takes the same lock, so it could not observe a torn file even
-    /// if `save` still truncated in place. It reads the path the way everything else on the device
-    /// does, which is also the window a crash or a power cut reads through: with `O_TRUNC` the
-    /// bytes at that path are empty for as long as the write takes, and an unparseable session
-    /// file is a QR code on the next boot, not a stale roster.
-    #[test]
-    fn a_reader_outside_the_lock_never_sees_half_a_session() {
-        let _g = crate::testlock::serial();
-        let t = TempSession::new("torn");
-        save(&signed_in());
-
-        let done = std::sync::atomic::AtomicBool::new(false);
-        std::thread::scope(|sc| {
-            sc.spawn(|| {
-                for i in 0..20 {
-                    update(|s| {
-                        let mut next = s.clone();
-                        // a payload big enough that one `write_all` is several pages — a torn read
-                        // must not depend on the file happening to be tiny
-                        next.home_users.push(HomeUserRef {
-                            uuid: format!("uuid-{i}"),
-                            title: format!("A profile with a long enough name to be worth {i} bytes"),
-                            thumb: format!("https://plex.direct/photo/:/transcode?url=library%2Fmetadata%2F{i}"),
-                            ..Default::default()
-                        });
-                        Some(next)
-                    });
-                }
-                done.store(true, std::sync::atomic::Ordering::Release);
-            });
-            let file = t.file();
-            let mut reads = 0u32;
-            while !done.load(std::sync::atomic::Ordering::Acquire) {
-                let bytes = std::fs::read(&file).expect("the path always names a complete file");
-                let s: Session = serde_json::from_slice(&bytes)
-                    .unwrap_or_else(|e| panic!("torn session file after {reads} clean reads: {e}"));
-                assert_eq!(
-                    s.client_id, "cid-1",
-                    "a partial read is a signed-out device"
-                );
-                reads += 1;
-            }
-        });
-        assert_eq!(peek().home_users.len(), 20);
-    }
-
-    /// `update` must never CREATE a session. A missing or unparseable file reads back as a default
-    /// `Session`, and writing one field onto that leaves a `client_id`-less file where a live
-    /// session used to be — the silent sign-out every list in this struct is soft-parsed to
-    /// prevent, arriving instead by the door built to fix it. It is also what a sign-out racing a
-    /// background worker would otherwise produce: `clear()` removes the file, and the worker in
-    /// flight puts a roster back with no credentials under it.
-    #[test]
-    fn update_refuses_a_file_that_holds_no_session() {
-        let _g = crate::testlock::serial();
-        let t = TempSession::new("refuse");
-
-        // no file at all — the state straight after `clear()`
-        assert!(!update(|s| Some(Session {
-            account_token: "acct".into(),
-            ..s.clone()
-        })));
-        assert!(
-            !t.file().exists(),
-            "a refused cycle must not create the file it refused to write"
-        );
-
-        // a file that does not parse: the same answer, and the bytes are left alone rather than
-        // replaced with a freshly minted session
-        std::fs::write(t.file(), b"{ not json").unwrap();
-        assert!(!update(|_| Some(signed_in())));
-        assert_eq!(std::fs::read(t.file()).unwrap(), b"{ not json");
-    }
-
-    /// The roster's own leniency must not weaken the roster the picker draws from: a managed user
-    /// whose stored `thumb` is a `null` costs that user, not the session.
-    #[test]
-    fn a_malformed_home_user_costs_that_tile_and_not_the_session() {
-        let s: Session = serde_json::from_str(
-            r#"{"client_id":"c","home_users":[{"uuid":"a","title":"A","thumb":null},
-                                              {"uuid":"b","title":"B","thumb":"","admin":true}]}"#,
-        )
-        .expect("one bad tile must not fail the file");
-        assert_eq!(s.home_users.len(), 1);
-        assert_eq!(s.account(None).name.as_deref(), Some("B"));
-    }
+#[path = "session_test_support.rs"]
+mod test_support;
+
+#[cfg(test)]
+#[path = "session_publication_tests.rs"]
+mod publication_tests;
+
+#[cfg(test)]
+#[path = "session_compat_tests.rs"]
+mod compat_tests;
+
+#[cfg(test)]
+#[path = "session_roster_tests.rs"]
+mod roster_tests;
+
+#[cfg(test)]
+#[path = "session_persistence_tests.rs"]
+mod persistence_tests;
+
+#[cfg(test)]
+#[path = "session_profile_cache_tests.rs"]
+mod profile_cache_tests;
+
+// Storage-facing capability only. Session owner admission is integrated in Stage B.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[allow(dead_code)]
+pub(crate) enum SaveAuthority { PublicOnly, Routine, FreshReauthentication }
+
+/// Test-only witness of the authority the last [`save_locked_with_authority`] call actually used —
+/// what a fixture cannot observe any other way, since the adapter's `LiveWrite` carries the
+/// canonical verdict but not which door produced it.
+#[cfg(test)]
+static LAST_WRITE_AUTHORITY: Mutex<Option<SaveAuthority>> = Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn last_write_authority_for_test() -> Option<SaveAuthority> {
+    *LAST_WRITE_AUTHORITY.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[cfg(test)]
-mod profile_cache_tests {
-    use super::*;
-
-    fn creds(uuid: &str, token: &str, pin: Option<&str>) -> ProfileCreds {
-        ProfileCreds {
-            uuid: uuid.into(),
-            user: UserRef {
-                uuid: uuid.into(),
-                token: token.into(),
-                ..Default::default()
-            },
-            server: ServerRef {
-                machine_id: "m".into(),
-                address: "10.0.0.5".into(),
-                port: 32400,
-                token: token.into(),
-                origin_url: "https://10-0-0-5.abc.plex.direct:32400".into(),
-                ..Default::default()
-            },
-            sources: vec![],
-            pin: pin.map(PinVerifier::new),
-        }
-    }
-
-    #[test]
-    fn a_verifier_accepts_its_pin_and_nothing_else() {
-        let v = PinVerifier::new("4821");
-        assert!(v.verify("4821"));
-        assert!(!v.verify("4822"));
-        assert!(!v.verify(""));
-        assert_eq!(v.salt.len(), 32, "16 random bytes, hex");
-        assert_eq!(v.hash.len(), 64);
-        assert_ne!(
-            PinVerifier::new("4821").salt,
-            v.salt,
-            "two verifiers of one PIN never share a salt"
-        );
-    }
-
-    #[test]
-    fn a_malformed_verifier_admits_nobody() {
-        let none = PinVerifier::default();
-        assert!(
-            !none.verify(""),
-            "an empty record must not match an empty PIN"
-        );
-        let mut v = PinVerifier::new("1234");
-        v.iters = 0;
-        assert!(!v.verify("1234"));
-        let mut v = PinVerifier::new("1234");
-        v.iters = u32::MAX;
-        assert!(
-            !v.verify("1234"),
-            "an unbounded count is refused before it is run"
-        );
-        let mut v = PinVerifier::new("1234");
-        v.iters = PinVerifier::MAX_ITERS + 1;
-        assert!(!v.verify("1234"));
-        let mut v = PinVerifier::new("1234");
-        v.hash.pop();
-        assert!(!v.verify("1234"));
-        let mut v = PinVerifier::new("1234");
-        v.salt = "zz".into();
-        assert!(!v.verify("1234"));
-    }
-
-    #[test]
-    fn remember_replaces_by_uuid_and_the_cache_survives_a_round_trip() {
-        let mut s = Session::default();
-        s.remember_profile(creds("u-admin", "t1", Some("1111")));
-        s.remember_profile(creds("u-kid", "t2", None));
-        s.remember_profile(creds("u-admin", "t3", Some("2222")));
-        s.remember_profile(creds("", "t4", None));
-        assert_eq!(
-            s.profiles.len(),
-            2,
-            "replace by uuid; an empty uuid is never cached"
-        );
-        assert_eq!(s.cached_profile("u-admin").unwrap().user.token, "t3");
-        assert!(s
-            .cached_profile("u-admin")
-            .unwrap()
-            .pin
-            .as_ref()
-            .unwrap()
-            .verify("2222"));
-        assert!(s.cached_profile("u-kid").unwrap().pin.is_none());
-        assert!(s.cached_profile("u-nobody").is_none());
-        assert!(s.cached_profile("").is_none());
-
-        let json = serde_json::to_string(&s).unwrap();
-        let back: Session = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.profiles.len(), 2);
-        assert!(back
-            .cached_profile("u-admin")
-            .unwrap()
-            .pin
-            .as_ref()
-            .unwrap()
-            .verify("2222"));
-        assert_eq!(back.cached_profile("u-kid").unwrap().server.port, 32400);
-    }
-
-    #[test]
-    fn refreshing_the_active_record_follows_the_session_and_keeps_the_verifier() {
-        let mut s = Session::default();
-        s.remember_profile(creds("u-admin", "t1", Some("1111")));
-        s.remember_profile(creds("u-kid", "t2", None));
-        s.user = UserRef {
-            uuid: "u-admin".into(),
-            token: "t9".into(),
-            ..Default::default()
-        };
-        s.server = ServerRef {
-            machine_id: "m2".into(),
-            address: "10.0.0.9".into(),
-            port: 32400,
-            token: "t9".into(),
-            ..Default::default()
-        };
-        s.sources = vec![
-            SourceRef {
-                machine_id: "m2".into(),
-                token: "t9".into(),
-                address: "10.0.0.9".into(),
-                port: 32400,
-                ..Default::default()
-            },
-            SourceRef {
-                machine_id: "share".into(),
-                token: "s".into(),
-                address: "10.0.0.7".into(),
-                port: 32400,
-                ..Default::default()
-            },
-        ];
-        assert!(s.refresh_profile_record(), "a stale record changes");
-        assert!(!s.refresh_profile_record(), "a current one does not");
-        let c = s.cached_profile("u-admin").unwrap();
-        assert_eq!(c.user.token, "t9");
-        assert_eq!(c.server.machine_id, "m2");
-        assert_eq!(c.sources.len(), 2, "the share found late is in the record");
-        assert!(
-            c.pin.as_ref().unwrap().verify("1111"),
-            "the verifier survives"
-        );
-        assert_eq!(
-            s.cached_profile("u-kid").unwrap().user.token,
-            "t2",
-            "other records untouched"
-        );
-        s.user.uuid = "u-nobody".into();
-        assert!(!s.refresh_profile_record());
-        assert_eq!(
-            s.profiles.len(),
-            2,
-            "no record for the active user: nothing invented"
-        );
-    }
-
-    #[test]
-    fn an_unusable_entry_is_not_offered() {
-        let mut s = Session::default();
-        s.remember_profile(creds("u-empty", "", None));
-        assert!(
-            s.cached_profile("u-empty").is_none(),
-            "no token, nothing to seat"
-        );
-        let mut c = creds("u-noorigin", "t", None);
-        c.server = ServerRef::default();
-        s.remember_profile(c);
-        assert!(
-            s.cached_profile("u-noorigin").is_none(),
-            "no primary, nothing to seat"
-        );
-    }
-
-    /// The shapes the APP writes — a real primary with a tier and an https origin, a roster
-    /// entry with a credit, a verifier — survive `to_vec_pretty` → `load`'s re-parse. Written
-    /// after a device wiped its cache on boot (2026-09-06): `load` re-saves every plaintext
-    /// session it parses, so an entry the parser drops is gone after one launch.
-    #[test]
-    fn an_app_written_record_survives_the_parse_that_every_boot_re_saves() {
-        let server = ServerRef {
-            machine_id: "abc123".into(),
-            address: "192.168.0.10".into(),
-            port: 32400,
-            token: "srv-tok".into(),
-            tier: Some(Location::Local),
-            origin_url: "https://192-168-0-10.abcdef.plex.direct:32400".into(),
-            ..Default::default()
-        };
-        let source = SourceRef {
-            machine_id: "abc123".into(),
-            name: "nas".into(),
-            shared_by: String::new(),
-            owned: true,
-            address: "192.168.0.10".into(),
-            port: 32400,
-            token: "srv-tok".into(),
-            tier: Some(Location::Local),
-            origin_url: "https://192-168-0-10.abcdef.plex.direct:32400".into(),
-            ..Default::default()
-        };
-        let mut s = Session {
-            client_id: "cid".into(),
-            account_token: "acct".into(),
-            server: server.clone(),
-            ..Default::default()
-        };
-        s.user = UserRef {
-            id: 7,
-            uuid: "u-admin".into(),
-            title: "Admin".into(),
-            thumb: "https://plex.tv/users/x/avatar?c=1".into(),
-            token: "user-tok".into(),
-        };
-        s.sources = vec![source.clone()];
-        s.remember_profile(ProfileCreds {
-            uuid: "u-admin".into(),
-            user: s.user.clone(),
-            server,
-            sources: vec![source],
-            pin: Some(PinVerifier::new("1234")),
-        });
-        let bytes = serde_json::to_vec_pretty(&s).unwrap();
-        let back: Session = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            back.profiles.len(),
-            1,
-            "{}",
-            String::from_utf8_lossy(&bytes)
-        );
-        let c = back
-            .cached_profile("u-admin")
-            .expect("the record is offered back");
-        assert_eq!(c.server.tier, Some(Location::Local));
-        assert!(c.pin.as_ref().unwrap().verify("1234"));
-    }
-
-    /// A file written before the field existed parses with an empty cache, never fails.
-    #[test]
-    fn a_legacy_file_has_an_empty_cache() {
-        let back: Session =
-            serde_json::from_str(r#"{"client_id":"c","account_token":"a"}"#).unwrap();
-        assert!(back.profiles.is_empty());
-        let back: Session = serde_json::from_str(
-            r#"{"client_id":"c","profiles":[{"uuid":"u","user":{"token":"t"},"server":{"address":"10.0.0.1","port":"nope"}}, 7]}"#,
-        )
-        .unwrap();
-        assert!(
-            back.profiles.is_empty(),
-            "a malformed entry costs the entry, not the session"
-        );
-    }
+pub(crate) fn reset_last_write_authority_for_test() {
+    *LAST_WRITE_AUTHORITY.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
+
+#[allow(dead_code)]
+pub(crate) mod persistence;
+
+#[cfg(test)]
+mod migration_tests;
+
+#[allow(dead_code)] // Stage B connects typed owner admission/completions.
+pub(crate) mod async_persistence;

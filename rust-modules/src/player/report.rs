@@ -35,14 +35,42 @@
 //! the completion rate a measure of how often people scrub.
 
 use crate::diag::schema::DiagEvent;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU32, AtomicU8, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU8, Ordering::Relaxed};
 
 /// The current attempt's opaque id — random, per attempt, never stored. See `DiagEvent`'s playback
 /// block: it joins one attempt's lifecycle events and cannot link two playbacks, let alone two sets.
 static ATTEMPT: AtomicI64 = AtomicI64::new(0);
-/// Registry slot of the server this attempt addresses. Captured when the plan commits so a later
-/// server switch cannot relabel the attempt's analytics.
-static ATTEMPT_SERVER: AtomicU16 = AtomicU16::new(crate::plex::ServerId::UNSET.raw());
+/// The attempt's server slot and connection facts, packed into one word so `requested` publishes
+/// all three with a SINGLE store and `emit` reads them with a single load — three separate atomics
+/// (as this used to be: a `u16` server plus two `u8` link/ip fields) let a concurrent `emit` (the
+/// engine's own worker thread; `requested` runs on the main thread) observe a torn combination —
+/// e.g. the NEW attempt's server slot paired with the OLD attempt's link/ip, or vice versa,
+/// whenever the two threads interleave between the three stores/loads.
+///
+/// Bit layout (LSB first), all little-endian within the `u32`:
+/// - bits 0..16:  server slot (`ServerId::raw()`, a `u16`; `ServerId::UNSET.raw()` when idle)
+/// - bits 16..24: link code (`plex::client::encode_link`'s `u8`: 0 = unknown)
+/// - bits 24..32: ip code (`plex::client::encode_ip`'s `u8`: 0 = unknown)
+///
+/// #95 step 8, item 4: the connection half is SNAPSHOTTED once in [`requested`] rather than read
+/// live off the server slot's client at every `emit`. A live read would let a mid-attempt re-point
+/// (a fresh `Client` published over the same slot) relabel `started`/`ended` events that reported
+/// `local` a moment ago as `unknown`, or worse, as whatever the NEW server's connection happens to
+/// be — neither is the connection THIS attempt actually used.
+static ATTEMPT_CONNECTION: AtomicU32 = AtomicU32::new(pack_connection(crate::plex::ServerId::UNSET.raw(), 0, 0));
+
+const fn pack_connection(server: u16, link: u8, ip: u8) -> u32 {
+    (server as u32) | ((link as u32) << 16) | ((ip as u32) << 24)
+}
+
+fn unpack_connection(word: u32) -> (u16, u8, u8) {
+    (word as u16, (word >> 16) as u8, (word >> 24) as u8)
+}
+
+// Link/IP encode-decode is the one pair `crate::plex::client` owns (`encode_link`/`decode_link`,
+// `encode_ip`/`decode_ip`) — this module used to keep a second private copy of both tables, which
+// is exactly the drift the shared pair exists to rule out.
+use crate::plex::{decode_ip, decode_link, encode_ip, encode_link};
 /// Process-local trace generation. Unlike `ATTEMPT`, this is never sent; it only prevents an
 /// outgoing demux worker from writing its late transitions into the next Play's reset trace.
 static NEXT_TRACE_GENERATION: AtomicU32 = AtomicU32::new(0);
@@ -360,6 +388,41 @@ impl TraceOutcome {
     }
 }
 
+/// **How long a native Load spent in flight, as a bucket — never the millisecond count.**
+///
+/// Recorded once per attempt, either when [`super::threads::load_thread`]'s Load-returned gate
+/// opens (the ordinary case) or when issue #74 D.1.4's [`super::pump::NATIVE_LOAD_BUDGET`] fires
+/// first (the k5lp hang this bucket exists to make visible on a dashboard rather than only in a
+/// device log). A duration is exactly the kind of measurement `PlaybackErrorContext`'s other
+/// fields refuse to carry verbatim — see the module's bucket rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoadElapsedClass {
+    Under1s,
+    S1To5,
+    S5To20,
+    Over20s,
+}
+
+impl LoadElapsedClass {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Under1s => "under_1s",
+            Self::S1To5 => "1_to_5s",
+            Self::S5To20 => "5_to_20s",
+            Self::Over20s => "over_20s",
+        }
+    }
+
+    pub(crate) fn from_ms(ms: i64) -> Self {
+        match ms.max(0) {
+            0..=999 => Self::Under1s,
+            1_000..=4_999 => Self::S1To5,
+            5_000..=19_999 => Self::S5To20,
+            _ => Self::Over20s,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TraceEvent {
     Requested {
@@ -387,6 +450,11 @@ pub(crate) enum TraceEvent {
     OriginalProbe {
         phase: OriginalProbePhase,
         outcome: TraceOutcome,
+    },
+    /// The native Load-returned gate opened, or issue #74 D.1.4's budget fired first — see
+    /// [`LoadElapsedClass`].
+    LoadGateOpened {
+        elapsed: LoadElapsedClass,
     },
     Failed {
         kind: super::FailureKind,
@@ -721,6 +789,13 @@ pub(crate) fn note_original_probe_for(
     push_trace_for(generation, TraceEvent::OriginalProbe { phase, outcome });
 }
 
+/// Record the native Load-returned gate opening, or issue #74 D.1.4's budget firing first — see
+/// [`LoadElapsedClass`]. Callable off the main thread (the load thread reports the ordinary gate
+/// transition), like every other `_for` breadcrumb here.
+pub(crate) fn note_load_gate_for(generation: u32, elapsed: LoadElapsedClass) {
+    push_trace_for(generation, TraceEvent::LoadGateOpened { elapsed });
+}
+
 fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
     let delivery = delivery_class(ps);
     let selected = QualityClass::selected(crate::route::quality());
@@ -791,7 +866,13 @@ pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: crate::plex:
         previous + 1
     };
     ATTEMPT.store(id, Relaxed);
-    ATTEMPT_SERVER.store(server.raw(), Relaxed);
+    // Snapshot the server slot AND the connection together, in one store — see
+    // `ATTEMPT_CONNECTION`'s doc for why `emit` must never re-read the live client, and why this
+    // must not be three separate stores.
+    let (link, ip) = crate::plex::client_for(server)
+        .map(|c| (c.link(), c.ip_version()))
+        .unwrap_or((None, None));
+    ATTEMPT_CONNECTION.store(pack_connection(server.raw(), encode_link(link), encode_ip(ip)), Relaxed);
     SAW_START.store(false, Relaxed);
     SAW_FAIL.store(false, Relaxed);
     SAW_END.store(false, Relaxed);
@@ -819,9 +900,23 @@ pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: crate::plex:
     generation
 }
 
+/// Test-only window onto the frozen snapshot `requested` took, so a test can assert it survives a
+/// mid-attempt re-point without driving the whole consent/spool pipeline `emit` feeds.
+#[cfg(test)]
+pub(crate) fn attempt_connection_snapshot_for_test(
+) -> (Option<crate::plex::probe::Location>, Option<crate::plex::IpVersion>) {
+    let (_, link, ip) = unpack_connection(ATTEMPT_CONNECTION.load(Relaxed));
+    (decode_link(link), decode_ip(ip))
+}
+
 fn emit(event: DiagEvent) {
-    let sid = crate::plex::ServerId::from_raw(ATTEMPT_SERVER.load(Relaxed));
-    crate::diag::event_for_server(event, sid);
+    // One load, not three — see `ATTEMPT_CONNECTION`'s doc for why a concurrent `requested` must
+    // never be observable as a torn mix of the old server slot and the new connection or back.
+    let (server, link, ip) = unpack_connection(ATTEMPT_CONNECTION.load(Relaxed));
+    let sid = crate::plex::ServerId::from_raw(server);
+    let link = decode_link(link);
+    let ip = decode_ip(ip);
+    crate::diag::event_for_connection(event, sid, link, ip);
 }
 
 /// Resolve an attempt before a newer Play overwrites its join key. Before first frame this is an
@@ -1195,6 +1290,82 @@ pub(crate) fn watched_class(position_ns: i64, duration_ns: i64) -> &'static str 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PR #104 review: `ATTEMPT_CONNECTION` packs the server slot, link code and ip code into one
+    /// `u32` so `requested`/`emit` publish/observe them with a single store/load. Every field must
+    /// round-trip through the pack/unpack pair independently of the others, at both ends of each
+    /// field's range (a bit landing in the wrong lane would show up here as one field corrupting
+    /// its neighbour).
+    #[test]
+    fn attempt_connection_packing_round_trips_every_field_independently() {
+        for server in [0u16, 1, u16::MAX - 1, u16::MAX] {
+            for link in [0u8, 1, 2, 3] {
+                for ip in [0u8, 1, 2] {
+                    let packed = pack_connection(server, link, ip);
+                    assert_eq!(
+                        unpack_connection(packed),
+                        (server, link, ip),
+                        "server={server} link={link} ip={ip} did not round-trip"
+                    );
+                }
+            }
+        }
+        // The three lanes must not bleed into each other: changing one field's bits must never
+        // change what another field decodes to.
+        let base = pack_connection(0x1234, 1, 2);
+        let bumped_server = pack_connection(0x5678, 1, 2);
+        let (_, link, ip) = unpack_connection(bumped_server);
+        assert_eq!((link, ip), (1, 2), "changing the server lane must not disturb link/ip");
+        let (server, _, _) = unpack_connection(base);
+        assert_eq!(server, 0x1234);
+    }
+
+    /// #95 step 8, item 4: `requested` snapshots the attempt's `(link, ip)` once; a re-point that
+    /// lands mid-attempt (a fresh `Client` published over the same slot, e.g. the roster refresh
+    /// path re-racing a working relay to LAN) must not relabel events already in flight for THIS
+    /// attempt. A live `client_for(server)` read at emit time would have.
+    #[test]
+    fn requested_snapshots_the_connection_and_a_mid_attempt_repoint_does_not_change_it() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let o = crate::plex::Origin::http("10.0.0.9", 32400);
+        let connection = crate::plex::ConnectionFacts::new(
+            Some(crate::plex::probe::Location::Local),
+            Some(crate::plex::IpVersion::V4),
+        );
+        let sid = crate::plex::register_pinned_with_client_id(
+            "m1", &o, "tok", None, "cid", connection,
+        );
+        let ps = crate::route::PlaybackSession::default();
+        requested(&ps, sid);
+        assert_eq!(
+            attempt_connection_snapshot_for_test(),
+            (Some(crate::plex::probe::Location::Local), Some(crate::plex::IpVersion::V4)),
+            "snapshotted at requested time"
+        );
+        // Mid-attempt re-point: a DIFFERENT origin for the same machine id, e.g. a roster refresh
+        // finally reaching the LAN candidate — publishes a fresh `Client` with its own tier/ip.
+        let o2 = crate::plex::Origin::http("10.0.0.20", 32400);
+        let repoint = crate::plex::ConnectionFacts::new(
+            Some(crate::plex::probe::Location::Relay),
+            Some(crate::plex::IpVersion::V6),
+        );
+        let repointed = crate::plex::register_pinned_with_client_id(
+            "m1", &o2, "tok", None, "cid", repoint,
+        );
+        assert_eq!(repointed, sid, "re-pointed in place — same slot id");
+        assert_eq!(
+            crate::plex::client_for(sid).unwrap().link(),
+            Some(crate::plex::probe::Location::Relay),
+            "the live client really did change"
+        );
+        assert_eq!(
+            attempt_connection_snapshot_for_test(),
+            (Some(crate::plex::probe::Location::Local), Some(crate::plex::IpVersion::V4)),
+            "the attempt's snapshot is untouched by the re-point"
+        );
+        crate::plex::reset_servers_for_test();
+    }
 
     #[test]
     fn replacing_an_attempt_always_gives_the_old_one_a_terminal_outcome() {

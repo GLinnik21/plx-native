@@ -1,3 +1,10 @@
+//! Library strip profile navigation and armed pill identity.
+
+use super::*;
+#[allow(unused_imports)]
+use super::test_support::*;
+use super::test_support::{frame};
+
 #[test]
 fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identity() {
     let _guard = crate::testlock::serial();

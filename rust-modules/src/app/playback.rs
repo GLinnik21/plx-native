@@ -383,7 +383,7 @@ pub(crate) fn request_loaded_episode(ps: &mut crate::route::PlaybackSession, rk:
 
 fn request_episode(ps: &mut crate::route::PlaybackSession, d: &crate::metadata::Detail, ep: &crate::metadata::Episode) -> bool {
     crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(crate::metadata::NowPlaying {
-        is_episode: true, title: d.title.clone(), ep_title: ep.title.clone(),
+        is_episode: true, is_real_episode: true, title: d.title.clone(), ep_title: ep.title.clone(),
         season: ep.season, index: ep.index, summary: ep.summary.clone(),
         year: ep.aired.get(..4).and_then(|s| s.parse().ok()).unwrap_or(0),
         dur_ms: ep.dur_ms, rating: ep.rating.clone(), thumb: ep.thumb.clone(), detail_rk: d.rk.clone(),
@@ -453,6 +453,7 @@ pub(crate) fn commit_track(
 }
 
 pub(crate) fn player_requests(
+    repair: &mut crate::player::machine::RepairAttempt,
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     reqs: Vec<crate::screens::registry::PlayerReq>,
@@ -467,6 +468,13 @@ pub(crate) fn player_requests(
     use crate::screens::registry::PlayerReq;
     for req in reqs {
         match req {
+            PlayerReq::RepairSandbox => {
+                if ps.jail_load_blocked {
+                    pa.repair_sandbox(repair, crate::webos::jail_blocks_native_video());
+                    ps.repair_status = repair.state();
+                    crate::ui::idle::invalidate();
+                }
+            }
             PlayerReq::ExtendHud(ms) => {
                 if let Some(player) = super::bridge::player_mut(pages) {
                     player.hud.extend(now, ms);
@@ -587,6 +595,10 @@ pub(crate) fn exit_player(
     // BACK during resolve has no engine for teardown to take. The exit ritual still ends that
     // attempt, so retire its in-memory trace here as the common backstop.
     crate::player::report::clear_error_trace();
+    // The jail pre-flight refusal (also no Engine to teardown) is already retired above: it
+    // lives on `ps.jail_load_blocked`, and `cancel_play` at the top of this function clears it
+    // via `clear_play_verdict` the same way it clears a `/decision` refusal — see that function's
+    // doc for why a verdict left standing described the item the user walked away from.
     // **The return is a `PopTo` of the ORIGIN ENTRY** (§5.1) — the page that was on top when the
     // push was asked for, captured at the player's own mount and read back off the instance. It
     // replaces `App.play_from: Node` plus `enter_node` plus `Trail::ensure`, which between them

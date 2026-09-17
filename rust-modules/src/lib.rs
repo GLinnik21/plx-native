@@ -455,3 +455,9 @@ mod private_log_tests {
         let _ = std::fs::remove_dir(dir);
     }
 }
+
+// Stage A foundation: owner adapters connect these APIs in the next integration stage.
+#[allow(dead_code)]
+mod storage;
+#[allow(dead_code)]
+mod storage_worker;

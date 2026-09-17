@@ -1182,6 +1182,14 @@ pub(crate) fn maybe_replay_after_eos(app: &mut App) {
     }
 }
 
+/// Publish the jail read-out fixture on the same session fact the owned confirmation reads.
+/// Only ordinary development scenarios call this; controlled replay never reads this trigger.
+pub(crate) fn failure_fixture(session: &mut crate::route::PlaybackSession) {
+    if super::read("failtest").is_some_and(|arm| arm.trim() == "jail") {
+        session.jail_load_blocked = true;
+    }
+}
+
 /// The boot-trigger SCRIPTS (autoplay, grid, settings, press, itemmenu, detail, play, seek,
 /// quality, pause, menu, marker), called once per iteration from `app::run::run` at exactly the
 /// position `dev_scripts` occupied. `false` propagates a refused trigger (an invalid
@@ -1206,6 +1214,9 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     menu_arm(app, fr);
     menupick_arm(app, fr);
     marker_arm(app, fr);
+    if crate::app::bridge::player(&app.pages).is_some() {
+        failure_fixture(&mut app.player.session);
+    }
     true
 }
 

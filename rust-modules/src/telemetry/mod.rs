@@ -15,6 +15,7 @@
 //! default gate does not build is a test that never runs.
 pub(crate) mod consent;
 pub(crate) mod crashreport;
+pub(crate) mod persistence;
 pub(crate) mod native;
 pub(crate) mod window;
 pub(crate) mod playback;
@@ -119,15 +120,27 @@ pub(crate) fn resource_candidates() -> Vec<std::path::PathBuf> {
 /// caller holds `crate::testlock::serial()` for the whole test: this is a crate global.
 #[cfg(test)]
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
+    let root = p.as_ref().and_then(|path| path.parent()).map(std::path::Path::to_path_buf);
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    persistence::redirect_root_for_test(root);
 }
 
+#[cfg(not(test))]
 fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
-    candidates
+    persistence::load(candidates)
+}
+
+/// The canonical record follows a test's scratch candidates, so a decision one test committed
+/// cannot become the canonical answer another test's legacy fixture is shadowed by.
+#[cfg(test)]
+fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
+    let root = candidates
         .iter()
-        .filter_map(|p| crate::plex::session::read_owned_regular(p))
-        .find_map(|b| serde_json::from_slice::<Consent>(&b).ok())
-        .unwrap_or_default()
+        .filter_map(|path| path.parent())
+        .find(|path| path.exists())
+        .map(std::path::Path::to_path_buf);
+    persistence::redirect_root_for_test(root);
+    persistence::load(candidates)
 }
 
 /// Compatibility for resource-focused telemetry and auth tests. Production code has one explicit
@@ -143,6 +156,18 @@ pub(crate) fn record(next: Consent) {
 pub(crate) fn forget() {
     let prior = consent::current().unwrap_or_default();
     crate::app::adapters::consent::ConsentAdapter::live().forget(&prior);
+}
+
+/// Called after the shared account tombstone (`plex::session::clear`'s canonical commit) is
+/// confirmed durable. On ARM, `persistence::forget_at` deliberately leaves telemetry/consent's own
+/// legacy files in place when a decision is cleared, relying on this sweep to run once the ONE
+/// atomic DB8 revocation for both domains — session and telemetry/consent — is confirmed rather
+/// than merely queued. Ported from `release/v0.6`'s `telemetry::cleanup_after_account_clear` /
+/// `persistence::cleanup_after_combined_clear`, which the 0.7 forward-port dropped along with
+/// their only caller (Copilot review on PR #105, finding 7).
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+pub(crate) fn cleanup_after_account_clear() -> bool {
+    persistence::cleanup_after_combined_clear(&candidates()) != persistence::CleanupResult::Failed
 }
 
 // ---- the spool, and the one worker that drains it ---------------------------------------------
@@ -333,6 +358,7 @@ mod tests {
             usage: true,
             install_id: Some("id".into()),
             errors_id: Some("eid".into()),
+            ..Default::default()
         };
         let mut attempted = Vec::new();
         let (retired, retry) = process_records(
@@ -424,13 +450,15 @@ mod tests {
         record(consent::apply(&Consent::default(), true, true, || {
             Some("f".repeat(32))
         }));
-        assert!(file.exists());
+        assert!(persistence::load(std::slice::from_ref(&file)).any());
         assert!(consent::errors_id().is_some() && consent::allows_usage());
         forget();
         let after = consent::current().expect("a default decision is published, not none");
         assert!(!after.any() && !after.answered());
         assert!(after.install_id.is_none() && after.errors_id.is_none());
         assert!(consent::errors_id().is_none() && !consent::allows_errors());
+        let reopened = persistence::load(std::slice::from_ref(&file));
+        assert!(!reopened.answered() && reopened.install_id.is_none() && reopened.errors_id.is_none());
         assert!(!file.exists(), "the decision file survived");
     }
 
@@ -440,6 +468,58 @@ mod tests {
     fn an_unparsable_file_is_not_consent() {
         let c: Consent = serde_json::from_slice(b"{ not json").unwrap_or_default();
         assert!(!c.any() && !c.answered());
+    }
+
+    /// The in-place upgrade regression: a 0.6.6 install keeps its decision in the canonical record
+    /// (no legacy file remains), and a 0.6.5 file carries accepted and declined scopes. The boot
+    /// read must find both, and the next answer must not narrow them or downgrade the policy.
+    #[test]
+    fn an_upgraded_06_decision_is_kept_and_the_next_answer_does_not_narrow_it() {
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir().join(format!("plxnative-consent-upgrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved = consent::current();
+        let legacy = dir.join("telemetry.json");
+        redirect_for_test(Some(legacy.clone()));
+        spool::set_test_path(Some(dir.join("spool.jsonl")));
+        crate::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
+
+        std::fs::write(
+            dir.join("consent.json"),
+            include_str!("../../../tests/fixtures/persistence/generated/v0.6.6-json-store/consent.json"),
+        )
+        .unwrap();
+        let from_066 = serde_json::to_value(load_from(std::slice::from_ref(&legacy))).unwrap();
+        assert_eq!(
+            (&from_066["errors"], &from_066["errors_id"], &from_066["errors_declined_scope"]),
+            (&serde_json::json!(true), &serde_json::json!("0123456789abcdef0123456789abcdef"), &serde_json::json!(6)),
+            "a 0.6.6 decision reverted to unanswered on upgrade"
+        );
+
+        std::fs::remove_file(dir.join("consent.json")).unwrap();
+        std::fs::write(
+            &legacy,
+            include_str!("../../../tests/fixtures/persistence/generated/v0.6.5-errors-yes-declined-extension.consent.json"),
+        )
+        .unwrap();
+        let prev = load_from(std::slice::from_ref(&legacy));
+        record(consent::apply(&prev, true, false, || None));
+        let after = serde_json::to_value(load_from(std::slice::from_ref(&legacy))).unwrap();
+        assert_eq!(after["asked_version"], 6, "policy version downgraded");
+        assert_eq!(
+            (&after["errors_scope"], &after["errors_declined_scope"]),
+            (&serde_json::json!(4), &serde_json::json!(6)),
+            "the accepted and declined scopes were dropped"
+        );
+
+        spool::set_test_path(None);
+        redirect_for_test(None);
+        crate::paths::redirect_persistent_state_root_for_test(None);
+        if let Some(c) = saved {
+            consent::install(c);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

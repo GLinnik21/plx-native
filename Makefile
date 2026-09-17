@@ -118,6 +118,13 @@ APPID_STABLE = com.beb.plxnative
 APPID        = $(if $(filter stable,$(FLAVOR)),$(APPID_STABLE),$(APPID_STABLE).$(FLAVOR))
 APPDIR       = /media/developer/apps/usr/palm/applications/$(APPID)
 
+# The native storage helper's LS2 service directory, installed by `ci/mkipk.py`'s
+# `stage_storage_service` beside the app under the SAME devmode prefix (`usr/palm/services/`, not
+# `usr/palm/applications/`) — `make FLAVOR=… install` is what first lays this down and writes its
+# `services.json` role manifest; `deploy` below only ever updates the BINARY already registered
+# there, never invents the directory.
+SERVICEDIR   = /media/developer/apps/usr/palm/services/$(APPID).storage
+
 # Where this install's runtime files live — the event log, the crash log, the `plxnative-*` dev
 # triggers and the remote FIFO. The app resolves this itself (`paths::resolve_runtime_dir`); this
 # is the same rule spelled for the shell, and `make print-rundir` is how every tool asks for it
@@ -170,7 +177,7 @@ print-tv:       ; @echo '$(TV)'
 # overridable — agents running several simulators at once keep separate target dirs, and the
 # `macapp` build has its own — so a tool that restates the path silently runs another lane's
 # binary. Same argument as `print-appdir`: ask, never restate.
-print-simbin:   ; @echo '$(SIM_BIN)'
+print-simbin:   ; @printf '%s\n' "$$SIM_MACOS_BIN_ENV"
 # The four queries `ci/test_deploy_manifest.py` asks instead of running `make -p` (which prints a
 # RECURSIVE variable's unexpanded definition — see the ban on it elsewhere in this file — and
 # would in any case hand a host test the SAME string for two different flavours). Defined once
@@ -562,7 +569,7 @@ SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
 ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
-  $(shell mkdir -p pkg && printf '%s' '$(RUST_CFG)' > $(RUST_STAMP) && rm -f pkg/plxnative \
+  $(shell mkdir -p pkg && printf '%s' '$(RUST_CFG)' > $(RUST_STAMP) && rm -f pkg/plxnative pkg/plxnative-storage \
           vendor/ffmpeg-prefix/include/libavformat/avformat.h pkg/lib*-plx.so.* pkg/.ffabi-ok)
 endif
 endif
@@ -574,7 +581,7 @@ RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/release/libplxnative_modu
 SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c)) src/compat/getauxval.c
 OBJS = $(SRCS:.c=.o)
 
-all: pkg/plxnative
+all: pkg/plxnative pkg/plxnative-storage
 
 # per-file compile; each object depends on ALL headers so a header edit rebuilds all
 src/%.o: src/%.c $(wildcard src/*.h) Makefile
@@ -672,7 +679,36 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo +$(RUST_NIGHTLY) build --release --target $(RUST_TARGET) \
-	    --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)
+	    --lib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)
+
+# The helper is an independent executable: it has its own auxv implementation and must never
+# link app getauxval.o. The project linker wrapper attests its map, trace and ELF bytes too.
+#
+# ITS OWN TARGET DIR, deliberately not $(RUST_TDIR): this `cargo rustc --bin ... --no-default-
+# -features` and $(RUST_LIB)'s `cargo build --lib` (default features) are two DIFFERENTLY-
+# CONFIGURED invocations of the SAME package (plxnative-modules), and `make -j` runs them
+# concurrently — exactly the hazard rust-modules/.cargo/config.toml's own comment already
+# documents ("a hand-typed cross build with a DIFFERENT ENVIRONMENT still writes the archive
+# make links... give a hand-run one its own --target-dir"). Sharing one target dir let the two
+# invocations race on the shared build-std sysroot units (std/core/alloc are never cached by
+# CI's rust-cache and so are rebuilt fresh by BOTH processes every run), which could leave
+# `cargo rustc`'s own fingerprint believing the just-linked plxnative-storage binary was still
+# fresh from the OTHER invocation's pass and skip re-invoking arm-cc.py — so no `.link.map`/
+# `.link.trace`/`.link.json` sidecar existed anywhere `stage-link-evidence.py` could find one,
+# even by its content-hash fallback (`04801c22`). A dedicated target dir makes the two cargo
+# invocations share nothing, so neither can observe the other's fingerprint state.
+STORAGE_TDIR = $(RUST_TDIR)-storage
+STORAGE_BIN = rust-modules/$(STORAGE_TDIR)/$(RUST_TARGET)/release/plxnative-storage
+pkg/plxnative-storage: LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs Makefile ci/arm-cc.py ci/check-link-evidence.py
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
+	  CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER='$(CC)' \
+	  cargo +$(RUST_NIGHTLY) rustc --release --target $(RUST_TARGET) \
+	    --bin plxnative-storage --target-dir $(STORAGE_TDIR) --no-default-features -- \
+	    -C link-arg=--sysroot=$(SYSROOT) -L native=$(SYSROOT)/usr/lib \
+	    -C link-arg=-Wl,-rpath-link,$(SYSROOT)/usr/lib -C link-arg=-Wl,--build-id=sha1
+	cp $(STORAGE_BIN) $@
+	chmod 755 $@
+	python3 ci/stage-link-evidence.py $(STORAGE_BIN) $@
 
 # link C objects + the Rust staticlib. gcc pulls in libgcc_s (the ARM-EHABI
 # unwinder Rust's panic_unwind std references) + libc/pthread/dl/m/rt itself.
@@ -855,10 +891,17 @@ pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/mkipk.py
 # prerequisites run left to right, and a cold `make deploy` spends ~2 minutes building FFmpeg
 # before it touches the television. Taking the lock first would hold the set through a build that
 # needs no television — and, on the short implicit lease, could even let it expire before the scp.
-deploy: pkg/plxnative $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release-guard tv-lock-require
+deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release-guard tv-lock-require
 	@echo "deploying $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) to $(APPID) [$(FLAVOR)]"
 	@$(SSH) 'test -d $(APPDIR)' || { \
 	  echo "$(APPDIR) does not exist on $(TV) — the $(FLAVOR) flavour is not installed."; \
+	  echo "install it once:  make FLAVOR=$(FLAVOR)$(if $(RELEASE), RELEASE=1,) install"; exit 1; }
+	# The storage helper's service directory is laid down by `make install` too (`ci/mkipk.py`'s
+	# `stage_storage_service`), never invented by `deploy` — a hand-made one would carry no
+	# `services.json` role manifest, so LS2 would refuse every call the helper makes and the
+	# failure would look like the helper crashing rather than never having been registered.
+	@$(SSH) 'test -d $(SERVICEDIR)' || { \
+	  echo "$(SERVICEDIR) does not exist on $(TV) — the storage helper was never installed for the $(FLAVOR) flavour."; \
 	  echo "install it once:  make FLAVOR=$(FLAVOR)$(if $(RELEASE), RELEASE=1,) install"; exit 1; }
 	# The descriptor and the directory it lands in must name the same app: `paths::app_id` reads
 	# the DIRECTORY, so a mismatch means the running binary and its own appinfo disagree about
@@ -880,6 +923,15 @@ deploy: pkg/plxnative $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release
 	# leaves the old process on its old inode while the next launch gets this one.
 	$(SCP) $(SENTRY_HANDLER) root@$(TV):$(APPDIR)/sentry-crash.new
 	$(SSH) 'chmod 755 $(APPDIR)/sentry-crash.new && mv $(APPDIR)/sentry-crash.new $(APPDIR)/sentry-crash'
+	# The storage helper is a registered LS2 SERVICE, not part of the app directory — `ipk` has
+	# shipped it since the service existed (`ci/stage-link-evidence.py` into
+	# `usr/palm/services/$(APPID).storage/`), but `deploy` never had a path to it at all, so an
+	# iterated fix to `storage_service/*.rs` only ever reached the TV via a full `make install`
+	# reinstall. Same `.new` + `mv` dance as the crash handler and for the same reason: LS2 may
+	# already have this service's OLD binary running (`appinstalld` execs `services.json`'s
+	# `executable` under its own uid), so `scp` straight onto that inode risks `ETXTBSY`.
+	$(SCP) pkg/plxnative-storage root@$(TV):$(SERVICEDIR)/plxnative-storage.new
+	$(SSH) 'chmod 755 $(SERVICEDIR)/plxnative-storage.new && mv $(SERVICEDIR)/plxnative-storage.new $(SERVICEDIR)/plxnative-storage'
 	# ...then retire any FFmpeg from a PREVIOUS version. `scp` only adds, so bumping the bundled
 	# release left the old majors sitting in the app directory forever — observed on the dev TV,
 	# which was carrying libavcodec-plx.so.60 and .so.58 from an earlier experiment alongside the
@@ -939,11 +991,16 @@ deploy: pkg/plxnative $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release
 # report to find weeks later. `VERIFY_FILES` is deliberately not `DEPLOY_FILES` alone: the binary,
 # the crash handler and the FFmpeg libraries take their own path to the device above and are just
 # as capable of silently drifting, so they are verified too.
-VERIFY_FILES = pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(DEPLOY_FILES) \
+VERIFY_FILES = pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(DEPLOY_FILES) pkg/plxnative-storage \
                $(if $(LAB),pkg/lab.json,)
 verify-deploy: tv-lock-require
 	@echo "verify-deploy: comparing $(words $(VERIFY_FILES)) files against $(APPID) [$(FLAVOR)]"
-	@$(SSH) 'cd $(APPDIR) && md5sum $(notdir $(VERIFY_FILES)) 2>&1' | \
+	@# The storage helper lands in $(SERVICEDIR), a different directory from everything else here —
+	@# `ci/verify-deploy.py` keys purely by basename (see its module doc), so a second `cd && md5sum`
+	@# appended to the same ssh round trip merges into one stream it already knows how to read,
+	@# rather than needing a transport of its own.
+	@$(SSH) 'cd $(APPDIR) && md5sum $(notdir $(filter-out pkg/plxnative-storage,$(VERIFY_FILES))) 2>&1; \
+	         cd $(SERVICEDIR) && md5sum plxnative-storage 2>&1' | \
 	  python3 ci/verify-deploy.py $(VERIFY_FILES)
 
 # NB (this webOS build): luna-send must stay subscribed (-i) for the launch to
@@ -1017,7 +1074,7 @@ kill: tv-lock-require
 	$(SSH) '$(CLOSE_SH) echo closed $(APPID)'
 
 clean:
-	rm -f src/*.o pkg/plxnative
+	rm -f src/*.o pkg/plxnative pkg/plxnative-storage
 
 test: deploy run
 
@@ -1191,6 +1248,8 @@ check: lint
 	python3 ci/test_deploy_manifest.py
 	python3 ci/test_verify_deploy.py
 	python3 ci/test_link_evidence.py
+	python3 ci/test_storage_service_package.py
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test --bin plxnative-storage
 	python3 ci/test_packaged_elf.py
 	python3 ci/test_check_elf.py
 	python3 ci/test_build_gc.py
@@ -1285,8 +1344,8 @@ sentry-symbols: symbols
 	@SENTRY_ORG='$(SENTRY_ORG)' SENTRY_PROJECT='$(SENTRY_PROJECT)' \
 	  $(SENTRY_CLI) debug-files upload --include-sources pkg/plxnative.debug pkg/plxnative
 
-ipk: pkg/plxnative $(APPINFO) release-guard
-	python3 ci/check-link-evidence.py pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED)
+ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
+	python3 ci/check-link-evidence.py pkg/plxnative pkg/plxnative-storage $(SENTRY_HANDLER) $(FFMPEG_STAGED)
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
 	rm -rf ipkroot/data/usr && mkdir -p $(STAGE)/licenses
 	cp $(APP_FILES) $(STAGE)/
@@ -1306,6 +1365,8 @@ ipk: pkg/plxnative $(APPINFO) release-guard
 	@# Only THIS flavour's artifact — packaging one must never delete the other's.
 	rm -f pkg/$(APPID)_*_arm.ipk
 	FLAVOR=$(FLAVOR) python3 ci/mkipk.py
+	python3 ci/stage-link-evidence.py pkg/plxnative-storage ipkroot/data/usr/palm/services/$(APPID).storage/plxnative-storage \
+	  --evidence-base pkg/link-evidence/$(FLAVOR)/plxnative-storage
 	@# Emitted from INSIDE pkg/ so the line carries the bare filename. With the `pkg/` prefix
 	@# in it, `shasum -a 256 -c ipk.sha256` fails for everyone who downloads the two release
 	@# assets side by side — which is every user, and is what shipped through v0.2.1.
@@ -1462,7 +1523,7 @@ SIM_PMS  ?= $(call cfg_macro,PMS_HOST)
 SIM_PORT ?= $(shell sed -n 's/^\#define[ \t]*PMS_PORT[ \t]*\([0-9]*\).*/\1/p' src/config.local.h 2>/dev/null)
 SIM_DIR  ?= /tmp/plxnative-sim
 # Its OWN target dir, per this file's rule for feature-set splits: `make check` builds default
-# features on nightly, `make sim` builds `hostsim` on the default toolchain. Sharing one dir makes
+# features on nightly, `make sim-macos` builds `hostsim` on the default toolchain. Sharing one dir makes
 # each invocation rebuild the crate the other way round.
 #
 # `?=` so it can also come from the environment: a checkout on a network or external volume
@@ -1471,17 +1532,24 @@ SIM_DIR  ?= /tmp/plxnative-sim
 # (os error 45)" before compiling anything. Point this at a local path and the checkout can stay
 # where it is:  export SIM_TDIR=$HOME/plxnative-sim-target
 SIM_TDIR  ?= rust-modules/target-sim
-SIM_BIN   = $(SIM_TDIR)$(if $(LAB),-lab,)/debug/plxnative-sim
+SIM_MACOS_BIN = $(SIM_TDIR)$(if $(LAB),-lab,)/debug/plxnative-sim
+SIM_MACOS_BIN_ENV = $(SIM_MACOS_BIN)
+SIM_LINUX_TDIR_ENV = $(SIM_TDIR)
+export SIM_MACOS_BIN_ENV SIM_LINUX_TDIR_ENV
 # Which presented frame `sim-shot` grabs. 200 is comfortably past first paint and the poster
 # fetches on a warm cache; raise it if a shot catches a screen mid-load.
 SIM_FRAME ?= 200
 SIM_SHOT  ?= $(SIM_DIR)/shot.png
 # Shared by every sim recipe so the wiring and the error sentence have exactly one copy — the same
 # reason BOOT_SH exists for `run`/`run-stream`.
-# Window size for the simulator, in DRAWABLE pixels. Empty = fit the display (see
+# Window size for the simulator, in window POINTS (SDL's window size; the window is ALLOW_HIGHDPI,
+# so on a Retina display the drawable is twice this). Empty = fit the display (see
 # `desktop_window_size`), which on a 1x screen is half the authored canvas and therefore half the
 # resolution of every screenshot. Set both to look at the UI the size it is drawn:
 #   make sim-shot SIM_W=1920 SIM_H=1080
+# For a capture LARGER than the display can hold, set PLXNATIVE_RENDER_SCALE=<1..4> in the
+# environment instead: the frame is then rendered offscreen at that multiple of 1920x1080 (glyphs,
+# icons and artwork rasterised to match) and shots come out at that size (`surface::render_scale`).
 SIM_W ?=
 SIM_H ?=
 SIM_WIN = $(if $(and $(SIM_W),$(SIM_H)),PLXNATIVE_WIN=$(SIM_W)x$(SIM_H),)
@@ -1492,7 +1560,7 @@ SIM_PRE = mkdir -p $(SIM_DIR); test -n "$(SIM_PMS)" || \
 # **The simulator needs its own FFmpeg, and that is what makes it able to STREAM.** `ff.rs` opens
 # the bundled libraries by absolute path out of the app directory, where they are 32-bit ARM ELF —
 # so until 2026-08-28 the entire streaming half of the app (both AVIO transports, the HLS demux,
-# the AU queues and therefore the whole adaptive controller) was device-only, and `make sim`
+# the AU queues and therefore the whole adaptive controller) was device-only, and `make sim-macos`
 # logged `ff: FFmpeg unavailable`. `HOST=1 ci/build-ffmpeg.sh` builds the SAME FFmpeg 9.0 from the
 # SAME component list for this Mac; `ci/stage-host-ffmpeg.sh` puts it in pkg/ with loader-relative
 # names. `APP_FILES` is an explicit list, so none of it can reach an .ipk or a television.
@@ -1525,21 +1593,38 @@ pkg/.ffabi-host-ok: ci/ffabi-assert.c $(FFMPEG_HOST_INC)/libavformat/avformat.h 
 #
 # The host FFmpeg is a prerequisite of BOTH configurations: a lab simulator that cannot demux
 # would exercise the upload path over a playback that never started.
-sim: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
+# Platform build targets are explicit. Keep `sim` as the compatibility spelling for the original
+# macOS simulator; new automation should name the platform it expects.
+sim: sim-macos
+
+sim-macos: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
 	PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
 
-# Interactive: opens a window. Ctrl-C to quit.
-sim-run: sim
-	@$(SIM_PRE)
-	$(SIM_ENV) $(SIM_BIN) $(SIM_PMS) $(SIM_PORT)
+# Optimized Linux UI/Plex simulator with no host FFmpeg prerequisite. It runs natively on Linux;
+# Windows/WSLg uses the same binary through `tools/sim.ps1`. Play intentionally reaches the host
+# seam's existing "no video path" result.
+sim-linux:
+	PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
+	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
+	  cargo build --release --manifest-path rust-modules/Cargo.toml --target-dir "$$SIM_LINUX_TDIR_ENV" \
+	  --features hostsim --bin plxnative-sim
 
-# Headless: boot, settle, write ONE png, exit. This is the agent-facing entry point.
-sim-shot: sim
+# Compatibility spelling used by the Windows launcher and existing documentation.
+sim-wsl: sim-linux
+
+# Explicit macOS operations. The old names remain aliases so existing scripts do not break.
+sim-run: sim-macos-run
+sim-macos-run: sim-macos
+	@$(SIM_PRE)
+	$(SIM_ENV) $(SIM_MACOS_BIN) $(SIM_PMS) $(SIM_PORT)
+
+sim-shot: sim-macos-shot
+sim-macos-shot: sim-macos
 	@$(SIM_PRE)
 	$(SIM_ENV) PLXNATIVE_SHOT=$(SIM_SHOT) PLXNATIVE_SHOT_FRAME=$(SIM_FRAME) PLXNATIVE_SHOT_EXIT=1 \
-	  $(SIM_BIN) $(SIM_PMS) $(SIM_PORT)
+	  $(SIM_MACOS_BIN) $(SIM_PMS) $(SIM_PORT)
 	@echo "wrote $(SIM_SHOT)"
 
 # Copy the owner token out of the gitignored header into this instance's root, so the simulator
@@ -1547,7 +1632,8 @@ sim-shot: sim
 # never echoed. It is a SHORTCUT, not the only way in: plex.tv QR sign-in works on the desktop as
 # of 2026-08-16 (net.rs's candidate list gained macOS's libcurl, and `dynlib!` learned to bind a
 # variadic C function correctly) — this line used to say it could not.
-sim-token:
+sim-token: sim-macos-token
+sim-macos-token:
 	@mkdir -p $(SIM_DIR)
 	@printf '%s' '$(call cfg_macro,PMS_TOKEN)' > $(SIM_DIR)/plxnative-token
 	@test -s $(SIM_DIR)/plxnative-token || { echo "no PMS_TOKEN in src/config.local.h"; rm -f $(SIM_DIR)/plxnative-token; exit 1; }
@@ -1571,7 +1657,8 @@ sim-token:
 # Needs no PMS, so it does not go through SIM_PRE. `SIM_SECS` bounds it.
 SIM_SAMPLE ?=
 SIM_SECS   ?= 20
-sim-play: sim
+sim-play: sim-macos-play
+sim-macos-play: sim-macos
 	@test -n "$(SIM_SAMPLE)" || { echo "SIM_SAMPLE=<file.h264> is required — an Annex-B elementary stream WITH access-unit delimiters, e.g."; \
 	  echo "  ffmpeg -i clip.ts -c:v copy -an -bsf:v h264_metadata=aud=insert -f h264 /tmp/sample.h264"; exit 1; }
 	@mkdir -p $(SIM_DIR)
@@ -1579,11 +1666,12 @@ sim-play: sim
 	@cp $(SIM_SAMPLE) $(SIM_DIR)/sample.h264
 	@touch $(SIM_DIR)/plxnative-clocksink $(SIM_DIR)/plxnative-autoplay $(SIM_DIR)/plxnative-stats
 	$(SIM_ENV) PLXNATIVE_SHOT=$(SIM_SHOT) PLXNATIVE_SHOT_FRAME=$$(( $(SIM_SECS) * 60 )) \
-	  PLXNATIVE_SHOT_EXIT=1 $(SIM_BIN) 127.0.0.1 32400 || true
+	  PLXNATIVE_SHOT_EXIT=1 $(SIM_MACOS_BIN) 127.0.0.1 32400 || true
 	@echo "--- $(SIM_DIR)/plxnative-events.log ---"
 	@grep -E 'clocksink|bf_split|SMP |vplane|route=player' $(SIM_DIR)/plxnative-events.log | head -20
 
-sim-clean:
+sim-clean: sim-macos-clean
+sim-macos-clean:
 	rm -rf $(SIM_DIR)
 
 # ---------------------------------------------------------------------------------------------
@@ -1663,5 +1751,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

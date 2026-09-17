@@ -112,10 +112,20 @@ fn envelope_props(
         ("device_model", &context.device_model),
         ("soc", &context.soc),
         ("hardware_revision", &context.hardware_revision),
+        ("rtkmem", &context.rtkmem),
+        ("install", &context.install),
+    ] {
+        properties.insert(key.into(), value.clone().into());
+    }
+    // Omitted entirely, not sent as `"unknown"`, when this event has no one server — see
+    // `UsageContext::current`'s doc.
+    for (key, value) in [
         ("server_connection", &context.server_connection),
         ("ip_version", &context.ip_version),
     ] {
-        properties.insert(key.into(), value.clone().into());
+        if let Some(value) = value {
+            properties.insert(key.into(), value.clone().into());
+        }
     }
     properties.insert("$session_id".into(), event.session_id.clone().into());
     properties.insert(ANON.into(), false.into());
@@ -479,6 +489,44 @@ mod tests {
         assert_eq!(b["api_key"], "phc_k");
     }
 
+    /// **THE ONE THAT MATTERS FOR ISSUE #74.** A `playback.failed` event, put through the exact
+    /// wire body a flush would send (`captured`, off the durable envelope — never `single`, which
+    /// only the legacy tests below exercise), carries the real `FailureKind::code()` as
+    /// `properties.kind` — for a NON-DEFAULT kind, so this cannot pass by accident on the
+    /// `unspecified` fallback every under-diagnosed dev failure produces. This is the check that
+    /// would have caught `kind` never reaching a production row: every earlier assertion in this
+    /// file used the legacy `single`/`batch` helpers, which are test-only and were never what the
+    /// sender actually posts — `sender::wire_body` decodes the durable envelope and calls
+    /// [`captured`], and this is the first test in this file to go through that same function.
+    #[test]
+    fn a_playback_failed_event_carries_the_real_failure_kind_on_the_durable_wire_body() {
+        for kind in [
+            crate::player::FailureKind::TvPipeline,
+            crate::player::FailureKind::LoadTimeout,
+            crate::player::FailureKind::JailMissingRtkmem,
+        ] {
+            let event = DiagEvent::PlaybackFailed {
+                playback_id: 7,
+                mode: "direct",
+                kind: kind.code(),
+            };
+            let envelope = crate::diag::schema::UsageEnvelope::capture(event, 0, "session");
+            let body = parse(&captured("phc_k", "id1", &envelope, "test"));
+            assert_eq!(
+                body["event"], "playback.failed",
+                "the wrong event serialised"
+            );
+            assert_eq!(
+                body["properties"]["kind"], kind.code(),
+                "the real FailureKind code did not reach the wire body for {kind:?}"
+            );
+            assert_ne!(
+                body["properties"]["kind"], "unspecified",
+                "a non-default kind must not fall back to the default code"
+            );
+        }
+    }
+
     #[test]
     fn a_durable_event_keeps_its_original_time_and_session() {
         let context = UsageContext {
@@ -489,8 +537,10 @@ mod tests {
             device_model: "m16p3s".into(),
             soc: "M19_DVB".into(),
             hardware_revision: "BOARD_PT_1ST".into(),
-            server_connection: "local".into(),
-            ip_version: "v4".into(),
+            server_connection: Some("local".into()),
+            ip_version: Some("v4".into()),
+            rtkmem: "missing".into(),
+            install: "devmode".into(),
         };
         let event = UsageEnvelope::capture_with_context(
             DiagEvent::RouteEntered { screen: "detail" },
@@ -509,6 +559,70 @@ mod tests {
         assert_eq!(body["properties"]["soc"], "M19_DVB");
         assert_eq!(body["properties"]["server_connection"], "local");
         assert_eq!(body["properties"]["ip_version"], "v4");
+        // issue #74: the two sandbox facts ride on every event, same as `soc`/`device_model`.
+        assert_eq!(body["properties"]["rtkmem"], "missing");
+        assert_eq!(body["properties"]["install"], "devmode");
         assert_eq!(body["properties"][ANON], false);
+    }
+
+    /// #95 step 8, item 1: an event with no one server (`UsageContext::current()`, which is what
+    /// every server-less `DiagEvent` captures through) must OMIT `server_connection` and
+    /// `ip_version` from the wire body entirely, never send a hardcoded `"unknown"`. Other context
+    /// fields are unaffected.
+    #[test]
+    fn a_server_less_event_omits_connection_and_ip_version() {
+        let context = UsageContext::current();
+        assert_eq!(context.server_connection, None);
+        assert_eq!(context.ip_version, None);
+        let event = UsageEnvelope::capture_with_context(
+            DiagEvent::AppLaunch,
+            1_787_961_234_567,
+            "0198f00d-1234-4567-89ab-0123456789ab",
+            context,
+        );
+        let body = parse(&captured("phc_k", "install", &event, "test"));
+        assert!(
+            body["properties"].get("server_connection").is_none(),
+            "a server-less event must not carry server_connection at all: {body}"
+        );
+        assert!(
+            body["properties"].get("ip_version").is_none(),
+            "a server-less event must not carry ip_version at all: {body}"
+        );
+        // Everything else still rides the envelope normally.
+        assert_eq!(body["event"], "app.launch");
+        assert_eq!(body["properties"][ANON], false);
+    }
+
+    /// A spooled envelope written before `server_connection`/`ip_version` could be omitted (or
+    /// before the `context` field existed at all) must still decode — `#[serde(default,
+    /// skip_serializing_if = "Option::is_none")]` on both fields is what keeps an older record
+    /// readable rather than refusing to parse.
+    #[test]
+    fn a_spooled_envelope_missing_connection_fields_still_decodes() {
+        let json = serde_json::json!({
+            "version": 1,
+            "occurred_at_ms": 1_787_961_234_567u64,
+            "session_id": "old-session",
+            "context": {
+                "app_version": "0.5.0",
+                "webos_release": "4.10.2",
+                "webos_api": "4.1.0",
+                "webos_codename": "goldilocks2-grampians",
+                "device_model": "m16p3s",
+                "soc": "M19_DVB",
+                "hardware_revision": "BOARD_PT_1ST",
+                // server_connection, ip_version, rtkmem, install all absent, as an old spool
+                // record would have them.
+            },
+            "name": "app.launch",
+            "fields": [],
+        });
+        let envelope: UsageEnvelope =
+            serde_json::from_value(json).expect("an old spooled envelope must still decode");
+        assert_eq!(envelope.context.server_connection, None);
+        assert_eq!(envelope.context.ip_version, None);
+        assert_eq!(envelope.context.rtkmem, "n/a");
+        assert_eq!(envelope.context.install, "unknown");
     }
 }

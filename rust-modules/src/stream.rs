@@ -36,15 +36,17 @@ pub struct HttpStream {
     /// interrupt (wakes the reader, keeps the number allocated), and exactly one closer via
     /// `take_fd`'s swap. See `http_shutdown` / `http_close`.
     fd: AtomicI32,
-    /// "A teardown asked this stream to stop" — set by [`http_shutdown`], cleared at the top of
-    /// every [`http_open`].
+    /// "A teardown asked this stream to stop" — set by [`http_shutdown`], never cleared by
+    /// [`http_open`].
     ///
     /// It exists because resolving gave the open something it never had: a NEXT address to try
     /// after a failed `connect`. A handshake aborted by `shutdown(2)` and an address that is simply
     /// dead are the same value at `connect`'s return, so without this latch a teardown fired during
     /// attempt 1 of 2 is answered by dialling attempt 2 — the interrupt silently consumed, and a
     /// brand-new connection handed back to a caller that was being torn down. Reading the fd cannot
-    /// stand in for it: between two attempts the fd is legitimately -1.
+    /// stand in for it: between two attempts the fd is legitimately -1. Production boxes a fresh
+    /// [`HttpStream`] per engine, so a leftover latch is not a later session to consume; clearing
+    /// it at open let a shutdown that landed after the caller's AU-abort check connect under join.
     interrupted: AtomicI32,
     buf: [u8; 65536],
     blen: c_int,
@@ -54,6 +56,21 @@ pub struct HttpStream {
     status: c_int,
     chunked: c_int,
     chunk_left: i64,
+    /// 1 if this response allows the next [`http_open`] to reuse the live fd. HTTP/1.1
+    /// defaults to keep-alive unless the server sent `Connection: close`.
+    keep_alive: c_int,
+    /// 1 once the body has been fully consumed and the fd is still open. A second open
+    /// may reuse only when this is set — an unread body would poison the next request.
+    body_done: c_int,
+    /// 1 once the current chunked-trailer line has seen a non-CR byte. Drain can return
+    /// `HTTP_READ_DEADLINE` mid-trailer and resume on a later call; a stack `line_empty = true`
+    /// on every entry treated the first `\n` of `\r\n\r\n` as the terminator and left leftover
+    /// bytes that forced a redial. Zeroed default is "empty so far", which `http_stream_boxed`
+    /// already writes.
+    trailer_line_has_content: c_int,
+    peer_port: c_int,
+    peer_host_len: c_int,
+    peer_host: [u8; 256],
 }
 
 fn errno() -> c_int {
@@ -100,21 +117,23 @@ impl HttpStream {
     fn interrupted(&self) -> bool {
         self.interrupted.load(Ordering::Acquire) != 0
     }
-    /// Reset every field EXCEPT `fd`. `http_open` used to `write_bytes`-memset the whole
-    /// struct, which wrote the ATOMIC fd non-atomically — and momentarily as 0, i.e. stdin —
-    /// while another thread could be loading it in `http_shutdown`. `fd` is reset separately
-    /// through its atomic store.
+    fn body_is_done(&self) -> bool {
+        self.body_done != 0
+    }
+    /// Reset every per-request field EXCEPT `fd` and `interrupted`. `http_open` used to
+    /// `write_bytes`-memset the whole struct, which wrote the ATOMIC fd non-atomically — and
+    /// momentarily as 0, i.e. stdin — while another thread could be loading it in
+    /// `http_shutdown`. `fd` is reset separately through its atomic store.
     ///
     /// `buf` is deliberately NOT cleared: it is only ever read within `[bpos, blen)`, both of
     /// which are reset here, so zeroing 64 KB on every request was pure cost.
     ///
-    /// `interrupted` IS reset here, and through its atomic store like `fd` — it is per-request
-    /// state, and the window it leaves open is the correct one: a `http_shutdown` landing between
-    /// this reset and the connect loop is a teardown of the open now starting, which is exactly
-    /// what the latch is for.
+    /// `interrupted` is not touched. Clearing it here lost a teardown that landed between the
+    /// load and the store, so a Transport redial could dial a socket the already-fired shutdown
+    /// cannot reach. The latch stays set for the life of this box; a later engine session is a
+    /// fresh [`HttpStream`].
     #[inline]
-    fn reset_fields(&mut self) {
-        self.interrupted.store(0, Ordering::Release);
+    fn reset_request_fields(&mut self) {
         self.blen = 0;
         self.bpos = 0;
         self.content_length = -1;
@@ -122,6 +141,9 @@ impl HttpStream {
         self.status = 0;
         self.chunked = 0;
         self.chunk_left = 0;
+        self.keep_alive = 0;
+        self.body_done = 0;
+        self.trailer_line_has_content = 0;
     }
 }
 
@@ -378,6 +400,31 @@ unsafe fn hs_next_chunk(
     Ok(if any { Some(sz) } else { None })
 }
 
+/// After the last-chunk size line, consume trailer fields and the terminating CRLF so the next
+/// keep-alive request does not parse leftover bytes as a status line.
+unsafe fn hs_skip_chunked_trailers(
+    hs: &mut HttpStream,
+    deadline: Option<Instant>,
+) -> Result<(), c_int> {
+    loop {
+        let Some(b) = hs_getb(hs, deadline)? else {
+            // EOF before the terminating blank line: leftover trailer bytes would be parsed as
+            // the next status line if we reused. Close rather than keep-alive.
+            return Err(-1);
+        };
+        if b == b'\n' {
+            if hs.trailer_line_has_content == 0 {
+                return Ok(());
+            }
+            hs.trailer_line_has_content = 0;
+            continue;
+        }
+        if b != b'\r' {
+            hs.trailer_line_has_content = 1;
+        }
+    }
+}
+
 /// Strip the optional whitespace (RFC 9110 §5.6.3's `OWS` — spaces and horizontal tabs only) from
 /// both ends of a header token.
 fn trim_ows(v: &[u8]) -> &[u8] {
@@ -389,6 +436,63 @@ fn trim_ows(v: &[u8]) -> &[u8] {
         .take_while(|b| **b == b' ' || **b == b'\t')
         .count();
     &v[..v.len() - b]
+}
+
+/// `Connection: close` on an HTTP/1.1 response forbids reuse of this fd.
+fn header_has_connection_close(hdr: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"\r\nconnection:";
+    let mut at = 0usize;
+    while let Some(p) = find_ci(&hdr[at..], NEEDLE) {
+        let vs = at + p + NEEDLE.len();
+        let end = hdr[vs..]
+            .iter()
+            .position(|&b| b == b'\r' || b == b'\n')
+            .map_or(hdr.len(), |i| vs + i);
+        if hdr[vs..end]
+            .split(|&b| b == b',')
+            .any(|t| trim_ows(t).eq_ignore_ascii_case(b"close"))
+        {
+            return true;
+        }
+        at = end;
+    }
+    false
+}
+
+fn remember_peer(hs: &mut HttpStream, host: &str, port: c_int) {
+    let bytes = host.as_bytes();
+    let n = bytes.len().min(hs.peer_host.len());
+    hs.peer_host[..n].copy_from_slice(&bytes[..n]);
+    hs.peer_host_len = n as c_int;
+    hs.peer_port = port;
+}
+
+fn same_peer(hs: &HttpStream, host: &str, port: c_int) -> bool {
+    let n = hs.peer_host_len as usize;
+    n <= hs.peer_host.len()
+        && hs.peer_port == port
+        && hs.peer_host.get(..n) == Some(host.as_bytes())
+}
+
+/// May this open send its request on the live fd instead of dialling?
+fn can_reuse(hs: &HttpStream, host: &str, port: c_int) -> bool {
+    hs.fd() >= 0
+        && !hs.interrupted()
+        && hs.keep_alive != 0
+        && hs.body_done != 0
+        && (hs.bpos as usize) >= (hs.blen as usize)
+        && same_peer(hs, host, port)
+}
+
+/// Body complete: keep the fd when the server offered keep-alive, otherwise close.
+/// `body_done` is set in both cases so a closed Connection: close response is not mistaken for
+/// an incomplete transfer (and a mid-body close, which never reaches here, is not mistaken for
+/// done).
+unsafe fn finish_body(hs: &mut HttpStream) {
+    hs.body_done = 1;
+    if hs.keep_alive == 0 || hs.fd() < 0 {
+        close_owned(hs);
+    }
 }
 
 /// Is this response body framed with the `chunked` transfer coding?
@@ -922,15 +1026,62 @@ fn http_open_with_timeouts(
     }
     unsafe {
         let hs = &mut *hs;
-        hs.reset_fields();
-        hs.set_fd(-1);
-
         if open_deadline.is_some_and(|at| Instant::now() >= at) {
+            close_owned(hs);
             return Err(HttpOpenError::Deadline);
         }
 
         let host_s = CStr::from_ptr(host).to_string_lossy();
         let path_s = CStr::from_ptr(path).to_string_lossy();
+        // A shutdown of this stream is teardown of THIS open, including when fd is already -1
+        // (first open, or seek_cb after http_close). Consuming the latch here let a teardown
+        // that landed after the caller's AU-abort check connect under join. Production boxes a
+        // fresh HttpStream per engine, so there is no later-session latch to consume.
+        if hs.interrupted() {
+            close_owned(hs);
+            return Err(HttpOpenError::Aborted);
+        }
+        let reuse = can_reuse(hs, &host_s, port);
+        if !reuse {
+            close_owned(hs);
+        }
+        let reused_fd = hs.fd();
+        hs.reset_request_fields();
+        // A shutdown during the reset must still abort a live keep-alive, not send on a
+        // half-closed fd and then redial. The latch is still set; we do not restore it.
+        if reused_fd >= 0 && hs.interrupted() {
+            close_owned(hs);
+            return Err(HttpOpenError::Aborted);
+        }
+
+        if reused_fd >= 0 {
+            match perform_http_request(
+                hs,
+                reused_fd,
+                &host_s,
+                port,
+                &path_s,
+                extra,
+                method,
+                open_deadline,
+                restore_media_timeouts,
+            ) {
+                Ok(()) => return Ok(()),
+                Err(HttpOpenError::Aborted) => return Err(HttpOpenError::Aborted),
+                Err(HttpOpenError::Deadline) => return Err(HttpOpenError::Deadline),
+                Err(HttpOpenError::Status(status)) => return Err(HttpOpenError::Status(status)),
+                Err(HttpOpenError::Transport) => {
+                    // Idle timeout or a half-closed keep-alive: one redial, not a hard failure.
+                    // Never consume the latch here: a teardown that lands after the reuse send
+                    // would otherwise look like a later session and dial a socket it cannot reach.
+                    close_owned(hs);
+                    hs.reset_request_fields();
+                    if hs.interrupted() {
+                        return Err(HttpOpenError::Aborted);
+                    }
+                }
+            }
+        }
 
         // Resolve FIRST, before any descriptor exists: the address family to open is the resolver's
         // answer, not this file's assumption, which is the whole of what makes an AF_INET6
@@ -1031,167 +1182,203 @@ fn http_open_with_timeouts(
         // remain the ordinary inactivity contract; `open_deadline` below is the separate absolute
         // conservation snapshot and is removed at the header/body boundary.
         set_socket_timeouts(fd, recv_timeout_ms, send_timeout_ms);
+        perform_http_request(
+            hs,
+            fd,
+            &host_s,
+            port,
+            &path_s,
+            extra,
+            method,
+            open_deadline,
+            restore_media_timeouts,
+        )
+    }
+}
 
-        // build + send the request (default Accept only if caller set none)
-        let extra_s: String = if extra.is_null() {
-            String::new()
-        } else {
-            CStr::from_ptr(extra).to_string_lossy().into_owned()
-        };
-        let accept = if extra_s.to_ascii_lowercase().contains("accept:") {
-            ""
-        } else {
-            "Accept: */*\r\n"
-        };
-        // `Host:` is the ORIGIN, never the address `connect_any` reached — see `host_header`.
-        let host_hdr = host_header(&host_s, port);
-        let req = format!(
-            "{method} {path_s} HTTP/1.1\r\nHost: {host_hdr}\r\nUser-Agent: plxnative/0.1\r\n{accept}{extra_s}Connection: close\r\n\r\n"
+unsafe fn perform_http_request(
+    hs: &mut HttpStream,
+    fd: c_int,
+    host_s: &str,
+    port: c_int,
+    path_s: &str,
+    extra: *const c_char,
+    method: &str,
+    open_deadline: Option<Instant>,
+    restore_media_timeouts: bool,
+) -> Result<(), HttpOpenError> {
+    // build + send the request (default Accept only if caller set none)
+    let extra_s: String = if extra.is_null() {
+        String::new()
+    } else {
+        CStr::from_ptr(extra).to_string_lossy().into_owned()
+    };
+    let accept = if extra_s.to_ascii_lowercase().contains("accept:") {
+        ""
+    } else {
+        "Accept: */*\r\n"
+    };
+    // `Host:` is the ORIGIN, never the address `connect_any` reached — see `host_header`.
+    let host_hdr = host_header(host_s, port);
+    // HTTP/1.1 keep-alive is the default; omitting Connection lets the server reuse this
+    // socket for the next HLS segment instead of forcing a fresh TCP handshake each time.
+    let req = format!(
+        "{method} {path_s} HTTP/1.1\r\nHost: {host_hdr}\r\nUser-Agent: plxnative/0.1\r\n{accept}{extra_s}\r\n"
+    );
+    let bytes = req.as_bytes();
+    let mut off = 0usize;
+    while off < bytes.len() {
+        let w = send_until(
+            fd,
+            bytes[off..].as_ptr() as *const c_void,
+            bytes.len() - off,
+            open_deadline,
         );
-        let bytes = req.as_bytes();
-        let mut off = 0usize;
-        while off < bytes.len() {
-            let w = send_until(
-                fd,
-                bytes[off..].as_ptr() as *const c_void,
-                bytes.len() - off,
-                open_deadline,
-            );
-            if w <= 0 {
-                let error = if hs.interrupted() {
-                    HttpOpenError::Aborted
-                } else if w == HTTP_READ_DEADLINE as isize {
-                    HttpOpenError::Deadline
-                } else {
-                    HttpOpenError::Transport
-                };
-                close_owned(hs);
-                return Err(error);
-            }
-            off += w as usize;
-        }
-
-        // read until end of headers (\r\n\r\n), keeping any body bytes that follow
-        let cap = hs.buf.len();
-        let mut hdr_end: Option<usize> = None;
-        hs.blen = 0;
-        while hdr_end.is_none() && (hs.blen as usize) < cap - 1 {
-            let r = recv_until(
-                fd,
-                hs.buf.as_mut_ptr().add(hs.blen as usize) as *mut c_void,
-                cap - hs.blen as usize,
-                open_deadline,
-            );
-            // r == 0 is also how an interrupted open surfaces: `http_shutdown` wakes this
-            // recv with EOF, so a teardown mid-header costs one syscall, not 15 s of SO_RCVTIMEO.
-            if r <= 0 {
-                let error = if hs.interrupted() {
-                    HttpOpenError::Aborted
-                } else if r == HTTP_READ_DEADLINE as isize {
-                    HttpOpenError::Deadline
-                } else {
-                    HttpOpenError::Transport
-                };
-                close_owned(hs);
-                return Err(error);
-            }
-            hs.blen += r as c_int;
-            let blen = hs.blen as usize;
-            let mut i = 3;
-            while i < blen {
-                if hs.buf[i - 3] == b'\r'
-                    && hs.buf[i - 2] == b'\n'
-                    && hs.buf[i - 1] == b'\r'
-                    && hs.buf[i] == b'\n'
-                {
-                    hdr_end = Some(i + 1);
-                    break;
-                }
-                i += 1;
-            }
-        }
-        let hdr_end = match hdr_end {
-            Some(e) => e,
-            None => {
-                close_owned(hs);
-                return Err(HttpOpenError::Transport);
-            }
-        };
-
-        // Parse status line + Content-Length + chunked. HEADERS ARE BYTES, not UTF-8 (RFC 9110
-        // §5.5: field values are octets, and a recipient must not reject the message for them).
-        // This used to run on `from_utf8(...).unwrap_or("")`, which meant ONE stray byte anywhere
-        // in the block — a Latin-1 character in a filename echoed back in a header, a mojibake
-        // title in an `X-Plex-*` round-trip — collapsed the WHOLE header block to "", left
-        // `status` at 0, and made the `status < 200` check below close a perfectly good 200 and
-        // report it as a transport failure. The bytes we actually care about are all ASCII, so
-        // reading them as bytes costs nothing and cannot be poisoned from a distance.
-        let hdr = &hs.buf[..hdr_end];
-        if hdr.starts_with(b"HTTP/1.") {
-            // `hdr[9..]` (a fixed index straight after "HTTP/1.x ") was also a panic: on the old
-            // `&str` it split a multi-byte char whose bytes straddled index 9, and on a byte slice
-            // it would still be an out-of-range index on a truncated line. `get` makes it total.
-            let rest = hdr.get(9..).unwrap_or(&[]);
-            let ndig = rest.iter().take_while(|b| b.is_ascii_digit()).count();
-            // RFC 9110 §15: status-code is exactly 3DIGIT. Requiring that (rather than folding a
-            // digit run of any length) keeps the well-formed case bit-identical while making the
-            // accumulate below unable to overflow. Anything else stays 0 — which is what the old
-            // `parse().unwrap_or(0)` produced for a malformed line too, and 0 fails the check
-            // below exactly as before.
-            hs.status = if ndig == 3 {
-                rest[..3]
-                    .iter()
-                    .fold(0 as c_int, |acc, &b| acc * 10 + (b - b'0') as c_int)
+        if w <= 0 {
+            let error = if hs.interrupted() {
+                HttpOpenError::Aborted
+            } else if w == HTTP_READ_DEADLINE as isize {
+                HttpOpenError::Deadline
             } else {
-                0
-            };
-        }
-        if let Some(p) = find_ci(hdr, b"\r\ncontent-length:") {
-            let v = &hdr[p + 17..];
-            // Only spaces/tabs are skipped (the OWS the grammar allows after the colon), NOT the
-            // `str::trim_start` of before, which also ate CR/LF and so could run on into the next
-            // header line's value. Identical on well-formed input, where there is one space.
-            let v = &v[v.iter().take_while(|b| **b == b' ' || **b == b'\t').count()..];
-            let ndig = v.iter().take_while(|b| b.is_ascii_digit()).count();
-            hs.content_length = std::str::from_utf8(&v[..ndig])
-                .ok()
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(-1);
-        }
-        if header_is_chunked(hdr) {
-            hs.chunked = 1;
-        }
-
-        hs.bpos = hdr_end as c_int; // first body byte
-        if hs.status < 200 || hs.status >= 300 {
-            // The code is known exactly here. The typed deadline API returns it directly; legacy
-            // callers still receive `-1`, and it also survives in the struct because `close_owned`
-            // touches only the fd. A seek reopen remains a legacy caller and therefore still has
-            // only the flat failure.
-            //
-            // `status=0` is not a code any server sent: it is what the parse above leaves when the
-            // status line was not `HTTP/1.x` followed by exactly three digits.
-            crate::log(&format!(
-                "stream: {method} {} status={}",
-                log_endpoint(&path_s),
-                hs.status
-            ));
-            let error = if hs.status == 0 {
                 HttpOpenError::Transport
-            } else {
-                HttpOpenError::Status(hs.status)
             };
             close_owned(hs);
             return Err(error);
         }
-        if restore_media_timeouts {
-            // The absolute open snapshot and its short socket options belong only to
-            // DNS/connect/send/headers. A paused candidate body is still a live media transfer;
-            // restore the ordinary inactivity contract before returning it to AVIO.
-            set_socket_timeouts(fd, MEDIA_RECV_TIMEOUT_MS, MEDIA_SEND_TIMEOUT_MS);
-        }
-        Ok(())
+        off += w as usize;
     }
+
+    // read until end of headers (\r\n\r\n), keeping any body bytes that follow
+    let cap = hs.buf.len();
+    let mut hdr_end: Option<usize> = None;
+    hs.blen = 0;
+    while hdr_end.is_none() && (hs.blen as usize) < cap - 1 {
+        let r = recv_until(
+            fd,
+            hs.buf.as_mut_ptr().add(hs.blen as usize) as *mut c_void,
+            cap - hs.blen as usize,
+            open_deadline,
+        );
+        // r == 0 is also how an interrupted open surfaces: `http_shutdown` wakes this
+        // recv with EOF, so a teardown mid-header costs one syscall, not 15 s of SO_RCVTIMEO.
+        if r <= 0 {
+            let error = if hs.interrupted() {
+                HttpOpenError::Aborted
+            } else if r == HTTP_READ_DEADLINE as isize {
+                HttpOpenError::Deadline
+            } else {
+                HttpOpenError::Transport
+            };
+            close_owned(hs);
+            return Err(error);
+        }
+        hs.blen += r as c_int;
+        let blen = hs.blen as usize;
+        let mut i = 3;
+        while i < blen {
+            if hs.buf[i - 3] == b'\r'
+                && hs.buf[i - 2] == b'\n'
+                && hs.buf[i - 1] == b'\r'
+                && hs.buf[i] == b'\n'
+            {
+                hdr_end = Some(i + 1);
+                break;
+            }
+            i += 1;
+        }
+    }
+    let hdr_end = match hdr_end {
+        Some(e) => e,
+        None => {
+            close_owned(hs);
+            return Err(if hs.interrupted() {
+                HttpOpenError::Aborted
+            } else {
+                HttpOpenError::Transport
+            });
+        }
+    };
+
+    // Parse status line + Content-Length + chunked. HEADERS ARE BYTES, not UTF-8 (RFC 9110
+    // §5.5: field values are octets, and a recipient must not reject the message for them).
+    // This used to run on `from_utf8(...).unwrap_or("")`, which meant ONE stray byte anywhere
+    // in the block — a Latin-1 character in a filename echoed back in a header, a mojibake
+    // title in an `X-Plex-*` round-trip — collapsed the WHOLE header block to "", left
+    // `status` at 0, and made the `status < 200` check below close a perfectly good 200 and
+    // report it as a transport failure. The bytes we actually care about are all ASCII, so
+    // reading them as bytes costs nothing and cannot be poisoned from a distance.
+    let hdr = &hs.buf[..hdr_end];
+    if hdr.starts_with(b"HTTP/1.") {
+        // `hdr[9..]` (a fixed index straight after "HTTP/1.x ") was also a panic: on the old
+        // `&str` it split a multi-byte char whose bytes straddled index 9, and on a byte slice
+        // it would still be an out-of-range index on a truncated line. `get` makes it total.
+        let rest = hdr.get(9..).unwrap_or(&[]);
+        let ndig = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+        // RFC 9110 §15: status-code is exactly 3DIGIT. Requiring that (rather than folding a
+        // digit run of any length) keeps the well-formed case bit-identical while making the
+        // accumulate below unable to overflow. Anything else stays 0 — which is what the old
+        // `parse().unwrap_or(0)` produced for a malformed line too, and 0 fails the check
+        // below exactly as before.
+        hs.status = if ndig == 3 {
+            rest[..3]
+                .iter()
+                .fold(0 as c_int, |acc, &b| acc * 10 + (b - b'0') as c_int)
+        } else {
+            0
+        };
+    }
+    if let Some(p) = find_ci(hdr, b"\r\ncontent-length:") {
+        let v = &hdr[p + 17..];
+        // Only spaces/tabs are skipped (the OWS the grammar allows after the colon), NOT the
+        // `str::trim_start` of before, which also ate CR/LF and so could run on into the next
+        // header line's value. Identical on well-formed input, where there is one space.
+        let v = &v[v.iter().take_while(|b| **b == b' ' || **b == b'\t').count()..];
+        let ndig = v.iter().take_while(|b| b.is_ascii_digit()).count();
+        hs.content_length = std::str::from_utf8(&v[..ndig])
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(-1);
+    }
+    if header_is_chunked(hdr) {
+        hs.chunked = 1;
+    }
+    // HTTP/1.0 `Connection: keep-alive` is unused. PMS is 1.1; offering 1.0 reuse would add a
+    // handshake only if we ever saw that framing, which we have not.
+    hs.keep_alive = i32::from(hdr.starts_with(b"HTTP/1.1") && !header_has_connection_close(hdr));
+    remember_peer(hs, host_s, port);
+
+    hs.bpos = hdr_end as c_int; // first body byte
+    if hs.status < 200 || hs.status >= 300 {
+        // The code is known exactly here. The typed deadline API returns it directly; legacy
+        // callers still receive `-1`, and it also survives in the struct because `close_owned`
+        // touches only the fd. A seek reopen remains a legacy caller and therefore still has
+        // only the flat failure.
+        //
+        // `status=0` is not a code any server sent: it is what the parse above leaves when the
+        // status line was not `HTTP/1.x` followed by exactly three digits.
+        crate::log(&format!(
+            "stream: {method} {} status={}",
+            log_endpoint(path_s),
+            hs.status
+        ));
+        let error = if hs.status == 0 {
+            HttpOpenError::Transport
+        } else {
+            HttpOpenError::Status(hs.status)
+        };
+        close_owned(hs);
+        return Err(error);
+    }
+    if hs.content_length == 0 && hs.chunked == 0 {
+        finish_body(hs);
+    }
+    if restore_media_timeouts {
+        // The absolute open snapshot and its short socket options belong only to
+        // DNS/connect/send/headers. A paused candidate body is still a live media transfer;
+        // restore the ordinary inactivity contract before returning it to AVIO.
+        set_socket_timeouts(fd, MEDIA_RECV_TIMEOUT_MS, MEDIA_SEND_TIMEOUT_MS);
+    }
+    Ok(())
 }
 
 pub(crate) fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_int {
@@ -1214,11 +1401,43 @@ pub(crate) fn http_read_until(
         let hs = &mut *hs;
         let n = n as usize;
         if hs.chunked != 0 {
+            if hs.chunk_left < 0 {
+                match hs_skip_chunked_trailers(hs, deadline) {
+                    Ok(()) => {
+                        finish_body(hs);
+                        return 0;
+                    }
+                    Err(e) => {
+                        hs.keep_alive = 0;
+                        close_owned(hs);
+                        return e;
+                    }
+                }
+            }
             if hs.chunk_left <= 0 {
                 match hs_next_chunk(hs, deadline) {
-                    Ok(Some(cs)) if cs > 0 => hs.chunk_left = cs,
+                    Ok(Some(0)) => match hs_skip_chunked_trailers(hs, deadline) {
+                        Ok(()) => {
+                            finish_body(hs);
+                            return 0;
+                        }
+                        Err(e) => {
+                            hs.keep_alive = 0;
+                            close_owned(hs);
+                            return e;
+                        }
+                    },
+                    Ok(Some(cs)) => {
+                        if cs < 0 {
+                            hs.keep_alive = 0;
+                            close_owned(hs);
+                            return -1;
+                        }
+                        hs.chunk_left = cs;
+                    }
                     Err(e) => return e,
-                    _ => {
+                    Ok(None) => {
+                        hs.keep_alive = 0;
                         close_owned(hs);
                         return 0;
                     }
@@ -1250,6 +1469,9 @@ pub(crate) fn http_read_until(
                     }
                     if r == 0 {
                         close_owned(hs);
+                        if got == 0 {
+                            return -1;
+                        }
                         break;
                     }
                     got += r as usize;
@@ -1261,17 +1483,25 @@ pub(crate) fn http_read_until(
             hs.consumed += got as i64;
             return if got > 0 {
                 got as c_int
-            } else if hs.fd() < 0 {
-                0
             } else {
-                -1
+                hs_closed_or_idle_read_result(hs)
             };
         }
         if hs.fd() < 0 && (hs.bpos as usize) >= (hs.blen as usize) {
-            return 0;
+            return hs_closed_or_idle_read_result(hs);
         }
         if hs.content_length >= 0 && hs.consumed >= hs.content_length {
+            finish_body(hs);
             return 0;
+        }
+        let mut n = n;
+        if hs.content_length >= 0 {
+            let remain = (hs.content_length - hs.consumed).max(0) as usize;
+            if remain == 0 {
+                finish_body(hs);
+                return 0;
+            }
+            n = n.min(remain);
         }
         // serve buffered body first
         if (hs.bpos as usize) < (hs.blen as usize) {
@@ -1280,10 +1510,13 @@ pub(crate) fn http_read_until(
             std::ptr::copy_nonoverlapping(hs.buf.as_ptr().add(hs.bpos as usize), dst, take);
             hs.bpos += take as c_int;
             hs.consumed += take as i64;
+            if hs.content_length >= 0 && hs.consumed >= hs.content_length {
+                finish_body(hs);
+            }
             return take as c_int;
         }
         if hs.fd() < 0 {
-            return 0;
+            return hs_closed_or_idle_read_result(hs);
         }
         // Already-buffered response bytes and an already-proven EOF/completion are facts from the
         // transport before this call began. Only a read which would perform fresh I/O can be
@@ -1301,10 +1534,14 @@ pub(crate) fn http_read_until(
                 return r as c_int;
             }
             if r == 0 {
+                let short = hs.content_length >= 0 && hs.consumed < hs.content_length;
                 close_owned(hs);
-                return 0;
+                return if short { -1 } else { 0 };
             }
             hs.consumed += r as i64;
+            if hs.content_length >= 0 && hs.consumed >= hs.content_length {
+                finish_body(hs);
+            }
             return r as c_int;
         }
     }
@@ -1327,6 +1564,260 @@ pub(crate) fn http_close(hs: *mut HttpStream) {
         return;
     }
     unsafe { close_owned(&*hs) }
+}
+
+pub(crate) fn http_body_done(hs: *const HttpStream) -> bool {
+    if hs.is_null() {
+        return true;
+    }
+    unsafe { (*hs).body_is_done() }
+}
+
+unsafe fn hs_compact_buf(hs: &mut HttpStream) {
+    if hs.bpos <= 0 {
+        return;
+    }
+    let n = (hs.blen - hs.bpos) as usize;
+    if n > 0 {
+        hs.buf.copy_within(hs.bpos as usize..hs.blen as usize, 0);
+    }
+    hs.blen = n as c_int;
+    hs.bpos = 0;
+}
+
+unsafe fn hs_poll_in(fd: c_int) -> bool {
+    if fd < 0 {
+        return false;
+    }
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    libc::poll(&mut pfd, 1, 0) > 0 && pfd.revents & libc::POLLIN != 0
+}
+
+/// `>0` bytes, `0` peer FIN, `-1` transport error, `-2` nothing ready.
+unsafe fn hs_recv_dontwait(fd: c_int, dst: &mut [u8]) -> c_int {
+    if dst.is_empty() || fd < 0 {
+        return -2;
+    }
+    let r = libc::recv(
+        fd,
+        dst.as_mut_ptr() as *mut c_void,
+        dst.len(),
+        libc::MSG_DONTWAIT,
+    );
+    if r < 0 {
+        let e = errno();
+        if e == libc::EAGAIN || e == libc::EWOULDBLOCK || e == libc::EINTR {
+            return -2;
+        }
+        return -1;
+    }
+    r as c_int
+}
+
+unsafe fn hs_fill_buf_dontwait(hs: &mut HttpStream) -> c_int {
+    hs_compact_buf(hs);
+    let space = hs.buf.len().saturating_sub(hs.blen as usize);
+    if space == 0 {
+        return 0;
+    }
+    let fd = hs.fd();
+    if !hs_poll_in(fd) {
+        return 0;
+    }
+    let r = hs_recv_dontwait(fd, &mut hs.buf[hs.blen as usize..]);
+    if r > 0 {
+        hs.blen += r;
+        return r;
+    }
+    if r == 0 {
+        close_owned(hs);
+        return 0;
+    }
+    if r == -2 {
+        return 0;
+    }
+    r
+}
+
+/// True when `buf` holds a chunk-size line, not merely the previous chunk's trailing CRLF.
+/// Drain must not call [`hs_next_chunk`] until this is true: that helper `recv`s after skipping
+/// leftover CRLF, and a delayed next size line would sit on `SO_RCVTIMEO`.
+fn hs_chunk_size_line_ready(hs: &HttpStream) -> bool {
+    let start = hs.bpos as usize;
+    let end = hs.blen as usize;
+    if start >= end {
+        return false;
+    }
+    let buf = &hs.buf[start..end];
+    let Some(i) = buf.iter().position(|&b| b != b'\r' && b != b'\n') else {
+        return false;
+    };
+    buf[i..].contains(&b'\n')
+}
+
+fn hs_body_incomplete(hs: &HttpStream) -> bool {
+    if hs.body_done != 0 {
+        return false;
+    }
+    if hs.chunked != 0 {
+        return true;
+    }
+    hs.content_length >= 0 && hs.consumed < hs.content_length
+}
+
+fn hs_closed_or_idle_read_result(hs: &HttpStream) -> c_int {
+    if hs.fd() < 0 && hs_body_incomplete(hs) {
+        -1
+    } else if hs.fd() < 0 {
+        0
+    } else {
+        -1
+    }
+}
+
+/// Consume chunked trailers from bytes already queued, without a blocking `recv`.
+///
+/// `hs_skip_chunked_trailers` with `deadline=now` never reads the socket (`recv_until` returns
+/// `HTTP_READ_DEADLINE` before `poll`). Fill dontwait first, same as the next chunk-size line,
+/// so a trailer split across two TCP fragments can complete on a later drain.
+/// Returns `0` when the body is done or nothing more is ready, or a negative transport error.
+unsafe fn hs_finish_chunked_trailers_dontwait(hs: &mut HttpStream) -> c_int {
+    let filled = hs_fill_buf_dontwait(hs);
+    if filled < 0 {
+        return filled;
+    }
+    match hs_skip_chunked_trailers(hs, Some(Instant::now())) {
+        Ok(()) => {
+            finish_body(hs);
+            0
+        }
+        Err(e) if e == HTTP_READ_DEADLINE => 0,
+        Err(e) => {
+            hs.keep_alive = 0;
+            close_owned(hs);
+            e
+        }
+    }
+}
+
+/// Copy bytes already waiting on the socket into `dst` without blocking.
+///
+/// Original playback parks the demuxer in `aq_push` on the same thread as AVIO. A blocking
+/// `recv` there would freeze the TCP window; this is the drain that keeps the window open.
+/// Payload copies already-buffered bytes plus at most one `MSG_DONTWAIT` recv. Trailer skip
+/// may add one more dontwait fill. Never `http_read`, never `SO_RCVTIMEO`.
+/// Returns bytes copied, `0` when the peer has nothing ready, or a negative transport error.
+pub(crate) fn http_drain_available(hs: *mut HttpStream, dst: &mut [u8]) -> c_int {
+    if hs.is_null() || dst.is_empty() {
+        return 0;
+    }
+    unsafe {
+        let hs = &mut *hs;
+        if hs.body_done != 0 {
+            return 0;
+        }
+        if hs.fd() < 0 && (hs.bpos as usize) >= (hs.blen as usize) {
+            return hs_closed_or_idle_read_result(hs);
+        }
+        if hs.content_length >= 0 && hs.consumed >= hs.content_length {
+            finish_body(hs);
+            return 0;
+        }
+        if hs.chunked != 0 && hs.chunk_left < 0 {
+            return hs_finish_chunked_trailers_dontwait(hs);
+        }
+        if hs.chunked != 0 && hs.chunk_left == 0 {
+            if !hs_chunk_size_line_ready(hs) {
+                let filled = hs_fill_buf_dontwait(hs);
+                if filled < 0 {
+                    return filled;
+                }
+                if !hs_chunk_size_line_ready(hs) {
+                    if hs.fd() < 0 {
+                        return hs_closed_or_idle_read_result(hs);
+                    }
+                    return 0;
+                }
+            }
+            // Size line is in `buf`. Deadline-now keeps `hs_next_chunk` from `recv`.
+            match hs_next_chunk(hs, Some(Instant::now())) {
+                Ok(Some(0)) => {
+                    hs.chunk_left = -1;
+                    return hs_finish_chunked_trailers_dontwait(hs);
+                }
+                Ok(Some(cs)) => {
+                    if cs < 0 {
+                        hs.keep_alive = 0;
+                        close_owned(hs);
+                        return -1;
+                    }
+                    hs.chunk_left = cs;
+                }
+                Ok(None) => {
+                    hs.keep_alive = 0;
+                    close_owned(hs);
+                    return -1;
+                }
+                Err(e) if e == HTTP_READ_DEADLINE => return 0,
+                Err(e) => return e,
+            }
+        }
+        let remain = if hs.chunked != 0 {
+            hs.chunk_left.max(0) as usize
+        } else if hs.content_length >= 0 {
+            (hs.content_length - hs.consumed).max(0) as usize
+        } else {
+            dst.len()
+        };
+        if remain == 0 {
+            if hs.chunked == 0 {
+                finish_body(hs);
+            }
+            return 0;
+        }
+        let want = dst.len().min(remain);
+        let mut got = 0usize;
+        let avail = (hs.blen as usize).saturating_sub(hs.bpos as usize);
+        if avail > 0 {
+            let take = avail.min(want);
+            dst[..take].copy_from_slice(&hs.buf[hs.bpos as usize..hs.bpos as usize + take]);
+            hs.bpos += take as c_int;
+            got = take;
+        }
+        if got < want {
+            let fd = hs.fd();
+            if hs_poll_in(fd) {
+                let r = hs_recv_dontwait(fd, &mut dst[got..want]);
+                if r == -1 {
+                    if got == 0 {
+                        return -1;
+                    }
+                } else if r == 0 {
+                    close_owned(hs);
+                    if got == 0 {
+                        return hs_closed_or_idle_read_result(hs);
+                    }
+                } else if r > 0 {
+                    got += r as usize;
+                }
+            }
+        }
+        if got == 0 {
+            return 0;
+        }
+        if hs.chunked != 0 {
+            hs.chunk_left -= got as i64;
+        }
+        hs.consumed += got as i64;
+        if hs.chunked == 0 && hs.content_length >= 0 && hs.consumed >= hs.content_length {
+            finish_body(hs);
+        }
+        got as c_int
+    }
 }
 
 /// Interrupt a read in progress WITHOUT closing: `shutdown(2)` wakes a peer blocked in `recv`
@@ -1405,1231 +1896,25 @@ pub(crate) fn http_stream_boxed() -> Box<HttpStream> {
 
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Instant;
-
-    #[test]
-    fn a_deadline_sentinel_is_never_retried_as_stale_eintr() {
-        assert!(!retry_interrupted_recv(
-            HTTP_READ_DEADLINE as isize,
-            libc::EINTR,
-        ));
-        assert!(retry_interrupted_recv(-1, libc::EINTR));
-    }
-
-    #[test]
-    fn an_absolute_read_deadline_beats_the_socket_inactivity_timeout() {
-        use std::os::fd::AsRawFd;
-        let (reader, _silent_peer) = std::os::unix::net::UnixStream::pair().expect("socket pair");
-        let mut byte = 0u8;
-        let started = Instant::now();
-        let deadline = started + std::time::Duration::from_millis(80);
-        let r = unsafe {
-            recv_until(
-                reader.as_raw_fd(),
-                &mut byte as *mut u8 as *mut c_void,
-                1,
-                Some(deadline),
-            )
-        };
-        let took = started.elapsed();
-        assert_eq!(r, HTTP_READ_DEADLINE as isize);
-        assert!(
-            took >= std::time::Duration::from_millis(50)
-                && took < std::time::Duration::from_secs(2),
-            "absolute deadline took {took:?}"
-        );
-    }
-
-    #[test]
-    fn a_typed_open_reports_the_header_deadline_that_stopped_it() {
-        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = srv.local_addr().unwrap().port();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let server = std::thread::spawn(move || {
-            let (_silent_peer, _) = srv.accept().expect("accept");
-            let _ = release_rx.recv();
-        });
-
-        let host = std::ffi::CString::new("127.0.0.1").unwrap();
-        let path = std::ffi::CString::new("/stall").unwrap();
-        let mut hs = http_stream_boxed();
-        let started = Instant::now();
-        let result = http_open_until_result(
-            &mut *hs,
-            host.as_ptr(),
-            port as c_int,
-            path.as_ptr(),
-            std::ptr::null(),
-            "GET",
-            started + std::time::Duration::from_millis(80),
-        );
-        let took = started.elapsed();
-
-        let _ = release_tx.send(());
-        server.join().unwrap();
-        assert_eq!(result, Err(HttpOpenError::Deadline));
-        assert_eq!(
-            hs.fd(),
-            -1,
-            "a deadline failure must retire the published fd"
-        );
-        assert!(
-            took >= std::time::Duration::from_millis(50)
-                && took < std::time::Duration::from_secs(2),
-            "typed open deadline took {took:?}"
-        );
-    }
-
-    /// One `GET /x` at a loopback port, through the door the control plane actually uses.
-    ///
-    /// These assertions used to call `stream::http_get`, and they outlived it: what they grade —
-    /// that a chunked body is decoded on the READ path, and that a truncated one still reaches its
-    /// caller — is a property of `http_open`/`http_read`, not of the wrapper that wrapped them. Now
-    /// they grade it through `crate::http`'s plaintext arm, i.e. through the composition that runs
-    /// in production, which is strictly more than the wrapper could say.
-    fn loopback_get(port: u16) -> Option<crate::http::Reply> {
-        let o = crate::plex::Origin::http("127.0.0.1", port as i32);
-        crate::http::request(&o, "/x", crate::http::Method::Get, &[], None)
-    }
-
-    /// Descriptors currently open in this process. `/dev/fd` works on both macOS and Linux;
-    /// `read_dir` opens one itself, but that is constant between two calls.
-    fn open_fd_count() -> usize {
-        std::fs::read_dir("/dev/fd").map(|d| d.count()).unwrap_or(0)
-    }
-
-    fn sockaddr(ip: [u8; 4], port: u16) -> libc::sockaddr_in {
-        let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-        sa.sin_family = libc::AF_INET as libc::sa_family_t;
-        sa.sin_port = port.to_be();
-        sa.sin_addr.s_addr = u32::from_ne_bytes(ip);
-        sa
-    }
-
-    fn sockaddr6(ip: std::net::Ipv6Addr, port: u16) -> libc::sockaddr_in6 {
-        let mut sa: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
-        sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
-        sa.sin6_port = port.to_be();
-        sa.sin6_addr = libc::in6_addr {
-            s6_addr: ip.octets(),
-        };
-        sa
-    }
-
-    /// `connect_timeout` for a v4 address. The real function takes the `(*const sockaddr,
-    /// socklen_t)` pair straight out of an `addrinfo`, because the address may now be either
-    /// family; the tests below predate that and say what they mean with a `sockaddr_in`.
-    unsafe fn connect_v4(fd: c_int, sa: &libc::sockaddr_in, timeout_ms: c_int) -> c_int {
-        connect_timeout(
-            fd,
-            sa as *const _ as *const libc::sockaddr,
-            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-            timeout_ms,
-        )
-    }
-
-    unsafe fn connect_v6(fd: c_int, sa: &libc::sockaddr_in6, timeout_ms: c_int) -> c_int {
-        connect_timeout(
-            fd,
-            sa as *const _ as *const libc::sockaddr,
-            std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
-            timeout_ms,
-        )
-    }
-
-    /// One `addrinfo` node pointing at a caller-owned `sockaddr`, for testing [`connect_any`]'s
-    /// walk without a resolver in the loop. The chain a real DNS answer produces is not something a
-    /// test can arrange on demand — which address a name yields, and in what order, is the
-    /// machine's business — so the walk is graded on a list built by hand instead.
-    fn ainfo(
-        family: c_int,
-        sa: *mut libc::sockaddr,
-        len: libc::socklen_t,
-        next: *mut libc::addrinfo,
-    ) -> libc::addrinfo {
-        let mut ai: libc::addrinfo = unsafe { std::mem::zeroed() };
-        ai.ai_family = family;
-        ai.ai_socktype = libc::SOCK_STREAM;
-        ai.ai_addr = sa;
-        ai.ai_addrlen = len;
-        ai.ai_next = next;
-        ai
-    }
-
-    /// Regression: `connect(2)` was called blocking with no deadline, so an unreachable PMS
-    /// froze the 60fps main loop for the kernel's SYN-retry budget (~2 min), once per request.
-    /// 192.0.2.0/24 is TEST-NET-1 (RFC 5737) — guaranteed non-routable, so the handshake can
-    /// never complete and the only thing that can end this call is the timeout.
-    #[test]
-    fn connect_to_a_black_hole_gives_up_on_the_deadline() {
-        let sa = sockaddr([192, 0, 2, 1], 80);
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        assert!(fd >= 0);
-        let t0 = Instant::now();
-        let r = unsafe { connect_v4(fd, &sa, 300) };
-        let waited = t0.elapsed();
-        unsafe { libc::close(fd) };
-        assert_eq!(r, -1, "an unroutable host must fail, not connect");
-        assert!(
-            waited.as_millis() < 3_000,
-            "took {waited:?} — the deadline is not being honoured"
-        );
-    }
-
-    /// A refused connection must be reported immediately, not waited out: port 1 on loopback
-    /// has no listener, so the kernel answers RST within the first poll.
-    #[test]
-    fn a_refused_connection_fails_fast_and_is_not_reported_as_success() {
-        let sa = sockaddr([127, 0, 0, 1], 1);
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        assert!(fd >= 0);
-        let t0 = Instant::now();
-        let r = unsafe { connect_v4(fd, &sa, 5_000) };
-        let waited = t0.elapsed();
-        unsafe { libc::close(fd) };
-        assert_eq!(
-            r, -1,
-            "SO_ERROR must be consulted — a writable socket is not a connected one"
-        );
-        assert!(
-            waited.as_millis() < 2_000,
-            "a refusal should be immediate, waited {waited:?}"
-        );
-    }
-
-    /// A failed `http_open` must leave the stream CLOSED (fd = -1) and leak no descriptor,
-    /// whichever early exit it took. This is what makes `http_stream_boxed`'s fd = -1 contract
-    /// hold end-to-end, and it is the invariant a future interruptible-open design has to keep.
-    #[test]
-    fn every_failed_open_retires_its_fd_and_leaks_nothing() {
-        let ip_refused = std::ffi::CString::new("127.0.0.1").unwrap(); // nothing listens on :1
-        let path = std::ffi::CString::new("/x").unwrap();
-
-        // The first case used to be the dotted quad `999.1.2.3`, rejected by the hand parse after
-        // `socket()`. That parse is gone, and sending the same string on would have made this
-        // OFFLINE suite do a DNS lookup: `999.1.2.3` is not an address, so it goes to the resolver
-        // as a NAME — where a network with NXDOMAIN hijacking answers it with a real web server
-        // (and the open then SUCCEEDS, failing this test), and a network with a dead resolver
-        // spends glibc's whole `timeout × attempts × nameservers` budget inside a ~0.3 s suite.
-        // An out-of-range port is the same early exit — refused in `resolve`, before any socket —
-        // and it cannot leave the machine.
-        for (label, ip, port) in [
-            ("port out of range", &ip_refused, 70_000),
-            ("refused connection", &ip_refused, 1),
-        ] {
-            let mut hs = http_stream_boxed();
-            let rv = http_open(
-                &mut *hs,
-                ip.as_ptr(),
-                port,
-                path.as_ptr(),
-                std::ptr::null(),
-                "GET",
-            );
-            assert_eq!(rv, -1, "{label}: open must fail");
-            assert_eq!(
-                hs.fd(),
-                -1,
-                "{label}: the fd must be retired, not left published"
-            );
-        }
-
-        // …and the descriptor is genuinely closed, not merely un-published.
-        //
-        // The slack is deliberately loose, because `open_fd_count` is PROCESS-wide and this suite
-        // runs in parallel: the sibling socket tests (loopback listeners, the two `ff.rs` counting
-        // accepts) hold descriptors open across this window, so a strict +2 made the assertion fire
-        // on their scheduling rather than on a leak — it was already failing ~1 run in 6 before this
-        // branch and got worse as the suite grew, which is a red gate that says nothing. What is
-        // being detected is 32 leaked sockets; anything under a handful is other tests, and the two
-        // are three quarters of an order of magnitude apart.
-        let before = open_fd_count();
-        for _ in 0..32 {
-            let mut hs = http_stream_boxed();
-            let _ = http_open(
-                &mut *hs,
-                ip_refused.as_ptr(),
-                1,
-                path.as_ptr(),
-                std::ptr::null(),
-                "GET",
-            );
-        }
-        let after = open_fd_count();
-        assert!(
-            after <= before + 8,
-            "failed opens leaked descriptors: {before} -> {after}"
-        );
-    }
-
-    /// The claim the whole single-closer protocol rests on: `shutdown(2)` wakes a peer that is
-    /// already blocked in `recv`, which is what the interrupt sites need. (`close(2)` does not —
-    /// that is why BACK during a stall used to wait out the 15 s SO_RCVTIMEO.) Two threads, a
-    /// real loopback socket, no mocking.
-    #[test]
-    fn shutdown_wakes_a_reader_that_is_already_blocked_in_recv() {
-        use std::sync::mpsc;
-        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = srv.local_addr().unwrap().port();
-        let sa = sockaddr([127, 0, 0, 1], port);
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        assert_eq!(unsafe { connect_v4(fd, &sa, 2_000) }, 0);
-        let _peer = srv.accept().expect("accept"); // held open: nothing will ever be sent
-        let (tx, rx) = mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            let mut b = [0u8; 16];
-            // blocks here until the socket is shut down (the peer never writes)
-            let r = unsafe { libc::recv(fd, b.as_mut_ptr() as *mut c_void, b.len(), 0) };
-            let _ = tx.send(r);
-        });
-        // give the reader time to actually enter recv, then interrupt it
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        unsafe { libc::shutdown(fd, libc::SHUT_RDWR) };
-        let r = rx
-            .recv_timeout(std::time::Duration::from_secs(3))
-            .expect("shutdown did not wake the blocked recv");
-        assert_eq!(r, 0, "a shut-down socket must report EOF");
-        reader.join().unwrap();
-        unsafe { libc::close(fd) };
-    }
-
-    /// The point of publishing the fd at `socket()`: an open that stalls is now interruptible.
-    /// A listener that accepts and never answers puts `http_open` in its header `recv`, where it
-    /// would otherwise sit out the full 15 s `SO_RCVTIMEO` — and the main thread waits on that in
-    /// `teardown`'s join, which is the freeze this whole change exists to remove. The interrupt
-    /// must also leave the stream RETIRED, not merely woken: a stale fd left in the atomic is one
-    /// the next `http_shutdown` would shoot after the number had been recycled.
-    #[test]
-    fn an_open_stalled_in_the_header_read_is_interruptible() {
-        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = srv.local_addr().unwrap().port();
-        let ip = std::ffi::CString::new("127.0.0.1").unwrap();
-        let path = std::ffi::CString::new("/stall").unwrap();
-
-        let mut hs = http_stream_boxed();
-        let addr = (&mut *hs) as *mut HttpStream as usize; // raw ptr isn't Send; the box outlives the scope
-        let t0 = Instant::now();
-        let (rv, waited) = std::thread::scope(|sc| {
-            let opener = sc.spawn(move || {
-                let rv = http_open_until_result(
-                    addr as *mut HttpStream,
-                    ip.as_ptr(),
-                    port as c_int,
-                    path.as_ptr(),
-                    std::ptr::null(),
-                    "GET",
-                    t0 + std::time::Duration::from_secs(10),
-                );
-                (rv, t0.elapsed())
-            });
-            let _peer = srv.accept().expect("accept"); // held open, never written to
-            std::thread::sleep(std::time::Duration::from_millis(200)); // let it reach the recv
-            http_shutdown(addr as *mut HttpStream);
-            opener.join().unwrap()
-        });
-
-        assert_eq!(
-            rv,
-            Err(HttpOpenError::Aborted),
-            "an interrupted open must preserve the abort cause"
-        );
-        assert!(
-            waited.as_secs() < 3,
-            "took {waited:?} — the open sat out SO_RCVTIMEO, so it was NOT interrupted"
-        );
-        assert_eq!(
-            hs.fd(),
-            -1,
-            "the interrupted open left its fd published — that is the stale \
-                                 descriptor a later http_shutdown would shoot"
-        );
-    }
-
-    /// `take_fd` is the single-closer gate: concurrent claimers must produce exactly one
-    /// winner, so a descriptor can never be closed twice (and so never recycled underneath
-    /// a thread still using it).
-    #[test]
-    fn exactly_one_caller_can_claim_the_fd() {
-        let hs = http_stream_boxed();
-        hs.set_fd(4242);
-        let winners: i32 = std::thread::scope(|sc| {
-            let hs = &hs;
-            let hs2 = (0..8)
-                .map(|_| sc.spawn(move || i32::from(hs.take_fd() >= 0)))
-                .collect::<Vec<_>>();
-            hs2.into_iter().map(|h| h.join().unwrap()).sum()
-        });
-        assert_eq!(
-            winners, 1,
-            "the fd was claimed {winners} times — that is a double close"
-        );
-        assert!(hs.fd() < 0, "the slot must be left closed");
-    }
-
-    /// The happy path still connects, and — the part that matters for every read below —
-    /// the socket is handed back in BLOCKING mode.
-    #[test]
-    fn a_live_listener_connects_and_the_socket_is_left_blocking() {
-        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = srv.local_addr().unwrap().port();
-        let sa = sockaddr([127, 0, 0, 1], port);
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        assert!(fd >= 0);
-        let r = unsafe { connect_v4(fd, &sa, 2_000) };
-        assert_eq!(r, 0, "a listening socket must connect");
-        let fl = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
-        assert_eq!(
-            fl & libc::O_NONBLOCK,
-            0,
-            "O_NONBLOCK leaked out of the handshake"
-        );
-        unsafe { libc::close(fd) };
-    }
-
-    /// Answer ONE request with `resp` verbatim, then close; hands back the bound port and the
-    /// server thread to join. `resp` is written as raw bytes precisely so a test can put things in
-    /// a header that no `&str` could hold. The listener moves into the thread, so the socket is
-    /// released once the response is out — which is also what gives the reader its EOF.
-    fn one_shot_server(resp: Vec<u8>) -> (u16, std::thread::JoinHandle<()>) {
-        use std::io::{Read, Write};
-        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = srv.local_addr().unwrap().port();
-        let h = std::thread::spawn(move || {
-            if let Ok((mut s, _)) = srv.accept() {
-                // Drain the request so our send() completes; it arrives in one write.
-                let mut req = [0u8; 2048];
-                let _ = s.read(&mut req);
-                let _ = s.write_all(&resp);
-            }
-        });
-        (port, h)
-    }
-
-    /// `http_open` a GET against a loopback port, handing back the stream AND its verdict.
-    fn open_against(port: u16) -> (Box<HttpStream>, c_int) {
-        open_host_against("127.0.0.1", port)
-    }
-
-    /// …and the same for a host that is not the v4 loopback literal — a name, a bracketed v6
-    /// literal, a bare one.
-    fn open_host_against(host: &str, port: u16) -> (Box<HttpStream>, c_int) {
-        let h = std::ffi::CString::new(host).unwrap();
-        let path = std::ffi::CString::new("/x").unwrap();
-        let mut hs = http_stream_boxed();
-        let rv = http_open(
-            &mut *hs,
-            h.as_ptr(),
-            port as c_int,
-            path.as_ptr(),
-            std::ptr::null(),
-            "GET",
-        );
-        (hs, rv)
-    }
-
-    /// A one-shot server that hands the REQUEST back to the test as well as answering it — the
-    /// only way to grade a header we emit rather than one we parse.
-    fn one_shot_echo(
-        bind: &str,
-        resp: Vec<u8>,
-    ) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<u8>>)> {
-        use std::io::{Read, Write};
-        let srv = std::net::TcpListener::bind(bind)?;
-        let port = srv.local_addr().unwrap().port();
-        let h = std::thread::spawn(move || {
-            let mut req = Vec::new();
-            if let Ok((mut sk, _)) = srv.accept() {
-                let mut b = [0u8; 2048];
-                if let Ok(n) = sk.read(&mut b) {
-                    req.extend_from_slice(&b[..n]);
-                }
-                let _ = sk.write_all(&resp);
-            }
-            req
-        });
-        Ok((port, h))
-    }
-
-    /// The `Host:` line of a captured request, without its CRLF.
-    fn host_line(req: &[u8]) -> String {
-        let text = String::from_utf8_lossy(req);
-        text.split("\r\n")
-            .find(|l| l.to_ascii_lowercase().starts_with("host:"))
-            .unwrap_or("<no Host header>")
-            .to_string()
-    }
-
-    /// Can this machine use the IPv6 loopback at all? A container or a set with IPv6 compiled out
-    /// cannot, and the v6 cases below are then not failing — they are unrunnable. Say so on the
-    /// output rather than passing quietly, because a test that reports success having never opened
-    /// an AF_INET6 socket is exactly the false green this file's own notes warn about.
-    fn v6_loopback_or_skip(what: &str) -> Option<std::net::TcpListener> {
-        match std::net::TcpListener::bind("[::1]:0") {
-            Ok(l) => Some(l),
-            Err(e) => {
-                eprintln!("SKIPPED {what}: this host has no usable IPv6 loopback ({e})");
-                None
-            }
-        }
-    }
-
-    /// Regression: the header block was parsed as STRICT UTF-8 (`from_utf8(…).unwrap_or("")`), so a
-    /// single non-UTF-8 byte anywhere in it — here a lone Latin-1 `0xE9` in a header value, which
-    /// is exactly what a PMS echo of a filename or title produces — emptied the whole block. The
-    /// status then stayed 0, and `http_open`'s `status < 200` check closed a perfectly good 200 and
-    /// reported it as a transport failure: an unplayable item / a missing poster with a healthy
-    /// server on the other end. The response is otherwise entirely well formed.
-    #[test]
-    fn one_non_utf8_byte_in_a_header_does_not_turn_a_200_into_a_failure() {
-        let mut resp: Vec<u8> = Vec::new();
-        resp.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Plex-Title: caf");
-        resp.push(0xE9); // 'é' in Latin-1 — a lone 0xE9 is not valid UTF-8 in any position
-        resp.extend_from_slice(b"\r\n\r\nhello");
-        let (port, h) = one_shot_server(resp);
-
-        let (mut hs, rv) = open_against(port);
-        assert_eq!(
-            rv, 0,
-            "a 200 must open, whatever bytes the other headers carry"
-        );
-        assert_eq!(
-            hs.status, 200,
-            "the status line is ASCII and was never in doubt"
-        );
-        assert_eq!(
-            hs.content_length, 5,
-            "…and Content-Length must survive the same way"
-        );
-
-        let mut body = Vec::new();
-        let mut chunk = [0u8; 16];
-        loop {
-            let r = http_read(&mut *hs, chunk.as_mut_ptr(), chunk.len() as c_int);
-            if r <= 0 {
-                break;
-            }
-            body.extend_from_slice(&chunk[..r as usize]);
-        }
-        assert_eq!(
-            body.as_slice(),
-            b"hello",
-            "the body must be delivered intact"
-        );
-        http_close(&mut *hs);
-        h.join().unwrap();
-    }
-
-    /// The status extraction indexed a fixed `[9..]`. On the old `&str` that panicked outright when
-    /// a multi-byte character straddled index 9 — a panic inside `http_open`, which runs on the
-    /// demux and poster workers as well as the main loop. A garbage status line must be REJECTED
-    /// (status 0 → open fails), never fatal.
-    #[test]
-    fn a_status_line_that_straddles_the_status_offset_is_rejected_not_fatal() {
-        // The 4-byte U+1F600 starts at index 7, so it OWNS index 9 — the old `&str[9..]` split it.
-        let (port, h) = one_shot_server("HTTP/1.\u{1F600} 200 OK\r\n\r\n".as_bytes().to_vec());
-
-        let (mut hs, rv) = open_against(port);
-        assert_eq!(rv, -1, "an unparseable status line must fail the open");
-        assert_eq!(hs.status, 0, "…with no status invented for it");
-        assert_eq!(
-            hs.fd(),
-            -1,
-            "a failed open retires its fd (see the leak test above)"
-        );
-        http_close(&mut *hs); // already closed by the failure path; keeps the intent explicit
-        h.join().unwrap();
-    }
-
-    /// Header field NAMES are case-insensitive (RFC 9110 §5.1) and PMS does not send one casing
-    /// consistently. The old code got that from lowercasing the whole block; `find_ci` has to give
-    /// it back, and — the part that matters to the caller — the offset it returns must index the
-    /// ORIGINAL bytes, since the value is read from there. Tested directly rather than through a
-    /// loopback round trip: it is a pure function, and every socket a test holds open is one the
-    /// fd-leak test above can miscount while the two run in parallel.
-    #[test]
-    fn header_names_are_found_whatever_their_casing() {
-        let hdr = b"HTTP/1.1 200 OK\r\nCONTENT-Length: 42\r\nTransfer-Encoding: chunked\r\n\r\n";
-        let p = find_ci(hdr, b"\r\ncontent-length:").expect("a shouted header name must be found");
-        assert_eq!(
-            &hdr[p + 17..p + 20],
-            b" 42",
-            "the offset must index the ORIGINAL bytes"
-        );
-        assert!(find_ci(hdr, b"\r\ntransfer-encoding: chunked").is_some());
-        assert!(
-            find_ci(hdr, b"\r\ncontent-range:").is_none(),
-            "no false positives"
-        );
-        assert!(
-            find_ci(b"HT", b"\r\ncontent-length:").is_none(),
-            "a needle longer than the hay"
-        );
-    }
-
-    /// The redaction rule these log lines rest on: what reaches the event log is the endpoint, and
-    /// a query string never is. `with_token` is "the ONLY place `X-Plex-Token` is appended"
-    /// (`plex/client.rs`'s own module doc) and it appends it to the QUERY, while the event log is
-    /// what a user pastes into a public issue thread — so this is graded on the token being
-    /// ABSENT, not on the split being pretty.
-    #[test]
-    fn a_logged_endpoint_drops_the_query_and_with_it_the_token() {
-        let p = "/library/metadata/4/children?includeChildren=1&X-Plex-Token=aBcD1234xyzQ";
-        assert_eq!(log_endpoint(p), "/library/metadata/4/children");
-        assert!(
-            !log_endpoint(p).contains("X-Plex-Token"),
-            "the token reached the log line"
-        );
-        assert!(!log_endpoint(p).contains("aBcD1234xyzQ"));
-        // A poster path arrives with the token already in it (`Client::fetch_built`).
-        let poster = "/photo/:/transcode?width=300&url=%2Flibrary%2F1&X-Plex-Token=aBcD1234xyzQ";
-        assert_eq!(log_endpoint(poster), "/photo/:/transcode");
-        assert_eq!(
-            log_endpoint("/identity"),
-            "/identity",
-            "a path with no query is itself"
-        );
-        assert_eq!(
-            log_endpoint("?X-Plex-Token=t"),
-            "",
-            "a path that is nothing but a query"
-        );
-    }
-
-    /// The completeness test itself. A body that reached its `Content-Length` reports nothing; one
-    /// that stopped short reports how far it got and what was owed, and names WHICH end it was —
-    /// a mid-body `SO_RCVTIMEO` (recv error) reads nothing like a peer that closed early (EOF),
-    /// which is why the read loops keep -1 and 0 apart rather than folding them into `r <= 0`.
-    #[test]
-    fn a_short_body_is_reported_and_a_complete_one_is_not() {
-        assert_eq!(
-            short_body_line("GET", "/hubs?X-Plex-Token=t", 5000, 5000, false, false),
-            None,
-            "a body that reached its length is whole"
-        );
-        assert_eq!(
-            short_body_line("GET", "/hubs", 5001, 5000, false, false),
-            None,
-            "…and one past it is not short either"
-        );
-
-        let l = short_body_line(
-            "GET",
-            "/hubs?X-Plex-Token=aBcD1234xyzQ",
-            900,
-            5000,
-            false,
-            false,
-        )
-        .expect("a body 900 bytes into a 5000-byte response must be reported");
-        assert!(l.contains("SHORT BODY got=900 want=5000"), "{l}");
-        assert!(
-            l.contains("/hubs") && !l.contains("aBcD1234xyzQ"),
-            "the line leaked the query: {l}"
-        );
-        assert!(
-            l.contains("EOF"),
-            "a clean end must not read as an error: {l}"
-        );
-
-        let e = short_body_line("POST", "/playQueues", 900, 5000, false, true).expect("reported");
-        assert!(
-            e.contains("recv error"),
-            "a recv error must be named as one: {e}"
-        );
-        assert!(
-            e.starts_with("stream: POST "),
-            "the verb belongs on the line: {e}"
-        );
-
-        // No length at all — a close-delimited body. A clean end is the ONLY end it has, so
-        // silence; an error is still an error, with nothing to state as `want`.
-        assert_eq!(short_body_line("GET", "/x", 900, -1, false, false), None);
-        let u = short_body_line("GET", "/x", 900, -1, false, true).expect("reported");
-        assert!(u.contains("got=900 want=? (recv error)"), "{u}");
-    }
-
-    /// Chunked framing has no `Content-Length` to fall short of, and `http_read`'s chunked branch
-    /// counts DECODED bytes into `consumed` without ever reading the field — so the length test
-    /// must not run there, INCLUDING for a server that sent both headers, where the two numbers
-    /// are not the same quantity. Only a recv error can call a chunked transfer incomplete.
-    #[test]
-    fn a_chunked_response_cannot_report_a_short_body_on_length() {
-        assert_eq!(
-            short_body_line("GET", "/x", 900, -1, true, false),
-            None,
-            "the ordinary chunked case: no length, clean end"
-        );
-        assert_eq!(
-            short_body_line("GET", "/x", 900, 5000, true, false),
-            None,
-            "both headers present — the chunked framing wins, the length means nothing"
-        );
-        let e = short_body_line("GET", "/x", 900, 5000, true, true).expect("reported");
-        assert!(
-            e.contains("want=?"),
-            "a chunked transfer owes no stated length: {e}"
-        );
-    }
-
-    /// The v6 sibling of the two connect tests above, on a real AF_INET6 socket: a live `::1`
-    /// listener connects and is handed back BLOCKING (every read path below depends on that, and
-    /// `connect_timeout` restores the flags itself), and a `::1` port with no listener is refused
-    /// at once rather than waited out. Neither is inferrable from the v4 pair — a family this file
-    /// never opened before is exactly where a wrong `socklen_t` or a stray `sockaddr_in` cast shows
-    /// up, and it shows up as a `connect` that fails for a reason nothing logs.
-    #[test]
-    fn a_v6_listener_connects_blocking_and_a_v6_refusal_is_immediate() {
-        let Some(srv) = v6_loopback_or_skip("the AF_INET6 connect pair") else {
-            return;
-        };
-        let port = srv.local_addr().unwrap().port();
-
-        let sa = sockaddr6(std::net::Ipv6Addr::LOCALHOST, port);
-        let fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_STREAM, 0) };
-        assert!(
-            fd >= 0,
-            "AF_INET6 sockets must be creatable — the loopback bound above"
-        );
-        assert_eq!(
-            unsafe { connect_v6(fd, &sa, 2_000) },
-            0,
-            "a listening ::1 socket must connect"
-        );
-        let fl = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
-        assert_eq!(
-            fl & libc::O_NONBLOCK,
-            0,
-            "O_NONBLOCK leaked out of the v6 handshake"
-        );
-        unsafe { libc::close(fd) };
-
-        let sa = sockaddr6(std::net::Ipv6Addr::LOCALHOST, 1); // nothing listens on ::1:1
-        let fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_STREAM, 0) };
-        let t0 = Instant::now();
-        let r = unsafe { connect_v6(fd, &sa, 5_000) };
-        let waited = t0.elapsed();
-        unsafe { libc::close(fd) };
-        assert_eq!(
-            r, -1,
-            "SO_ERROR must be consulted on v6 too — a writable socket is not connected"
-        );
-        assert!(
-            waited.as_millis() < 2_000,
-            "a refusal should be immediate, waited {waited:?}"
-        );
-    }
-
-    /// The bracket asymmetry, which is the single easiest thing to get backwards here: the URI
-    /// authority carries them (RFC 3986 §3.2.2, and so `Host:` does — RFC 9110 §7.2), the RESOLVER
-    /// does not. `getaddrinfo("[::1]", …)` is EAI_NONAME, so passing the authority form through
-    /// would make every IPv6 server read as "does not resolve".
-    #[test]
-    fn a_v6_literal_is_bracketed_for_the_host_header_and_bare_for_the_resolver() {
-        assert_eq!(resolver_node("[2001:db8::1]"), "2001:db8::1");
-        assert_eq!(
-            resolver_node("2001:db8::1"),
-            "2001:db8::1",
-            "already bare: unchanged"
-        );
-        assert_eq!(resolver_node("nas.local"), "nas.local");
-        assert_eq!(resolver_node("192.0.2.10"), "192.0.2.10");
-
-        assert_eq!(
-            host_header("2001:db8::1", 32400),
-            "[2001:db8::1]:32400",
-            "a bare v6 literal must be bracketed for the authority"
-        );
-        assert_eq!(
-            host_header("[2001:db8::1]", 32400),
-            "[2001:db8::1]:32400",
-            "…and one that arrived bracketed must not be double-bracketed"
-        );
-        assert_eq!(host_header("nas.local", 32400), "nas.local:32400");
-        assert_eq!(host_header("192.0.2.10", 32400), "192.0.2.10:32400");
-        assert_eq!(host_header("::1", 80), "[::1]:80");
-    }
-
-    /// Which `getaddrinfo` flag a host takes turns on this, and getting it wrong is silent: a
-    /// literal misfiled as a name goes to DNS (and, under `AI_ADDRCONFIG`, can resolve to nothing
-    /// at all), while a name misfiled as a literal fails outright under `AI_NUMERICHOST`.
-    #[test]
-    fn an_address_literal_is_told_apart_from_a_name() {
-        for a in [
-            "127.0.0.1",
-            "192.0.2.10",
-            "::1",
-            "2001:db8::1",
-            "fe80::1%en0",
-        ] {
-            assert!(is_numeric_host(a), "{a} is an address literal");
-        }
-        for n in [
-            "nas.local",
-            "plex.example.org",
-            "localhost",
-            "999.1.2.3",
-            "1.2.3",
-            "1.2.3.4.5",
-        ] {
-            assert!(!is_numeric_host(n), "{n} is not an address literal");
-        }
-    }
-
-    /// `AI_ADDRCONFIG` suppresses AF_INET6 results on a host whose only IPv6 address is loopback —
-    /// which is most developer machines — so a v6 LITERAL must not be resolved under it. This is
-    /// the assertion behind `resolve`'s flag split; without it `::1` resolves to nothing on a
-    /// perfectly healthy machine and every v6 case below fails for a reason that looks like ours.
-    /// Both of these are purely local: `AI_NUMERICHOST` sends no packet and loads no NSS module.
-    #[test]
-    fn an_address_literal_resolves_without_a_resolver() {
-        assert!(
-            unsafe { resolve("127.0.0.1", 80) }.is_some(),
-            "a v4 literal must resolve"
-        );
-        assert!(
-            unsafe { resolve("::1", 80) }.is_some(),
-            "a v6 literal must resolve — if this fails, AI_ADDRCONFIG leaked onto a literal"
-        );
-        assert!(
-            unsafe { resolve("2001:db8::1", 80) }.is_some(),
-            "a non-loopback v6 literal too"
-        );
-
-        // An out-of-range port FAILS instead of wrapping into a plausible one — 70000 used to dial
-        // 4464. Note what this is asserting: `resolve`'s OWN range check, not `AI_NUMERICSERV`'s.
-        // Darwin rejects the service string and glibc does not, so had this been left to the
-        // resolver the assertion would have passed here and the app would still have truncated on
-        // the television. It is the shape this file's own notes warn about — a green host run about
-        // a platform difference — and it was caught in review, not by the suite.
-        assert!(
-            unsafe { resolve("127.0.0.1", 70_000) }.is_none(),
-            "an out-of-range port must fail, not truncate into a dialable one"
-        );
-        assert!(
-            unsafe { resolve("127.0.0.1", 65_536) }.is_none(),
-            "…one past the top"
-        );
-        assert!(
-            unsafe { resolve("127.0.0.1", -1) }.is_none(),
-            "…nor a negative one"
-        );
-        assert!(
-            unsafe { resolve("127.0.0.1", 65_535) }.is_some(),
-            "…and the top itself is fine"
-        );
-    }
-
-    /// IPv6 end to end, which is checklist #43 CASE2: a listener on `::1`, an AF_INET6 socket
-    /// opened because the RESOLVER said so, a 200 read back, and — the half a connect alone cannot
-    /// show — a bracketed `Host:` on the wire. Both spellings of the host reach the same server,
-    /// since `plex::probe::host_of` hands back the bracketed one.
-    #[test]
-    fn a_v6_literal_connects_and_sends_a_bracketed_host_header() {
-        let Some(listener) = v6_loopback_or_skip("the IPv6 end-to-end open") else {
-            return;
-        };
-        drop(listener); // proven bindable; `one_shot_echo` needs the address for itself
-
-        for host in ["::1", "[::1]"] {
-            let (port, h) = one_shot_echo(
-                "[::1]:0",
-                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi".to_vec(),
-            )
-            .expect("bind ::1");
-            let (mut hs, rv) = open_host_against(host, port);
-            assert_eq!(rv, 0, "{host}: an IPv6 server must open");
-            assert_eq!(hs.status, 200, "{host}");
-
-            let mut buf = [0u8; 8];
-            let n = http_read(&mut *hs, buf.as_mut_ptr(), buf.len() as c_int);
-            assert_eq!(
-                &buf[..n.max(0) as usize],
-                b"hi",
-                "{host}: the body must come back intact"
-            );
-            http_close(&mut *hs);
-
-            let req = h.join().unwrap();
-            assert_eq!(
-                host_line(&req),
-                format!("Host: [::1]:{port}"),
-                "{host}: the authority form is bracketed whichever spelling was handed in"
-            );
-        }
-    }
-
-    /// A NAME, which is the other half of the limitation being removed — and the three things that
-    /// have to hold at once for one to work. `localhost` resolves to both families on every machine
-    /// this runs on, while the listener is bound to 127.0.0.1 ONLY, so on a host that offers `::1`
-    /// first this only passes by WALKING past a refused address to a live one.
-    ///
-    /// And `Host:` must carry the name. Sending the address it resolved to instead is what breaks
-    /// name-based virtual hosting, and it is invisible from the connect: the TCP session is
-    /// identical either way.
-    #[test]
-    fn a_hostname_resolves_and_the_host_header_carries_the_name_not_the_address() {
-        let (port, h) = one_shot_echo(
-            "127.0.0.1:0",
-            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
-        )
-        .expect("bind 127.0.0.1");
-        let (mut hs, rv) = open_host_against("localhost", port);
-        assert_eq!(
-            rv, 0,
-            "a name the system resolves must open — this is the whole DNS gap"
-        );
-        assert_eq!(hs.status, 200);
-        http_close(&mut *hs);
-
-        let req = h.join().unwrap();
-        assert_eq!(
-            host_line(&req),
-            format!("Host: localhost:{port}"),
-            "the Host header is the ORIGIN; a resolved address here breaks vhosting"
-        );
-    }
-
-    /// The v4 literal path still says what it always said — the regression guard for every existing
-    /// caller, all of which hand `http_open` a dotted quad.
-    #[test]
-    fn a_v4_literal_still_sends_its_own_address_as_the_host_header() {
-        let (port, h) = one_shot_echo(
-            "127.0.0.1:0",
-            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
-        )
-        .expect("bind");
-        let (mut hs, rv) = open_against(port);
-        assert_eq!(rv, 0);
-        http_close(&mut *hs);
-        assert_eq!(
-            host_line(&h.join().unwrap()),
-            format!("Host: 127.0.0.1:{port}")
-        );
-    }
-
-    /// Resolving to several addresses and dialling only the first is the old single-address limit
-    /// wearing a resolver. The chain here is built by hand rather than resolved, because which
-    /// addresses a name yields and in what order is the machine's business and not something a test
-    /// can arrange: a REFUSED v6 loopback port first, a live v4 listener second. It is also a
-    /// mixed-family chain on purpose — the socket family comes from each node, so a walk that
-    /// assumed AF_INET would open the wrong socket for the first, and one that assumed AF_INET6
-    /// would open the wrong socket for the second.
-    #[test]
-    fn the_whole_address_chain_is_walked_until_one_connects() {
-        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = srv.local_addr().unwrap().port();
-
-        let mut dead = sockaddr6(std::net::Ipv6Addr::LOCALHOST, 1); // nothing listens on ::1:1
-        let mut live = sockaddr([127, 0, 0, 1], port);
-        let mut second = ainfo(
-            libc::AF_INET,
-            &mut live as *mut _ as *mut libc::sockaddr,
-            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-            std::ptr::null_mut(),
-        );
-        let first = ainfo(
-            libc::AF_INET6,
-            &mut dead as *mut _ as *mut libc::sockaddr,
-            std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
-            &mut second,
-        );
-
-        let hs = http_stream_boxed();
-        let fd = unsafe { connect_any(&hs, &first, 2_000) };
-        assert!(
-            fd >= 0,
-            "the walk stopped at the first dead address instead of trying the second"
-        );
-        assert_eq!(
-            hs.fd(),
-            fd,
-            "the connected fd must be left PUBLISHED for http_shutdown to reach"
-        );
-        let _peer = srv
-            .accept()
-            .expect("the live address must actually have been dialled");
-        unsafe { close_owned(&hs) };
-    }
-
-    /// …and a chain with nothing live fails as one failure, leaving no descriptor behind: every
-    /// attempt has to be retired through `close_owned`, not bare-closed and not simply abandoned.
-    #[test]
-    fn a_chain_with_no_live_address_fails_closed_and_leaks_nothing() {
-        let before = open_fd_count();
-        for _ in 0..64 {
-            let mut a = sockaddr([127, 0, 0, 1], 1);
-            let mut b = sockaddr([127, 0, 0, 1], 1);
-            let mut second = ainfo(
-                libc::AF_INET,
-                &mut b as *mut _ as *mut libc::sockaddr,
-                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-                std::ptr::null_mut(),
-            );
-            let first = ainfo(
-                libc::AF_INET,
-                &mut a as *mut _ as *mut libc::sockaddr,
-                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-                &mut second,
-            );
-            let hs = http_stream_boxed();
-            assert_eq!(
-                unsafe { connect_any(&hs, &first, 2_000) },
-                -1,
-                "nothing here can connect"
-            );
-            assert_eq!(
-                hs.fd(),
-                -1,
-                "a spent walk must leave the stream CLOSED, not published"
-            );
-        }
-        // Same slack, and the same reason, as `every_failed_open_retires_its_fd_and_leaks_nothing`:
-        // `open_fd_count` is PROCESS-wide and this suite runs in parallel, so the sibling socket
-        // tests hold descriptors open across this window and the reading drifts by a handful either
-        // way — measured at +9 against a first draft that allowed +8, on a run with nothing wrong.
-        // The separation is what makes the gate mean something rather than the tightness: 64 rounds
-        // of a two-address walk leak 128 descriptors if a single `close_owned` is missed, which is
-        // most of an order of magnitude clear of the noise.
-        let after = open_fd_count();
-        assert!(
-            after <= before + 24,
-            "the walk leaked descriptors: {before} -> {after}"
-        );
-    }
-
-    /// A teardown mid-open must not be ANSWERED by dialling the next address — that would consume
-    /// the interrupt and hand a caller being torn down a brand-new connection, quietly undoing the
-    /// interruptibility the publish-before-connect invariant exists to give.
-    ///
-    /// The latch is armed here instead of raced, deliberately: `shutdown(2)` aborting a handshake in
-    /// progress is TRUE on the TV's kernel and NOT on the Darwin host these tests run on
-    /// (`tools/sockprobe.c`), so timing the real interrupt would be asserting the host's behaviour.
-    /// What is portable, and what actually decides the outcome, is the branch — a failed attempt
-    /// plus a latched interrupt stops the walk — and `http_shutdown` is the real API that arms it,
-    /// including with the fd already retired, which is the between-attempts window.
-    #[test]
-    fn an_interrupted_walk_does_not_dial_the_next_address() {
-        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        srv.set_nonblocking(true).expect("nonblocking accept");
-        let port = srv.local_addr().unwrap().port();
-
-        let mut dead = sockaddr([127, 0, 0, 1], 1);
-        let mut live = sockaddr([127, 0, 0, 1], port);
-        let mut second = ainfo(
-            libc::AF_INET,
-            &mut live as *mut _ as *mut libc::sockaddr,
-            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-            std::ptr::null_mut(),
-        );
-        let first = ainfo(
-            libc::AF_INET,
-            &mut dead as *mut _ as *mut libc::sockaddr,
-            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-            &mut second,
-        );
-
-        let mut hs = http_stream_boxed();
-        http_shutdown(&mut *hs); // a teardown with no descriptor to shoot: the latch is the point
-        assert!(
-            hs.interrupted(),
-            "http_shutdown must latch even when the fd is already -1"
-        );
-
-        assert_eq!(
-            unsafe { connect_any(&hs, &first, 2_000) },
-            -1,
-            "an interrupted walk fails"
-        );
-        assert_eq!(hs.fd(), -1);
-        assert!(
-            matches!(srv.accept(), Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock),
-            "the second address was dialled anyway — the teardown was answered with a connection"
-        );
-    }
-
-    /// …and the latch is per-request state: the next `http_open` on the same stream must not
-    /// inherit the last teardown, or one interrupted open would poison the reused struct for good.
-    /// (`player::engine` pre-allocates its streams and reopens them for the life of a playback.)
-    #[test]
-    fn a_new_open_clears_the_interrupt_from_the_last_one() {
-        let (port, h) = one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec());
-        let mut hs = http_stream_boxed();
-        http_shutdown(&mut *hs);
-        assert!(hs.interrupted());
-
-        let ip = std::ffi::CString::new("127.0.0.1").unwrap();
-        let path = std::ffi::CString::new("/x").unwrap();
-        let rv = http_open(
-            &mut *hs,
-            ip.as_ptr(),
-            port as c_int,
-            path.as_ptr(),
-            std::ptr::null(),
-            "GET",
-        );
-        assert_eq!(rv, 0, "a stale interrupt must not fail the next open");
-        assert!(!hs.interrupted(), "the latch belongs to one request");
-        http_close(&mut *hs);
-        h.join().unwrap();
-    }
-
-    /// The chunked detection was `find_ci(hdr, b"\r\ntransfer-encoding: chunked")` — one exact
-    /// spelling, single space, single token. Every other legal way to write the same header missed,
-    /// and a miss is not a failure: the body is then read as close-delimited with the chunk-size
-    /// lines left INLINE in it, i.e. silent corruption of whatever the caller parses next.
-    #[test]
-    fn chunked_is_recognised_however_the_header_is_spelled() {
-        let hdr = |te: &str| format!("HTTP/1.1 200 OK\r\n{te}\r\n\r\n").into_bytes();
-        for te in [
-            "Transfer-Encoding: chunked",   // the one spelling that already worked
-            "Transfer-Encoding:chunked",    // OWS after the colon is OPTIONAL (RFC 9110 §5.6.3)
-            "Transfer-Encoding:   chunked", // …and may be more than one
-            "Transfer-Encoding: chunked ",  // trailing OWS is not part of the value
-            "Transfer-Encoding: Chunked",   // the VALUE is case-insensitive too (§10.1.4)
-            "transfer-encoding: CHUNKED",
-            "Transfer-Encoding: gzip, chunked", // the legal list form: chunked applied LAST
-            "Transfer-Encoding: chunked, gzip", // malformed per §6.1, but the framing IS chunked
-            "Transfer-Encoding: gzip\r\nTransfer-Encoding: chunked", // a list split across lines
-        ] {
-            assert!(header_is_chunked(&hdr(te)), "missed: {te}");
-        }
-        for te in [
-            "Transfer-Encoding: gzip",
-            "Transfer-Encoding: chunkedy", // a token that merely starts the same way
-            "Transfer-Encoding: xchunked",
-            "Content-Length: 5",
-            "X-Chunked: chunked", // not the field this decides on
-        ] {
-            assert!(!header_is_chunked(&hdr(te)), "false positive: {te}");
-        }
-        // Termination, not just correctness: a block whose last line has no CRLF must still end the
-        // scan rather than spin on the same offset.
-        assert!(!header_is_chunked(
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip"
-        ));
-        assert!(header_is_chunked(
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked"
-        ));
-        assert!(!header_is_chunked(b""));
-    }
-
-    /// …and the spelling reaches the READ path, not merely the predicate. A server answering
-    /// `Transfer-Encoding:chunked` (no space) used to hand its caller `4\r\nabcd\r\n0\r\n\r\n`
-    /// verbatim — a body that parses as neither JSON nor a media stream, from a healthy server.
-    #[test]
-    fn a_chunked_body_spelled_without_a_space_is_still_decoded() {
-        let (port, h) = one_shot_server(
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding:chunked\r\n\r\n4\r\nabcd\r\n3\r\nefg\r\n0\r\n\r\n".to_vec());
-        let r = loopback_get(port).expect("a 200 must open");
-        assert_eq!(
-            (r.status, r.body.as_slice()),
-            (200, &b"abcdefg"[..]),
-            "the chunk framing was left in the body"
-        );
-        h.join().unwrap();
-    }
-
-    /// The constraint the reporting is bound by: it is observability only. A server that promises
-    /// 10 bytes and closes after 4 still hands the caller those 4 bytes as `Some(body)`, so what
-    /// the data layer does with them (`get_json`'s serde failure, `.ok()`-folded to `None`) is
-    /// decided exactly where it was — the event log is the only thing that gained a fact.
-    #[test]
-    fn a_truncated_body_is_still_returned_to_the_caller() {
-        let (port, h) =
-            one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabcd".to_vec());
-        let r = loopback_get(port)
-            .expect("a truncated body is still a body — this must not become None");
-        assert_eq!(
-            r.body.as_slice(),
-            b"abcd",
-            "the bytes that did arrive must be handed over intact"
-        );
-        assert_eq!(
-            r.status, 200,
-            "…and the server's own verdict travels beside them"
-        );
-        h.join().unwrap();
-    }
-
-    /// **A non-2xx is a RESPONSE, and it must arrive as one.** The wrapper these two tests used to
-    /// call answered `None` here, indistinguishable from a refused connection — the collapse the
-    /// whole `plex::probe::Outcome` model is built to avoid, and the reason `crate::http` replaced
-    /// it. Graded against a real socket rather than against the header parser, because what is
-    /// being asserted is the composition: `http_open` reports the failure through its return value
-    /// and leaves the code on the struct, and only reading `hs_status` afterwards recovers it.
-    #[test]
-    fn a_401_reaches_the_caller_as_a_status_and_not_as_a_transport_failure() {
-        let (port, h) =
-            one_shot_server(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_vec());
-        let r = loopback_get(port).expect("the server ANSWERED — that is not a transport failure");
-        assert_eq!(r.status, 401);
-        assert!(!r.ok(), "…and it is still not a success");
-        h.join().unwrap();
-    }
-
-    /// Regression: the caller used to receive only `-1` and infer `deadline` afterwards. A valid
-    /// PMS 500 parsed just before that caller was descheduled across the boundary therefore wore a
-    /// timeout and triggered a reserve retry. The transport has the exact status while parsing the
-    /// head; crossing the clock afterwards cannot erase that fact.
-    #[test]
-    fn a_500_response_remains_a_status_after_its_deadline_passes() {
-        let (port, h) = one_shot_server(
-            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_vec(),
-        );
-        let host = std::ffi::CString::new("127.0.0.1").unwrap();
-        let path = std::ffi::CString::new("/boundary").unwrap();
-        let mut hs = http_stream_boxed();
-        let deadline = Instant::now() + std::time::Duration::from_millis(250);
-
-        let result = http_open_until_result(
-            &mut *hs,
-            host.as_ptr(),
-            port as c_int,
-            path.as_ptr(),
-            std::ptr::null(),
-            "GET",
-            deadline,
-        );
-        h.join().unwrap();
-        let until_boundary = deadline.saturating_duration_since(Instant::now());
-        if !until_boundary.is_zero() {
-            std::thread::sleep(until_boundary + std::time::Duration::from_millis(10));
-        }
-
-        assert!(
-            Instant::now() >= deadline,
-            "the fixture did not cross its deadline"
-        );
-        assert_eq!(
-            result,
-            Err(HttpOpenError::Status(500)),
-            "a known server response must not become a retrospective timeout"
-        );
-        assert_eq!(
-            hs_status(&*hs),
-            500,
-            "the response code must also remain observable on hs"
-        );
-        assert_eq!(
-            hs.fd(),
-            -1,
-            "a rejected response must retire the published fd"
-        );
-    }
-
-    /// Nothing listening is the OTHER outcome, and it must not wear a status. `0` is what
-    /// `http_open`'s parser leaves when no `HTTP/1.x NNN` line ever arrived, and `crate::http`
-    /// turns that into `None` so a caller cannot read it as a refusal (`classify` would score it
-    /// `Unreachable` either way, but by luck rather than by decision).
-    #[test]
-    fn a_connection_that_never_answers_is_none_rather_than_a_status_of_zero() {
-        // Bind and drop, so the port is one nothing is listening on any more.
-        let port = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-            l.local_addr().expect("addr").port()
-        };
-        assert!(loopback_get(port).is_none());
-    }
-}
+#[path = "stream_test_support.rs"]
+mod test_support;
+
+#[cfg(test)]
+#[path = "stream_deadline_connect_tests.rs"]
+mod deadline_connect_tests;
+
+#[cfg(test)]
+#[path = "stream_header_body_tests.rs"]
+mod header_body_tests;
+
+#[cfg(test)]
+#[path = "stream_ipv6_resolution_tests.rs"]
+mod ipv6_resolution_tests;
+
+#[cfg(test)]
+#[path = "stream_keepalive_reuse_tests.rs"]
+mod keepalive_reuse_tests;
+
+#[cfg(test)]
+#[path = "stream_chunked_drain_tests.rs"]
+mod chunked_drain_tests;

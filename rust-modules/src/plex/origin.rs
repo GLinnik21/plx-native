@@ -100,6 +100,46 @@ impl Scheme {
 /// The port a PMS origin means when its URL names none. See the module doc: 32400, not 80/443.
 pub const DEFAULT_PORT: i32 = 32400;
 
+/// **The one authority for "may a credential ride this origin" — the single rule, wherever it is
+/// asked.** Every caller that used to carry its own `cfg!(feature = "devtriggers")` (the http
+/// guard, the curlio media twin, the probe activation gate) now asks THIS type instead, and
+/// [`CredentialPolicy::build`] is the ONLY place the cfg still lives.
+///
+/// A store build is [`CredentialPolicy::HttpsOnly`]: a token may only ride a TLS origin. A
+/// developer build (`devtriggers`) is [`CredentialPolicy::AllowPlaintext`]: the rule exists so a
+/// lane with no TLS server of its own can still exercise the credentialed path against a plain
+/// `dev::DevServer`. Nothing about WHICH origin is eligible ever depends on where the policy came
+/// from — a pure function receives it as a parameter, and only the two live edges that talk to the
+/// real registry (`auth::resolve_roster_live_while`, `auth::probe_profile_resource_live`) call
+/// [`build`](CredentialPolicy::build) themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialPolicy {
+    /// A store build: only a TLS origin may ever carry a credential.
+    HttpsOnly,
+    /// A developer build: any origin may, matching every build's behaviour before this type
+    /// existed.
+    AllowPlaintext,
+}
+
+impl CredentialPolicy {
+    /// The build's own policy — **the only `cfg!` for this rule in the whole crate.** Every other
+    /// caller either receives this value as a parameter (a pure function) or calls this directly
+    /// at a live edge; nothing else re-derives it.
+    pub const fn build() -> Self {
+        if cfg!(feature = "devtriggers") {
+            CredentialPolicy::AllowPlaintext
+        } else {
+            CredentialPolicy::HttpsOnly
+        }
+    }
+
+    /// May a credential ride `origin` under this policy? TLS always; plaintext only under
+    /// [`CredentialPolicy::AllowPlaintext`].
+    pub fn may_carry_credential(self, origin: &Origin) -> bool {
+        origin.is_tls() || self == CredentialPolicy::AllowPlaintext
+    }
+}
+
 /// **One server's address, completely.** Scheme, host and port — no path, no query, no trailing
 /// slash. See the module doc for the bracket invariant on [`Origin::host`] vs [`Origin::authority`].
 #[derive(Debug, Clone, PartialEq, Eq)]

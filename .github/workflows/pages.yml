@@ -1,0 +1,177 @@
+# SEQUENCING REQUIREMENT: this repo's Pages source is currently "Deploy from a
+# branch" (legacy, building docs/ with Jekyll), not "GitHub Actions". This
+# workflow only takes effect once an owner with admin access switches the
+# Pages source to GitHub Actions in Settings > Pages.
+#
+# The commit that adds this workflow also deletes docs/index.html and
+# docs/.nojekyll (the landing page moved to site/). If that commit is pushed
+# to main BEFORE the Pages source is switched, the legacy Jekyll build will
+# run over docs/ with no index page and the live site will 404 or render the
+# docs/ tree until the switch happens. Switch the Pages source to Actions
+# FIRST, then push this commit (or push and switch in the same sitting) —
+# never push it against a still-legacy source and leave it there.
+#
+# Verify the current source with:
+#   gh api repos/<owner>/<repo>/pages --jq .build_type
+# It should read "workflow" once the switch is done; "legacy" means the
+# ordering above still needs to happen.
+name: Deploy landing page
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "docs/screenshots/**"
+      - "assets/logo-master.png"
+      - "pkg/appfont.ttf"
+      - "pkg/appfont-bold.ttf"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+
+      - name: Stage _site
+        run: |
+          set -euo pipefail
+
+          mkdir -p _site/media
+          mkdir -p _site/assets
+          mkdir -p _site/docs/screenshots
+          mkdir -p _site/fonts
+
+          cp site/index.html _site/index.html
+          cp site/styles.css _site/styles.css
+          cp site/site.js _site/site.js
+          cp site/CNAME _site/CNAME
+
+          cp site/media/feel-1080p60.av1.mp4 _site/media/feel-1080p60.av1.mp4
+          cp site/media/feel-1080p60.h264.mp4 _site/media/feel-1080p60.h264.mp4
+          cp site/media/feel-poster.jpg _site/media/feel-poster.jpg
+          cp site/media/closeup-glass.jpg _site/media/closeup-glass.jpg
+          cp site/media/closeup-glass-narrow.jpg _site/media/closeup-glass-narrow.jpg
+          cp site/media/closeup-tiles.jpg _site/media/closeup-tiles.jpg
+          cp site/media/closeup-player.jpg _site/media/closeup-player.jpg
+
+          cp assets/logo-master.png _site/assets/logo-master.png
+
+          cp docs/screenshots/home.jpg _site/docs/screenshots/home.jpg
+
+          cp pkg/appfont.ttf _site/fonts/appfont.ttf
+          cp pkg/appfont-bold.ttf _site/fonts/appfont-bold.ttf
+
+      - name: Check for missing assets
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          import sys
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          site = Path("_site")
+
+          def local_refs(text):
+              refs = set()
+              for m in re.finditer(r'''(?:src|srcset|href|poster|data-img)\s*=\s*["']([^"']+)["']''', text):
+                  refs.add(m.group(1))
+              for m in re.finditer(r'''url\(\s*["']?([^"')]+)["']?\s*\)''', text):
+                  refs.add(m.group(1))
+              return refs
+
+          def is_local(ref):
+              ref = ref.strip()
+              if not ref:
+                  return False
+              if ref.startswith("#"):
+                  return False
+              if ref.startswith("mailto:") or ref.startswith("tel:") or ref.startswith("data:"):
+                  return False
+              scheme = urlsplit(ref).scheme
+              if scheme in ("http", "https"):
+                  return False
+              return True
+
+          sources = [site / "index.html", site / "styles.css", site / "site.js"]
+          all_refs = set()
+          for src in sources:
+              if src.exists():
+                  all_refs |= local_refs(src.read_text(encoding="utf-8"))
+
+          local_ref_count = 0
+          missing = []
+          escaped = []
+          for ref in sorted(all_refs):
+              if not is_local(ref):
+                  continue
+              clean = ref.split("#", 1)[0].split("?", 1)[0]
+              if not clean:
+                  continue
+              local_ref_count += 1
+              resolved = (site / clean).resolve()
+              try:
+                  resolved.relative_to(site.resolve())
+              except ValueError:
+                  # Reference escapes _site entirely: always a failure.
+                  escaped.append((ref, str(resolved)))
+                  continue
+              if not resolved.exists():
+                  missing.append((ref, str(resolved)))
+
+          if escaped:
+              print("Local assets referenced outside the staged site:")
+              for ref, resolved in escaped:
+                  print(f"  {ref} -> {resolved}")
+
+          if missing:
+              print("Missing local assets referenced from the staged site:")
+              for ref, resolved in missing:
+                  print(f"  {ref} -> {resolved}")
+
+          if missing or escaped:
+              sys.exit(1)
+
+          print(f"All {local_ref_count} local references resolved under _site/.")
+          PYEOF
+
+      - name: Add .nojekyll
+        run: touch _site/.nojekyll
+
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: _site
+          # This action's tar step excludes dotfiles unless told otherwise;
+          # without this, the .nojekyll file above never reaches the deploy.
+          include-hidden-files: true
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5

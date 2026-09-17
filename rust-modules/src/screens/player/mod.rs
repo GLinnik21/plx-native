@@ -64,7 +64,7 @@ pub(crate) const WORD: &str = "player";
 pub(crate) const SHAPE: &str =
     "PlayerScreen{hud:{focus:i32,btn:i32,tab:i32,until:u32,dismissed:bool,visible_at_press:bool,\
      offer:Option<(u32,i64)>,was_standin:bool},scrub:{dir:i32,hold:bool,reveal:bool,drag:bool,\
-     ns:i64,commit_at:u32},origin:Option<u32>}";
+     ns:i64,commit_at:u32},origin:Option<u32>,repair_alert:{open:bool,confirm:bool}}";
 
 /// **The page this playback was launched from**, as the container's own identity.
 ///
@@ -130,6 +130,8 @@ pub(crate) struct PlayerScreen {
     /// Where this playback returns to — see [`Origin`].
     pub(crate) origin: Option<Origin>,
     render: PlayerRender,
+    repair_alert: crate::ui::decision_alert::DecisionAlert,
+    repair_frames: std::cell::Cell<Option<(Rect, Rect)>>,
 }
 
 impl PlayerScreen {
@@ -146,6 +148,12 @@ impl PlayerScreen {
             lifted: false,
             origin: None,
             render: PlayerRender::default(),
+            repair_alert: {
+                let mut alert = crate::ui::decision_alert::DecisionAlert::new();
+                alert.set_tone(crate::ui::decision_alert::Tone::Neutral);
+                alert
+            },
+            repair_frames: std::cell::Cell::new(None),
         }
     }
 
@@ -311,6 +319,10 @@ const GROUP_SCRUB: GroupId = GroupId(0);
 const GROUP_ROW: GroupId = GroupId(1);
 const GROUP_TABS: GroupId = GroupId(2);
 const GROUP_FAILURE: GroupId = GroupId(3);
+const GROUP_REPAIR: GroupId = GroupId(4);
+const REPAIR_CANCEL: u32 = 40_000;
+const REPAIR_CONFIRM: u32 = REPAIR_CANCEL + 1;
+const REPAIR_BODY: &str = "Use Homebrew Channel’s root access to update PlxNative’s sandbox with LG’s native profile. This requires a rooted TV. Close and reopen PlxNative afterward.";
 
 impl<H: PlayerLike> Machine<H> for PlayerScreen {
     type Ev = ScreenEvent<H>;
@@ -354,8 +366,42 @@ impl<H: PlayerLike> Machine<H> for PlayerScreen {
     /// this the stop landed on `key_ok`'s final `else` and toggled play/pause, and the drag flag
     /// was a field of the loop's pointer machine whose producer had become unreachable.
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        if self.repair_alert.visible() {
+            match ev {
+                ScreenEvent::FocusMoved { to, .. } => {
+                    self.repair_alert.set_choice(if to.elem == REPAIR_CONFIRM { crate::ui::decision_alert::Choice::Destructive } else { crate::ui::decision_alert::Choice::Cancel });
+                    return Handled::Yes;
+                }
+                ScreenEvent::PressCommit(_) => {
+                    if let Some(key) = cx.focus.current {
+                        if matches!(key.elem, REPAIR_CANCEL | REPAIR_CONFIRM) {
+                            self.repair_answer(key.elem == REPAIR_CONFIRM, fx);
+                        }
+                    }
+                    return Handled::Yes;
+                }
+                ScreenEvent::Activate(_) => return Handled::Yes,
+                ScreenEvent::Input(input) => {
+                    if !self.repair_alert.is_open() { return Handled::Yes; }
+                    return match input.kind {
+                        InputKind::Key { sym, wcode, edge, .. } => match consts::classify(sym, wcode) {
+                            consts::Key::Back | consts::Key::Stop if edge == Edge::Down => {
+                                self.repair_answer(false, fx); Handled::Yes
+                            }
+                            consts::Key::Left { .. } | consts::Key::Right { .. } | consts::Key::Ok | consts::Key::Exit => Handled::No,
+                            _ => Handled::Yes,
+                        },
+                        InputKind::Pointer { .. } | InputKind::Click { .. } => Handled::No,
+                        _ => Handled::Yes,
+                    };
+                }
+                _ => {}
+            }
+        }
         match ev {
             ScreenEvent::Tick(tick) => {
+                if self.repair_alert.visible() && !H::session(cx).jail_load_blocked { self.repair_alert.close(); }
+                self.repair_alert.update(tick.dt());
                 // The control row's springs and the resume clock are stepped once per FRAME and
                 // never from `draw_hud` — this row is not drawn on every frame of the route, so a
                 // spring advanced in the draw would run at a rate that depended on which overlay
@@ -418,6 +464,34 @@ impl PlayerScreen {
         fx.push(Fx::App(AppFx::Player(req)));
     }
 
+    fn repair_focus<H: AppLike>(fx: &mut Effects<'_, H>, group: GroupId) {
+        fx.push(Fx::Deliver(
+            fx.from(),
+            crate::ui::machine::Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
+                focus: crate::ui::screen::FocusTarget::ContainerGroup(group),
+            })),
+        ));
+    }
+    fn failure_action<H: AppLike>(&mut self, ps: &crate::route::PlaybackSession, fx: &mut Effects<'_, H>) {
+        if crate::player::error_now(ps).kind == crate::player::FailureKind::JailMissingRtkmem {
+            if ps.repair_status == crate::webos::jail_repair::State::Idle && !self.repair_alert.visible() {
+                self.repair_alert.open_with_body(c"Repair PlxNative’s sandbox?", REPAIR_BODY);
+                Self::repair_focus(fx, GROUP_REPAIR);
+            }
+        } else {
+            Self::ask(fx, PlayerReq::OpenOverlay(overlay::OverlayKind::More { quality: true }));
+        }
+    }
+    fn repair_answer<H: AppLike>(&mut self, confirm: bool, fx: &mut Effects<'_, H>) {
+        if !self.repair_alert.is_open() { return; }
+        self.repair_alert.dismiss();
+        if confirm { Self::ask(fx, PlayerReq::RepairSandbox); }
+        Self::repair_focus(fx, GROUP_FAILURE);
+    }
+    fn repair_rect(&self, confirm: bool) -> Rect {
+        self.repair_frames.get().map(|(cancel, repair)| if confirm { repair } else { cancel }).unwrap_or(Rect::FULL)
+    }
+
     /// One registered click's element resolves to an action — the pointer twin of `handle_key`'s
     /// `Ok`/`Left`/`Right` arms.
     ///
@@ -459,10 +533,7 @@ impl PlayerScreen {
         };
         match elem {
             e if e == ELEM_FAILURE_OK => {
-                Self::ask(
-                    fx,
-                    PlayerReq::OpenOverlay(overlay::OverlayKind::More { quality: true }),
-                );
+                self.failure_action(ps, fx);
                 Handled::Yes
             }
             e if e == ELEM_SCRUB => {
@@ -572,10 +643,7 @@ impl PlayerScreen {
                     matches!(key, Key::Ok),
                     matches!(key, Key::Back | Key::Stop),
                 ) {
-                    input::FailedKeyAction::ChooseQuality => Self::ask(
-                        fx,
-                        PlayerReq::OpenOverlay(overlay::OverlayKind::More { quality: true }),
-                    ),
+                    input::FailedKeyAction::ChooseQuality => self.failure_action(ps, fx),
                     input::FailedKeyAction::Return => Self::ask(fx, PlayerReq::Exit),
                     input::FailedKeyAction::Ignore => {}
                 }
@@ -897,6 +965,11 @@ impl PlayerScreen {
 /// geometry to test a click or a simulator mouse against, not so the engine drives the ring itself.
 impl<H: PlayerLike> Focusable<H> for PlayerScreen {
     fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        if self.repair_alert.visible() {
+            out.push(GroupSpec { id: GROUP_REPAIR, kind: GroupKind::Row { wrap: false }, seat: Seat::First,
+                reachable: AxisMask::BOTH, edge: [EdgeRule::Stop; 4], extent: self.repair_rect(false).union(self.repair_rect(true)), len: 2, elem: crate::ui::screen::ElemKind::Control });
+            return;
+        }
         out.push(GroupSpec {
             id: GROUP_SCRUB,
             kind: GroupKind::Free,
@@ -947,6 +1020,9 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
     }
     fn group_of(&self, key: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
         use player_hud::{ELEM_FAILURE_OK, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        if self.repair_alert.visible() {
+            return matches!(*key, REPAIR_CANCEL | REPAIR_CONFIRM).then_some(GROUP_REPAIR);
+        }
         match *key {
             e if e == ELEM_SCRUB => Some(GROUP_SCRUB),
             e if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&e) => Some(GROUP_ROW),
@@ -955,11 +1031,24 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
             _ => None,
         }
     }
-    fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
+    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
+        if self.repair_alert.is_open() {
+            let elem = match (key.elem, dir) {
+                (REPAIR_CANCEL, Dir::Right) => REPAIR_CONFIRM,
+                (REPAIR_CONFIRM, Dir::Left) => REPAIR_CANCEL,
+                _ => return Step::Edge,
+            };
+            return Step::Move(FocusKey { entry: self.entry, elem });
+        }
         Step::Edge
     }
     fn place(&self, key: &u32, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
         use player_hud::{ELEM_FAILURE_OK, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        if self.repair_alert.visible() {
+            if !matches!(*key, REPAIR_CANCEL | REPAIR_CONFIRM) { return None; }
+            let rect = self.repair_rect(*key == REPAIR_CONFIRM);
+            return Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: None });
+        }
         let rect = match *key {
             e if e == ELEM_SCRUB => player_hud::scrub_hit_rect(),
             e if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&e) => {
@@ -987,6 +1076,7 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
             GROUP_ROW => player_hud::ELEM_ROW_BASE,
             GROUP_TABS => player_hud::ELEM_TAB_BASE,
             GROUP_FAILURE => player_hud::ELEM_FAILURE_OK,
+            GROUP_REPAIR => REPAIR_CANCEL,
             _ => player_hud::ELEM_SCRUB,
         };
         FocusKey { entry: self.entry, elem }
@@ -1014,6 +1104,7 @@ impl LogicalState for PlayerScreen {
         c.option(self.origin.as_ref(), |c, o| {
             c.u32(o.entry.0);
         });
+        c.bool(self.repair_alert.is_open()).bool(self.repair_alert.choice() == crate::ui::decision_alert::Choice::Destructive);
     }
     fn probe(&self, out: &mut String) {
         out.push_str(WORD);
@@ -1058,7 +1149,7 @@ impl<H: PlayerLike> Screen<H> for PlayerScreen {
         // that commit-frame dispatch with nothing to fire. Direct delivery, and the screen decides
         // what the element means — including the scrubber, whose meaning needs the click's `x`
         // and so cannot be carried by a bare `ScreenEvent::Activate` at all.
-        if hud_up || self.lifted {
+        if (hud_up || self.lifted) && !self.repair_alert.visible() {
             for (elem, rect) in self.draw_hud(ps, now, f.measure) {
                 f.stop(
                     crate::ui::Painter::root(),
@@ -1079,18 +1170,31 @@ impl<H: PlayerLike> Screen<H> for PlayerScreen {
         // the scrim; BEFORE the overlay panels, which the container draws above this page.
         let mut readout_stops = Vec::new();
         crate::ui::player_hud::draw_readout(ps, self.busy, now, &mut readout_stops, f.measure);
-        for (elem, rect) in readout_stops {
-            f.stop(
-                crate::ui::Painter::root(),
-                Stop {
-                    key: FocusKey { entry: self.entry, elem },
-                    rect,
-                    rest_rect: rect,
-                    clip: Rect::FULL,
-                    hover: Hover::Ignore,
-                    activate: Activate::Direct,
-                },
-            );
+        if !self.repair_alert.visible() {
+            for (elem, rect) in readout_stops {
+                f.stop(
+                    crate::ui::Painter::root(),
+                    Stop {
+                        key: FocusKey { entry: self.entry, elem },
+                        rect,
+                        rest_rect: rect,
+                        clip: Rect::FULL,
+                        hover: Hover::Ignore,
+                        activate: Activate::Direct,
+                    },
+                );
+            }
+        }
+        if self.repair_alert.visible() {
+            self.repair_alert.draw_scrim();
+            self.repair_alert.draw(c"Cancel", c"Repair");
+            let frames = self.repair_alert.frames();
+            self.repair_frames.set(Some(frames));
+            if self.repair_alert.is_open() && self.repair_alert.settled() {
+                for (elem, rect) in [(REPAIR_CANCEL, frames.0), (REPAIR_CONFIRM, frames.1)] {
+                    f.stop(crate::ui::Painter::root(), Stop { key: FocusKey { entry: self.entry, elem }, rect, rest_rect: rect, clip: Rect::FULL, hover: Hover::Focus, activate: Activate::Press });
+                }
+            }
         }
     }
     fn render(&self) -> RenderStrategy {
@@ -1985,5 +2089,129 @@ mod scrub_ownership_tests {
             vec![PlayerReq::CommitSeek(previewed)],
             "the button coming up commits exactly what the drag was showing",
         );
+    }
+}
+#[cfg(test)]
+mod repair_confirmation_tests {
+    use super::*;
+    use crate::ui::machine::{Host, InputEvent, InputOwner, MachineId, PressId, Source, Tick};
+    struct TestHost;
+    impl Host for TestHost {
+        type Arg = crate::ui::fixture::FixtureArg;
+        type Fx = AppFx;
+        type Msg = crate::screens::registry::AppMsg;
+        type Elem = u32;
+        type Views<'a> = &'a crate::route::PlaybackSession;
+        type Init = crate::ui::fixture::FixtureArg;
+        type Memory = crate::screens::registry::PageMemory;
+    }
+    impl PlayerLike for TestHost {
+        fn session<'a>(cx: &Cx<'a, Self>) -> &'a crate::route::PlaybackSession { cx.views }
+    }
+    fn context(ps: &crate::route::PlaybackSession, elem: Option<u32>) -> Cx<'_, TestHost> {
+        let mut cx = Cx { views: ps, tick: Tick::default(), measure: &crate::ui::fixture::FixtureMeasure,
+            focus: Default::default(), press: Default::default(), owner: InputOwner::Entry(EntryId(1)) };
+        cx.focus.current = elem.map(|elem| FocusKey { entry: EntryId(1), elem });
+        cx
+    }
+    fn deliver(page: &mut PlayerScreen, ps: &crate::route::PlaybackSession, elem: Option<u32>, ev: ScreenEvent<TestHost>) -> Vec<PlayerReq> {
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        page.step(&ev, &context(ps, elem), &mut Effects::new(&mut out, MachineId::Instance(InstanceId(1)), &mut present));
+        for effect in &out {
+            if let Fx::Deliver(MachineId::Instance(id), _) = &effect.fx {
+                assert_eq!(*id, InstanceId(1), "focus requests must address this screen instance");
+            }
+        }
+        out.into_iter().filter_map(|e| match e.fx { Fx::App(AppFx::Player(req)) => Some(req), _ => None }).collect()
+    }
+    fn key_event(sym: u32, wcode: u32) -> ScreenEvent<TestHost> {
+        ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: crate::ui::machine::Key::Other, sym, wcode, edge: Edge::Down, at_edge: false }, at: Tick::default(), source: Source::Sdl })
+    }
+    fn blocked() -> crate::route::PlaybackSession {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        ps.jail_load_blocked = true;
+        ps
+    }
+    #[test]
+    #[cfg(feature = "devtriggers")]
+    fn jail_fixture_keeps_repair_open_through_the_screen_tick() {
+        let _g = crate::testlock::serial();
+        struct Trigger(std::path::PathBuf, Option<Vec<u8>>);
+        impl Drop for Trigger {
+            fn drop(&mut self) {
+                if let Some(bytes) = &self.1 { std::fs::write(&self.0, bytes).unwrap(); }
+                else { std::fs::remove_file(&self.0).unwrap(); }
+            }
+        }
+        let path = crate::paths::in_runtime_dir("plxnative-failtest");
+        let previous = match std::fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => panic!("cannot read the prior fixture: {e}"),
+        };
+        let _trigger = Trigger(path.clone(), previous);
+        std::fs::write(&path, "jail").unwrap();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::reset_player_control_for_test(&ps);
+        let hardware_verdict = crate::webos::jail_blocks_native_video();
+        crate::dev::scenarios::failure_fixture(&mut ps);
+        let mut page = PlayerScreen::new(EntryId(1));
+        assert!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)).is_empty());
+        assert!(page.repair_alert.is_open(), "fixture must offer the real confirmation");
+        assert!(deliver(&mut page, &ps, Some(REPAIR_CANCEL), ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_000 })).is_empty());
+        assert!(page.repair_alert.is_open(), "Tick must not retire the jail fixture confirmation");
+        assert!(ps.jail_load_blocked);
+        assert_eq!(crate::webos::jail_blocks_native_video(), hardware_verdict, "the fixture must not alter the cached hardware verdict");
+        ps.jail_load_blocked = false;
+        deliver(&mut page, &ps, None, ScreenEvent::Tick(Tick { ms: 32, dt_us: 16_000 }));
+        assert!(!page.repair_alert.is_open(), "retiring the session still closes its confirmation");
+        std::fs::write(&path, "tv").unwrap();
+        crate::dev::scenarios::failure_fixture(&mut ps);
+        assert!(!ps.jail_load_blocked, "other failure fixtures must not claim a jail refusal");
+    }
+
+    #[test]
+    fn repair_requires_second_explicit_answer_and_cancel_is_the_default() {
+        let _g = crate::testlock::serial();
+        let ps = blocked();
+        crate::route::reset_player_control_for_test(&ps);
+        let mut page = PlayerScreen::new(EntryId(1));
+        assert!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)).is_empty());
+        assert!(page.repair_alert.is_open());
+        assert_eq!(page.repair_alert.choice(), crate::ui::decision_alert::Choice::Cancel);
+        let cx = context(&ps, Some(REPAIR_CANCEL));
+        let from = Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None };
+        assert_eq!(Focusable::<TestHost>::seat(&page, GROUP_REPAIR, from, &cx).elem, REPAIR_CANCEL);
+        assert!(matches!(Focusable::<TestHost>::neighbour(&page, FocusKey { entry: EntryId(1), elem: REPAIR_CANCEL }, Dir::Right, &cx), Step::Move(FocusKey { elem: REPAIR_CONFIRM, .. })));
+        let req = deliver(&mut page, &ps, Some(REPAIR_CONFIRM), ScreenEvent::PressCommit(PressId(1)));
+        assert_eq!(req, vec![PlayerReq::RepairSandbox]);
+        assert!(deliver(&mut page, &ps, Some(REPAIR_CONFIRM), ScreenEvent::PressCommit(PressId(1))).is_empty());
+        page.repair_alert.close();
+    }
+    #[test]
+    fn back_then_stale_commit_and_underlying_click_cannot_repair_or_reopen() {
+        let _g = crate::testlock::serial();
+        let ps = blocked();
+        crate::route::reset_player_control_for_test(&ps);
+        let mut page = PlayerScreen::new(EntryId(1));
+        deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0));
+        assert!(deliver(&mut page, &ps, Some(REPAIR_CONFIRM), key_event(0, consts::WCODE_BACK)).is_empty());
+        assert!(!page.repair_alert.is_open());
+        assert!(deliver(&mut page, &ps, Some(REPAIR_CONFIRM), ScreenEvent::PressCommit(PressId(1))).is_empty());
+        assert!(deliver(&mut page, &ps, None, ScreenEvent::Activate(player_hud::ELEM_FAILURE_OK)).is_empty());
+        assert!(!page.repair_alert.is_open());
+        page.repair_alert.close();
+    }
+    #[test]
+    fn accepted_attempt_hides_forward_action_after_screen_recreation() {
+        let _g = crate::testlock::serial();
+        for state in [crate::webos::jail_repair::State::Running, crate::webos::jail_repair::State::Repaired, crate::webos::jail_repair::State::Failed(crate::webos::jail_repair::Failure::Timeout)] {
+            let mut ps = blocked(); ps.repair_status = state;
+            crate::route::reset_player_control_for_test(&ps);
+            let mut page = PlayerScreen::new(EntryId(1));
+            assert!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)).is_empty());
+            assert!(!page.repair_alert.is_open());
+        }
     }
 }

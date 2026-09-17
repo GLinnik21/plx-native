@@ -300,13 +300,14 @@ pub(super) fn activate_server_owned(
 pub(super) fn install_pms_owned(
     bridge: &mut super::bridge::Bridge,
     origin: &crate::plex::Origin,
+    address: &str,
     token: &str,
     tier: Option<crate::plex::probe::Location>,
     pin: Option<&crate::plex::ResolvePin>,
     install: &crate::auth::owner::ReadyInstall,
 ) -> crate::stores::EndpointRefreshSet {
     if let crate::auth::owner::ReadyInstall::PrimaryAndExtras(extras) = install {
-        crate::auth::install_captured_registry(origin, token, tier, pin, extras, None);
+        crate::auth::install_captured_registry(origin, address, token, tier, pin, extras, None);
     }
     activate_server_owned(bridge)
 }
@@ -452,10 +453,15 @@ pub(crate) unsafe fn construct(
         return Err(1);
     }
     crate::surface::probe(win);
-    // vsync on → the frame rate locks to the panel refresh. `/tmp/plxnative-novsync` uncaps it so the
-    // FPS counter reports the TRUE GPU render rate (a diagnostic: if fps then jumps well past the
-    // vsynced number, we were panel/refresh-bound, not GPU-bound).
-    SDL_GL_SetSwapInterval(if !controlled && crate::dev::scenarios::novsync_armed() { 0 } else { 1 });
+    // vsync on → the frame rate locks to the panel refresh. `/tmp/plxnative-novsync` uncaps it so
+    // `fps=` reports the true GPU render rate. WSLg's X11/GLX swap accepts interval 1 without
+    // blocking, so the software budget in `run` follows the same switch.
+    let vsync_enabled = controlled || !crate::dev::scenarios::novsync_armed();
+    SDL_GL_SetSwapInterval(if vsync_enabled { 1 } else { 0 });
+    #[cfg(all(feature = "hostsim", target_os = "linux"))]
+    let wslg_frame_pacing = vsync_enabled
+        && std::env::var_os("WSL_DISTRO_NAME").is_some()
+        && std::env::var("SDL_VIDEODRIVER").as_deref() == Ok("x11");
     {
         let r = glGetString(GL_RENDERER);
         let v = glGetString(GL_VERSION);
@@ -484,7 +490,11 @@ pub(crate) unsafe fn construct(
     // read, logged and used for nothing: `docs/egl-partial-update-and-damage.md` is what it
     // was for. Deliberately NOT a new link dependency; see `egl.rs`'s module doc for why
     // `-lEGL` would kill the process at exec() on the very firmwares this app runs on.
-    crate::egl::probe();
+    if cfg!(all(feature = "hostsim", target_os = "linux")) {
+        log("egl: skipped — Linux host simulator does not require EGL diagnostics");
+    } else {
+        crate::egl::probe();
+    }
     crate::textinput::bind(win);
     // …and the same handshake for the ROOT press: `webos::go_home`'s fallback leg minimizes
     // this window, and the window is created here, a long way from where BACK is decided.
@@ -702,8 +712,8 @@ pub(crate) unsafe fn construct(
                 pages.emit(MachineId::Nav, Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
                 pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(), rec, false);
             } else {
-                let endpoints = install_pms_owned(bridge, &ready.origin, &ready.token,
-                    ready.tier, ready.pin.as_ref(), &ready.install);
+                let endpoints = install_pms_owned(bridge, &ready.origin, &ready.address,
+                    &ready.token, ready.tier, ready.pin.as_ref(), &ready.install);
                 super::bridge::execute_endpoint_outcomes(pages, endpoints);
             }
             BootTo::Home
@@ -729,8 +739,8 @@ pub(crate) unsafe fn construct(
             pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
                 rec, false);
             if let Some(ready) = bridge.take_session_ready() {
-                let endpoints = install_pms_owned(bridge, &ready.origin, &ready.token,
-                    ready.tier, ready.pin.as_ref(), &ready.install);
+                let endpoints = install_pms_owned(bridge, &ready.origin, &ready.address,
+                    &ready.token, ready.tier, ready.pin.as_ref(), &ready.install);
                 super::bridge::execute_endpoint_outcomes(pages, endpoints);
                 // Refresh only AFTER installing the captured primary, so a fast accepted
                 // endpoint observation cannot be overwritten by that older boot snapshot.
@@ -1163,6 +1173,8 @@ pub(crate) unsafe fn construct(
         ev,
         remote,
         win,
+        #[cfg(all(feature = "hostsim", target_os = "linux"))]
+        wslg_frame_pacing,
         t0,
         instr,
         measure_fault_logged: false,

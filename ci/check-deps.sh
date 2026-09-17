@@ -97,9 +97,9 @@ ok()   { echo "  ok — $*"; }
 # grep_code <pattern> <paths...>: matching lines, minus comment-only lines, as `path:line:text`.
 grep_code() {
   local pat="$1"; shift
-  # `[[:space:]]` is POSIX ERE. Do not use `\s` here: BSD grep accepts it, but GNU grep in the
-  # Ubuntu CI image treats it differently, causing comment-only examples to become gate hits.
-  grep -rnE --include='*.rs' "$pat" "$@" 2>/dev/null \
+  # `-H` keeps the promised `path:line:text` shape even when a caller scans one file: GNU grep
+  # otherwise omits the path while BSD grep keeps it. `[[:space:]]` is POSIX ERE; do not use `\s`.
+  grep -HrnE --include='*.rs' "$pat" "$@" 2>/dev/null \
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true
 }
 
@@ -147,7 +147,9 @@ allowed() {
 # nothing here compiles Bash comments (D3 census finding). Two shapes:
 #   (i)  a bare `#[cfg(test)]` immediately followed by `mod <name>;` — a DECLARATION with no body,
 #        naming a test module split into its own sibling file (`screens/detail/mod.rs:14`'s
-#        `mod tests;` names `screens/detail/tests.rs`).
+#        `mod tests;` names `screens/detail/tests.rs`) — optionally with a `#[path = "<file>"]`
+#        between the two, in which case the named file is that path, relative to the declaring
+#        file's directory (`auth.rs`'s `#[path = "auth_registry_tests.rs"] mod registry_tests;`).
 #   (ii) `include!("<name>.rs")` found while walking INSIDE a `#[cfg(test)] mod { … }` block
 #        (`app/bridge.rs`'s own test module `include!`s `detail_panel_tests.rs` and friends).
 # Plain POSIX awk (no gawk `match(...,arr)` — this runs under BSD/one-true-awk too).
@@ -155,12 +157,16 @@ wholly_test_files() {
   find "$SRC" -name '*.rs' | while IFS= read -r f; do
     local dir; dir=$(dirname "$f")
     awk -v dir="$dir" '
-      /^#\[cfg\(test\)\][ \t]*$/ { prevcfg=1; next }
+      /^#\[cfg\(test\)\][ \t]*$/ { prevcfg=1; path=""; next }
+      prevcfg==1 && /^#\[path = "[^"]+"\][ \t]*$/ {
+        path=$0; sub(/^#\[path = "/,"",path); sub(/"\].*/,"",path)
+        next
+      }
       prevcfg==1 && /^mod [a-z_]+;/ {
         line=$0; sub(/^mod /,"",line); sub(/;.*/,"",line)
-        print dir "/" line ".rs"
+        if (path != "") print dir "/" path; else print dir "/" line ".rs"
       }
-      { prevcfg=0 }
+      { prevcfg=0; path="" }
     ' "$f" | while IFS= read -r cand; do
       [ -f "$cand" ] && echo "$cand"
     done
@@ -424,12 +430,16 @@ fi
 
 # libm: the method-call spelling, OUTSIDE ui/motion.rs (which owns the integrators and their
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
+# Wholly-test files (see `wholly_test_files`) are skipped like inline `#[cfg(test)]` blocks: a
+# test's reference colour maths is not logical state.
+wholly_test="$(wholly_test_files)"
 libm_lines=$(grep_code '\.(exp|ln|log|powf|powi|cbrt|sin|cos|tan|atan2|hypot|mul_add|sin_cos)\(' "$SRC" \
   | grep -vE '\.log\((&|")' | grep -v "^$SRC/ui/motion.rs:")
 libm_bad=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   p="${line%%:*}"
+  if echo "$wholly_test" | grep -qxF "$p"; then continue; fi
   if ! allowed libm "$p"; then echo "    $line"; libm_bad=$((libm_bad+1)); fi
 done <<< "$libm_lines"
 if [ "$libm_bad" -eq 0 ]; then ok "libm"; else fail "libm: $libm_bad line(s) outside ci/allow/libm.txt"; fi
@@ -441,7 +451,7 @@ gate ticks 'SDL_GetTicks\(' "$SRC"
 #              rule its old home had. Re-verified clean on 2026-09-10 with no new violation.
 gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC/ui" "$SRC/app" "$SRC/route/plan.rs" "$SRC/screens" "$SRC/stores"
 
-if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^\s*#'; then
+if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
 else ok "fpflags"; fi
 
@@ -481,7 +491,7 @@ MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library
 # production lines of ui/detail.rs go unscanned. `stores::<store>::apply(` lines are the new
 # spelling and are excluded by name; a SCREEN's own `crate::ui::person::open(` is not a store
 # call and is masked before the match.
-mut_wholly_test="$(wholly_test_files)"
+mut_wholly_test="$wholly_test"
 mut_bad=0
 while IFS= read -r f; do
   if echo "$mut_wholly_test" | grep -qxF "$f"; then continue; fi
@@ -491,7 +501,7 @@ while IFS= read -r f; do
   done < <(awk '
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
     prev=="#[cfg(test)]" && /^mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
-    { print NR":"$0; prev=$0 }' "$f" | sed -E 's/crate::ui::[a-z_]+::[a-z_]+\(/UI_CALL(/g' | grep -E "$MUTATORS" | grep -vE '^[0-9]+:\s*//' | grep -v 'stores::' || true)
+    { print NR":"$0; prev=$0 }' "$f" | sed -E 's/crate::ui::[a-z_]+::[a-z_]+\(/UI_CALL(/g' | grep -E "$MUTATORS" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -v 'stores::' || true)
 done < <(find "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" -name '*.rs' | sort)
 if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use stores::<store>::apply)"; fi
 
@@ -766,6 +776,9 @@ else fail "testmod: $testmod_n \`#[cfg(test)] mod\` block(s) in app/mod.rs — a
 #     `thread::spawn(` spelling used to.
 threads_bad=0
 while IFS= read -r f; do
+  # a wholly-test file is test code exactly like an inline `#[cfg(test)] mod` block, which the
+  # awk below skips — without this, splitting a test module into its own file fails the gate
+  if echo "$wholly_test" | grep -qxF "$f"; then continue; fi
   pat='\bthread::spawn\('
   if grep -qE '^\s*use\s+std::thread::(spawn\s*;|\{[^}]*\bspawn\b[^}]*\}\s*;)' "$f"; then
     pat='\bthread::spawn\(|\bspawn\('

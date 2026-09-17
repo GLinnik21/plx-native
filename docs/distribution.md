@@ -428,7 +428,11 @@ The media stack is permitted by an **LS2 role file the Dev Mode installer writes
 nothing we declare. On the device, `/var/palm/ls2-dev/roles/pub/com.beb.plxnative.json` grants
 `com.webos.media.client.*`, `com.webos.rm.client.*`, `com.webos.pipeline.*` with in/outbound to
 `com.webos.media`. That is exactly the surface StarfishMediaAPIs needs, and it is why **no
-`requiredPermissions` field is needed in `appinfo.json`** (neither Kodi nor Moonlight sets one).
+`requiredPermissions` entry is needed for playback itself** (neither Kodi nor Moonlight declares
+one for it). Since the storage helper landed, `appinfo.json` DOES carry `requiredPermissions` —
+`database.operation` and `securitykey.operation`, both the storage service's, for the local DB8
+keystore and the platform key manager it wraps — so the field is no longer absent; it is just
+declared for a surface neither Kodi nor Moonlight has an equivalent of.
 
 Corroboration: Kodi's `MediaPipelineWebOS.cpp` drives `mediaTransportType: "BUFFERSTREAM"` and
 `AcbAPI_initialize(…, PLAYER_TYPE_MSE, getenv("APPID"), …)`, and its own docs say *"you do not need

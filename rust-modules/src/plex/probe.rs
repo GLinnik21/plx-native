@@ -53,7 +53,7 @@ use super::account::{Connection, Resource};
 /// RANKS it (see the third sort key in [`candidates`]). Re-exported so `probe::Scheme` keeps
 /// resolving for every caller that reads it as a ranking axis.
 pub use super::origin::Scheme;
-use super::origin::{url_host, Origin};
+use super::origin::{url_host, CredentialPolicy, Origin};
 use serde::{Deserialize, Serialize};
 
 /// Where an address sits relative to us. The ranking axis every Plex client agrees on, ordered
@@ -86,6 +86,14 @@ pub struct Candidate {
     pub address: String,
     pub port: i64,
     pub ipv6: bool,
+    /// May this candidate's origin carry a credential under the [`CredentialPolicy`] `candidates`
+    /// was built with? TLS always; plaintext only under
+    /// [`CredentialPolicy::AllowPlaintext`](super::origin::CredentialPolicy::AllowPlaintext) —
+    /// [`CredentialPolicy::may_carry_credential`](super::origin::CredentialPolicy::may_carry_credential)'s
+    /// answer, computed once here rather than re-derived by every consumer. A verified but
+    /// ineligible candidate is still evidence the server is alive on this address; it is the race
+    /// in `auth.rs` that decides what an ineligible-but-verified answer means.
+    pub credential_eligible: bool,
 }
 
 impl Candidate {
@@ -126,6 +134,10 @@ pub struct ProbePlan {
     /// In rank order, best first. Empty means the policy refused every advertised address, which is
     /// a decision and not a failure to reach anything — nothing was dialled.
     pub candidates: Vec<Candidate>,
+    /// The [`CredentialPolicy`] this plan's [`Candidate::credential_eligible`] flags were computed
+    /// under — carried alongside rather than re-derived, so a caller grading eligibility later
+    /// reads the same policy the plan was built with rather than the build's CURRENT one.
+    pub policy: CredentialPolicy,
 }
 
 /// How a probe of one candidate ended. Spelled out here because the distinction the caller must not
@@ -143,6 +155,14 @@ pub enum Outcome {
     Unauthorized,
     /// No answer: refused, timed out, or unresolvable. The only outcome the next candidate can fix.
     Unreachable,
+    /// The whole-server aggregate for [`crate::auth::Reach::InsecureOnly`] (issue #95, plan §4):
+    /// verified, provably the right server, but only over a transport this build can never put a
+    /// credential on. A single per-candidate probe never classifies to this — [`classify`] has no
+    /// arm that produces it — it exists for the coordinator's SETTLED, whole-server verdict, which
+    /// is a different question from "what did this one response say". Kept apart from
+    /// [`Self::Unreachable`] because the remedy and the words are both different: the server
+    /// answered, so telling the user it did not sends them to look at a router for nothing.
+    InsecureOnly,
 }
 
 /// A port this client could actually dial, narrowed to the `i32` the transport takes — `None` for
@@ -315,18 +335,26 @@ fn is_numeric_address(a: &str) -> bool {
 /// a stranger without sending it a credential.
 ///
 /// That twin was once the point of the whole file — the only candidate the app's transport could
-/// dial. It is the FALLBACK now: the advertised https uri leads its tier, and the twin is what
-/// answers the `/identity` PROBE when DNS cannot. **It is not what makes offline play work, and
-/// this doc said it was until 2026-09-05.** A store build refuses to send a token over plaintext
+/// dial. It is the FALLBACK now: the advertised https uri leads its tier, and — since `auth::
+/// race_batch` began pinning every `https://…plex.direct` candidate it dials
+/// (`super::origin::ResolvePin::for_origin`, keyed on the same `address` this file attaches to the
+/// candidate) — the TLS candidate itself can also answer the `/identity` PROBE when DNS cannot, not
+/// only its plaintext twin. **It is not what makes offline play work, and this doc said it was
+/// until 2026-09-05.** A store build refuses to send a token over plaintext
 /// (`crate::http::credential_transport_allowed`), so the twin can prove a server is there and
 /// cannot browse it; and a stored-session boot never re-races candidates at all. Offline play on
 /// the house's own server — a LAN with no route to the internet resolves no `plex.direct` name —
 /// is carried by [`super::origin::ResolvePin`] instead: the https uri stays the origin, and the
-/// `address` advertised beside it is what the name is dialled at, with no resolver involved.
+/// `address` advertised beside it is what the name is dialled at, with no resolver involved, at the
+/// PROBE that decides a winner and again at every request the winning `Client` makes afterward.
 ///
 /// A `relay` connection gets no http twin: it is a Plex-operated TLS tunnel, and plain HTTP on it is
 /// not a thing that exists — synthesizing one would only spend a probe slot proving that.
-pub fn candidates(res: &Resource) -> Vec<Candidate> {
+///
+/// `policy` decides only [`Candidate::credential_eligible`] — it never drops a candidate. A
+/// verified-but-ineligible answer is still evidence the server is alive on that address; see the
+/// field's own doc and `auth.rs`'s race semantics for what that answer is allowed to mean.
+pub fn candidates(res: &Resource, policy: CredentialPolicy) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     for c in res.connections.iter().filter(|c| is_usable(c)) {
         let location = tier(c);
@@ -345,6 +373,8 @@ pub fn candidates(res: &Resource) -> Vec<Candidate> {
                 address: c.address.clone(),
                 port: c.port,
                 ipv6,
+                credential_eligible: scheme == Scheme::Https
+                    || policy == CredentialPolicy::AllowPlaintext,
             });
         };
         let unmatched_shared_lan = c.local && !res.owned && !res.public_address_matches;
@@ -383,14 +413,15 @@ pub fn candidates(res: &Resource) -> Vec<Candidate> {
 }
 
 /// The plan for one server: identity to verify, token to send, addresses to try.
-pub fn plan(res: &Resource) -> ProbePlan {
+pub fn plan(res: &Resource, policy: CredentialPolicy) -> ProbePlan {
     ProbePlan {
         machine_id: res.client_identifier.clone(),
         token: res.access_token.clone(),
         owned: res.owned,
         name: res.name.clone(),
         source_title: res.source_title.clone(),
-        candidates: candidates(res),
+        candidates: candidates(res, policy),
+        policy,
     }
 }
 
@@ -451,7 +482,7 @@ mod tests {
     /// name the server we asked for.
     #[test]
     fn a_shares_unmatched_local_connection_keeps_tls_but_never_plaintext() {
-        let cs = candidates(&shared_server());
+        let cs = candidates(&shared_server(), CredentialPolicy::HttpsOnly);
 
         assert!(
             cs.iter().any(|c| {
@@ -475,7 +506,7 @@ mod tests {
         advertised_plain.connections[0].uri = "http://10.9.9.7:32400".into();
         advertised_plain.connections[0].protocol = "http".into();
         assert!(
-            !candidates(&advertised_plain)
+            !candidates(&advertised_plain, CredentialPolicy::HttpsOnly)
                 .iter()
                 .any(|c| c.address == "10.9.9.7"),
             "an advertised plaintext URI is no safer than the synthesized twin"
@@ -506,7 +537,7 @@ mod tests {
     /// reproducible for one account and not another.
     #[test]
     fn a_dotted_quad_outranks_a_hostname_that_plex_tv_listed_first() {
-        let cs = candidates(&shared_server());
+        let cs = candidates(&shared_server(), CredentialPolicy::HttpsOnly);
         let pos = |u: &str| {
             cs.iter()
                 .position(|c| c.url == u)
@@ -550,7 +581,7 @@ mod tests {
     /// into `Origin::http(&self.address, self.port)`.
     #[test]
     fn a_candidates_origin_is_parsed_from_its_url_not_rebuilt_from_its_address() {
-        let cs = candidates(&shared_server());
+        let cs = candidates(&shared_server(), CredentialPolicy::HttpsOnly);
 
         let uri = cs
             .iter()
@@ -599,7 +630,7 @@ mod tests {
     /// `origin.rs` documents, asserted where the v6 candidate is actually built.
     #[test]
     fn a_v6_candidates_origin_is_bare_for_the_resolver() {
-        let cs = candidates(&owned_server());
+        let cs = candidates(&owned_server(), CredentialPolicy::HttpsOnly);
         let v6 = cs
             .iter()
             .find(|c| c.url == "http://[2001:db8::1]:32400")
@@ -626,7 +657,7 @@ mod tests {
     /// resolve one.
     #[test]
     fn a_hostname_ranks_behind_an_address_that_can_actually_be_dialled() {
-        let cs = candidates(&shared_server());
+        let cs = candidates(&shared_server(), CredentialPolicy::HttpsOnly);
         let http: Vec<&Candidate> = cs.iter().filter(|c| c.scheme == Scheme::Http).collect();
 
         assert_eq!(
@@ -657,7 +688,7 @@ mod tests {
     fn a_non_owned_local_address_survives_when_our_public_address_matches() {
         let mut res = shared_server();
         res.public_address_matches = true;
-        let cs = candidates(&res);
+        let cs = candidates(&res, CredentialPolicy::HttpsOnly);
 
         assert_eq!(
             cs[0].location,
@@ -680,7 +711,7 @@ mod tests {
             "the fixture must carry both flags"
         );
 
-        let cs = candidates(&res);
+        let cs = candidates(&res, CredentialPolicy::HttpsOnly);
         assert!(
             cs.iter()
                 .any(|c| c.url == "http://192.168.0.10:32400" && c.location == Location::Local),
@@ -691,7 +722,7 @@ mod tests {
     /// Local first, relay last — and the relay is https-only, so it contributes exactly one.
     #[test]
     fn our_own_server_ranks_lan_first_and_relay_last() {
-        let cs = candidates(&owned_server());
+        let cs = candidates(&owned_server(), CredentialPolicy::HttpsOnly);
 
         let tiers: Vec<Location> = cs.iter().map(|c| c.location).collect();
         assert_eq!(
@@ -761,7 +792,7 @@ mod tests {
                   {"protocol":"https","address":"plex.example.com","port":443,
                    "uri":"https://plex.example.com","local":false,"relay":false,"IPv6":false}]}"#,
         );
-        let cs = candidates(&res);
+        let cs = candidates(&res, CredentialPolicy::HttpsOnly);
         let remote: Vec<&Candidate> = cs
             .iter()
             .filter(|c| c.location == Location::Remote)
@@ -796,7 +827,7 @@ mod tests {
     fn https_required_suppresses_every_http_candidate() {
         let mut res = owned_server();
         res.https_required = true;
-        let cs = candidates(&res);
+        let cs = candidates(&res, CredentialPolicy::HttpsOnly);
 
         assert!(cs.iter().all(|c| c.scheme == Scheme::Https), "{cs:#?}");
         assert_eq!(cs.len(), 4, "one per connection, the advertised uri only");
@@ -805,7 +836,7 @@ mod tests {
         // and the share, whose measured working fallback is the plain-http twin, loses it too
         let mut share = shared_server();
         share.https_required = true;
-        assert!(candidates(&share).iter().all(|c| c.scheme == Scheme::Https));
+        assert!(candidates(&share, CredentialPolicy::HttpsOnly).iter().all(|c| c.scheme == Scheme::Https));
     }
 
     /// Addresses that cannot be dialled are not candidates, and a resource with nothing usable
@@ -819,7 +850,7 @@ mod tests {
                   {"address":"10.0.0.9","port":0,"uri":"","local":true}]}"#,
         );
         assert!(
-            candidates(&res).is_empty(),
+            candidates(&res, CredentialPolicy::HttpsOnly).is_empty(),
             "no address and no port are both nothing to dial"
         );
     }
@@ -850,7 +881,7 @@ mod tests {
                   {"protocol":"http","address":"10.0.0.9","port":4294999696,"uri":"","local":true},
                   {"protocol":"http","address":"10.0.0.9","port":32400,"uri":"","local":true}]}"#,
         );
-        let cs = candidates(&res);
+        let cs = candidates(&res, CredentialPolicy::HttpsOnly);
         assert!(
             !cs.is_empty(),
             "the good address is still dialable: {cs:#?}"
@@ -865,7 +896,7 @@ mod tests {
     /// that turn "something answered" into "this server answered, and we are allowed in".
     #[test]
     fn the_plan_carries_the_identity_to_verify_and_the_per_server_token() {
-        let p = plan(&shared_server());
+        let p = plan(&shared_server(), CredentialPolicy::HttpsOnly);
         assert_eq!(
             p.machine_id, "bbbb2222",
             "what the probe response must equal"
@@ -892,7 +923,7 @@ mod tests {
     #[test]
     fn ownership_or_a_public_address_match_restores_the_plain_lan_twin() {
         let has_plain_lan = |r: &Resource| {
-            candidates(r)
+            candidates(r, CredentialPolicy::HttpsOnly)
                 .iter()
                 .any(|c| c.url == "http://10.9.9.7:32400")
         };
@@ -910,6 +941,49 @@ mod tests {
         share.public_address_matches = false;
         share.owned = true;
         assert!(has_plain_lan(&share), "our own LAN address is always ours");
+    }
+
+    /// [`Candidate::credential_eligible`], graded against [`super::origin::CredentialPolicy`]:
+    /// TLS is eligible under either policy, a plaintext twin only under `AllowPlaintext`.
+    #[test]
+    fn the_plaintext_twin_is_eligible_only_under_allow_plaintext() {
+        let https_only = candidates(&owned_server(), CredentialPolicy::HttpsOnly);
+        let https_cand = https_only
+            .iter()
+            .find(|c| c.scheme == Scheme::Https)
+            .expect("an https candidate");
+        assert!(https_cand.credential_eligible, "TLS is always eligible");
+        let http_cand = https_only
+            .iter()
+            .find(|c| c.scheme == Scheme::Http)
+            .expect("a plaintext twin");
+        assert!(
+            !http_cand.credential_eligible,
+            "a plaintext twin is ineligible under HttpsOnly"
+        );
+
+        let allow_plain = candidates(&owned_server(), CredentialPolicy::AllowPlaintext);
+        assert!(
+            allow_plain.iter().all(|c| c.credential_eligible),
+            "every candidate is eligible under AllowPlaintext: {allow_plain:#?}"
+        );
+    }
+
+    /// `policy` decides only [`Candidate::credential_eligible`] — never which candidates rule 1
+    /// (the unmatched-shared-LAN guard) or rule 2 (`httpsRequired`) keep. Same server, same list,
+    /// under either policy.
+    #[test]
+    fn credential_policy_never_changes_which_candidates_are_emitted() {
+        for res in [shared_server(), owned_server()] {
+            let https_only = candidates(&res, CredentialPolicy::HttpsOnly);
+            let allow_plain = candidates(&res, CredentialPolicy::AllowPlaintext);
+            let urls_a: Vec<&str> = https_only.iter().map(|c| c.url.as_str()).collect();
+            let urls_b: Vec<&str> = allow_plain.iter().map(|c| c.url.as_str()).collect();
+            assert_eq!(
+                urls_a, urls_b,
+                "rules 1 and 2 are unaffected by CredentialPolicy: {urls_a:?} vs {urls_b:?}"
+            );
+        }
     }
 
     /// `is_usable` is deliberately only the mechanical gate. Candidate emission applies rule 1

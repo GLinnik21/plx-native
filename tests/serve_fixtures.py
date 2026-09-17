@@ -13,9 +13,10 @@ why `Range` is not optional here (§4 of the spec below).
 
 THE SPEC — what the app actually requires of a server (all read out of the code, not assumed):
 
-  1. Request line is `GET <abs-path> HTTP/1.1` with `Host:`, `User-Agent: plxnative/0.1`,
-     `Accept: */*` and `Connection: close` (`stream.rs::http_open`). One request per connection;
-     there is no keep-alive to support and no pipelining.
+  1. Request line is `GET <abs-path> HTTP/1.1` with `Host:`, `User-Agent: plxnative/0.1` and
+     `Accept: */*` (`stream.rs::http_open`). Media GETs omit `Connection: close` so HTTP/1.1
+     keep-alive is the default; sequential HLS/playlist GETs to the same peer reuse the fd.
+     Range seeks still close from the client (`ff.rs::seek_cb`). No pipelining.
   2. Only the status code, `Content-Length:` and `Transfer-Encoding: chunked` are parsed
      (`stream.rs`, the block after the header read). Everything else we send is ignored, so extra
      headers are free but never load-bearing.
@@ -129,6 +130,33 @@ class FixtureHandler(BaseHTTPRequestHandler):
     # run can attribute every open and every seek to a case.
     def log_message(self, fmt, *args):  # noqa: A003  (BaseHTTPRequestHandler's name)
         self.server.note(f"{self.address_string()} {fmt % args}")
+
+    def setup(self):
+        super().setup()
+        self.server.count_accept()
+
+    def handle(self):
+        # A TV seek or teardown RSTs a kept-alive socket while this loop is blocked in
+        # readline() for the next request. Mid-body already catches that in `_serve`;
+        # without this, every such case prints an uncaught ConnectionResetError.
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.server.note("client reset keep-alive")
+
+    def finish(self):
+        # socketserver.BaseRequestHandler.__init__ calls finish() in a `finally`, so it runs
+        # whether handle() above returned cleanly or was already caught — it is a SECOND,
+        # independent place the same reset can surface. StreamRequestHandler.finish() only
+        # guards its own wfile.flush() against socket.error; the wfile/rfile close() calls
+        # right after it are unguarded, and on a socket the peer already RST'd, closing the
+        # wrapped file objects can still raise. Uncaught there, it reaches
+        # socketserver.ThreadingMixIn's process_request_thread and prints exactly the
+        # traceback this file otherwise goes out of its way to avoid.
+        try:
+            super().finish()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.server.note("client reset keep-alive (finish)")
 
     def _resolve(self):
         """Map the request target to a real file under the root, or None.
@@ -256,9 +284,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.apple.mpegurl")
             self.send_header("Content-Length", str(len(playlist)))
-            self.send_header("Connection", "close")
             self.end_headers()
-            self.close_connection = True
             if body:
                 self.server.count(False)
                 self.server.write_body(self.wfile, playlist)
@@ -291,9 +317,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         if partial:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        self.send_header("Connection", "close")
         self.end_headers()
-        self.close_connection = True
         if not body:
             return
         self.server.count(partial)
@@ -321,6 +345,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
 
 class FixtureServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
+    # Keep-alive handlers sit in readline() until the TV RSTs. Do not wait them out on shutdown.
+    block_on_close = False
     allow_reuse_address = True
 
     def __init__(self, root, port, sink=None, bind="0.0.0.0"):
@@ -330,7 +356,7 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         # Two counters, not a log: every request is already narrated through `note()`, and
         # `stats()` is the only reader — it wants totals. A list of per-request tuples grew for
         # the life of the run and read as though something consulted it.
-        self.n_opens = self.n_ranged = 0
+        self.n_opens = self.n_ranged = self.n_accepts = 0
         self.rate_profile = []
         self.rate_started = None
         # The REQUEST-indexed schedule, and the count it is indexed by. See `set_segment_profile`.
@@ -597,12 +623,20 @@ class FixtureServer(socketserver.ThreadingTCPServer):
             self.n_opens += 1
             self.n_ranged += bool(partial)
 
-    def stats(self):
-        """(total opens, range opens) — the harness asserts on these: a seek case that never
-        produced a range open never reached the demuxer's seek path at all, which is a different
-        failure from a seek that landed in the wrong place."""
+    def count_accept(self):
         with self.lock:
-            return self.n_opens, self.n_ranged
+            self.n_accepts += 1
+
+    def stats(self):
+        """(total opens, range opens, TCP accepts).
+
+        The harness asserts on opens/ranges: a seek case that never produced a range
+        open never reached the demuxer's seek path at all, which is a different
+        failure from a seek that landed in the wrong place. Accepts are a separate
+        counter; keep-alive means sequential GETs share one TCP connection.
+        """
+        with self.lock:
+            return self.n_opens, self.n_ranged, self.n_accepts
 
 
 def default_root():
@@ -618,28 +652,32 @@ def default_root():
         os.environ.get("FIXTURES_OUT") or os.path.expanduser("~/plxnative-fixtures"), "pipeline")
 
 
-def lan_ip():
-    """This machine's LAN address as the TV will reach it.
+def lan_ip(peer=None):
+    """This machine's address as the TV will reach it.
 
-    A UDP `connect` to an off-link address picks the interface the routing table would use without
-    sending anything. `gethostbyname(gethostname())` is the obvious alternative and is wrong on
-    macOS — it answers 127.0.0.1 on a machine with a perfectly good LAN address, and the app cannot
-    resolve names anyway (`stream.rs` takes a dotted quad only), so a loopback answer here produces
-    a URL the television will never connect to.
+    A UDP `connect` picks the interface the routing table would use without sending anything.
+    `gethostbyname(gethostname())` is the obvious alternative and is wrong on macOS — it answers
+    127.0.0.1 on a machine with a perfectly good LAN address, and the app cannot resolve names
+    anyway (`stream.rs` takes a dotted quad only), so a loopback answer here produces a URL the
+    television will never connect to.
+
+    When `peer` is the television, connect to THAT rather than 8.8.8.8: a VPN default route
+    otherwise advertises a utun address the set cannot route to, the app logs `HTTP request
+    failed`, and the harness reports 0 bodies — the same shape as the macOS firewall trap.
     """
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("8.8.8.8", 53))
+        s.connect((peer, 9) if peer else ("8.8.8.8", 53))
         return s.getsockname()[0]
     finally:
         s.close()
 
 
-def serve(root, port=0, sink=None):
+def serve(root, port=0, sink=None, peer=None):
     """Start a server on its own thread. Returns (server, url_base). Port 0 picks a free one."""
     srv = FixtureServer(root, port, sink=sink)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv, f"http://{lan_ip()}:{srv.server_address[1]}"
+    return srv, f"http://{lan_ip(peer)}:{srv.server_address[1]}"
 
 
 def _selftest(root, port):

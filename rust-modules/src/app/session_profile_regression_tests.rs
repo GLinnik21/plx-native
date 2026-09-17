@@ -201,8 +201,10 @@ mod tests {
                 port: 32400, origin_url: format!("http://{address}:32400"),
                 ..Default::default()
             };
-            (Some(source), crate::auth::settled_probe(&crate::plex::probe::plan(resource),
-                crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local)))
+            (Some(source), crate::auth::settled_probe(
+                &crate::plex::probe::plan(resource, crate::plex::CredentialPolicy::HttpsOnly),
+                crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local),
+                Some(address.into())))
         }
         fn gap(&mut self) {
             assert_eq!(self.probes, 1, "late share probing occurs after the initial Ready");
@@ -264,9 +266,10 @@ mod tests {
                 assert_eq!(disk.user.uuid, "synthetic-kid");
                 disk.recent_searches.push(crate::plex::session::RecentSearches {
                     user: "synthetic-kid".into(), terms: vec!["newer preference".into()],
+                    extensions: Default::default(),
                 });
                 disk.playback_quality = Some(crate::plex::session::PlaybackQuality::Original);
-                assert!(!disk.sources.iter().any(|source| source.machine_id == "synthetic-share" && source.usable()));
+                assert!(!disk.sources.iter().any(|source| source.machine_id == "synthetic-share" && source.dialable()));
                 frame(&mut rig, &mut d, vec![roster]);
                 drain_carried(&mut rig, &mut d);
                 let disk = &rig.session_adapter.fixture_resources().disk;
@@ -278,7 +281,7 @@ mod tests {
             let disk = &rig.session_adapter.fixture_resources().disk;
             assert_eq!(disk.user.uuid, "synthetic-kid");
             assert_eq!(disk.server.address, "127.0.0.2");
-            assert!(disk.sources.iter().any(|s| s.machine_id == "synthetic-share" && s.address == "127.0.0.3" && s.usable()));
+            assert!(disk.sources.iter().any(|s| s.machine_id == "synthetic-share" && s.address == "127.0.0.3" && s.dialable()));
             let before = resources(&mut rig);
             command(&mut rig, &mut d, SessionCmd::TakeReady);
             assert!(rig.take_session_ready().is_none());
@@ -341,7 +344,7 @@ mod tests {
             server: ServerRef { token: "synthetic-admin-token".into(), ..server.clone() },
             sources: vec![SourceRef { token: "synthetic-admin-token".into(), ..source.clone() }],
             profiles: vec![ProfileCreds { uuid: kid.uuid.clone(), user: kid, server,
-                sources: vec![source], pin: None }], ..Default::default() }
+                sources: vec![source], pin: None, extensions: Default::default() }], ..Default::default() }
     }
 
     #[test]

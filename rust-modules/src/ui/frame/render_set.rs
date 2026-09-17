@@ -138,7 +138,7 @@ impl RenderSet {
             return Err(RenderBreach::Surface(*e, *n));
         }
         let total = self.total_bytes();
-        if total > RENDER_BYTES_MAX {
+        if total > RENDER_BYTES_MAX * crate::ui::tex::render_area() {
             return Err(RenderBreach::Bytes(total));
         }
         Ok(())

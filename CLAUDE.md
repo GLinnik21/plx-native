@@ -1,5 +1,4 @@
 @AGENTS.md
-@docs/agent-reference.md
 
 # Claude Code configuration
 

@@ -213,6 +213,8 @@ pub(crate) struct Engine {
     pub load_th: Option<std::thread::JoinHandle<()>>,
     pub report_th: Option<std::thread::JoinHandle<()>>, // /:/timeline progress reporter
     pub report_stop: Option<std::sync::Arc<threads::ReportStop>>, // ITS stop signal, not SHARED's
+    /// Preview Load that must land unbound. The media join waits until the thread has returned.
+    pub preview_abandon: bool,
 }
 
 impl Engine {
@@ -304,6 +306,113 @@ fn native_object_disposition(
     } else {
         NativeObjectDisposition::Quarantine
     }
+}
+
+/// A native `Load` that teardown could not wait for.
+///
+/// The D.1.4 budget turns a `Load` that never returns into a failure read-out, but the object that
+/// `Load` is running on cannot be touched until the call comes back — `Unload`/`Destroy` on it
+/// while the load thread is still inside is the issue #74 race — and joining the media thread on
+/// the SDL main thread froze the whole app on exactly the set where the Load was hung. So teardown
+/// parks the thread, the payload it reads and the epoch here instead, and
+/// [`reap_abandoned_load`] runs the ordinary native release (`Unload` → callback gate → epoch
+/// retirement → D1 or quarantine) on the main thread once the thread has finished. Until then every
+/// start is refused rather than handed the same object; if the `Load` never returns the object is
+/// leaked for the life of the process, which is what the C seam would have to do anyway.
+pub(crate) struct AbandonedLoad {
+    epoch: u32,
+    load_th: std::thread::JoinHandle<()>,
+    /// The Load payload `sf_load` was handed as a raw pointer. Must outlive the thread.
+    _payload: std::ffi::CString,
+    abandoned_at: std::time::Instant,
+}
+
+/// Release a parked [`AbandonedLoad`] if its `Load` has returned. Cheap when there is nothing to
+/// do; called once per app frame and at the top of every native start. `true` when the parked
+/// object was released by this call.
+pub(crate) fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
+    let finished = match pa.abandoned_load_mut() {
+        Some(parked) => parked.load_th.is_finished(),
+        None => return false,
+    };
+    if !finished {
+        return false;
+    }
+    let parked = pa.take_abandoned_load().expect("checked above");
+    // The thread has already returned, so this join cannot block.
+    crate::task::join("media", parked.load_th);
+    log(&format!(
+        "native lifecycle: abandoned Load epoch={} returned {}ms after teardown; releasing it",
+        parked.epoch,
+        parked.abandoned_at.elapsed().as_millis(),
+    ));
+    release_native_object(pa.mt(), parked.epoch);
+    // `parked._payload` drops here, after the thread that read it has been joined.
+    true
+}
+
+/// Unload and retire the native object of `epoch`, then destroy it only with complete evidence.
+/// The engine's own teardown and the abandoned-Load release share this so the order below is one
+/// definition.
+fn release_native_object(mt: &MainThread, epoch: u32) {
+    // Stop the pipeline, close native callback admission, then drain the Rust epoch.
+    //
+    // `Unload` waits for the GStreamer state transition, but neither libpf's raw callback fields nor
+    // type=23 is an exported producer/in-flight barrier. The executable therefore interposes the
+    // exact callbackFunctionHook JUMP_SLOT. Each Load owns a never-reused object address; after
+    // Unload the C gate rejects new calls and waits for calls already inside the real hook. Only
+    // then can the Rust callback mutex be retired and D1 considered:
+    //
+    //     Unload -> gate inactive/drained -> retire/drain epoch -> D1.
+    //
+    // Both the synchronous type=23 observation and a non-zero per-object interposer counter are
+    // runtime evidence that this firmware followed the audited path. If any proof is missing, C
+    // retains the constructed object forever and permanently refuses another Load. Leaking one
+    // object is preferable to letting D1 turn a late producer callback into a use-after-free.
+    if unsafe { ffi::sf_ready(mt) } != 0 {
+        unsafe { ffi::sf_unload(mt) };
+        let callback_gate_proven = unsafe { ffi::sf_callback_gate_retire(mt) } != 0;
+        let callback_intercepts = unsafe { ffi::sf_callback_intercepts(mt) };
+        let unload_completed = SHARED.native_unload_completed(epoch);
+        let rust_epoch_retired = SHARED.retire_native_session(epoch);
+        if !unload_completed {
+            log(&format!(
+                "native lifecycle: Unload returned without type=23 epoch={epoch}",
+            ));
+        }
+        if !callback_gate_proven {
+            log(&format!(
+                "native lifecycle: callback interposition unproven epoch={epoch} intercepted={callback_intercepts}",
+            ));
+        }
+        if !rust_epoch_retired {
+            log(&format!(
+                "native lifecycle: failed to retire epoch={epoch} after Unload",
+            ));
+        }
+        if ACB_OK.load(Ordering::Relaxed) {
+            unsafe { ffi::acb_unload(mt) };
+        }
+        match native_object_disposition(unload_completed, callback_gate_proven, rust_epoch_retired)
+        {
+            NativeObjectDisposition::Destroy => {
+                if unsafe { ffi::sf_destroy(mt) } == 0 {
+                    log("native lifecycle: C seam rejected D1 and quarantined the object");
+                }
+            }
+            NativeObjectDisposition::Quarantine => unsafe { ffi::sf_quarantine(mt) },
+        }
+    } else if !SHARED.retire_native_session(epoch) {
+        log(&format!(
+            "native lifecycle: no dispatchable object and epoch={epoch} was already retired",
+        ));
+    }
+    // The webOS 5+ counterpart of acb_unload, and the other half of `with_window_id`'s create.
+    // Outside the sf_ready guard because readiness means dispatchable, not "object exists", and
+    // because the window is created BEFORE Load — a session that failed between the two would
+    // otherwise leak it, and the next Load would ask for another. Unguarded because the seam
+    // already no-ops in the other modes (see starfish.h).
+    unsafe { ffi::vp_destroy_window(mt) };
 }
 
 /// Bind the decoded video sink to the display plane, whichever way this television does it.
@@ -796,13 +905,23 @@ impl BufferfeedStartOutcome {
 }
 
 pub(crate) fn start_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
-    start_bufferfeed_tracked(ps, pa).accepted()
+    let outcome = start_bufferfeed_tracked(ps, pa);
+    ps.jail_load_blocked || outcome.accepted()
 }
 
 /// Start the native Engine while retaining the identity of the exact asynchronous `sf_load`.
 /// Foreground recovery uses this to wait for the media-thread result instead of treating thread
 /// creation as proof that the television accepted the payload.
 pub(crate) fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> BufferfeedStartOutcome {
+    if crate::webos::jail_blocks_native_video() {
+        ps.jail_load_blocked = true;
+        log("start_bufferfeed: refusing native video; affected chassis cannot read /dev/rtkmem");
+        if let Some(ticket) = crate::route::begin_route_start() {
+            let _ = crate::route::abort_route_start(ticket, crate::route::RouteStartResult::StartFailed);
+        }
+        return BufferfeedStartOutcome::Failed;
+    }
+    ps.jail_load_blocked = false;
     if let Some(existing) = pa.engine().map(|engine| engine.route_start) {
         match crate::route::classify_live_engine_start(existing) {
             crate::route::LiveEngineStartRelation::CurrentAttempt => {
@@ -855,6 +974,14 @@ fn start_bufferfeed_inner(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
+    // A timed-out Load from an earlier Engine may still own the one native object the C seam
+    // holds. Release it now if it has returned; otherwise refuse before anything below (the
+    // exported window in particular) can touch state that object is still using.
+    reap_abandoned_load(pa);
+    if pa.has_abandoned_load() {
+        log("start_bufferfeed: an abandoned Load has not returned yet (refusing native start)");
+        return Err(crate::route::RouteStartResult::StartFailed);
+    }
     // Guard a double-start: overwriting a live ENGINE slot would DROP the running
     // Engine, detaching its worker threads and freeing the hs/aq boxes those
     // threads still hold raw ptrs into -> use-after-free. If already running, no-op.
@@ -1206,7 +1333,7 @@ fn start_bufferfeed_inner(
     // never reads route::Session: a stale lease stops at teardown, while active encoder changes
     // remain synchronized with the projection under PlayerControl.
     let report_stop = threads::ReportStop::new();
-    let report_th = if stream {
+    let report_th = if stream && !crate::route::is_preview(ps) {
         if let Some(lease) = crate::route::begin_timeline_reporting(ps) {
             // best-effort: refused, the only loss is that the resume point stops being posted
             let st = report_stop.clone();
@@ -1250,6 +1377,7 @@ fn start_bufferfeed_inner(
         load_th,
         report_th,
         report_stop: Some(report_stop),
+        preview_abandon: false,
     };
     // Re-arm the in-place-seek probe for this session. `feed_stream` clears it when
     // `sf_send_segment` can't reach the pipeline, and that is a fact about the StarfishMediaAPIs
@@ -1519,6 +1647,19 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         }
         return;
     }
+    // A preview Load that has not returned yet must not be joined on this frame. Bind is skipped
+    // while the flag is set, so the picture never reaches the plane. The next halt joins once
+    // the thread has already finished.
+    if crate::route::is_preview(ps) {
+        if let Some(eng) = pa.engine() {
+            let loading = eng.stage == Stage::Loading;
+            let finished = eng.load_th.as_ref().is_none_or(|t| t.is_finished());
+            if crate::player::preview::defer_media_join(loading, finished) {
+                eng.preview_abandon = true;
+                return;
+            }
+        }
+    }
     // Revoke every worker ticket before asking those workers to stop. This is the synchronization
     // boundary that makes a late HLS candidate/fallback an ordinary stale event instead of a
     // mutation of the route the next Load is about to own.
@@ -1589,9 +1730,20 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     if let Some(t) = eng.stream_th.take() {
         crate::task::join("demux", t);
     }
-    if let Some(t) = eng.load_th.take() {
-        crate::task::join("media", t);
-    }
+    // A Load the D.1.4 budget already gave up on, still inside `sf_load`: do NOT join it here.
+    // This is the main thread, and on the set where the budget fires the call may never return —
+    // BACK from the timeout read-out used to freeze the app on this line. The native object is
+    // parked instead and released by `reap_abandoned_load` once the thread has returned; nothing
+    // below may touch it before then (issue #74). Every other Load keeps the ordinary ordering:
+    // one that has returned joins at once, and one that is merely slow is still joined.
+    let abandoned_load = match eng.load_th.take() {
+        Some(t) if !t.is_finished() && SHARED.load_timed_out.load(Ordering::Acquire) => Some(t),
+        Some(t) => {
+            crate::task::join("media", t);
+            None
+        }
+        None => None,
+    };
     // 2b. every reader is now joined, so this thread is the sole owner: do the real close.
     // (Before the join it could only shutdown — see step 1.)
     if stream {
@@ -1619,68 +1771,29 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     if !for_reload {
         crate::route::scrobble_stop(ps, final_report, eng.report_th.take());
     }
-    // 3. Stop the pipeline, close native callback admission, then drain the Rust epoch.
-    //
-    // `Unload` waits for the GStreamer state transition, but neither libpf's raw callback fields nor
-    // type=23 is an exported producer/in-flight barrier. The executable therefore interposes the
-    // exact callbackFunctionHook JUMP_SLOT. Each Load owns a never-reused object address; after
-    // Unload the C gate rejects new calls and waits for calls already inside the real hook. Only
-    // then can the Rust callback mutex be retired and D1 considered:
-    //
-    //     Unload -> gate inactive/drained -> retire/drain epoch -> D1.
-    //
-    // Both the synchronous type=23 observation and a non-zero per-object interposer counter are
-    // runtime evidence that this firmware followed the audited path. If any proof is missing, C
-    // retains the constructed object forever and permanently refuses another Load. Leaking one
-    // object is preferable to letting D1 turn a late producer callback into a use-after-free.
-    if unsafe { ffi::sf_ready(pa.mt()) } != 0 {
-        unsafe { ffi::sf_unload(pa.mt()) };
-        let callback_gate_proven = unsafe { ffi::sf_callback_gate_retire(pa.mt()) } != 0;
-        let callback_intercepts = unsafe { ffi::sf_callback_intercepts(pa.mt()) };
-        let unload_completed = SHARED.native_unload_completed(eng.native_epoch);
-        let rust_epoch_retired = SHARED.retire_native_session(eng.native_epoch);
-        if !unload_completed {
+    // 3. Release the native object (see `release_native_object` for the proof chain), unless its
+    // Load is still in flight — then hand it, its thread and its payload to the adapter.
+    if let Some(load_th) = abandoned_load {
+        if !SHARED.abandon_native_session(eng.native_epoch) {
             log(&format!(
-                "native lifecycle: Unload returned without type=23 epoch={}",
+                "native lifecycle: abandoned Load epoch={} no longer owned the Active phase",
                 eng.native_epoch,
             ));
         }
-        if !callback_gate_proven {
-            log(&format!(
-                "native lifecycle: callback interposition unproven epoch={} intercepted={}",
-                eng.native_epoch, callback_intercepts,
-            ));
-        }
-        if !rust_epoch_retired {
-            log(&format!(
-                "native lifecycle: failed to retire epoch={} after Unload",
-                eng.native_epoch,
-            ));
-        }
-        if ACB_OK.load(Ordering::Relaxed) {
-            unsafe { ffi::acb_unload(pa.mt()) };
-        }
-        match native_object_disposition(unload_completed, callback_gate_proven, rust_epoch_retired)
-        {
-            NativeObjectDisposition::Destroy => {
-                if unsafe { ffi::sf_destroy(pa.mt()) } == 0 {
-                    log("native lifecycle: C seam rejected D1 and quarantined the object");
-                }
-            }
-            NativeObjectDisposition::Quarantine => unsafe { ffi::sf_quarantine(pa.mt()) },
-        }
-    } else if !SHARED.retire_native_session(eng.native_epoch) {
         log(&format!(
-            "native lifecycle: no dispatchable object and epoch={} was already retired",
+            "native lifecycle: Load epoch={} still in flight at teardown — not joining; the \
+             object stays parked (and native playback refused) until Load returns",
             eng.native_epoch,
         ));
+        pa.park_abandoned_load(AbandonedLoad {
+            epoch: eng.native_epoch,
+            load_th,
+            _payload: std::mem::take(&mut eng.payload),
+            abandoned_at: std::time::Instant::now(),
+        });
+    } else {
+        release_native_object(pa.mt(), eng.native_epoch);
     }
-    // The webOS 5+ counterpart of acb_unload, and the other half of `with_window_id`'s create.
-    // Outside the sf_ready guard because readiness means dispatchable, not "object exists", and
-    // because the window is created BEFORE Load — a session that failed between the two would
-    // otherwise leak it, and the next Load would ask for another. Unguarded because the seam
-    // already no-ops in the other modes (see starfish.h).
-    unsafe { ffi::vp_destroy_window(pa.mt()) };
     // 4. drain + destroy both queues (drain_aq also clears both pendings)
     if stream {
         drain_aq(&mut eng);
@@ -2778,6 +2891,7 @@ mod prime_livelock_tests {
             load_th: None,
             report_th: None,
             report_stop: None,
+            preview_abandon: false,
         }
     }
 
@@ -3461,6 +3575,656 @@ mod replay_after_stop_tests {
         ));
 
         crate::route::reset_player_control_for_test(&ps);
+    }
+}
+
+/// issue #74 D.1 regression tests. Real v0.6.0 dispatches every Starfish/ACB verb through
+/// `sf_ready_object()` alone (`src/starfish.c`), which went live at `SMP_SET_READY(1)` BEFORE the
+/// real, blocking `sf_load` call (`g_load_with_context`) returned — nothing waited for that
+/// return. So the whole duration of a Load was a window in which `sf_is_load_completed`/
+/// `sf_play`/`sf_feed`/etc. could dispatch into an object whose LoadCommon ctor path was still
+/// running on the load thread: investigation.md's run A (a null-arg SIGSEGV on the priming path)
+/// and run B (a Play-vs-LoadCommon mutex deadlock ending in an OMX_VideoComp abort).
+#[cfg(all(test, feature = "hostsim"))]
+mod load_in_flight_tests {
+    use super::*;
+
+    /// The Engine itself needs no cleanup since phase 9 — it lives in the test's own
+    /// `PlayerAdapter`, which drops with the test. What is still process-wide is `SHARED`, the
+    /// native lifecycle test seams, and the route reducer's projection.
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            ffi::reset_native_lifecycle_for_test();
+            ffi::force_clocksink_for_test(false);
+            ffi::set_load_in_flight_for_test(false);
+            SHARED.test_force_native_idle();
+            SHARED.reset_session();
+            crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
+        }
+    }
+
+    /// An engine parked in `Stage::Loading`, native session installed, not yet primed. Mirrors
+    /// [`prime_livelock_tests::engine_after_reload`] but for the state a fresh `Load` is in
+    /// BEFORE it returns, rather than after.
+    ///
+    /// `rebase_pending: true` stands in for a segmented-HLS route fixture: `route::is_segmented_hls`
+    /// is decided by `route.rs`, which another package in this run owns. `rebase_pending` drives
+    /// the exact same `prime_before_play` branch at the pump's loadCompleted arm
+    /// (`pump.rs::prime_before_play`) that segmented HLS does — the branch investigation.md §A.2
+    /// (run A) actually took — so the code path under test is identical.
+    fn engine_loading(epoch: u32) -> Engine {
+        let mut eng = super::prime_livelock_tests::engine_after_reload();
+        eng.native_epoch = epoch;
+        eng.stage = Stage::Loading;
+        eng.rebase_pending = true;
+        eng.prime_play = false;
+        eng.max_fed_video_pts = 0;
+        eng.max_fed_audio_pts = 0;
+        eng
+    }
+
+    /// Waits (bounded — this is a HOST test, never the television) for the host seam's
+    /// `LOAD_IN_FLIGHT` window to actually open. This project's silent-instrument rule
+    /// (AGENTS.md): a seam that never entered the in-flight window would score zero dispatches
+    /// and prove nothing, so the precondition is its own assertion with its own message, kept
+    /// separate from the real assertion below.
+    fn wait_for_load_in_flight() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ffi::load_in_flight_for_test() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "PRECONDITION FAILED: sf_load never entered its in-flight window (loadCompleted \
+                 emitted, not yet returned). A run that never opens this window would score zero \
+                 seam dispatches and prove nothing about the gate — see AGENTS.md's \
+                 silent-instrument rule."
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// The primary test: real concurrency, a real second thread running `threads::load_thread`,
+    /// a real held `sf_load`.
+    #[test]
+    fn nothing_reaches_the_seam_while_load_is_still_in_flight() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = crate::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        ffi::reset_native_lifecycle_for_test();
+        ffi::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
+        let epoch = SHARED.begin_native_session().expect("native session");
+        pa.install(engine_loading(epoch));
+
+        // Push a whole segment's worth onto both lanes now, the way a demuxer already running
+        // ahead of Load would (investigation.md §A.4 names exactly this as what differed between
+        // the dev set's clean runs and the reporter's segmented-HLS one) — enough to clear both
+        // `PRIME_NS` (video) and `PRIME_AUDIO_NS` (audio), so the positive half below can reach a
+        // real `sf_play` once the gate opens, not just an engine that primed and stalled.
+        {
+            const V_STEP_NS: i64 = 41_666_666; // 24 fps
+            const A_STEP_NS: i64 = 21_333_333; // 1024 samples at 48 kHz
+            const VIDEO_AUS: i64 = 30; // ~1.25s > PRIME_NS (700ms)
+            const AUDIO_AUS: i64 = 20; // ~427ms > PRIME_AUDIO_NS (300ms)
+            let eng = pa.engine().expect("engine installed above");
+            let au = [0u8; 32];
+            let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+            for i in 0..VIDEO_AUS {
+                crate::aq::aq_push(
+                    qv,
+                    au.as_ptr(),
+                    au.len() as c_int,
+                    i * V_STEP_NS,
+                    c_int::from(i == 0),
+                    1,
+                );
+            }
+            let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut crate::aq::AuQueue;
+            for i in 0..AUDIO_AUS {
+                crate::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, i * A_STEP_NS, 1, 2);
+            }
+        }
+
+        ffi::hold_load_for_test();
+        let payload = std::ffi::CString::new("{}").unwrap();
+        let payload_ptr = threads::SendPtr(payload.as_ptr() as *mut c_char);
+        let load_thread = std::thread::Builder::new()
+            .name("test-load-thread".into())
+            .spawn(move || threads::load_thread(payload_ptr, epoch, None))
+            .expect("spawn load_thread");
+
+        wait_for_load_in_flight();
+
+        // The primary assertion: several real pump ticks, none of which may reach the seam.
+        for _ in 0..5 {
+            crate::player::pump::pump(&mut ps, &mut pa, 1_000);
+        }
+        assert_eq!(
+            ffi::in_flight_calls_for_test(), 0,
+            "the pump reached the Starfish/ACB seam ({:?}) while StarfishMediaAPIs::Load was \
+             still executing on the load thread. In issue #74 that window is where the app died: \
+             a SIGSEGV in libc with a null first argument on the priming path, and a \
+             Play-vs-LoadCommon deadlock ending in an OMX_VideoComp abort on the immediate-Play \
+             path.",
+            ffi::in_flight_verb_for_test()
+        );
+        assert!(
+            !SHARED.native_load_returned(epoch),
+            "sanity: the Rust-side gate must still read closed while sf_load has not returned"
+        );
+        assert!(
+            pa.engine().is_some_and(|e| e.stage == Stage::Loading),
+            "the pump must not have advanced past Loading while Load was still in flight"
+        );
+
+        // Release the held Load and let it actually return.
+        ffi::release_load_for_test();
+        load_thread.join().expect("load_thread joins");
+
+        // The positive half: the gate isn't just permanently closed. A few more ticks must now
+        // advance past Loading and reach Play — proving the fix doesn't just refuse forever.
+        let mut advanced = false;
+        for _ in 0..20 {
+            crate::player::pump::pump(&mut ps, &mut pa, 1_000);
+            if pa.engine().is_some_and(|e| e.stage != Stage::Loading) {
+                advanced = true;
+                break;
+            }
+        }
+        assert!(
+            SHARED.native_load_returned(epoch),
+            "the Rust-side gate must open once threads::load_thread has actually returned"
+        );
+        assert!(
+            advanced,
+            "the gate opening must let the pump leave Stage::Loading"
+        );
+        assert!(
+            ffi::play_calls_for_test() > 0,
+            "once Load has genuinely returned, Play must eventually be reached — the gate must \
+             not simply stay closed forever"
+        );
+    }
+
+    /// `load-budget-skipped-when-the-gate-can-never-open` (a fix-wave finding, not a P1a
+    /// acceptance line): the D.1.4 budget below shares its precondition with the gate it exists
+    /// to bound — both `native_load_elapsed` and `native_load_returned` require the epoch to
+    /// still own `NativeSessionPhase::Active`. A synchronous UnloadCompleted callback for the
+    /// live epoch (firmware type=23) flips the phase to `Unloaded` without `load_call` ever
+    /// having reached `Returned`, which — before this fix — left `pump.rs`'s loadCompleted arm
+    /// deferring forever with no deadline: exactly the permanent Connecting spinner D.1.4 exists
+    /// to make impossible, on the one path where the gate can never open again.
+    #[test]
+    fn losing_the_active_phase_while_still_deferred_fires_the_budget_instead_of_hanging() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = crate::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        ffi::reset_native_lifecycle_for_test();
+        ffi::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
+        let epoch = SHARED.begin_native_session().expect("native session");
+        pa.install(engine_loading(epoch));
+
+        // `sf_ready(mt)` must already read nonzero (SMP_READY true) BEFORE the loadCompleted arm
+        // is even reached — pump.rs's own `sf_ready == 0 => Connecting` early return sits ahead
+        // of it — so this needs the same real held-Load rig as
+        // `nothing_reaches_the_seam_while_load_is_still_in_flight`, not a bare phase flip.
+        ffi::hold_load_for_test();
+        let payload = std::ffi::CString::new("{}").unwrap();
+        let payload_ptr = threads::SendPtr(payload.as_ptr() as *mut c_char);
+        let load_thread = std::thread::Builder::new()
+            .name("test-load-thread-2".into())
+            .spawn(move || threads::load_thread(payload_ptr, epoch, None))
+            .expect("spawn load_thread");
+        wait_for_load_in_flight();
+
+        assert!(
+            !SHARED.native_load_returned(epoch),
+            "sanity: the gate starts closed"
+        );
+
+        // Simulate the firmware's synchronous UnloadCompleted callback for this epoch while the
+        // pump is still deferring loadCompleted (Load is genuinely still executing on the load
+        // thread) — the phase leaves Active for Unloaded without `load_call` ever reaching
+        // `Returned`.
+        SHARED.with_native_session(
+            epoch,
+            crate::player::shared::NativeEventClass::UnloadCompleted,
+            23,
+            || {},
+        );
+        assert!(
+            SHARED.native_load_elapsed(epoch).is_none(),
+            "PRECONDITION FAILED: the epoch must have actually left Active, or this test proves \
+             nothing about the hazard (AGENTS.md's silent-instrument rule)"
+        );
+
+        assert!(!SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire));
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
+        assert!(
+            SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+            "losing Active while loadCompleted was still deferred must fire the D.1.4 budget \
+             immediately rather than silently disabling it — the permanent Connecting spinner \
+             this exists to rule out"
+        );
+
+        // Unblock and join the held load thread so the process doesn't leak it into later tests.
+        ffi::release_load_for_test();
+        load_thread.join().expect("load_thread joins");
+    }
+
+    /// `load-budget-expiry-path-itself-has-no-test` (a fix-wave finding): of this arm's three
+    /// match arms, `losing_the_active_phase_while_still_deferred_fires_the_budget_instead_of_hanging`
+    /// above pins the `None` arm, but `Some(elapsed) if elapsed >= NATIVE_LOAD_BUDGET` — the arm
+    /// the D.1.4 acceptance criterion is actually about — was reachable only by waiting a real 20s,
+    /// so nothing drove it: inverting the comparison to `elapsed < NATIVE_LOAD_BUDGET` left the
+    /// host suite green. `Shared::test_backdate_native_load_issued` (test-only) rewinds the
+    /// recorded `load_issued_at` past the budget instead, so the same real held-Load rig as
+    /// `nothing_reaches_the_seam_while_load_is_still_in_flight` can drive the actual comparison
+    /// without a sleep.
+    #[test]
+    fn native_load_budget_expiry_fires_load_failed() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = crate::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        ffi::reset_native_lifecycle_for_test();
+        ffi::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
+        let epoch = SHARED.begin_native_session().expect("native session");
+        pa.install(engine_loading(epoch));
+
+        ffi::hold_load_for_test();
+        let payload = std::ffi::CString::new("{}").unwrap();
+        let payload_ptr = threads::SendPtr(payload.as_ptr() as *mut c_char);
+        let load_thread = std::thread::Builder::new()
+            .name("test-load-thread-budget".into())
+            .spawn(move || threads::load_thread(payload_ptr, epoch, None))
+            .expect("spawn load_thread");
+        wait_for_load_in_flight();
+
+        assert!(
+            SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
+            "PRECONDITION FAILED: the epoch must still own the Active phase to backdate its \
+             load_issued_at, or this test proves nothing about the arm under test"
+        );
+        assert!(
+            SHARED
+                .native_load_elapsed(epoch)
+                .is_some_and(|e| e >= crate::player::pump::NATIVE_LOAD_BUDGET),
+            "PRECONDITION FAILED: the backdate must actually push elapsed past the budget — a \
+             silent-instrument trap (AGENTS.md) if it doesn't"
+        );
+        assert!(
+            !SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+            "sanity: load_failed starts clear"
+        );
+
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
+
+        assert!(
+            SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+            "elapsed >= NATIVE_LOAD_BUDGET must publish load_failed — an inverted or otherwise \
+             broken comparison here would leave a Load that never returns spinning forever \
+             instead of reaching the failure read-out"
+        );
+
+        // Unblock and join the held load thread so the process doesn't leak it into later tests.
+        ffi::release_load_for_test();
+        load_thread.join().expect("load_thread joins");
+    }
+
+    /// `load-returned-log-is-conditional-on-loadcompleted-and-unbounded-after`: the OTHER half of
+    /// D.1.4's budget. `native_load_budget_expiry_fires_load_failed` above pins "Load never
+    /// returns"; this pins "Load returns, but `loadCompleted` never arrives" — a wait that was
+    /// completely unbounded before this fix, since `pump.rs`'s D.1.4 arm only runs while
+    /// `!native_load_returned`, and stops being reachable the instant Load returns.
+    ///
+    /// Drives the gate by hand (like `the_gate_is_epoch_scoped` below): no real `sf_load` call is
+    /// made at all — the host stub's `sf_load` unconditionally emits the `loadCompleted` callback
+    /// before it can return, so it cannot represent "Load returned but loadCompleted never
+    /// arrived". `force_object_ready_for_test` gives `sf_ready()` its `true` without that call,
+    /// leaving `LOADED` (and so `sf_is_load_completed()`) at its default `false` — the "quiet
+    /// pipeline" this fix is about.
+    #[test]
+    fn native_load_returned_loadcompleted_never_arrives_fires_load_failed() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = crate::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        ffi::reset_native_lifecycle_for_test();
+        ffi::force_clocksink_for_test(true);
+        ffi::force_object_ready_for_test(true);
+        let _cleanup = Cleanup;
+
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
+        let epoch = SHARED.begin_native_session().expect("native session");
+        pa.install(engine_loading(epoch));
+
+        assert!(
+            SHARED.mark_native_load_returned(epoch).is_some(),
+            "PRECONDITION FAILED: Load must actually be marked Returned, or this test proves \
+             nothing about the second-half budget"
+        );
+        assert!(
+            SHARED.native_load_returned(epoch),
+            "PRECONDITION FAILED: the gate must read Returned"
+        );
+        assert!(
+            !SHARED.load_completed.load(std::sync::atomic::Ordering::Relaxed),
+            "PRECONDITION FAILED: loadCompleted must genuinely never have arrived"
+        );
+        assert_ne!(
+            unsafe { ffi::sf_ready(pa.mt()) },
+            0,
+            "PRECONDITION FAILED: sf_ready() must read true (force_object_ready_for_test), or \
+             pump() bails out at its own sf_ready wait before ever reaching the arm under test"
+        );
+        assert_eq!(
+            unsafe { ffi::sf_is_load_completed(pa.mt()) },
+            0,
+            "PRECONDITION FAILED: sf_is_load_completed() must read false — if it reads true, the \
+             OTHER arm (loadCompleted arrived) fires instead and this test proves nothing about \
+             the arm under test"
+        );
+
+        assert!(
+            SHARED.test_backdate_native_load_returned(
+                epoch,
+                crate::player::pump::NATIVE_LOAD_BUDGET
+            ),
+            "PRECONDITION FAILED: the epoch must still own the Active phase to backdate when it \
+             returned, or this test proves nothing about the arm under test"
+        );
+        assert!(
+            SHARED
+                .native_load_returned_elapsed(epoch)
+                .is_some_and(|e| e >= crate::player::pump::NATIVE_LOAD_BUDGET),
+            "PRECONDITION FAILED: the backdate must actually push the returned-elapsed past the \
+             budget — a silent-instrument trap (AGENTS.md) if it doesn't"
+        );
+        assert!(
+            !SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+            "sanity: load_failed starts clear"
+        );
+
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
+
+        assert!(
+            SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+            "loadCompleted never arriving within NATIVE_LOAD_BUDGET of Load RETURNING must \
+             publish load_failed — an unbounded wait here is exactly the permanent-Connecting- \
+             spinner shape D.1.4 exists to rule out, on the half that was still open"
+        );
+    }
+
+    /// A narrow SIMULATION of the epoch-scoping property, not a historical reproduction of the
+    /// crash — it drives both sides of the gate by hand (no real second thread, no real held
+    /// `sf_load`) to prove a mark for a DIFFERENT (superseded) epoch can never open the current
+    /// one's gate. See `nothing_reaches_the_seam_while_load_is_still_in_flight` for the
+    /// real-concurrency test that this one deliberately does not attempt to replace.
+    #[test]
+    fn the_gate_is_epoch_scoped() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = crate::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        ffi::reset_native_lifecycle_for_test();
+        ffi::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
+        let epoch = SHARED.begin_native_session().expect("native session");
+        pa.install(engine_loading(epoch));
+
+        // Get the host seam's OBJECT_READY (so `sf_ready(mt)` reads true and the pump reaches
+        // the loadCompleted arm at all) without arming HOLD_LOAD — this call returns at once.
+        let payload = std::ffi::CString::new("{}").unwrap();
+        assert_eq!(unsafe { ffi::sf_load(payload.as_ptr(), epoch) }, 1);
+        // Hand-set the in-flight window and publish loadCompleted via the existing sf_on_event
+        // path — simulating "Load has not returned" without a real second thread.
+        ffi::set_load_in_flight_for_test(true);
+        super::super::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
+
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
+        assert_eq!(
+            ffi::in_flight_calls_for_test(), 0,
+            "loadCompleted alone, with the Rust-side gate not yet marked Returned for this \
+             epoch, must not let any seam verb dispatch ({:?})",
+            ffi::in_flight_verb_for_test()
+        );
+        assert!(
+            pa.engine().is_some_and(|e| e.stage == Stage::Loading),
+            "the gate must still be closed"
+        );
+
+        // Mark a DIFFERENT epoch as returned. Since it never owns the Active phase, this must be
+        // a complete no-op for the session actually running.
+        let other_epoch = epoch.wrapping_add(1).max(1);
+        assert_ne!(other_epoch, epoch, "the test must pick a genuinely different epoch");
+        assert!(
+            SHARED.mark_native_load_returned(other_epoch).is_none(),
+            "marking an epoch that does not own the Active phase must be a no-op"
+        );
+        assert!(
+            !SHARED.native_load_returned(epoch),
+            "a mark for a DIFFERENT epoch must never open THIS epoch's gate — this is the \
+             epoch-scoping property that stops a late thread from a superseded session opening \
+             the gate for a newer one"
+        );
+
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
+        assert_eq!(
+            ffi::in_flight_calls_for_test(), 0,
+            "the pump must still defer after a differently-epoched mark ({:?})",
+            ffi::in_flight_verb_for_test()
+        );
+        assert!(
+            pa.engine().is_some_and(|e| e.stage == Stage::Loading),
+            "marking an epoch other than the pump's own must never open ITS gate"
+        );
+
+        ffi::set_load_in_flight_for_test(false);
+    }
+
+    #[test]
+    fn native_source_correction_ctor_wait_has_an_issued_budget() {
+        let _serial = crate::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&crate::route::PlaybackSession::IDLE);
+        ffi::reset_native_lifecycle_for_test();
+        ffi::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() });
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let epoch = SHARED.begin_native_session().unwrap();
+        pa.install(engine_loading(epoch));
+        assert_eq!(unsafe { ffi::sf_ready(pa.mt()) }, 0);
+        crate::player::pump::pump(&mut ps, &mut pa, 1000);
+        assert!(!SHARED.load_failed.load(Ordering::Acquire));
+        assert!(SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET));
+        crate::player::pump::pump(&mut ps, &mut pa, 1001);
+        assert!(SHARED.load_failed.load(Ordering::Acquire), "constructor readiness must not bypass the issued budget");
+    }
+    #[test]
+    fn native_source_correction_stale_load_refusal_cannot_fail_new_epoch() {
+        let _serial = crate::testlock::serial();
+        SHARED.reset_session();
+        ffi::reset_native_lifecycle_for_test();
+        ffi::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let mt = unsafe { crate::task::MainThread::assume() };
+        unsafe { ffi::sf_quarantine(&mt); }
+        let old = SHARED.begin_native_session().unwrap();
+        assert!(SHARED.retire_native_session(old));
+        let current = SHARED.begin_native_session().unwrap();
+        threads::load_thread(threads::SendPtr(c"{}".as_ptr() as *mut c_char), old, None);
+        assert!(!SHARED.load_failed.load(Ordering::Acquire), "a stale worker must not poison the newer epoch");
+        assert!(!SHARED.native_load_returned(current));
+        threads::load_thread(threads::SendPtr(c"{}".as_ptr() as *mut c_char), current, None);
+        assert!(SHARED.load_failed.load(Ordering::Acquire), "a current synchronous refusal must still fail");
+    }
+
+    #[test]
+    fn native_ready_demux_failure_keeps_precedence_over_the_load_wait() {
+        let _serial = crate::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&crate::route::PlaybackSession::IDLE);
+        ffi::reset_native_lifecycle_for_test();
+        ffi::force_clocksink_for_test(true);
+        ffi::force_object_ready_for_test(true);
+        let _cleanup = Cleanup;
+        let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { crate::task::MainThread::assume() });
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let epoch = SHARED.begin_native_session().unwrap();
+        pa.install(engine_loading(epoch));
+        crate::player::pump::pump(&mut ps, &mut pa, 1000);
+        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Connecting);
+        SHARED.demux_failed.store(true, Ordering::Release);
+        crate::player::pump::pump(&mut ps, &mut pa, 1001);
+        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Error);
+    }
+
+    /// PR #105 review finding: the D.1.4 budget turns a `Load` that never returns into a
+    /// failure read-out, but BACK from that read-out ran `teardown`, which JOINED the media
+    /// thread on the SDL main thread before anything else — so a genuinely hung `sf_load` froze
+    /// the whole app the moment the user tried to leave the screen that told them about it.
+    ///
+    /// The held host `sf_load` is the hang. A watchdog releases it after `WATCHDOG` so a broken
+    /// teardown FAILS this test (elapsed ≈ WATCHDOG) instead of hanging the suite.
+    #[test]
+    fn teardown_after_a_load_timeout_does_not_block_on_the_hung_load() {
+        const WATCHDOG: std::time::Duration = std::time::Duration::from_secs(3);
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = crate::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        ffi::reset_native_lifecycle_for_test();
+        ffi::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            crate::task::MainThread::assume()
+        });
+        let epoch = SHARED.begin_native_session().expect("native session");
+        let mut eng = engine_loading(epoch);
+        ffi::hold_load_for_test();
+        let payload_ptr = threads::SendPtr(eng.payload.as_ptr() as *mut c_char);
+        eng.load_th = Some(
+            std::thread::Builder::new()
+                .name("test-load-thread-hung".into())
+                .spawn(move || threads::load_thread(payload_ptr, epoch, None))
+                .expect("spawn load_thread"),
+        );
+        pa.install(eng);
+        wait_for_load_in_flight();
+
+        assert!(
+            SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
+            "PRECONDITION FAILED: the epoch must still own Active to backdate it"
+        );
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
+        assert!(
+            SHARED.load_timed_out.load(Ordering::Acquire),
+            "PRECONDITION FAILED: the budget must have fired, or this test is not about a timed-out Load"
+        );
+
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watchdog = {
+            let (done, fired) = (done.clone(), fired.clone());
+            std::thread::Builder::new().name("test-load-watchdog".into()).spawn(move || {
+                let deadline = std::time::Instant::now() + WATCHDOG;
+                while std::time::Instant::now() < deadline {
+                    if done.load(Ordering::Acquire) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                fired.store(true, Ordering::Release);
+                ffi::release_load_for_test();
+            }).expect("spawn watchdog")
+        };
+
+        let started = std::time::Instant::now();
+        stop_bufferfeed(&mut ps, &mut pa);
+        let elapsed = started.elapsed();
+        done.store(true, Ordering::Release);
+        watchdog.join().unwrap();
+
+        assert!(
+            !fired.load(Ordering::Acquire) && elapsed < std::time::Duration::from_secs(1),
+            "teardown blocked the main thread for {elapsed:?} on a Load that never returned \
+             (watchdog had to release it: {}) — BACK from the timeout read-out freezes the app",
+            fired.load(Ordering::Acquire)
+        );
+        assert_eq!(
+            ffi::in_flight_calls_for_test(),
+            0,
+            "teardown reached the Starfish seam ({:?}) while Load was still in flight — the #74 race",
+            ffi::in_flight_verb_for_test()
+        );
+        assert!(!pa.is_live(), "the stop must still complete from the route's point of view");
+        assert!(pa.has_abandoned_load(), "the in-flight Load must be parked, not dropped");
+        assert_ne!(
+            unsafe { ffi::sf_ready(pa.mt()) },
+            0,
+            "the object must be neither unloaded, destroyed nor quarantined while Load is in flight"
+        );
+        assert!(
+            SHARED.begin_native_session().is_none(),
+            "no new native session may begin while the seam still owns the abandoned object"
+        );
+
+        // While Load is still in flight the per-frame release is a no-op and a start is refused.
+        for _ in 0..3 {
+            assert!(!reap_abandoned_load(&mut pa));
+        }
+        assert!(pa.has_abandoned_load());
+        let start = crate::route::begin_route_start().expect("a completed stop grants a start owner");
+        // No URL is set, so an unguarded start would answer `NoRoute`; `StartFailed` is the refusal.
+        assert_eq!(
+            start_bufferfeed_inner(&mut ps, &mut pa, start).err(),
+            Some(crate::route::RouteStartResult::StartFailed),
+            "a later playback must not be handed the object an abandoned Load still owns"
+        );
+        let _ = crate::route::abort_route_start(start, crate::route::RouteStartResult::StartFailed);
+        assert_eq!(ffi::in_flight_calls_for_test(), 0, "{:?}", ffi::in_flight_verb_for_test());
+
+        // Now the Load returns. The next reap releases the object with full evidence (D1, not a
+        // quarantine), and native sessions are available again.
+        ffi::release_load_for_test();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !reap_abandoned_load(&mut pa) {
+            assert!(std::time::Instant::now() < deadline, "the returned Load was never released");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!pa.has_abandoned_load());
+        assert_eq!(unsafe { ffi::sf_ready(pa.mt()) }, 0, "the released object must be gone");
+        assert!(
+            !ffi::lifecycle_blocked_for_test(),
+            "the release must be a D1 with complete evidence, not a process-long quarantine"
+        );
+        let next = SHARED.begin_native_session().expect("native sessions resume after the release");
+        assert!(SHARED.retire_native_session(next));
     }
 }
 

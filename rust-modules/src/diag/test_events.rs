@@ -39,7 +39,7 @@ fn capture_observes_the_real_event_doors_and_restores_after_unwind() {
     let event = DiagEvent::FeatureUsed { feature: Feature::LibrarySwitch };
     let (answer, events) = capture(|| {
         super::event(event);
-        super::event_for_server(event, crate::plex::ServerId::UNSET);
+        super::event_for_connection(event, crate::plex::ServerId::UNSET, None, None);
         7
     });
     assert_eq!(answer, 7);

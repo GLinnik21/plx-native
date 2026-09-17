@@ -246,8 +246,36 @@ pub(crate) struct UsageContext {
     pub device_model: String,
     pub soc: String,
     pub hardware_revision: String,
-    pub server_connection: String,
-    pub ip_version: String,
+    /// `local` / `remote` / `relay` / `unknown`. **Absent, not `unknown`, on an event with no one
+    /// server** — `app.launch`, `route.entered`, `signin.*` — since an account with N servers has
+    /// no single connection to report for those. Present (possibly `unknown`, when the winning
+    /// client hasn't classified its link yet) on every event captured through
+    /// [`UsageEnvelope::capture_for_snapshot`]. `#[serde(default)]` keeps an older spooled envelope,
+    /// captured before this field could be omitted, decoding as `None` rather than refusing to
+    /// parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_connection: Option<String>,
+    /// `v4` / `v6` / `unknown`. Same absence rule as `server_connection`, from the same cause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip_version: Option<String>,
+    /// issue #74: the k5lp/k3lp `/dev/rtkmem` sandbox pre-flight — `ok` / `missing` / `n/a` — the
+    /// SAME closed enum [`crate::webos::rtkmem_context`] reports, never a free-text probe result.
+    /// Present on every event so a chassis's crash-at-start rate is queryable by sandbox rather
+    /// than only discoverable from a single reported issue.
+    #[serde(default = "rtkmem_default")]
+    pub rtkmem: String,
+    /// issue #74: which of the two webOS install prefixes this process runs from — `devmode` /
+    /// `homebrew` / `unknown` — from [`crate::paths::install_kind`]. Never the path itself.
+    #[serde(default = "install_default")]
+    pub install: String,
+}
+
+fn rtkmem_default() -> String {
+    "n/a".into()
+}
+
+fn install_default() -> String {
+    "unknown".into()
 }
 
 impl Default for UsageContext {
@@ -260,42 +288,55 @@ impl Default for UsageContext {
             device_model: "unknown".into(),
             soc: "unknown".into(),
             hardware_revision: "unknown".into(),
-            server_connection: "unknown".into(),
-            ip_version: "unknown".into(),
+            server_connection: None,
+            ip_version: None,
+            rtkmem: rtkmem_default(),
+            install: install_default(),
         }
     }
 }
 
 impl UsageContext {
     /// Read the already-probed platform inventory. `webos::probe` runs before telemetry boot and
-    /// before the first usage event; an unavailable field is reported honestly as `unknown`.
+    /// before the first usage event; an unavailable field is reported honestly as `unknown`. This
+    /// is the server-LESS form — a generic screen or app event has no one server when an account
+    /// owns N of them, so it OMITS `server_connection`/`ip_version` entirely rather than
+    /// inheriting whichever registry slot happens to be current or reporting a hardcoded
+    /// `unknown` for a connection the event never had. The one server-addressed producer is
+    /// [`Self::for_snapshot`], for an event that captured its own `(link, ip)` up front.
     pub(crate) fn current() -> Self {
-        Self::for_server(None)
+        Self::build(None)
     }
 
-    /// Capture network facts for the server the action actually addressed. A generic screen or
-    /// app event has no one server when an account owns N of them, so `None` stays `unknown`
-    /// instead of inheriting whichever registry slot happens to be current.
-    pub(crate) fn for_server(server: Option<crate::plex::ServerId>) -> Self {
+    /// Capture network facts from an ALREADY-CAPTURED `(link, ip)` pair rather than a live
+    /// registry read. `server.is_some()` is what decides "this event addresses one server" (and
+    /// so gets fields at all, possibly `unknown`); `server.is_none()` omits both regardless of
+    /// `link`/`ip`, matching [`Self::current`]'s server-less behaviour exactly.
+    pub(crate) fn for_snapshot(
+        server: Option<crate::plex::ServerId>,
+        link: Option<crate::plex::probe::Location>,
+        ip: Option<crate::plex::IpVersion>,
+    ) -> Self {
+        Self::build(server.map(|_| (link, ip)))
+    }
+
+    fn build(connection: Option<(Option<crate::plex::probe::Location>, Option<crate::plex::IpVersion>)>) -> Self {
         let os = crate::webos::info();
         let hw = crate::webos::device();
-        let (server_connection, ip_version) =
-            server
-                .and_then(crate::plex::client_for)
-                .map_or(("unknown", "unknown"), |client| {
-                    let connection = match client.link() {
-                        Some(crate::plex::probe::Location::Local) => "local",
-                        Some(crate::plex::probe::Location::Remote) => "remote",
-                        Some(crate::plex::probe::Location::Relay) => "relay",
-                        None => "unknown",
-                    };
-                    let ip = match client.ip_version() {
-                        Some(crate::plex::IpVersion::V4) => "v4",
-                        Some(crate::plex::IpVersion::V6) => "v6",
-                        None => "unknown",
-                    };
-                    (connection, ip)
-                });
+        let connection = connection.map(|(link, ip)| {
+            let connection = match link {
+                Some(crate::plex::probe::Location::Local) => "local",
+                Some(crate::plex::probe::Location::Remote) => "remote",
+                Some(crate::plex::probe::Location::Relay) => "relay",
+                None => "unknown",
+            };
+            let ip = match ip {
+                Some(crate::plex::IpVersion::V4) => "v4",
+                Some(crate::plex::IpVersion::V6) => "v6",
+                None => "unknown",
+            };
+            (connection, ip)
+        });
         Self {
             app_version: dimension(env!("PLX_VERSION")),
             webos_release: dimension(&os.release),
@@ -304,8 +345,10 @@ impl UsageContext {
             device_model: dimension(&hw.model),
             soc: dimension(&hw.board),
             hardware_revision: dimension(&hw.hw_revision),
-            server_connection: server_connection.into(),
-            ip_version: ip_version.into(),
+            server_connection: connection.map(|(c, _)| c.to_string()),
+            ip_version: connection.map(|(_, ip)| ip.to_string()),
+            rtkmem: crate::webos::rtkmem_context().into(),
+            install: crate::paths::install_kind().into(),
         }
     }
 
@@ -319,8 +362,10 @@ impl UsageContext {
             device_model: "<device model class>".into(),
             soc: "<SoC/platform class>".into(),
             hardware_revision: "<hardware revision class>".into(),
-            server_connection: "<local / remote / relay / unknown>".into(),
-            ip_version: "<v4 / v6 / unknown>".into(),
+            server_connection: Some("<local / remote / relay / unknown>".into()),
+            ip_version: Some("<v4 / v6 / unknown>".into()),
+            rtkmem: "<ok / missing / n/a>".into(),
+            install: "<devmode / homebrew / unknown>".into(),
         }
     }
 }
@@ -360,17 +405,25 @@ impl UsageEnvelope {
         Self::capture_with_context(event, occurred_at_ms, session_id, UsageContext::current())
     }
 
-    pub(crate) fn capture_for_server(
+    /// Connection facts come from an already-captured `(link, ip)` snapshot rather than a live
+    /// registry read (#95 step 8, item 4) — what a playback attempt event wants, since
+    /// `player::report::requested` snapshots the attempt's server connection once and every later
+    /// event on that attempt must report THAT connection, not whatever the client reads as at
+    /// send time after a mid-attempt re-point. The one server-addressed producer; a generic event
+    /// with no one server goes through [`Self::capture`] instead.
+    pub(crate) fn capture_for_snapshot(
         event: DiagEvent,
         occurred_at_ms: u64,
         session_id: &str,
         server: crate::plex::ServerId,
+        link: Option<crate::plex::probe::Location>,
+        ip: Option<crate::plex::IpVersion>,
     ) -> Self {
         Self::capture_with_context(
             event,
             occurred_at_ms,
             session_id,
-            UsageContext::for_server(Some(server)),
+            UsageContext::for_snapshot(Some(server), link, ip),
         )
     }
 
@@ -578,7 +631,7 @@ pub(crate) const EVENT_SPECS: &[EventSpec] = &[
         fields: &[
             F { key: "playback_id", domain: PLAYBACK_ID },
             F { key: "mode", domain: MODE },
-            F { key: "kind", domain: "`decision_refused` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `unspecified`" },
+            F { key: "kind", domain: "`decision_refused` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `jail_missing_rtkmem` / `load_timeout` / `unspecified`" },
         ],
     },
     EventSpec {
@@ -641,11 +694,21 @@ pub(crate) const CONTEXT_SPECS: &[F] = &[
     },
     F {
         key: "server_connection",
-        domain: "`local` / `remote` / `relay` / `unknown`",
+        domain: "`local` / `remote` / `relay` / `unknown` — omitted entirely on an event with no \
+                  one server, such as `app.launch`, `route.entered` or a `signin.*` event",
     },
     F {
         key: "ip_version",
-        domain: "`v4` / `v6` / `unknown`",
+        domain: "`v4` / `v6` / `unknown` — omitted entirely on an event with no one server, same \
+                  as `server_connection`",
+    },
+    F {
+        key: "rtkmem",
+        domain: "`ok` / `missing` / `n/a` — the k5lp/k3lp `/dev/rtkmem` jail pre-flight",
+    },
+    F {
+        key: "install",
+        domain: "`devmode` / `homebrew` / `unknown` — never the install path",
     },
 ];
 
@@ -938,5 +1001,52 @@ mod tests {
             doc.contains(&context),
             "PRIVACY.md does not contain the generated usage context table:\n\n{context}"
         );
+    }
+
+    /// **`playback.failed`'s declared `kind` domain must name every `FailureKind` code.**
+    ///
+    /// This is the check that was missing when `FailureKind::JailMissingRtkmem` shipped: nothing
+    /// tied the *documented* domain (this file's `EVENT_SPECS`, and through it `PRIVACY.md`, whose
+    /// own test only compares the two against EACH OTHER) to the *actual* enum a `playback.failed`
+    /// event's `kind` field is built from — `player::FailureKind::code`. So a new variant reached
+    /// production PostHog rows with a value neither document ever named, which is exactly the
+    /// shape of drift the value would be filtered out by in any dashboard, insight or taxonomy
+    /// definition built from the documented list rather than from the enum itself. Add a
+    /// `FailureKind` variant, forget this list, and this test is what catches it — not a
+    /// dashboard going quiet on a code nobody recognises.
+    #[test]
+    fn every_failure_kind_code_is_named_in_the_playback_failed_domain() {
+        use crate::player::FailureKind as F;
+        let spec = EVENT_SPECS
+            .iter()
+            .find(|s| s.name == "playback.failed")
+            .expect("playback.failed is declared");
+        let domain = spec
+            .fields
+            .iter()
+            .find(|f| f.key == "kind")
+            .expect("playback.failed declares a kind field")
+            .domain;
+        // Every current variant, including the retained historical `original_rollback` code — see
+        // `FailureKind`'s own doc for why that one still exists with no live producer.
+        for kind in [
+            F::DecisionRefused,
+            F::NoVideoTranscodeTarget,
+            F::NoVideoTrack,
+            F::MediaSource,
+            F::PlaybackInterrupted,
+            F::TvPipeline,
+            F::OriginalRollback,
+            F::JailMissingRtkmem,
+            F::LoadTimeout,
+            F::Unspecified,
+        ] {
+            assert!(
+                domain.contains(kind.code()),
+                "playback.failed's declared kind domain omits {:?} ({}): {domain}",
+                kind,
+                kind.code()
+            );
+        }
     }
 }

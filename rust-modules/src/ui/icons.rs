@@ -105,6 +105,10 @@ pub enum Icon {
     /// nothing beside it is a play triangle. So the row keeps `PlayStart` and the disc takes this,
     /// and the divergence is the point rather than drift — see [`Icon::PlayStart`].
     Restart,
+    /// A play triangle knocked out of a landscape frame — the detail hero's Trailer disc and
+    /// the item menu's Play Trailer row. One path, evenodd knockout, same construction as
+    /// [`Icon::CheckCircleFill`].
+    Trailer,
     Info,
     /// Warning triangle — `info.svg`'s sibling (same 24 viewBox, 2.2 stroke, round caps/joins,
     /// dot-and-bar inverted). From `Plex Pass Awareness.dc.html`: the facts row's HDR chip at
@@ -237,6 +241,7 @@ fn src(id: Icon) -> &'static str {
         Icon::Rewind => include_str!("../../../assets/icons/rewind.svg"),
         Icon::FastForward => include_str!("../../../assets/icons/fast-forward.svg"),
         Icon::Restart => include_str!("../../../assets/icons/restart.svg"),
+        Icon::Trailer => include_str!("../../../assets/icons/trailer.svg"),
         Icon::Info => include_str!("../../../assets/icons/info.svg"),
         Icon::Alert => include_str!("../../../assets/icons/alert.svg"),
         Icon::User => include_str!("../../../assets/icons/user.svg"),
@@ -277,7 +282,9 @@ fn tex_for(id: Icon, px: i32) -> c_uint {
         if let Some(e) = cache.iter().find(|e| e.id == id && e.px == px) {
             return e.tex;
         }
-        let target = px.clamp(8, 96);
+        // `render_scale` is the simulator's supersampling (1 on a television): the mask is
+        // rasterised at physical size and still drawn into the same logical rect.
+        let target = px.clamp(8, 96) * crate::surface::render_scale();
         let hi = target * SS;
         let tex = match crate::svg::rasterize(src(id), hi, hi) {
             Some(rgba) => {

@@ -212,8 +212,11 @@ static mut TLF_FADE: c_int = 0;
 /// than the text dissolving.
 static mut TLF_VTOP: c_int = 0;
 static mut TLF_VBOT: c_int = 0;
-static mut FONTS: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
-static mut FONTS_B: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
+/// One opened face per pixel size, per array. 80 covers the whole `theme::size` ladder; the
+/// simulator's supersampled rendering (`surface::render_scale`, up to 4x) rasterises at up to 4x it.
+const FONT_SLOTS: usize = if cfg!(feature = "hostsim") { 320 } else { 80 };
+static mut FONTS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
+static mut FONTS_B: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
 static mut TEXT_OK: c_int = 0;
 
 #[derive(Clone, Copy)]
@@ -277,7 +280,9 @@ fn key_hash(s: &[u8], sz: c_int, bold: c_int) -> u64 {
 // an LRU thrashes — each frame re-renders dozens of lines via TTF (+ a full-surface ink scan) and
 // re-uploads them, which showed up as ~22ms About / ~12ms Cast (sub-30fps scrolling into them). With
 // headroom past the ~80 simultaneous worst case, stable text is a pure cache hit after first paint.
-const TCACHE: usize = 160;
+// The simulator's supersampled rendering keeps a second, `n`x texture per visible string beside
+// the logical one layout measures, so it gets the room for both.
+const TCACHE: usize = if cfg!(feature = "hostsim") { 480 } else { 160 };
 static mut TCACHE_A: [TCacheEntry; TCACHE] = [TCacheEntry::ZERO; TCACHE];
 static mut TCLOCK: c_uint = 0;
 
@@ -388,7 +393,7 @@ fn log_font_fallback_once() {
 }
 
 unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
-    let sz = sz.clamp(8, 79) as usize;
+    let sz = sz.clamp(8, FONT_SLOTS as c_int - 1) as usize;
     let arr = if bold != 0 {
         &mut *addr_of_mut!(FONTS_B)
     } else {
@@ -458,8 +463,8 @@ const CJK_FONT: &str = "appfont-cjk.ttf";
 /// defect path: reaching this one is normal and expected on a Korean library.
 const DROIDSANS_FALLBACK: &str = "/usr/share/fonts/DroidSansFallback.ttf";
 
-static mut FONTS_CJK: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
-static mut FONTS_SYS: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
+static mut FONTS_CJK: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
+static mut FONTS_SYS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
 /// Per-link coverage, read from the file's cmap on FIRST NEED and never again. `None` after
 /// `COV_TRIED` means the file is absent or unreadable, i.e. the link is empty.
 static mut COV: [Option<crate::fontcov::Coverage>; 3] = [None, None, None];
@@ -532,7 +537,7 @@ unsafe fn link_font(link: Link, sz: c_int, bold: c_int) -> *mut TtfFont {
     if link == Link::Base {
         return font_at(sz, bold);
     }
-    let sz = sz.clamp(8, 79) as usize;
+    let sz = sz.clamp(8, FONT_SLOTS as c_int - 1) as usize;
     let arr = match link {
         Link::Cjk => &mut *addr_of_mut!(FONTS_CJK),
         _ => &mut *addr_of_mut!(FONTS_SYS),
@@ -1264,6 +1269,33 @@ pub(crate) fn baseline_y(sz: c_int, bold: c_int, on_sz: c_int, on_bold: c_int, o
     on_y + (text_cap_band(on_sz, on_bold).1 - text_cap_band(sz, bold).1)
 }
 
+/// The texture a string is DRAWN with and its size in logical px. The logical texture itself, except
+/// under the simulator's supersampled rendering (`surface::render_scale`), where it is the same
+/// string rasterised at `n`x and drawn at `1/n` — so glyphs stay 1:1 with physical pixels while
+/// every width and metric the layout reads is still the logical one.
+#[inline]
+unsafe fn drawn_tex(
+    s_bytes: &[u8],
+    s: *const c_char,
+    sz: c_int,
+    bold: c_int,
+    logical: (c_uint, c_int, c_int),
+) -> (c_uint, f32, f32) {
+    #[cfg(feature = "hostsim")]
+    {
+        let n = crate::surface::render_scale();
+        if n > 1 {
+            let (t, w, h, _, _) = text_tex(s_bytes, s, sz * n, bold);
+            if t != 0 {
+                return (t, w as f32 / n as f32, h as f32 / n as f32);
+            }
+        }
+    }
+    #[cfg(not(feature = "hostsim"))]
+    let _ = (s_bytes, s, sz, bold);
+    (logical.0, logical.1 as f32, logical.2 as f32)
+}
+
 /// align: 0 left, 1 center, 2 right (x is the anchor edge). returns text width.
 pub(crate) fn draw_text(
     s: *const c_char,
@@ -1287,9 +1319,10 @@ pub(crate) fn draw_text(
         if tex == 0 {
             return 0.0;
         }
+        let (tex, dw, dh) = drawn_tex(s_bytes, s, sz, bold, (tex, w, h));
         let dx = match align {
-            1 => x - w as f32 * 0.5,
-            2 => x - w as f32,
+            1 => x - dw * 0.5,
+            2 => x - dw,
             _ => x,
         };
         crate::gfx::use_prog(TPROG); // TL_SCREEN / TL_TEX / texture unit 0 set once at init
@@ -1300,13 +1333,13 @@ pub(crate) fn draw_text(
             TL_RECT,
             crate::gfx::snap(dx),
             crate::gfx::snap(y),
-            w as f32,
-            h as f32,
+            dw,
+            dh,
         );
         // The width is still returned — callers lay out from it — but a run outside a blur source
         // pass's region contributes no fragment to the backdrop, so the quad is not submitted.
-        if !crate::gfx::culled(dx, y, w as f32, h as f32)
-            && !gate(Class::Text, dx, y, w as f32, h as f32)
+        if !crate::gfx::culled(dx, y, dw, dh)
+            && !gate(Class::Text, dx, y, dw, dh)
         {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
@@ -1353,9 +1386,10 @@ pub(crate) fn draw_text_fade(
         if tex == 0 {
             return 0.0;
         }
+        let (tex, dw, dh) = drawn_tex(s_bytes, s, sz, bold, (tex, w, h));
         let dx = match align {
-            1 => x - w as f32 * 0.5,
-            2 => x - w as f32,
+            1 => x - dw * 0.5,
+            2 => x - dw,
             _ => x,
         };
         crate::gfx::use_prog(TPROGF); // TLF_SCREEN / TLF_TEX / texture unit 0 set once at init
@@ -1363,7 +1397,7 @@ pub(crate) fn draw_text_fade(
         // px → string-texture uv (the varying spans the one-quad string). `(0.0, 0.0)` is "off" —
         // the shader gates on `to > from`, so a caller with no horizontal fade need not sentinel
         // against the string's own width.
-        let wf = w as f32;
+        let wf = dw;
         let (hf0, hf1) = hfade.unwrap_or((0.0, 0.0));
         glUniform2f(TLF_FADE, hf0 / wf, hf1 / wf);
         let (vt0, vt1) = vfade_top.unwrap_or((0.0, 0.0));
@@ -1375,11 +1409,11 @@ pub(crate) fn draw_text_fade(
             TLF_RECT,
             crate::gfx::snap(dx),
             crate::gfx::snap(y),
-            w as f32,
-            h as f32,
+            dw,
+            dh,
         );
-        if !crate::gfx::culled(dx, y, w as f32, h as f32)
-            && !gate(Class::Text, dx, y, w as f32, h as f32)
+        if !crate::gfx::culled(dx, y, dw, dh)
+            && !gate(Class::Text, dx, y, dw, dh)
         {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }

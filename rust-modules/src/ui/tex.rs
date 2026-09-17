@@ -68,7 +68,7 @@ thread_local! {
     /// The render cache, on the GL thread. A named render-cache static (spec §15.2): screens
     /// reach it through the free functions below until they take it from `Cx` (phases 5–8).
     static CACHE: RefCell<TexCache<PosterKey>> =
-        RefCell::new(TexCache::with_budget(CACHE_CAP, TEX_RESIDENT_BYTES_MAX));
+        RefCell::new(TexCache::with_budget(CACHE_CAP, TEX_RESIDENT_BYTES_MAX * render_area()));
     static SOURCE: Cell<Option<&'static dyn Source>> = const { Cell::new(None) };
 }
 
@@ -116,6 +116,15 @@ const CACHE_CAP: usize = 64;
 /// reason: a number that is wrong should be wrong SMALL, on the side that asserts early rather
 /// than the side that ships a breach.
 pub const TEX_RESIDENT_BYTES_MAX: usize = 44 << 20;
+
+/// How many texels one authored pixel costs: 1 on a television, `n²` under the simulator's
+/// supersampled rendering (`surface::render_scale`), whose images are requested at `n`x per axis.
+/// Every byte ceiling derived from a 1080p frame scales by it, or an `n`x backdrop alone breaches.
+#[inline]
+pub(crate) fn render_area() -> usize {
+    let n = crate::surface::render_scale() as usize;
+    n * n
+}
 
 /// Decoded bytes above which an upload is a [`Class::Residency`] take rather than a
 /// [`Class::Poster`] one (spec §8.1).

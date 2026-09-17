@@ -675,7 +675,9 @@ where
     /// [`PresentEvent::VideoPlane`](super::present::PresentEvent::VideoPlane) input from the one
     /// machine that owns that bit. Either term alone is wrong: the player page is up for the whole
     /// pre-bind spinner and the whole post-unbind read-out, where our surface holds an ordinary
-    /// picture, and a bound plane under some other page is not a thing this tree can produce.
+    /// picture. A bound plane under the detail page is the trailer preview, which stays
+    /// [`RenderStrategy::Page`] because that page still paints chrome, shelves and the hero scrim;
+    /// punch-through is the page's own clear, not this predicate.
     ///
     /// What it decides, in this file: nothing below the top page ticks or draws — `(Frozen,
     /// Replaced)` in §6.2's vocabulary, applied to everything UNDER the page rather than to the

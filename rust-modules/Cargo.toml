@@ -33,6 +33,10 @@ name = "plxnative-sim"
 path = "src/bin/sim.rs"
 required-features = ["hostsim"]
 
+[[bin]]
+name = "plxnative-storage"
+path = "src/bin/plxnative-storage.rs"
+
 [features]
 # On by default, so every ordinary `make`, every `make test` and every on-device harness run
 # behaves exactly as it always has. `make RELEASE=1` passes --no-default-features, which is what
@@ -154,3 +158,7 @@ serde = { version = "1", default-features = false, features = ["derive", "alloc"
 
 [profile.release]
 opt-level = 2
+
+[dev-dependencies]
+rcgen = "0.14.10"
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
