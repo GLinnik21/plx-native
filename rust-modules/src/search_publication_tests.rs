@@ -78,36 +78,37 @@ fn an_empty_answer_waits_for_the_stragglers_but_a_populated_one_does_not() {
 #[test]
 fn a_failed_source_backs_off_alone_and_the_others_still_answer() {
     let _g = fresh();
-    register(2);
-    set_query("wallace");
-    let gen = GEN.load(Ordering::SeqCst);
+    let mut owner = Owner::default();
+    register(&mut owner, 2);
+    owner.set_query("wallace");
+    let gen = owner.state.gen;
 
-    IN_FLIGHT[0].store(true, Ordering::SeqCst);
-    IN_FLIGHT[1].store(true, Ordering::SeqCst);
-    land(
+    owner.adapter.fetch[0].in_flight.store(true, Ordering::SeqCst);
+    owner.adapter.fetch[1].in_flight.store(true, Ordering::SeqCst);
+    owner.land(
         0,
         gen,
         Some(answered(0, vec![media("A Close Shave")]).items),
     );
-    land(1, gen, None); // the friend's server is off
-    hold_off();
-    assert!(pump(0.0));
+    owner.land(1, gen, None); // the friend's server is off
+    hold_off(&mut owner);
+    assert!(owner.pump(0.0));
 
     assert_eq!(
-        titles(&shelves()[0]),
+        titles(&owner.state.shelves()[0]),
         ["A Close Shave"],
         "a dead source must not blank a live one"
     );
-    assert_eq!(state(), State::Ready, "one answer is enough");
-    assert_eq!(unsafe { (*addr_of!(SRC))[1].status }, Status::Failed);
+    assert_eq!(owner.state.state(), State::Ready, "one answer is enough");
+    assert_eq!(owner.state.src[1].status, Status::Failed);
     assert_eq!(
-        unsafe { (*addr_of!(SRC))[1].retry_cd },
+        owner.state.src[1].retry_cd,
         RETRY_FRAMES,
         "the failed source backs off before retrying"
     );
-    assert!(!IN_FLIGHT[0].load(Ordering::SeqCst) && !IN_FLIGHT[1].load(Ordering::SeqCst));
+    assert!(!owner.adapter.fetch[0].in_flight.load(Ordering::SeqCst)
+        && !owner.adapter.fetch[1].in_flight.load(Ordering::SeqCst));
     crate::plex::reset_servers_for_test();
-    reset();
 }
 
 /// The duplicate-spawn race [`IN_FLIGHT`] admits to can leave two workers out for one source at
@@ -117,33 +118,33 @@ fn a_failed_source_backs_off_alone_and_the_others_still_answer() {
 #[test]
 fn a_late_failure_cannot_unsay_an_answer_this_source_already_gave() {
     let _g = fresh();
-    register(1);
-    set_query("wallace");
-    let gen = GEN.load(Ordering::SeqCst);
-    land(
+    let mut owner = Owner::default();
+    register(&mut owner, 1);
+    owner.set_query("wallace");
+    let gen = owner.state.gen;
+    owner.land(
         0,
         gen,
         Some(answered(0, vec![media("A Close Shave")]).items),
     );
-    hold_off();
-    assert!(pump(0.0));
-    assert_eq!(state(), State::Ready);
+    hold_off(&mut owner);
+    assert!(owner.pump(0.0));
+    assert_eq!(owner.state.state(), State::Ready);
 
-    land(0, gen, None); // the duplicate worker, finishing second
-    hold_off();
-    pump(0.0);
+    owner.land(0, gen, None); // the duplicate worker, finishing second
+    hold_off(&mut owner);
+    owner.pump(0.0);
     assert_eq!(
-        titles(&shelves()[0]),
+        titles(&owner.state.shelves()[0]),
         ["A Close Shave"],
         "the results vanished for two seconds"
     );
-    assert_eq!(state(), State::Ready);
-    assert_eq!(unsafe { (*addr_of!(SRC))[0].status }, Status::Answered);
+    assert_eq!(owner.state.state(), State::Ready);
+    assert_eq!(owner.state.src[0].status, Status::Answered);
     assert_eq!(
-        unsafe { (*addr_of!(SRC))[0].retry_cd },
+        owner.state.src[0].retry_cd,
         RETRY_FRAMES - 1,
         "no backoff — only the sentinel ticked"
     );
     crate::plex::reset_servers_for_test();
-    reset();
 }

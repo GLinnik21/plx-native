@@ -428,6 +428,32 @@ else
   fail "person-owner: retired Person compatibility surface returned"
 fi
 
+# search-owner: Search's query/generation/shelf model lives in SearchState, its per-source fetch
+# claims/mailboxes live in the rotated Arc<SearchAdapter>, and both belong to one SearchStore per
+# Bridge (`app/bridge.rs`'s `search_run`/`search_pump`/`search_snapshot`). Zero tolerance, no
+# allowlist: any free state facade or storage selector reconnects those owners and lets an
+# unaddressed reset, query edit or landing cross the Bridge boundary — exactly the pre-port shape
+# `crate::stores::search::apply`/`snapshot`/`snapshot_with_directory`/`run_with_directory`/
+# `pump_with_directory` and `crate::search::query`/`state`/`query_gen`/
+# `publish_shelves_for_test`/`settling`/`debounce_elapsed_for_test` had. `reset` is deliberately
+# NOT listed: `search.rs` keeps a legitimate module-level `fn reset(state, adapter)` as the
+# current explicit-parameter architecture, and `SearchStore::run`'s Reset arm calls it plus
+# rotates the adapter — only a bare, parameterless global `reset()` would be the retired shape.
+search_facades='apply|snapshot|snapshot_with_directory|run_with_directory|pump_with_directory|query|state|query_gen|publish_shelves_for_test|settling|debounce_elapsed_for_test'
+search_selectors='ACTIVE|OWNER|QUERY|GEN|STATE|SHELVES|SRC|ARMED|FAV_GEN|IN_FLIGHT|MAIL|SLOT|SEARCH|SEARCH_STATE|LEGACY_ADAPTER'
+search_owner_matches=$({
+  owner_declarations "$search_facades" "$search_selectors" \
+    'SearchState|SearchAdapter|SearchStore|Fetch|Projection|Shelf' \
+    "$SRC/search.rs" "$SRC/stores/search.rs"
+  grep_code "(crate::search|crate::stores::search|stores::search)::($search_facades)\(" "$SRC"
+} | sort -u)
+if [ -z "$search_owner_matches" ]; then
+  ok "search-owner: zero global storage, transport, selectors, and free facades"
+else
+  echo "$search_owner_matches" | sed 's/^/    /'
+  fail "search-owner: retired Search compatibility surface returned"
+fi
+
 # libm: the method-call spelling, OUTSIDE ui/motion.rs (which owns the integrators and their
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
 # Wholly-test files (see `wholly_test_files`) are skipped like inline `#[cfg(test)]` blocks: a

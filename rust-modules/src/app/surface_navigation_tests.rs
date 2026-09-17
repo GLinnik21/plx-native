@@ -79,16 +79,16 @@ fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page(
     let route = AppArg::Player;
     frame(&mut d, &mut rig, route.clone(), tick(0), vec![]);
     assert_eq!(d.top_screen().map(|s| s.name()), Some("player"));
-    let before = crate::stores::gen(StoreId::Search);
+    let before = rig.stores.gen(StoreId::Search);
     d.emit(
         MachineId::Nav,
         Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(crate::stores::search::SearchCmd::Reset))),
     );
     frame(&mut d, &mut rig, route.clone(), tick(1), vec![]);
-    assert_eq!(crate::stores::gen(StoreId::Search), before + 1, "the store was stepped in the drain");
+    assert_eq!(rig.stores.gen(StoreId::Search), before + 1, "the store was stepped in the drain");
     frame(&mut d, &mut rig, route.clone(), tick(2), vec![]);
-    assert_eq!(crate::stores::gen(StoreId::Search), before + 1, "and exactly once");
-    let g = crate::stores::gen(StoreId::Search);
+    assert_eq!(rig.stores.gen(StoreId::Search), before + 1, "and exactly once");
+    let g = rig.stores.gen(StoreId::Search);
     d.emit(
         MachineId::Nav,
         Fx::Deliver(
@@ -97,7 +97,7 @@ fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page(
         ),
     );
     frame(&mut d, &mut rig, route.clone(), tick(4), vec![]);
-    assert_eq!(crate::stores::gen(StoreId::Search), g);
+    assert_eq!(rig.stores.gen(StoreId::Search), g);
 }
 
 /// **A profile switch must leave the container holding nothing of the profile before it.**

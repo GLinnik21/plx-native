@@ -414,7 +414,7 @@ fn search_capture_and_pump_keep_the_frame_directory_policy() {
     let directory = directory_policy_fixture(own, hidden);
     rig.directory = directory.clone();
     rig.search_run(crate::stores::search::SearchCmd::SetQuery("same frame".into()));
-    let query_generation = crate::search::query_gen();
+    let query_generation = rig.stores.search.query_gen();
     let _ = crate::stores::take_notices();
     let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
         owner: InputOwner::Entry(EntryId(0)) };
@@ -423,10 +423,62 @@ fn search_capture_and_pump_keep_the_frame_directory_policy() {
     let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Search.ord()), &mut present);
     assert_eq!(rig.deliver(MachineId::Store(StoreId::Search.ord()),
         &AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us: 0 }), &parts, &mut fx), Handled::Yes);
-    assert_eq!(crate::search::query_gen(), query_generation,
+    assert_eq!(rig.stores.search.query_gen(), query_generation,
         "the pump must not supersede against a different directory in the same frame");
     assert!(crate::stores::take_notices().is_empty(),
         "an idle retained-directory Search pump invents no notice");
+}
+
+/// The Search two-owner regression the store-ownership contract requires: two `Bridge`s must
+/// share neither Search's query/shelves/notice-generation state nor its notice queue. Simulated
+/// RED against the pre-port process-wide `static`s this ported: a global `QUERY`/`GEN`/notice
+/// meant Bridge B's `Reset` cleared Bridge A's query and neither `take_notices()` call below could
+/// distinguish which Bridge raised the notice — both would have observed one shared notice, not
+/// one apiece. That older code no longer exists on disk to run directly (see `person.rs`'s and
+/// `viewstate.rs`'s sibling tests for the same shape, ported the same way), so the red here is
+/// simulated rather than historical, exactly as `reproduce-before-fixing` requires when a fix
+/// changes the seam a test would otherwise call.
+#[test]
+fn separate_bridges_do_not_share_any_search_owner_state_or_notice() {
+    let _guard = crate::testlock::serial();
+    let mut first = Bridge::for_test(|| 0);
+    let mut second = Bridge::for_test(|| 0);
+
+    first.search_run(crate::stores::search::SearchCmd::SetQuery("first-owner".into()));
+    let before_reset = first.stores.search.query().to_string();
+    second.search_run(crate::stores::search::SearchCmd::Reset);
+    let after_reset = first.stores.search.query().to_string();
+
+    assert_eq!(before_reset, after_reset, "resetting Bridge B must not clear Bridge A's query");
+    assert_eq!(after_reset, "first-owner");
+    assert!(second.stores.search.query().is_empty(), "Bridge B starts with no query of its own");
+
+    let second_notices = second.stores.take_notices();
+    let first_notices = first.stores.take_notices();
+    assert_eq!(second_notices.iter().filter(|(id, _)| *id == StoreId::Search).count(), 1,
+        "Bridge B owns only its own reset notice");
+    assert_eq!(first_notices.iter().filter(|(id, _)| *id == StoreId::Search).count(), 1,
+        "Bridge A's SetQuery notice survives Bridge B draining its own queue");
+}
+
+/// The other half of the contract's Required #3: `Reset` must rotate the live adapter so a worker
+/// spawned before the reset can only land into the retired `Arc`, never the replacement's mailbox
+/// — the same fetch/adapter-bundling pattern `person.rs`'s
+/// `person_reset_rotates_the_adapter_and_fences_a_late_old_worker` pins for Person.
+#[test]
+fn search_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
+    let _guard = crate::testlock::serial();
+    let mut bridge = Bridge::for_test(|| 0);
+    let old_adapter = bridge.stores.search.adapter_for_test();
+
+    bridge.search_run(crate::stores::search::SearchCmd::Reset);
+    let new_adapter = bridge.stores.search.adapter_for_test();
+    assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
+        "reset must rotate the Search worker adapter");
+
+    // The retired adapter is orphaned, not observed: `pump` only ever drains the CURRENT adapter,
+    // so a worker that captured `old_adapter` before the reset has nothing left to land into.
+    assert!(!bridge.stores.search.pump(0.0), "an idle rotated adapter has nothing to land");
 }
 
 /// The account-menu lift is a second PAINT of this bridge's captured chrome, not a second

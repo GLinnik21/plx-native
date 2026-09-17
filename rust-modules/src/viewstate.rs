@@ -270,6 +270,7 @@ impl ViewStateState {
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
 ) -> bool {
     // `client_for`, never `client()`: the item may live on a share, and a scrobble sent to the wrong
     // machine marks a DIFFERENT film watched there (both servers number their items from 1). None is
@@ -286,7 +287,7 @@ impl ViewStateState {
     // OPTIMISTIC, before the request: the press must land on the panel now, not one WAN round trip
     // from now. Only THIS copy — the other sources' keys are not known until the fan-out resolves
     // them, which is what [`pump`] finishes the job with.
-    edit_local_with_owners(sid, rk, w, browse, hubs, person);
+    edit_local_with_owners(sid, rk, w, browse, hubs, person, search);
     self.coalesce(sid, rk, w);
     let id = self.mint_request_id();
     self.queue.push(Req {
@@ -318,6 +319,7 @@ fn edit_local_with_owners(
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
 ) {
     match w {
         Write::Watched | Write::Unwatched => {
@@ -354,7 +356,7 @@ fn edit_local_with_owners(
                 rk: rk.to_string(),
                 on,
             });
-            crate::stores::search::apply(crate::stores::search::SearchCmd::SetWatchedLocal {
+            search(crate::stores::search::SearchCmd::SetWatchedLocal {
                 sid,
                 rk: rk.to_string(),
                 on,
@@ -476,6 +478,7 @@ pub(crate) fn pump(
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
 ) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     let due = self.retry_tick();
@@ -501,7 +504,7 @@ pub(crate) fn pump(
             // the ones their server took. A press that reached no other source does nothing here,
             // which is every press on a one-server install.
             for (osid, ork) in &done.also {
-                edit_local_with_owners(*osid, ork, r.w, browse, hubs, person);
+                edit_local_with_owners(*osid, ork, r.w, browse, hubs, person, search);
             }
             // The refresh is owed whether or not the server took it: on success it is the reconcile,
             // and on failure it is what puts the optimistic edit back to whatever the server really
@@ -791,11 +794,12 @@ pub(crate) fn run(
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
 ) -> bool {
     use crate::stores::viewstate::ViewStateCmd;
     match cmd {
         ViewStateCmd::Request { sid, rk, write, detail, guid } => {
-            self.request(adapter, sid, &rk, write, detail, &guid, browse, hubs, person)
+            self.request(adapter, sid, &rk, write, detail, &guid, browse, hubs, person, search)
         }
         ViewStateCmd::Reset => {
             self.reset();
@@ -819,6 +823,7 @@ mod tests {
         let mut browse = Vec::new();
         let mut hubs = Vec::new();
         let mut person = Vec::new();
+        let mut search = Vec::new();
         let _ = crate::stores::take_notices();
 
         assert!(store.run(
@@ -835,6 +840,7 @@ mod tests {
                 crate::stores::StoreOutcome::default()
             },
             &mut |cmd| { person.push(cmd); true },
+            &mut |cmd| { search.push(cmd); true },
         ));
 
         assert!(matches!(hubs.as_slice(), [crate::stores::hubs::HubsCmd::EditItem {
@@ -846,11 +852,12 @@ mod tests {
         assert!(matches!(person.as_slice(), [crate::stores::person::PersonCmd::SetWatchedLocal {
             sid: seen, rk, on: true
         }] if *seen == sid && rk == "7"));
+        assert!(matches!(search.as_slice(), [crate::stores::search::SearchCmd::SetWatchedLocal {
+            sid: seen, rk, on: true
+        }] if *seen == sid && rk == "7"));
         let notices = crate::stores::take_notices();
-        for id in [crate::stores::StoreId::Metadata, crate::stores::StoreId::Search] {
-            assert_eq!(notices.iter().filter(|(seen, _)| *seen == id).count(), 1,
-                "the optimistic edit reaches {} before run returns", id.name());
-        }
+        assert_eq!(notices.iter().filter(|(seen, _)| *seen == crate::stores::StoreId::Metadata).count(), 1,
+            "the optimistic edit reaches {} before run returns", crate::stores::StoreId::Metadata.name());
         assert!(store.take_notice().is_some(), "the owning ViewState store notices its command");
         crate::plex::reset_servers_for_test();
     }
@@ -910,6 +917,7 @@ mod tests {
                 crate::stores::StoreOutcome::default()
             },
             &mut |cmd| { person.push(cmd); true },
+            &mut |_| false,
         );
 
         assert!(matches!(&hubs[0], crate::stores::hubs::HubsCmd::EditItem {
@@ -1256,14 +1264,14 @@ mod tests {
         }));
 
         edit_local_with_owners(SRV_A, "4", Write::Watched, &mut |_| false,
-            &mut |cmd| crate::stores::hubs::apply(cmd), &mut |_| false);
+            &mut |cmd| crate::stores::hubs::apply(cmd), &mut |_| false, &mut |_| false);
         assert!(
             !crate::metadata::current().unwrap().watched,
             "A's 4 is not B's 4"
         );
 
         edit_local_with_owners(SRV_B, "4", Write::Watched, &mut |_| false,
-            &mut |cmd| crate::stores::hubs::apply(cmd), &mut |_| false);
+            &mut |cmd| crate::stores::hubs::apply(cmd), &mut |_| false, &mut |_| false);
         assert!(crate::metadata::current().unwrap().watched);
         assert_eq!(
             crate::metadata::current().unwrap().resume_ms,
@@ -1307,7 +1315,7 @@ mod tests {
         });
 
         let _outcome = state.pump(&adapter, &mut |_| false,
-            &mut |cmd| crate::stores::hubs::apply(cmd), &mut |_| false);
+            &mut |cmd| crate::stores::hubs::apply(cmd), &mut |_| false, &mut |_| false);
 
         assert!(
             crate::metadata::current().unwrap().watched,
@@ -1344,7 +1352,7 @@ mod tests {
         });
 
         let _ = state.pump(&adapter, &mut |_| false,
-            &mut |_| crate::stores::StoreOutcome::default(), &mut |_| false);
+            &mut |_| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false);
 
         assert_eq!(state.sent.as_ref().map(|request| request.id), Some(second_id),
             "a stale or mismatched completion cannot satisfy the current in-flight identity");
@@ -1369,7 +1377,7 @@ mod tests {
             Some(Completion { id, done: Done::default() });
 
         let _ = state.pump(&adapter, &mut |_| false,
-            &mut |_| crate::stores::StoreOutcome::default(), &mut |_| false);
+            &mut |_| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false);
 
         assert_eq!(state.take_detail_refresh(), Some(target));
     }

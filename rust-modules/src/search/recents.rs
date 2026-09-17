@@ -334,11 +334,11 @@ mod tests {
             assert!(!remember_with(first.generation(), same, || panic!("no-op submitted a write")));
             assert!(first.same_publication(&snapshot()));
         }
-        let outer = crate::search::view::snapshot();
+        let outer = crate::search::SearchState::default().snapshot();
         assert!(remember_with(first.generation(), "beta", || submissions += 1));
         assert_eq!(first.terms(), &["alpha"]);
         assert_eq!(snapshot().terms(), &["beta", "alpha"]);
-        let changed = crate::search::view::snapshot();
+        let changed = crate::search::SearchState::default().snapshot();
         assert_eq!(outer.view().query_gen(), changed.view().query_gen());
         assert!(!outer.same_publication(&changed), "recents change independently of query results");
         assert_eq!(outer.view().recents().terms(), &["alpha"]);
@@ -386,7 +386,9 @@ mod tests {
         session.watching("recent-a");
         let restored = snapshot();
         assert_eq!(restored.terms(), &["new-a", "alpha"]);
-        crate::search::reset();
+        let mut owner_state = crate::search::SearchState::default();
+        let owner_adapter = std::sync::Arc::new(crate::search::SearchAdapter::default());
+        crate::search::reset(&mut owner_state, &owner_adapter);
         assert!(restored.same_publication(&snapshot()), "query/server reset does not erase history");
     }
 

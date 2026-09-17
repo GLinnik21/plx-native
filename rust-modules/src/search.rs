@@ -62,8 +62,8 @@
 //! a tag straddling a favourite and a non-favourite library ranks favourite with its whole count.
 //!
 //! The favourite table is a SNAPSHOT taken at the spawn site and watched by a second generation
-//! ([`FAV_GEN`]) beside the roster's — see that constant for why a change re-arms the query rather
-//! than re-sorting what is on screen.
+//! ([`SearchState::fav_gen`]) beside the roster's — see that field for why a change re-arms the
+//! query rather than re-sorting what is on screen.
 //!
 //! ## The idiom to copy
 //!
@@ -74,13 +74,22 @@
 //! that are easy to miss and both wedge the screen forever if missed: release the in-flight flag
 //! when `spawn_small` REFUSES, and call [`crate::ui::idle::invalidate`] on every landing including
 //! the failure branch.
+//!
+//! ## Ownership (`docs/stores-as-machines.md`)
+//!
+//! [`SearchState`] is the main-thread-only logical state (query, shelves, generation fences, per
+//! source status/backoff/answer); [`SearchAdapter`] is the `Arc`'d worker-touched half (one
+//! [`Fetch`] per registry slot — the in-flight claim plus the landing mailbox). A production
+//! `Bridge` owns exactly one of each pair through `stores::search::SearchStore`, which is what
+//! makes two `Bridge`s share neither a query, a landing nor a notice. `SearchStore::run` rotates
+//! `adapter` to a fresh `Arc` on `SearchCmd::Reset`, so a worker spawned before the reset can only
+//! ever complete into the retired mailbox it captured.
 #![allow(dead_code)]
 
 use crate::plex::ServerId;
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
-use std::ptr::{addr_of, addr_of_mut};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub(crate) mod view;
@@ -310,12 +319,8 @@ pub(crate) enum State {
     /// roster with nothing in it to ask.
     ///
     /// The shelves are empty here **by construction**, not by policy: a query change clears them
-    /// ([`set_query`]) and [`merge`] draws only from a source whose status is [`Status::Answered`],
-    /// so nothing a previous query fetched can still be on screen. That is exactly why this variant
-    /// exists — the fault sentence is read off the STATE, because an empty store on its own cannot
-    /// be told apart from a [`State::Ready`] one. (This line long said the opposite: "whatever is in
-    /// the store is the PREVIOUS answer and is left alone", which is `browse.rs`'s rule, not this
-    /// store's — search drops the old answer the moment the terms change.)
+    /// (see the `set_query*` family) and [`merge`] draws only from a source whose status is
+    /// [`Status::Answered`], so nothing a previous query fetched can still be on screen.
     Failed,
 }
 
@@ -331,24 +336,13 @@ impl State {
     }
 }
 
-// Published buffers are shared with retained frame views. Only the main-thread store writes
-// them; replacing a query or landing cannot invalidate a frame that still owns the old Arc.
-static mut QUERY: Option<Arc<str>> = None;
-static mut SHELVES: Option<Arc<Vec<Shelf>>> = None;
-static mut STATE: State = State::Idle;
-
-/// The query as typed, verbatim — trailing space and all, because the FIELD draws this.
-pub(crate) fn query() -> &'static str {
-    unsafe { (&*addr_of!(QUERY)).as_deref().unwrap_or("") }
-}
-
 /// **THE predicate for "is this a real query"**, and the terms a fetch would actually be addressed
 /// to — `None` when the query is too short to be worth a round trip. Two halves, and each one is a
 /// decision rather than a formality:
 ///
 /// - **Trimmed**, because leading/trailing space is a fact about the FIELD and not about what is
-///   being looked for — which is also what lets [`set_query`] tell "the user typed a space" apart
-///   from "the user is looking for something else".
+///   being looked for — which is also what lets the `set_query*` family tell "the user typed a
+///   space" apart from "the user is looking for something else".
 /// - **[`MIN_QUERY`] counted in CHARACTERS, not bytes**, because the floor is a measured fact about
 ///   what the SERVER answers (module doc) and the query arrives as UTF-8 off the television's own
 ///   keyboard: `len()` would put a one-letter Cyrillic or CJK query over a floor the server will
@@ -380,136 +374,6 @@ pub(crate) fn sanitize_query(q: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Replace the query. Idempotent on an unchanged string, so a caller may hand it every frame.
-fn set_query(q: &str) {
-    set_query_with_directory(q, None);
-}
-
-fn set_query_from_directory(q: &str, directory: crate::stores::browse::DirectoryView<'_>) {
-    set_query_with_directory(q, Some(directory));
-}
-
-fn set_query_with_directory(
-    q: &str,
-    directory: Option<crate::stores::browse::DirectoryView<'_>>,
-) {
-    let q = &*sanitize_query(q);
-    // Two different changes, and only one of them is news for the SERVER: the field draws the raw
-    // string (so a typed space must repaint), while the fetch is addressed to the trimmed one (so
-    // that same space must not supersede an answer that is still correct). Collapsing the two
-    // re-asks the whole roster for the identical terms every time the space bar is pressed.
-    // Finish reading the caller's string before replacing storage: even a caller deriving
-    // a shorter query from the legacy read facade must not leave us reading a retired buffer.
-    let real_query = terms(q).is_some();
-    let restart = unsafe {
-        let cur = &mut *addr_of_mut!(QUERY);
-        let old = cur.as_deref().unwrap_or("");
-        if old == q {
-            return;
-        }
-        let restart = old.trim() != q.trim();
-        *cur = Some(Arc::from(q));
-        restart
-    };
-    if restart {
-        // A new query invalidates the old answer immediately. Leaving the previous shelves up
-        // while the next lands would show results for a string that is no longer on screen.
-        match directory {
-            Some(directory) => supersede_from_directory(directory),
-            None => supersede(),
-        }
-        unsafe {
-            *addr_of_mut!(SHELVES) = None;
-            *addr_of_mut!(STATE) = if real_query {
-                State::Searching
-            } else {
-                State::Idle
-            };
-            // …and the debounce restarts with it: the fetch is owed to the LAST keystroke, not to
-            // the first one of the burst.
-            *addr_of_mut!(SETTLE_US) = 0;
-            *addr_of_mut!(ARMED) = real_query;
-        }
-    }
-    crate::ui::idle::invalidate();
-}
-
-pub(crate) fn state() -> State {
-    unsafe { *addr_of!(STATE) }
-}
-
-/// The CONTENT epoch — bumped by every query change and every [`reset`]. Read by the screen to
-/// notice that the shelves under it have been replaced, including by something the screen did not
-/// do itself (a profile switch calling [`reset`]), which is what earns it a cross-fade rather than
-/// a cut. `browse::query_gen` is the same accessor for the same reason.
-pub(crate) fn query_gen() -> u32 {
-    GEN.load(Ordering::SeqCst)
-}
-
-/// Publish a bounded catalog through the real retained-view boundary, without network work.
-#[cfg(test)]
-pub(crate) fn publish_shelves_for_test(shelves: Vec<Shelf>) {
-    crate::testlock::assert_held("the search store (publish_shelves_for_test)");
-    // A published catalog represents completed source answers, not merely painted rows over
-    // still-pending requests. Keep it valid when a real owned-screen Tick pumps the store.
-    VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
-    snapshot_favs();
-    for i in slots() {
-        let items = std::array::from_fn(|k| shelves.iter().filter(|s| s.kind == KINDS[k])
-            .flat_map(|s| &s.items).filter(|item| item.sid().raw() as usize == i).cloned().collect());
-        record(i, Some(items));
-    }
-    unsafe {
-        *addr_of_mut!(ARMED) = false;
-        *addr_of_mut!(SHELVES) = Some(Arc::new(shelves));
-        *addr_of_mut!(STATE) = State::Ready;
-    }
-}
-
-/// The shelves, already in [`KINDS`] order, with empty ones omitted — an empty type draws nothing
-/// at all, so the UI never has to test for it.
-pub(crate) fn shelves() -> &'static [Shelf] {
-    unsafe { (&*addr_of!(SHELVES)).as_deref().map(Vec::as_slice).unwrap_or(&[]) }
-}
-
-/// Flip `(sid, rk)`'s watched state in the result set — the optimistic half of a view-state write,
-/// for the Search screen's own tiles. `pms::edit_item`'s twin, for `browse::set_watched_local`'s
-/// reason: that one reaches the HOME hubs alone, so a film marked watched from a search result's
-/// context menu kept its old mark until a refetch.
-///
-/// **Both stores, and no `rebuild`.** A source owns its rows and [`SHELVES`] is a projection of
-/// them ([`merge`]), so an edit to one alone would be undone by the next landing — but re-running
-/// the merge here would re-clone every row and log a line for a press that changed one boolean.
-/// Editing both by the same rule is the same result at the same cost as the walk itself.
-///
-/// Returns whether anything matched. **MAIN THREAD.**
-fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
-    let mut hit = false;
-    let mut flip = |it: &mut Item| {
-        if let Item::Media(m) = it {
-            if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
-                crate::pms::set_watched(m, on);
-                hit = true;
-            }
-        }
-    };
-    for it in unsafe { (&mut *addr_of_mut!(SRC)).iter_mut() }
-        .flat_map(|s| s.items.iter_mut())
-        .flatten()
-    {
-        flip(it);
-    }
-    if let Some(shelves) = unsafe { &mut *addr_of_mut!(SHELVES) } {
-        // A write outside the visible result cap must not clone a retained catalog it cannot
-        // change. The catalog itself is bounded by KINDS × SHELF_MAX, never library-sized.
-        if shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it,
-            Item::Media(m) if crate::plex::same_item((m.sid, &m.rk), (sid, rk)))) {
-            for it in Arc::make_mut(shelves).iter_mut().flat_map(|s| &mut s.items) { flip(it); }
-        }
-    }
-    hit
-}
-
 // ---- fetch plumbing (debounce + generation + single-flight + mailbox + retry backoff) ----------
 
 /// How long the query must hold still before it is asked. `ui/detail.rs`'s `SEASON_SETTLE` is 0.2 s
@@ -518,8 +382,8 @@ fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
 /// It is the whole reason the "called as the user types" endpoint is affordable at all.
 const SETTLE_S: f32 = 0.25;
 
-/// [`SETTLE_S`] in whole microseconds — the unit [`SETTLE_US`] actually accumulates in, so the
-/// debounce is an exact integer comparison rather than a summed `f32`.
+/// [`SETTLE_S`] in whole microseconds — the unit `SearchState::settle_us` actually accumulates in,
+/// so the debounce is an exact integer comparison rather than a summed `f32`.
 const SETTLE_US_TARGET: u32 = (SETTLE_S * 1_000_000.0) as u32;
 
 /// Items asked for **per hub** — `plex-openapi.json`: "The number of items to return per hub. 3 if
@@ -541,114 +405,7 @@ const SHELF_MAX: usize = crate::ui::card_row::MAX_ROW_ITEMS;
 
 /// Fetch-slot ceiling — the registry's own `MAX_SERVERS`, named rather than copied, so raising the
 /// ceiling cannot leave this module quietly never asking the extra servers.
-///
-/// It was a separate `16` for a while, on the reasoning that `MAX_SERVERS` was `pub(super)` inside
-/// `plex/` and could not be named here. That was already false when it was written — the constant
-/// is `pub` and re-exported, and `person.rs` names it for exactly this purpose — so the alias is
-/// kept only as a local name for what the arrays below are sized by.
-///
-/// Nothing here indexes by a raw server id it has not first clamped: [`nsrc`] is the one place
-/// that happens, and every array is walked through it. So a registry that outgrew this would cost
-/// an unsearched server, never a write off the end.
 const NSRC: usize = crate::plex::MAX_SERVERS;
-
-/// Bumped by every query change and every [`reset`]: a landing whose generation no longer matches
-/// is discarded by [`pump`], so a slow answer for `wal` can never repopulate the results for
-/// `wallace`.
-static GEN: AtomicU32 = AtomicU32::new(0);
-
-/// Registry identity generation last observed by the frame-loop store. This catches sparse
-/// membership changes and same-slot re-points alike; both supersede cached answers and workers
-/// aimed at the previous origin/profile.
-static VISIBLE: AtomicU32 = AtomicU32::new(0);
-
-/// **The favourite table this result set was projected under**, taken once per query at the spawn
-/// site (`plex/CLAUDE.md` rule 5) and read by [`rebuild`]'s merge. It ranks; it never filters.
-static FAVS: Mutex<Vec<(ServerId, i64, bool)>> = Mutex::new(Vec::new());
-
-/// The retained Browse directory's section generation as of that snapshot — the cheap half of the
-/// second identity this store watches beside [`VISIBLE`]. [`pump_with_optional_directory`] also
-/// compares the exact favourite table: generations are owner-local and two Browse stores can both
-/// be at zero while describing different libraries.
-///
-/// It is genuinely needed. Search watched the ROSTER generation alone, and the favourite answer
-/// moves without the roster moving at all: discovery appends a library and `apply_pins` records an
-/// edit, both bumping `SECTIONS_GEN` — and this screen deliberately runs discovery immediately
-/// before its own pump, so the answer really can change under a landed result set.
-///
-/// A change **supersedes and re-arms the whole resident query** rather than re-sorting what is on
-/// screen, and "re-sort" was never available: after the fold a [`TagHit`] no longer carries the
-/// section its bit came from, so a stored bit cannot be re-derived locally. The alternative is
-/// retaining full contributing-section provenance through both folds; re-arming is cheaper.
-static FAV_GEN: AtomicU32 = AtomicU32::new(0);
-
-/// Standalone fixture scope. Production always supplies the owning Bridge's retained directory;
-/// tests that exercise Search in isolation have no Browse favourites by construction.
-fn snapshot_favs() {
-    FAV_GEN.store(0, Ordering::SeqCst);
-    FAVS.lock().unwrap_or_else(|e| e.into_inner()).clear();
-}
-
-fn snapshot_favs_from_directory(directory: crate::stores::browse::DirectoryView<'_>) {
-    FAV_GEN.store(directory.sections_gen(), Ordering::SeqCst);
-    *FAVS.lock().unwrap_or_else(|e| e.into_inner()) = directory.favorite_sections().to_vec();
-}
-
-/// The snapshot, for the merge and for a worker about to be spawned.
-fn favs() -> Vec<(ServerId, i64, bool)> {
-    FAVS.lock().unwrap_or_else(|e| e.into_inner()).clone()
-}
-
-fn favs_match_directory(directory: crate::stores::browse::DirectoryView<'_>) -> bool {
-    FAVS.lock().unwrap_or_else(|e| e.into_inner()).as_slice()
-        == directory.favorite_sections()
-}
-
-/// The claim that source `i`'s fetch is out. Released by the mailbox take — the only event that
-/// knows the fetch is over — so anything that ends one by another route must release it itself:
-/// [`supersede`] drops the mailbox the take would have come from, and a refused `spawn_small` never
-/// produces one at all. Miss either and the source stays latched and never searches again.
-///
-/// This and [`SLOT`] are the two halves a WORKER touches, which is why they stay `Sync` statics
-/// rather than fields on [`Source`] beside the main-thread-only status/backoff/answer.
-///
-/// Same latch `person.rs`/`browse.rs` document, and the same honest caveat: it bounds spawns per
-/// *pump*, it is not a hard one-worker-at-a-time interlock. **Two ways past it, and they are
-/// different sizes.**
-///
-/// *Within one generation* a stale landing releases the claim before the generation check, so it
-/// can free a newer fetch's claim and buy one duplicate request. Bounded at one, and neither can
-/// wedge nor corrupt: [`land`] is monotone and [`pump`] discards stale mail.
-///
-/// *Across generations there is no bound at all*, and that half is written down here because
-/// nothing else says it. [`supersede`] releases the claim while the superseded worker is **still
-/// running** — it drops the ANSWER, it cannot abort the fetch, since the worker is parked in a
-/// blocking `stream.rs` GET with no cancellation to poll. So every keystroke that changes the terms
-/// can leave one live worker per source behind and immediately free the slot for another, each
-/// holding a `spawn_small` 256 KB stack until its request returns. [`SETTLE_S`]'s 0.25 s debounce is
-/// what bounds this in the normal case (one settled query per source, and the previous one has
-/// usually landed); a source that STALLS rather than failing — accepted, held open, never answered,
-/// `tools/netcond.py`'s `stall` — is the case that genuinely accumulates, until `task.rs`'s thread
-/// ceiling refuses a spawn, which [`maybe_spawn`] already treats as a retry rather than a fault. The
-/// fix, if it is ever worth one, is a cancel token the worker polls between reads; a tighter claim
-/// here cannot help, because the claim is not what is holding the thread.
-static IN_FLIGHT: [AtomicBool; NSRC] = [const { AtomicBool::new(false) }; NSRC];
-
-/// ~2 s at 60 fps — the same backoff `person.rs`/`browse.rs` use for a failed fetch. Counted down in
-/// [`Source::retry_cd`].
-const RETRY_FRAMES: u32 = 120;
-
-/// Microseconds the current query has held still, and whether it is still owed a fetch. Main
-/// thread only, advanced by [`pump`] — the `season_settle` accumulator's cousin one screen over,
-/// but WHOLE MICROSECONDS rather than a summed `f32`: [`pump`]'s `dt` argument already comes from
-/// a real `Tick.dt_us` (`stores::search::pump`'s own caller reads it off `parts.tick`), and a
-/// per-frame delta that size round-trips through `f32` exactly, so converting it back once and
-/// accumulating the integer is what removes the drift `check-deps.sh`'s `dt` gate exists to catch
-/// — without this debounce needing a `motion::Ramp` of its own (it is not logical state, not
-/// hashed and not replayed; see the retired `ci/allow/dt.txt`'s header for why it was ever this
-/// gate's lowest-stakes entry).
-static mut SETTLE_US: u32 = 0;
-static mut ARMED: bool = false;
 
 /// What one source's finished fetch delivers. `None` means the fetch FAILED (transport, parse, or
 /// a panicking worker) and must be retried — kept distinguishable from a successful answer that
@@ -663,8 +420,38 @@ struct Mail {
 /// crosses the mailbox.
 type Projection = [Vec<Item>; NKIND];
 
-/// One mailbox per source, indexed by [`ServerId::raw`].
-static SLOT: [Mutex<Option<Mail>>; NSRC] = [const { Mutex::new(None) }; NSRC];
+/// One registry slot's worker-touched half: the single-flight claim plus the landing mailbox.
+/// Bundled into [`SearchAdapter`], which a production `Bridge` holds as one `Arc` per owner —
+/// `person.rs`'s `Fetch`/`PersonAdapter` is the idiom this copies.
+struct Fetch {
+    in_flight: AtomicBool,
+    slot: Mutex<Option<Mail>>,
+}
+
+impl Fetch {
+    const IDLE: Fetch = Fetch {
+        in_flight: AtomicBool::new(false),
+        slot: Mutex::new(None),
+    };
+}
+
+/// The `Arc`'d worker half of one Search owner: every in-flight claim and landing mailbox, indexed
+/// by [`ServerId::raw`]. A worker captures a clone of the owning `Bridge`'s `Arc<SearchAdapter>`
+/// before it spawns; rotating the store's live `Arc` (on `SearchCmd::Reset`) orphans that clone
+/// harmlessly — the old worker can still land, but only into a mailbox nothing reads any more.
+pub(crate) struct SearchAdapter {
+    fetch: [Fetch; NSRC],
+}
+
+impl Default for SearchAdapter {
+    fn default() -> Self {
+        Self { fetch: [const { Fetch::IDLE }; NSRC] }
+    }
+}
+
+/// ~2 s at 60 fps — the same backoff `person.rs`/`browse.rs` use for a failed fetch. Counted down in
+/// [`Source::retry_cd`].
+const RETRY_FRAMES: u32 = 120;
 
 /// What the current generation's attempt at source `i` has come to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -679,19 +466,12 @@ enum Status {
 }
 
 /// One source's contribution to the merge, plus what its last attempt did. **Main thread only, in
-/// full** — [`pump`], [`record`], [`supersede`] and [`maybe_spawn`] are the only code that touches
-/// one, and all four run on the frame loop. The worker's two halves are [`IN_FLIGHT`] and [`SLOT`],
-/// which is why those stay separate `Sync` statics.
+/// full.**
 struct Source {
     status: Status,
-    /// Frames left before this source may be asked again after a FAILED attempt ([`pump`]
-    /// decrements, [`record`] arms it at [`RETRY_FRAMES`]). PER SOURCE on purpose: a friend's server
+    /// Frames left before this source may be asked again after a FAILED attempt (`pump`
+    /// decrements, `record` arms it at [`RETRY_FRAMES`]). PER SOURCE on purpose: a friend's server
     /// that is off must not hold our own library's results off for two seconds a go.
-    ///
-    /// A field rather than the parallel `RETRY_CD` array this used to be. It never moved
-    /// independently of `status` — armed with it in [`record`], read with it in [`maybe_spawn`],
-    /// cleared with it in [`supersede`] — so a second array was a second place to forget, and the
-    /// per-slot reset is now the one assignment `Source::EMPTY` already meant.
     retry_cd: u32,
     /// The last successful answer for the CURRENT generation. Meaningful only while `status` is
     /// [`Status::Answered`], which is what [`merge`] filters on.
@@ -706,10 +486,8 @@ impl Source {
     };
 }
 
-static mut SRC: [Source; NSRC] = [const { Source::EMPTY }; NSRC];
-
 /// The registry slots this store fans out over — **the one place a raw `ServerId` becomes an index
-/// into [`SRC`]/[`SLOT`]/[`IN_FLIGHT`]** (see [`NSRC`]).
+/// into `SearchState::src` / [`SearchAdapter`]** (see [`NSRC`]).
 ///
 /// **Exact ids, not a prefix or a range.** Slot
 /// numbers are permanent and a sign-out RETIRES the departing account's slots without renumbering
@@ -729,22 +507,296 @@ fn nsrc() -> usize {
     slots().len()
 }
 
+/// One Search owner's main-thread-only logical state (`docs/stores-as-machines.md`). Production
+/// gains one through `stores::search::SearchStore`; the worker-touched half is [`SearchAdapter`].
+pub(crate) struct SearchState {
+    // Published buffers are shared with retained frame views. Only the main-thread store writes
+    // them; replacing a query or landing cannot invalidate a frame that still owns the old Arc.
+    query: Option<Arc<str>>,
+    shelves: Option<Arc<Vec<Shelf>>>,
+    state: State,
+
+    /// The CONTENT epoch — bumped by every query change and every reset. Read by the screen to
+    /// notice that the shelves under it have been replaced, including by something the screen did
+    /// not do itself (a profile switch calling `SearchCmd::Reset`), which is what earns it a
+    /// cross-fade rather than a cut. Also the staleness fence: a landing whose generation no
+    /// longer matches is discarded by `pump`, so a slow answer for `wal` can never repopulate the
+    /// results for `wallace`.
+    gen: u32,
+
+    /// Registry identity generation last observed by this owner's pump. Catches sparse membership
+    /// changes and same-slot re-points alike; both supersede cached answers and workers aimed at
+    /// the previous origin/profile.
+    visible: u32,
+
+    /// **The favourite table this result set was projected under**, taken once per query at the
+    /// spawn site (`plex/CLAUDE.md` rule 5) and read by [`rebuild`]'s merge. It ranks; it never
+    /// filters.
+    favs: Vec<(ServerId, i64, bool)>,
+
+    /// The retained Browse directory's section generation as of that snapshot — the cheap half of
+    /// the second identity this store watches beside `visible`. [`pump_with_optional_directory`]
+    /// also compares the exact favourite table: generations are owner-local and two Browse stores
+    /// can both be at zero while describing different libraries.
+    ///
+    /// It is genuinely needed. Search watched the ROSTER generation alone, and the favourite answer
+    /// moves without the roster moving at all: discovery appends a library and `apply_pins` records
+    /// an edit, both bumping `SECTIONS_GEN` — and this screen deliberately runs discovery
+    /// immediately before its own pump, so the answer really can change under a landed result set.
+    ///
+    /// A change **supersedes and re-arms the whole resident query** rather than re-sorting what is
+    /// on screen, and "re-sort" was never available: after the fold a [`TagHit`] no longer carries
+    /// the section its bit came from, so a stored bit cannot be re-derived locally. The alternative
+    /// is retaining full contributing-section provenance through both folds; re-arming is cheaper.
+    fav_gen: u32,
+
+    /// Microseconds the current query has held still, and whether it is still owed a fetch. Main
+    /// thread only, advanced by `pump` — the `season_settle` accumulator's cousin one screen over,
+    /// but WHOLE MICROSECONDS rather than a summed `f32`.
+    settle_us: u32,
+    armed: bool,
+
+    /// One per registry slot; see [`Source`]. The worker's two halves live in [`SearchAdapter`].
+    src: [Source; NSRC],
+}
+
+impl Default for SearchState {
+    fn default() -> Self {
+        Self {
+            query: None,
+            shelves: None,
+            state: State::Idle,
+            gen: 0,
+            visible: 0,
+            favs: Vec::new(),
+            fav_gen: 0,
+            settle_us: 0,
+            armed: false,
+            src: [const { Source::EMPTY }; NSRC],
+        }
+    }
+}
+
+impl SearchState {
+    /// The query as typed, verbatim — trailing space and all, because the FIELD draws this.
+    pub(crate) fn query(&self) -> &str {
+        self.query.as_deref().unwrap_or("")
+    }
+
+    pub(crate) fn state(&self) -> State {
+        self.state
+    }
+
+    /// The shelves, already in [`KINDS`] order, with empty ones omitted — an empty type draws
+    /// nothing at all, so the UI never has to test for it.
+    pub(crate) fn shelves(&self) -> &[Shelf] {
+        self.shelves.as_deref().map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub(crate) fn query_gen(&self) -> u32 {
+        self.gen
+    }
+
+    pub(crate) fn snapshot(&self) -> view::SearchSnapshot {
+        self.snapshot_with_scope(scope::snapshot())
+    }
+
+    pub(crate) fn snapshot_with_directory(
+        &self,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> view::SearchSnapshot {
+        self.snapshot_with_scope(scope::snapshot_with_directory(directory))
+    }
+
+    fn snapshot_with_scope(&self, scope: scope::SourceScopeSnapshot) -> view::SearchSnapshot {
+        view::SearchSnapshot::from_parts(
+            self.query.clone(),
+            self.shelves.clone(),
+            self.state,
+            self.gen,
+            recents::snapshot(),
+            scope,
+        )
+    }
+
+    /// Synchronous command path. `stores::search::SearchStore::run` is the one caller in
+    /// production and is what rotates `adapter` on `SearchCmd::Reset`.
+    pub(crate) fn run(
+        &mut self,
+        adapter: &Arc<SearchAdapter>,
+        cmd: crate::stores::search::SearchCmd,
+    ) -> bool {
+        run_with_optional_directory(self, adapter, cmd, None)
+    }
+
+    pub(crate) fn run_with_directory(
+        &mut self,
+        adapter: &Arc<SearchAdapter>,
+        cmd: crate::stores::search::SearchCmd,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> bool {
+        scope::snapshot_with_directory(directory);
+        run_with_optional_directory(self, adapter, cmd, Some(directory))
+    }
+
+    /// Test-only compatibility pump for fixtures without a retained directory.
+    #[cfg(test)]
+    pub(crate) fn pump(&mut self, adapter: &Arc<SearchAdapter>, dt: f32) -> bool {
+        pump_with_optional_directory(self, adapter, dt, None)
+    }
+
+    /// Advance the debounce and land whatever arrived under this frame's retained directory policy.
+    /// Returns whether anything changed, so the caller can re-clamp focus.
+    pub(crate) fn pump_with_directory(
+        &mut self,
+        adapter: &Arc<SearchAdapter>,
+        dt: f32,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> bool {
+        pump_with_optional_directory(self, adapter, dt, Some(directory))
+    }
+
+    /// Publish a bounded catalog through the real retained-view boundary, without network work.
+    #[cfg(test)]
+    pub(crate) fn publish_shelves_for_test(&mut self, shelves: Vec<Shelf>) {
+        crate::testlock::assert_held("the search store (publish_shelves_for_test)");
+        // A published catalog represents completed source answers, not merely painted rows over
+        // still-pending requests. Keep it valid when a real owned-screen Tick pumps the store.
+        self.visible = crate::plex::server_roster_gen();
+        snapshot_favs(self);
+        for i in slots() {
+            let items = std::array::from_fn(|k| {
+                shelves
+                    .iter()
+                    .filter(|s| s.kind == KINDS[k])
+                    .flat_map(|s| &s.items)
+                    .filter(|item| item.sid().raw() as usize == i)
+                    .cloned()
+                    .collect()
+            });
+            record(self, i, Some(items));
+        }
+        self.armed = false;
+        self.shelves = Some(Arc::new(shelves));
+        self.state = State::Ready;
+    }
+
+    /// TEST ONLY: is the debounce still holding a keystroke back? The accumulator is otherwise
+    /// invisible — its only effect is that `maybe_spawn` declines — and a debounce that silently
+    /// stops releasing is a screen that never searches.
+    #[cfg(test)]
+    pub(crate) fn settling(&self) -> bool {
+        self.armed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debounce_elapsed_for_test(&self) -> f32 {
+        crate::testlock::assert_held("the search store (debounce_elapsed_for_test)");
+        self.settle_us as f32 / 1_000_000.0
+    }
+}
+
+/// Replace the query. Idempotent on an unchanged string, so a caller may hand it every frame.
+fn set_query(state: &mut SearchState, adapter: &Arc<SearchAdapter>, q: &str) {
+    set_query_with_directory(state, adapter, q, None);
+}
+
+fn set_query_from_directory(
+    state: &mut SearchState,
+    adapter: &Arc<SearchAdapter>,
+    q: &str,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) {
+    set_query_with_directory(state, adapter, q, Some(directory));
+}
+
+fn set_query_with_directory(
+    state: &mut SearchState,
+    adapter: &Arc<SearchAdapter>,
+    q: &str,
+    directory: Option<crate::stores::browse::DirectoryView<'_>>,
+) {
+    let q = &*sanitize_query(q);
+    // Two different changes, and only one of them is news for the SERVER: the field draws the raw
+    // string (so a typed space must repaint), while the fetch is addressed to the trimmed one (so
+    // that same space must not supersede an answer that is still correct). Collapsing the two
+    // re-asks the whole roster for the identical terms every time the space bar is pressed.
+    let real_query = terms(q).is_some();
+    let old = state.query.as_deref().unwrap_or("");
+    if old == q {
+        return;
+    }
+    let restart = old.trim() != q.trim();
+    state.query = Some(Arc::from(q));
+    if restart {
+        // A new query invalidates the old answer immediately. Leaving the previous shelves up
+        // while the next lands would show results for a string that is no longer on screen.
+        match directory {
+            Some(directory) => supersede_from_directory(state, adapter, directory),
+            None => supersede(state, adapter),
+        }
+        state.shelves = None;
+        state.state = if real_query { State::Searching } else { State::Idle };
+        // …and the debounce restarts with it: the fetch is owed to the LAST keystroke, not to
+        // the first one of the burst.
+        state.settle_us = 0;
+        state.armed = real_query;
+    }
+    crate::ui::idle::invalidate();
+}
+
+/// Flip `(sid, rk)`'s watched state in the result set — the optimistic half of a view-state write,
+/// for the Search screen's own tiles. `pms::edit_item`'s twin, for `browse::set_watched_local`'s
+/// reason: that one reaches the HOME hubs alone, so a film marked watched from a search result's
+/// context menu kept its old mark until a refetch.
+///
+/// **Both stores, and no `rebuild`.** A source owns its rows and `SearchState::shelves` is a
+/// projection of them ([`merge`]), so an edit to one alone would be undone by the next landing —
+/// but re-running the merge here would re-clone every row and log a line for a press that changed
+/// one boolean. Editing both by the same rule is the same result at the same cost as the walk
+/// itself.
+///
+/// Returns whether anything matched. **MAIN THREAD.**
+fn set_watched_local(state: &mut SearchState, sid: ServerId, rk: &str, on: bool) -> bool {
+    let mut hit = false;
+    let mut flip = |it: &mut Item| {
+        if let Item::Media(m) = it {
+            if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
+                crate::pms::set_watched(m, on);
+                hit = true;
+            }
+        }
+    };
+    for it in state.src.iter_mut().flat_map(|s| s.items.iter_mut()).flatten() {
+        flip(it);
+    }
+    if let Some(shelves) = &mut state.shelves {
+        // A write outside the visible result cap must not clone a retained catalog it cannot
+        // change. The catalog itself is bounded by KINDS × SHELF_MAX, never library-sized.
+        if shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it,
+            Item::Media(m) if crate::plex::same_item((m.sid, &m.rk), (sid, rk)))) {
+            for it in Arc::make_mut(shelves).iter_mut().flat_map(|s| &mut s.items) { flip(it); }
+        }
+    }
+    hit
+}
+
 /// Post a finished fetch to its mailbox. MONOTONE: an older fetch landing late must never clobber a
 /// newer result the pump has not consumed yet. Named (not inlined in the worker closure) because
-/// the guard is the one piece of this machinery a test cannot reach through [`set_query`] —
+/// the guard is the one piece of this machinery a test cannot reach through `set_query` —
 /// reaching it needs two overlapping real fetches.
-fn land(i: usize, gen: u32, what: Option<Projection>) {
-    let mut slot = SLOT[i].lock().unwrap_or_else(|e| e.into_inner());
+fn land(adapter: &SearchAdapter, i: usize, gen: u32, what: Option<Projection>) {
+    let mut slot = adapter.fetch[i].slot.lock().unwrap_or_else(|e| e.into_inner());
     let beats = match slot.as_ref() {
         None => true,
         // A newer generation always wins — the monotone rule this mailbox exists for.
         Some(m) if m.gen != gen => m.gen < gen,
         // …but at the SAME generation an ANSWER beats a failure. The in-flight claim bounds spawns
-        // and is not a hard interlock (see `IN_FLIGHT`), so two workers can be out for one source
-        // at one generation; with the loser's `None` arriving first, the real response was dropped
-        // and the source then sat out a ~2 s backoff holding a good answer. `record` already
-        // encodes this preference on the other side of the pump — "a late failure cannot unsay an
-        // answer" — and `land` is what decides which mail survives to be read at all.
+        // and is not a hard interlock, so two workers can be out for one source at one generation;
+        // with the loser's `None` arriving first, the real response was dropped and the source then
+        // sat out a ~2 s backoff holding a good answer. `record` already encodes this preference on
+        // the other side of the pump — "a late failure cannot unsay an answer" — and `land` is what
+        // decides which mail survives to be read at all.
         Some(m) => m.what.is_none() && what.is_some(),
     };
     if beats {
@@ -756,59 +808,89 @@ fn land(i: usize, gen: u32, what: Option<Projection>) {
 /// mailbox, release the single-flight claims with them, and put every source back to
 /// [`Source::EMPTY`] — status, retry backoff and answer together, since they are one source's state
 /// and "never asked" has exactly one spelling. The ONE place those move together, and what a
-/// keystroke calls. It does NOT stop the workers; see [`IN_FLIGHT`] for what that costs.
-fn supersede() {
-    supersede_with_directory(None);
+/// keystroke calls. It does NOT stop the workers — a superseded worker keeps running; see
+/// [`Fetch`]'s doc for what that costs.
+fn supersede(state: &mut SearchState, adapter: &Arc<SearchAdapter>) {
+    supersede_with_directory(state, adapter, None);
 }
 
-fn supersede_from_directory(directory: crate::stores::browse::DirectoryView<'_>) {
-    supersede_with_directory(Some(directory));
+fn supersede_from_directory(
+    state: &mut SearchState,
+    adapter: &Arc<SearchAdapter>,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) {
+    supersede_with_directory(state, adapter, Some(directory));
 }
 
-fn supersede_with_directory(directory: Option<crate::stores::browse::DirectoryView<'_>>) {
-    GEN.fetch_add(1, Ordering::SeqCst);
+fn supersede_with_directory(
+    state: &mut SearchState,
+    adapter: &Arc<SearchAdapter>,
+    directory: Option<crate::stores::browse::DirectoryView<'_>>,
+) {
+    state.gen = state.gen.wrapping_add(1);
     // A fresh favourite snapshot belongs to the fresh generation, and taking it HERE is what makes
     // the staleness rule need no second mailbox field: a landing projected under the old table
     // carries the old `gen`, and `pump` already discards those. One rejection rule, not two.
     match directory {
-        Some(directory) => snapshot_favs_from_directory(directory),
-        None => snapshot_favs(),
+        Some(directory) => snapshot_favs_from_directory(state, directory),
+        None => snapshot_favs(state),
     }
     for i in 0..NSRC {
-        *SLOT[i].lock().unwrap_or_else(|e| e.into_inner()) = None;
-        IN_FLIGHT[i].store(false, Ordering::SeqCst);
-        unsafe { (*addr_of_mut!(SRC))[i] = Source::EMPTY };
+        *adapter.fetch[i].slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        adapter.fetch[i].in_flight.store(false, Ordering::SeqCst);
+        state.src[i] = Source::EMPTY;
     }
+}
+
+/// Standalone fixture scope. Production always supplies the owning Bridge's retained directory;
+/// tests that exercise Search in isolation have no Browse favourites by construction.
+fn snapshot_favs(state: &mut SearchState) {
+    state.fav_gen = 0;
+    state.favs.clear();
+}
+
+fn snapshot_favs_from_directory(
+    state: &mut SearchState,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) {
+    state.fav_gen = directory.sections_gen();
+    state.favs = directory.favorite_sections().to_vec();
+}
+
+/// The snapshot, for the merge and for a worker about to be spawned.
+fn favs(state: &SearchState) -> Vec<(ServerId, i64, bool)> {
+    state.favs.clone()
+}
+
+fn favs_match_directory(
+    state: &SearchState,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> bool {
+    state.favs.as_slice() == directory.favorite_sections()
 }
 
 /// Test-only compatibility pump for fixtures without a retained directory.
 #[cfg(test)]
-pub(crate) fn pump(dt: f32) -> bool {
-    pump_with_optional_directory(dt, None)
-}
-
-/// Advance the debounce and land whatever arrived under this frame's retained directory policy.
-/// Returns whether anything changed, so the caller can re-clamp focus.
-pub(crate) fn pump_with_directory(
-    dt: f32,
-    directory: crate::stores::browse::DirectoryView<'_>,
-) -> bool {
-    pump_with_optional_directory(dt, Some(directory))
+fn pump(state: &mut SearchState, adapter: &Arc<SearchAdapter>, dt: f32) -> bool {
+    pump_with_optional_directory(state, adapter, dt, None)
 }
 
 fn pump_with_optional_directory(
+    state: &mut SearchState,
+    adapter: &Arc<SearchAdapter>,
     dt: f32,
     directory: Option<crate::stores::browse::DirectoryView<'_>>,
 ) -> bool {
     let live = slots();
     let visible = crate::plex::server_roster_gen();
-    let roster_changed = VISIBLE.swap(visible, Ordering::SeqCst) != visible;
+    let roster_changed = state.visible != visible;
+    state.visible = visible;
     if roster_changed {
         // This is an identity boundary, not merely a changed source count. Clear every answer and
         // generation so a slot reactivated for another profile cannot surface rows fetched with
         // the credential it held before it was hidden.
-        supersede();
-        unsafe { *addr_of_mut!(SHELVES) = None };
+        supersede(state, adapter);
+        state.shelves = None;
     }
     // **The second Browse identity, and it moves without the first.** Discovery appending a library
     // and a favourites edit both bump `SECTIONS_GEN`; an independent owner can instead carry a
@@ -817,77 +899,70 @@ fn pump_with_optional_directory(
     //
     // A resident query is SUPERSEDED AND RE-ARMED rather than re-sorted, because re-sorting is not
     // available: after the fold a `TagHit` no longer carries the section its bit came from, so the
-    // bit cannot be re-derived locally (see [`FAV_GEN`]). With nothing resident there is nothing to
-    // invalidate and the snapshot is simply brought up to date, so the next query does not open by
-    // re-arming itself.
+    // bit cannot be re-derived locally (see `SearchState::fav_gen`). With nothing resident there is
+    // nothing to invalidate and the snapshot is simply brought up to date, so the next query does
+    // not open by re-arming itself.
     let sections_gen = directory.map_or(0, |directory| directory.sections_gen());
-    let favourites_changed = FAV_GEN.load(Ordering::SeqCst) != sections_gen
-        || directory.is_some_and(|directory| !favs_match_directory(directory));
+    let favourites_changed = state.fav_gen != sections_gen
+        || directory.is_some_and(|directory| !favs_match_directory(state, directory));
     if favourites_changed {
-        if terms(query()).is_some() {
+        if terms(state.query()).is_some() {
             match directory {
-                Some(directory) => supersede_from_directory(directory),
-                None => supersede(),
+                Some(directory) => supersede_from_directory(state, adapter, directory),
+                None => supersede(state, adapter),
             }
-            unsafe {
-                *addr_of_mut!(SHELVES) = None;
-                *addr_of_mut!(SETTLE_US) = 0;
-                *addr_of_mut!(ARMED) = true;
-            }
+            state.shelves = None;
+            state.settle_us = 0;
+            state.armed = true;
         } else {
             match directory {
-                Some(directory) => snapshot_favs_from_directory(directory),
-                None => snapshot_favs(),
+                Some(directory) => snapshot_favs_from_directory(state, directory),
+                None => snapshot_favs(state),
             }
         }
     }
-    unsafe {
-        if *addr_of!(ARMED) {
-            // Realistic per-frame deltas (tens of milliseconds) round-trip through `f32` exactly,
-            // so converting once here and accumulating the whole-microsecond integer is exact —
-            // see `SETTLE_US`'s doc for why that, and not a summed `f32`, is what this reads.
-            let dt_us = (dt * 1_000_000.0).round() as u32;
-            let s = &mut *addr_of_mut!(SETTLE_US);
-            *s = s.saturating_add(dt_us);
-            if *s >= SETTLE_US_TARGET {
-                *addr_of_mut!(ARMED) = false;
-                if let Some(q) = terms(query()) {
-                    crate::log(&format!(
-                        "search: q[{}ch] settled, asking {} source(s)",
-                        q.chars().count(),
-                        nsrc()
-                    ));
-                }
+    if state.armed {
+        // Realistic per-frame deltas (tens of milliseconds) round-trip through `f32` exactly,
+        // so converting once here and accumulating the whole-microsecond integer is exact —
+        // see `SearchState::settle_us`'s doc for why that, and not a summed `f32`, is what this
+        // reads.
+        let dt_us = (dt * 1_000_000.0).round() as u32;
+        state.settle_us = state.settle_us.saturating_add(dt_us);
+        if state.settle_us >= SETTLE_US_TARGET {
+            state.armed = false;
+            if let Some(q) = terms(state.query()) {
+                crate::log(&format!(
+                    "search: q[{}ch] settled, asking {} source(s)",
+                    q.chars().count(),
+                    nsrc()
+                ));
             }
         }
     }
     let mut landed = false;
     for i in live.iter().copied() {
-        unsafe {
-            let cd = &mut (*addr_of_mut!(SRC))[i].retry_cd;
-            if *cd > 0 {
-                *cd -= 1;
-            }
+        if state.src[i].retry_cd > 0 {
+            state.src[i].retry_cd -= 1;
         }
         // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay a source's answer is
         // taken on the frame the recording took it on. The debounce above and `maybe_spawn` below
         // are outside it, so the query still goes out when it went out.
         let taken = crate::stores::take_landing(crate::stores::StoreId::Search, || {
-            SLOT[i].lock().unwrap_or_else(|e| e.into_inner()).take()
+            adapter.fetch[i].slot.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         if let Some(m) = taken {
             // the take ALWAYS releases the single-flight claim, whatever the landing turns out to
             // be — dropping a stale one without this is how the flag latches forever
-            IN_FLIGHT[i].store(false, Ordering::SeqCst);
-            if m.gen == GEN.load(Ordering::SeqCst) {
-                record(i, m.what);
+            adapter.fetch[i].in_flight.store(false, Ordering::SeqCst);
+            if m.gen == state.gen {
+                record(state, i, m.what);
                 landed = true;
             }
             // else superseded: this is news about a query that is no longer on screen. The FAILURE
             // arm is skipped with it on purpose — a stale failure that armed the backoff would
             // delay the current query's first answer by ~2 s for an error that was never about it.
         }
-        maybe_spawn(i);
+        maybe_spawn(state, adapter, i);
     }
     // The SHELVES are rebuilt only when something landed, but the STATE is recomputed every frame:
     // it is a scan of at most NSRC statuses, and making it conditional on a landing left the one
@@ -895,18 +970,19 @@ fn pump_with_optional_directory(
     // precisely the endless spinner `state_from`'s empty arm exists to prevent. Reachable in
     // practice: `/tmp/plxnative-search=<q>` forces the route whether or not a server was installed.
     if landed {
-        rebuild();
+        rebuild(state);
     }
-    let sources = live_sources(&live);
-    let state = state_from_refs(&sources, terms(query()).is_some());
-    let moved = state != self::state();
+    let sources = live_sources(state, &live);
+    let asking = terms(state.query()).is_some();
+    let new_state = state_from_refs(&sources, asking);
+    let moved = new_state != state.state;
     if moved {
         crate::log(&format!(
             "search: q[{}ch] state={}",
-            query().trim().chars().count(),
-            state.name()
+            state.query().trim().chars().count(),
+            new_state.name()
         ));
-        unsafe { *addr_of_mut!(STATE) = state };
+        state.state = new_state;
     }
     if !landed && !moved && !roster_changed {
         return false;
@@ -919,31 +995,25 @@ fn pump_with_optional_directory(
 
 /// Record ONE source's landing. The merge itself is [`rebuild`], run once after the whole sweep, so
 /// two sources landing in the same frame cost one rebuild rather than two.
-fn record(i: usize, what: Option<Projection>) {
-    let q = query().trim();
+fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
+    let qlen = state.query().trim().chars().count();
     match what {
         // A failure for a source that has ALREADY answered this query is dropped on the floor. The
-        // duplicate-spawn race [`IN_FLIGHT`] documents is what makes this reachable: two workers can
+        // duplicate-spawn race `Fetch` documents is what makes this reachable: two workers can
         // briefly be out for one source at one generation, and if the loser's `None` arrived after
         // the winner's answer, `Status::Answered` would regress to `Failed` — dropping that
         // source's already-drawn results out of the merge for a two-second backoff, over an error
         // about a request whose answer we are holding.
-        None if unsafe { (*addr_of!(SRC))[i].status } == Status::Answered => {
+        None if state.src[i].status == Status::Answered => {
             crate::log(&format!(
-                "search: q[{}ch] sid={i} late failure ignored — already answered",
-                q.chars().count()
+                "search: q[{qlen}ch] sid={i} late failure ignored — already answered"
             ));
         }
         None => {
-            unsafe {
-                let s = &mut (*addr_of_mut!(SRC))[i];
-                s.status = Status::Failed;
-                s.retry_cd = RETRY_FRAMES;
-            }
-            crate::log(&format!(
-                "search: q[{}ch] sid={i} FAILED, retry in {RETRY_FRAMES}f",
-                q.chars().count()
-            ));
+            let s = &mut state.src[i];
+            s.status = Status::Failed;
+            s.retry_cd = RETRY_FRAMES;
+            crate::log(&format!("search: q[{qlen}ch] sid={i} FAILED, retry in {RETRY_FRAMES}f"));
         }
         Some(items) => {
             let counts: Vec<String> = KINDS
@@ -951,47 +1021,36 @@ fn record(i: usize, what: Option<Projection>) {
                 .enumerate()
                 .map(|(k, kind)| format!("{}={}", kind.title(), items[k].len()))
                 .collect();
-            crate::log(&format!(
-                "search: q[{}ch] sid={i} hubs {}",
-                q.chars().count(),
-                counts.join(" ")
-            ));
+            crate::log(&format!("search: q[{qlen}ch] sid={i} hubs {}", counts.join(" ")));
             // The two fields an answer decides, and `retry_cd` is deliberately not one of them: a
             // source that has answered is refused by `maybe_spawn` on `status` alone, and the next
-            // query resets the whole record through `Source::EMPTY`. (Assigning a whole `Source`
-            // here would zero a backoff instead of leaving it — the same behaviour today, but only
-            // by accident of nothing reading it.)
-            unsafe {
-                let s = &mut (*addr_of_mut!(SRC))[i];
-                s.status = Status::Answered;
-                s.items = items;
-            }
+            // query resets the whole record through `Source::EMPTY`.
+            let s = &mut state.src[i];
+            s.status = Status::Answered;
+            s.items = items;
         }
     }
 }
 
-/// The LIVE registry slots as exact references into the raw main-thread store. Taking the whole
-/// array first avoids an implicit autoref of the raw pointer (`dangerous_implicit_autorefs`).
-/// Collecting is necessary because profile visibility may contain holes.
-fn live_sources(live: &[usize]) -> Vec<&'static Source> {
-    let all: &'static [Source; NSRC] = unsafe { &*addr_of!(SRC) };
-    live.iter().map(|&i| &all[i]).collect()
+/// The LIVE registry slots as exact references into the owned per-source store.
+fn live_sources<'a>(state: &'a SearchState, live: &[usize]) -> Vec<&'a Source> {
+    live.iter().map(|&i| &state.src[i]).collect()
 }
 
 /// Recompute the merged shelves from every source's last answer. The [`State`] is NOT set here —
-/// [`pump`] recomputes that every frame, landing or no landing (see the note there).
-fn rebuild() {
+/// `pump` recomputes that every frame, landing or no landing (see the note there).
+fn rebuild(state: &mut SearchState) {
     let live = slots();
-    let sources = live_sources(&live);
-    let shelves = merge_refs(&sources, &favs());
+    let sources = live_sources(state, &live);
+    let shelves = merge_refs(&sources, &favs(state));
     let items: usize = shelves.iter().map(|s| s.items.len()).sum();
     crate::log(&format!(
         "search: q[{}ch] shelves={} items={}",
-        query().trim().chars().count(),
+        state.query().trim().chars().count(),
         shelves.len(),
         items
     ));
-    unsafe { *addr_of_mut!(SHELVES) = Some(Arc::new(shelves)) };
+    state.shelves = Some(Arc::new(shelves));
 }
 
 /// The merged result set: [`KINDS`] order, empty shelves omitted, sources taken **round robin** so
@@ -1112,39 +1171,34 @@ fn state_from_refs(sources: &[&Source], asking: bool) -> State {
 }
 
 /// One fetch per source at a time, and only once the query has settled. Re-entered every frame by
-/// [`pump`], which is what makes the failure path self-healing: a refused `spawn_small` (the
+/// `pump`, which is what makes the failure path self-healing: a refused `spawn_small` (the
 /// device's thread ceiling) or a transient network error simply retries after the backoff instead
 /// of latching the screen on a spinner forever.
-fn maybe_spawn(i: usize) {
-    if unsafe { *addr_of!(ARMED) } {
+fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) {
+    if state.armed {
         return; // still settling — the keystroke burst is not over
     }
-    // ONE borrow of this source's record, since the backoff and the status are now one thing. The
-    // whole array is taken first and indexed after, for `live_sources`' reason.
-    let all: &'static [Source; NSRC] = unsafe { &*addr_of!(SRC) };
-    let src = &all[i];
-    if IN_FLIGHT[i].load(Ordering::SeqCst) || src.retry_cd > 0 {
+    let src = &state.src[i];
+    if adapter.fetch[i].in_flight.load(Ordering::SeqCst) || src.retry_cd > 0 {
         return;
     }
     if src.status == Status::Answered {
         return; // this source has had its say about this query
     }
-    let Some(q) = terms(query()) else { return };
+    let Some(q) = terms(state.query()) else { return };
     let q = q.to_string();
     // `sid` is captured HERE, on the main thread, and resolved through `client_for` on the worker.
     // A worker that read `client()` would search whichever server the user had wandered off to by
     // the time it was scheduled, and file the answers under this slot's id.
     let sid = ServerId::from_raw(i as u16);
-    let gen = GEN.load(Ordering::SeqCst);
+    let gen = state.gen;
     // …and so is the favourite table, for the same reason and by the same rule: a worker that asked
     // `browse` what was current would answer with a table from a different moment than the query it
     // was given. `pump` rejects a landing taken under a snapshot that has since moved.
-    let favs = favs();
-    IN_FLIGHT[i].store(true, Ordering::SeqCst);
-    crate::log(&format!(
-        "search: q[{}ch] sid={i} asking limit={LIMIT}",
-        q.chars().count()
-    ));
+    let favs = favs(state);
+    adapter.fetch[i].in_flight.store(true, Ordering::SeqCst);
+    crate::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
+    let worker_adapter = Arc::clone(adapter);
     let spawned = crate::task::spawn_small("search", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
         // (None), not as an answer of "this server has nothing"
@@ -1156,13 +1210,13 @@ fn maybe_spawn(i: usize) {
             Some(project(&mc, sid, &favs))
         })
         .unwrap_or(None);
-        land(i, gen, what);
+        land(&worker_adapter, i, gen, what);
     });
     if !spawned {
         // nothing will ever fill the mailbox, and the claim is cleared only by a take — release it
         // here or this source never searches again. `maybe_spawn` runs every frame, so this retries
         // by itself.
-        IN_FLIGHT[i].store(false, Ordering::SeqCst);
+        adapter.fetch[i].in_flight.store(false, Ordering::SeqCst);
     }
 }
 
@@ -1272,36 +1326,19 @@ fn tag_hit(t: &crate::plex::Tag, sid: ServerId, favs: &[(ServerId, i64, bool)]) 
 
 /// Drop everything — the account changed, so both the query and the results belong to someone
 /// else. Called beside the Browse `BrowseCmd::Reset` command.
-fn reset() {
-    supersede();
-    VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
-    unsafe {
-        *addr_of_mut!(QUERY) = None;
-        *addr_of_mut!(SHELVES) = None;
-        *addr_of_mut!(STATE) = State::Idle;
-        *addr_of_mut!(SETTLE_US) = 0;
-        *addr_of_mut!(ARMED) = false;
-    }
-}
-
-/// `stores::search`'s one door onto every [`SearchCmd`](crate::stores::search::SearchCmd) (D3):
-/// the match used to live in `stores/search.rs::run`, calling `set_query`/`reset`/
-/// `set_watched_local` across the module boundary. Relocating it here is what lets those three
-/// go private; `RememberRecent`/`ClearRecents`/`SetQueryScoped` still address `search::recents`
-/// and `search::scope`, which stay `pub(crate)` (out of this package's scope, per the census).
-pub(crate) fn run(cmd: crate::stores::search::SearchCmd) -> bool {
-    run_with_optional_directory(cmd, None)
-}
-
-pub(crate) fn run_with_directory(
-    cmd: crate::stores::search::SearchCmd,
-    directory: crate::stores::browse::DirectoryView<'_>,
-) -> bool {
-    scope::snapshot_with_directory(directory);
-    run_with_optional_directory(cmd, Some(directory))
+fn reset(state: &mut SearchState, adapter: &Arc<SearchAdapter>) {
+    supersede(state, adapter);
+    state.visible = crate::plex::server_roster_gen();
+    state.query = None;
+    state.shelves = None;
+    state.state = State::Idle;
+    state.settle_us = 0;
+    state.armed = false;
 }
 
 fn run_with_optional_directory(
+    state: &mut SearchState,
+    adapter: &Arc<SearchAdapter>,
     cmd: crate::stores::search::SearchCmd,
     directory: Option<crate::stores::browse::DirectoryView<'_>>,
 ) -> bool {
@@ -1309,16 +1346,16 @@ fn run_with_optional_directory(
     match cmd {
         SearchCmd::SetQuery(q) => {
             match directory {
-                Some(directory) => set_query_from_directory(&q, directory),
-                None => set_query(&q),
+                Some(directory) => set_query_from_directory(state, adapter, &q, directory),
+                None => set_query(state, adapter, &q),
             }
             true
         }
         SearchCmd::SetQueryScoped { profile_generation, query } => {
             if profile_generation != crate::plex::session::current_gen() { return false; }
             match directory {
-                Some(directory) => set_query_from_directory(&query, directory),
-                None => set_query(&query),
+                Some(directory) => set_query_from_directory(state, adapter, &query, directory),
+                None => set_query(state, adapter, &query),
             }
             true
         }
@@ -1329,17 +1366,47 @@ fn run_with_optional_directory(
             crate::search::recents::clear(profile_generation)
         }
         SearchCmd::Reset => {
-            reset();
+            reset(state, adapter);
             true
         }
-        SearchCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(sid, &rk, on),
+        SearchCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(state, sid, &rk, on),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn set_query_for_test(state: &mut SearchState, adapter: &Arc<SearchAdapter>, q: &str) {
+    set_query(state, adapter, q);
+}
+
+#[cfg(test)]
+pub(crate) fn set_watched_local_for_test(
+    state: &mut SearchState,
+    sid: ServerId,
+    rk: &str,
+    on: bool,
+) -> bool {
+    set_watched_local(state, sid, rk, on)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_for_test(state: &mut SearchState, adapter: &Arc<SearchAdapter>) {
+    reset(state, adapter);
+}
+
+#[cfg(test)]
+pub(crate) fn record_for_test(state: &mut SearchState, i: usize, what: Option<Projection>) {
+    record(state, i, what);
+}
+
+#[cfg(test)]
+pub(crate) fn rebuild_for_test(state: &mut SearchState) {
+    rebuild(state);
 }
 
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 #[path = "search_test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;
 
 #[cfg(test)]
 #[path = "search_query_debounce_tests.rs"]
@@ -1356,17 +1423,3 @@ mod merge_ranking_tests;
 #[cfg(test)]
 #[path = "search_publication_tests.rs"]
 mod publication_tests;
-
-/// TEST ONLY: is the debounce still holding a keystroke back? The accumulator is otherwise
-/// invisible — its only effect is that `maybe_spawn` declines — and a debounce that silently stops
-/// releasing is a screen that never searches.
-#[cfg(test)]
-pub(crate) fn settling() -> bool {
-    unsafe { *addr_of!(ARMED) }
-}
-
-#[cfg(test)]
-pub(crate) fn debounce_elapsed_for_test() -> f32 {
-    crate::testlock::assert_held("the search store (debounce_elapsed_for_test)");
-    unsafe { *addr_of!(SETTLE_US) as f32 / 1_000_000.0 }
-}

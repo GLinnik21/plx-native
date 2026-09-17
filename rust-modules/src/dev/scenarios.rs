@@ -633,7 +633,7 @@ mod content_boot_tests {
 pub(crate) fn apply_search_boot_trigger(
     q: &str,
     d: &mut crate::ui::dispatch::Dispatcher<crate::app::bridge::AppHost>,
-    bridge: &crate::app::bridge::Bridge,
+    bridge: &mut crate::app::bridge::Bridge,
 ) {
     bridge.search_run(crate::stores::search::SearchCmd::SetQuery(q.trim().to_string()));
     // A peer of Home, exactly as an interactive press on the strip's last pill is — and a ROOT
@@ -744,7 +744,7 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
             crate::app::bridge::nav_root(&mut app.pages, AppArg::Library);
         }
         if let Some(q) = crate::dev::read("search") {
-            apply_search_boot_trigger(&q, &mut app.pages, &app.bridge);
+            apply_search_boot_trigger(&q, &mut app.pages, &mut app.bridge);
         }
         if let Some(s) = crate::dev::read("heroidx") {
             if let Ok(n) = s.parse::<c_int>() {

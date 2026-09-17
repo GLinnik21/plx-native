@@ -12,7 +12,8 @@ use super::test_support::*;
 #[test]
 fn signing_into_a_second_account_searches_its_slots_and_not_the_retired_ones() {
     let _g = fresh();
-    register(2);
+    let mut owner = Owner::default();
+    register(&mut owner, 2);
     assert_eq!(slots(), vec![0, 1]);
 
     crate::plex::revoke_all();
@@ -22,7 +23,7 @@ fn signing_into_a_second_account_searches_its_slots_and_not_the_retired_ones() {
     );
     assert_eq!(nsrc(), 0);
     assert!(
-        live_sources(&slots()).is_empty(),
+        live_sources(&owner.state, &slots()).is_empty(),
         "and the retired records reach neither the merge nor the verdict"
     );
 
@@ -44,23 +45,22 @@ fn signing_into_a_second_account_searches_its_slots_and_not_the_retired_ones() {
         "and the live id follows it rather than starting at 0"
     );
     assert_eq!(nsrc(), 1);
-    assert_eq!(live_sources(&slots()).len(), 1);
+    assert_eq!(live_sources(&owner.state, &slots()).len(), 1);
 }
 
 #[test]
 fn a_profile_hole_searches_exact_live_ids_and_supersedes_the_previous_profiles_answers() {
     let _g = fresh();
-    register(3);
-    hold_off();
-    unsafe {
-        *addr_of_mut!(QUERY) = Some(Arc::from("wallace"));
-        (*addr_of_mut!(SRC))[0].status = Status::Answered;
-        *addr_of_mut!(SHELVES) = Some(Arc::new(vec![Shelf {
-            kind: Kind::Movie,
-            items: vec![media("old-profile")],
-        }]));
-        *addr_of_mut!(STATE) = State::Ready;
-    }
+    let mut owner = Owner::default();
+    register(&mut owner, 3);
+    hold_off(&mut owner);
+    owner.state.query = Some(Arc::from("wallace"));
+    owner.state.src[0].status = Status::Answered;
+    owner.state.shelves = Some(Arc::new(vec![Shelf {
+        kind: Kind::Movie,
+        items: vec![media("old-profile")],
+    }]));
+    owner.state.state = State::Ready;
 
     crate::plex::revoke_for_profile_switch();
     let restored = crate::plex::register_for_test(
@@ -78,15 +78,15 @@ fn a_profile_hole_searches_exact_live_ids_and_supersedes_the_previous_profiles_a
     );
 
     assert!(
-        pump(0.0),
+        owner.pump(0.0),
         "membership changed the result state and therefore repaints"
     );
-    assert_eq!(state(), State::Searching);
+    assert_eq!(owner.state.state(), State::Searching);
     assert!(
-        shelves().is_empty(),
+        owner.state.shelves().is_empty(),
         "old-profile tiles disappear before a new source lands"
     );
-    let live = live_sources(&slots());
+    let live = live_sources(&owner.state, &slots());
     assert_eq!(live.len(), 2);
     assert!(
         live.iter().all(|s| s.status == Status::Pending),
@@ -106,44 +106,45 @@ fn a_profile_hole_searches_exact_live_ids_and_supersedes_the_previous_profiles_a
 #[test]
 fn a_favourite_edit_supersedes_a_resident_query_and_re_arms_it() {
     let _g = fresh();
+    let mut owner = Owner::default();
     let _t = crate::plex::session::TempSession::new("search-favgen");
     _t.watching("u-search-favgen");
-    register(1);
+    register(&mut owner, 1);
     let stores = crate::stores::Stores::default();
     let mut directory = crate::stores::browse::DirectorySnapshot::default();
     stores.capture_browse(&mut directory);
-    set_query_from_directory("wallace", directory.view());
-    hold_off();
-    pump_with_directory(SETTLE_S + 0.1, directory.view()); // settles and takes the snapshot's generation
-    let gen0 = GEN.load(Ordering::SeqCst);
-    unsafe { *addr_of_mut!(ARMED) = false };
+    owner.set_query_from_directory("wallace", directory.view());
+    hold_off(&mut owner);
+    owner.pump_with_directory(SETTLE_S + 0.1, directory.view()); // settles and takes the snapshot's generation
+    let gen0 = owner.state.gen;
+    owner.state.armed = false;
 
     // …a library lands, which is what `apply_pins` and discovery both look like from here
     stores.browse.borrow_mut().seed_two_source_table_for_test();
     stores.capture_browse(&mut directory);
-    hold_off();
-    pump_with_directory(0.016, directory.view());
+    hold_off(&mut owner);
+    owner.pump_with_directory(0.016, directory.view());
     assert_ne!(
-        GEN.load(Ordering::SeqCst),
+        owner.state.gen,
         gen0,
         "the resident answer was superseded, so a landing under the old table is discarded"
     );
     assert!(
-        unsafe { *addr_of!(ARMED) },
+        owner.state.armed,
         "…and the query is owed a fresh fetch rather than left on stale shelves"
     );
     assert_eq!(
-        FAV_GEN.load(Ordering::SeqCst),
+        owner.state.fav_gen,
         directory.view().sections_gen(),
         "the snapshot moved with it"
     );
 
     // …and a SECOND pump with nothing further changed must not re-arm again, or every frame
     // after any edit would supersede the query it just started
-    hold_off();
-    let gen1 = GEN.load(Ordering::SeqCst);
-    pump_with_directory(0.016, directory.view());
-    assert_eq!(GEN.load(Ordering::SeqCst), gen1, "it settles");
+    hold_off(&mut owner);
+    let gen1 = owner.state.gen;
+    owner.pump_with_directory(0.016, directory.view());
+    assert_eq!(owner.state.gen, gen1, "it settles");
 }
 
 /// The other half, and the one that costs nothing to get wrong until a user types: with NO
@@ -153,27 +154,28 @@ fn a_favourite_edit_supersedes_a_resident_query_and_re_arms_it() {
 #[test]
 fn a_favourite_edit_with_no_query_resident_only_refreshes_the_snapshot() {
     let _g = fresh();
+    let mut owner = Owner::default();
     let _t = crate::plex::session::TempSession::new("search-favgen-idle");
     _t.watching("u-search-favgen-idle");
-    register(1);
+    register(&mut owner, 1);
     let stores = crate::stores::Stores::default();
     let mut directory = crate::stores::browse::DirectorySnapshot::default();
     stores.capture_browse(&mut directory);
-    hold_off();
-    pump_with_directory(0.016, directory.view());
-    let gen0 = GEN.load(Ordering::SeqCst);
+    hold_off(&mut owner);
+    owner.pump_with_directory(0.016, directory.view());
+    let gen0 = owner.state.gen;
 
     stores.browse.borrow_mut().seed_two_source_table_for_test();
     stores.capture_browse(&mut directory);
-    hold_off();
-    pump_with_directory(0.016, directory.view());
+    hold_off(&mut owner);
+    owner.pump_with_directory(0.016, directory.view());
     assert_eq!(
-        GEN.load(Ordering::SeqCst),
+        owner.state.gen,
         gen0,
         "nothing was resident, so nothing was superseded"
     );
     assert_eq!(
-        FAV_GEN.load(Ordering::SeqCst),
+        owner.state.fav_gen,
         directory.view().sections_gen(),
         "…but the snapshot is current, so the next query does not open by re-arming"
     );
