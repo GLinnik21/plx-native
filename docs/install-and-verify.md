@@ -86,6 +86,8 @@ If the Developer Mode session expires, Developer Mode apps are removed. This als
 
 A rooted Homebrew setup is different, but **root is not required to use PlxNative**.
 
+The app runs in LG's normal sandbox: an unprivileged uid, chrooted, under the stock jail profile. `appinfo.json` declares two ACGs, `database.operation` and `securitykey.operation` — both are the storage helper's, for the local DB8 keystore and the platform key manager it uses to keep your sign-in off plain disk; neither reaches the network or anything outside this app's own data.
+
 ## Which route should I use?
 
 If you are starting from scratch and only want PlxNative:

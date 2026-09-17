@@ -34,6 +34,8 @@
 //! shape for something that must never keep the app from booting.
 use std::sync::OnceLock;
 
+pub(crate) mod jail_repair;
+
 const OS_INFO: &str = "/var/run/nyx/os_info.json";
 
 /// What the set said about itself. Owned strings rather than borrows into the file, because the
@@ -277,13 +279,8 @@ fn probe_jail() {
     } else {
         RtkmemProbe::NotApplicable
     };
-    let word = match result {
-        RtkmemProbe::NotApplicable => "n/a",
-        RtkmemProbe::Ok => "ok",
-        RtkmemProbe::Missing => "missing",
-    };
-    crate::log(&format!("devjail: soc={name} rtkmem={word}"));
     let _ = RTKMEM.set(result);
+    crate::log(&format!("devjail: soc={name} rtkmem={}", rtkmem_context()));
 }
 
 /// TEST ONLY: force [`jail_blocks_native_video`] to report blocked, without touching the
@@ -567,6 +564,17 @@ fn ls2_probe() {
 #[cfg(all(not(feature = "hostsim"), not(test)))]
 fn ls2_probe() {
     ls2::probe();
+}
+
+/// Best-effort dynamic-service activation hint for the storage helper.
+///
+/// The helper publishes readiness from its startup path, so neither a successful method reply nor
+/// delivery of `/wake` is required; the result is deliberately ignored and the authenticated
+/// Unix-socket `Hello` is the sole readiness proof.
+#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+pub(crate) fn activate_storage_helper(service: &str) {
+    let uri = format!("luna://{service}/wake");
+    let _ = ls2::call_once(&uri, "{}");
 }
 
 #[cfg(all(not(feature = "hostsim"), not(test)))]

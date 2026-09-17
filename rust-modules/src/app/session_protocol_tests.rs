@@ -7,7 +7,7 @@ use super::*;
 mod carry_matrix {
     use super::*;
     use crate::auth::{AuthProgress, LoginProgress, RegistryProgress, SessionCmd};
-    use crate::auth::owner::{AdmissionId, AdmissionState, CommitReply, Identity, Pending, Receipt,
+    use crate::auth::owner::{AdmissionId, AdmissionState, CommitAdmission, CommitReply, Identity, Pending, Receipt,
         RegistryPlan, SessionEnvelope, SessionEvent, SessionFx, SessionOp, SessionWorkKey, StreamPhase};
     use crate::plex::session::{Session, SourceRef, UserRef, ServerRef};
     use crate::ui::machine::{RequestId, Stamped};
@@ -133,7 +133,8 @@ mod carry_matrix {
         let next = rig.session_adapter.take_results();
         assert_eq!(next.len(), 1);
         let before = rig.session_subhash();
-        queue(&mut d, SessionEvent::Commit(CommitReply { req: 1, epoch: EPOCH, arrival: a.arrival, accepted: true }));
+        queue(&mut d, SessionEvent::Commit(CommitReply { req: 1, epoch: EPOCH, arrival: a.arrival,
+            admission: CommitAdmission::StaleAuthority }));
         for r in &records { queue(&mut d, SessionEvent::Result(r.clone())); }
         d.emit(MachineId::Session, Fx::App(AppFx::SessionEffect(SessionFx::Acknowledge(vec![Receipt::of(&a), Receipt::of(&a)]))));
         frame(&mut rig, &mut d, Vec::new(), &mut trace);
@@ -175,7 +176,8 @@ mod carry_matrix {
             assert_eq!(trace.order.iter().filter(|x| x.0 == "pump-app").count(), usize::from(event_form));
             assert!(!trace.order.iter().any(|x| x.0 == "pump-event"));
             queue(&mut d, SessionEvent::Commit(CommitReply {
-                req: 1, epoch: EPOCH, arrival: records[0].arrival, accepted: true,
+                req: 1, epoch: EPOCH, arrival: records[0].arrival,
+                admission: CommitAdmission::StaleAuthority,
             }));
             assert!(second.carried < BUDGET);
             pad(&mut d, BUDGET - second.carried - 1);

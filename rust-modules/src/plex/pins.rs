@@ -139,6 +139,7 @@ pub(crate) fn record(user: &str, asked: bool, libs: &[LibRef<'_>], on: &[bool]) 
         asked,
         on: Vec::new(),
         off: Vec::new(),
+        extensions: Default::default(),
     };
     for (i, l) in libs.iter().enumerate() {
         if l.machine_id.is_empty() {
@@ -147,6 +148,7 @@ pub(crate) fn record(user: &str, asked: bool, libs: &[LibRef<'_>], on: &[bool]) 
         let lib = PinnedLib {
             machine_id: l.machine_id.to_string(),
             key: l.key,
+            extensions: Default::default(),
         };
         if on.get(i).copied().unwrap_or(false) {
             out.on.push(lib);

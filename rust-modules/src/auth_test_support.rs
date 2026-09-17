@@ -190,6 +190,7 @@ pub(super) fn cached_session(protected_pin: Option<&str>) -> Session {
         server: s.server.clone(),
         sources: s.sources.clone(),
         pin: protected_pin.map(session::PinVerifier::new),
+        extensions: Default::default(),
     });
     s.remember_profile(ProfileCreds {
         uuid: "u-kid".into(),
@@ -207,6 +208,7 @@ pub(super) fn cached_session(protected_pin: Option<&str>) -> Session {
         },
         sources: vec![source("ours", true, "kid-token")],
         pin: None,
+        extensions: Default::default(),
     });
     s
 }

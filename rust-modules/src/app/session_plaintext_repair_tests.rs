@@ -53,7 +53,7 @@ mod tests {
             sources: vec![plain.clone()],
             profiles: vec![ProfileCreds {
                 uuid: kid.uuid.clone(), user: kid, server: server.clone(),
-                sources: vec![plain.clone()], pin: None,
+                sources: vec![plain.clone()], pin: None, extensions: Default::default(),
             }],
             ..Default::default()
         };

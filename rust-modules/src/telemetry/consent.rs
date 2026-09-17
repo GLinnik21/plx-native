@@ -107,6 +107,142 @@ pub(crate) struct Consent {
     /// which destroys both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub errors_id: Option<String>,
+    /// The scope a category was accepted at; `0` while it is off. Carried losslessly from 0.6.6,
+    /// whose scope-based re-ask rules read it: rewriting a 0.6.6 record without these fields would
+    /// forget which extensions a person already accepted or declined.
+    #[serde(default)]
+    pub errors_scope: u32,
+    #[serde(default)]
+    pub usage_scope: u32,
+    /// The extension scope a person declined while keeping the category on. A No to an extension
+    /// is not a withdrawal, and must not be asked again.
+    #[serde(default)]
+    pub errors_declined_scope: u32,
+    #[serde(default)]
+    pub usage_declined_scope: u32,
+    /// Fields this build does not know, kept verbatim so another writer's data survives a rewrite
+    /// by this one.
+    #[serde(flatten, default)]
+    pub(crate) extensions: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Category {
+    Errors,
+    Usage,
+}
+
+/// The scope each category reached at each policy version, as 0.6.6 recorded it. Used only to
+/// backfill a record written before scopes existed.
+const SCOPE_CHANGES: &[(Category, u32)] = &[
+    (Category::Errors, 4),
+    (Category::Errors, 5),
+    (Category::Errors, 6),
+    (Category::Usage, 6),
+];
+
+fn scope_at_policy_version(version: u32, cat: Category) -> u32 {
+    SCOPE_CHANGES
+        .iter()
+        .filter(|&&(c, v)| c == cat && v <= version)
+        .map(|&(_, v)| v)
+        .max()
+        .unwrap_or(version)
+}
+
+/// The scope a fresh opt-in in THIS build accepts: what this build collects, the
+/// [`POLICY_VERSION`] baseline. 0.6.6's wider scopes (sign-in and storage reports) are not
+/// collected here, so this build does not claim consent for them.
+fn current_scope(cat: Category) -> u32 {
+    scope_at_policy_version(POLICY_VERSION, cat)
+}
+
+/// Backfill the accepted scope of a record written before per-category scope existed. Only a
+/// category that is ON with scope still `0` changes, so it is idempotent and never lowers or
+/// overwrites a scope a person already accepted.
+pub(crate) fn migrate_loaded(mut c: Consent) -> Consent {
+    if c.asked_version >= 1 {
+        if c.errors && c.errors_scope == 0 {
+            c.errors_scope = scope_at_policy_version(c.asked_version, Category::Errors);
+        }
+        if c.usage && c.usage_scope == 0 {
+            c.usage_scope = scope_at_policy_version(c.asked_version, Category::Usage);
+        }
+    }
+    c
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalDecision {
+    asked_version: u32,
+    errors: bool,
+    usage: bool,
+    errors_declined_scope: u32,
+    usage_declined_scope: u32,
+    extensions: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalScopes {
+    errors: u32,
+    usage: u32,
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalIds {
+    analytics: Option<String>,
+    errors: Option<String>,
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+/// Split consent into the three DB8-public slots the canonical state clears atomically on logout.
+pub(crate) fn split_canonical(consent: &Consent) -> Result<crate::storage::state::ConsentPayload, ()> {
+    Ok(crate::storage::state::ConsentPayload {
+        consent: serde_json::to_value(CanonicalDecision {
+            asked_version: consent.asked_version,
+            errors: consent.errors,
+            usage: consent.usage,
+            errors_declined_scope: consent.errors_declined_scope,
+            usage_declined_scope: consent.usage_declined_scope,
+            extensions: consent.extensions.clone(),
+        })
+        .map_err(|_| ())?,
+        scopes: serde_json::to_value(CanonicalScopes {
+            errors: consent.errors_scope,
+            usage: consent.usage_scope,
+        })
+        .map_err(|_| ())?,
+        ids: serde_json::to_value(CanonicalIds {
+            analytics: consent.install_id.clone(),
+            errors: consent.errors_id.clone(),
+        })
+        .map_err(|_| ())?,
+    })
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+pub(crate) fn join_canonical(payload: &crate::storage::state::ConsentPayload) -> Result<Consent, ()> {
+    let decision: CanonicalDecision = serde_json::from_value(payload.consent.clone()).map_err(|_| ())?;
+    let scopes: CanonicalScopes = serde_json::from_value(payload.scopes.clone()).map_err(|_| ())?;
+    let ids: CanonicalIds = serde_json::from_value(payload.ids.clone()).map_err(|_| ())?;
+    Ok(Consent {
+        asked_version: decision.asked_version,
+        errors: decision.errors,
+        usage: decision.usage,
+        install_id: ids.analytics,
+        errors_id: ids.errors,
+        errors_scope: scopes.errors,
+        usage_scope: scopes.usage,
+        errors_declined_scope: decision.errors_declined_scope,
+        usage_declined_scope: decision.usage_declined_scope,
+        extensions: decision.extensions,
+    })
 }
 
 impl Consent {
@@ -170,12 +306,28 @@ pub(crate) fn apply(
     };
     let errors_id = keep_or_mint(errors, &prev.errors_id);
     let install_id = keep_or_mint(usage, &prev.install_id);
+    let errors = errors && errors_id.is_some();
+    let usage = usage && install_id.is_some();
+    // A category already on that stays on keeps its OLD accepted scope and whatever extension it
+    // declined — so a record 0.6.6 wrote at a wider scope is not narrowed, and an edit of one
+    // category never accepts or forgets the other's decision. Only a genuinely new opt-in takes
+    // this build's scope, with no prior decline.
+    let scope = |on: bool, was_on: bool, prev_scope: u32, cat: Category| {
+        if !on { 0 } else if was_on { prev_scope } else { current_scope(cat) }
+    };
+    let declined = |on: bool, was_on: bool, prev_declined: u32| if on && was_on { prev_declined } else { 0 };
     Consent {
-        asked_version: POLICY_VERSION,
-        errors: errors && errors_id.is_some(),
-        usage: usage && install_id.is_some(),
+        // Never lower: a record answered against a newer policy stays answered against it.
+        asked_version: prev.asked_version.max(POLICY_VERSION),
+        errors,
+        usage,
         install_id,
         errors_id,
+        errors_scope: scope(errors, prev.errors, prev.errors_scope, Category::Errors),
+        usage_scope: scope(usage, prev.usage, prev.usage_scope, Category::Usage),
+        errors_declined_scope: declined(errors, prev.errors, prev.errors_declined_scope),
+        usage_declined_scope: declined(usage, prev.usage, prev.usage_declined_scope),
+        extensions: prev.extensions.clone(),
     }
 }
 
@@ -246,6 +398,28 @@ pub(crate) fn errors_id() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_consent_slots_roundtrip_every_policy_field_and_identifier() {
+        let original = Consent {
+            asked_version: 9,
+            errors: true,
+            usage: true,
+            install_id: Some("analytics-fixture".into()),
+            errors_id: Some("errors-fixture".into()),
+            errors_scope: 7,
+            usage_scope: 8,
+            errors_declined_scope: 5,
+            usage_declined_scope: 6,
+            extensions: [("future".into(), serde_json::json!({"enabled":true}))]
+                .into_iter()
+                .collect(),
+        };
+        let slots = split_canonical(&original).unwrap();
+        assert_eq!(join_canonical(&slots).unwrap(), original);
+        assert!(slots.ids.to_string().contains("analytics-fixture"));
+        assert!(!slots.consent.to_string().contains("analytics-fixture"));
+    }
 
     /// The default is OFF, for both, and unanswered — not "off because someone said no".
     #[test]

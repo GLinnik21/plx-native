@@ -84,6 +84,9 @@ fn working_phase(phase: Phase) -> bool {
 /// when it did not.
 const ESCAPE: &CStr = c"Try again";
 const SIGN_IN: &CStr = c"Sign in";
+/// AUTH-03: acknowledges a fresh save the disk could not confirm — proceed, knowing the next
+/// launch may ask you to sign in again.
+const CONTINUE_UNSAVED: &CStr = c"Continue";
 
 /// How long a QR code may go unscanned before the screen offers to replace it on request.
 ///
@@ -271,12 +274,16 @@ enum ControlKind {
     Retry,
     /// `Phase::Deleted`'s `Sign in` — starts a whole fresh flow.
     StartLogin,
+    /// AUTH-03: acknowledges an unconfirmed fresh save and releases the held Ready handoff (or,
+    /// for a Discovery-site warning, re-admits the final commit that produces one).
+    ContinueUnsaved,
 }
 
 fn label_for(kind: ControlKind) -> &'static CStr {
     match kind {
         ControlKind::RestartWait | ControlKind::Retry => ESCAPE,
         ControlKind::StartLogin => SIGN_IN,
+        ControlKind::ContinueUnsaved => CONTINUE_UNSAVED,
     }
 }
 
@@ -284,8 +291,8 @@ fn label_for(kind: ControlKind) -> &'static CStr {
 /// thing on this screen that animates from a raw clock (`spin_ms`) rather than a spring `ui::idle`
 /// can see on its own. `Spinner::draw`'s own module note is the standing warning that this class of
 /// animator ships FROZEN if it forgets to report every frame it is on screen.
-fn control_has_spinner(phase: Phase) -> bool {
-    !matches!(phase, Phase::Error | Phase::Deleted)
+fn control_has_spinner(phase: Phase, warning_showing: bool) -> bool {
+    !warning_showing && !matches!(phase, Phase::Error | Phase::Deleted)
 }
 
 fn phase_disc(p: Phase) -> u8 {
@@ -310,6 +317,9 @@ struct LoginState {
     delete_leftovers: u32,
     next_correlation: Option<u32>,
     pending_restart: Option<u32>,
+    /// AUTH-03: whether a `PersistenceWarning` is currently shown. The key itself is not part of
+    /// the logical state a container needs to notice a change — only whether one is showing.
+    warning: bool,
 }
 
 impl LogicalState for LoginState {
@@ -325,10 +335,11 @@ impl LogicalState for LoginState {
         w.option(self.pending_restart, |w, correlation| {
             w.u32(correlation);
         });
+        w.bool(self.warning);
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "login phase={} qr_gen={} replaced={} control={} leftovers={} next={:?} restart={:?}",
+            "login phase={} qr_gen={} replaced={} control={} leftovers={} next={:?} restart={:?} warning={}",
             self.phase,
             self.qr_gen,
             self.qr_replaced,
@@ -336,6 +347,7 @@ impl LogicalState for LoginState {
             self.delete_leftovers,
             self.next_correlation,
             self.pending_restart,
+            self.warning,
         ));
     }
 }
@@ -386,6 +398,9 @@ pub(crate) struct LoginScreen {
     delete_leftovers: usize,
     next_correlation: Option<u32>,
     pending_restart: Option<PendingRestart>,
+    /// AUTH-03: the warning this screen is answering, if any — synced every `resync` from the
+    /// Session publication.
+    persistence_warning: Option<auth::owner::PersistenceWarning>,
     ground: RouteGround,
     state: LoginState,
 }
@@ -411,6 +426,7 @@ impl LoginScreen {
             delete_leftovers: 0,
             next_correlation: Some(1),
             pending_restart: None,
+            persistence_warning: None,
             ground: RouteGround::new(),
             state: LoginState {
                 phase: 0,
@@ -420,6 +436,7 @@ impl LoginScreen {
                 delete_leftovers: 0,
                 next_correlation: Some(1),
                 pending_restart: None,
+                warning: false,
             },
         };
         // Read once at construction — not a `draw`-time poll — so the first frame is coherent
@@ -463,6 +480,7 @@ impl LoginScreen {
         if self.phase == Phase::Deleted {
             self.delete_leftovers = snapshot.delete_leftovers;
         }
+        self.persistence_warning = snapshot.persistence_warning;
         self.sync_state();
         (self.phase, self.qr_gen)
     }
@@ -476,6 +494,7 @@ impl LoginScreen {
             delete_leftovers: self.delete_leftovers as u32,
             next_correlation: self.next_correlation,
             pending_restart: self.pending_restart.map(|pending| pending.correlation),
+            warning: self.persistence_warning.is_some(),
         };
     }
 
@@ -510,7 +529,7 @@ impl LoginScreen {
         // `control_has_spinner`'s true set, so this changes nothing about when the escape offer
         // can appear — it only stops accumulating (freezes, harmlessly, since nothing reads it)
         // while the spinner is not drawn at all (`Error`/`Deleted`).
-        if control_has_spinner(self.phase) {
+        if control_has_spinner(self.phase, self.persistence_warning.is_some()) {
             let mut present = fx.present();
             self.spin_ms = self.spin_phase.advance(t, &mut present);
             self.phase_ms = self.phase_clock.advance(t, &mut present);
@@ -536,6 +555,9 @@ impl LoginScreen {
     }
 
     fn control_kind(&self) -> Option<ControlKind> {
+        if self.persistence_warning.is_some() {
+            return Some(ControlKind::ContinueUnsaved);
+        }
         match self.phase {
             Phase::Deleted => Some(ControlKind::StartLogin),
             Phase::Error => Some(ControlKind::Retry),
@@ -570,6 +592,7 @@ impl LoginScreen {
             ControlKind::RestartWait => true, // Working's own stall reason is unconditional once offered
             ControlKind::Retry => !self.error.is_empty(),
             ControlKind::StartLogin => true, // `deleted_readout` always states one
+            ControlKind::ContinueUnsaved => true, // the warning sentence is unconditional
         };
         status_action_rect(measure, label_for(kind), working, has_reason)
     }
@@ -602,6 +625,13 @@ impl LoginScreen {
 
     fn activate<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
         match self.control_kind() {
+            Some(ControlKind::ContinueUnsaved) => {
+                if let Some(warning) = self.persistence_warning {
+                    fx.push(Fx::App(AppFx::Session(
+                        auth::SessionCmd::AcknowledgePersistenceWarning { key: warning.key },
+                    )));
+                }
+            }
             Some(ControlKind::StartLogin) => {
                 fx.push(Fx::App(AppFx::Session(auth::SessionCmd::StartLogin)));
             }
@@ -710,6 +740,27 @@ impl LoginScreen {
             // button just appeared under a spinner that was doing fine a moment ago.
             stuck.then_some(c"This is taking longer than usual."),
             stuck.then_some(ESCAPE),
+            focused,
+        );
+    }
+
+    /// AUTH-03: the fresh save the disk could not confirm durable. Drawn instead of the phase's
+    /// ordinary read-out whenever a warning is showing — see `draw`'s own check.
+    fn draw_warning<H: AppLike>(
+        &self,
+        f: &mut DrawFrame<'_, '_, H>,
+        p: Painter,
+        env: &Env,
+        focused: bool,
+    ) {
+        self.draw_readout(
+            f,
+            p,
+            env,
+            c"Couldn\u{2019}t save your sign-in",
+            StatusKind::Failed,
+            Some(c"Your sign-in couldn\u{2019}t be saved on this TV. You can continue, but you\u{2019}ll be asked to sign in again next time."),
+            Some(CONTINUE_UNSAVED),
             focused,
         );
     }
@@ -1059,6 +1110,12 @@ impl<H: AuthLike> Screen<H> for LoginScreen {
         let env = Env::inert();
         let focused = f.focus.current.map(|k| k.elem) == Some(CONTROL);
 
+        if self.persistence_warning.is_some() {
+            // AUTH-03: reachable before consent/profile routing, exactly as the phase-keyed
+            // branches below — see `app/run.rs`'s own routing gate for the mirror of this check.
+            self.draw_warning(f, p, &env, focused);
+            return;
+        }
         match self.phase {
             Phase::Waiting => self.draw_waiting(f, p),
             Phase::Error => self.draw_failed(f, p, &env, focused),
@@ -1146,6 +1203,7 @@ mod tests {
             profile: None,
             scope: auth::owner::ProfileScope(0),
             delete_leftovers: 0,
+            persistence_warning: None,
         }
     }
 
@@ -1329,6 +1387,7 @@ mod tests {
             delete_leftovers: 0,
             next_correlation: Some(1),
             pending_restart: None,
+            persistence_warning: None,
             ground: RouteGround::new(),
             state: LoginState {
                 phase: 0,
@@ -1338,6 +1397,7 @@ mod tests {
                 delete_leftovers: 0,
                 next_correlation: Some(1),
                 pending_restart: None,
+                warning: false,
             },
         }
     }
@@ -1697,6 +1757,57 @@ mod tests {
                 reply,
             })) if reply.instance == 44 && reply.correlation == 1
         )));
+    }
+
+    /// Regression for `warning-routing-and-continue-untested`. Pins the UI half of the AUTH-03
+    /// gate: while `persistence_warning` is showing, the one offered control is `ContinueUnsaved`,
+    /// and activating it emits EXACTLY one `AcknowledgePersistenceWarning` carrying the shown
+    /// warning's OWN key — never `Retry`/`StartLogin`/nothing. MUTATION for this finding: make
+    /// `LoginScreen::activate`'s `Some(ControlKind::ContinueUnsaved)` arm push nothing (or push the
+    /// wrong key) — this test must then fail, because acknowledging is the only door that can ever
+    /// release a held Final handoff (`auth/owner.rs::acknowledge_persistence_warning`), so a
+    /// no-op here strands the user in front of the warning forever.
+    #[test]
+    fn the_warning_screens_one_control_acknowledges_exactly_that_warning() {
+        let key = auth::owner::PersistenceWarningKey { epoch: 3, req: 9 };
+        let warning = auth::owner::PersistenceWarning {
+            key,
+            site: auth::owner::PersistenceWarningSite::Final,
+        };
+        let mut screen = bare_screen(Phase::Ready, 0.0);
+        screen.persistence_warning = Some(warning);
+        assert_eq!(
+            screen.control_kind(),
+            Some(ControlKind::ContinueUnsaved),
+            "a live warning is the only control offered, regardless of the underlying phase"
+        );
+
+        let (_, effects) = step_ev(&mut screen, &ScreenEvent::Activate(CONTROL));
+        let acks: Vec<_> = effects
+            .iter()
+            .filter(|st| {
+                matches!(
+                    st.fx,
+                    Fx::App(AppFx::Session(auth::SessionCmd::AcknowledgePersistenceWarning { .. }))
+                )
+            })
+            .collect();
+        assert_eq!(acks.len(), 1, "exactly one acknowledgement, never zero and never a second");
+        assert!(
+            matches!(
+                acks[0].fx,
+                Fx::App(AppFx::Session(auth::SessionCmd::AcknowledgePersistenceWarning { key: acked }))
+                    if acked == key
+            ),
+            "the acknowledgement must carry the SHOWN warning's own key, not a stale or default one"
+        );
+        assert!(
+            !effects.iter().any(|st| matches!(
+                st.fx,
+                Fx::App(AppFx::Session(auth::SessionCmd::Retry | auth::SessionCmd::StartLogin))
+            )),
+            "activating the warning control must never also fire an unrelated session command"
+        );
     }
 
     #[test]

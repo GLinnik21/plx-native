@@ -161,6 +161,45 @@ fn an_absent_trailer_autoplay_field_stays_on() {
     assert!(!off.trailer_autoplay());
 }
 
+const MINIMAL_PROTECTED_AUTH: &str = r#"{"format":"plxnative-session-auth","version":1,"account_token":"tok","server":{},"user":{},"home_users":[],"sources":[],"extensions":{}}"#;
+
+/// #92's contract is "absence is on". `join_canonical` reconstructs a `Session` from a
+/// canonical `PublicPayload` + a decrypted protected auth string — a null/absent
+/// `preferences` blob must not silently turn the hero trailer off.
+#[test]
+fn join_canonical_with_null_preferences_keeps_trailer_autoplay_on() {
+    let public = crate::storage::state::PublicPayload::default();
+    assert_eq!(public.preferences, Value::Null);
+    let session = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+    assert!(session.trailer_autoplay());
+}
+
+#[test]
+fn join_canonical_with_explicit_false_keeps_trailer_autoplay_off() {
+    let mut public = crate::storage::state::PublicPayload::default();
+    public.preferences = serde_json::json!({"trailer_autoplay": false});
+    let session = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+    assert!(!session.trailer_autoplay());
+}
+
+/// `public_session` is the Locked/protected-bundle snapshot constructor — it must surface the
+/// same public preference even though it never sees the decrypted credentials.
+#[test]
+fn public_session_with_null_preferences_keeps_trailer_autoplay_on() {
+    let public = crate::storage::state::PublicPayload::default();
+    assert_eq!(public.preferences, Value::Null);
+    let session = public_session(&public);
+    assert!(session.trailer_autoplay());
+}
+
+#[test]
+fn public_session_with_explicit_false_keeps_trailer_autoplay_off() {
+    let mut public = crate::storage::state::PublicPayload::default();
+    public.preferences = serde_json::json!({"trailer_autoplay": false});
+    let session = public_session(&public);
+    assert!(!session.trailer_autoplay());
+}
+
 #[test]
 fn a_fresh_install_defaults_to_auto_only_after_readiness() {
     assert_eq!(

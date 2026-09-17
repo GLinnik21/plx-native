@@ -824,6 +824,7 @@ impl BrowseState {
                     next.last_library.push(crate::plex::session::LastLibrary {
                         user: user.clone(),
                         libs: Vec::new(),
+                        extensions: Default::default(),
                     });
                     next.last_library.last_mut()?
                 }

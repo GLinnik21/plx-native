@@ -66,6 +66,7 @@ fn the_shared_fixture_resolves_the_defaults_over_a_recorded_answer() {
     let lib = |machine: &str, key| crate::plex::session::PinnedLib {
         machine_id: machine.into(),
         key,
+        extensions: Default::default(),
     };
     assert!(
         crate::plex::session::update(|s| {
@@ -77,6 +78,7 @@ fn the_shared_fixture_resolves_the_defaults_over_a_recorded_answer() {
                     asked: true,
                     on: vec![lib("mac-mini", 2)],
                     off: vec![lib("mac-mini", 1), lib("nas-home", 1), lib("nas-home", 2)],
+                    extensions: Default::default(),
                 },
             );
             Some(next)

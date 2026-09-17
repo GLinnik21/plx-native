@@ -416,7 +416,7 @@ impl ConsentPage {
             RowId::ErrorsId => self.open_preview(PreviewKind::ErrorsId, fx),
             RowId::AnalyticsId => self.open_preview(PreviewKind::AnalyticsId, fx),
             RowId::Delete => {
-                self.alert.open_with_body(DELETE_SCOPE);
+                self.alert.open_with_body(c"Delete all local data?", DELETE_SCOPE);
                 self.state.alert = true;
                 // the alert traps focus: seat the engine on its answers
                 fx.push(Fx::Deliver(
@@ -826,7 +826,7 @@ impl Screen<InnerHost> for ConsentPage {
         // engine seats on while it is open
         if self.alert.visible() {
             self.alert.draw_scrim();
-            self.alert.draw(c"Delete all local data?", c"Cancel", c"Delete");
+            self.alert.draw(c"Cancel", c"Delete");
             let frames = self.alert.frames();
             self.alert_frames.set(Some(frames));
             // **Register the two hit stops only once the entrance spring has actually arrived.**

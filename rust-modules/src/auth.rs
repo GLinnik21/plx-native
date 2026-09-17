@@ -207,6 +207,7 @@ impl UserTile {
             thumb: self.thumb.clone(),
             protected: self.protected,
             admin: self.admin,
+            extensions: Default::default(),
         }
     }
 }
@@ -380,6 +381,7 @@ fn remember_unprotected_active(sess: &mut Session) {
         server: sess.server.clone(),
         sources: sess.sources.clone(),
         pin: None,
+        extensions: Default::default(),
     });
 }
 
@@ -2056,6 +2058,7 @@ fn resolve_roster_using(
                     // origin so boot can restore the same playback policy without guessing from
                     // an address.
                     tier: Some(c.location),
+                    extensions: Default::default(),
                 };
                 // **`origin.log_form()`, not just `describe()`.** `SourceRef::describe` prints the
                 // diagnostic `address:port`, and both candidates of one connection carry the SAME
@@ -2203,6 +2206,7 @@ fn source_from_reach(
         port: c.port,
         token: plan.token.clone(),
         tier: Some(c.location),
+        extensions: Default::default(),
     })
 }
 
@@ -2308,6 +2312,7 @@ fn discover_and_store(ac: &AccountClient, epoch: u64, output: &dyn owner::Observ
         // Carried across from the roster entry, so the primary and its `sources` twin can never
         // disagree about where the same server is. `reconcile_primary` keeps them together later.
         origin_url: p.origin_url.clone(),
+        extensions: Default::default(),
     };
     log(&format!(
         "auth: {} server(s) reached, primary '{}'",
@@ -2439,6 +2444,7 @@ fn server_ref(source: &SourceRef) -> ServerRef {
         token: source.token.clone(),
         tier: source.tier,
         origin_url: source.origin_url.clone(),
+        extensions: source.extensions.clone(),
     }
 }
 
@@ -2568,6 +2574,7 @@ fn apply_refreshed_endpoint(
         name: source.name.clone(),
         shared_by: source.shared_by.clone(),
         owned: source.owned,
+        extensions: source.extensions.clone(),
     };
     let changed = source.address != next.address
         || source.port != next.port
@@ -3134,8 +3141,20 @@ pub(crate) fn profile_switch_worker_with_io(
         title: user.title,
         thumb: tile.thumb,
         token: primary.token.clone(),
+        extensions: Default::default(),
     };
     if !output.live() { return; }
+    // Carry forward whatever this uuid's PRIOR seating cached in `extensions` — the serde-flatten
+    // catch-all for fields this build does not model (forward compatibility with a newer build
+    // that wrote this session). `remember_profile` below replaces that uuid's whole cache entry,
+    // so building a fresh one with `Default::default()` here silently erased it (Copilot review on
+    // PR #105, finding 3).
+    let carried_extensions = stored
+        .profiles
+        .iter()
+        .find(|p| p.uuid == user.uuid)
+        .map(|p| p.extensions.clone())
+        .unwrap_or_default();
     let cache = ProfileCreds {
         uuid: user.uuid.clone(),
         user: user.clone(),
@@ -3145,6 +3164,7 @@ pub(crate) fn profile_switch_worker_with_io(
             .as_deref()
             .filter(|value| !value.is_empty())
             .map(session::PinVerifier::new),
+        extensions: carried_extensions,
     };
     let next_identity = SessionIdentity {
         client_id: expected.client_id.clone(),
@@ -3217,3 +3237,7 @@ mod qr_wait_tests;
 #[cfg(test)]
 #[path = "auth_session_worker_tests.rs"]
 mod session_worker_tests;
+
+#[cfg(test)]
+#[path = "auth_storage_extension_tests.rs"]
+mod storage_extension_tests;
