@@ -531,6 +531,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
             // page would refuse: availability is the PAGE's answer about the page's own item.
             if let Some(pg) = app.boot_initial.is_none().then(|| crate::dev::read("tracks")).flatten() {
                 let host = app.pages.top_page();
+                let meta = app.bridge.metadata_view();
                 let available = app
                     .pages
                     .nav
@@ -538,7 +539,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
                     .and_then(|e| e.inst.as_ref())
                     .and_then(|i| i.screen.as_any())
                     .and_then(|a| a.downcast_ref::<crate::screens::detail::DetailScreen>())
-                    .is_some_and(|d| d.tracks_available());
+                    .is_some_and(|d| d.tracks_available(meta));
                 if let (Some(host), true) = (host, available) {
                     let (sid, rk) = (boot.sid, boot.rk.clone());
                     bridge::open_content_panel(
@@ -1106,17 +1107,18 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
         app.scenarios.menu_tried = true;
         if let Some(t) = crate::dev::read("menu") {
             crate::app::bridge::open_player_overlay(&mut app.player.session,
+                app.bridge.metadata_view(),
                 &mut app.pages,
                 crate::screens::player::overlay::OverlayKind::Tracks { tab: t.parse::<c_int>().unwrap_or(0) },
             );
             pin_headless_hud(app, fr.now, None);
         }
         if crate::dev::flag("info") {
-            crate::app::bridge::open_player_overlay(&mut app.player.session, &mut app.pages, crate::screens::player::overlay::OverlayKind::Info);
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::Info);
             pin_headless_hud(app, fr.now, Some(0));
         }
         if crate::dev::flag("chapters") {
-            crate::app::bridge::open_player_overlay(&mut app.player.session, &mut app.pages, crate::screens::player::overlay::OverlayKind::Chapters);
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::Chapters);
             pin_headless_hud(app, fr.now, Some(1));
         }
     }
@@ -1129,14 +1131,15 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
             let mut it = s.split(',');
             let tab = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
             let row = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
-            crate::app::bridge::open_player_overlay(&mut app.player.session, &mut app.pages, crate::screens::player::overlay::OverlayKind::Tracks { tab });
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::Tracks { tab });
             app.scenarios.menupick_row = Some(row);
         }
     }
     if let Some(row) = app.scenarios.menupick_row.take() {
+        let meta = app.bridge.metadata_view();
         match crate::app::bridge::player_overlay_mut(&mut app.pages) {
             Some(surface) => {
-                if let Some(commit) = surface.pick_track_row(&app.player.session, row) {
+                if let Some(commit) = surface.pick_track_row(&app.player.session, meta, row) {
                     crate::app::playback::commit_track(&mut app.player.session, commit);
                 }
             }

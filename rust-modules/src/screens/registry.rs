@@ -1543,10 +1543,10 @@ where
             AppArg::AccountMenu => Box::new(crate::screens::account_menu::AccountMenuScreen::new(entry)),
             AppArg::ItemMenu(arg) => Box::new(crate::screens::item_menu::ItemMenuScreen::new(entry, arg.clone())),
             AppArg::PlayerOverlay(arg) => Box::new(
-                crate::screens::player::overlay::PlayerOverlayScreen::new(H::session(cx), entry, arg.kind),
+                crate::screens::player::overlay::PlayerOverlayScreen::new(H::session(cx), H::metadata(cx), entry, arg.kind),
             ),
             AppArg::AltSources(arg) => Box::new(
-                crate::screens::alt_sources::AltSourcesScreen::new(entry, arg.clone()),
+                crate::screens::alt_sources::AltSourcesScreen::new(entry, arg.clone(), H::metadata(cx)),
             ),
             AppArg::TracksPanel(arg) => Box::new(
                 crate::screens::tracks_panel::TracksPanelScreen::new(entry, *arg),
@@ -1560,9 +1560,9 @@ where
             AppArg::Content(ContentArg::Detail { sid, rk }) => {
                 let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone(), H::hubs(cx));
                 if let PageMemory::Detail(spot) = &ret.memory {
-                    page.restore_memory(spot);
+                    page.restore_memory(spot, H::metadata(cx));
                 } else if let Some(seed) = self.seed.take() {
-                    if seed.sid == *sid && seed.rk == *rk { page.restore(&seed.spot); }
+                    if seed.sid == *sid && seed.rk == *rk { page.restore(&seed.spot, H::metadata(cx)); }
                 }
                 Box::new(page)
             }

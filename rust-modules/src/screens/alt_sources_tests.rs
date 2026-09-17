@@ -47,6 +47,7 @@ fn panel(host_sid: ServerId, rk: &str) -> AltSourcesScreen {
             rk: rk.to_string(),
             anchor: [0.0f32, 0.0, 100.0, 40.0].map(f32::to_bits),
         },
+        crate::stores::metadata::MetadataStore::default().view(),
     )
 }
 
@@ -437,7 +438,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
 
     crate::plex::describe_server(house, "Mac mini", "", false);
     alt_restamp_owners();
-    assert!(p.refresh(crate::metadata::MetadataView::new()), "the correction reached the drawn table");
+    assert!(p.refresh(crate::stores::metadata::MetadataStore::default().view()), "the correction reached the drawn table");
     assert_eq!(
         p.table.n_rows(),
         2,
@@ -449,7 +450,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
         "an OPEN panel follows the correction; it is a snapshot, not a view of the store"
     );
     assert!(
-        !p.refresh(crate::metadata::MetadataView::new()),
+        !p.refresh(crate::stores::metadata::MetadataStore::default().view()),
         "…and a refresh with nothing to say rebuilds nothing"
     );
 }
@@ -618,6 +619,7 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
             rk: String::new(),
             anchor: [low.x, low.y, low.w, low.h].map(f32::to_bits),
         },
+        crate::stores::metadata::MetadataStore::default().view(),
     );
     let want = panel_at(low, p.table.measured_height());
     let got = p.frame();
@@ -736,9 +738,11 @@ mod focus_and_hit {
         type Init = FixtureArg;
         type Memory = PageMemory;
     }
+    static TEST_METADATA_STORE: crate::stores::metadata::MetadataStore =
+        crate::stores::metadata::MetadataStore;
     impl crate::screens::registry::MetadataLike for HostFixture {
         fn metadata<'a>(_cx: &crate::ui::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
-            crate::metadata::MetadataView::new()
+            TEST_METADATA_STORE.view()
         }
     }
     fn fixture_cx(focus: Option<FocusKey<u32>>) -> crate::ui::machine::Cx<'static, HostFixture> {

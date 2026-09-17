@@ -853,15 +853,16 @@ impl Bridge {
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
-            if let Some((rk, mark)) = page.focused_season(ret.focus) {
+            let meta = <AppHost as crate::screens::registry::MetadataLike>::metadata(&cx);
+            if let Some((rk, mark)) = page.focused_season(ret.focus, meta) {
                 Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark }, entry, ret.focus, rect))
-            } else if let Some((rk, mark)) = page.focused_episode(ret.focus) {
+            } else if let Some((rk, mark)) = page.focused_episode(ret.focus, meta) {
                 // the ONE entry point whose item is a leaf of the season this page has loaded
                 Some(strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark }, entry, ret.focus, rect))
             } else {
                 // …a RELATED tile is a DIFFERENT item standing on the same page: an ordinary card
                 // row, which is exactly what `MenuHost::Related` existed to say.
-                let item = page.focused_related(ret.focus).filter(|m| crate::screens::item_menu::has_actions(m))?;
+                let item = page.focused_related(ret.focus, meta).filter(|m| crate::screens::item_menu::has_actions(m))?;
                 Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
             }
         } else if let Some(page) = screen.downcast_ref::<crate::screens::person::PersonScreen>() {
@@ -1950,7 +1951,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             out.push_str(" ep=");
             let episode = instance.screen.as_any()
                 .and_then(|s| s.downcast_ref::<crate::screens::detail::DetailScreen>())
-                .and_then(|s| s.focused_episode(focus));
+                .and_then(|s| s.focused_episode(focus, <AppHost as crate::screens::registry::MetadataLike>::metadata(&cx)));
             if let Some((rk, mark)) = episode {
                 crate::focusprobe::push_rk(&mut out, &rk);
                 out.push_str(match mark {
@@ -1992,6 +1993,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
 /// player route). `survives_failure` is the `…` popover's alone — see `OverlayKind`.
 pub(crate) fn open_player_overlay(
     ps: &crate::route::PlaybackSession,
+    meta: crate::metadata::MetadataView<'_>,
     d: &mut Dispatcher<AppHost>,
     kind: crate::screens::player::overlay::OverlayKind,
 ) {
@@ -1999,7 +2001,7 @@ pub(crate) fn open_player_overlay(
     // pressed while the Subtitles tab is showing — and never a second surface of the same kind.
     if player_overlay_kind(d).is_some_and(|up| up.slot() == kind.slot()) {
         if let Some(surface) = player_overlay_mut(d) {
-            surface.retarget(ps, kind);
+            surface.retarget(ps, meta, kind);
         }
         return;
     }

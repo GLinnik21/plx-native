@@ -7,19 +7,24 @@ pub(crate) mod record;
 use std::panic::catch_unwind;
 use std::ptr::{addr_of, addr_of_mut};
 
-/// **Stage A of the store-ownership migration** (`docs/stores-as-machines.md`): a borrowed handle
+/// **Stage A4 of the store-ownership migration** (`docs/stores-as-machines.md`): a borrowed handle
 /// onto this layer's read surface, shaped like `crate::person::PersonView`. Every method here
 /// forwards to the free functions below, which still read the process-wide statics — this stage is
-/// behaviour-preserving plumbing, not a data move. The `'a` lifetime is unconstrained today (there
-/// is nothing yet to borrow); it exists so callers write the same code a later stage's real borrow
-/// will require, and so `crate::stores::metadata::MetadataStore::view(&self) -> MetadataView<'_>`
-/// already has the right shape. A future stage that moves `CURRENT`/`NOW`/`PLAYING`/`SKIPPED` onto
-/// an owned `MetadataState` will tie `'a` to that state without touching a caller's syntax.
+/// behaviour-preserving plumbing, not a data move. The `'a` lifetime borrows the owning
+/// `MetadataStore` (`new` takes `&'a MetadataStore`), so a `MetadataView` can only be produced from
+/// an owner — there is no argument-less constructor, `Default` impl or `'static` substitute. The
+/// borrow is not read today (there is nothing yet on `MetadataStore` to read); it exists so a
+/// caller cannot build a view from nothing, and so a later stage that moves
+/// `CURRENT`/`NOW`/`PLAYING`/`SKIPPED` onto `MetadataStore` makes the borrow real without touching
+/// a caller's syntax. See `crate::stores::metadata::MetadataStore::view(&self) -> MetadataView<'_>`.
 #[derive(Clone, Copy)]
 pub(crate) struct MetadataView<'a>(std::marker::PhantomData<&'a ()>);
 
 impl<'a> MetadataView<'a> {
-    pub(crate) fn new() -> Self {
+    /// The only constructor. A view must come from an owner — `_owner` is unread today (the store
+    /// is still a zero-sized unit struct; Stage B moves real state onto it), but its presence is
+    /// what makes "no owner, no view" a type-level fact rather than a convention.
+    pub(crate) fn new(_owner: &'a crate::stores::metadata::MetadataStore) -> Self {
         Self(std::marker::PhantomData)
     }
     pub(crate) fn current(&self) -> Option<&'static Detail> {

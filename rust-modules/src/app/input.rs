@@ -1098,6 +1098,7 @@ pub(crate) unsafe fn key_ok(
     ok_armed: &mut bool,
     press: &mut crate::ui::press::Press,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
 ) {
     // The shared top bar's PROFILE CHIP used to be answered here, ahead of the per-route ladder
     // below, off `top_focus` — retired with that function (Home/Library/Search are all owned
@@ -1126,9 +1127,9 @@ pub(crate) unsafe fn key_ok(
             *ok_armed = true;
         } else if vis && focus == 2 {
             if tab == 0 {
-                super::bridge::open_player_overlay(ps, pages, crate::screens::player::overlay::OverlayKind::Info);
+                super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::Info);
             } else if tab == 1 {
-                super::bridge::open_player_overlay(ps, pages, crate::screens::player::overlay::OverlayKind::Chapters);
+                super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::Chapters);
             }
         } else {
             let np = !paused();

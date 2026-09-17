@@ -190,10 +190,10 @@ impl PlayerOverlayScreen {
     /// no second id to reserve.
     const GROUP: GroupId = GroupId(0);
 
-    pub(crate) fn new(ps: &crate::route::PlaybackSession, entry: EntryId, kind: OverlayKind) -> Self {
+    pub(crate) fn new(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
         let panel = match kind {
             OverlayKind::Tracks { tab } => {
-                Panel::Tracks(crate::ui::track_menu::TrackMenuState::new(ps, tab))
+                Panel::Tracks(crate::ui::track_menu::TrackMenuState::new(ps, meta, tab))
             }
             OverlayKind::Info => Panel::Info(crate::ui::info_panel::InfoPanelState::new()),
             OverlayKind::Chapters => {
@@ -222,13 +222,13 @@ impl PlayerOverlayScreen {
     /// their own tab, so the second press has to move the tab of the entry that exists rather than
     /// present a second one — `same_instance` says they ARE the same instance, and this is the
     /// other half of that: what "the same instance, at a different address" does.
-    pub(crate) fn retarget(&mut self, ps: &crate::route::PlaybackSession, kind: OverlayKind) {
+    pub(crate) fn retarget(&mut self, ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>, kind: OverlayKind) {
         if kind.slot() != self.kind.slot() {
             return;
         }
         self.kind = kind;
         match (&mut self.panel, kind) {
-            (Panel::Tracks(p), OverlayKind::Tracks { tab }) => p.focus_tab(ps, tab),
+            (Panel::Tracks(p), OverlayKind::Tracks { tab }) => p.focus_tab(ps, meta, tab),
             _ => {}
         }
     }
@@ -260,11 +260,12 @@ impl PlayerOverlayScreen {
     pub(crate) fn pick_track_row(
         &mut self,
         ps: &crate::route::PlaybackSession,
+        meta: crate::metadata::MetadataView<'_>,
         row: c_int,
     ) -> Option<crate::ui::track_menu::TrackCommit> {
         if let Panel::Tracks(p) = &mut self.panel {
             p.focus_row(row);
-            return p.on_ok(ps);
+            return p.on_ok(ps, meta);
         }
         None
     }
@@ -315,7 +316,7 @@ impl PlayerOverlayScreen {
     fn activate<H: AppLike + crate::screens::registry::MetadataLike>(&mut self, ps: &crate::route::PlaybackSession, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         match &mut self.panel {
             Panel::Tracks(p) => {
-                if let Some(commit) = p.on_ok(ps) {
+                if let Some(commit) = p.on_ok(ps, H::metadata(cx)) {
                     fx.push(Fx::App(AppFx::Player(PlayerReq::CommitTrack(commit))));
                 }
                 self.dismiss(fx);
@@ -349,16 +350,17 @@ impl PlayerOverlayScreen {
     /// scope, because it moves focus OFF this screen (Chapters'/Info's DOWN) or re-addresses the
     /// panel entirely (Tracks' LEFT/RIGHT tab switch, `TrackMenuState::focus_tab`). More declares
     /// no `Screen` edge at all (its four sides are `Stop`), so it never reaches here.
-    fn edge_key<H: AppLike>(
+    fn edge_key<H: AppLike + crate::screens::registry::MetadataLike>(
         &mut self,
         ps: &crate::route::PlaybackSession,
+        cx: &Cx<'_, H>,
         key: consts::Key,
         fx: &mut Effects<'_, H>,
     ) -> Handled {
         use consts::Key;
         match (&mut self.panel, key) {
             (Panel::Tracks(p), Key::Left { .. } | Key::Right { .. }) => {
-                p.focus_tab(ps, if matches!(key, Key::Left { .. }) { 0 } else { 1 });
+                p.focus_tab(ps, H::metadata(cx), if matches!(key, Key::Left { .. }) { 0 } else { 1 });
                 self.moved(fx);
             }
             (Panel::Chapters(_), Key::Down) | (Panel::Info(_), Key::Down) => {
@@ -379,9 +381,10 @@ impl PlayerOverlayScreen {
     /// left to the engine's own `Activate`/press machinery (§7.4; see [`Self::activate`]). BACK
     /// dismisses — Tracks and More close silently, exactly as the old ladder did; Info and
     /// Chapters also hand the transport the ordinary linger.
-    fn key<H: AppLike>(
+    fn key<H: AppLike + crate::screens::registry::MetadataLike>(
         &mut self,
         ps: &crate::route::PlaybackSession,
+        cx: &Cx<'_, H>,
         key: consts::Key,
         edge: Edge,
         at_edge: bool,
@@ -418,7 +421,7 @@ impl PlayerOverlayScreen {
                 _ => {}
             }
             if at_edge {
-                return self.edge_key(ps, key, fx);
+                return self.edge_key(ps, cx, key, fx);
             }
             // an interior move: let the engine's own `neighbour`/`EdgeRule` answer it (§7.3 steps
             // 2-3) rather than moving the panel's cursor by hand.
@@ -459,7 +462,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                     sym, wcode, edge, at_edge, ..
                 } = input.kind
                 {
-                    return self.key(ps, consts::classify(sym, wcode), edge, at_edge, input.at.ms, fx);
+                    return self.key(ps, cx, consts::classify(sym, wcode), edge, at_edge, input.at.ms, fx);
                 }
                 // **An open panel owns the click and closes on it.** Four `modal_of` arms of
                 // the loop's pointer path said this — "the transport is partly hidden while a

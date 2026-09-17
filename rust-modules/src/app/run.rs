@@ -983,6 +983,7 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
                 &mut app.ok_armed,
                 &mut app.input.press,
                 &mut app.pages,
+                &mut app.bridge,
             );
         } else if matches!(key, Key::Pause) {
             key_pause(&mut app.adapters.player, app.last_input, &mut app.pages);

@@ -307,7 +307,7 @@ impl DetailScreen {
         }
     }
 
-    pub(crate) fn restore_memory(&mut self, memory: &DetailMemory) {
+    pub(crate) fn restore_memory(&mut self, memory: &DetailMemory, meta: crate::metadata::MetadataView<'_>) {
         // A covered live body may have interned a landing after the request snapshot. Never
         // rewind its registry/counter: those integers still belong to the identities it minted.
         for saved in &memory.keys {
@@ -320,14 +320,14 @@ impl DetailScreen {
             self.keys.iter().map(|key| key.elem).max().and_then(|n| n.checked_add(1)).unwrap_or(FIRST_ITEM_ELEM));
         let newer_restore = self.restore_intent.take()
             .filter(|_| self.refresh != DetailRefreshPhase::None);
-        self.restore(&memory.spot);
+        self.restore(&memory.spot, meta);
         if let Some(newer_restore) = newer_restore {
             // The entry memory is the request-time navigation snapshot. A ViewState completion
             // delivered while covered is newer and carries the episode whose write just settled.
             self.restore_intent = Some(newer_restore);
         }
         self.return_pending = true;
-        self.sync_keys();
+        self.sync_keys(meta);
     }
 
     fn engine_key(&self, local: u32) -> Option<u32> {
@@ -342,11 +342,11 @@ impl DetailScreen {
         self.engine_key(located.local_key()?)
     }
 
-    fn sync_keys(&mut self) {
+    fn sync_keys(&mut self, meta: crate::metadata::MetadataView<'_>) {
         self.layout.set(None);
         let pending_key = self.pending_season.and_then(season::elem).and_then(|local| self.engine_key(local));
         let mut identities = Vec::new();
-        if let Some(d) = self.detail() {
+        if let Some(d) = self.detail(meta) {
             for (i, season) in d.seasons.iter().enumerate() {
                 if let Some(local) = season::elem(i) {
                     identities.push((local, DetailIdentity::Season { sid: d.sid, show: d.rk.clone(), rk: season.rk.clone() }));
@@ -400,12 +400,12 @@ impl DetailScreen {
         }
     }
 
-    pub(crate) fn restore(&mut self, spot: &Spot) {
-        self.restore_episode(spot, None);
+    pub(crate) fn restore(&mut self, spot: &Spot, meta: crate::metadata::MetadataView<'_>) {
+        self.restore_episode(spot, None, meta);
     }
 
-    pub(crate) fn restore_episode(&mut self, spot: &Spot, episode: Option<&str>) {
-        self.sync_keys();
+    pub(crate) fn restore_episode(&mut self, spot: &Spot, episode: Option<&str>, meta: crate::metadata::MetadataView<'_>) {
+        self.sync_keys(meta);
         self.return_pending = false;
         self.restore_intent = Some(RestoreIntent {
             spot: spot.clone(),
@@ -415,13 +415,13 @@ impl DetailScreen {
         self.scroll_target = 0.0;
     }
 
-    pub(crate) fn spot(&self, focus: Option<FocusKey<u32>>) -> Spot {
+    pub(crate) fn spot(&self, focus: Option<FocusKey<u32>>, meta: crate::metadata::MetadataView<'_>) -> Spot {
         let (section, col, ep_text) = focus
             .filter(|k| k.entry == self.entry)
-            .and_then(|k| self.locate(k.elem))
+            .and_then(|k| self.locate(k.elem, meta))
             .map(|l| {
                 let col = match l {
-                    Located::Hero(control) => hero::index_of(self.hero_set(), control).unwrap_or(0),
+                    Located::Hero(control) => hero::index_of(self.hero_set(meta), control).unwrap_or(0),
                     _ => l.index(),
                 };
                 (
@@ -432,7 +432,7 @@ impl DetailScreen {
             })
             .unwrap_or((0, 0, false));
         let season = self
-            .detail()
+            .detail(meta)
             .and_then(|d| d.seasons.get(d.cur_season))
             .map(|s| s.index);
         Spot {
@@ -449,39 +449,42 @@ impl DetailScreen {
     pub(crate) fn focused_episode(
         &self,
         focus: Option<FocusKey<u32>>,
+        meta: crate::metadata::MetadataView<'_>,
     ) -> Option<(String, PosterMark)> {
-        if crate::metadata::MetadataView::new().season_loading() {
+        if meta.season_loading() {
             return None;
         }
-        let (i, row) = self.focused_episode_index(focus)?;
+        let (i, row) = self.focused_episode_index(focus, meta)?;
         if row != episodes::Row::Still {
             return None;
         }
-        let ep = self.detail()?.episodes.get(i)?;
+        let ep = self.detail(meta)?.episodes.get(i)?;
         Some((ep.rk.clone(), episodes::watch_state(ep)))
     }
 
     pub(crate) fn focused_season(
         &self,
         focus: Option<FocusKey<u32>>,
+        meta: crate::metadata::MetadataView<'_>,
     ) -> Option<(String, PosterMark)> {
-        if crate::metadata::MetadataView::new().season_loading() {
+        if meta.season_loading() {
             return None;
         }
-        let i = self.focused_index(focus, season::SEASON_GROUP)?;
-        let s = self.detail()?.seasons.get(i)?;
+        let i = self.focused_index(focus, season::SEASON_GROUP, meta)?;
+        let s = self.detail(meta)?.seasons.get(i)?;
         (!s.rk.is_empty()).then(|| (s.rk.clone(), season::watch_state(s)))
     }
 
     pub(crate) fn focused_related(
         &self,
         focus: Option<FocusKey<u32>>,
+        meta: crate::metadata::MetadataView<'_>,
     ) -> Option<&'static crate::pms::PmsMovie> {
         let key = focus.filter(|k| k.entry == self.entry)?.elem;
-        related::item(self.detail()?, self.locate(key)?.local_key()?)
+        related::item(self.detail(meta)?, self.locate(key, meta)?.local_key()?)
     }
 
-    pub(crate) fn focused_rect<H: ContentLike>(
+    pub(crate) fn focused_rect<H: ContentLike + crate::screens::registry::MetadataLike>(
         &self,
         focus: Option<FocusKey<u32>>,
         cx: &Cx<'_, H>,
@@ -491,14 +494,15 @@ impl DetailScreen {
         self.place(&key.elem, cx, at).map(|p| p.rect)
     }
 
-    pub(crate) fn redraw_focused<H: ContentLike>(
+    pub(crate) fn redraw_focused<H: ContentLike + crate::screens::registry::MetadataLike>(
         &self,
         f: &mut DrawFrame<'_, '_, H>,
         focus: Option<FocusKey<u32>>,
     ) {
+        let meta = H::metadata(f.cx);
         let measure = f.cx.measure;
-        let Some(d) = self.detail() else { return };
-        match focus.and_then(|k| self.locate(k.elem)) {
+        let Some(d) = self.detail(meta) else { return };
+        match focus.and_then(|k| self.locate(k.elem, meta)) {
             Some(Located::Season(i)) => season::draw(
                 f.painter
                     .translate(0.0, self.section_top(1, d, measure) - self.scroll.pos),
@@ -518,8 +522,10 @@ impl DetailScreen {
                 self.episode_scroll.pos,
                 self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0) * f.press.scale,
                 f.measure,
+                meta,
             ),
             Some(Located::Related(i)) => related::draw_focused(
+
                 f.painter,
                 d,
                 &self.related,
@@ -541,8 +547,8 @@ impl DetailScreen {
         }
     }
 
-    fn detail(&self) -> Option<&'static Detail> {
-        crate::metadata::MetadataView::new().current().filter(|d| {
+    fn detail(&self, meta: crate::metadata::MetadataView<'_>) -> Option<&'static Detail> {
+        meta.current().filter(|d| {
             crate::plex::same_item((d.sid, d.rk.as_str()), (self.sid, self.rk.as_str()))
         })
     }
@@ -551,8 +557,8 @@ impl DetailScreen {
         self.selected.as_ref()
     }
 
-    fn hero_chain(&self, measure: &dyn crate::ui::machine::Measure) -> crate::ui::detail_layout::HeroChain {
-        if let Some(d) = self.detail() {
+    fn hero_chain(&self, measure: &dyn crate::ui::machine::Measure, meta: crate::metadata::MetadataView<'_>) -> crate::ui::detail_layout::HeroChain {
+        if let Some(d) = self.detail(meta) {
             return self.ensure_layout(d, measure).chain;
         }
         self.compute_hero_chain(None, measure)
@@ -645,8 +651,8 @@ impl DetailScreen {
         }
     }
 
-    fn content_top(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
-        if let Some(d) = self.detail() {
+    fn content_top(&self, measure: &dyn crate::ui::machine::Measure, meta: crate::metadata::MetadataView<'_>) -> f32 {
+        if let Some(d) = self.detail(meta) {
             self.ensure_layout(d, measure).content_top
         } else {
             self.compute_hero_chain(None, measure).btn_y + hero::CD + theme::space::XL
@@ -701,17 +707,17 @@ impl DetailScreen {
         Self::section_block_h(section, d, measure)
     }
 
-    fn locate(&self, elem: u32) -> Option<Located> {
+    fn locate(&self, elem: u32, meta: crate::metadata::MetadataView<'_>) -> Option<Located> {
         let local = if elem >= FIRST_ITEM_ELEM {
             // The projections describe only our currently published item.
-            self.detail()?;
+            self.detail(meta)?;
             *self.local_by_key.get(&elem)?
         } else if elem < season::SEASON_ELEM_RANGE_START || elem >= about::ABOUT_ELEM_RANGE_START {
             elem
         } else {
             return None;
         };
-        Self::locate_local(local, self.tracks_available())
+        Self::locate_local(local, self.tracks_available(meta))
     }
 
     /// `tracks` is [`Self::tracks_available`] — the page's own answer, threaded in because this is
@@ -738,34 +744,35 @@ impl DetailScreen {
         about::locate(elem, tracks).map(Located::About)
     }
 
-    fn focused_index(&self, focus: Option<FocusKey<u32>>, group: GroupId) -> Option<usize> {
+    fn focused_index(&self, focus: Option<FocusKey<u32>>, group: GroupId, meta: crate::metadata::MetadataView<'_>) -> Option<usize> {
         let key = focus.filter(|k| k.entry == self.entry)?;
-        let located = self.locate(key.elem)?;
+        let located = self.locate(key.elem, meta)?;
         (located.group() == group).then(|| located.index())
     }
 
     fn focused_episode_index(
         &self,
         focus: Option<FocusKey<u32>>,
+        meta: crate::metadata::MetadataView<'_>,
     ) -> Option<(usize, episodes::Row)> {
         match focus
             .filter(|k| k.entry == self.entry)
-            .and_then(|k| self.locate(k.elem))?
+            .and_then(|k| self.locate(k.elem, meta))?
         {
             Located::Episode(i, row) => Some((i, row)),
             _ => None,
         }
     }
 
-    fn restore_focus(&self) -> Option<u32> {
+    fn restore_focus(&self, meta: crate::metadata::MetadataView<'_>) -> Option<u32> {
         if self.return_pending { return None; }
         let intent = self.restore_intent.as_ref()?;
-        let d = self.detail()?;
+        let d = self.detail(meta)?;
         if season::restore_step(
             Some(d),
             intent.spot.season,
             intent.season_requested,
-            crate::metadata::MetadataView::new().season_loading(),
+            meta.season_loading(),
         ) != season::RestoreStep::Ready
         {
             return None;
@@ -773,7 +780,7 @@ impl DetailScreen {
         let clamp = |col: i32, len: usize| (col.max(0) as usize).min(len.saturating_sub(1));
         let local = match intent.spot.section {
             0 => {
-                let set = self.hero_set();
+                let set = self.hero_set(meta);
                 let (_, n) = hero::hero_ctls(set);
                 hero::ctl_at(set, clamp(intent.spot.col, n)).map(hero::HeroCtl::elem)
             }
@@ -800,7 +807,7 @@ impl DetailScreen {
             6 if !d.extras.is_empty() => extras::elem(clamp(intent.spot.col, extras::len(d))),
             4 if d.credits_len() > 0 => cast::elem(clamp(intent.spot.col, d.credits_len())),
             5 => Some(
-                if intent.spot.col > 0 && self.tracks_available() {
+                if intent.spot.col > 0 && self.tracks_available(meta) {
                     about::LANGUAGES_ELEM
                 } else {
                     about::CARD_ELEM
@@ -812,19 +819,20 @@ impl DetailScreen {
     }
 }
 
-impl<H: ContentLike> Focusable<H> for DetailScreen {
+impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for DetailScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        let meta = H::metadata(cx);
         let measure = cx.measure;
-        let set = self.hero_set();
+        let set = self.hero_set(meta);
         let widths = hero::hero_widths(
             cx.measure,
             set,
             set.restart,
             self.disc_unfurl.map(|s| s.pos),
-            self.named_show(),
+            self.named_show(meta),
         );
         let (_, hero_n) = hero::visible_ctls(set, self.full_trailer());
-        let hero_y = self.hero_chain(measure).btn_y;
+        let hero_y = self.hero_chain(measure, meta).btn_y;
         let hero_last = hero::hero_btn_rect_at(set, hero_n.saturating_sub(1), hero_y, widths);
         out.push(GroupSpec {
             id: hero::HERO_GROUP,
@@ -847,7 +855,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             elem: ElemKind::Control,
         });
 
-        let Some(d) = self.detail() else { return };
+        let Some(d) = self.detail(meta) else { return };
         let (sections, n) = self.sections(Some(d));
         for &section in &sections[1..n] {
             let top = self.section_top(section, d, measure) - self.scroll_target;
@@ -931,7 +939,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                     elem: ElemKind::Card,
                 }),
                 5 => {
-                    let tracks = self.tracks_available();
+                    let tracks = self.tracks_available(meta);
                     out.push(GroupSpec {
                         id: about::ABOUT_GROUP,
                         kind: GroupKind::Column,
@@ -958,18 +966,20 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
         }
     }
 
-    fn group_of(&self, key: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        let located = self.locate(*key)?;
-        self.valid(located).then(|| located.group())
+    fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
+        let meta = H::metadata(cx);
+        let located = self.locate(*key, meta)?;
+        self.valid(located, meta).then(|| located.group())
     }
 
-    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
-        let Some(located) = self.locate(key.elem).filter(|l| self.valid(*l)) else {
+    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
+        let meta = H::metadata(cx);
+        let Some(located) = self.locate(key.elem, meta).filter(|l| self.valid(*l, meta)) else {
             return Step::Edge;
         };
         let moved = match located {
             Located::Hero(ctl) => {
-                let set = self.hero_set();
+                let set = self.hero_set(meta);
                 let Some(i) = hero::index_of(set, ctl) else {
                     return Step::Edge;
                 };
@@ -981,12 +991,12 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 }
             }
             Located::Season(i) => {
-                row_move(i, self.detail().map(|d| d.seasons.len()).unwrap_or(0), dir)
+                row_move(i, self.detail(meta).map(|d| d.seasons.len()).unwrap_or(0), dir)
                     .and_then(season::elem)
             }
             Located::Episode(i, row) => match dir {
                 Dir::Left if i > 0 => episodes::elem(i - 1, row),
-                Dir::Right if self.detail().is_some_and(|d| i + 1 < d.episodes.len()) => {
+                Dir::Right if self.detail(meta).is_some_and(|d| i + 1 < d.episodes.len()) => {
                     episodes::elem(i + 1, row)
                 }
                 Dir::Down if row == episodes::Row::Still => episodes::elem(i, episodes::Row::Text),
@@ -994,18 +1004,18 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 _ => None,
             },
             Located::Related(i) => {
-                row_move(i, self.detail().map(|d| d.related.len()).unwrap_or(0), dir)
+                row_move(i, self.detail(meta).map(|d| d.related.len()).unwrap_or(0), dir)
                     .and_then(related::elem)
             }
             Located::Extras(i) => {
-                row_move(i, self.detail().map(extras::len).unwrap_or(0), dir)
+                row_move(i, self.detail(meta).map(extras::len).unwrap_or(0), dir)
                     .and_then(extras::elem)
             }
             Located::Cast(i) => {
-                row_move(i, self.detail().map(|d| d.credits_len()).unwrap_or(0), dir)
+                row_move(i, self.detail(meta).map(|d| d.credits_len()).unwrap_or(0), dir)
                     .and_then(cast::elem)
             }
-            Located::About(i) => match (i, dir, self.tracks_available()) {
+            Located::About(i) => match (i, dir, self.tracks_available(meta)) {
                 (0, Dir::Down, true) => Some(about::LANGUAGES_ELEM),
                 (1, Dir::Up, _) => Some(about::CARD_ELEM),
                 _ => None,
@@ -1023,9 +1033,10 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
     }
 
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
+        let meta = H::metadata(cx);
         let measure = cx.measure;
-        let located = self.locate(*key).filter(|l| self.valid(*l))?;
-        let d = self.detail();
+        let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta))?;
+        let d = self.detail(meta);
         let vertical = if at == At::Drawn {
             self.scroll.pos
         } else {
@@ -1033,17 +1044,17 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
         };
         let (rect, rest_rect, index) = match located {
             Located::Hero(ctl) => {
-                let set = self.hero_set();
+                let set = self.hero_set(meta);
                 let i = hero::index_of(set, ctl)?;
                 let widths = hero::hero_widths(
                     cx.measure,
                     set,
                     set.restart,
                     self.disc_unfurl.map(|s| s.pos),
-                    self.named_show(),
+                    self.named_show(meta),
                 );
                 let base =
-                    hero::hero_btn_rect_at(set, i, self.hero_chain(measure).btn_y - vertical, widths);
+                    hero::hero_btn_rect_at(set, i, self.hero_chain(measure, meta).btn_y - vertical, widths);
                 (
                     base.scaled(self.ctl_pop.scale(i)),
                     base.scaled(crate::ui::widgets::CTRL_FOCUS_SCALE),
@@ -1126,14 +1137,15 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
         })
     }
 
-    fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, H>) -> FocusKey<u32> {
+    fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        let meta = H::metadata(cx);
         // Full-trailer mode collapses the hero row to Play/Resume only, and this must be the
         // FIRST check in the function: the return_pending/restore_intent short-circuit below and
         // restore_focus() can each hand back a hero elem without knowing about full-trailer mode,
         // so gating only the dedicated hero branch further down let a restored or
         // return-pending focus land on a control the row no longer draws.
         if self.full_trailer() {
-            if let Some(Located::Hero(ctl)) = self.locate(want.elem) {
+            if let Some(Located::Hero(ctl)) = self.locate(want.elem, meta) {
                 if !hero::focusable(ctl, true) {
                     return FocusKey {
                         entry: want.entry,
@@ -1143,18 +1155,18 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             }
         }
         let known = self.keys.iter().any(|key| key.elem == want.elem);
-        if known && (self.return_pending || self.restore_intent.is_some()) && (crate::metadata::MetadataView::new().detail_request_status(self.sid, &self.rk) == Some(true)
-            || self.detail().is_some() && (crate::metadata::MetadataView::new().season_loading() || self.return_waiting())) {
+        if known && (self.return_pending || self.restore_intent.is_some()) && (meta.detail_request_status(self.sid, &self.rk) == Some(true)
+            || self.detail(meta).is_some() && (meta.season_loading() || self.return_waiting(meta))) {
             return want;
         }
-        if self.detail().is_some() {
+        if self.detail(meta).is_some() {
             if let Some(DetailIdentity::Slot(local)) = self.keys.iter().find(|key| key.elem == want.elem).map(|key| &key.identity) {
                 if let Some(elem) = self.engine_key(*local) {
                     return FocusKey { entry: want.entry, elem };
                 }
             }
         }
-        if let Some(elem) = self.restore_focus() {
+        if let Some(elem) = self.restore_focus(meta) {
             return FocusKey {
                 entry: want.entry,
                 elem,
@@ -1164,9 +1176,9 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
         // control that was focused the instant UP promoted must not be reconciled back onto
         // itself here just because the ITEM's facts still offer it. `hero::focusable` is the same
         // predicate `visible_ctls` and `valid` gate on, so this cannot silently drift from either.
-        if let Some(Located::Hero(ctl)) = self.locate(want.elem) {
+        if let Some(Located::Hero(ctl)) = self.locate(want.elem, meta) {
             if hero::focusable(ctl, self.full_trailer()) {
-                let set = self.hero_set();
+                let set = self.hero_set(meta);
                 if hero::index_of(set, ctl).is_some() {
                     return want;
                 }
@@ -1180,8 +1192,8 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             }
         }
         if self
-            .locate(want.elem)
-            .is_some_and(|located| self.valid(located))
+            .locate(want.elem, meta)
+            .is_some_and(|located| self.valid(located, meta))
         {
             return want;
         }
@@ -1193,7 +1205,8 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
 
     fn seat(&self, group: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
         let measure = cx.measure;
-        let d = self.detail();
+        let meta = H::metadata(cx);
+        let d = self.detail(meta);
         let from_i = from.index.unwrap_or(0) as usize;
         let elem = if group == hero::HERO_GROUP {
             hero::HeroCtl::Play.elem()
@@ -1270,7 +1283,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
         };
         FocusKey {
             entry: self.entry,
-            elem: Self::locate_local(elem, self.tracks_available())
+            elem: Self::locate_local(elem, self.tracks_available(meta))
                 .and_then(|located| self.key_of(located))
                 .unwrap_or(hero::ELEM_PLAY),
         }
@@ -1278,14 +1291,14 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
 }
 
 impl DetailScreen {
-    fn valid(&self, located: Located) -> bool {
-        let d = self.detail();
+    fn valid(&self, located: Located, meta: crate::metadata::MetadataView<'_>) -> bool {
+        let d = self.detail(meta);
         match located {
             // A control other than Play is never valid while full-trailer mode has collapsed the
             // row to just it — `hero::focusable` is the same predicate `reconcile` and
             // `hero::visible_ctls` gate on.
             Located::Hero(c) => {
-                hero::focusable(c, self.full_trailer()) && hero::index_of(self.hero_set(), c).is_some()
+                hero::focusable(c, self.full_trailer()) && hero::index_of(self.hero_set(meta), c).is_some()
             }
             Located::Season(i) => d.is_some_and(|d| i < d.seasons.len().min(64)),
             Located::Episode(i, _) => {
@@ -1295,7 +1308,7 @@ impl DetailScreen {
             Located::Extras(i) => d.is_some_and(|d| i < extras::len(d)),
             Located::Cast(i) => d.is_some_and(|d| i < d.credits_len().min(512)),
             Located::About(0) => d.is_some(),
-            Located::About(1) => d.is_some() && self.tracks_available(),
+            Located::About(1) => d.is_some() && self.tracks_available(meta),
             Located::About(_) => false,
         }
     }
@@ -1326,17 +1339,18 @@ fn nearest_variable(metrics: &season::Metrics, x: f32, scroll: f32, n: usize, ti
         .unwrap_or(0)
 }
 
-impl<H: ContentLike> Machine<H> for DetailScreen {
+impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for DetailScreen {
     type Ev = ScreenEvent<H>;
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        let meta = H::metadata(cx);
         match ev {
             ScreenEvent::Mount => {
-                self.sync_keys();
+                self.sync_keys(meta);
                 Handled::Yes
             }
             ScreenEvent::RestoreMemory(PageMemory::Detail(memory)) => {
-                self.restore_memory(memory);
+                self.restore_memory(memory, meta);
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
@@ -1345,7 +1359,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
             }
             ScreenEvent::Enter(_) => {
                 let refresh = self.refresh;
-                let request_status = crate::metadata::MetadataView::new().detail_request_status(self.sid, &self.rk);
+                let request_status = meta.detail_request_status(self.sid, &self.rk);
                 // Deferred is newer than every request that could already occupy this address:
                 // it was armed only after the ViewState write completed. Always supersede that
                 // pre-write generation when the page becomes visible. Requested normally reuses
@@ -1355,7 +1369,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 // Ordinary enters still reuse an in-flight request instead of duplicating it.
                 let request = refresh == DetailRefreshPhase::Deferred
                     || refresh == DetailRefreshPhase::Requested && request_status.is_none()
-                    || refresh == DetailRefreshPhase::None && self.detail().is_none()
+                    || refresh == DetailRefreshPhase::None && self.detail(meta).is_none()
                         && request_status != Some(true);
                 if request && refresh == DetailRefreshPhase::None {
                     apply_metadata(MetadataCmd::RequestDetail {
@@ -1366,23 +1380,23 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 if request && refresh != DetailRefreshPhase::None {
                     self.start_reconciliation();
                 }
-                self.reveal_focus(cx.focus.current, cx.measure);
+                self.reveal_focus(cx.focus.current, cx.measure, meta);
                 fx.invalidate(Provenance::Input);
                 Handled::Yes
             }
             ScreenEvent::StoreChanged(ord, _) => {
                 self.layout.set(None);
                 if *ord == StoreId::Metadata.ord() {
-                    self.sync_keys();
+                    self.sync_keys(meta);
                     self.season_metrics.invalidate();
                     self.about_rows.invalidate();
-                    if let Some(detail) = self.detail() {
+                    if let Some(detail) = self.detail(meta) {
                         self.season_metrics.update(detail, cx.measure);
                         self.about_rows.update(detail);
                     }
                 }
-                self.pump_restore();
-                self.reveal_focus(cx.focus.current, cx.measure);
+                self.pump_restore(meta);
+                self.reveal_focus(cx.focus.current, cx.measure, meta);
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
             }
@@ -1391,8 +1405,8 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                     self.return_pending = false;
                     self.restore_intent = None;
                 }
-                self.reveal_focus(Some(*to), cx.measure);
-                if let Some(located) = self.locate(to.elem) {
+                self.reveal_focus(Some(*to), cx.measure, meta);
+                if let Some(located) = self.locate(to.elem, meta) {
                     if let Located::Season(i) = located {
                         if matches!(by, By::Dir | By::Pointer) {
                             self.pending_season = Some(i);
@@ -1423,7 +1437,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                     .focus
                     .current
                     .filter(|k| k.entry == self.entry)
-                    .and_then(|k| self.locate(k.elem))
+                    .and_then(|k| self.locate(k.elem, meta))
                     .is_some_and(|located| {
                         matches!(
                             located,
@@ -1459,7 +1473,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                         .filter(|key| key.entry == self.entry)
                         .and_then(|key| {
                             matches!(
-                                self.locate(key.elem),
+                                self.locate(key.elem, meta),
                                 Some(Located::Episode(_, episodes::Row::Text))
                             )
                             .then_some(key.elem)
@@ -1512,7 +1526,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                         ..
                     }
                 ) && crate::player::preview::view().picture
-                    && cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| self.locate(k.elem)).is_some_and(|located| matches!(located, Located::Hero(_)))
+                    && cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| self.locate(k.elem, meta)).is_some_and(|located| matches!(located, Located::Hero(_)))
                 {
                     // UP fades this page's chrome to zero. The page stays mounted. OK still
                     // activates the focused control. There is no HUD.
@@ -1523,7 +1537,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 Handled::No
             }
             ScreenEvent::App(AppMsg::DetailRestore { spot, episode, refresh }) => {
-                self.restore_episode(spot, episode.as_deref());
+                self.restore_episode(spot, episode.as_deref(), meta);
                 // A focus-only restore (including navigation memory) cannot discharge a newer
                 // write's server obligation. A visible completion starts through the Metadata
                 // compatibility boundary before Requested becomes observable; a covered page
@@ -1553,7 +1567,7 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 self.restore_intent = None;
                 self.refresh = DetailRefreshPhase::None;
                 self.return_pending = false;
-                if self.detail().is_some() {
+                if self.detail(meta).is_some() {
                     apply_metadata(MetadataCmd::Clear);
                 }
                 Handled::Yes
@@ -1576,12 +1590,12 @@ impl DetailScreen {
         self.refresh = DetailRefreshPhase::Requested;
     }
 
-    fn restore_target_matches(&self, located: Located) -> bool {
-        self.restore_focus().and_then(|elem| self.locate(elem)) == Some(located)
+    fn restore_target_matches(&self, located: Located, meta: crate::metadata::MetadataView<'_>) -> bool {
+        self.restore_focus(meta).and_then(|elem| self.locate(elem, meta)) == Some(located)
     }
 }
 
-impl<H: ContentLike> Screen<H> for DetailScreen {
+impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for DetailScreen {
     fn name(&self) -> &'static str {
         "detail"
     }
@@ -1597,6 +1611,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
     fn prepare(&mut self, _budget: &mut Budget, _cx: &Cx<'_, H>) {}
 
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+        let meta = H::metadata(f.cx);
         let measure = f.cx.measure;
         let preview = crate::player::preview::view();
         if preview_punch_through(preview.picture) {
@@ -1606,8 +1621,8 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
         }
         let p = f.painter;
         let nav_page_alpha = f.nav_page_alpha;
-        let d = self.detail();
-        self.draw_backdrop(p, d, f.measure, preview);
+        let d = self.detail(meta);
+        self.draw_backdrop(p, d, f.measure, preview, meta);
         let hero_vis = hero_alpha(self.scroll.pos, HERO_FADE);
         if hero_vis > 0.01 {
             self.draw_hero(p.translate(0.0, -self.scroll.pos).alpha(hero_vis), f, d, nav_page_alpha);
@@ -1618,7 +1633,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                 .focus
                 .current
                 .filter(|k| k.entry == self.entry)
-                .and_then(|k| self.locate(k.elem));
+                .and_then(|k| self.locate(k.elem, meta));
             let (sections, n) = self.sections(Some(d));
             for &section in &sections[1..n] {
                 let top = self.section_top(section, d, measure) - self.scroll.pos;
@@ -1650,8 +1665,9 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                             },
                             |i| self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0),
                             f.measure,
+                            meta,
                         );
-                        if crate::metadata::MetadataView::new().season_loading() {
+                        if meta.season_loading() {
                             crate::ui::widgets::Spinner::new(
                                 crate::ui::consts::SCR_W * 0.5,
                                 top + episodes::H * 0.5,
@@ -1700,16 +1716,16 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                         d,
                         top,
                         f.focus.current.map(|k| k.elem),
-                        self.tracks_available(),
+                        self.tracks_available(meta),
                         f.measure,
                     ),
                     _ => {}
                 }
             }
-        } else if crate::metadata::MetadataView::new().detail_loading() {
+        } else if meta.detail_loading() {
             crate::ui::widgets::Spinner::new(
                 crate::ui::consts::SCR_W * 0.5,
-                (self.content_top(measure) + crate::ui::consts::SCR_H) * 0.5 - self.scroll.pos,
+                (self.content_top(measure, meta) + crate::ui::consts::SCR_H) * 0.5 - self.scroll.pos,
                 26.0,
             )
             .phase(self.spin_ms as u32)
@@ -1736,8 +1752,16 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
     }
 
     fn memory_at(&self, focus: Option<FocusKey<u32>>) -> PageMemory {
+        // `memory_at` is a fixed `Screen<H>` trait signature shared by every screen (called
+        // through `dyn Screen<H>` from `ui/dispatch.rs` and `app/bridge.rs`, neither of which
+        // carries a `MetadataView`), so there is no owner to thread down without widening that
+        // trait across every screen — out of this layer's scope. Construct a fresh owner here,
+        // exactly the pattern test code uses when no `cx` is in reach; the statics it still reads
+        // are the same ones `H::metadata(cx)` reads until Stage B deletes them.
+        let owned_metadata = crate::stores::metadata::MetadataStore::default();
+        let meta = owned_metadata.view();
         PageMemory::Detail(DetailMemory {
-            spot: self.restore_intent.as_ref().filter(|_| self.return_pending).map(|intent| intent.spot.clone()).unwrap_or_else(|| self.spot(focus)),
+            spot: self.restore_intent.as_ref().filter(|_| self.return_pending).map(|intent| intent.spot.clone()).unwrap_or_else(|| self.spot(focus, meta)),
             keys: self.keys.clone(), next_elem: self.next_elem,
         })
     }
@@ -1767,7 +1791,7 @@ impl DetailScreen {
 
     #[cfg(test)]
     pub(crate) fn return_waiting_for_test(&self) -> bool {
-        self.return_waiting()
+        self.return_waiting(crate::stores::metadata::MetadataStore::default().view())
     }
 
     fn art_identity(&self, d: Option<&Detail>) -> (ServerId, String, String) {
@@ -1799,8 +1823,9 @@ impl DetailScreen {
         d: Option<&Detail>,
         measure: &dyn crate::ui::machine::Measure,
         preview: crate::player::preview::View,
+        meta: crate::metadata::MetadataView<'_>,
     ) {
-        let sf = (self.scroll.pos / (self.content_top(measure) - crate::ui::detail_layout::TOP_MARGIN))
+        let sf = (self.scroll.pos / (self.content_top(measure, meta) - crate::ui::detail_layout::TOP_MARGIN))
             .clamp(0.0, 1.0);
         let art_alpha = (1.0 - sf) * self.preview_art;
         let (sid, _, path) = self.art_identity(d);
@@ -1857,7 +1882,8 @@ impl DetailScreen {
         }
     }
 
-    fn draw_hero<H: ContentLike>(&self, p: Painter, cx: &Cx<'_, H>, d: Option<&Detail>, nav_page_alpha: f32) {
+    fn draw_hero<H: ContentLike + crate::screens::registry::MetadataLike>(&self, p: Painter, cx: &Cx<'_, H>, d: Option<&Detail>, nav_page_alpha: f32) {
+        let meta = H::metadata(cx);
         let measure = cx.measure;
         use crate::ui::detail_layout::{HERO_TEXT_W, TITLE_BOTTOM};
 
@@ -1894,7 +1920,7 @@ impl DetailScreen {
 
         let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_view = crate::ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
-        let chain = self.hero_chain(measure);
+        let chain = self.hero_chain(measure, meta);
         if let Some(d) = d {
             self.draw_identity_line(prose, d, chain.meta_y, cx.measure);
             self.draw_ratings(prose, d, chain.ratings_y, cx.measure);
@@ -2010,14 +2036,15 @@ impl DetailScreen {
         }
     }
 
-    fn draw_buttons<H: ContentLike>(&self, p: Painter, cx: &Cx<'_, H>, y: f32, nav_page_alpha: f32) {
-        let set = self.hero_set();
+    fn draw_buttons<H: ContentLike + crate::screens::registry::MetadataLike>(&self, p: Painter, cx: &Cx<'_, H>, y: f32, nav_page_alpha: f32) {
+        let meta = H::metadata(cx);
+        let set = self.hero_set(meta);
         let widths = hero::hero_widths(
             cx.measure,
             set,
             set.restart,
             self.disc_unfurl.map(|s| s.pos),
-            self.named_show(),
+            self.named_show(meta),
         );
         let current = cx.focus.current.map(|k| k.elem);
         let (controls, n) = hero::visible_ctls(set, self.full_trailer());
@@ -2082,7 +2109,7 @@ impl DetailScreen {
                         .palette(palette)
                         .ground(ground)
                         .scale(scale);
-                    if let Some((slot, label)) = hero::disc_verb(ctl, self.named_show()) {
+                    if let Some((slot, label)) = hero::disc_verb(ctl, self.named_show(meta)) {
                         button = button.label(label.as_ptr(), self.disc_unfurl[slot].pos);
                     }
                     button.draw(&Env::inert(), p);
@@ -2122,12 +2149,13 @@ impl DetailScreen {
             );
     }
 
-    fn record_stops<H: ContentLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
+    fn record_stops<H: ContentLike + crate::screens::registry::MetadataLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
+        let meta = H::metadata(f.cx);
         let mut elems = Vec::new();
-        let set = self.hero_set();
+        let set = self.hero_set(meta);
         let (controls, n) = hero::hero_ctls(set);
         elems.extend(controls[..n].iter().map(|c| (c.elem(), Activate::Press)));
-        if let Some(d) = self.detail() {
+        if let Some(d) = self.detail(meta) {
             elems.extend(
                 (0..d.seasons.len().min(64))
                     .filter_map(|i| season::elem(i).map(|e| (e, Activate::Press))),
@@ -2153,7 +2181,7 @@ impl DetailScreen {
                     .filter_map(|i| cast::elem(i).map(|e| (e, Activate::Press))),
             );
             elems.push((about::CARD_ELEM, Activate::Press));
-            if self.tracks_available() {
+            if self.tracks_available(meta) {
                 elems.push((about::LANGUAGES_ELEM, Activate::Press));
             }
         }
@@ -2450,38 +2478,38 @@ impl LogicalState for DetailScreen {
 }
 
 impl DetailScreen {
-    fn reveal_focus(&mut self, focus: Option<FocusKey<u32>>, measure: &dyn crate::ui::machine::Measure) {
-        if self.return_waiting() { return; }
-        let Some(located) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.locate(key.elem)) else { return };
-        let Some(detail) = self.detail() else { return };
+    fn reveal_focus(&mut self, focus: Option<FocusKey<u32>>, measure: &dyn crate::ui::machine::Measure, meta: crate::metadata::MetadataView<'_>) {
+        if self.return_waiting(meta) { return; }
+        let Some(located) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.locate(key.elem, meta)) else { return };
+        let Some(detail) = self.detail(meta) else { return };
         self.scroll_target = if located.section() == 0 { 0.0 } else {
             (self.section_top(located.section(), detail, measure) - crate::ui::detail_layout::TOP_MARGIN).max(0.0)
         };
     }
 
-    fn return_waiting(&self) -> bool {
+    fn return_waiting(&self, meta: crate::metadata::MetadataView<'_>) -> bool {
         self.return_pending && self.restore_intent.as_ref().is_some_and(|intent| {
-            self.refresh != DetailRefreshPhase::None || self.detail().is_none()
-                || season::restore_step(self.detail(), intent.spot.season,
-                intent.season_requested, crate::metadata::MetadataView::new().season_loading()) != season::RestoreStep::Ready
+            self.refresh != DetailRefreshPhase::None || self.detail(meta).is_none()
+                || season::restore_step(self.detail(meta), intent.spot.season,
+                intent.season_requested, meta.season_loading()) != season::RestoreStep::Ready
         })
     }
 
-    fn pump_restore(&mut self) {
+    fn pump_restore(&mut self, meta: crate::metadata::MetadataView<'_>) {
         // Consume terminal reconciliation even after directional input cancelled restoration.
-        match (self.refresh, crate::metadata::MetadataView::new().detail_request_status(self.sid, &self.rk)) {
+        match (self.refresh, meta.detail_request_status(self.sid, &self.rk)) {
             (DetailRefreshPhase::Deferred, _) | (DetailRefreshPhase::Requested, None | Some(true)) => return,
             (DetailRefreshPhase::Requested, Some(false)) => {
                 self.refresh = DetailRefreshPhase::None;
             }
             (DetailRefreshPhase::None, _) => {}
         }
-        if self.detail().is_none() && crate::metadata::MetadataView::new().detail_request_status(self.sid, &self.rk) == Some(false) {
+        if self.detail(meta).is_none() && meta.detail_request_status(self.sid, &self.rk) == Some(false) {
             self.restore_intent = None;
             self.return_pending = false;
             return;
         }
-        let Some(d) = self.detail() else { return };
+        let Some(d) = self.detail(meta) else { return };
         let step = self
             .restore_intent
             .as_ref()
@@ -2490,7 +2518,7 @@ impl DetailScreen {
                     Some(d),
                     intent.spot.season,
                     intent.season_requested,
-                    crate::metadata::MetadataView::new().season_loading(),
+                    meta.season_loading(),
                 )
             })
             .unwrap_or(season::RestoreStep::Ready);
@@ -2509,11 +2537,12 @@ impl DetailScreen {
         }
     }
 
-    fn tick<H: ContentLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn tick<H: ContentLike + crate::screens::registry::MetadataLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let meta = H::metadata(cx);
         self.layout.set(None);
         let dt = t.dt();
-        self.pump_restore();
-        let d = self.detail();
+        self.pump_restore(meta);
+        let d = self.detail(meta);
         let loaded = d.is_some();
         if let Some(d) = d {
             self.season_metrics.update(d, cx.measure);
@@ -2524,8 +2553,8 @@ impl DetailScreen {
             .focus
             .current
             .filter(|k| k.entry == self.entry)
-            .and_then(|k| self.locate(k.elem));
-        let hero_set = self.hero_set();
+            .and_then(|k| self.locate(k.elem, meta));
+        let hero_set = self.hero_set(meta);
         let hero_index = match focused {
             Some(Located::Hero(c)) => hero::index_of(hero_set, c),
             _ => None,
@@ -2534,7 +2563,7 @@ impl DetailScreen {
         self.season_pop
             .step(matches!(focused, Some(Located::Season(_))).then_some(0), dt);
         let disc = match focused {
-            Some(Located::Hero(c)) => hero::disc_verb(c, self.named_show()).map(|(i, _)| i),
+            Some(Located::Hero(c)) => hero::disc_verb(c, self.named_show(meta)).map(|(i, _)| i),
             _ => None,
         };
         for (i, spring) in self.disc_unfurl.iter_mut().enumerate() {
@@ -2637,7 +2666,7 @@ impl DetailScreen {
                 let index = self.pending_season.take().unwrap_or(0);
                 self.season_settle = 0.0;
                 if self
-                    .detail()
+                    .detail(meta)
                     .is_some_and(|d| d.cur_season != index && index < d.seasons.len())
                 {
                     apply_metadata(MetadataCmd::LoadSeason(index));
@@ -2649,9 +2678,9 @@ impl DetailScreen {
             || self.episode_scroll.vel.abs() > 0.01
             || self.tab_scroll.vel.abs() > 0.01
             || self.disc_unfurl.iter().any(|s| s.vel.abs() > 0.01);
-        if !crate::metadata::MetadataView::new().detail_loading()
-            && !crate::metadata::MetadataView::new().season_loading()
-            && focused.is_some_and(|located| self.return_pending && !self.return_waiting() || self.restore_target_matches(located))
+        if !meta.detail_loading()
+            && !meta.season_loading()
+            && focused.is_some_and(|located| self.return_pending && !self.return_waiting(meta) || self.restore_target_matches(located, meta))
         {
             self.restore_intent = None;
             self.return_pending = false;
@@ -2659,10 +2688,10 @@ impl DetailScreen {
         if !loaded {
             self.spin_ms = self.spin_phase.advance(t, &mut fx.present());
         }
-        if moving || crate::metadata::MetadataView::new().season_loading() {
+        if moving || meta.season_loading() {
             fx.note(PresentEvent::Motion);
         }
-        self.preview_tick(dt, focused, fx);
+        self.preview_tick(dt, focused, fx, meta);
     }
 
     fn preview_tick<H: ContentLike>(
@@ -2670,6 +2699,7 @@ impl DetailScreen {
         dt: f32,
         focused: Option<Located>,
         fx: &mut Effects<'_, H>,
+        meta: crate::metadata::MetadataView<'_>,
     ) {
         let hero = matches!(focused, Some(Located::Hero(_)));
         let view = crate::player::preview::view();
@@ -2700,8 +2730,8 @@ impl DetailScreen {
             }
         }
         self.preview_had_picture = view.picture;
-        let blocked = crate::player::preview::blocked(self.sid, &self.preview_cache_rk());
-        let already_played = preview_already_played(self.preview_played_for.as_deref(), &self.preview_cache_rk());
+        let blocked = crate::player::preview::blocked(self.sid, &self.preview_cache_rk(meta));
+        let already_played = preview_already_played(self.preview_played_for.as_deref(), &self.preview_cache_rk(meta));
         let can_dwell = hero_active
             && !self.preview_promoted
             && !view.playing
@@ -2714,7 +2744,7 @@ impl DetailScreen {
             });
             if self.preview_dwell >= crate::player::preview::DWELL_S {
                 self.preview_dwell = 0.0;
-                self.request_preview(fx);
+                self.request_preview(fx, meta);
             }
         } else if !view.playing {
             self.preview_dwell = 0.0;
@@ -2761,8 +2791,8 @@ impl DetailScreen {
     /// `request_preview` (what to actually start) and `preview_cache_rk` (what key the started
     /// session's facts get recorded under) must agree on, or the negative-fact cache writes under
     /// one rk and reads under another and never actually blocks a known-bad trailer.
-    fn preview_extra(&self) -> Option<&Extra> {
-        self.detail().and_then(|d| d.trailer()).filter(|e| e.playable())
+    fn preview_extra(&self, meta: crate::metadata::MetadataView<'_>) -> Option<&Extra> {
+        self.detail(meta).and_then(|d| d.trailer()).filter(|e| e.playable())
     }
 
     /// The rk `player::preview`'s cache/breaker keys THIS item's facts on — the extra's own rk
@@ -2771,13 +2801,13 @@ impl DetailScreen {
     /// which fires before any extra-specific session exists). `preview_tick`'s dwell gate must
     /// check `blocked` against this, not `self.rk` unconditionally, or a refused trailer's cache
     /// entry is written under a key nothing ever looks up again.
-    fn preview_cache_rk(&self) -> String {
-        self.preview_extra().map(|e| e.rk.clone()).unwrap_or_else(|| self.rk.clone())
+    fn preview_cache_rk(&self, meta: crate::metadata::MetadataView<'_>) -> String {
+        self.preview_extra(meta).map(|e| e.rk.clone()).unwrap_or_else(|| self.rk.clone())
     }
 
-    fn request_preview<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) {
-        self.preview_started_for = Some(self.preview_cache_rk());
-        let extra = self.preview_extra();
+    fn request_preview<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>, meta: crate::metadata::MetadataView<'_>) {
+        self.preview_started_for = Some(self.preview_cache_rk(meta));
+        let extra = self.preview_extra(meta);
         let (rk, part, vcodec, acodec, title) = match extra {
             Some(e) => (
                 e.rk.clone(),
@@ -2841,9 +2871,9 @@ impl DetailScreen {
         true
     }
 
-    fn hero_set(&self) -> hero::HeroSet {
+    fn hero_set(&self, meta: crate::metadata::MetadataView<'_>) -> hero::HeroSet {
         let (restart, mark) = self
-            .detail()
+            .detail(meta)
             .map(|d| {
                 (
                     hero::has_restart(hero::hero_resume_ns(d)),
@@ -2859,7 +2889,7 @@ impl DetailScreen {
         hero::HeroSet {
             restart,
             trailer: false,
-            alt: self.alt_available(),
+            alt: self.alt_available(meta),
             mark,
         }
     }
@@ -2873,8 +2903,8 @@ impl DetailScreen {
     /// thing to keep in step with the same landing, and the failure mode of that (a hero row with
     /// four controls' worth of geometry and three drawn) is exactly the class of bug this
     /// publication exists to remove.
-    pub(crate) fn alt_available(&self) -> bool {
-        crate::metadata::MetadataView::new().alt_available(self.sid, &self.rk)
+    pub(crate) fn alt_available(&self, meta: crate::metadata::MetadataView<'_>) -> bool {
+        meta.alt_available(self.sid, &self.rk)
     }
 
     /// **Is there a file for the *Track information* sheet to describe?** — the Languages column's
@@ -2892,18 +2922,19 @@ impl DetailScreen {
     /// still false. The column does not appear or vanish with the answer — it is always the third
     /// of four — so a press that arrives early is refused rather than landing on a control that has
     /// moved.
-    pub(crate) fn tracks_available(&self) -> bool {
-        self.detail().is_some_and(crate::metadata::Detail::has_own_file)
+    pub(crate) fn tracks_available(&self, meta: crate::metadata::MetadataView<'_>) -> bool {
+        self.detail(meta).is_some_and(crate::metadata::Detail::has_own_file)
     }
 
-    fn named_show(&self) -> bool {
-        self.detail().is_some_and(hero::watch_names_show)
+    fn named_show(&self, meta: crate::metadata::MetadataView<'_>) -> bool {
+        self.detail(meta).is_some_and(hero::watch_names_show)
     }
 
-    fn activate<H: ContentLike>(&mut self, elem: u32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
-        let local = self.locate(elem).and_then(Located::local_key).unwrap_or(elem);
-        match self.locate(elem) {
-            Some(Located::Hero(ctl)) => self.activate_hero(ctl, cx, fx),
+    fn activate<H: ContentLike + crate::screens::registry::MetadataLike>(&mut self, elem: u32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let meta = H::metadata(cx);
+        let local = self.locate(elem, meta).and_then(Located::local_key).unwrap_or(elem);
+        match self.locate(elem, meta) {
+            Some(Located::Hero(ctl)) => self.activate_hero(ctl, cx, fx, meta),
             Some(Located::Season(i)) => {
                 // A direct press skips the dwell entirely — pre-loading `season_settle` past the
                 // threshold fires on the very NEXT `tick` rather than after a full `SETTLE_S`.
@@ -2912,12 +2943,12 @@ impl DetailScreen {
             }
             Some(Located::Episode(_, _)) => {
                 let action = self
-                    .detail()
-                    .map(|d| episodes::action(d, local, crate::metadata::MetadataView::new().season_loading()))
+                    .detail(meta)
+                    .map(|d| episodes::action(d, local, meta.season_loading()))
                     .unwrap_or(episodes::Action::None);
                 match action {
                     episodes::Action::Play(i) => {
-                        self.play_episode_at(i, false, fx);
+                        self.play_episode_at(i, false, fx, meta);
                     }
                     episodes::Action::OpenDetail(sid, rk) => {
                         self.content(fx, ContentReq::Push(ContentArg::Detail { sid, rk }))
@@ -2927,7 +2958,7 @@ impl DetailScreen {
             }
             Some(Located::Related(_)) => {
                 let action = self
-                    .detail()
+                    .detail(meta)
                     .map(|d| related::action(d, local))
                     .unwrap_or(related::Action::None);
                 if let related::Action::OpenDetail(sid, rk) = action {
@@ -2935,13 +2966,13 @@ impl DetailScreen {
                 }
             }
             Some(Located::Extras(_)) => {
-                let Some(d) = self.detail() else { return };
+                let Some(d) = self.detail(meta) else { return };
                 let Some(play) = extras::play(d, local) else { return };
                 self.content(fx, ContentReq::Play { play, resume_ns: 0 });
             }
             Some(Located::Cast(_)) => {
                 let action = self
-                    .detail()
+                    .detail(meta)
                     .map(|d| cast::action(d, local))
                     .unwrap_or(cast::Action::None);
                 if let cast::Action::OpenPerson {
@@ -2978,21 +3009,22 @@ impl DetailScreen {
         ctl: hero::HeroCtl,
         cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>,
+        meta: crate::metadata::MetadataView<'_>,
     ) {
         let measure = cx.measure;
         match ctl {
             hero::HeroCtl::Play => {
-                self.play_hero(false, fx);
+                self.play_hero(false, fx, meta);
             }
             hero::HeroCtl::Restart => {
-                self.play_hero(true, fx);
+                self.play_hero(true, fx, meta);
             }
             hero::HeroCtl::Trailer => {
                 // Do not touch `NowPlaying` here. Extra/Detail live in `current()`, and a
                 // no-op (no playable extra) or a later `request_play` refusal must not wipe a
                 // leftover episode descriptor. The Play drain installs the trailer card after
                 // the session is accepted.
-                let Some(d) = self.detail() else { return };
+                let Some(d) = self.detail(meta) else { return };
                 let Some((extra, title)) = hero::trailer_play(d) else { return };
                 let play = PlayIntent::Item {
                     sid: crate::route::item_sid(d.sid),
@@ -3006,16 +3038,16 @@ impl DetailScreen {
                 self.content(fx, ContentReq::Play { play, resume_ns: 0 });
             }
             hero::HeroCtl::Alt => {
-                let set = self.hero_set();
+                let set = self.hero_set(meta);
                 if let Some(i) = hero::index_of(set, ctl) {
                     let widths = hero::hero_widths(
                         cx.measure,
                         set,
                         set.restart,
                         self.disc_unfurl.map(|s| s.pos),
-                        self.named_show(),
+                        self.named_show(meta),
                     );
-                    let mut rect = hero::hero_btn_rect_at(set, i, self.hero_chain(measure).btn_y, widths);
+                    let mut rect = hero::hero_btn_rect_at(set, i, self.hero_chain(measure, meta).btn_y, widths);
                     rect.y -= self.scroll.pos;
                     // The ANCHOR travels on the argument, bit for bit, so the surface places
                     // itself off the pill without the page or a static holding a `Rect` for it.
@@ -3028,7 +3060,7 @@ impl DetailScreen {
                 }
             }
             hero::HeroCtl::MarkWatched | hero::HeroCtl::MarkUnwatched => {
-                if let Some(d) = self.detail() {
+                if let Some(d) = self.detail(meta) {
                     fx.push(Fx::App(AppFx::Store(
                         StoreId::ViewState,
                         StoreCmd::ViewState(ViewStateCmd::Request {
@@ -3052,8 +3084,8 @@ impl DetailScreen {
         }
     }
 
-    fn play_hero<H: ContentLike>(&mut self, from_start: bool, fx: &mut Effects<'_, H>) -> bool {
-        let Some(d) = self.detail() else { return false };
+    fn play_hero<H: ContentLike>(&mut self, from_start: bool, fx: &mut Effects<'_, H>, meta: crate::metadata::MetadataView<'_>) -> bool {
+        let Some(d) = self.detail(meta) else { return false };
         if d.is_show {
             let i = hero::hero_episode(d).and_then(|ep| {
                 d.episodes
@@ -3061,7 +3093,7 @@ impl DetailScreen {
                     .position(|candidate| candidate.rk == ep.rk)
             });
             match i {
-                Some(i) => self.play_episode_at(i, from_start, fx),
+                Some(i) => self.play_episode_at(i, from_start, fx, meta),
                 None => self.play_episode_value(
                     hero::hero_episode(d).or_else(|| d.episodes.first()),
                     d,
@@ -3093,11 +3125,12 @@ impl DetailScreen {
         index: usize,
         from_start: bool,
         fx: &mut Effects<'_, H>,
+        meta: crate::metadata::MetadataView<'_>,
     ) -> bool {
-        if crate::metadata::MetadataView::new().season_loading() {
+        if meta.season_loading() {
             return false;
         }
-        let Some(d) = self.detail() else { return false };
+        let Some(d) = self.detail(meta) else { return false };
         self.play_episode_value(d.episodes.get(index), d, from_start, fx)
     }
 

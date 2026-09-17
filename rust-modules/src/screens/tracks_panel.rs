@@ -1842,9 +1842,11 @@ mod tests {
         type Init = FixtureArg;
         type Memory = ();
     }
+    static TEST_METADATA_STORE: crate::stores::metadata::MetadataStore =
+        crate::stores::metadata::MetadataStore;
     impl crate::screens::registry::MetadataLike for HostFixture {
         fn metadata<'a>(_cx: &crate::ui::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
-            crate::metadata::MetadataView::new()
+            TEST_METADATA_STORE.view()
         }
     }
     fn fixture_cx(focus: Option<FocusKey<u32>>) -> crate::ui::machine::Cx<'static, HostFixture> {

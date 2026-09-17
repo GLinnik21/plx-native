@@ -45,9 +45,11 @@ impl crate::screens::registry::PlayerLike for TestHost {
     }
 }
 
+static TEST_METADATA_STORE: crate::stores::metadata::MetadataStore =
+    crate::stores::metadata::MetadataStore;
 impl crate::screens::registry::MetadataLike for TestHost {
     fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
-        crate::metadata::MetadataView::new()
+        TEST_METADATA_STORE.view()
     }
 }
 
@@ -166,7 +168,7 @@ fn a_transport_key_is_forwarded_by_a_modal_panel_and_leaves_it_up() {
             (WCODE_PLAY, Some(true)),
             (WCODE_PLAYPAUSE, None),
         ] {
-            let mut page = PlayerOverlayScreen::new(&ps, ENTRY, kind);
+            let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
             let (handled, reqs, dismissed) = press(&mut page, 0, wcode, Edge::Down);
             assert_eq!(handled, Handled::Yes, "{name}: the surface owns the press");
             assert_eq!(
@@ -189,7 +191,7 @@ fn a_transport_key_is_forwarded_by_a_modal_panel_and_leaves_it_up() {
 fn a_fresh_direction_and_ok_fall_through_to_the_engine_and_back_is_still_the_panels_own() {
     let ps = crate::route::PlaybackSession::IDLE;
     for (kind, name) in MODAL {
-        let mut page = PlayerOverlayScreen::new(&ps, ENTRY, kind);
+        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, reqs, _) = press(&mut page, SDLK_UP, 0, Edge::Down);
         assert_eq!(handled, Handled::No, "{name}: UP is now the engine's to move");
         assert!(
@@ -197,11 +199,11 @@ fn a_fresh_direction_and_ok_fall_through_to_the_engine_and_back_is_still_the_pan
             "{name}: UP is not a transport key",
         );
 
-        let mut page = PlayerOverlayScreen::new(&ps, ENTRY, kind);
+        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, ..) = press(&mut page, SDLK_RETURN, 0, Edge::Down);
         assert_eq!(handled, Handled::No, "{name}: OK is the engine's Activate/PressArm to answer");
 
-        let mut page = PlayerOverlayScreen::new(&ps, ENTRY, kind);
+        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, _, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
         assert_eq!(handled, Handled::Yes, "{name}: BACK is still the panel's");
         assert!(dismissed, "{name}: and BACK is what closes it");
@@ -214,7 +216,7 @@ fn a_fresh_direction_and_ok_fall_through_to_the_engine_and_back_is_still_the_pan
 fn stop_stays_swallowed_by_the_three_reading_panels() {
     let ps = crate::route::PlaybackSession::IDLE;
     for (kind, name) in MODAL {
-        let mut page = PlayerOverlayScreen::new(&ps, ENTRY, kind);
+        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_STOP, Edge::Down);
         assert_eq!(handled, Handled::Yes, "{name}: STOP is panel-owned");
         assert!(reqs.is_empty(), "{name}: STOP must not reach the player");
@@ -229,7 +231,7 @@ fn stop_stays_swallowed_by_the_three_reading_panels() {
 fn the_options_popover_keeps_the_old_swallow_everything_behaviour() {
     let ps = crate::route::PlaybackSession::IDLE;
     for wcode in [WCODE_PAUSE, WCODE_PLAY, WCODE_PLAYPAUSE] {
-        let mut page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::More { quality: false });
+        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
         let (handled, reqs, dismissed) = press(&mut page, 0, wcode, Edge::Down);
         assert_eq!(handled, Handled::Yes);
         assert!(
@@ -244,7 +246,7 @@ fn the_options_popover_keeps_the_old_swallow_everything_behaviour() {
 fn back_dismisses_more_including_the_quality_recovery_variant() {
     let ps = crate::route::PlaybackSession::IDLE;
     for quality in [false, true] {
-        let mut page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::More { quality });
+        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality });
         let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
         assert_eq!(handled, Handled::Yes, "More quality={quality} owns BACK");
         assert!(reqs.is_empty(), "BACK must not activate a More row");
@@ -261,7 +263,7 @@ fn back_dismisses_more_including_the_quality_recovery_variant() {
 #[test]
 fn a_held_direction_is_paced_and_a_fresh_press_is_never_swallowed() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::More { quality: false });
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
     // A fresh press rearms the cadence and is handed to the engine.
     let (handled, ..) = press(&mut page, SDLK_DOWN, 0, Edge::Down);
     assert_eq!(handled, Handled::No, "the fresh press falls through to the engine");
@@ -288,7 +290,7 @@ fn a_held_direction_is_paced_and_a_fresh_press_is_never_swallowed() {
 fn a_click_no_longer_scans_pixels_or_dismisses_inside_step() {
     let ps = crate::route::PlaybackSession::IDLE;
     for (kind, name) in MODAL.into_iter().chain([(OverlayKind::More { quality: false }, "More")]) {
-        let mut page = PlayerOverlayScreen::new(&ps, ENTRY, kind);
+        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, reqs, dismissed) = click(&mut page, 10.0, 10.0);
         assert_eq!(handled, Handled::No, "{name}: the engine's hit map resolves a click, not step");
         assert!(reqs.is_empty(), "{name}: step raises nothing from a raw click");
@@ -303,7 +305,7 @@ fn a_click_no_longer_scans_pixels_or_dismisses_inside_step() {
 #[test]
 fn groups_publishes_the_active_panels_real_row_count() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::Info);
+    let page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let mut groups = Vec::new();
     Focusable::<TestHost>::groups(&page, &cx(), &mut groups);
     assert_eq!(groups.len(), 1, "one focus group for the action column");
@@ -318,7 +320,7 @@ fn groups_publishes_the_active_panels_real_row_count() {
 #[test]
 fn place_answers_each_rows_own_rect_not_one_full_screen_stop() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::Info);
+    let page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let first: Placed = Focusable::<TestHost>::place(&page, &0u32, &cx(), At::Drawn).expect("row 0 places");
     let second: Placed = Focusable::<TestHost>::place(&page, &1u32, &cx(), At::Drawn).expect("row 1 places");
     assert_ne!(
@@ -344,7 +346,7 @@ fn place_answers_each_rows_own_rect_not_one_full_screen_stop() {
 #[test]
 fn focus_moved_writes_the_new_cursor_into_the_open_panel() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::Info);
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     assert_eq!(page.sel(), 0);
     let (_, reqs, _) = deliver(
         &mut page,
@@ -363,11 +365,11 @@ fn focus_moved_writes_the_new_cursor_into_the_open_panel() {
 #[test]
 fn activate_commits_the_bare_rows_directly() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::Tracks { tab: 0 });
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
     let (_, _, dismissed) = activate(&mut page, 0);
     assert!(dismissed, "Tracks: Activate commits and dismisses");
 
-    let mut page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::More { quality: false });
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
     let (_, reqs, dismissed) = activate(&mut page, 0);
     assert!(dismissed, "More: Activate commits and dismisses");
     assert!(
@@ -384,12 +386,12 @@ fn activate_commits_the_bare_rows_directly() {
 #[test]
 fn infos_activate_and_press_commit_take_different_roads() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::Info);
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let (_, reqs, dismissed) = activate(&mut page, 0);
     assert!(dismissed, "a pointer click applies the card's action at once");
     assert!(reqs.iter().any(|r| matches!(r, PlayerReq::Info(_))));
 
-    let mut page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::Info);
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let (_, reqs, dismissed) = press_commit(&mut page, 0);
     assert!(!dismissed, "a keyboard OK defers instead of acting now");
     assert!(reqs.iter().any(|r| matches!(r, PlayerReq::ArmInfoPress)));
@@ -400,7 +402,7 @@ fn infos_activate_and_press_commit_take_different_roads() {
 #[test]
 fn chapters_press_commit_seeks_and_dismisses() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::Chapters);
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Chapters);
     let (_, _, dismissed) = press_commit(&mut page, 0);
     assert!(
         dismissed,
@@ -416,7 +418,7 @@ fn chapters_press_commit_seeks_and_dismisses() {
 fn tracks_edge_key_switches_tab_instead_of_moving_within_the_group() {
     use crate::ui::consts::SDLK_RIGHT;
     let ps = crate::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::Tracks { tab: 0 });
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
     assert!(matches!(page.kind(), OverlayKind::Tracks { .. }));
     let (handled, ..) = press_at_edge(&mut page, SDLK_RIGHT);
     assert_eq!(handled, Handled::Yes, "the panel answers its own edge crossing");
@@ -430,7 +432,7 @@ fn tracks_edge_key_switches_tab_instead_of_moving_within_the_group() {
 fn the_overlay_answers_engine_for_both_focus_and_hits() {
     use crate::ui::screen::{FocusSource, HitSource, Screen};
     let ps = crate::route::PlaybackSession::IDLE;
-    let page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::Info);
+    let page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     assert_eq!(Screen::<TestHost>::focus_source(&page), FocusSource::Engine);
     assert_eq!(Screen::<TestHost>::hit_source(&page), HitSource::Engine);
 }
@@ -440,7 +442,7 @@ fn the_overlay_answers_engine_for_both_focus_and_hits() {
 #[test]
 fn the_active_groups_seat_round_trips_through_group_of() {
     let ps = crate::route::PlaybackSession::IDLE;
-    let page = PlayerOverlayScreen::new(&ps, ENTRY, OverlayKind::Info);
+    let page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
     let mut groups = Vec::new();
     Focusable::<TestHost>::groups(&page, &cx(), &mut groups);
     assert_eq!(groups.len(), 1, "one focus group for the action column");

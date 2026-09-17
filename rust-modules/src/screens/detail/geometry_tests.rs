@@ -41,6 +41,14 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 
+static TEST_METADATA_STORE: crate::stores::metadata::MetadataStore =
+    crate::stores::metadata::MetadataStore;
+impl crate::screens::registry::MetadataLike for TestHost {
+    fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        TEST_METADATA_STORE.view()
+    }
+}
+
 fn cx<'a>(measure: &'a dyn crate::ui::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
     Cx {
         views: (),
@@ -109,7 +117,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         spin_phase: crate::ui::motion::Phase::default(),
         layout: std::cell::Cell::new(None),
     };
-    screen.sync_keys();
+    screen.sync_keys(crate::stores::metadata::MetadataStore::default().view());
     screen
 }
 
@@ -183,8 +191,10 @@ fn populated_detail_geometry_uses_recorded_metrics() {
     let _serial = install(d);
     crate::ui::rec::assert_measured_geometry(|measure| {
         let mut s = bare(sid, "show");
-        s.about_rows.update(s.detail().unwrap());
-        s.season_metrics.update(s.detail().unwrap(), measure);
+        let store = crate::stores::metadata::MetadataStore::default();
+        let meta = store.view();
+        s.about_rows.update(s.detail(meta).unwrap());
+        s.season_metrics.update(s.detail(meta).unwrap(), measure);
         let context = cx(measure, None);
         let mut groups = Vec::new();
         Focusable::<TestHost>::groups(&s, &context, &mut groups);
@@ -193,9 +203,9 @@ fn populated_detail_geometry_uses_recorded_metrics() {
         for g in groups {
             bits.extend([g.extent.x, g.extent.y, g.extent.w, g.extent.h].map(f32::to_bits));
         }
-        assert!(s.tracks_available());
+        assert!(s.tracks_available(meta));
         let mut elems = vec![about::CARD_ELEM, about::LANGUAGES_ELEM];
-        let (controls, n) = hero::hero_ctls(s.hero_set());
+        let (controls, n) = hero::hero_ctls(s.hero_set(meta));
         elems.extend(controls[..n].iter().map(|ctl| ctl.elem()));
         elems.extend(s.keys.iter().map(|key| key.elem));
         for elem in elems {
@@ -239,7 +249,7 @@ fn expect_move(outcome: Outcome<u32>, expectation: &str) -> FocusKey<u32> {
 
 fn scroll_to(screen: &mut DetailScreen, section: i32) {
     let top = {
-        let detail = screen.detail().expect("fixture detail must be mounted");
+        let detail = screen.detail(crate::stores::metadata::MetadataStore::default().view()).expect("fixture detail must be mounted");
         screen.section_top(section, detail, &crate::ui::fixture::FixtureMeasure)
     };
     screen.scroll.jump(top);

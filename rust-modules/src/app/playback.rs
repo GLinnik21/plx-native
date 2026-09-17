@@ -528,7 +528,7 @@ pub(crate) fn player_requests(
             // arms, both of which presented a panel immediately rather than through the deferred
             // press `ArmControlRow`/`ArmInfoPress` use.
             PlayerReq::OpenOverlay(kind) => {
-                super::bridge::open_player_overlay(ps, pages, kind);
+                super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, kind);
             }
             // The old `key_ok`'s `focus == 1` arm: dip the same tvOS press `ArmInfoPress` does,
             // for the transport's OWN control row rather than a panel's action column. The loop's
@@ -945,10 +945,11 @@ pub(crate) unsafe fn activate_player_row(
     } else if btn == crate::ui::player_hud::BTN_MORE {
         // …so the discs are what row 1 holds — the complement of the arm above, and the row's only
         // other occupant. OK on a control disc PRESENTS its panel on this page's own stack.
-        super::bridge::open_player_overlay(ps, pages, crate::screens::player::overlay::OverlayKind::More { quality: false });
+        super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::More { quality: false });
     } else {
         super::bridge::open_player_overlay(
             ps,
+            bridge.metadata_view(),
             pages,
             crate::screens::player::overlay::OverlayKind::Tracks { tab: if btn == 0 { 1 } else { 0 } },
         );

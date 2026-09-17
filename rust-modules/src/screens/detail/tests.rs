@@ -45,6 +45,14 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 
+static TEST_METADATA_STORE: crate::stores::metadata::MetadataStore =
+    crate::stores::metadata::MetadataStore;
+impl crate::screens::registry::MetadataLike for TestHost {
+    fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        TEST_METADATA_STORE.view()
+    }
+}
+
 fn cx<'a>(measure: &'a dyn crate::ui::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
     Cx {
         views: (),
@@ -111,7 +119,7 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         spin_phase: crate::ui::motion::Phase::default(),
         layout: std::cell::Cell::new(None),
     };
-    screen.sync_keys();
+    screen.sync_keys(crate::stores::metadata::MetadataStore::default().view());
     screen
 }
 
@@ -171,7 +179,7 @@ fn step(
     event: &ScreenEvent<TestHost>,
     focus: Option<u32>,
 ) -> (Handled, Vec<crate::ui::machine::Stamped<TestHost>>) {
-    screen.sync_keys();
+    screen.sync_keys(crate::stores::metadata::MetadataStore::default().view());
     let focus = focus.and_then(|key| screen.engine_key(key).or(Some(key)));
     let translated;
     let event = match event {
@@ -224,8 +232,8 @@ fn logical_hash_names_the_full_restore_target() {
     };
     let right = left.clone();
     left.col = 0;
-    a.restore_episode(&left, Some("e1"));
-    b.restore_episode(&right, Some("e2"));
+    a.restore_episode(&left, Some("e1"), crate::stores::metadata::MetadataStore::default().view());
+    b.restore_episode(&right, Some("e2"), crate::stores::metadata::MetadataStore::default().view());
     assert_ne!(a.hash(), b.hash());
     let settled = b.hash();
     b.refresh = DetailRefreshPhase::Deferred;
@@ -289,7 +297,7 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
                 };
                 assert_eq!(crate::metadata::detail_generation_for_test(), generation + requests,
                     "cached={cached} phase={phase:?} status={status:?}");
-                screen.pump_restore();
+                screen.pump_restore(crate::stores::metadata::MetadataStore::default().view());
                 let expected = match (phase, status) {
                     (DetailRefreshPhase::None, _) | (DetailRefreshPhase::Requested, Some(false)) => DetailRefreshPhase::None,
                     _ => DetailRefreshPhase::Requested,
@@ -322,7 +330,7 @@ fn restore_memory_cannot_rewind_a_newer_refresh_obligation() {
             let mut screen = bare(&guard, ServerId::UNSET, "show");
             let PageMemory::Detail(memory) = Screen::<TestHost>::memory_at(&screen, None) else { unreachable!() };
             let spot = Spot { section: 2, season: Some(2), ..Default::default() };
-            screen.restore_episode(&spot, Some("e2"));
+            screen.restore_episode(&spot, Some("e2"), crate::stores::metadata::MetadataStore::default().view());
             screen.refresh = phase;
             if cancelled { screen.restore_intent = None; }
             step(&mut screen, &ScreenEvent::RestoreMemory(PageMemory::Detail(memory)), None);
@@ -346,7 +354,7 @@ fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_fai
         crate::metadata::set_current_for_test(Some(detail(sid, "show")));
         let generation = crate::metadata::begin_detail_for_test(sid, "show");
         let mut screen = bare(&guard, sid, "show");
-        screen.restore_episode(&Spot::default(), Some("e2"));
+        screen.restore_episode(&Spot::default(), Some("e2"), crate::stores::metadata::MetadataStore::default().view());
         screen.refresh = DetailRefreshPhase::Requested;
         step(&mut screen, &ScreenEvent::Input(crate::ui::machine::InputEvent {
             at: Default::default(), source: crate::ui::machine::Source::Script,
@@ -359,7 +367,7 @@ fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_fai
         step(&mut screen, &ScreenEvent::StoreChanged(StoreId::Metadata.ord(), generation), None);
         assert_eq!(screen.refresh, DetailRefreshPhase::None);
         assert!(screen.restore_intent.is_none());
-        screen.pump_restore();
+        screen.pump_restore(crate::stores::metadata::MetadataStore::default().view());
         assert_eq!(crate::metadata::detail_generation_for_test(), generation);
     }
     apply_metadata(MetadataCmd::Clear);
@@ -399,9 +407,9 @@ fn a_spot_round_trips_through_the_page_it_describes() {
         let spot = screen.spot(Some(FocusKey {
             entry: EntryId(7),
             elem,
-        }));
+        }), crate::stores::metadata::MetadataStore::default().view());
         assert_eq!((spot.section, spot.col, spot.ep_text), (section, col, text));
-        screen.restore(&spot);
+        screen.restore(&spot, crate::stores::metadata::MetadataStore::default().view());
         let restored = Focusable::<TestHost>::reconcile(
             &screen,
             FocusKey {
@@ -424,7 +432,7 @@ fn a_spot_round_trips_through_the_page_it_describes() {
     let languages = movie.spot(Some(FocusKey {
         entry: EntryId(7),
         elem: about::LANGUAGES_ELEM,
-    }));
+    }), crate::stores::metadata::MetadataStore::default().view());
     assert_eq!((languages.section, languages.col), (5, 2));
     clear();
 }
@@ -446,7 +454,7 @@ fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
         season: Some(1),
         ..Default::default()
     };
-    screen.restore(&spot);
+    screen.restore(&spot, crate::stores::metadata::MetadataStore::default().view());
     assert_eq!(
         Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None)).elem,
         hero::ELEM_PLAY,
@@ -456,7 +464,7 @@ fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
     let mut d = detail(sid, "show");
     d.related = vec![Default::default(), Default::default()];
     crate::metadata::set_current_for_test(Some(d));
-    screen.restore(&spot);
+    screen.restore(&spot, crate::stores::metadata::MetadataStore::default().view());
     assert_eq!(
         Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None)).elem,
         screen.engine_key(related::elem(1).unwrap()).unwrap(),
@@ -465,7 +473,7 @@ fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
     let mut no_related = detail(sid, "show");
     no_related.related.clear();
     crate::metadata::set_current_for_test(Some(no_related));
-    screen.restore(&spot);
+    screen.restore(&spot, crate::stores::metadata::MetadataStore::default().view());
     assert_eq!(
         Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None)).elem,
         hero::ELEM_PLAY,
@@ -488,7 +496,7 @@ fn a_movie_spot_does_not_wait_for_a_season_that_will_never_land() {
         section: 5,
         season: None,
         ..Default::default()
-    });
+    }, crate::stores::metadata::MetadataStore::default().view());
     let measure = crate::ui::fixture::FixtureMeasure;
     let restored = Focusable::<TestHost>::reconcile(
         &screen,
@@ -629,18 +637,18 @@ fn tracks_availability_is_detail_state_not_surface_state() {
     let screen = DetailScreen::new(EntryId(7), ServerId::UNSET, "here".into(),
         crate::pms::HubsSnapshot::empty_for_test().view());
     assert!(
-        !screen.tracks_available(),
+        !screen.tracks_available(crate::stores::metadata::MetadataStore::default().view()),
         "the page has no item of its own yet, so there is no file it can describe"
     );
     assert!(
-        screen.locate(about::LANGUAGES_ELEM).is_none(),
+        screen.locate(about::LANGUAGES_ELEM, crate::stores::metadata::MetadataStore::default().view()).is_none(),
         "…and the About footer publishes no Languages element to press"
     );
 
     // The page's OWN item lands, and it is a show: its streams are episode 1's, so still no file.
     crate::metadata::set_current_for_test(Some(detail(ServerId::UNSET, "here")));
-    assert!(!screen.tracks_available(), "a show has no file of its own");
-    assert!(screen.locate(about::LANGUAGES_ELEM).is_none());
+    assert!(!screen.tracks_available(crate::stores::metadata::MetadataStore::default().view()), "a show has no file of its own");
+    assert!(screen.locate(about::LANGUAGES_ELEM, crate::stores::metadata::MetadataStore::default().view()).is_none());
 
     // A leaf with a part, on this page's own key: now the column is pressable.
     crate::metadata::set_current_for_test(Some(Detail {
@@ -649,9 +657,9 @@ fn tracks_availability_is_detail_state_not_surface_state() {
         part: "/library/parts/751/1745595530/file.mp4".into(),
         ..Default::default()
     }));
-    assert!(screen.tracks_available());
+    assert!(screen.tracks_available(crate::stores::metadata::MetadataStore::default().view()));
     assert!(
-        matches!(screen.locate(about::LANGUAGES_ELEM), Some(Located::About(1))),
+        matches!(screen.locate(about::LANGUAGES_ELEM, crate::stores::metadata::MetadataStore::default().view()), Some(Located::About(1))),
         "the page's own leaf has a file, so the column is the About footer's second element"
     );
     clear();
@@ -809,9 +817,9 @@ fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_
         season: Some(2),
         ..Default::default()
     };
-    screen.restore_episode(&spot, Some("e3"));
+    screen.restore_episode(&spot, Some("e3"), crate::stores::metadata::MetadataStore::default().view());
     let kept = Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None));
-    assert_eq!(screen.locate(kept.elem).and_then(Located::local_key).and_then(episodes::locate), Some((2, episodes::Row::Still)));
+    assert_eq!(screen.locate(kept.elem, crate::stores::metadata::MetadataStore::default().view()).and_then(Located::local_key).and_then(episodes::locate), Some((2, episodes::Row::Still)));
 
     let mut changed_season = detail(sid, "show");
     changed_season.cur_season = 0;
@@ -824,7 +832,7 @@ fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_
         episode: Some("e3".into()),
         season_requested: true,
     });
-    screen.pump_restore();
+    screen.pump_restore(crate::stores::metadata::MetadataStore::default().view());
     assert!(
         screen.restore_intent.is_none(),
         "a different-season landing retires the latch"
@@ -833,10 +841,10 @@ fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_
     let mut removed = detail(sid, "show");
     removed.cur_season = 1;
     crate::metadata::set_current_for_test(Some(removed));
-    screen.restore_episode(&spot, Some("gone"));
+    screen.restore_episode(&spot, Some("gone"), crate::stores::metadata::MetadataStore::default().view());
     let fallback = Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None));
     assert_eq!(
-        screen.locate(fallback.elem).and_then(Located::local_key).and_then(episodes::locate),
+        screen.locate(fallback.elem, crate::stores::metadata::MetadataStore::default().view()).and_then(Located::local_key).and_then(episodes::locate),
         Some((0, episodes::Row::Still))
     );
     assert!(
@@ -860,6 +868,7 @@ fn a_landed_view_state_refresh_puts_the_browsed_season_back_and_never_steers_ano
             ..Default::default()
         },
         Some("e2"),
+        crate::stores::metadata::MetadataStore::default().view(),
     );
     let measure = crate::ui::fixture::FixtureMeasure;
     let got = Focusable::<TestHost>::reconcile(
@@ -870,7 +879,7 @@ fn a_landed_view_state_refresh_puts_the_browsed_season_back_and_never_steers_ano
         },
         &cx(&measure, None),
     );
-    assert_eq!(screen.locate(got.elem).and_then(Located::local_key).and_then(episodes::locate), Some((1, episodes::Row::Still)));
+    assert_eq!(screen.locate(got.elem, crate::stores::metadata::MetadataStore::default().view()).and_then(Located::local_key).and_then(episodes::locate), Some((1, episodes::Row::Still)));
 
     crate::metadata::set_current_for_test(Some(Detail {
         sid,
@@ -977,7 +986,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                         },
                     });
                     let mut screen = bare(&_guard, sid, "hero-hit");
-                    let set = screen.hero_set();
+                    let set = screen.hero_set(crate::stores::metadata::MetadataStore::default().view());
                     assert_eq!(
                         (set.restart, set.alt, set.trailer),
                         (restart, alt, false),
@@ -1005,7 +1014,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                                 let placed = Focusable::<TestHost>::place(&screen, &key.elem, &context, At::Drawn).expect("every drawn control places");
                                 // Same primitive geometry used by draw_buttons; its painter scroll
                                 // translation must match the screen-space hit placement exactly.
-                                let mut painted = hero::hero_btn_rect_at(set, i, screen.hero_chain(&crate::ui::fixture::FixtureMeasure).btn_y, widths);
+                                let mut painted = hero::hero_btn_rect_at(set, i, screen.hero_chain(&crate::ui::fixture::FixtureMeasure, crate::stores::metadata::MetadataStore::default().view()).btn_y, widths);
                                 painted.y -= scroll;
                                 assert_eq!((placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
                                     (painted.x, painted.y, painted.w, painted.h),
@@ -1075,7 +1084,7 @@ fn an_episode_page_leads_with_the_episodes_own_still() {
         ..Default::default()
     });
     let screen = bare(&_guard, sid, "episode");
-    assert_eq!(screen.art_identity(screen.detail()).2, "episode-still");
+    assert_eq!(screen.art_identity(screen.detail(crate::stores::metadata::MetadataStore::default().view())).2, "episode-still");
     clear();
 }
 
@@ -1092,7 +1101,7 @@ fn a_shows_hero_still_outranks_every_other_art() {
     });
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
-    assert_eq!(screen.art_identity(screen.detail()).2, "next-still");
+    assert_eq!(screen.art_identity(screen.detail(crate::stores::metadata::MetadataStore::default().view())).2, "next-still");
     clear();
 }
 
@@ -1110,13 +1119,13 @@ fn a_long_synopsis_keeps_the_first_section_one_region_gap_below_the_buttons() {
     });
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
-    let detail = screen.detail().unwrap();
-    let chain = screen.hero_chain(&crate::ui::fixture::FixtureMeasure);
+    let detail = screen.detail(crate::stores::metadata::MetadataStore::default().view()).unwrap();
+    let chain = screen.hero_chain(&crate::ui::fixture::FixtureMeasure, crate::stores::metadata::MetadataStore::default().view());
     assert_eq!(
         screen.section_top(1, detail, &crate::ui::fixture::FixtureMeasure),
         chain.btn_y + hero::CD + theme::space::XL
     );
-    assert_eq!(screen.content_top(&crate::ui::fixture::FixtureMeasure), screen.section_top(1, detail, &crate::ui::fixture::FixtureMeasure));
+    assert_eq!(screen.content_top(&crate::ui::fixture::FixtureMeasure, crate::stores::metadata::MetadataStore::default().view()), screen.section_top(1, detail, &crate::ui::fixture::FixtureMeasure));
     clear();
 }
 
@@ -1442,7 +1451,7 @@ fn the_loading_spinner_reports_motion_on_every_tick_while_unloaded() {
     let sid = ServerId::UNSET;
     let guard = crate::testlock::serial();
     let mut screen = bare(&guard, sid, "show");
-    assert!(screen.detail().is_none(), "no metadata installed for this test");
+    assert!(screen.detail(crate::stores::metadata::MetadataStore::default().view()).is_none(), "no metadata installed for this test");
     let measure = crate::ui::fixture::FixtureMeasure;
     let context = cx(&measure, None);
     let mut present = crate::ui::present::Present::new();
@@ -1518,7 +1527,7 @@ fn a_movie_trailer_disc_plays_the_extra_from_the_start() {
         },
     )));
     let mut screen = bare(&_guard, ServerId::UNSET, "movie");
-    assert!(!screen.hero_set().trailer, "the preview path replaced the Trailer disc");
+    assert!(!screen.hero_set(crate::stores::metadata::MetadataStore::default().view()).trailer, "the preview path replaced the Trailer disc");
     let (_, effects) = step(
         &mut screen,
         &ScreenEvent::Activate(hero::ELEM_TRAILER),
@@ -1611,8 +1620,8 @@ fn a_movie_without_extras_does_not_offer_a_trailer_disc() {
         ..Default::default()
     });
     let screen = bare(&_guard, ServerId::UNSET, "movie");
-    assert!(!screen.hero_set().trailer);
-    assert!(hero::index_of(screen.hero_set(), hero::HeroCtl::Trailer).is_none());
+    assert!(!screen.hero_set(crate::stores::metadata::MetadataStore::default().view()).trailer);
+    assert!(hero::index_of(screen.hero_set(crate::stores::metadata::MetadataStore::default().view()), hero::HeroCtl::Trailer).is_none());
     clear();
 }
 
@@ -1657,10 +1666,10 @@ fn a_trailer_disc_requires_both_rk_and_part() {
         }));
         let screen = bare(&_guard, ServerId::UNSET, "movie");
         assert!(
-            !screen.hero_set().trailer,
+            !screen.hero_set(crate::stores::metadata::MetadataStore::default().view()).trailer,
             "visibility must match Extra::playable, not a nonempty part alone"
         );
-        assert!(hero::index_of(screen.hero_set(), hero::HeroCtl::Trailer).is_none());
+        assert!(hero::index_of(screen.hero_set(crate::stores::metadata::MetadataStore::default().view()), hero::HeroCtl::Trailer).is_none());
         let mut screen = screen;
         let (_, effects) = step(
             &mut screen,
@@ -1690,7 +1699,7 @@ fn extras_landing_does_not_grow_a_trailer_disc_or_move_play_identity() {
         ..Default::default()
     });
     let screen = bare(&_guard, sid, "movie");
-    let before = screen.hero_set();
+    let before = screen.hero_set(crate::stores::metadata::MetadataStore::default().view());
     assert!(!before.trailer);
     assert_eq!(hero::index_of(before, hero::HeroCtl::Play), Some(0));
     let play_elem = hero::HeroCtl::Play.elem();
@@ -1701,7 +1710,7 @@ fn extras_landing_does_not_grow_a_trailer_disc_or_move_play_identity() {
         extras: vec![trailer_extra()],
         ..Default::default()
     }));
-    let after = screen.hero_set();
+    let after = screen.hero_set(crate::stores::metadata::MetadataStore::default().view());
     assert!(!after.trailer, "the preview path replaced the Trailer disc");
     assert_eq!(hero::index_of(after, hero::HeroCtl::Play), Some(0));
     assert_eq!(hero::HeroCtl::Play.elem(), play_elem);
@@ -1744,7 +1753,7 @@ fn section_tops_do_not_remeasure_per_credit() {
         .collect();
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
-    let detail = screen.detail().expect("installed");
+    let detail = screen.detail(crate::stores::metadata::MetadataStore::default().view()).expect("installed");
     let measure = CountMeasure {
         widths: Cell::new(0),
     };
@@ -1803,7 +1812,7 @@ fn cached_section_tops_match_the_stacking_walk() {
     d.related = vec![Default::default()];
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
-    let detail = screen.detail().expect("installed");
+    let detail = screen.detail(crate::stores::metadata::MetadataStore::default().view()).expect("installed");
     let measure = crate::ui::fixture::FixtureMeasure;
 
     let cast_first = screen.section_top(4, detail, &measure);
@@ -1816,7 +1825,7 @@ fn cached_section_tops_match_the_stacking_walk() {
         cast_first,
         "asking a later section first must not change earlier tops"
     );
-    assert_eq!(seasons, screen.content_top(&measure));
+    assert_eq!(seasons, screen.content_top(&measure, crate::stores::metadata::MetadataStore::default().view()));
     assert_eq!(episodes, seasons + season::ROW_H + super::TAB_EP_GAP);
     assert_eq!(
         cast_first,
@@ -1847,7 +1856,7 @@ fn a_replaced_episode_list_moves_the_cast_row() {
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
     let measure = crate::ui::fixture::FixtureMeasure;
-    let before = screen.section_top(4, screen.detail().expect("installed"), &measure);
+    let before = screen.section_top(4, screen.detail(crate::stores::metadata::MetadataStore::default().view()).expect("installed"), &measure);
 
     let mut taller = detail(sid, "show");
     taller.cast = vec![crate::metadata::Cast {
@@ -1866,7 +1875,7 @@ fn a_replaced_episode_list_moves_the_cast_row() {
         })
         .collect();
     crate::metadata::set_current_for_test(Some(taller));
-    let after = screen.section_top(4, screen.detail().expect("replaced"), &measure);
+    let after = screen.section_top(4, screen.detail(crate::stores::metadata::MetadataStore::default().view()).expect("replaced"), &measure);
     assert!(
         after > before,
         "replacing CURRENT must miss the cached walk, not keep the short-episode cast top ({after} vs {before})"
@@ -1893,9 +1902,9 @@ fn a_movie_without_a_filmstrip_sits_its_first_block_on_content_top() {
         ..Default::default()
     });
     let screen = bare(&_guard, sid, "movie");
-    let detail = screen.detail().expect("installed");
+    let detail = screen.detail(crate::stores::metadata::MetadataStore::default().view()).expect("installed");
     let measure = crate::ui::fixture::FixtureMeasure;
-    let top = screen.content_top(&measure);
+    let top = screen.content_top(&measure, crate::stores::metadata::MetadataStore::default().view());
     assert_eq!(screen.section_top(4, detail, &measure), top);
     assert_eq!(
         screen.section_top(1, detail, &measure),
@@ -1942,7 +1951,7 @@ fn ticking_the_page_allows_layout_to_remeasure() {
     let measure = CountMeasure {
         widths: Cell::new(0),
     };
-    let detail = screen.detail().expect("installed");
+    let detail = screen.detail(crate::stores::metadata::MetadataStore::default().view()).expect("installed");
     let _ = screen.section_top(1, detail, &measure);
     let after_first = measure.widths.get();
     assert!(after_first > 0);
@@ -1956,7 +1965,7 @@ fn ticking_the_page_allows_layout_to_remeasure() {
         }),
         None,
     );
-    let _ = screen.section_top(1, screen.detail().expect("still installed"), &measure);
+    let _ = screen.section_top(1, screen.detail(crate::stores::metadata::MetadataStore::default().view()).expect("still installed"), &measure);
     assert!(
         measure.widths.get() > after_first,
         "tick must drop the walk so the next present can remeasure"
@@ -1986,7 +1995,7 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     show.extras = vec![extra.clone(), extra];
     let _guard = install(show);
     let mut screen = bare(&_guard, ServerId::UNSET, "show");
-    let loaded = screen.detail().expect("installed");
+    let loaded = screen.detail(crate::stores::metadata::MetadataStore::default().view()).expect("installed");
     let (sections, n) = screen.sections(Some(loaded));
     assert_eq!(
         &sections[..n],
@@ -1999,9 +2008,9 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     let mut spot = crate::metadata::Spot::default();
     spot.section = 6;
     spot.col = 1;
-    screen.restore(&spot);
-    let key = screen.restore_focus().expect("extras column restores");
-    assert!(matches!(screen.locate(key), Some(Located::Extras(1))));
+    screen.restore(&spot, crate::stores::metadata::MetadataStore::default().view());
+    let key = screen.restore_focus(crate::stores::metadata::MetadataStore::default().view()).expect("extras column restores");
+    assert!(matches!(screen.locate(key, crate::stores::metadata::MetadataStore::default().view()), Some(Located::Extras(1))));
 
     let movie = Detail {
         sid: ServerId::UNSET,
@@ -2069,7 +2078,7 @@ fn cast_section_top_is_keyed_by_identity_not_array_position() {
     };
     let _guard = install(movie);
     let screen = bare(&_guard, ServerId::UNSET, "movie-cast-pos");
-    let loaded = screen.detail().expect("installed");
+    let loaded = screen.detail(crate::stores::metadata::MetadataStore::default().view()).expect("installed");
     let (sections, n) = screen.sections(Some(loaded));
     assert_eq!(
         &sections[..n],
@@ -2078,7 +2087,7 @@ fn cast_section_top_is_keyed_by_identity_not_array_position() {
     );
     let measure = crate::ui::fixture::FixtureMeasure;
     let cast_top = screen.section_top(section::SectionId::Cast.raw(), loaded, &measure);
-    let content_top = screen.content_top(&measure);
+    let content_top = screen.content_top(&measure, crate::stores::metadata::MetadataStore::default().view());
     let layout_end = screen.ensure_layout(loaded, &measure).end;
     assert!(
         cast_top >= content_top && cast_top < layout_end,

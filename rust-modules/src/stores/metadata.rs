@@ -199,7 +199,7 @@ impl MetadataStore {
 
     /// Borrowed read handle, shaped like `crate::person::PersonStore::view`.
     pub(crate) fn view(&self) -> crate::metadata::MetadataView<'_> {
-        crate::metadata::MetadataView::new()
+        crate::metadata::MetadataView::new(self)
     }
 }
 

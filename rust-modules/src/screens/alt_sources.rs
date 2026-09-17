@@ -330,7 +330,7 @@ pub(crate) struct AltSourcesScreen {
 }
 
 impl AltSourcesScreen {
-    pub(crate) fn new(entry: EntryId, arg: AltSourcesArg) -> Self {
+    pub(crate) fn new(entry: EntryId, arg: AltSourcesArg, meta: crate::metadata::MetadataView<'_>) -> Self {
         let mut screen = Self {
             entry,
             arg,
@@ -338,7 +338,7 @@ impl AltSourcesScreen {
             table: TableView::new(),
             glass: GlassState::new(),
         };
-        screen.rebuild(Sel::OnTheCopyYouAreOn, crate::metadata::MetadataView::new());
+        screen.rebuild(Sel::OnTheCopyYouAreOn, meta);
         screen
     }
 

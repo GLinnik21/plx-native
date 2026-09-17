@@ -1262,7 +1262,7 @@ mod tests {
         m.part = "/library/parts/42/file.mkv".to_string();
 
         let mut screen = ItemMenuScreen::new(EntryId(7), card_arg(&m, false));
-        screen.build_rows(crate::metadata::MetadataView::new());
+        screen.build_rows(crate::stores::metadata::MetadataStore::default().view());
         let elem = first_action(&screen, |a| matches!(a, Action::PlayFromStart(_)));
         let req = commit(&mut screen, elem);
         assert_eq!(
@@ -1296,7 +1296,7 @@ mod tests {
                 from_home: false,
             },
         );
-        strip.build_rows(crate::metadata::MetadataView::new());
+        strip.build_rows(crate::stores::metadata::MetadataStore::default().view());
         let elem = first_action(&strip, |a| matches!(a, Action::PlayFromStart(_)));
         let req = commit(&mut strip, elem);
         assert!(
@@ -1435,9 +1435,11 @@ mod tests {
         type Init = Arg;
         type Memory = PageMemory;
     }
+    static TEST_METADATA_STORE: crate::stores::metadata::MetadataStore =
+        crate::stores::metadata::MetadataStore;
     impl crate::screens::registry::MetadataLike for HostFixture {
         fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
-            crate::metadata::MetadataView::new()
+            TEST_METADATA_STORE.view()
         }
     }
 
@@ -1609,7 +1611,7 @@ mod tests {
         let _g = crate::testlock::serial();
         crate::metadata::set_current_for_test(None);
         assert!(
-            cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), crate::metadata::MetadataView::new()).is_none(),
+            cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), crate::stores::metadata::MetadataStore::default().view()).is_none(),
             "no loaded Detail → no row"
         );
 
@@ -1620,13 +1622,13 @@ mod tests {
             extras: vec![extra()],
             ..Default::default()
         }));
-        let hit = cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), crate::metadata::MetadataView::new()).unwrap();
+        let hit = cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), crate::stores::metadata::MetadataStore::default().view()).unwrap();
         assert_eq!(hit.rk, "99");
 
         let mut other = item(0, PosterMark::None);
         other.rk = "other".into();
         assert!(
-            cached_trailer(crate::plex::ServerId::UNSET, &other, crate::metadata::MetadataView::new()).is_none(),
+            cached_trailer(crate::plex::ServerId::UNSET, &other, crate::stores::metadata::MetadataStore::default().view()).is_none(),
             "a related tile of a different item must not steal the loaded trailer"
         );
         crate::metadata::set_current_for_test(None);

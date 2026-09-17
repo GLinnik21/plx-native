@@ -31,6 +31,14 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 
+static TEST_METADATA_STORE: crate::stores::metadata::MetadataStore =
+    crate::stores::metadata::MetadataStore;
+impl crate::screens::registry::MetadataLike for TestHost {
+    fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        TEST_METADATA_STORE.view()
+    }
+}
+
 // No constructor request: this fixture publishes data through the real store-notice and
 // container lifecycle seams, without requiring a configured server or a graphics context.
 fn body(entry: EntryId, rk: &str) -> DetailScreen {
@@ -70,7 +78,7 @@ impl Mounter<TestHost> for Mount {
         cx: &Cx<'_, TestHost>, _: &mut Effects<'_, TestHost>) -> Box<dyn Screen<TestHost>> {
         let InputOwner::Entry(entry) = cx.owner else { panic!("page owner") };
         let mut page = body(entry, &arg.0);
-        if let PageMemory::Detail(memory) = &ret.memory { page.restore_memory(memory); }
+        if let PageMemory::Detail(memory) = &ret.memory { page.restore_memory(memory, crate::stores::metadata::MetadataStore::default().view()); }
         Box::new(page)
     }
 }
@@ -149,11 +157,11 @@ fn repeated_detail_keys_follow_items_through_all_four_group_reorders() {
     for group in [season::SEASON_GROUP, episodes::EPISODES_GROUP, related::RELATED_GROUP, cast::CAST_GROUP] {
         let (mut d, mut rig) = boot();
         let key = first(&d, group);
-        assert_eq!(screen(&d).locate(key.elem).unwrap().index(), 0);
+        assert_eq!(screen(&d).locate(key.elem, crate::stores::metadata::MetadataStore::default().view()).unwrap().index(), 0);
         d.set_focus_in(Some(key), Some(group));
         land(&mut d, &mut rig, item("a", true), 32);
         assert_eq!(d.focus(), Some(key), "reorder must preserve identity in {group:?}");
-        assert_eq!(screen(&d).locate(key.elem).unwrap().index(), 1,
+        assert_eq!(screen(&d).locate(key.elem, crate::stores::metadata::MetadataStore::default().view()).unwrap().index(), 1,
             "the same key must now project to the item's NEW slot in {group:?}");
     }
     crate::metadata::set_current_for_test(None);
@@ -200,7 +208,7 @@ fn retained_detail_back_keeps_the_engine_key_until_its_own_landing() {
     d.store_changed(StoreId::Metadata.ord(), 80);
     frame(&mut d, &mut rig, 80);
     assert_eq!(d.focus(), Some(key));
-    assert_eq!(screen(&d).locate(key.elem).unwrap().index(), 1);
+    assert_eq!(screen(&d).locate(key.elem, crate::stores::metadata::MetadataStore::default().view()).unwrap().index(), 1);
     assert!(screen(&d).scroll_target > 0.0, "matching landing must reveal the restored row even when its key never changed");
     crate::metadata::set_current_for_test(None);
 }
@@ -227,7 +235,7 @@ fn an_evicted_detail_reuses_its_item_registry_after_a_reordered_landing() {
     frame(&mut d, &mut rig, 400);
     assert_ne!(d.nav.top_page().unwrap().inst.as_ref().unwrap().id, old_instance);
     assert_eq!(d.focus(), Some(key));
-    assert_eq!(screen(&d).locate(key.elem).unwrap().index(), 1);
+    assert_eq!(screen(&d).locate(key.elem, crate::stores::metadata::MetadataStore::default().view()).unwrap().index(), 1);
     assert!(screen(&d).scroll_target > 0.0, "a cold body must reveal its restored row on Enter");
     crate::metadata::set_current_for_test(None);
 }
@@ -260,7 +268,7 @@ fn retained_detail_back_hydrates_saved_season_before_episode_focus() {
     d.store_changed(StoreId::Metadata.ord(), 80);
     frame(&mut d, &mut rig, 80);
     assert_eq!(d.focus(), Some(key));
-    assert_eq!(screen(&d).locate(key.elem).unwrap().index(), 1);
+    assert_eq!(screen(&d).locate(key.elem, crate::stores::metadata::MetadataStore::default().view()).unwrap().index(), 1);
     crate::metadata::set_current_for_test(None);
 }
 

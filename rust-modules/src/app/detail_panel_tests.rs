@@ -177,8 +177,16 @@ fn an_alt_sources_anchor_travels_on_its_arg() {
         rk: "m1".into(),
         anchor: [x, y, 300.0, 60.0].map(f32::to_bits),
     };
-    let high = AltSourcesScreen::new(EntryId(1), arg(320.0, 200.0));
-    let low = AltSourcesScreen::new(EntryId(2), arg(700.0, 880.0));
+    let high = AltSourcesScreen::new(
+        EntryId(1),
+        arg(320.0, 200.0),
+        crate::stores::metadata::MetadataStore::default().view(),
+    );
+    let low = AltSourcesScreen::new(
+        EntryId(2),
+        arg(700.0, 880.0),
+        crate::stores::metadata::MetadataStore::default().view(),
+    );
     let (a, b) = (high.frame(), low.frame());
     assert_ne!(
         (a.x, a.y),
