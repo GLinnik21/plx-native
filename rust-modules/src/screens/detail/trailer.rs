@@ -461,4 +461,19 @@ mod tests {
             "a play glyph held for the whole trailer says nothing"
         );
     }
+
+    /// **The hint fades on its own eased clock, same as the transport row.** `update`'s `hint`
+    /// argument feeds the same `ease` as `alpha`, but every `run` call above this test passes
+    /// `hint=false`, so nothing ever moved the field at all: a flag that never changes would pass
+    /// just as well as a real fade. Driven here in the background-autoplay context the hint
+    /// actually appears in (`full_trailer=false`, mirroring `hint_shown`'s own case).
+    #[test]
+    fn the_hint_fades_in_and_out_on_its_own_eased_clock() {
+        let mut t = Transport::IDLE;
+        assert_eq!(t.hint, 0.0, "starts hidden");
+        let (_, now) = run(&mut t, 0, 100, false, false, true);
+        assert!(t.hint > 0.9, "hint={} should have eased in", t.hint);
+        let (_, _) = run(&mut t, now, 100, false, false, false);
+        assert!(t.hint < 0.01, "hint={} should have eased back out", t.hint);
+    }
 }
