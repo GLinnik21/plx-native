@@ -1141,7 +1141,7 @@ fn preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_an
 /// dropped to zero underneath it, and only sinking into full-trailer mode (promoted) still takes
 /// it to zero.
 #[test]
-fn background_autoplay_keeps_the_rows_below_the_synopsis_full_while_full_trailer_still_hides_them() {
+fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_people() {
     let sid = ServerId::UNSET;
     let _guard = install(detail(sid, "show"));
     let mut screen = bare(&_guard, sid, "show");
@@ -1166,14 +1166,16 @@ fn background_autoplay_keeps_the_rows_below_the_synopsis_full_while_full_trailer
     }
     assert!(
         screen.preview_prose < 0.01,
-        "preview_prose={} should have dropped once a picture is up — this is the OLD value, no \
-         longer read by draw_hero for these rows",
+        "preview_prose={} must drop once a picture is up: draw_hero gates the identity/meta line \
+         and the rating marks on it, and the owner wants those two out of the way while the \
+         trailer answers the same question they do",
         screen.preview_prose
     );
     assert!(
         screen.preview_chrome > 0.99,
-        "preview_chrome={} must stay full during background autoplay — draw_hero now reads THIS \
-         for the identity/meta line, ratings, facts and people, so they must not fade",
+        "preview_chrome={} must stay full during background autoplay: draw_hero gates the facts \
+         row (date · runtime · Direct Play) and the people column on it, and those must not \
+         vanish and come back under a playing preview",
         screen.preview_chrome
     );
 

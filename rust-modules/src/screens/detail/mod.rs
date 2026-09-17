@@ -1956,13 +1956,16 @@ impl DetailScreen {
         let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_view = crate::ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
         let chain = self.hero_chain(measure);
-        // `chrome`, not a `preview_prose`-gated value: these rows (identity/meta, ratings, facts,
-        // people) stay at full alpha through background autoplay and fade only in full-trailer
-        // mode, exactly like the buttons below and the logo above — the owner's "nothing between
-        // the synopsis and Play may disappear" during a background trailer preview.
+        // Two gates, and the difference is the whole behaviour. `prose` recedes the moment a
+        // picture is up: the identity line and the rating marks are how you decide whether to
+        // watch, and once the trailer itself is answering that question they are in the way.
+        // `chrome` only reaches 0 in full-trailer mode, and the rows below (facts, people) hold
+        // it — they are what the viewer reads WHILE the trailer plays, and the owner asked that
+        // nothing there vanish and come back under a playing preview.
+        let prose = p.alpha(self.preview_chrome * self.preview_prose);
         if let Some(d) = d {
-            self.draw_identity_line(chrome, d, chain.meta_y, cx.measure);
-            self.draw_ratings(chrome, d, chain.ratings_y, cx.measure);
+            self.draw_identity_line(prose, d, chain.meta_y, cx.measure);
+            self.draw_ratings(prose, d, chain.ratings_y, cx.measure);
         }
         if !synopsis.is_empty() {
             synopsis_view.draw(
