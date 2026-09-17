@@ -5,9 +5,10 @@
 //! hand-built paths or `Value` scraping here.
 //!
 //! **This is the data module `stores::hubs` (`docs/stores-as-machines.md`) is a machine over** —
-//! `stores::hubs::apply(HubsCmd)` is the vocabulary a screen calls, and its own `run` forwards
-//! each variant straight into `request_refetch_hubs`/`request_retry`/`reset`/`edit_item` here,
-//! while the owned `BrowseStore::run` decodes Browse commands against its explicit state. **Those forwarding targets
+//! each production `Bridge` owns a `stores::hubs::HubsStore`, whose `run`/`run_with_directory`
+//! forward each `HubsCmd` variant straight into `request_refetch_hubs`/`request_retry`/`reset`/
+//! `edit_item` here against its own `PmsState`/`Arc<PmsAdapter>`, the same relationship the owned
+//! `BrowseStore::run` has to Browse commands against its explicit state. **Those forwarding targets
 //! cannot be scoped narrower than `pub(crate)`, and that is a fact about Rust module topology,
 //! not an oversight**: `pms` and `stores` are both top-level children of the crate root, so
 //! neither is an ancestor of the other, and `pub(in path)` requires `path` to name an ancestor of
@@ -16,9 +17,10 @@
 //! caller outside this file at all — `hub_state` — is plain private, not `pub(crate)`; (2) every
 //! mutator `stores::hubs` (or a test) can reach — `request_refetch_hubs`, `request_retry`,
 //! `edit_item`, `tick`, `apply_landing`, `reset`, and the `_for_test` seeds — asserts
-//! `crate::testlock::held()` under `#[cfg(test)]` before it touches a global (see `lib.rs::testlock`
-//! and D5), which is the runtime half of the same contract a compile-time visibility keyword
-//! cannot express across two sibling modules. `ci/allow/mutators.txt`'s `# count: 0` already
+//! `crate::testlock::held()` under `#[cfg(test)]` before it touches the crate-wide test-only
+//! state those seeds still share (see `lib.rs::testlock` and D5), which is the runtime half of
+//! the same contract a compile-time visibility keyword cannot express across two sibling
+//! modules. `ci/allow/mutators.txt`'s `# count: 0` already
 //! proves no PRODUCTION line outside `pms`/`stores::hubs` spells the old direct-call form; this
 //! is the part that keyword-level `pub(super)` genuinely cannot add on top of that count.
 use crate::plex::ServerId;

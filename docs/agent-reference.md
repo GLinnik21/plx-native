@@ -505,8 +505,9 @@ which the linking section explains is load-bearing rather than tidy.
   deadlocked the whole `auth` test block and put five `read`s on every log line.
 - `rust-modules/src/stores/` — **the data stores behind ONE vocabulary and ONE step** (restructure
   phase 4, 2026-09-07; `docs/stores-as-machines.md`): `StoreCmd` is the complete set of mutations
-  of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`. Browse, Person, Search and ViewState
-  are physically owned per `Bridge` by `Stores`: `BrowseStore` owns its state/adapter/notice,
+  of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`. Browse, Hubs, Person, Search and
+  ViewState are physically owned per `Bridge` by `Stores`: `BrowseStore` owns its
+  state/adapter/notice, `HubsStore` owns its `PmsState`/`Arc<PmsAdapter>`/notice,
   `PersonStore` owns its model/generation/retry state plus a rotated indexed fetch adapter,
   `SearchStore` owns its state/adapter/notice with a rotated adapter, and `ViewStateStore`
   owns its queue, in-flight request, retry/refresh latches, rotated worker adapter and notice.
@@ -519,8 +520,8 @@ which the linking section explains is load-bearing rather than tidy.
   `Stores` before capturing those publications. Person's borrowed `PersonView` reaches its three
   live readers through `AppViews`/`Cx`, never a
   free selector. The aggregate notice drain in `app/bridge.rs` delivers `StoreChanged` to live
-  pages; `pms` and `metadata` still retain their compatibility
-  global/mailbox implementations.
+  pages; `metadata` still retains its compatibility
+  global/mailbox implementation.
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Four** callers in a lab build and three in every other, each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
@@ -1093,10 +1094,10 @@ you get without waking a television. What it covers today, by module:
   **(3) Some app async seams remain process-wide**, so some tests are serialized rather than parallel:
   `metadata.rs`'s two take `lib.rs`'s crate-wide `testlock::serial()` (the detail and season
   mailboxes contend across modules — a per-module mutex cannot see that, because the season
-  generation also moves under `pump_detail`), and `pms`'s compatibility catalog statics are still
-  shared. Browse, Person and ViewState are the exceptions: a production `Bridge` owns those stores' state,
-  adapters and notices, so separate owners share neither state nor landings; their fixtures use
-  explicit `Stores` owners. Those locks are load-bearing for the remaining globals, not incidental
+  generation also moves under `pump_detail`), and `metadata`'s compatibility catalog statics are
+  still shared. Browse, Hubs, Person and ViewState are the exceptions: a production `Bridge` owns
+  those stores' state, adapters and notices, so separate owners share neither state nor landings;
+  their fixtures use explicit `Stores` owners. Those locks are load-bearing for the remaining globals, not incidental
   — hold one for anything that touches the shared registry, compatibility state or the app frame.
   **Since 2026-09-10 the lock also records WHICH THREAD holds it, and the stores ASSERT it.** A
   mutex nobody is obliged to take is a convention, and a convention broken by one test in two
