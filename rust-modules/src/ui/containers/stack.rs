@@ -175,9 +175,13 @@ impl<H: Host> NavStack<H> {
             NavOp::SelectTab(arg) => {
                 let root = self.root().map(|e| e.id);
                 self.top().map(|e| e.id) == root
-                    && self.root().map_or(false, |r| r.arg.same_instance(arg))
+                    && self.root().map_or(false, |r| {
+                        r.arg.same_instance(arg) && r.inst.is_some()
+                    })
             }
-            NavOp::PopTo(id) => self.top().map(|e| e.id) == Some(*id),
+            NavOp::PopTo(id) => {
+                self.top().map_or(false, |t| t.id == *id && t.inst.is_some())
+            }
             _ => false,
         }
     }
@@ -322,6 +326,14 @@ impl<H: Host> NavStack<H> {
                     .map(|e| e.id)
                     .collect();
                 if above.is_empty() {
+                    // Already the top: nothing to unwind — but a target whose body was dropped
+                    // still owes the same `Mount` the general path below gives it, or the op
+                    // that named it (which `is_inert` deliberately did NOT drop, precisely
+                    // because the entry is bodyless) would leave the page unmounted for good.
+                    if self.entry(target).map_or(false, |e| e.inst.is_none()) {
+                        out.push(Life::Mount(target));
+                        out.push(Life::Ev(target, ScreenEvent::Enter(Enter::Restored)));
+                    }
                     return out;
                 }
                 for id in above {

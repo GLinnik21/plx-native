@@ -916,6 +916,51 @@ fn redundant_root_select_tab_and_pop_to_requests_are_inert() {
     assert_eq!(after.matches("\"enter\"").count(), 1, "no additional Enter either: {after}");
 }
 
+/// **An EVICTED entry is never "already satisfied", whichever op names it.** `Root` asks
+/// [`NavStack::root_settled`], which requires a body; `SelectTab` and `PopTo` used to compare only
+/// ids and `same_instance`, so a tab press or a `PopTo` returning to a root whose body `CAP`
+/// eviction had dropped was refused as redundant — and the apply arm's own `Mount` for a bodyless
+/// target (`stack.rs`'s `bodyless` branch) never ran, leaving the page permanently unmounted.
+/// (Reported by review on PR #113; the sibling property is
+/// `an_evicted_entry_keeps_its_focus_identity_on_remount`, which reaches the same remount by BACK.)
+#[test]
+fn a_select_tab_or_pop_to_naming_an_evicted_entry_remounts_it_rather_than_being_inert() {
+    for op_is_select_tab in [true, false] {
+        let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(PageDip::new()));
+        let mut rig = FixtureRig::new();
+        d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+        for i in 0..20u32 {
+            d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap);
+        }
+        let home = d.nav.top_page().unwrap().id;
+        // What `CAP` eviction leaves behind: the entry, its `ReturnState` and its id, with the
+        // body dropped and `evicted` set. Done by hand because reaching the cap here would put
+        // other pages ON TOP of Home, and the case under test is the op that names the entry
+        // that is ALREADY the top — the only shape `is_inert` can mistake for settled.
+        {
+            let e = d.nav.tabs.stack.entries.iter_mut().find(|e| e.id == home).unwrap();
+            e.inst = None;
+            e.evicted = true;
+        }
+        let op = if op_is_select_tab { NavOp::SelectTab(FixtureArg::Home) } else { NavOp::PopTo(home) };
+        d.request(MachineId::Nav, op);
+        let report = d.frame(&mut rig, tick(2000), vec![], vec![], &mut NoTap);
+        let mounted_or_pending = !report.mounted.is_empty() || d.nav.tabs.stack.is_pending();
+        assert!(
+            mounted_or_pending,
+            "select_tab={op_is_select_tab}: the request must reach the stack, not be dropped as satisfied",
+        );
+        // …and it really does come back, with the same identity.
+        for i in 0..20u32 {
+            let r = d.frame(&mut rig, tick(2016 + i * 16), vec![], vec![], &mut NoTap);
+            d.prune(&r.unmounted);
+        }
+        let e = d.nav.top_page().unwrap();
+        assert_eq!(e.id, home, "select_tab={op_is_select_tab}: the same EntryId");
+        assert!(e.inst.is_some(), "select_tab={op_is_select_tab}: remounted");
+    }
+}
+
 /// **A `Root` request while a DIFFERENT op is pending still replaces it — newest wins**, which
 /// sign-out and a profile switch both depend on (they `Root` right after asking for something
 /// else in the same breath). This is a property of `NavStack::is_inert` only refusing an
