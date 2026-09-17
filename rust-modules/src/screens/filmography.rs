@@ -2,9 +2,9 @@
 //! two-column composition, department strip, table, preview dwell and cross-fade, but owns no
 //! cursor: every focus-dependent query receives the engine's `FocusKey`.
 //!
-//! The person store remains a legacy singleton during phase 7. This screen snapshots the matching
-//! person's name and filmography into its instance and refreshes that snapshot only from matching
-//! store notices. A covered instance therefore cannot start rendering a different person's data,
+//! This screen reads the PersonStore owned by its Bridge through the frame `Cx`, snapshots the
+//! matching person's name and filmography into its instance, and refreshes that snapshot only from
+//! matching store notices. A covered instance therefore cannot render another Bridge's person,
 //! and restoring it does not reset its department, preview, table motion, or engine focus.
 
 use std::borrow::Cow;
@@ -33,6 +33,7 @@ use crate::ui::{theme, Env, Rect, Spring, View};
 
 use super::registry::{
     AppFx, ContentArg, ContentLike, ContentReq, FilmographyKey, FilmographyMemory, PageMemory,
+    PersonLike,
 };
 
 const COPY_W: f32 = 480.0;
@@ -175,8 +176,16 @@ pub(crate) struct FilmographyScreen {
 impl FilmographyScreen {
     pub(crate) const SHAPE: &'static str = "FilmographyScreen{sid:ServerId,key:String,department:String,next_elem:u32,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>,name:String,model:[{title:String,total:usize,rows:[{catalog_id:String,title:String,thumb:String,role:String,year:i32,local:Option<(ServerId,String)>}]}],pv_want:Option<(String,String)>,pv_still:f32,pv_fade:{phase:Idle|Out|Hold|In,t:f32}}";
 
-    pub(crate) fn new(entry: EntryId, sid: ServerId, key: String) -> Self {
-        let mut out = Self {
+    pub(crate) fn new(
+        entry: EntryId,
+        sid: ServerId,
+        key: String,
+        person: crate::person::PersonView<'_>,
+    ) -> Self {
+        let person = person.current().filter(|person| {
+            crate::plex::same_item((person.sid, person.key.as_str()), (sid, key.as_str()))
+        });
+        let mut screen = Self {
             entry,
             sid,
             key,
@@ -202,12 +211,12 @@ impl FilmographyScreen {
             ground: RouteGround::new(),
             ground_ready: false,
         };
-        out.rebuild(None);
-        out
+        screen.rebuild_from(None, person);
+        screen
     }
 
-    fn person(&self) -> Option<&'static crate::person::Person> {
-        crate::person::current().filter(|p| {
+    fn person<'a, H: PersonLike>(&self, cx: &Cx<'a, H>) -> Option<&'a crate::person::Person> {
+        H::person(cx).current().filter(|p| {
             crate::plex::same_item((p.sid, p.key.as_str()), (self.sid, self.key.as_str()))
         })
     }
@@ -374,7 +383,7 @@ impl FilmographyScreen {
         self.row_index = row_index;
     }
 
-    pub(crate) fn restore(&mut self, memory: &FilmographyMemory) {
+    pub(crate) fn restore<H: PersonLike>(&mut self, memory: &FilmographyMemory, cx: &Cx<'_, H>) {
         self.keys = memory.keys.clone();
         let after_last = self
             .keys
@@ -389,7 +398,7 @@ impl FilmographyScreen {
         self.pv_want = self.preview.clone();
         self.pv_still = 0.0;
         self.pv_fade = Xfade::new();
-        self.rebuild(None);
+        self.rebuild(None, cx);
     }
 
     fn memory(&self) -> FilmographyMemory {
@@ -415,9 +424,13 @@ impl FilmographyScreen {
             .collect()
     }
 
-    fn rebuild(&mut self, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+    fn rebuild_from(
+        &mut self,
+        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        person: Option<&crate::person::Person>,
+    ) {
         self.dirty = false;
-        if let Some(p) = self.person() {
+        if let Some(p) = person {
             self.name = p.name.clone();
             self.model = crate::person::filmography(p);
         }
@@ -439,6 +452,14 @@ impl FilmographyScreen {
             .unwrap_or(self.table.sel.max(0) as usize);
         self.sync_rows(sel, self.current_row(focus).is_some());
         self.table.list_focused = self.current_row(focus).is_some();
+    }
+
+    fn rebuild<H: PersonLike>(
+        &mut self,
+        focus: Option<crate::ui::machine::FocusKey<u32>>,
+        cx: &Cx<'_, H>,
+    ) {
+        self.rebuild_from(focus, self.person(cx));
     }
 
     fn sync_rows(&mut self, sel: usize, slide: bool) {
@@ -538,10 +559,10 @@ impl FilmographyScreen {
         waiting || self.pv_fade.is_swapping()
     }
 
-    fn tick<H: ContentLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn tick<H: ContentLike + PersonLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let dt = t.dt();
         if self.dirty {
-            self.rebuild(cx.focus.current);
+            self.rebuild(cx.focus.current, cx);
         }
         let row = self.current_row(cx.focus.current);
         self.table.list_focused = row.is_some();
@@ -727,7 +748,7 @@ impl FilmographyScreen {
     }
 }
 
-impl<H: ContentLike> Focusable<H> for FilmographyScreen {
+impl<H: ContentLike + PersonLike> Focusable<H> for FilmographyScreen {
     fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         let layout = RouteLayout::screen_with_copy_w(COPY_W);
         if !self.model.is_empty() {
@@ -868,7 +889,7 @@ impl<H: ContentLike> Focusable<H> for FilmographyScreen {
     }
 }
 
-impl<H: ContentLike> Machine<H> for FilmographyScreen {
+impl<H: ContentLike + PersonLike> Machine<H> for FilmographyScreen {
     type Ev = ScreenEvent<H>;
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
@@ -886,7 +907,7 @@ impl<H: ContentLike> Machine<H> for FilmographyScreen {
                     }
                 }
                 memory.next_elem = memory.next_elem.max(self.next_elem);
-                self.restore(&memory);
+                self.restore(&memory, cx);
                 Handled::Yes
             }
             ScreenEvent::Tick(tick) => {
@@ -938,8 +959,8 @@ impl<H: ContentLike> Machine<H> for FilmographyScreen {
                 Handled::Yes
             }
             ScreenEvent::StoreChanged(ord, _) if *ord == crate::stores::StoreId::Person.ord() => {
-                if self.person().is_some() {
-                    self.rebuild(cx.focus.current);
+                if self.person(cx).is_some() {
+                    self.rebuild(cx.focus.current, cx);
                 }
                 Handled::Yes
             }
@@ -957,7 +978,7 @@ impl<H: ContentLike> Machine<H> for FilmographyScreen {
     }
 }
 
-impl<H: ContentLike> Screen<H> for FilmographyScreen {
+impl<H: ContentLike + PersonLike> Screen<H> for FilmographyScreen {
     fn name(&self) -> &'static str {
         // The test manifest intentionally records this opaque modal as route=person.
         super::registry::word::PERSON
@@ -1021,9 +1042,12 @@ mod tests {
         type Fx = AppFx;
         type Msg = super::super::registry::AppMsg;
         type Elem = u32;
-        type Views<'a> = ();
+        type Views<'a> = crate::person::PersonView<'a>;
         type Init = super::super::family::NoInit;
         type Memory = PageMemory;
+    }
+    impl PersonLike for FilmographyHost {
+        fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a> { cx.views }
     }
 
     fn dept(title: &str, rows: Vec<Credit>) -> Department {
@@ -1047,7 +1071,9 @@ mod tests {
 
     fn screen(entry: u32, _serial: &crate::testlock::Serial) -> FilmographyScreen {
         let mut s =
-            FilmographyScreen::new(EntryId(entry), ServerId::UNSET, format!("person-{entry}"));
+            FilmographyScreen::new(
+                EntryId(entry), ServerId::UNSET, format!("person-{entry}"),
+                crate::person::PersonView::default());
         s.name = format!("Person {entry}");
         s.model = vec![
             dept(
@@ -1076,6 +1102,27 @@ mod tests {
         s
     }
 
+    #[test]
+    fn a_fresh_filmography_reads_only_the_person_view_it_is_given() {
+        let mut first = crate::stores::person::PersonStore::default();
+        first.run(crate::stores::person::PersonCmd::Open {
+            sid: ServerId::UNSET, key: "person".into(), guid: "guid".into(),
+            name: "First owner".into(), thumb: String::new(),
+        });
+        first.install_credits_for_test(&[("Actor", 2)]);
+        let second = crate::stores::person::PersonStore::default();
+
+        let page = FilmographyScreen::new(
+            EntryId(1), ServerId::UNSET, "person".into(), first.view());
+        assert_eq!(page.name, "First owner");
+        assert_eq!(page.model.iter().map(|department| department.total).sum::<usize>(), 2);
+
+        let decoy = FilmographyScreen::new(
+            EntryId(2), ServerId::UNSET, "person".into(), second.view());
+        assert!(decoy.name.is_empty() && decoy.model.is_empty(),
+            "a reader cannot fall through to another Person owner");
+    }
+
     /// Tests that seed a model directly must maintain the same derived-index invariant the only
     /// production writer (`pick_tab`) does before rebuilding the shared table.
     fn select(s: &mut FilmographyScreen, department: &str) {
@@ -1093,7 +1140,7 @@ mod tests {
         focus: Option<crate::ui::machine::FocusKey<u32>>,
     ) -> Cx<'a, FilmographyHost> {
         Cx {
-            views: (),
+            views: crate::person::PersonView::default(),
             tick: Tick::default(),
             measure,
             press: PressRead::default(),
@@ -1485,7 +1532,7 @@ mod tests {
             .insert(0, credit("Earlier", "Writer", 2013, None));
         writer.total += 1;
         remounted.model.reverse();
-        remounted.restore(&memory);
+        remounted.restore(&memory, &cx(&FixtureMeasure, None));
         let restored = Focusable::<FilmographyHost>::reconcile(
             &remounted,
             old_focus,
@@ -1549,14 +1596,16 @@ mod tests {
         let model = std::mem::take(&mut source.model);
 
         let mut remounted =
-            FilmographyScreen::new(EntryId(50), ServerId::UNSET, "person-50".to_string());
+            FilmographyScreen::new(
+                EntryId(50), ServerId::UNSET, "person-50".to_string(),
+                crate::person::PersonView::default());
         assert!(remounted.model.is_empty());
-        remounted.restore(&memory);
+        remounted.restore(&memory, &cx(&FixtureMeasure, None));
         assert_eq!(remounted.department, "Writer");
         assert_eq!(remounted.preview, memory.preview);
 
         remounted.model = model;
-        remounted.rebuild(None);
+        remounted.rebuild(None, &cx(&FixtureMeasure, None));
         assert_eq!(remounted.selected_tab(), 1);
         assert!(remounted
             .credit_by_identity("Writer", "catalog-Written")

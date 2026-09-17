@@ -102,6 +102,7 @@ pub(crate) struct AppViews<'a> {
     pub(crate) directory: crate::stores::browse::DirectoryView<'a>,
     pub(crate) section_hubs: crate::stores::browse::HubsView<'a>,
     pub(crate) search: crate::search::view::SearchView<'a>,
+    pub(crate) person: crate::person::PersonView<'a>,
     /// **The playback session, as this frame's publication** (spec §2.3, phase 9). The Player
     /// machine (`App.player`) owns the value; `Split` can only lend what the RIG owns, so the loop
     /// copies the decisions in once per frame ([`crate::route::PlaybackSession::publication`]) and
@@ -193,6 +194,10 @@ impl crate::screens::registry::LibraryLike for AppHost {
     fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> { cx.views.section_hubs }
+}
+
+impl crate::screens::registry::PersonLike for AppHost {
+    fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a> { cx.views.person }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -565,7 +570,7 @@ impl Bridge {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback }, &self.measure);
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback }, &self.measure);
         let item = page.selected_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -585,7 +590,7 @@ impl Bridge {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback }, &self.measure);
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback }, &self.measure);
         let item = page.focused_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -638,7 +643,7 @@ impl Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
             }, &self.measure);
             screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?
                 .focused_rect::<AppHost>(Some(key), &cx, At::Drawn)
@@ -679,7 +684,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         Some(f(home, &cx, focus))
     }
@@ -805,7 +810,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         if home.grid_position::<AppHost>(parts.focus.current, &cx).is_none() { return false; }
         self.home_command(HomeCmd::ItemMenu)
@@ -830,7 +835,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
@@ -847,7 +852,7 @@ impl Bridge {
                 Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
             }
         } else if let Some(page) = screen.downcast_ref::<crate::screens::person::PersonScreen>() {
-            let item = page.focused_item(ret.focus).filter(|m| crate::screens::item_menu::has_actions(m))?;
+            let item = page.focused_item(ret.focus, &cx).filter(|m| crate::screens::item_menu::has_actions(m))?;
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
         } else { None }
@@ -880,7 +885,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         let mut frame = DrawFrame::with_navigation(&cx, crate::ui::Painter::root(), self.navigation_presentation());
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
@@ -978,11 +983,23 @@ impl Bridge {
         self.stores.browse_discover_pump()
     }
 
-    pub(crate) fn viewstate_run(&self, cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
+    pub(crate) fn person_run(&mut self, cmd: crate::stores::person::PersonCmd) -> bool {
+        self.stores.person_run(cmd)
+    }
+
+    pub(crate) fn person_pump(&mut self) -> bool {
+        self.stores.person_pump()
+    }
+
+    pub(crate) fn person_view(&self) -> crate::person::PersonView<'_> {
+        self.stores.person_view()
+    }
+
+    pub(crate) fn viewstate_run(&mut self, cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
         self.stores.viewstate_run(cmd, self.directory.view())
     }
 
-    pub(crate) fn viewstate_pump(&self) -> crate::stores::EndpointRefreshSet {
+    pub(crate) fn viewstate_pump(&mut self) -> crate::stores::EndpointRefreshSet {
         self.stores.viewstate_pump(self.directory.view())
     }
 
@@ -1118,7 +1135,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
             },
             measure: &self.measure,
         }
@@ -1149,7 +1166,7 @@ impl Rig<AppHost> for Bridge {
             let publication = self.session.publication();
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
             }, &self.measure);
             return self.session.step(event, &cx, fx);
         }
@@ -1201,11 +1218,22 @@ impl Rig<AppHost> for Bridge {
                 _ => {}
             }
         }
+        match msg {
+            AppMsg::Store(StoreCmd::Person(command)) => {
+                self.person_run(command.clone());
+                return Handled::Yes;
+            }
+            AppMsg::Store(StoreCmd::ViewState(command)) => {
+                self.viewstate_run(command.clone());
+                return Handled::Yes;
+            }
+            _ => {}
+        }
         let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         match msg {
             AppMsg::Store(StoreCmd::Browse(c)) => {
@@ -1218,10 +1246,6 @@ impl Rig<AppHost> for Bridge {
             AppMsg::Store(StoreCmd::Hubs(c)) => {
                 crate::stores::hubs::apply_with_directory(c.clone(), self.directory.view())
                     .endpoints.emit(fx);
-                Handled::Yes
-            }
-            AppMsg::Store(StoreCmd::ViewState(c)) => {
-                self.viewstate_run(c.clone());
                 Handled::Yes
             }
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
@@ -1432,13 +1456,13 @@ impl Bridge {
 }
 
 fn step_store(cmd: &StoreCmd, cx: &Cx<'_, AppHost>, fx: &mut Effects<'_, AppHost>) -> Handled {
-    use crate::stores::{metadata, person};
+    use crate::stores::metadata;
     match cmd {
         StoreCmd::Browse(_) => unreachable!("Browse is stepped by Bridge's owned store"),
         StoreCmd::Hubs(_) => unreachable!("Hubs is stepped by Bridge with its Browse directory"),
         StoreCmd::Metadata(c) => metadata::MetadataStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
         StoreCmd::Search(_) => unreachable!("Search is stepped by Bridge with its Browse directory"),
-        StoreCmd::Person(c) => person::PersonStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::Person(_) => unreachable!("Person is stepped by Bridge's owned store"),
         StoreCmd::ViewState(_) => unreachable!("ViewState is stepped by Bridge with its Browse owner"),
     }
 }
@@ -1726,7 +1750,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             hubs: rig.hubs.view(),
             listing: rig.listing.view(),
             directory: rig.directory.view(),
-            section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback,
+            section_hubs: rig.section_hubs.view(), search: rig.search.view(), person: rig.stores.person_view(), session: &rig.playback,
         }, &rig.measure);
         let position = home.grid_position::<AppHost>(focus, &cx);
         let (row, col) = position.map(|(r, c)| (r as i64, c as i64)).unwrap_or((-1, -1));
@@ -1748,7 +1772,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
         let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(), hubs: rig.hubs.view(), listing: rig.listing.view(),
-            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback }, &rig.measure);
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), person: rig.stores.person_view(), session: &rig.playback }, &rig.measure);
         let menu = d.top_surface_name() == Some("library_menu");
         let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
             crate::ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
@@ -1790,7 +1814,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         hubs: rig.hubs.view(),
         listing: rig.listing.view(),
         directory: rig.directory.view(),
-        section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback,
+        section_hubs: rig.section_hubs.view(), search: rig.search.view(), person: rig.stores.person_view(), session: &rig.playback,
     }, &rig.measure);
     let mut groups = Vec::new();
     instance.screen.groups(&cx, &mut groups);
@@ -1850,7 +1874,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             let _ = write!(out, " card={} filmography={}", card as u8, filmography as u8);
             let item = instance.screen.as_any()
                 .and_then(|s| s.downcast_ref::<crate::screens::person::PersonScreen>())
-                .and_then(|s| s.focused_item(focus));
+                .and_then(|s| s.focused_item(focus, &cx));
             if let Some(item) = item {
                 let _ = write!(out, " sid={} rk=", item.sid.raw());
                 crate::focusprobe::push_rk(&mut out, &item.rk);
@@ -2860,3 +2884,7 @@ mod surface_navigation_tests;
 #[cfg(test)]
 #[path = "viewstate_directory_policy_tests.rs"]
 mod viewstate_directory_policy_tests;
+
+#[cfg(test)]
+#[path = "person_lifecycle_tests.rs"]
+mod person_lifecycle_tests;

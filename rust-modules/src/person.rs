@@ -2,10 +2,9 @@
 //!
 //! Sibling of `metadata.rs` (the detail page's item store) and `browse.rs` (the Library's paged
 //! catalog), and built on the same three pieces: [`crate::task::spawn_small`] + a `Mutex` mailbox
-//! + a generation atomic, applied on the MAIN thread by [`pump`] once a frame while the page is
-//! up. The worker never touches a static; [`current`] hands out a `&'static Person` that the draw
-//! reads all frame, so the main thread stays its only writer (the same soundness rule
-//! `metadata.rs`'s `CURRENT` carries).
+//! + a generation, applied on the MAIN thread by [`PersonState::pump`] once a frame. One
+//! `PersonState` and rotated `Arc<PersonAdapter>` belong to each production Bridge; screens borrow
+//! a `PersonView` through their frame `Cx`, so neither reads nor workers select process state.
 //!
 //! ## A filmography is a fact about a PERSON, not about a server
 //!
@@ -78,9 +77,8 @@
 use crate::plex::{ServerId, Tag};
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
-use std::ptr::{addr_of, addr_of_mut};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Per-shelf item cap. A `CardRow` owns exactly [`crate::ui::card_row::MAX_ROW_ITEMS`] focus-scale
 /// springs and `scale(i)` clamps past the end, so an item beyond the cap would draw with the last
@@ -290,10 +288,56 @@ impl Person {
     }
 }
 
-static mut CURRENT: Option<Person> = None;
+/// Immutable publication borrowed from one concrete [`PersonState`] owner for a dispatcher
+/// step/draw. It carries no selector and cannot outlive the owner borrow that produced it.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PersonView<'a> {
+    current: Option<&'a Person>,
+}
 
-/// The open person, or None. Main-thread only; the reference is valid until the next
-/// [`pump`]/[`open`]/[`close`] (same lifetime rule as `metadata::current`).
+impl<'a> PersonView<'a> {
+    pub(crate) fn current(self) -> Option<&'a Person> {
+        self.current
+    }
+
+    pub(crate) fn loading(self) -> bool {
+        // A failed fetch remains pending because the owner retries it after the backoff.
+        self.current.is_some_and(|person| !person.landed)
+    }
+}
+
+/// Main-thread logical state for one Person owner. Generation, retry ladders and the dev-seed
+/// latch move with the model instead of selecting process state.
+pub(crate) struct PersonState {
+    current: Option<Person>,
+    generation: u32,
+    retry_cd: [u32; NFETCH],
+    dev_held: usize,
+}
+
+impl Default for PersonState {
+    fn default() -> Self {
+        Self {
+            current: None,
+            generation: 0,
+            retry_cd: [0; NFETCH],
+            dev_held: usize::MAX,
+        }
+    }
+}
+
+impl PersonState {
+    pub(crate) fn view(&self) -> PersonView<'_> {
+        PersonView { current: self.current.as_ref() }
+    }
+
+    fn current(&self) -> Option<&Person> {
+        self.current.as_ref()
+    }
+}
+
+/// The open person publication is borrowed from its owner. Main-thread only; the reference is
+/// valid for the frame context that lent it.
 /// **The plex.tv profile has not answered yet** — the canvas's phase 0, and what the portrait, the
 /// identity pair and the bio draw a placeholder for.
 ///
@@ -321,17 +365,11 @@ pub(crate) fn facts_pending(p: &Person) -> bool {
 // true the moment ANY source has actually put a tile on the page, so a shelf shows real content the
 // instant it is real rather than staying skeletonized while a second, slower source is still out.
 
-pub(crate) fn current() -> Option<&'static Person> {
-    unsafe { (*addr_of!(CURRENT)).as_ref() }
-}
-
 // ---- fetch plumbing (generation + single-flight + mailbox + retry backoff) -------------------
 
 /// Bumped by every [`open`]/[`close`]/[`reset`]: a landing whose generation no longer matches is
-/// discarded by [`pump`], so a slow fetch for the actor you just left can never repopulate the
+/// discarded by [`PersonState::pump`], so a slow fetch for the actor you just left can never repopulate the
 /// one you are looking at now.
-static GEN: AtomicU32 = AtomicU32::new(0);
-
 /// The three requests this page makes OF ONE SERVER. Adding one is a constant, one arm in
 /// [`address`] and one in [`maybe_spawn`]; [`supersede`] picks it up with no edit at all.
 const K_RESOLVE: usize = 0;
@@ -373,7 +411,7 @@ fn un_fx(i: usize) -> Option<(ServerId, usize)> {
     (i < F_PROFILE).then(|| (ServerId::from_raw((i / NKIND) as u16), i % NKIND))
 }
 
-/// Frames left before fetch `i` may spawn again after a FAILED attempt (main-thread; [`pump`]
+/// Frames left before fetch `i` may spawn again after a FAILED attempt (main-thread; [`PersonState::pump`]
 /// decrements). Stops a fast-failing network from spawning a worker every frame. PER FETCH AND PER
 /// SOURCE on purpose, which is the third of `pms.rs`'s three multi-source lessons: a plex.tv
 /// biography that cannot be reached (the TV is on a LAN with no internet — the case this app is
@@ -385,10 +423,10 @@ fn un_fx(i: usize) -> Option<(ServerId, usize)> {
 /// `Cell` is not `Sync`, and a `static mut` [`FETCH`] would put these writes inside an object
 /// worker threads hold references into. And unlike `search.rs`'s `Source::retry_cd`, which its doc
 /// records as never moving independently of the `status` beside it, this countdown genuinely moves
-/// on its own: [`pump`] ticks it every frame whether or not the fetch is claimed, [`apply`] arms it
+/// on its own: [`PersonState::pump`] ticks it every frame whether or not the fetch is claimed,
+/// [`apply_landing`] arms it
 /// for a landing whose claim the take has already released, and [`maybe_spawn`] arms it for a
 /// source with no client — a fetch it never claimed at all.
-static mut RETRY_CD: [u32; NFETCH] = [0; NFETCH];
 /// ~2s at 60fps — the same backoff `browse.rs` uses for a failed page.
 const RETRY_FRAMES: u32 = 120;
 
@@ -431,7 +469,7 @@ pub(crate) struct MediaLanding {
 }
 
 /// A finished character-name batch. `keys` is the shelf-key list it was ADDRESSED to, which rides
-/// along because [`apply`] must refuse a landing for a shelf list that has since been replaced
+/// along because [`apply_landing`] must refuse a landing for a shelf list that has since been replaced
 /// (see there). `pairs` is already filtered to THIS person's credit per item — the worker walks the
 /// batched response so ~30 KB of tag arrays never crosses the mailbox.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -485,7 +523,7 @@ struct Fetch {
     /// exist: [`supersede`] releases the claim while the old worker is still running, and a take
     /// releases it before the generation check (so a stale landing can free a NEWER fetch's claim,
     /// costing one duplicate request). Neither can wedge or corrupt — [`land`] is monotone on the
-    /// generation and [`pump`] discards anything stale — and `browse.rs` has the identical shape.
+    /// generation and [`PersonState::pump`] discards anything stale — and `browse.rs` has the identical shape.
     in_flight: AtomicBool,
     /// Where the worker posts what it came back with — the one half of a [`Fetch`] a worker
     /// touches, the claim beside it being moved by the main thread alone. `None` means nothing has
@@ -538,17 +576,30 @@ impl Fetch {
     }
 }
 
-/// One [`Fetch`] per index of the [`fx`] space, the profile's included.
-static FETCH: [Fetch; NFETCH] = [const { Fetch::IDLE }; NFETCH];
+/// Cross-thread transport for one physical owner. Every worker captures this exact `Arc`; reset
+/// rotates the store to a fresh adapter, so a detached old worker can only fill retired slots.
+pub(crate) struct PersonAdapter {
+    fetch: [Fetch; NFETCH],
+}
+
+impl Default for PersonAdapter {
+    fn default() -> Self {
+        Self {
+            fetch: [const { Fetch::IDLE }; NFETCH],
+        }
+    }
+}
 
 /// Post a finished fetch to its mailbox. MONOTONE: an older fetch landing late must never clobber
 /// a newer result the pump has not consumed yet. Named (not inlined in the worker closure) for the
 /// same reason as `metadata::land_detail` — the guard is the one piece of this machinery a test
 /// cannot reach through [`open`], because reaching it needs two overlapping real fetches.
-fn land(i: usize, gen: u32, what: Landing) {
-    let mut slot = FETCH[i].slot.lock().unwrap_or_else(|e| e.into_inner());
-    if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
-        *slot = Some(Mail { gen, what });
+impl PersonAdapter {
+    fn land(&self, i: usize, generation: u32, what: Landing) {
+        let mut slot = self.fetch[i].slot.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.as_ref().map(|r| r.gen < generation).unwrap_or(true) {
+            *slot = Some(Mail { gen: generation, what });
+        }
     }
 }
 
@@ -556,11 +607,16 @@ fn land(i: usize, gen: u32, what: Landing) {
 /// mailbox and the claim held with it ([`Fetch::clear`]), and clear the retry backoffs. The ONE
 /// place those three move together — and it walks the WHOLE index space, not just the sources
 /// currently held, so a slot that has left the roster cannot leave a latched claim behind it.
-fn supersede() {
-    GEN.fetch_add(1, Ordering::SeqCst);
-    for i in 0..NFETCH {
-        FETCH[i].clear();
-        unsafe { RETRY_CD[i] = 0 };
+impl PersonState {
+    fn supersede(&mut self, adapter: &PersonAdapter) {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("person generation exhausted");
+        for fetch in &adapter.fetch {
+            fetch.clear();
+        }
+        self.retry_cd.fill(0);
     }
 }
 
@@ -725,8 +781,8 @@ fn resettle(p: &mut Person) {
 /// undone by the next landing.
 ///
 /// Returns whether anything matched. **MAIN THREAD.**
-fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
-    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
+fn set_watched_local(state: &mut PersonState, sid: ServerId, rk: &str, on: bool) -> bool {
+    let Some(p) = state.current.as_mut() else {
         return false;
     };
     let mut hit = false;
@@ -751,41 +807,65 @@ fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
 
 /// Open the page for the person the ORIGIN server `sid` knows as `key`, with the header the caller
 /// already has — the cast row's name + headshot. MAIN THREAD, NON-BLOCKING: nothing is fetched
-/// here, [`pump`] spawns every request on the next frame, so the page mounts on its header
+/// here, [`PersonState::pump`] spawns every request on the next frame, so the page mounts on its header
 /// immediately and fills in around it.
 ///
 /// `sid` is the server whose credit row this is, captured by the caller. It is where `key` means
 /// something and where the headshot comes from — but it is NOT the only server read: [`sources`]
 /// takes the whole roster, and every other entry resolves its own id from `guid` first.
-fn open(sid: ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
-    supersede();
+///
+/// **Idempotent on the identity already held** (review round 1, P1): a redundant `Open` for the
+/// `(sid, key)` the store already holds is a no-op — no generation bump, no fetch-claim clear, no
+/// rebuilt `Person`. This is what lets `screens::person`'s `Enter(_) | Uncover` arm call
+/// `request_store` unconditionally rather than only when its own `person(cx)` read is `None`: the
+/// two-phase `AppFx::Store` queue can deliver a same-identity `Close` (an evicted covered/stacked
+/// body's `Unmount`) ahead of a fresh page's `Open` in the same drain, and the guard below is what
+/// keeps a *genuinely* redundant Open — the store already correctly settled on this identity —
+/// from refetching or dropping in-flight work for a page that never actually lost it.
+fn open(
+    state: &mut PersonState,
+    adapter: &PersonAdapter,
+    sid: ServerId,
+    key: &str,
+    guid: &str,
+    name: &str,
+    thumb: &str,
+) {
+    if state
+        .current
+        .as_ref()
+        .is_some_and(|p| crate::plex::same_item((p.sid, p.key.as_str()), (sid, key)))
+    {
+        return;
+    }
+    state.supersede(adapter);
     let srcs = sources(sid, key, name);
-    unsafe {
-        *addr_of_mut!(CURRENT) = Some(Person {
-            sid,
-            key: key.to_string(),
-            guid: guid.to_string(),
-            name: name.to_string(),
-            thumb: thumb.to_string(),
-            bio: String::new(),
-            roles: String::new(),
-            born: String::new(),
-            died: String::new(),
-            birthplace: String::new(),
-            shelves: Default::default(),
-            srcs,
-            landed: false,
-            profiled: false,
-            profile_tried: false,
-            credits: Vec::new(),
-            credited: false,
-            roster_gen: crate::plex::server_roster_gen(),
-        });
-        // A page with NO source at all has already answered — see `resettle`'s fold. Deriving it
-        // here rather than hardcoding `landed: false` is what keeps that rule in one place.
-        if let Some(p) = (*addr_of_mut!(CURRENT)).as_mut() {
-            resettle(p);
-            if !crate::app::bootstrap::stores::active() { seed_dev_profile(p); }
+    state.current = Some(Person {
+        sid,
+        key: key.to_string(),
+        guid: guid.to_string(),
+        name: name.to_string(),
+        thumb: thumb.to_string(),
+        bio: String::new(),
+        roles: String::new(),
+        born: String::new(),
+        died: String::new(),
+        birthplace: String::new(),
+        shelves: Default::default(),
+        srcs,
+        landed: false,
+        profiled: false,
+        profile_tried: false,
+        credits: Vec::new(),
+        credited: false,
+        roster_gen: crate::plex::server_roster_gen(),
+    });
+    // A page with NO source at all has already answered — see `resettle`'s fold. Deriving it
+    // here rather than hardcoding `landed: false` is what keeps that rule in one place.
+    if let Some(p) = state.current.as_mut() {
+        resettle(p);
+        if !crate::app::bootstrap::stores::active() {
+            seed_dev_profile(p);
         }
     }
 }
@@ -867,54 +947,62 @@ continues to divide her time between London and New York.";
 const DEV_BIO: &str = "";
 
 /// Drop the open person and supersede any fetch for it — on leaving the page. Without the
-/// supersede, a landing arriving after the page closed would repopulate `CURRENT` behind whatever
+/// supersede, a landing arriving after the page closed would repopulate the owner's model behind whatever
 /// screen is now mounted (the bug `metadata::clear` carries the same guard for).
-fn close() {
-    supersede();
-    unsafe { *addr_of_mut!(CURRENT) = None };
+fn close(state: &mut PersonState, adapter: &PersonAdapter) {
+    state.supersede(adapter);
+    state.current = None;
 }
 
 /// Wipe the store on a profile/account switch — the browse/pms twin of `install_pms`'s reset. A
 /// new user must never inherit the previous one's page, and the flags must move with the mailbox.
 /// It is also what makes [`sources`]' read-once safe: the roster only changes on the paths that
 /// call this.
-fn reset() {
-    close();
+fn reset(state: &mut PersonState, adapter: &PersonAdapter) {
+    close(state, adapter);
+    state.dev_held = usize::MAX;
 }
 
 /// `stores::person`'s one door onto every [`PersonCmd`](crate::stores::person::PersonCmd) (D3):
 /// the match used to live in `stores/person.rs::run`, calling `open`/`close`/`reset` across the
 /// module boundary. Relocating it here is what lets those three go private — `set_watched_local`
 /// was already `pub(crate)` for the same reason and joins them.
-pub(crate) fn run(cmd: crate::stores::person::PersonCmd) -> bool {
-    use crate::stores::person::PersonCmd;
-    match cmd {
-        PersonCmd::Open { sid, key, guid, name, thumb } => {
-            open(sid, &key, &guid, &name, &thumb);
-            true
+impl PersonState {
+    pub(crate) fn run(
+        &mut self,
+        adapter: &Arc<PersonAdapter>,
+        cmd: crate::stores::person::PersonCmd,
+    ) -> bool {
+        use crate::stores::person::PersonCmd;
+        match cmd {
+            PersonCmd::Open {
+                sid,
+                key,
+                guid,
+                name,
+                thumb,
+            } => {
+                open(self, adapter, sid, &key, &guid, &name, &thumb);
+                true
+            }
+            PersonCmd::Close => {
+                close(self, adapter);
+                true
+            }
+            PersonCmd::Reset => {
+                reset(self, adapter);
+                true
+            }
+            PersonCmd::SetWatchedLocal { sid, rk, on } => {
+                set_watched_local(self, sid, &rk, on)
+            }
         }
-        PersonCmd::Close => {
-            close();
-            true
-        }
-        PersonCmd::Reset => {
-            reset();
-            true
-        }
-        PersonCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(sid, &rk, on),
     }
-}
-
-/// True while the open person has nothing to show yet — the page's spinner state. A failed fetch
-/// stays "loading" on purpose: [`maybe_spawn`] retries after the backoff, so the spinner is telling
-/// the truth about what the page is doing. See [`Person::landed`] for how the sources fold into it.
-pub(crate) fn loading() -> bool {
-    current().map(|p| !p.landed).unwrap_or(false)
 }
 
 /// Whether one server's contribution to this person's shelves is still unresolved.
 ///
-/// This is deliberately narrower than [`loading`]: the page may stop its global spinner as soon
+/// This is deliberately narrower than [`PersonView::loading`]: the page may stop its global spinner as soon
 /// as any source contributes content, while a saved card from another source still needs its own
 /// `/media` answer before the screen may decide that identity is gone. A failed resolve or media
 /// request remains pending here because [`maybe_spawn`] retries it after backoff. An absent source
@@ -930,48 +1018,50 @@ pub(crate) fn media_resolving(p: &Person, sid: ServerId) -> bool {
 /// MAIN THREAD, once a frame while the page is up: apply every landed fetch and schedule the next.
 /// Returns true when the store just changed — the screen re-clamps its focus and rebuilds its
 /// cached header strings on it.
-pub(crate) fn pump() -> bool {
-    let mut changed = sync_roster();
-    for i in 0..NFETCH {
-        unsafe {
-            if RETRY_CD[i] > 0 {
-                RETRY_CD[i] -= 1;
+impl PersonState {
+    pub(crate) fn pump(&mut self, adapter: &Arc<PersonAdapter>) -> bool {
+        let mut changed = sync_roster(self, adapter);
+        for i in 0..NFETCH {
+            if self.retry_cd[i] > 0 {
+                self.retry_cd[i] -= 1;
             }
-        }
-        // the take releases the single-flight claim with the mail, whatever the landing turns out
-        // to be — `Fetch::take` is where that rule lives. Under a replay it happens on the frame
-        // the recording took it on (§3.3 step 3, `ui::landgate`); `maybe_spawn` below is
-        // deliberately outside the gate, so the request that produces it still goes out on time.
-        if let Some(r) =
-            if crate::app::bootstrap::stores::active() {
-                let reply = crate::app::bootstrap::stores::poll("person", i as u32, || FETCH[i].take());
-                if reply.is_some() { crate::ui::landgate::landed(crate::stores::StoreId::Person.ord()); }
+            // The take releases the single-flight claim with the mail, whatever the landing turns
+            // out to be. Under replay it happens on the recorded frame; spawning remains outside
+            // that gate so the request still leaves on time.
+            let reply = if crate::app::bootstrap::stores::active() {
+                let reply = crate::app::bootstrap::stores::poll("person", i as u32, || {
+                    adapter.fetch[i].take()
+                });
+                if reply.is_some() {
+                    crate::ui::landgate::landed(crate::stores::StoreId::Person.ord());
+                }
                 reply
-            } else { crate::stores::take_landing(crate::stores::StoreId::Person, || FETCH[i].take()) }
-        {
-            FETCH[i].release();
-            // EVERY landing repaints, the failures included. `ui::idle` gates the whole frame
-            // on a settled screen, so without this a shelf that arrives (or a spinner that should
-            // stop) waits for the next keypress to become visible. This page had no such call at
-            // all — the omission `search.rs`'s module doc warns the next store about.
-            crate::ui::idle::invalidate();
-            if r.gen == GEN.load(Ordering::SeqCst) {
-                changed |= apply(i, r.what);
+            } else {
+                crate::stores::take_landing(crate::stores::StoreId::Person, || {
+                    adapter.fetch[i].take()
+                })
+            };
+            if let Some(reply) = reply {
+                adapter.fetch[i].release();
+                // Every landing repaints, failures included: a shelf or stopped spinner must not
+                // wait for the next keypress to become visible.
+                crate::ui::idle::invalidate();
+                if reply.gen == self.generation {
+                    changed |= apply_landing(self, i, reply.what);
+                }
+                // A superseded landing is news about neither person. In particular, its failure
+                // must not arm a retry delay for the replacement identity.
             }
-            // else superseded: a different person is open now, so this landing is news about
-            // NEITHER of them. The failure arm inside `apply` is skipped with it on purpose — a
-            // stale failure that armed the backoff would delay the new person's first fetch by
-            // ~2s for a network error that was never about them.
+            maybe_spawn(self, adapter, i);
         }
-        maybe_spawn(i);
+        // The credits seed runs HERE rather than at `open`, unlike the biography's, and the difference
+        // is what it needs: it joins itself against the shelves so the availability column and the
+        // trailing chevron are actually visible, and the shelves do not exist until a landing.
+        if self.current.is_some() {
+            changed |= seed_dev_credits(self);
+        }
+        changed
     }
-    // The credits seed runs HERE rather than at `open`, unlike the biography's, and the difference
-    // is what it needs: it joins itself against the shelves so the availability column and the
-    // trailing chevron are actually visible, and the shelves do not exist until a landing.
-    if let Some(p) = unsafe { (*addr_of_mut!(CURRENT)).as_mut() } {
-        changed |= seed_dev_credits(p);
-    }
-    changed
 }
 
 /// `/tmp/plxnative-personcredits[=<rows>]` — **stand in for the plex.tv FILMOGRAPHY record**, so
@@ -983,7 +1073,7 @@ pub(crate) fn pump() -> bool {
 /// with a single row on it.
 ///
 /// **It seeds the JOIN as well as the rows**, which the biography's twin has no equivalent of and
-/// which is the whole reason this runs from [`pump`] instead of from [`open`]: every row the page's
+/// which is the whole reason this runs from [`PersonState::pump`] instead of from [`open`]: every row the page's
 /// own shelves can cover gets that item's `(guid, ratingKey)` written into the origin source's
 /// index, so those rows draw the source annotation and the chevron and their OK really opens a
 /// detail page. The rest are the majority the screen exists to show — a career you do not hold.
@@ -993,13 +1083,14 @@ pub(crate) fn pump() -> bool {
 /// and enough ABOVE it that the department strip overflows its column, which is the only way a
 /// headless capture reaches the strip's scroll and the left edge fade over its cut.
 #[allow(unused_variables)]
-fn seed_dev_credits(p: &mut Person) -> bool {
+fn seed_dev_credits(state: &mut PersonState) -> bool {
     let arg = if crate::app::bootstrap::stores::active() {
         crate::app::bootstrap::stores::credits().map(|v| v.to_string())
     } else { crate::dev::read("personcredits") };
     let Some(arg) = arg else {
         return false;
     };
+    let Some(p) = state.current.as_mut() else { return false };
     // **The rows the page really holds, as `(title, guid)`** — taken from the source's OWN index
     // (`Src::matches`, filled by a real `/media` landing) joined back to the shelf item by
     // ratingKey. Nothing here fabricates a match: a seeded row that names one of these carries that
@@ -1023,11 +1114,10 @@ fn seed_dev_credits(p: &mut Person) -> bool {
     // it has nothing to work with until a source lands. A COUNT rather than a "have I seeded" flag,
     // because the real `/media` landing fills `Src::matches` itself and a flag keyed on that cannot
     // tell the source's own index apart from a seeded one.
-    static mut HELD: usize = usize::MAX;
-    if p.credited && unsafe { HELD } == held.len() {
+    if p.credited && state.dev_held == held.len() {
         return false;
     }
-    unsafe { HELD = held.len() };
+    state.dev_held = held.len();
     let n: usize = arg.trim().parse().unwrap_or(9);
     let row = |i: usize, dept: &str| {
         let (title, id, thumb) = match held.get(i) {
@@ -1088,19 +1178,19 @@ fn seed_dev_credits(p: &mut Person) -> bool {
 
 /// Rebuild an open page's per-source projection at an exact registry identity boundary. Header
 /// profile facts survive; server-derived shelves and every old worker/mailbox do not.
-fn sync_roster() -> bool {
+fn sync_roster(state: &mut PersonState, adapter: &PersonAdapter) -> bool {
     let gen = crate::plex::server_roster_gen();
     let Some((old, sid, key, name)) =
-        current().map(|p| (p.roster_gen, p.sid, p.key.clone(), p.name.clone()))
+        state.current().map(|p| (p.roster_gen, p.sid, p.key.clone(), p.name.clone()))
     else {
         return false;
     };
     if old == gen {
         return false;
     }
-    supersede();
+    state.supersede(adapter);
     let srcs = sources(sid, &key, &name);
-    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
+    let Some(p) = state.current.as_mut() else {
         return false;
     };
     p.srcs = srcs;
@@ -1121,8 +1211,8 @@ fn src_of(p: &Person, i: usize) -> Option<(ServerId, usize)> {
 }
 
 /// Install ONE landing on the open person. Returns whether anything actually changed.
-fn apply(i: usize, what: Landing) -> bool {
-    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
+fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
+    let Some(p) = state.current.as_mut() else {
         return false;
     };
     match what {
@@ -1134,7 +1224,7 @@ fn apply(i: usize, what: Landing) -> bool {
         | Landing::Profile(None)
         | Landing::Credits(None)
         | Landing::Roles(None) => {
-            unsafe { RETRY_CD[i] = RETRY_FRAMES };
+            state.retry_cd[i] = RETRY_FRAMES;
             // The retry still stands; what ends here is the PLACEHOLDER's licence to keep sweeping.
             // See [`facts_pending`] — a wait nothing can end is not a wait, it is a repaint loop.
             if matches!(what, Landing::Profile(None)) {
@@ -1346,25 +1436,26 @@ fn address(i: usize, p: &Person) -> Option<Vec<String>> {
 }
 
 /// One fetch per mailbox at a time, and only while the open person still wants it. Re-entered every
-/// frame by [`pump`], which is what makes the failure path self-healing: a refused `spawn_small`
+/// frame by [`PersonState::pump`], which is what makes the failure path self-healing: a refused `spawn_small`
 /// (the device's thread ceiling) or a transient network error simply retries after the backoff
 /// instead of latching the page on a spinner forever.
-fn maybe_spawn(i: usize) {
-    if FETCH[i].busy() || unsafe { RETRY_CD[i] > 0 } {
+fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) {
+    if adapter.fetch[i].busy() || state.retry_cd[i] > 0 {
         return;
     }
-    let Some(p) = current() else { return };
+    let Some(p) = state.current() else { return };
     let Some(arg) = address(i, p) else { return };
-    let gen = GEN.load(Ordering::SeqCst);
+    let generation = state.generation;
     // the person's global id rides along: the resolve joins its search answer on it, and the roles
     // worker matches a credit row by either id space
     let guid = p.guid.clone();
     if i == F_PROFILE || i == F_CREDITS {
         let profile = i == F_PROFILE;
-        FETCH[i].claim();
+        adapter.fetch[i].claim();
+        let worker_adapter = Arc::clone(adapter);
         let controlled = crate::app::bootstrap::stores::active();
         let spawned = crate::app::bootstrap::stores::admit(serde_json::json!({
-            "store":"person","slot":i,"gen":gen,"arg":arg,"guid":guid}), ||
+            "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid}), ||
             crate::task::spawn_small("person", move || {
             // filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE (None), not
             // as an empty biography / an empty filmography
@@ -1373,10 +1464,10 @@ fn maybe_spawn(i: usize) {
             } else {
                 Landing::Credits(if controlled { None } else { catch_unwind(|| fetch_credits(&arg[0])).unwrap_or(None) })
             };
-            land(i, gen, what);
+            worker_adapter.land(i, generation, what);
         }));
         if !spawned {
-            FETCH[i].release();
+            adapter.fetch[i].release();
         }
         return;
     }
@@ -1389,7 +1480,7 @@ fn maybe_spawn(i: usize) {
     let Some(c) = crate::plex::client_for(sid) else {
         // a source whose slot holds no client has nothing to contribute right now — back off rather
         // than re-asking every frame; `pump` retries by itself
-        unsafe { RETRY_CD[i] = RETRY_FRAMES };
+        state.retry_cd[i] = RETRY_FRAMES;
         return;
     };
     // …and the SOURCE's own local id, for the roles worker's credit filter. The origin's `key` is
@@ -1401,9 +1492,10 @@ fn maybe_spawn(i: usize) {
         .find(|s| s.sid == sid)
         .and_then(|s| s.local.clone())
         .unwrap_or_default();
-    FETCH[i].claim();
+    adapter.fetch[i].claim();
+    let worker_adapter = Arc::clone(adapter);
     let spawned = crate::app::bootstrap::stores::admit(serde_json::json!({
-        "store":"person","slot":i,"gen":gen,"arg":arg,"guid":guid,
+        "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid,
         "local":local,"client":c.instance_gen(),"sid":sid.raw()}), || crate::task::spawn_small("person", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
         // (None), not as an empty filmography / a source silently written off / no captions
@@ -1443,13 +1535,13 @@ fn maybe_spawn(i: usize) {
             ),
             _ => return, // `un_fx` only ever yields 0..NKIND
         };
-        land(i, gen, what);
+        worker_adapter.land(i, generation, what);
     }));
     if !spawned {
         // nothing will ever fill the mailbox, and the claim is cleared only by a take — release it
         // here or this source never fetches again. `maybe_spawn` runs every frame, so this retries
         // by itself.
-        FETCH[i].release();
+        adapter.fetch[i].release();
     }
 }
 
@@ -1490,7 +1582,8 @@ fn fetch_credits(_guid: &str) -> Option<Vec<crate::plex::discover::CreditGroup>>
 /// `docs/agent-reference.md` calls structural limit #1, and the reason `ff.rs` cfg-gates its `#[link]`s). `pump`
 /// is called by tests, so the reference has to be cut here rather than avoided by discipline.
 /// Everything downstream of the request — the mailbox, the generation guard, the unknown-vs-failed
-/// distinction and the roles mapping — is exercised directly through [`land`]/[`pump`]/[`roles_line`],
+/// distinction and the roles mapping — is exercised directly through the adapter landing,
+/// [`PersonState::pump`] and [`roles_line`],
 /// which is where the logic worth testing actually lives.
 #[cfg(test)]
 fn fetch_profile(_guid: &str) -> Option<crate::plex::discover::PersonProfile> {
@@ -1620,7 +1713,7 @@ pub(crate) struct Department {
 /// steps depend on data that keeps moving: the availability join is a function of the sources, and
 /// a share that lands five seconds in must turn "no server behind this" into "Dad's Plex" without
 /// anybody remembering to invalidate a cache. The screen rebuilds it on the frames
-/// [`pump`] reports a change, which is the same discipline `ui::person`'s header flow uses.
+/// [`PersonState::pump`] reports a change, which is the same discipline the Person screen's header flow uses.
 ///
 /// **Newest first, and an undated credit goes to the BOTTOM with no year.** The alternative —
 /// reading year 0 as "upcoming" and pinning it to the top — makes a title whose metadata is merely
@@ -1757,10 +1850,10 @@ fn match_local(p: &Person, id: &str) -> Option<(ServerId, String)> {
 /// column is the one thing this helper cannot stand in for, and a test that wants it seeds
 /// `Src::matches` instead.
 #[cfg(test)]
-pub(crate) fn install_credits_for_test(groups: &[(&str, usize)]) {
-    crate::testlock::assert_held("the person store (install_credits_for_test)");
+impl PersonState {
+pub(crate) fn install_credits_for_test(&mut self, groups: &[(&str, usize)]) {
     use crate::plex::discover::{Credit, CreditGroup, CreditItem};
-    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
+    let Some(p) = self.current.as_mut() else {
         return;
     };
     p.credits = groups
@@ -1799,10 +1892,8 @@ pub(crate) fn install_credits_for_test(groups: &[(&str, usize)]) {
 /// page's default focus on the entry row exactly until `credited` says so — a caller that wants a
 /// PENDING person (focus still parked, nothing walkable yet) should not call this at all rather
 /// than call it and expect `credited` to stay false.
-#[cfg(test)]
-pub(crate) fn install_for_test(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
-    crate::testlock::assert_held("the person store (install_for_test)");
-    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
+pub(crate) fn install_for_test(&mut self, movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
+    let Some(p) = self.current.as_mut() else {
         return;
     };
     p.credited = true;
@@ -1828,12 +1919,10 @@ pub(crate) fn install_for_test(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
 }
 
 /// TEST ONLY: land one named source's shelves through the same per-source ownership and merge
-/// projection as [`apply`]'s successful media arm. Unlike [`install_for_test`], this does not
+/// projection as [`apply_landing`]'s successful media arm. Unlike [`PersonState::install_for_test`], this does not
 /// settle unrelated credits state and therefore supports multi-source pending-return tests.
-#[cfg(test)]
-pub(crate) fn install_source_for_test(sid: ServerId, movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
-    crate::testlock::assert_held("the person store (install_source_for_test)");
-    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
+pub(crate) fn install_source_for_test(&mut self, sid: ServerId, movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
+    let Some(p) = self.current.as_mut() else {
         return;
     };
     let Some(source) = p.srcs.iter_mut().find(|source| source.sid == sid) else {
@@ -1849,6 +1938,50 @@ pub(crate) fn install_source_for_test(sid: ServerId, movies: Vec<PmsMovie>, show
     resettle(p);
 }
 
+pub(crate) fn seed_ownership_fixture_for_test(&mut self, adapter: &Arc<PersonAdapter>) {
+    self.retry_cd[0] = 17;
+    adapter.fetch[1].claim();
+    adapter.land(1, self.generation.max(1), Landing::Media(None));
+}
+
+pub(crate) fn ownership_fixture_for_test(&self, adapter: &Arc<PersonAdapter>) -> OwnershipFixture {
+    OwnershipFixture {
+        name: self.current().map(|person| person.name.clone()),
+        generation: self.generation,
+        retry_cd: self.retry_cd,
+        flights: std::array::from_fn(|i| adapter.fetch[i].busy()),
+        mail: std::array::from_fn(|i| adapter.fetch[i].slot.lock()
+            .unwrap_or_else(|e| e.into_inner()).is_some()),
+    }
+}
+
+pub(crate) fn late_completion_for_test(
+    &self,
+    adapter: &Arc<PersonAdapter>,
+) -> Box<dyn FnOnce()> {
+    let adapter = Arc::clone(adapter);
+    let generation = self.generation;
+    Box::new(move || {
+        adapter.land(F_PROFILE, generation, Landing::Profile(Some(
+            crate::plex::discover::PersonProfile {
+                summary: "late-old-worker".into(),
+                ..Default::default()
+            },
+        )));
+    })
+}
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OwnershipFixture {
+    name: Option<String>,
+    generation: u32,
+    retry_cd: [u32; NFETCH],
+    flights: [bool; NFETCH],
+    mail: [bool; NFETCH],
+}
+
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
@@ -1861,33 +1994,70 @@ mod tests {
     const S0: ServerId = ServerId::from_raw(0);
     const S1: ServerId = ServerId::from_raw(1);
 
+    struct Owner {
+        state: PersonState,
+        adapter: Arc<PersonAdapter>,
+    }
+
+    impl Default for Owner {
+        fn default() -> Self {
+            Self { state: Default::default(), adapter: Arc::new(Default::default()) }
+        }
+    }
+
+    impl Owner {
+        fn current(&self) -> Option<&Person> { self.state.current() }
+        fn gen(&self) -> u32 { self.state.generation }
+        fn open(&mut self, sid: ServerId, key: &str, guid: &str, name: &str, thumb: &str) {
+            open(&mut self.state, &self.adapter, sid, key, guid, name, thumb);
+        }
+        fn close(&mut self) { close(&mut self.state, &self.adapter); }
+        fn reset(&mut self) {
+            self.adapter = Arc::new(Default::default());
+            reset(&mut self.state, &self.adapter);
+        }
+        fn land(&self, slot: usize, generation: u32, landing: Landing) {
+            self.adapter.land(slot, generation, landing);
+        }
+        fn apply(&mut self, slot: usize, landing: Landing) -> bool {
+            apply_landing(&mut self.state, slot, landing)
+        }
+        fn pump(&mut self) -> bool { self.state.pump(&self.adapter) }
+        fn sync_roster(&mut self) -> bool { sync_roster(&mut self.state, &self.adapter) }
+        fn loading(&self) -> bool { self.state.view().loading() }
+        fn hold_off(&mut self) { self.state.retry_cd = [RETRY_FRAMES; NFETCH]; }
+        fn supersede(&mut self) { self.state.supersede(&self.adapter); }
+    }
+
     #[test]
     fn filmography_preserves_provider_identity_without_a_local_library_copy() {
+        let mut owner = Owner::default();
         let _g = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
-        reset();
-        open(S0, "1001", "", "s00000001", "");
-        install_credits_for_test(&[("Actor", 4)]);
-        let departments = filmography(current().unwrap());
+        owner.reset();
+        owner.open(S0, "1001", "", "s00000001", "");
+        owner.state.install_credits_for_test(&[("Actor", 4)]);
+        let departments = filmography(owner.current().unwrap());
         let rows: Vec<_> = departments.iter().flat_map(|d| &d.rows).collect();
         assert_eq!(rows.iter().map(|r| r.catalog_id.as_str()).collect::<Vec<_>>(),
             ["s00000003", "s00000002", "s00000001", "s00000000"]);
         assert!(rows.iter().all(|r| r.local.is_none()),
             "provider identity survives even when no PMS can supply a local ratingKey");
-        reset();
+        owner.reset();
         crate::plex::reset_servers_for_test();
     }
 
     #[test]
     fn an_open_person_rebuilds_exact_sources_when_the_profile_roster_changes() {
+        let mut owner = Owner::default();
         let _g = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
-        reset();
+        owner.reset();
         let a = crate::plex::register_for_test("person-a", "127.0.0.1", 1, "a", "cid");
         let b = crate::plex::register_for_test("person-b", "127.0.0.1", 2, "b", "cid");
-        open(a, "7", "plex://person/7", "Actor", "");
+        owner.open(a, "7", "plex://person/7", "Actor", "");
         assert_eq!(
-            current()
+            owner.current()
                 .unwrap()
                 .srcs
                 .iter()
@@ -1896,17 +2066,17 @@ mod tests {
             [a, b]
         );
 
-        let old_gen = GEN.load(Ordering::SeqCst);
-        land(
+        let old_gen = owner.gen();
+        owner.land(
             fx(b, K_MEDIA).unwrap(),
             old_gen,
             media(vec![movie_on(b, "4")], Vec::new()),
         );
         crate::plex::revoke_for_profile_switch();
         let c = crate::plex::register_for_test("person-c", "127.0.0.1", 3, "c", "cid");
-        assert!(sync_roster());
+        assert!(owner.sync_roster());
         assert_eq!(
-            current()
+            owner.current()
                 .unwrap()
                 .srcs
                 .iter()
@@ -1915,20 +2085,20 @@ mod tests {
             [a, c]
         );
         assert!(
-            FETCH[fx(b, K_MEDIA).unwrap()]
+            owner.adapter.fetch[fx(b, K_MEDIA).unwrap()]
                 .slot
                 .lock()
                 .unwrap()
                 .is_none(),
             "old-share mail was superseded"
         );
-        assert!(current()
+        assert!(owner.current()
             .unwrap()
             .shelves
             .iter()
             .all(|s| s.items.is_empty()));
 
-        reset();
+        owner.reset();
         crate::plex::reset_servers_for_test();
     }
 
@@ -2006,30 +2176,31 @@ mod tests {
 
     #[test]
     fn per_source_media_resolution_stays_pending_across_failure_until_an_answer() {
+        let mut owner = Owner::default();
         let _serial = crate::testlock::serial();
-        reset();
-        open(S0, "6059", "guid", "Somebody", "");
-        assert!(media_resolving(current().unwrap(), S0));
+        owner.reset();
+        owner.open(S0, "6059", "guid", "Somebody", "");
+        assert!(media_resolving(owner.current().unwrap(), S0));
 
         assert!(
-            !apply(at(S0, K_MEDIA), Landing::Media(None)),
+            !owner.apply(at(S0, K_MEDIA), Landing::Media(None)),
             "a transport failure changes no published shelves"
         );
         assert!(
-            media_resolving(current().unwrap(), S0),
+            media_resolving(owner.current().unwrap(), S0),
             "failure backs off and retries; it is not a terminal missing answer"
         );
 
-        assert!(apply(at(S0, K_MEDIA), media(Vec::new(), Vec::new())));
+        assert!(owner.apply(at(S0, K_MEDIA), media(Vec::new(), Vec::new())));
         assert!(
-            !media_resolving(current().unwrap(), S0),
+            !media_resolving(owner.current().unwrap(), S0),
             "a successful empty media response is a terminal answer for this source"
         );
         assert!(
-            !media_resolving(current().unwrap(), S1),
+            !media_resolving(owner.current().unwrap(), S1),
             "a source absent from the current roster cannot restore a card"
         );
-        reset();
+        owner.reset();
     }
 
     /// The shelves are filled from each ROW's `type`, never from the container's `viewGroup` —
@@ -2305,11 +2476,7 @@ mod tests {
     /// immediately masked by the next fetch claiming it — and, more importantly, so the host suite
     /// spawns NO worker: one would reach for a PMS client that isn't installed and for a plex.tv
     /// these tests must never touch, and a stray background thread also perturbs the process-wide
-    /// fd count `stream.rs`'s tests assert on. Call it before every `pump()`.
-    fn hold_off() {
-        unsafe { RETRY_CD = [RETRY_FRAMES; NFETCH] };
-    }
-
+    /// fd count `stream.rs`'s tests assert on. Call it before every `owner.pump()`.
     fn profile(bio: &str, born: &str, died: &str) -> crate::plex::discover::PersonProfile {
         crate::plex::discover::PersonProfile {
             summary: bio.to_string(),
@@ -2331,8 +2498,9 @@ mod tests {
     /// pair directly, since both halves are properties of the take rather than of `pump`'s sweep.
     #[test]
     fn a_take_releases_the_claim_and_an_empty_mailbox_leaves_it_alone() {
+        let owner = Owner::default();
         let _serial = crate::testlock::serial();
-        let f = &FETCH[at(S0, K_ROLES)];
+        let f = &owner.adapter.fetch[at(S0, K_ROLES)];
         f.clear();
 
         f.claim();
@@ -2342,9 +2510,9 @@ mod tests {
             "an empty mailbox must not un-claim a worker still out"
         );
 
-        land(
+        owner.land(
             at(S0, K_ROLES),
-            GEN.load(Ordering::SeqCst),
+            owner.gen(),
             Landing::Roles(None),
         );
         assert!(f.take().is_some());
@@ -2361,21 +2529,22 @@ mod tests {
     /// single-flight flag while doing so, or the NEW person can never fetch.
     #[test]
     fn a_landing_from_the_previous_person_is_discarded_but_still_releases_the_fetch() {
+        let mut owner = Owner::default();
         let _serial = crate::testlock::serial();
-        open(S0, "161", "5d776", "Idina Menzel", "");
-        let stale = GEN.load(Ordering::SeqCst);
-        open(S0, "465", "5d777", "Cynthia Erivo", ""); // supersedes: the fetch above is now obsolete
+        owner.open(S0, "161", "5d776", "Idina Menzel", "");
+        let stale = owner.gen();
+        owner.open(S0, "465", "5d777", "Cynthia Erivo", ""); // supersedes: the fetch above is now obsolete
 
-        FETCH[at(S0, K_MEDIA)].claim();
-        hold_off();
-        land(
+        owner.adapter.fetch[at(S0, K_MEDIA)].claim();
+        owner.hold_off();
+        owner.land(
             at(S0, K_MEDIA),
             stale,
             media(vec![PmsMovie::default()], Vec::new()),
         );
-        assert!(!pump(), "a superseded landing must not publish");
+        assert!(!owner.pump(), "a superseded landing must not publish");
 
-        let p = current().expect("the new person stays open");
+        let p = owner.current().expect("the new person stays open");
         assert_eq!(p.key, "465");
         assert!(
             p.shelf(0).is_empty(),
@@ -2383,43 +2552,44 @@ mod tests {
         );
         assert!(!p.landed, "a discarded landing must not settle the spinner");
         assert!(
-            !FETCH[at(S0, K_MEDIA)].busy(),
+            !owner.adapter.fetch[at(S0, K_MEDIA)].busy(),
             "the take must release the single-flight even for a landing it drops"
         );
-        close();
+        owner.close();
     }
 
     /// A FAILED fetch (None) must leave a populated page alone and schedule a retry — the
     /// "one wifi hiccup blanked a populated grid" regression, in this store's shape.
     #[test]
     fn a_failed_fetch_keeps_the_shelves_and_backs_off_instead_of_publishing_empty() {
+        let mut owner = Owner::default();
         let _serial = crate::testlock::serial();
-        open(S0, "161", "5d776", "Idina Menzel", "");
-        let gen = GEN.load(Ordering::SeqCst);
+        owner.open(S0, "161", "5d776", "Idina Menzel", "");
+        let gen = owner.gen();
         // seed a populated, landed page the honest way (through the pump)
-        land(
+        owner.land(
             at(S0, K_MEDIA),
             gen,
             media(vec![PmsMovie::default()], Vec::new()),
         );
-        hold_off();
-        assert!(pump());
-        assert_eq!(current().unwrap().shelf(0).len(), 1);
+        owner.hold_off();
+        assert!(owner.pump());
+        assert_eq!(owner.current().unwrap().shelf(0).len(), 1);
 
-        land(at(S0, K_MEDIA), gen, Landing::Media(None)); // the retry fails
-        hold_off();
-        assert!(!pump(), "a failure publishes nothing");
+        owner.land(at(S0, K_MEDIA), gen, Landing::Media(None)); // the retry fails
+        owner.hold_off();
+        assert!(!owner.pump(), "a failure publishes nothing");
         assert_eq!(
-            current().unwrap().shelf(0).len(),
+            owner.current().unwrap().shelf(0).len(),
             1,
             "the failure wiped a populated shelf"
         );
         assert_eq!(
-            unsafe { RETRY_CD[at(S0, K_MEDIA)] },
+            owner.state.retry_cd[at(S0, K_MEDIA)],
             RETRY_FRAMES,
             "a failure must back off before retrying"
         );
-        close();
+        owner.close();
     }
 
     /// `close`/`reset` drop the mailboxes, and a single-flight flag is cleared ONLY by a successful
@@ -2428,23 +2598,24 @@ mod tests {
     /// the whole index space is walked, so a slot that has left the roster cannot latch either.
     #[test]
     fn close_clears_every_single_flight_flag_and_retry_backoff() {
+        let mut owner = Owner::default();
         let _serial = crate::testlock::serial();
-        open(S0, "161", "5d776", "Idina Menzel", "");
+        owner.open(S0, "161", "5d776", "Idina Menzel", "");
         for i in 0..NFETCH {
-            FETCH[i].claim();
-            unsafe { RETRY_CD[i] = RETRY_FRAMES };
+            owner.adapter.fetch[i].claim();
+            owner.state.retry_cd[i] = RETRY_FRAMES;
         }
 
-        reset();
+        owner.reset();
 
         for i in 0..NFETCH {
             assert!(
-                !FETCH[i].busy(),
+                !owner.adapter.fetch[i].busy(),
                 "fetch {i} stayed latched — the page wedges"
             );
-            assert_eq!(unsafe { RETRY_CD[i] }, 0);
+            assert_eq!(owner.state.retry_cd[i], 0);
         }
-        assert!(current().is_none());
+        assert!(owner.current().is_none());
     }
 
     /// The plex.tv profile lands into the HEADER fields and settles the fetch — and it must not
@@ -2452,18 +2623,19 @@ mod tests {
     /// SINGLE fetch on purpose: plex.tv answers about the person, not about anybody's library.
     #[test]
     fn a_profile_landing_fills_the_header_without_touching_the_shelves() {
+        let mut owner = Owner::default();
         let _serial = crate::testlock::serial();
-        open(S0, "6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
-        let gen = GEN.load(Ordering::SeqCst);
-        land(
+        owner.open(S0, "6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
+        let gen = owner.gen();
+        owner.land(
             at(S0, K_MEDIA),
             gen,
             media(vec![PmsMovie::default()], Vec::new()),
         );
-        hold_off();
-        assert!(pump());
+        owner.hold_off();
+        assert!(owner.pump());
 
-        land(
+        owner.land(
             F_PROFILE,
             gen,
             Landing::Profile(Some(profile(
@@ -2472,12 +2644,12 @@ mod tests {
                 "2017-06-02",
             ))),
         );
-        hold_off();
+        owner.hold_off();
         assert!(
-            pump(),
+            owner.pump(),
             "the profile landing is a change the screen must see"
         );
-        let p = current().unwrap();
+        let p = owner.current().unwrap();
         assert_eq!(p.bio, "An English actor.");
         assert_eq!(p.born, "1921-02-01");
         assert_eq!(
@@ -2490,7 +2662,7 @@ mod tests {
             1,
             "the biography landing wiped the shelves"
         );
-        close();
+        owner.close();
     }
 
     /// plex.tv answers **200 with an empty container** for a person it has never heard of, which
@@ -2499,18 +2671,19 @@ mod tests {
     /// the opposite. Getting this backwards is a page that re-requests a biography forever.
     #[test]
     fn an_unknown_person_settles_the_profile_while_a_failure_backs_off() {
+        let mut owner = Owner::default();
         let _serial = crate::testlock::serial();
-        open(S0, "6059", "0000000000000000000000ff", "Nobody", "");
-        let gen = GEN.load(Ordering::SeqCst);
-        hold_off();
+        owner.open(S0, "6059", "0000000000000000000000ff", "Nobody", "");
+        let gen = owner.gen();
+        owner.hold_off();
 
-        land(
+        owner.land(
             F_PROFILE,
             gen,
             Landing::Profile(Some(crate::plex::discover::PersonProfile::default())),
         );
-        assert!(pump());
-        let p = current().unwrap();
+        assert!(owner.pump());
+        let p = owner.current().unwrap();
         assert!(
             p.profiled,
             "an 'unknown person' answer must settle, not retry forever"
@@ -2520,19 +2693,19 @@ mod tests {
             "nothing may be invented for an unknown person"
         );
         assert!(
-            unsafe { RETRY_CD[F_PROFILE] } < RETRY_FRAMES,
+            owner.state.retry_cd[F_PROFILE] < RETRY_FRAMES,
             "an ANSWER must not arm the failure backoff"
         );
 
-        land(F_PROFILE, gen, Landing::Profile(None)); // now a real transport failure
-        hold_off();
-        assert!(!pump());
+        owner.land(F_PROFILE, gen, Landing::Profile(None)); // now a real transport failure
+        owner.hold_off();
+        assert!(!owner.pump());
         assert_eq!(
-            unsafe { RETRY_CD[F_PROFILE] },
+            owner.state.retry_cd[F_PROFILE],
             RETRY_FRAMES,
             "a failure must back off before retrying"
         );
-        close();
+        owner.close();
     }
 
     /// `roles_from` keeps exactly THIS person's credit per row — matched by the tag's numeric id
@@ -2592,18 +2765,19 @@ mod tests {
     /// it was addressed to, and the cleared `roled` is what re-asks for the new one.
     #[test]
     fn a_roles_landing_captions_by_key_and_a_media_landing_resets_it() {
+        let mut owner = Owner::default();
         let _serial = crate::testlock::serial();
-        open(S0, "6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
-        let gen = GEN.load(Ordering::SeqCst);
+        owner.open(S0, "6059", "5d7768268718ba001e311be6", "Peter Sallis", "");
+        let gen = owner.gen();
         let (fm, fr) = (at(S0, K_MEDIA), at(S0, K_ROLES));
         let movie = |rk: &str| movie_on(S0, rk);
-        land(
+        owner.land(
             fm,
             gen,
             media(vec![movie("1971"), movie("2005")], vec![movie("1975")]),
         );
-        hold_off();
-        assert!(pump());
+        owner.hold_off();
+        assert!(owner.pump());
 
         // a landing addressed to keys the store no longer holds must be REFUSED — and without the
         // failure backoff: it is stale, not broken, and the re-ask must be free to go at once. The
@@ -2613,17 +2787,17 @@ mod tests {
             keys: vec!["9999".to_string()],
             pairs: vec![("9999".to_string(), "Nobody".to_string())],
         };
-        land(fr, gen, Landing::Roles(Some(stale)));
-        hold_off();
-        unsafe { RETRY_CD[fr] = 5 };
-        assert!(!pump(), "a mis-addressed caption landing published");
+        owner.land(fr, gen, Landing::Roles(Some(stale)));
+        owner.hold_off();
+        owner.state.retry_cd[fr] = 5;
+        assert!(!owner.pump(), "a mis-addressed caption landing published");
         assert_eq!(
-            current().unwrap().role(0, 0),
+            owner.current().unwrap().role(0, 0),
             "",
             "a stale landing captioned the CURRENT list"
         );
         assert_eq!(
-            unsafe { RETRY_CD[fr] },
+            owner.state.retry_cd[fr],
             4,
             "staleness is not a failure — no backoff armed (the sentinel just ticked)"
         );
@@ -2635,10 +2809,10 @@ mod tests {
             ("2005".to_string(), "Wallace / Hutch (voice)".to_string()),
             ("1971".to_string(), "Wallace (voice)".to_string()),
         ];
-        land(fr, gen, Landing::Roles(Some(RolesLanding { keys, pairs })));
-        hold_off();
-        assert!(pump(), "a caption landing is a change the screen must see");
-        let p = current().unwrap();
+        owner.land(fr, gen, Landing::Roles(Some(RolesLanding { keys, pairs })));
+        owner.hold_off();
+        assert!(owner.pump(), "a caption landing is a change the screen must see");
+        let p = owner.current().unwrap();
         assert_eq!(p.role(0, 0), "Wallace (voice)");
         assert_eq!(p.role(0, 1), "Wallace / Hutch (voice)");
         assert_eq!(p.role(1, 0), "Wallace");
@@ -2649,20 +2823,20 @@ mod tests {
         );
 
         // a fresh media landing (same person) replaces the shelves — the captions go WITH them
-        land(fm, gen, media(vec![movie("2005")], Vec::new()));
-        hold_off();
-        assert!(pump());
+        owner.land(fm, gen, media(vec![movie("2005")], Vec::new()));
+        owner.hold_off();
+        assert!(owner.pump());
         assert_eq!(
-            current().unwrap().role(0, 0),
+            owner.current().unwrap().role(0, 0),
             "",
             "a caption survived the list it was addressed to"
         );
         // …and the cleared flag is what re-asks: the roles fetch is addressable again
         assert!(
-            address(fr, current().unwrap()).is_some(),
+            address(fr, owner.current().unwrap()).is_some(),
             "the reset is what re-asks for the new list's captions"
         );
-        close();
+        owner.close();
     }
 
     // ---- multi-source --------------------------------------------------------------------------
@@ -2686,6 +2860,7 @@ mod tests {
     /// registered one: the origin with the id it was handed, each share through a resolve first.
     #[test]
     fn every_registered_server_is_a_source_and_only_the_origin_skips_the_resolve() {
+        let mut owner = Owner::default();
         let _g = fresh_registry();
         // `register_for_test`, not the public `register`: the latter resolves the device id through
         // `session::load`, which mints and PERSISTS a uuid on a host that has no session file.
@@ -2699,8 +2874,8 @@ mod tests {
             "cid-person-test",
         );
 
-        open(friend, "77", "5d77682a", "Idina Menzel", ""); // arrived through the SHARE
-        let p = current().unwrap();
+        owner.open(friend, "77", "5d77682a", "Idina Menzel", ""); // arrived through the SHARE
+        let p = owner.current().unwrap();
         assert_eq!(
             p.srcs.len(),
             2,
@@ -2727,19 +2902,19 @@ mod tests {
         );
 
         // the resolve lands: now, and only now, is that server's own filmography addressable
-        let gen = GEN.load(Ordering::SeqCst);
-        land(
+        let gen = owner.gen();
+        owner.land(
             at(own, K_RESOLVE),
             gen,
             Landing::Resolve(Some("918".to_string())),
         );
-        hold_off();
-        assert!(pump());
+        owner.hold_off();
+        assert!(owner.pump());
         assert_eq!(
-            address(at(own, K_MEDIA), current().unwrap()),
+            address(at(own, K_MEDIA), owner.current().unwrap()),
             Some(vec!["918".to_string()])
         );
-        close();
+        owner.close();
     }
 
     /// A server that has never heard of them contributes nothing — **and that is an answer.** It
@@ -2749,6 +2924,7 @@ mod tests {
     /// have them is still fetching.
     #[test]
     fn a_source_that_has_never_heard_of_them_contributes_nothing_without_failing_the_others() {
+        let mut owner = Owner::default();
         let _g = fresh_registry();
         let own =
             crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-person-test");
@@ -2759,40 +2935,40 @@ mod tests {
             "tok",
             "cid-person-test",
         );
-        open(own, "161", "5d77682a", "Idina Menzel", "");
-        let gen = GEN.load(Ordering::SeqCst);
+        owner.open(own, "161", "5d77682a", "Idina Menzel", "");
+        let gen = owner.gen();
 
         // the share answers first, with nothing
-        land(
+        owner.land(
             at(friend, K_RESOLVE),
             gen,
             Landing::Resolve(Some(String::new())),
         );
-        hold_off();
-        pump();
+        owner.hold_off();
+        owner.pump();
         assert!(
-            !current().unwrap().landed,
+            !owner.current().unwrap().landed,
             "an empty answer must not settle a page still fetching"
         );
         assert_eq!(
-            unsafe { RETRY_CD[at(friend, K_RESOLVE)] },
+            owner.state.retry_cd[at(friend, K_RESOLVE)],
             RETRY_FRAMES - 1,
             "an ANSWER is not a failure"
         );
         assert!(
-            address(at(friend, K_MEDIA), current().unwrap()).is_none(),
+            address(at(friend, K_MEDIA), owner.current().unwrap()).is_none(),
             "a server with no record of them must not be asked for their filmography"
         );
 
         // …and the server that does have them fills the page by itself
-        land(
+        owner.land(
             at(own, K_MEDIA),
             gen,
             media(vec![movie_on(own, "1971")], Vec::new()),
         );
-        hold_off();
-        assert!(pump());
-        let p = current().unwrap();
+        owner.hold_off();
+        assert!(owner.pump());
+        let p = owner.current().unwrap();
         assert_eq!(p.shelf(0).len(), 1);
         assert_eq!(
             p.shelf(0)[0].sid,
@@ -2803,7 +2979,7 @@ mod tests {
             p.landed,
             "one source answering is enough to stop the spinner"
         );
-        close();
+        owner.close();
     }
 
     /// The other direction of the same fold: when NO source has anything, the page may only say so
@@ -2811,6 +2987,7 @@ mod tests {
     /// in your libraries" over the fetch still out on the other server.
     #[test]
     fn the_page_says_nothing_only_once_every_source_has_answered() {
+        let mut owner = Owner::default();
         let _g = fresh_registry();
         let own =
             crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-person-test");
@@ -2821,32 +2998,32 @@ mod tests {
             "tok",
             "cid-person-test",
         );
-        open(own, "161", "5d77682a", "Idina Menzel", "");
-        let gen = GEN.load(Ordering::SeqCst);
+        owner.open(own, "161", "5d77682a", "Idina Menzel", "");
+        let gen = owner.gen();
         assert!(
-            loading(),
+            owner.loading(),
             "a page that has asked nobody anything yet is loading"
         );
 
-        land(
+        owner.land(
             at(friend, K_RESOLVE),
             gen,
             Landing::Resolve(Some(String::new())),
         );
-        hold_off();
-        pump();
-        assert!(loading(), "one source's 'no' is not the page's answer");
+        owner.hold_off();
+        owner.pump();
+        assert!(owner.loading(), "one source's 'no' is not the page's answer");
 
         // the origin answers with an empty (but successful) filmography — now the page HAS an answer
-        land(at(own, K_MEDIA), gen, media(Vec::new(), Vec::new()));
-        hold_off();
-        pump();
+        owner.land(at(own, K_MEDIA), gen, media(Vec::new(), Vec::new()));
+        owner.hold_off();
+        owner.pump();
         assert!(
-            !loading(),
+            !owner.loading(),
             "every source has answered — the page is finished, not still loading"
         );
-        assert!(current().unwrap().shelf(0).is_empty());
-        close();
+        assert!(owner.current().unwrap().shelf(0).is_empty());
+        owner.close();
     }
 
     /// The same flash from the other side. A `/media` response can SUCCEED and still put no tile on
@@ -2855,6 +3032,7 @@ mod tests {
     /// empty read-out over a share still resolving, whose films then pop in on top of the words.
     #[test]
     fn a_successful_but_empty_filmography_is_not_something_to_show() {
+        let mut owner = Owner::default();
         let _g = fresh_registry();
         let own =
             crate::plex::register_for_test("mach-own", "10.0.0.1", 32400, "tok", "cid-person-test");
@@ -2865,40 +3043,40 @@ mod tests {
             "tok",
             "cid-person-test",
         );
-        open(own, "161", "5d77682a", "Idina Menzel", "");
-        let gen = GEN.load(Ordering::SeqCst);
+        owner.open(own, "161", "5d77682a", "Idina Menzel", "");
+        let gen = owner.gen();
 
         // the origin succeeds with nothing shelvable while the share has not answered at all
-        land(at(own, K_MEDIA), gen, media(Vec::new(), Vec::new()));
-        hold_off();
-        pump();
+        owner.land(at(own, K_MEDIA), gen, media(Vec::new(), Vec::new()));
+        owner.hold_off();
+        owner.pump();
         assert!(
-            loading(),
+            owner.loading(),
             "a successful EMPTY answer is not content — the share is still out"
         );
 
         // …and the share then fills the page
-        land(
+        owner.land(
             at(friend, K_RESOLVE),
             gen,
             Landing::Resolve(Some("918".to_string())),
         );
-        hold_off();
-        pump();
-        land(
+        owner.hold_off();
+        owner.pump();
+        owner.land(
             at(friend, K_MEDIA),
             gen,
             media(vec![movie_on(friend, "5274")], Vec::new()),
         );
-        hold_off();
-        assert!(pump());
-        assert!(!loading());
+        owner.hold_off();
+        assert!(owner.pump());
+        assert!(!owner.loading());
         assert_eq!(
-            current().unwrap().shelf(0).len(),
+            owner.current().unwrap().shelf(0).len(),
             1,
             "the borrowed film is the whole page"
         );
-        close();
+        owner.close();
     }
 
     /// The roles line is Plex's "Actor, Producer" kicker: display titles, most-credited first,
@@ -2939,9 +3117,10 @@ mod tests {
     /// discover provider answers 401.
     #[test]
     fn the_header_stops_sweeping_once_the_profile_has_actually_been_asked() {
+        let mut owner = Owner::default();
         let _serial = crate::testlock::serial();
-        open(ServerId::from_raw(0), "1", "guid", "Somebody", "");
-        let p = unsafe { (*addr_of_mut!(CURRENT)).as_mut().expect("open mounts a person") };
+        owner.open(ServerId::from_raw(0), "1", "guid", "Somebody", "");
+        let p = owner.state.current.as_mut().expect("open mounts a person");
         assert!(facts_pending(p), "before any attempt, the band is genuinely waiting");
         p.profile_tried = true;
         assert!(
@@ -2951,7 +3130,7 @@ mod tests {
         // …and a later success still fills it in — `profiled` is what draws the content.
         p.profiled = true;
         assert!(!facts_pending(p));
-        supersede();
+        owner.supersede();
     }
 
 }

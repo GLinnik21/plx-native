@@ -1,9 +1,9 @@
 //! **Stores as machines** (restructure spec §2.1/§2.2, phase 4; `docs/stores-as-machines.md`).
 //!
 //! Six data modules provide the application's server-derived state — `browse`, `pms` (the Home
-//! hubs), `metadata`, `search`, `person`, `viewstate`. Browse and ViewState are physically owned by
+//! hubs), `metadata`, `search`, `person`, `viewstate`. Browse, Person and ViewState are physically owned by
 //! one [`Stores`] aggregate per `crate::app::bridge::Bridge`, with per-instance state, adapter and
-//! notice; the other four retain the compatibility global + mailbox shape. This layer puts ONE entrance in
+//! notice; the other three retain the compatibility global + mailbox shape. This layer puts ONE entrance in
 //! front of each: a [`StoreCmd`] is the complete, enumerated vocabulary of mutations, a store's
 //! owned command decoder is the one place its vocabulary is applied, and every command that changes
 //! observable state or landing that changes the store raises the store's NOTICE (a generation the
@@ -12,9 +12,9 @@
 //! Owned stores have two caller shapes and one explicit owner: screens emit `AppFx::Store(id, cmd)` for
 //! `app/bridge.rs` to deliver, while same-turn application boundaries call a method on the
 //! [`Stores`] value they already hold. The generic `apply(cmd)` dispatcher remains only for the
-//! four not-yet-owned stores and rejects Browse and ViewState commands.
+//! three not-yet-owned stores and rejects Browse, Person and ViewState commands.
 //!
-//! What lives here is the vocabulary and machines plus Browse/ViewState's production aggregate; the remaining
+//! What lives here is the vocabulary and machines plus Browse/Person/ViewState's production aggregate; the remaining
 //! data stays in the legacy modules until its ownership slice (§14). This module names data crates, `ui::machine` and — since
 //! phase 11's landing schedule — `ui::landgate`, and nothing else (spec §2.1's layer rule;
 //! `ci/check-deps.sh`'s `mutators` gate refuses the old spelling outside `stores/` and the data
@@ -80,17 +80,22 @@ pub(crate) mod person;
 pub(crate) mod search;
 pub(crate) mod viewstate;
 
-/// Production store aggregate. Browse and ViewState are physical owners here; the remaining stores
+/// Production store aggregate. Browse, Person and ViewState are physical owners here; the remaining stores
 /// retain their compatibility owners until their corresponding ownership slices land.
 pub(crate) struct Stores {
     pub(crate) browse: std::rc::Rc<std::cell::RefCell<browse::BrowseStore>>,
+    pub(crate) person: person::PersonStore,
     pub(crate) viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
 }
 
 impl Default for Stores {
     fn default() -> Self {
         let browse = std::rc::Rc::new(std::cell::RefCell::new(browse::BrowseStore::default()));
-        Self { browse, viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()) }
+        Self {
+            browse,
+            person: person::PersonStore::default(),
+            viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
+        }
     }
 }
 
@@ -104,6 +109,18 @@ impl Stores {
         self.browse.borrow_mut().discover_pump()
     }
 
+    pub(crate) fn person_run(&mut self, cmd: person::PersonCmd) -> bool {
+        self.person.run(cmd)
+    }
+
+    pub(crate) fn person_pump(&mut self) -> bool {
+        self.person.pump()
+    }
+
+    pub(crate) fn person_view(&self) -> crate::person::PersonView<'_> {
+        self.person.view()
+    }
+
     /// Controlled discovery against this aggregate's Browse owner.
     pub(crate) fn browse_controlled_discover(
         &self,
@@ -115,26 +132,32 @@ impl Stores {
     /// ViewState's synchronous command path, with every Browse side effect addressed back to this
     /// aggregate. The callback is invoked inline, preserving the press-frame optimistic edit.
     pub(crate) fn viewstate_run(
-        &self,
+        &mut self,
         cmd: viewstate::ViewStateCmd,
         directory: browse::DirectoryView<'_>,
     ) -> bool {
+        let browse = std::rc::Rc::clone(&self.browse);
+        let person = &mut self.person;
         self.viewstate.borrow_mut().run(
             cmd,
-            &mut |browse| self.browse_run(browse),
+            &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubs| hubs::apply_with_directory(hubs, directory),
+            &mut |cmd| person.run(cmd),
         )
     }
 
     /// ViewState's route-unconditional landing pass. Fan-out edits and the terminal section-hubs
     /// invalidation are applied to this aggregate's Browse owner before the pump returns.
     pub(crate) fn viewstate_pump(
-        &self,
+        &mut self,
         directory: browse::DirectoryView<'_>,
     ) -> EndpointRefreshSet {
+        let browse = std::rc::Rc::clone(&self.browse);
+        let person = &mut self.person;
         self.viewstate.borrow_mut().pump(
-            &mut |browse| self.browse_run(browse),
+            &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubs| hubs::apply_with_directory(hubs, directory),
+            &mut |cmd| person.run(cmd),
         )
     }
 
@@ -158,6 +181,7 @@ impl Stores {
     pub(crate) fn gen(&self, id: StoreId) -> u32 {
         match id {
             StoreId::Browse => self.browse.borrow().gen(),
+            StoreId::Person => self.person.gen(),
             StoreId::ViewState => self.viewstate.borrow().gen(),
             _ => gen(id),
         }
@@ -165,9 +189,12 @@ impl Stores {
 
     pub(crate) fn take_notices(&self) -> Vec<(StoreId, u32)> {
         let mut notices = take_notices();
-        notices.retain(|(id, _)| !matches!(id, StoreId::Browse | StoreId::ViewState));
+        notices.retain(|(id, _)| !matches!(id, StoreId::Browse | StoreId::Person | StoreId::ViewState));
         if let Some(generation) = self.browse.borrow().take_notice() {
             notices.insert(0, (StoreId::Browse, generation));
+        }
+        if let Some(generation) = self.person.take_notice() {
+            notices.push((StoreId::Person, generation));
         }
         if let Some(generation) = self.viewstate.borrow().take_notice() {
             notices.push((StoreId::ViewState, generation));
@@ -274,21 +301,21 @@ pub(crate) enum StoreEv<C> {
     Pump { dt: f32 },
 }
 
-/// Apply one command to a not-yet-owned store. Browse and ViewState are deliberately rejected:
+/// Apply one command to a not-yet-owned store. Browse, Person and ViewState are deliberately rejected:
 /// their dispatcher and synchronous paths require the concrete [`Stores`] owner.
 pub(crate) fn apply(cmd: StoreCmd) -> StoreOutcome {
     match cmd {
         StoreCmd::Browse(_) => panic!("Browse commands require an explicit Stores owner"),
+        StoreCmd::Person(_) => panic!("Person commands require an explicit Stores owner"),
         StoreCmd::ViewState(_) => panic!("ViewState commands require an explicit Stores owner"),
         StoreCmd::Hubs(c) => hubs::run(c),
         StoreCmd::Metadata(c) => StoreOutcome::changed(metadata::run(c)),
         StoreCmd::Search(c) => StoreOutcome::changed(search::run(c)),
-        StoreCmd::Person(c) => StoreOutcome::changed(person::run(c)),
     }
 }
 
 // ---------------------------------------------------------------------------------------------
-// Compatibility notices for the four not-yet-owned stores. BrowseStore and ViewStateStore carry
+// Compatibility notices for the three not-yet-owned stores. BrowseStore, PersonStore and ViewStateStore carry
 // notices in the per-Bridge aggregate and have no slots in this compatibility array.
 // ---------------------------------------------------------------------------------------------
 
@@ -307,15 +334,14 @@ const fn notice() -> Notice {
 /// Atomics rather than `static mut`: they are read and written on the main thread only, but an
 /// atomic needs no `unsafe` block at the ~40 call sites and is what the legacy stores already use
 /// for their own generations.
-static NOTICES: [Notice; 4] = [notice(), notice(), notice(), notice()];
+static NOTICES: [Notice; 3] = [notice(), notice(), notice()];
 
 fn compatibility_notice(id: StoreId) -> &'static Notice {
     &NOTICES[match id {
         StoreId::Hubs => 0,
         StoreId::Metadata => 1,
         StoreId::Search => 2,
-        StoreId::Person => 3,
-        StoreId::Browse | StoreId::ViewState => {
+        StoreId::Browse | StoreId::Person | StoreId::ViewState => {
             panic!("owned store notices require an explicit Stores owner")
         }
     }]
@@ -334,11 +360,11 @@ pub(crate) fn gen(id: StoreId) -> u32 {
     compatibility_notice(id).gen.load(Ordering::Relaxed)
 }
 
-/// Drain the four compatibility notices. `Stores::take_notices` adds both owned notices and is the
+/// Drain the three compatibility notices. `Stores::take_notices` adds owned notices and is the
 /// aggregate drain used by `app/bridge.rs` once per frame.
 pub(crate) fn take_notices() -> Vec<(StoreId, u32)> {
     let mut out = Vec::new();
-    for id in [StoreId::Hubs, StoreId::Metadata, StoreId::Search, StoreId::Person] {
+    for id in [StoreId::Hubs, StoreId::Metadata, StoreId::Search] {
         let n = compatibility_notice(id);
         if n.dirty.swap(false, Ordering::Relaxed) {
             out.push((id, n.gen.load(Ordering::Relaxed)));
@@ -424,9 +450,10 @@ mod tests {
     }
 
     #[test]
-    fn generic_dispatch_rejects_both_physically_owned_stores() {
+    fn generic_dispatch_rejects_all_physically_owned_stores() {
         for command in [
             StoreCmd::Browse(browse::BrowseCmd::Reset),
+            StoreCmd::Person(person::PersonCmd::Reset),
             StoreCmd::ViewState(viewstate::ViewStateCmd::Reset),
         ] {
             assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply(command))).is_err());

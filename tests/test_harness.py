@@ -4808,6 +4808,46 @@ impl ViewStateOwnerGateFixture {
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok — viewstate-owner", r.stdout)
 
+    def test_person_owner_gate_rejects_free_read_and_mutation_facades(self):
+        for declaration in (
+            "pub(crate) fn current() -> Option<()> { None }\n",
+            "#[inline]\npub(super)\nfn\npump() -> bool { false }\n",
+            "pub(crate) fn apply() {}\n",
+        ):
+            with self.subTest(declaration=declaration):
+                r = self._prepend("person.rs", "\n" + declaration)
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, out)
+                self.assertIn("person-owner:", out)
+
+    def test_person_owner_gate_rejects_model_transport_and_selector_statics(self):
+        fixtures = (
+            ("person.rs", "static mut CURRENT: Option<Person> = None;\n"),
+            ("person.rs", "static FETCH: Option<Fetch> = None;\n"),
+            ("person.rs", "static RETRY_CD: [u32; 1] = [0];\n"),
+            ("stores/person.rs", "static RETIRED: Option<PersonStore> = None;\n"),
+            ("stores/person.rs", "thread_local! {\n    static ACTIVE: () = ();\n}\n"),
+        )
+        for relpath, declaration in fixtures:
+            with self.subTest(declaration=declaration):
+                r = self._prepend(relpath, "\n" + declaration)
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, out)
+                self.assertIn("person-owner:", out)
+
+    def test_person_owner_gate_accepts_receiver_bound_owned_methods(self):
+        fixture = """
+struct PersonOwnerGateFixture;
+impl PersonOwnerGateFixture {
+    pub(crate) fn current(&self) -> Option<()> { None }
+    pub(crate) fn pump(&mut self) -> bool { false }
+    pub(crate) fn apply(&mut self) {}
+}
+"""
+        r = self._prepend("person.rs", fixture)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok — person-owner", r.stdout)
+
     def test_threads_gate_catches_a_bare_thread_spawn_after_use_std_thread(self):
         """The gate used to match only the fully-qualified `std::thread::spawn(` spelling, so a
         file that does `use std::thread;` and then calls the bare `thread::spawn(` — exactly the

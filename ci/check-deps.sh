@@ -409,6 +409,25 @@ else
   fail "viewstate-owner: retired ViewState compatibility surface returned"
 fi
 
+# person-owner: Person's model/generation/retry/dev seed live in PersonState, its indexed fetch
+# claims/mailboxes live in the rotated Arc<PersonAdapter>, and both belong to one PersonStore per
+# Bridge. Zero tolerance, no allowlist: any free state facade or storage selector reconnects those
+# owners and lets an unaddressed reset, pump or optimistic edit cross the Bridge boundary.
+person_facades='current|loading|run|pump|apply|install_for_test|install_source_for_test|install_credits_for_test'
+person_selectors='ACTIVE|OWNER|CURRENT|GEN|RETRY_CD|FETCH|MAIL|PERSON|PERSON_STATE|LEGACY_ADAPTER|HELD'
+person_owner_matches=$({
+  owner_declarations "$person_facades" "$person_selectors" \
+    'PersonState|PersonAdapter|PersonStore|Person|Fetch|Mail|Landing' \
+    "$SRC/person.rs" "$SRC/stores/person.rs"
+  grep_code "(crate::person|crate::stores::person|stores::person)::($person_facades)\(" "$SRC"
+} | sort -u)
+if [ -z "$person_owner_matches" ]; then
+  ok "person-owner: zero global storage, transport, selectors, and free facades"
+else
+  echo "$person_owner_matches" | sed 's/^/    /'
+  fail "person-owner: retired Person compatibility surface returned"
+fi
+
 # libm: the method-call spelling, OUTSIDE ui/motion.rs (which owns the integrators and their
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
 # Wholly-test files (see `wholly_test_files`) are skipped like inline `#[cfg(test)]` blocks: a

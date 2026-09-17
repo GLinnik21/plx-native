@@ -73,7 +73,7 @@ mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRI
 pub(crate) mod testlock {
     //! One lock for every test that touches a process-global.
     //!
-    //! The app's async seams are process-wide by construction — `static mut CURRENT`, route's play
+    //! Some remaining async seams are process-wide by construction — metadata's `static mut CURRENT`, route's play
     //! mailbox, the player's SHARED block — so tests in DIFFERENT modules contend on the same
     //! state and `cargo test` threads them. A per-module mutex cannot see that: the season and
     //! detail mailboxes are two test functions in one file, but the season generation also moves
@@ -101,9 +101,9 @@ pub(crate) mod testlock {
     //! That DoD criterion scopes a bare `static mut` OUT of `screens`/`ui` engine code — it asks
     //! "does a SCREEN still own process-wide state a second instance would corrupt", and an
     //! allowlisted exception there is a debt with a name and a phase number. A store's data module
-    //! (`pms`, `metadata`, `search`, `person`) is a different question entirely: those remaining
+    //! (`pms`, `metadata`, `search`) is a different question entirely: those remaining
     //! compatibility stores keep process-wide statics **by design** — `docs/stores-as-machines.md`
-    //! §1 is explicit about that temporary shape. Browse and ViewState have since moved to
+    //! §1 is explicit about that temporary shape. Browse, Person and ViewState have since moved to
     //! per-`Bridge` physical owners, and their owner gates reject a restored process global. For
     //! each remaining compatibility store, an allowlist entry would therefore be a permanent
     //! fixture wearing a temporary label. What such a store genuinely owes is not "stop being
@@ -116,16 +116,15 @@ pub(crate) mod testlock {
     //!
     //! **Phase 12 / D5 closed the coverage this claim depends on** (2026-09-10): each remaining
     //! process-global store's `apply`/`run` funnel asserts (`stores::hubs::run`,
-    //! `stores::metadata::run`, `stores::person::run`, and `stores::search::run`), as does every
-    //! `_for_test` installer that touches shared state. Browse and ViewState fixtures instead own
+    //! `stores::metadata::run` and `stores::search::run`), as does every
+    //! `_for_test` installer that touches shared state. Browse, Person and ViewState fixtures instead own
     //! explicit stores; Browse's helpers cover source, pin,
     //! table, item, letter and query seeds without selecting process Browse state. Helpers that
     //! also touch the shared session or server registry assert the same lock. The remaining global
     //! installers include `metadata.rs`
     //! (`install_for_test`, `set_current_for_test`, `begin_detail_for_test`,
     //! `land_detail_for_test`), `search.rs` (`publish_shelves_for_test`,
-    //! `debounce_elapsed_for_test`), `person.rs` (`install_credits_for_test`, `install_for_test`,
-    //! `install_source_for_test`) and `pms.rs`'s own eleven sites — and so does every entry point of
+    //! `debounce_elapsed_for_test`) and `pms.rs`'s own eleven sites — and so does every entry point of
     //! the server registry a test can reach: `plex::servers::register_with_client_id` (and the
     //! `register_lazy` seam it and its sibling test constructors share), `revoke_all`,
     //! `set_current` and `reset_for_test`. A three-run `make check` plus a ten-run

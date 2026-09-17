@@ -453,7 +453,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
     let ready = if boot.waiting_person {
         app.pages.nav.top_page().is_some_and(|entry| {
             let AppArg::Content(ContentArg::Person { sid, key, .. }) = &entry.arg else { return false };
-            crate::person::current().is_some_and(|p| p.sid == *sid && p.key == *key
+            app.bridge.person_view().current().is_some_and(|p| p.sid == *sid && p.key == *key
                 // **The BIO sheet waits for the person, not for the CREDITS.** The filmography
                 // needs `credited`/`landed` because it is a list of them; the biography needs the
                 // person's own facts, which the header already has. Requiring the credits here
@@ -488,7 +488,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
             .and_then(|e| e.inst.as_ref())
             .and_then(|i| i.screen.as_any())
             .and_then(|a| a.downcast_ref::<crate::screens::person::PersonScreen>())
-            .is_some_and(|page| page.bio_available());
+            .is_some_and(|page| page.bio_available(app.bridge.person_view()));
         if let (Some(host), true) = (app.pages.top_page(), available) {
             bridge::open_content_panel(
                 &mut app.pages,

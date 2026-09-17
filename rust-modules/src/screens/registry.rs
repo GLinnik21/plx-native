@@ -827,6 +827,11 @@ pub(crate) enum PlayIntent {
 pub(crate) trait ContentLike: AppLike<Memory = PageMemory> {}
 impl<H: AppLike<Memory = PageMemory>> ContentLike for H {}
 
+/// A host publishing the Person model borrowed from its concrete store owner for this frame.
+pub(crate) trait PersonLike: AppLike + Sized {
+    fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a>;
+}
+
 /// A host that publishes Home's retained catalog view. The view is borrowed from the rig-owned
 /// snapshot and is therefore valid for the complete step/draw query without per-frame cloning.
 pub(crate) trait HomeLike: AppLike<Memory = PageMemory> + Sized {
@@ -1509,7 +1514,7 @@ pub(crate) struct AppMounter {
 /// it for its own host exactly as the dispatcher instantiates everything else.
 impl<H> Mounter<H> for AppMounter
 where
-    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike,
+    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike + PersonLike,
 {
     fn mount(
         &mut self,
@@ -1557,8 +1562,9 @@ where
                 Box::new(page)
             }
             AppArg::Content(ContentArg::Filmography { sid, key }) => {
-                let mut page = crate::screens::filmography::FilmographyScreen::new(entry, *sid, key.clone());
-                if let PageMemory::Filmography(memory) = &ret.memory { page.restore(memory); }
+                let mut page = crate::screens::filmography::FilmographyScreen::new(
+                    entry, *sid, key.clone(), H::person(cx));
+                if let PageMemory::Filmography(memory) = &ret.memory { page.restore(memory, cx); }
                 Box::new(page)
             }
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route

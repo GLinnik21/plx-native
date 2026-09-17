@@ -43,7 +43,7 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
 fn separate_bridges_do_not_share_any_viewstate_owner_state_or_notice() {
     let _guard = crate::testlock::serial();
     let first = Bridge::for_test(|| 0);
-    let second = Bridge::for_test(|| 0);
+    let mut second = Bridge::for_test(|| 0);
 
     first.stores.viewstate.borrow_mut().seed_ownership_fixture_for_test();
     let before_reset = first.stores.viewstate.borrow().ownership_fixture_for_test();
@@ -68,7 +68,7 @@ fn separate_bridges_do_not_share_any_viewstate_owner_state_or_notice() {
 #[test]
 fn reset_fences_a_late_old_viewstate_worker_from_the_post_reset_request() {
     let _guard = crate::testlock::serial();
-    let bridge = Bridge::for_test(|| 0);
+    let mut bridge = Bridge::for_test(|| 0);
     bridge.stores.viewstate.borrow_mut().seed_post_reset_flight_for_test();
     let old_adapter = bridge.stores.viewstate.borrow().adapter_for_test();
     let finish_old_worker = bridge.stores.viewstate.borrow().late_completion_for_test();
@@ -83,6 +83,159 @@ fn reset_fences_a_late_old_viewstate_worker_from_the_post_reset_request() {
 
     assert_eq!(bridge.stores.viewstate.borrow().ownership_fixture_for_test().sent.as_deref(), Some("post-reset"),
         "a completion from the retired adapter must not satisfy the replacement request");
+}
+
+fn person_open(sid: crate::plex::ServerId, name: &str) -> crate::stores::person::PersonCmd {
+    crate::stores::person::PersonCmd::Open {
+        sid,
+        key: "person-key".into(),
+        guid: "plex://person/person-guid".into(),
+        name: name.into(),
+        thumb: String::new(),
+    }
+}
+
+fn person_item(sid: crate::plex::ServerId, rk: &str, watched: bool) -> crate::pms::PmsMovie {
+    crate::pms::PmsMovie {
+        sid,
+        rk: rk.into(),
+        watched,
+        unwatched: !watched,
+        ..Default::default()
+    }
+}
+
+fn deliver_person(rig: &mut Bridge, command: crate::stores::person::PersonCmd) {
+    let parts = CxParts { tick: Tick::default(), press: Default::default(),
+        focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Person.ord()), &mut present);
+    assert_eq!(Rig::<AppHost>::deliver(rig, MachineId::Store(StoreId::Person.ord()),
+        &AppMsg::Store(StoreCmd::Person(command)), &parts, &mut fx), Handled::Yes);
+}
+
+#[test]
+fn separate_bridges_do_not_share_any_person_owner_state_or_notice() {
+    let _guard = crate::testlock::serial();
+    let mut first = Bridge::for_test(|| 0);
+    let mut second = Bridge::for_test(|| 0);
+    let sid = crate::plex::ServerId::from_raw(0);
+
+    first.person_run(person_open(sid, "first-owner"));
+    first.stores.person.seed_ownership_fixture_for_test();
+    let before_reset = first.stores.person.ownership_fixture_for_test();
+    second.person_run(crate::stores::person::PersonCmd::Reset);
+    let after_reset = first.stores.person.ownership_fixture_for_test();
+
+    first.stores.person.seed_ownership_fixture_for_test();
+    let before_pump = first.stores.person.ownership_fixture_for_test();
+    let _ = second.person_pump();
+    let after_pump = first.stores.person.ownership_fixture_for_test();
+
+    assert_eq!((after_reset, after_pump), (before_reset, before_pump),
+        "resetting or pumping Bridge B must not alter Bridge A's model, generation, retry, flight or mailbox");
+    assert_eq!(first.person_view().current().map(|person| person.name.as_str()), Some("first-owner"));
+    assert!(second.person_view().current().is_none());
+    let second_notices = second.stores.take_notices();
+    let first_notices = first.stores.take_notices();
+    assert_eq!(second_notices.iter().filter(|(id, _)| *id == StoreId::Person).count(), 1,
+        "Bridge B owns only its reset notice");
+    assert_eq!(first_notices.iter().filter(|(id, _)| *id == StoreId::Person).count(), 1,
+        "Bridge B draining its notices must leave Bridge A's notice untouched");
+}
+
+#[test]
+fn person_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
+    let _guard = crate::testlock::serial();
+    let mut bridge = Bridge::for_test(|| 0);
+    let sid = crate::plex::ServerId::from_raw(0);
+    bridge.person_run(person_open(sid, "old-person"));
+    let old_adapter = bridge.stores.person.adapter_for_test();
+    let finish_old_worker = bridge.stores.person.late_completion_for_test();
+
+    bridge.person_run(crate::stores::person::PersonCmd::Reset);
+    bridge.person_run(person_open(sid, "post-reset-person"));
+    let new_adapter = bridge.stores.person.adapter_for_test();
+    assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
+        "reset must rotate the Person worker adapter");
+    finish_old_worker();
+    let _ = bridge.person_pump();
+
+    let person = bridge.person_view().current().expect("post-reset person remains open");
+    assert_eq!(person.name, "post-reset-person");
+    assert!(person.bio.is_empty(), "the retired worker cannot write the replacement person");
+}
+
+#[test]
+fn addressed_person_store_command_changes_and_notifies_only_its_bridge() {
+    let _guard = crate::testlock::serial();
+    let mut first = Bridge::for_test(|| 0);
+    let mut second = Bridge::for_test(|| 0);
+    let sid = crate::plex::ServerId::from_raw(0);
+    first.person_run(person_open(sid, "first-reader"));
+    second.person_run(person_open(sid, "second-reader"));
+    first.stores.person.install_for_test(vec![person_item(sid, "movie", false)], Vec::new());
+    second.stores.person.install_for_test(vec![person_item(sid, "movie", false)], Vec::new());
+    let _ = first.stores.take_notices();
+    let _ = second.stores.take_notices();
+
+    deliver_person(&mut first, crate::stores::person::PersonCmd::SetWatchedLocal {
+        sid, rk: "movie".into(), on: true,
+    });
+
+    assert!(first.person_view().current().unwrap().shelf(0)[0].watched,
+        "the addressed Person reader sees the optimistic edit immediately");
+    assert!(!second.person_view().current().unwrap().shelf(0)[0].watched,
+        "an unaddressed Person/Filmography reader keeps its own publication");
+    assert_eq!(first.stores.take_notices().iter().filter(|(id, _)| *id == StoreId::Person).count(), 1);
+    assert_eq!(second.stores.take_notices().iter().filter(|(id, _)| *id == StoreId::Person).count(), 0);
+}
+
+#[test]
+fn profile_activation_clears_the_same_bridge_person_before_a_new_mount() {
+    let _guard = crate::testlock::serial();
+    let mut bridge = Bridge::for_test(|| 0);
+    let sid = crate::plex::ServerId::from_raw(0);
+    bridge.person_run(person_open(sid, "outgoing-profile"));
+    assert!(bridge.person_view().current().is_some());
+
+    let _ = crate::app::boot::activate_server_owned(&mut bridge);
+
+    assert!(bridge.person_view().current().is_none(),
+        "profile activation must clear the Person owner on the same Bridge before any new page mounts");
+}
+
+#[test]
+fn viewstate_optimistic_edit_mutates_only_its_bridge_person_store() {
+    let _guard = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let sid = crate::plex::register_for_test(
+        "bridge-person-viewstate", "127.0.0.1", 9, "synthetic", "fixture");
+    let mut first = Bridge::for_test(|| 0);
+    let mut second = Bridge::for_test(|| 0);
+    for bridge in [&mut first, &mut second] {
+        bridge.person_run(person_open(sid, "shared-subject"));
+        bridge.stores.person.install_for_test(
+            vec![person_item(sid, "movie", false)], Vec::new());
+        bridge.stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
+        let _ = bridge.stores.take_notices();
+    }
+
+    assert!(first.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+        sid,
+        rk: "movie".into(),
+        write: crate::viewstate::Write::Watched,
+        detail: None,
+        guid: String::new(),
+    }));
+
+    assert!(first.person_view().current().unwrap().shelf(0)[0].watched);
+    assert!(!second.person_view().current().unwrap().shelf(0)[0].watched,
+        "ViewState's callback must address the Person owner beside its own queue");
+    assert_eq!(first.stores.take_notices().iter().filter(|(id, _)| *id == StoreId::Person).count(), 1);
+    assert_eq!(second.stores.take_notices().iter().filter(|(id, _)| *id == StoreId::Person).count(), 0);
+    crate::plex::reset_servers_for_test();
 }
 
 /// Detail owns the press decision, but the Bridge owns the retained Browse directory needed

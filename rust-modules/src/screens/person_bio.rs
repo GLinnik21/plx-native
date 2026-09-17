@@ -212,13 +212,13 @@ impl PersonBioScreen {
         moved
     }
 
-    fn tick(&mut self, dt: f32) {
+    fn tick(&mut self, dt: f32, person: Option<&Person>) {
         // Re-clamp before springing: the store can land a longer (or empty) biography while the
         // panel is up — `person::pump` applies a profile whenever it arrives — and a page index
         // past the end would otherwise park the spring beyond the content.
-        let (_, pages) = page_state();
+        let (_, pages) = person.map(page_state).unwrap_or((0.0, 1));
         self.page = self.page.clamp(1, pages);
-        let want = scroll_for_page(self.page);
+        let want = person.map(|person| scroll_for_page(person, self.page)).unwrap_or(0.0);
         self.scroll.step(want, crate::ui::consts::K_SCROLL, dt);
         crate::ui::anim::probe("personbio.scroll", self.scroll.pos, self.scroll.vel, want, dt);
         // No per-frame `note_own_damage` here: the container's own-motion scope attributes this
@@ -260,19 +260,19 @@ impl PersonBioScreen {
     }
 }
 
-impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for PersonBioScreen {
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike> crate::ui::machine::Machine<H> for PersonBioScreen {
     type Ev = crate::ui::screen::ScreenEvent<H>;
     fn step(
         &mut self,
         ev: &Self::Ev,
-        _cx: &crate::ui::machine::Cx<'_, H>,
+        cx: &crate::ui::machine::Cx<'_, H>,
         fx: &mut crate::ui::machine::Effects<'_, H>,
     ) -> crate::ui::machine::Handled {
         use crate::ui::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
         use crate::ui::screen::ScreenEvent;
         match ev {
             ScreenEvent::Tick(t) => {
-                self.tick(t.dt());
+                self.tick(t.dt(), H::person(cx).current());
                 Handled::Yes
             }
             ScreenEvent::Input(input) => match input.kind {
@@ -314,7 +314,7 @@ impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for Pe
 /// the same `FocusEngine` entry points `ui/dispatch.rs` calls. The page cursor stays exactly what
 /// it always was: `Self::page`, moved by `step_page` from the screen's own `step`, sprung to by
 /// `tick` — the engine has no opinion about it, under either source.
-impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for PersonBioScreen {
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike> crate::ui::screen::Focusable<H> for PersonBioScreen {
     fn groups(&self, _cx: &crate::ui::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
     fn group_of(&self, _key: &u32, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<crate::ui::machine::GroupId> {
         None
@@ -361,7 +361,7 @@ impl crate::ui::machine::LogicalState for PersonBioScreen {
     }
 }
 
-impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for PersonBioScreen {
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike> crate::ui::screen::Screen<H> for PersonBioScreen {
     fn name(&self) -> &'static str {
         "bio"
     }
@@ -407,7 +407,7 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for Pers
         if crate::gfx::blur_source_pass() {
             return;
         }
-        let Some(person) = crate::person::current() else { return };
+        let Some(person) = H::person(f.cx).current() else { return };
         let appear = f.page_alpha;
         let measure = f.measure;
         crate::ui::profile::phase("dt.bio", || self.paint(person, appear, measure));
@@ -570,15 +570,12 @@ pub(crate) fn scroll_at(page: usize, max_scroll: f32, step: f32) -> f32 {
 }
 
 /// `(max_scroll, pages)` for the open person — the impure wrapper the screen calls.
-fn page_state() -> (f32, usize) {
-    let Some(person) = crate::person::current() else {
-        return (0.0, 1);
-    };
+fn page_state(person: &Person) -> (f32, usize) {
     paging(content_h(person), viewport().h, STEP)
 }
 
-fn scroll_for_page(page: usize) -> f32 {
-    let (max_scroll, _) = page_state();
+fn scroll_for_page(person: &Person, page: usize) -> f32 {
+    let (max_scroll, _) = page_state(person);
     scroll_at(page, max_scroll, STEP)
 }
 
@@ -1002,16 +999,19 @@ mod tests {
         type Fx = AppFx;
         type Msg = AppMsg;
         type Elem = u32;
-        type Views<'a> = ();
+        type Views<'a> = crate::person::PersonView<'a>;
         type Init = TestInit;
         type Memory = TestInit;
+    }
+    impl crate::screens::registry::PersonLike for TestHost {
+        fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a> { cx.views }
     }
 
     const ENTRY: EntryId = EntryId(7);
 
     fn cx(measure: &crate::ui::fixture::FixtureMeasure) -> Cx<'_, TestHost> {
         Cx {
-            views: (),
+            views: crate::person::PersonView::default(),
             tick: Tick::default(),
             measure,
             press: PressRead::default(),
