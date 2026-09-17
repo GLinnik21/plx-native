@@ -106,10 +106,6 @@ pub(crate) struct AppViews<'a> {
     /// Stage A of the store-ownership migration (`docs/stores-as-machines.md`): the owner's
     /// borrowed read handle, shaped like [`crate::person::PersonView`]. It still reads the
     /// process-wide `metadata` statics underneath — see `crate::metadata::MetadataView`'s doc.
-    /// Not yet read by a screen (D2 names `ui/player_hud.rs`/`ui/info_panel.rs`/
-    /// `screens/player/skip_pill.rs` as its future consumers); kept here so every `AppViews`
-    /// construction site already carries it.
-    #[allow(dead_code)]
     pub(crate) metadata: crate::metadata::MetadataView<'a>,
     /// **The playback session, as this frame's publication** (spec §2.3, phase 9). The Player
     /// machine (`App.player`) owns the value; `Split` can only lend what the RIG owns, so the loop
@@ -206,6 +202,10 @@ impl crate::screens::registry::LibraryLike for AppHost {
 
 impl crate::screens::registry::PersonLike for AppHost {
     fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a> { cx.views.person }
+}
+
+impl crate::screens::registry::MetadataLike for AppHost {
+    fn metadata<'a>(cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> { cx.views.metadata }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1012,12 +1012,6 @@ impl Bridge {
         &mut self.stores.metadata
     }
 
-    // Stage A wiring for consumers `metadata-design.md`'s binding decisions name but this stage's
-    // production call-path list does not yet reach (`AppViews.metadata`, the UI modules that will
-    // read it, and the once-a-frame pump the Stage A owner mirrors from the other physically-owned
-    // stores). Kept rather than deleted so the owner's shape already matches the design's read
-    // surface; wiring their call sites is later store-ownership work.
-    #[allow(dead_code)]
     pub(crate) fn metadata_view(&self) -> crate::metadata::MetadataView<'_> {
         self.stores.metadata_view()
     }
@@ -1938,7 +1932,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
                 if i > 0 { out.push(','); }
                 let _ = write!(out, "{col}");
             }
-            let show = crate::metadata::current().is_some_and(|m| m.sid == *sid && m.rk == *rk && m.kind == "show");
+            let show = cx.views.metadata.current().is_some_and(|m| m.sid == *sid && m.rk == *rk && m.kind == "show");
             // `alt=` is now a question about the TREE — the *Also available* picker is a surface,
             // so "is it up" is the container's answer and not a module flag's.
             let alt = surface_up(d, |arg| matches!(arg, AppArg::AltSources(_)));

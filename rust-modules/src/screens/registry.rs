@@ -835,6 +835,13 @@ pub(crate) trait PersonLike: AppLike + Sized {
     fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a>;
 }
 
+/// A host publishing the Metadata layer's read surface borrowed from its concrete store owner
+/// for this frame — the same shape [`PersonLike`] gives Person, for a screen generic over `H`
+/// that needs `crate::metadata::MetadataView` rather than the app-concrete `Bridge`.
+pub(crate) trait MetadataLike: AppLike + Sized {
+    fn metadata<'a>(cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a>;
+}
+
 /// A host that publishes Home's retained catalog view. The view is borrowed from the rig-owned
 /// snapshot and is therefore valid for the complete step/draw query without per-frame cloning.
 pub(crate) trait HomeLike: AppLike<Memory = PageMemory> + Sized {
@@ -1517,7 +1524,7 @@ pub(crate) struct AppMounter {
 /// it for its own host exactly as the dispatcher instantiates everything else.
 impl<H> Mounter<H> for AppMounter
 where
-    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike + PersonLike,
+    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike + PersonLike + MetadataLike,
 {
     fn mount(
         &mut self,

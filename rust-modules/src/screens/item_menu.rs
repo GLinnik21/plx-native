@@ -436,11 +436,15 @@ pub(crate) struct ItemMenuScreen {
 
 /// Play Trailer only when the already-loaded Detail is this movie/show and already has a trailer.
 /// The menu never talks to PMS.
-fn cached_trailer(sid: crate::plex::ServerId, m: &PmsMovie) -> Option<crate::metadata::Extra> {
+fn cached_trailer(
+    sid: crate::plex::ServerId,
+    m: &PmsMovie,
+    meta: crate::metadata::MetadataView<'_>,
+) -> Option<crate::metadata::Extra> {
     if m.kind != 0 && m.kind != 1 {
         return None;
     }
-    let d = crate::metadata::current()?;
+    let d = meta.current()?;
     if !crate::plex::same_item((d.sid, d.rk.as_str()), (sid, m.rk.as_str())) {
         return None;
     }
@@ -463,14 +467,14 @@ impl ItemMenuScreen {
     /// The rows, built ONCE at `Mount`. A hub refetch can re-order the catalog underneath an open
     /// panel, so nothing here is rebuilt while the menu is up — which is also why every [`Action`]
     /// carries the identity it needs rather than an index.
-    fn build_rows(&mut self) {
+    fn build_rows(&mut self, meta: crate::metadata::MetadataView<'_>) {
         if self.built {
             return;
         }
         self.built = true;
         let (sec, acts) = match &self.arg.kind {
             ItemMenuKind::Card { row, from_deck } => {
-                let trailer = cached_trailer(self.arg.sid, row);
+                let trailer = cached_trailer(self.arg.sid, row, meta);
                 build_with(row, *from_deck, trailer.as_ref())
             }
             ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark),
@@ -554,11 +558,11 @@ impl ItemMenuScreen {
     }
 }
 
-impl<H: AppLike> Machine<H> for ItemMenuScreen {
+impl<H: AppLike + crate::screens::registry::MetadataLike> Machine<H> for ItemMenuScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
-            ScreenEvent::Mount => self.build_rows(),
+            ScreenEvent::Mount => self.build_rows(H::metadata(cx)),
             ScreenEvent::Tick(tick) => {
                 self.table.sel = cx
                     .focus
@@ -672,7 +676,7 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
     }
 }
 
-impl<H: AppLike> Screen<H> for ItemMenuScreen {
+impl<H: AppLike + crate::screens::registry::MetadataLike> Screen<H> for ItemMenuScreen {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -1258,7 +1262,7 @@ mod tests {
         m.part = "/library/parts/42/file.mkv".to_string();
 
         let mut screen = ItemMenuScreen::new(EntryId(7), card_arg(&m, false));
-        screen.build_rows();
+        screen.build_rows(crate::metadata::MetadataView::new());
         let elem = first_action(&screen, |a| matches!(a, Action::PlayFromStart(_)));
         let req = commit(&mut screen, elem);
         assert_eq!(
@@ -1292,7 +1296,7 @@ mod tests {
                 from_home: false,
             },
         );
-        strip.build_rows();
+        strip.build_rows(crate::metadata::MetadataView::new());
         let elem = first_action(&strip, |a| matches!(a, Action::PlayFromStart(_)));
         let req = commit(&mut strip, elem);
         assert!(
@@ -1430,6 +1434,11 @@ mod tests {
         type Views<'a> = ();
         type Init = Arg;
         type Memory = PageMemory;
+    }
+    impl crate::screens::registry::MetadataLike for HostFixture {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            crate::metadata::MetadataView::new()
+        }
     }
 
     fn with_cx<R>(test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
@@ -1600,7 +1609,7 @@ mod tests {
         let _g = crate::testlock::serial();
         crate::metadata::set_current_for_test(None);
         assert!(
-            cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None)).is_none(),
+            cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), crate::metadata::MetadataView::new()).is_none(),
             "no loaded Detail → no row"
         );
 
@@ -1611,13 +1620,13 @@ mod tests {
             extras: vec![extra()],
             ..Default::default()
         }));
-        let hit = cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None)).unwrap();
+        let hit = cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), crate::metadata::MetadataView::new()).unwrap();
         assert_eq!(hit.rk, "99");
 
         let mut other = item(0, PosterMark::None);
         other.rk = "other".into();
         assert!(
-            cached_trailer(crate::plex::ServerId::UNSET, &other).is_none(),
+            cached_trailer(crate::plex::ServerId::UNSET, &other, crate::metadata::MetadataView::new()).is_none(),
             "a related tile of a different item must not steal the loaded trailer"
         );
         crate::metadata::set_current_for_test(None);

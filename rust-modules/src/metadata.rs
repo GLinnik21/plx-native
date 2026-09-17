@@ -31,11 +31,9 @@ impl<'a> MetadataView<'a> {
     // same free functions those modules still call directly; wiring the call sites themselves is
     // later Stage A/B work, not invented here. `#[allow(dead_code)]` rather than deleting them
     // keeps `MetadataView`'s shape matched to `metadata-design.md`'s read surface up front.
-    #[allow(dead_code)]
     pub(crate) fn now_playing(&self) -> Option<&'static NowPlaying> {
         now_playing()
     }
-    #[allow(dead_code)]
     pub(crate) fn playing(&self) -> Option<&'static PlayingItem> {
         playing()
     }
@@ -62,13 +60,18 @@ impl<'a> MetadataView<'a> {
     pub(crate) fn cached_playing(&self, sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
         cached_playing(sid, rk)
     }
-    #[allow(dead_code)]
     pub(crate) fn active_marker(&self, ps: &crate::route::PlaybackSession) -> Option<Marker> {
         active_marker(ps)
     }
-    #[allow(dead_code)]
     pub(crate) fn synthesized_tail_marker(&self, ps: &crate::route::PlaybackSession, has_next: bool) -> Option<Marker> {
         synthesized_tail_marker(ps, has_next)
+    }
+    pub(crate) fn alt_copies(&self, sid: crate::plex::ServerId, rk: &str) -> &'static [AltCopy] {
+        alt_copies(sid, rk)
+    }
+    #[allow(dead_code)]
+    pub(crate) fn alt_available(&self, sid: crate::plex::ServerId, rk: &str) -> bool {
+        alt_available(sid, rk)
     }
 }
 

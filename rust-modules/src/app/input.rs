@@ -196,7 +196,7 @@ pub(crate) unsafe fn menu_play_tick(
         *menu_play_await = None;
         return;
     }
-    let landed = crate::metadata::current()
+    let landed = bridge.metadata_view().current()
         .map(|d| crate::plex::same_item((d.sid, &d.rk), (sid, &expect)))
         .unwrap_or(false);
     if !landed {
@@ -205,7 +205,7 @@ pub(crate) unsafe fn menu_play_tick(
         // `Some(false)`), or past the ceiling — the same two ways `dev::scenarios::play_arm`'s own
         // wait ends without a play, both logged rather than silent there for the same reason: a
         // wait that neither played nor said why would read as a hang.
-        let settled = crate::metadata::detail_request_status(sid, &expect) == Some(false);
+        let settled = bridge.metadata_view().detail_request_status(sid, &expect) == Some(false);
         let expired = now.wrapping_sub(deadline) < u32::MAX / 2;
         if !settled && !expired {
             return; // still waiting — try again next frame
@@ -224,7 +224,7 @@ pub(crate) unsafe fn menu_play_tick(
     // against a stale, unrelated show that happened to still be loaded; gating it on `landed`
     // here is strictly narrower, not a new capability.
     if let Some(i) = season_index {
-        if let Some(idx) = crate::metadata::current().and_then(|d| d.seasons.iter().position(|s| s.index == i)) {
+        if let Some(idx) = bridge.metadata_view().current().and_then(|d| d.seasons.iter().position(|s| s.index == i)) {
             bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::LoadSeasonNow(idx));
         }
     }

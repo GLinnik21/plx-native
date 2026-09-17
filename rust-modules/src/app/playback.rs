@@ -368,7 +368,7 @@ pub(crate) fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
 
 /// Legacy card launches resolve media data without creating an invisible Detail screen.
 pub(crate) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore) -> Option<i64> {
-    let d = crate::metadata::current()?;
+    let d = meta.view().current()?;
     if d.kind == "show" || !d.seasons.is_empty() {
         let started = d.on_deck.as_ref().is_some_and(|e| e.resume_ms > 0)
             || d.seasons.iter().any(|s| s.viewed_leaf_count > 0);
@@ -383,7 +383,7 @@ pub(crate) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession, meta: 
 }
 
 pub(crate) fn request_loaded_episode(ps: &mut crate::route::PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, rk: &str) -> bool {
-    let Some(d) = crate::metadata::current() else { return false };
+    let Some(d) = meta.view().current() else { return false };
     d.episodes.iter().find(|e| e.rk == rk).is_some_and(|ep| request_episode(ps, meta, d, ep))
 }
 
@@ -425,13 +425,15 @@ pub(crate) unsafe fn commit_info_press(
     pa: &mut crate::player::adapter::PlayerAdapter,
     refresh_hubs_at: &mut u32,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
 ) {
-    let Some(action) = super::bridge::player_overlay_mut(pages).and_then(|o| o.info_press_action())
+    let Some(action) = super::bridge::player_overlay_mut(pages)
+        .and_then(|o| o.info_press_action(bridge.metadata_view()))
     else {
         return;
     };
     close_player_overlays(pages);
-    apply_info_action(ps, pa, action, refresh_hubs_at, pages);
+    apply_info_action(ps, pa, action, refresh_hubs_at, pages, bridge);
 }
 
 /// **Perform what a player overlay decided** (§14): the panel owns its own state and its own
@@ -520,7 +522,7 @@ pub(crate) fn player_requests(
                 *ok_armed = true;
             }
             PlayerReq::Info(action) => {
-                apply_info_action(ps, pa, action, refresh_hubs_at, pages)
+                apply_info_action(ps, pa, action, refresh_hubs_at, pages, bridge)
             }
             // The old `key_ok`'s tabs-row (`focus == 2`) and failure-read-out (`ChooseQuality`)
             // arms, both of which presented a panel immediately rather than through the deferred
@@ -687,7 +689,7 @@ pub(crate) fn activate_ctrl_row(
                     // Retire the segment FIRST: the seek lands on the preceding keyframe, which
                     // is usually still inside it, so without this the button comes straight back
                     // (see `metadata::mark_skipped`).
-                    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
+                    bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
                     request_seek(ns);
                     resume_if_paused(pa);
                     false
@@ -743,7 +745,7 @@ pub(crate) fn play_up_next(
     // whole pre-roll, and fetch the new leaf off the loop.
     // Read BEFORE `retire_playing` drops the store: the successor is a row of the queue
     // the finished episode created, so it lives on that episode's server.
-    let sid = crate::metadata::playing()
+    let sid = bridge.metadata_view().playing()
         .map(|p| p.sid)
         .unwrap_or_else(crate::plex::current_server);
     bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RetirePlaying);
@@ -858,6 +860,7 @@ fn apply_info_action(
     action: crate::ui::info_panel::InfoAction,
     refresh_hubs_at: &mut u32,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
 ) {
     match action {
         crate::ui::info_panel::InfoAction::FromBeginning => {
@@ -878,7 +881,7 @@ fn apply_info_action(
                 // The played leaf's server, read BEFORE the exit ritual — `detail_rk` is that
                 // item's own show, so it is on the same machine, and the store this reads is torn
                 // down below.
-                let sid = crate::metadata::playing()
+                let sid = bridge.metadata_view().playing()
                     .map(|p| p.sid)
                     .unwrap_or_else(crate::plex::current_server);
                 exit_player(ps, pa, refresh_hubs_at, pages);

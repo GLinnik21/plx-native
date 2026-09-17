@@ -464,10 +464,11 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
                 && (boot.bio || (p.credited && p.landed)))
         })
     } else {
-        let loaded = crate::metadata::current().map(|d|
+        let meta = app.bridge.metadata_view();
+        let loaded = meta.current().map(|d|
             (d.sid, d.rk.as_str(), d.seasons.get(d.cur_season).map(|s| s.index)));
         boot.is_top(&app.pages)
-            && detail_boot_ready(boot.sid, &boot.rk, boot.season, loaded, crate::metadata::detail_loading(), crate::metadata::season_loading())
+            && detail_boot_ready(boot.sid, &boot.rk, boot.season, loaded, meta.detail_loading(), meta.season_loading())
     };
     // A complete landing must have passed through the screen's StoreChanged step first.
     if !boot.admit_landing(ready) {
@@ -713,7 +714,7 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
                         // `install_landed_detail` calls the same `sync_now_playing` the blocking
                         // load did. So there is nothing to wait for, and no reason to spend two
                         // PMS round trips of the SDL thread on the frame that starts a playback.
-                        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid: pmm.sid, rk: pmm.rk.to_string() });
+                        app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid: pmm.sid, rk: pmm.rk.to_string() });
                     }
                     requested
                 } else {
@@ -877,7 +878,7 @@ fn detail_arm(app: &mut App, fr: &mut Frame) -> bool {
                         return false;
                     }
                 };
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
+                app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
                 crate::log(&format!("plxnative-detail: rk={rk} server={} start", sid.raw()));
                 // A HARD CUT onto the page: at boot there is no outgoing screen to replace, so a
                 // dip would fade the page up out of nothing and read as a slow app rather than a
@@ -927,7 +928,7 @@ fn play_arm(app: &mut App, fr: &mut Frame) -> bool {
                         return false;
                     }
                 };
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
+                app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
                 crate::log(&format!("plxnative-play: rk={rk} server={} request", sid.raw()));
                 app.scenarios.play_await = Some((sid, rk.to_string(), fr.now.wrapping_add(12_000)));
             }
@@ -945,7 +946,7 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
         app.scenarios.play_await = None;
         return;
     }
-    let leaf = crate::metadata::current()
+    let leaf = app.bridge.metadata_view().current()
         .filter(|d| crate::plex::same_item((d.sid, &d.rk), (sid, &rk)))
         .map(|d| {
             if !d.part.is_empty() {
@@ -959,7 +960,7 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
     let Some((part, vc, ac, title, resume_ms, dur_ms)) = leaf else {
         // nothing published for this item yet. Give up when the request itself has settled with
         // something else in place (a failed fetch keeps the previous item), or on the ceiling.
-        let settled = crate::metadata::detail_request_status(sid, &rk) == Some(false);
+        let settled = app.bridge.metadata_view().detail_request_status(sid, &rk) == Some(false);
         let expired = fr.now.wrapping_sub(deadline) < u32::MAX / 2;
         if settled || expired {
             app.scenarios.play_await = None;
@@ -1153,7 +1154,7 @@ fn marker_arm(app: &mut App, _fr: &mut Frame) {
                 } else {
                     crate::metadata::MarkerKind::Credits
                 };
-                let markers = crate::metadata::playing_markers();
+                let markers = app.bridge.metadata_view().playing_markers();
                 if !markers.is_empty() {
                     app.scenarios.marker_tried = true;
                     if let Some(m) = markers.iter().find(|m| m.kind == want) {

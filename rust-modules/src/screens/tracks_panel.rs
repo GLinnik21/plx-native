@@ -62,6 +62,7 @@
 //! "Russian" and "Ukrainian" because its author normalised them by hand. We render what the server
 //! said, which is what `ui::track_menu` already does with the same tracks — the app must not name
 //! one track two ways on two screens — and `appfont.ttf` (Inter) covers Cyrillic in full.
+#[cfg_attr(not(test), allow(unused_imports))]
 use crate::metadata::{self, Detail, Stream};
 use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use crate::ui::icons::Icon;
@@ -1213,7 +1214,7 @@ impl crate::ui::machine::LogicalState for TracksPanelScreen {
     }
 }
 
-impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for TracksPanelScreen {
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLike> crate::ui::screen::Screen<H> for TracksPanelScreen {
     fn name(&self) -> &'static str {
         "tracks"
     }
@@ -1245,7 +1246,7 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for Trac
         // one page and dismissed with it, so in practice they are the same item; reading
         // `metadata::current()` keeps this module's own dependency at the store it always had
         // rather than adding a copy of the page's identity to the argument for a string it draws.
-        let Some(d) = metadata::current() else { return };
+        let Some(d) = H::metadata(f.cx).current() else { return };
         // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`
         // for a surface, which is what this panel's own `Popover` used to hold.
         let appear = f.page_alpha;
@@ -1840,6 +1841,11 @@ mod tests {
         type Views<'a> = ();
         type Init = FixtureArg;
         type Memory = ();
+    }
+    impl crate::screens::registry::MetadataLike for HostFixture {
+        fn metadata<'a>(_cx: &crate::ui::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            crate::metadata::MetadataView::new()
+        }
     }
     fn fixture_cx(focus: Option<FocusKey<u32>>) -> crate::ui::machine::Cx<'static, HostFixture> {
         crate::ui::machine::Cx {

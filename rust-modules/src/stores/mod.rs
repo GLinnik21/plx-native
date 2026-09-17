@@ -174,12 +174,14 @@ impl Stores {
         let hubs = &mut self.hubs;
         let person = &mut self.person;
         let search = &mut self.search;
+        let metadata = &mut self.metadata;
         self.viewstate.borrow_mut().run(
             cmd,
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| metadata.run(cmd),
         )
     }
 
@@ -193,11 +195,13 @@ impl Stores {
         let hubs = &mut self.hubs;
         let person = &mut self.person;
         let search = &mut self.search;
+        let metadata = &mut self.metadata;
         self.viewstate.borrow_mut().pump(
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| metadata.run(cmd),
         )
     }
 

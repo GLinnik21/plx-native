@@ -68,16 +68,17 @@ impl InfoPanelState {
 
     /// activate the focused action — dismissing the card afterward is the container's job now, not
     /// this method's.
-    pub(crate) fn on_ok(&self) -> InfoAction {
+    pub(crate) fn on_ok(&self, meta: metadata::MetadataView<'_>) -> InfoAction {
         let f = self.focus;
         if f <= 0 {
             return InfoAction::FromBeginning;
         }
         // second action opens the show (episode) or the movie
-        let rk = metadata::now_playing()
+        let rk = meta
+            .now_playing()
             .map(|n| n.detail_rk.clone())
             .filter(|s| !s.is_empty())
-            .or_else(|| metadata::current().map(|d| d.rk.clone()))
+            .or_else(|| meta.current().map(|d| d.rk.clone()))
             .unwrap_or_default();
         if rk.is_empty() {
             InfoAction::None
@@ -113,9 +114,10 @@ impl InfoPanelState {
         ps: &crate::route::PlaybackSession,
         appear: f32,
         measure: &dyn crate::ui::machine::Measure,
+        meta: metadata::MetadataView<'_>,
     ) {
-        let np = metadata::now_playing();
-        let d = metadata::current();
+        let np = meta.now_playing();
+        let d = meta.current();
         if np.is_none() && d.is_none() {
             return;
         }
@@ -166,7 +168,7 @@ impl InfoPanelState {
             .unwrap_or_default();
         // capability badges come from the PLAYING item's own tracks — `current()` is the show
         // (episode-1 streams) during a show-page episode play, or another item entirely
-        let (audio, subs): (&[metadata::Stream], &[metadata::Stream]) = match metadata::playing() {
+        let (audio, subs): (&[metadata::Stream], &[metadata::Stream]) = match meta.playing() {
             Some(t) => (&t.audio, &t.subs),
             None => (
                 d.map(|x| x.audio.as_slice()).unwrap_or(&[]),
@@ -1089,7 +1091,7 @@ mod focus_tests {
         let mut movie = InfoPanelState::new();
         movie.set_focus(1);
         assert_eq!(
-            movie.on_ok(),
+            movie.on_ok(crate::metadata::MetadataView::new()),
             InfoAction::GoToDetail("parent-movie".into())
         );
         assert!(!is_episode(), "a movie parent labels Go to Movie");
@@ -1102,7 +1104,7 @@ mod focus_tests {
         }));
         let mut show = InfoPanelState::new();
         show.set_focus(1);
-        assert_eq!(show.on_ok(), InfoAction::GoToDetail("parent-show".into()));
+        assert_eq!(show.on_ok(crate::metadata::MetadataView::new()), InfoAction::GoToDetail("parent-show".into()));
         assert!(is_episode(), "a show parent labels Go to Show");
 
         crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
@@ -1125,7 +1127,7 @@ mod focus_tests {
         ));
         let mut playing = InfoPanelState::new();
         playing.set_focus(1);
-        assert_eq!(playing.on_ok(), InfoAction::GoToDetail("parent-show".into()));
+        assert_eq!(playing.on_ok(crate::metadata::MetadataView::new()), InfoAction::GoToDetail("parent-show".into()));
         assert!(is_episode(), "an installed show-trailer card still says Go to Show");
         assert_eq!(
             crate::metadata::now_playing().map(|n| n.dur_ms),

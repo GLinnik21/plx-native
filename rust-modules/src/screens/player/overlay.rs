@@ -275,9 +275,12 @@ impl PlayerOverlayScreen {
     /// how it asks the panel what the press meant. `None` for the other three, whose OK acts at
     /// once — asking any of them is a caller confusion rather than a state, so it cannot be a
     /// silent no-op that returns an action.
-    pub(crate) fn info_press_action(&mut self) -> Option<crate::ui::info_panel::InfoAction> {
+    pub(crate) fn info_press_action(
+        &mut self,
+        meta: crate::metadata::MetadataView<'_>,
+    ) -> Option<crate::ui::info_panel::InfoAction> {
         match &mut self.panel {
-            Panel::Info(p) => Some(p.on_ok()),
+            Panel::Info(p) => Some(p.on_ok(meta)),
             _ => None,
         }
     }
@@ -309,7 +312,7 @@ impl PlayerOverlayScreen {
     /// way the panel's own cursor is already correct — every `FocusMoved` this screen sees writes
     /// it back (`step`'s own arm below) — so this reads the panel's OWN `on_ok`, exactly as the
     /// old ladder's `Key::Ok` arms did.
-    fn activate<H: AppLike>(&mut self, ps: &crate::route::PlaybackSession, fx: &mut Effects<'_, H>) {
+    fn activate<H: AppLike + crate::screens::registry::MetadataLike>(&mut self, ps: &crate::route::PlaybackSession, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         match &mut self.panel {
             Panel::Tracks(p) => {
                 if let Some(commit) = p.on_ok(ps) {
@@ -325,7 +328,7 @@ impl PlayerOverlayScreen {
                 self.closing(fx);
             }
             Panel::Info(p) => {
-                let action = p.on_ok();
+                let action = p.on_ok(H::metadata(cx));
                 self.dismiss(fx);
                 Self::ask(fx, PlayerReq::Info(action));
                 self.closing(fx);
@@ -441,7 +444,7 @@ impl PlayerOverlayScreen {
     }
 }
 
-impl<H: crate::screens::registry::PlayerLike> Machine<H> for PlayerOverlayScreen {
+impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::MetadataLike> Machine<H> for PlayerOverlayScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         // The frame's publication of the playback session (spec §2.3): a screen reads the Player
@@ -499,14 +502,14 @@ impl<H: crate::screens::registry::PlayerLike> Machine<H> for PlayerOverlayScreen
             // `PressCommit`, on release — except `Info`, whose `PressCommit` defers instead to
             // the loop's own tvOS dip (`Self::activate`'s doc explains the split).
             ScreenEvent::Activate(_) => {
-                self.activate(ps, fx);
+                self.activate(ps, cx, fx);
                 Handled::No
             }
             ScreenEvent::PressCommit(_) => {
                 if let Panel::Info(_) = &self.panel {
                     Self::ask(fx, PlayerReq::ArmInfoPress);
                 } else {
-                    self.activate(ps, fx);
+                    self.activate(ps, cx, fx);
                 }
                 Handled::No
             }
@@ -600,7 +603,7 @@ impl LogicalState for PlayerOverlayScreen {
     }
 }
 
-impl<H: crate::screens::registry::PlayerLike> Screen<H> for PlayerOverlayScreen {
+impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for PlayerOverlayScreen {
     fn name(&self) -> &'static str {
         self.kind.word()
     }
@@ -625,7 +628,7 @@ impl<H: crate::screens::registry::PlayerLike> Screen<H> for PlayerOverlayScreen 
         let measure = f.measure;
         match &mut self.panel {
             Panel::Tracks(p) => p.draw(appear, measure),
-            Panel::Info(p) => p.draw(ps, appear, measure),
+            Panel::Info(p) => p.draw(ps, appear, measure, H::metadata(f.cx)),
             Panel::Chapters(p) => p.draw(ps, appear, measure),
             Panel::More(p) => p.draw(appear, measure),
         }

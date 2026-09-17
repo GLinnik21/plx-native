@@ -437,7 +437,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
 
     crate::plex::describe_server(house, "Mac mini", "", false);
     alt_restamp_owners();
-    assert!(p.refresh(), "the correction reached the drawn table");
+    assert!(p.refresh(crate::metadata::MetadataView::new()), "the correction reached the drawn table");
     assert_eq!(
         p.table.n_rows(),
         2,
@@ -449,7 +449,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
         "an OPEN panel follows the correction; it is a snapshot, not a view of the store"
     );
     assert!(
-        !p.refresh(),
+        !p.refresh(crate::metadata::MetadataView::new()),
         "…and a refresh with nothing to say rebuilds nothing"
     );
 }
@@ -735,6 +735,11 @@ mod focus_and_hit {
         type Views<'a> = ();
         type Init = FixtureArg;
         type Memory = PageMemory;
+    }
+    impl crate::screens::registry::MetadataLike for HostFixture {
+        fn metadata<'a>(_cx: &crate::ui::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            crate::metadata::MetadataView::new()
+        }
     }
     fn fixture_cx(focus: Option<FocusKey<u32>>) -> crate::ui::machine::Cx<'static, HostFixture> {
         crate::ui::machine::Cx {

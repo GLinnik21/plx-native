@@ -579,12 +579,11 @@ pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool) 
 /// around: `playpos_ns` is written by LG's media thread and `player::pump` runs between the input
 /// handlers and the draw, so re-deriving per call site let a keypress dispatch to a control that
 /// the same frame then declined to draw.
-pub(crate) fn slot(ps: &crate::route::PlaybackSession) -> ControlSlot {
+pub(crate) fn slot(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> ControlSlot {
     let has_next = crate::route::up_next(ps).is_some();
     // Server marker first; the synthesized tail only exists where credits DETECTION does not
     // (a Plex Pass server feature) — see `metadata::synthesized_tail_marker`.
-    let m = crate::metadata::active_marker(ps)
-        .or_else(|| crate::metadata::synthesized_tail_marker(ps, has_next));
+    let m = meta.active_marker(ps).or_else(|| meta.synthesized_tail_marker(ps, has_next));
     slot_for(m, has_next)
 }
 

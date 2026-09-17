@@ -45,6 +45,12 @@ impl crate::screens::registry::PlayerLike for TestHost {
     }
 }
 
+impl crate::screens::registry::MetadataLike for TestHost {
+    fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        crate::metadata::MetadataView::new()
+    }
+}
+
 const ENTRY: EntryId = EntryId(44);
 const INST: InstanceId = InstanceId(7);
 

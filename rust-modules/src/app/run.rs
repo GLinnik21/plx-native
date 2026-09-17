@@ -78,9 +78,9 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    fn begin(ps: &crate::route::PlaybackSession) -> Frame {
+    fn begin(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> Frame {
         Frame {
-            ctrl: crate::ui::player_hud::slot(ps),
+            ctrl: crate::ui::player_hud::slot(ps, meta),
             now: 0,
             dt: 0.0,
             underlay_moving: false,
@@ -111,7 +111,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // the input. Eight phases between the nine stamps, named after the frame algorithm
         // the restructure moves this loop onto (spec §3.3/§8.4); on THIS loop navcommit
         // precedes tick_drain, and the FRAMEDROP line prints them in the algorithm's order.
-        let mut fr = Frame::begin(&app.player.session);
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
         let first_controlled_frame = app.boot_initial.is_some() && app.prev == 0;
         let fr = &mut fr;
         app.instr.mark(crate::diag::heartbeat::Phase::Top);
@@ -1613,6 +1613,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                             &mut app.adapters.player,
                             &mut app.refresh_hubs_at,
                             &mut app.pages,
+                            &mut app.bridge,
                         )
                     }
                     AppArg::Player => activate_player_row(&mut app.player.session,
@@ -3033,7 +3034,7 @@ mod lifecycle_regression_tests {
             if controlled {
                 app.boot_initial=Some(super::super::bootstrap::Initial::synthetic_home(1,32517,Some("root".into())).unwrap());
             }
-            let mut fr=Frame::begin(&app.player.session);
+            let mut fr=Frame::begin(&app.player.session, app.bridge.metadata_view());
             let mut steps=Vec::new();
             for (et,x,y) in [(SDL_MOUSEBUTTONDOWN,200i32,300i32),
                 (SDL_MOUSEMOTION,400,300),(SDL_MOUSEBUTTONUP,400,300)] {
@@ -3086,7 +3087,7 @@ mod lifecycle_regression_tests {
         app.rec.prepare_resources(&mut app.bridge);
         app.rec.tick(100,0.016);
         clock::set_replay(100);
-        let mut fr=Frame::begin(&app.player.session);
+        let mut fr=Frame::begin(&app.player.session, app.bridge.metadata_view());
         for et in [SDL_MOUSEBUTTONDOWN,SDL_MOUSEMOTION,SDL_MOUSEBUTTONUP] {
             app.ev[20..24].copy_from_slice(&400i32.to_ne_bytes());
             app.ev[24..28].copy_from_slice(&300i32.to_ne_bytes());
@@ -3292,7 +3293,7 @@ mod lifecycle_regression_tests {
                 }),
                 20,
             );
-            let mut fr = Frame::begin(&self.app.player.session);
+            let mut fr = Frame::begin(&self.app.player.session, self.app.bridge.metadata_view());
             fr.now = 20 + crate::ui::up_next::COUNTDOWN_MS;
             assert!(player.up_next.expired(fr.now));
             fr
@@ -3341,7 +3342,7 @@ mod lifecycle_regression_tests {
         rig.accept_start();
         assert!(super::super::bridge::player(&rig.app.pages).is_none());
         assert!(crate::route::play_pending());
-        let mut fr = Frame::begin(&rig.app.player.session);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         fr.now = 16;
         event(&mut rig.app, &mut fr, 0x104);
         assert!(
@@ -3414,7 +3415,7 @@ mod lifecycle_regression_tests {
             "fixture must create the actual Engine"
         );
         assert!(super::super::bridge::player(&rig.app.pages).is_none());
-        let mut fr = Frame::begin(&rig.app.player.session);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         event(&mut rig.app, &mut fr, 0x104);
         assert!(
             !rig.app.adapters.player.is_live(),
@@ -3517,7 +3518,7 @@ mod lifecycle_regression_tests {
         frame(&mut rig.app, 16);
         assert!(super::super::bridge::player(&rig.app.pages).is_some());
 
-        let mut fr = Frame::begin(&rig.app.player.session);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         fr.now = 32;
         event(&mut rig.app, &mut fr, 0x104);
         assert!(rig.app.player.lifecycle.awaiting_load());
