@@ -1045,6 +1045,38 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
     crate::plex::reset_servers_for_test();
 }
 
+/// **A pointer click must not be able to reach the hero row — Play included — while full-trailer
+/// mode owns the screen.** `hero::focusable`/`valid()` keep Play "valid" so the engine has a
+/// legitimate keyboard anchor to stand on, but `draw_buttons` fades the whole row (Play too) to
+/// alpha 0 there. Before the fix, `record_stops` still registered Play's rect as a Stop, so a
+/// magic-remote click on the old pill position resolved and activated it — starting the FEATURE
+/// from a screen showing only a trailer. This drives the real `player::preview` singleton (behind
+/// `testlock::serial()`, reset before returning) because `full_trailer()` reads it live.
+#[test]
+fn full_trailer_mode_registers_no_hero_stops_at_all() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    crate::player::preview::force_playing_for_test();
+    assert!(screen.full_trailer(), "the fixture must land in full-trailer mode for this test to mean anything");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let context = cx(&measure, Some(hero::HeroCtl::Play.elem()));
+    let mut draw = DrawFrame::new(&context, crate::ui::Painter::root());
+    screen.record_stops(&mut draw);
+    let stops = draw.into_stops();
+    let set = screen.hero_set();
+    let (all, n) = hero::hero_ctls(set);
+    for ctl in &all[..n] {
+        assert!(
+            !stops.iter().any(|stop| stop.key.elem == ctl.elem()),
+            "{ctl:?} must not register a pointer stop while full_trailer() is up"
+        );
+    }
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
 #[test]
 fn an_item_with_no_ultrablur_keeps_the_flat_app_ground() {
     let wash = AmbientWash::flat(theme::SURFACE_APP);

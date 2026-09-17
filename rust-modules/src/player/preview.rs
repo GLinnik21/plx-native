@@ -425,6 +425,26 @@ pub(crate) fn note_eos() {
     with_mut(|m| m.eos());
 }
 
+/// Test-only: force the process-wide singleton straight to "picture is up," skipping
+/// `enabled()`/session plumbing and a real Starfish Load so a screen-level test can exercise
+/// `DetailScreen::full_trailer()`-gated behavior. Reset with [`reset_for_test`] before the guard
+/// (`testlock::serial()`) that must surround both calls is dropped, so no state leaks to whichever
+/// test the process runs next.
+#[cfg(test)]
+pub(crate) fn force_playing_for_test() {
+    with_mut(|m| {
+        m.phase = Phase::Playing;
+        m.picture_ms = Some(0);
+    });
+}
+
+/// Test-only: undo [`force_playing_for_test`] (or any other singleton mutation) back to a fresh
+/// `Machine`.
+#[cfg(test)]
+pub(crate) fn reset_for_test() {
+    with_mut(|m| *m = Machine::default());
+}
+
 /// After the engine pump. Finishes an abandoned Load once the media thread has returned, logs
 /// the first picture, and arms the breaker if an admitted Load failed before any frame.
 pub(crate) fn after_pump(

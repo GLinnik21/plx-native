@@ -2175,8 +2175,17 @@ impl DetailScreen {
     fn record_stops<H: ContentLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         let mut elems = Vec::new();
         let set = self.hero_set();
-        let (controls, n) = hero::hero_ctls(set);
-        elems.extend(controls[..n].iter().map(|c| (c.elem(), Activate::Press)));
+        // Full-trailer mode draws none of the row, Play included (`draw_buttons` fades it to
+        // alpha 0 with the rest of the chrome) — Play only stays `valid()` so the engine has a
+        // legitimate keyboard anchor to stand on. That legitimacy must not reach the pointer: a
+        // Stop is a hit-testable rect, so registering Play's here would let a magic-remote click
+        // land on a pill nobody can see and start the FEATURE from a screen showing only a
+        // trailer. Skip the whole hero group rather than filtering by `valid()`/`focusable`, so
+        // hover and click both go away together.
+        if !self.full_trailer() {
+            let (controls, n) = hero::hero_ctls(set);
+            elems.extend(controls[..n].iter().map(|c| (c.elem(), Activate::Press)));
+        }
         if let Some(d) = self.detail() {
             elems.extend(
                 (0..d.seasons.len().min(64))
