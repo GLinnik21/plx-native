@@ -71,11 +71,12 @@ impl ViewStateStore {
         browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
         hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
         person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+        search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     ) -> bool {
         if matches!(&cmd, ViewStateCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
-        let answer = self.state.run(&self.adapter, cmd, browse, hubs, person);
+        let answer = self.state.run(&self.adapter, cmd, browse, hubs, person, search);
         self.bump();
         answer
     }
@@ -86,9 +87,10 @@ impl ViewStateStore {
         browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
         hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
         person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+        search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     ) -> super::EndpointRefreshSet {
         let busy = self.state.is_busy();
-        let endpoints = self.state.pump(&self.adapter, browse, hubs, person);
+        let endpoints = self.state.pump(&self.adapter, browse, hubs, person, search);
         if busy != self.state.is_busy() {
             self.bump();
         }

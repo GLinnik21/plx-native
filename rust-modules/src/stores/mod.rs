@@ -85,6 +85,7 @@ pub(crate) mod viewstate;
 pub(crate) struct Stores {
     pub(crate) browse: std::rc::Rc<std::cell::RefCell<browse::BrowseStore>>,
     pub(crate) person: person::PersonStore,
+    pub(crate) search: search::SearchStore,
     pub(crate) viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
 }
 
@@ -94,6 +95,7 @@ impl Default for Stores {
         Self {
             browse,
             person: person::PersonStore::default(),
+            search: search::SearchStore::default(),
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
         }
     }
@@ -121,6 +123,22 @@ impl Stores {
         self.person.view()
     }
 
+    pub(crate) fn search_run(
+        &mut self,
+        cmd: search::SearchCmd,
+        directory: browse::DirectoryView<'_>,
+    ) -> bool {
+        self.search.run_with_directory(cmd, directory)
+    }
+
+    pub(crate) fn search_pump(&mut self, dt: f32, directory: browse::DirectoryView<'_>) -> bool {
+        self.search.pump_with_directory(dt, directory)
+    }
+
+    pub(crate) fn search_snapshot(&self, directory: browse::DirectoryView<'_>) -> search::SearchSnapshot {
+        self.search.snapshot_with_directory(directory)
+    }
+
     /// Controlled discovery against this aggregate's Browse owner.
     pub(crate) fn browse_controlled_discover(
         &self,
@@ -138,11 +156,13 @@ impl Stores {
     ) -> bool {
         let browse = std::rc::Rc::clone(&self.browse);
         let person = &mut self.person;
+        let search = &mut self.search;
         self.viewstate.borrow_mut().run(
             cmd,
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubs| hubs::apply_with_directory(hubs, directory),
             &mut |cmd| person.run(cmd),
+            &mut |cmd| search.run_with_directory(cmd, directory),
         )
     }
 
@@ -154,10 +174,12 @@ impl Stores {
     ) -> EndpointRefreshSet {
         let browse = std::rc::Rc::clone(&self.browse);
         let person = &mut self.person;
+        let search = &mut self.search;
         self.viewstate.borrow_mut().pump(
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubs| hubs::apply_with_directory(hubs, directory),
             &mut |cmd| person.run(cmd),
+            &mut |cmd| search.run_with_directory(cmd, directory),
         )
     }
 
@@ -182,6 +204,7 @@ impl Stores {
         match id {
             StoreId::Browse => self.browse.borrow().gen(),
             StoreId::Person => self.person.gen(),
+            StoreId::Search => self.search.gen(),
             StoreId::ViewState => self.viewstate.borrow().gen(),
             _ => gen(id),
         }
@@ -189,12 +212,17 @@ impl Stores {
 
     pub(crate) fn take_notices(&self) -> Vec<(StoreId, u32)> {
         let mut notices = take_notices();
-        notices.retain(|(id, _)| !matches!(id, StoreId::Browse | StoreId::Person | StoreId::ViewState));
+        notices.retain(|(id, _)| {
+            !matches!(id, StoreId::Browse | StoreId::Person | StoreId::Search | StoreId::ViewState)
+        });
         if let Some(generation) = self.browse.borrow().take_notice() {
             notices.insert(0, (StoreId::Browse, generation));
         }
         if let Some(generation) = self.person.take_notice() {
             notices.push((StoreId::Person, generation));
+        }
+        if let Some(generation) = self.search.take_notice() {
+            notices.push((StoreId::Search, generation));
         }
         if let Some(generation) = self.viewstate.borrow().take_notice() {
             notices.push((StoreId::ViewState, generation));
@@ -307,16 +335,17 @@ pub(crate) fn apply(cmd: StoreCmd) -> StoreOutcome {
     match cmd {
         StoreCmd::Browse(_) => panic!("Browse commands require an explicit Stores owner"),
         StoreCmd::Person(_) => panic!("Person commands require an explicit Stores owner"),
+        StoreCmd::Search(_) => panic!("Search commands require an explicit Stores owner"),
         StoreCmd::ViewState(_) => panic!("ViewState commands require an explicit Stores owner"),
         StoreCmd::Hubs(c) => hubs::run(c),
         StoreCmd::Metadata(c) => StoreOutcome::changed(metadata::run(c)),
-        StoreCmd::Search(c) => StoreOutcome::changed(search::run(c)),
     }
 }
 
 // ---------------------------------------------------------------------------------------------
-// Compatibility notices for the three not-yet-owned stores. BrowseStore, PersonStore and ViewStateStore carry
-// notices in the per-Bridge aggregate and have no slots in this compatibility array.
+// Compatibility notices for the two not-yet-owned stores. BrowseStore, PersonStore, SearchStore
+// and ViewStateStore carry notices in the per-Bridge aggregate and have no slots in this
+// compatibility array.
 // ---------------------------------------------------------------------------------------------
 
 struct Notice {
@@ -334,14 +363,13 @@ const fn notice() -> Notice {
 /// Atomics rather than `static mut`: they are read and written on the main thread only, but an
 /// atomic needs no `unsafe` block at the ~40 call sites and is what the legacy stores already use
 /// for their own generations.
-static NOTICES: [Notice; 3] = [notice(), notice(), notice()];
+static NOTICES: [Notice; 2] = [notice(), notice()];
 
 fn compatibility_notice(id: StoreId) -> &'static Notice {
     &NOTICES[match id {
         StoreId::Hubs => 0,
         StoreId::Metadata => 1,
-        StoreId::Search => 2,
-        StoreId::Browse | StoreId::Person | StoreId::ViewState => {
+        StoreId::Browse | StoreId::Person | StoreId::Search | StoreId::ViewState => {
             panic!("owned store notices require an explicit Stores owner")
         }
     }]
@@ -360,11 +388,11 @@ pub(crate) fn gen(id: StoreId) -> u32 {
     compatibility_notice(id).gen.load(Ordering::Relaxed)
 }
 
-/// Drain the three compatibility notices. `Stores::take_notices` adds owned notices and is the
+/// Drain the two compatibility notices. `Stores::take_notices` adds owned notices and is the
 /// aggregate drain used by `app/bridge.rs` once per frame.
 pub(crate) fn take_notices() -> Vec<(StoreId, u32)> {
     let mut out = Vec::new();
-    for id in [StoreId::Hubs, StoreId::Metadata, StoreId::Search] {
+    for id in [StoreId::Hubs, StoreId::Metadata] {
         let n = compatibility_notice(id);
         if n.dirty.swap(false, Ordering::Relaxed) {
             out.push((id, n.gen.load(Ordering::Relaxed)));
@@ -442,10 +470,10 @@ mod tests {
     fn a_command_raises_one_notice_and_a_steady_store_none() {
         let _g = crate::testlock::serial();
         let _ = take_notices();
-        let before = gen(StoreId::Search);
-        assert!(apply(StoreCmd::Search(search::SearchCmd::Reset)).changed);
+        let before = gen(StoreId::Metadata);
+        assert!(apply(StoreCmd::Metadata(metadata::MetadataCmd::Clear)).changed);
         let n = take_notices();
-        assert!(n.contains(&(StoreId::Search, before + 1)), "{n:?}");
+        assert!(n.contains(&(StoreId::Metadata, before + 1)), "{n:?}");
         assert!(take_notices().is_empty(), "drained once");
     }
 
@@ -454,6 +482,7 @@ mod tests {
         for command in [
             StoreCmd::Browse(browse::BrowseCmd::Reset),
             StoreCmd::Person(person::PersonCmd::Reset),
+            StoreCmd::Search(search::SearchCmd::Reset),
             StoreCmd::ViewState(viewstate::ViewStateCmd::Reset),
         ] {
             assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply(command))).is_err());

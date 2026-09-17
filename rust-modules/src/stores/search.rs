@@ -1,18 +1,10 @@
-//! The Search store boundary over `crate::search` (`docs/stores-as-machines.md`).
+//! The physically owned Search model and fetch transport (`docs/stores-as-machines.md`). Each
+//! production `Bridge` owns one [`SearchStore`]; no free selector can connect two Bridges.
 
-use super::{note, StoreId};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
 pub(crate) use crate::search::view::SearchSnapshot;
-
-/// Capture the store publication at the dispatcher frame boundary, not during paint.
-#[cfg(test)]
-pub(crate) fn snapshot() -> SearchSnapshot { crate::search::view::snapshot() }
-
-pub(crate) fn snapshot_with_directory(
-    directory: crate::stores::browse::DirectoryView<'_>,
-) -> SearchSnapshot {
-    crate::search::view::snapshot_with_directory(directory)
-}
 
 #[derive(Clone, Debug)]
 pub(crate) enum SearchCmd {
@@ -30,45 +22,135 @@ pub(crate) enum SearchCmd {
     SetWatchedLocal { sid: crate::plex::ServerId, rk: String, on: bool },
 }
 
-/// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
-pub(crate) fn apply(cmd: SearchCmd) -> bool {
-    super::apply(super::StoreCmd::Search(cmd)).changed
+/// One Search owner: logical state, the worker adapter all current fetches capture, and notice.
+pub(crate) struct SearchStore {
+    state: crate::search::SearchState,
+    adapter: Arc<crate::search::SearchAdapter>,
+    notice_gen: AtomicU32,
+    notice_dirty: AtomicBool,
 }
 
-/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
-/// `search::run` — its arms called `pub(crate)` mutators (`set_query`, `reset`,
-/// `set_watched_local`) across this module boundary; those three are private to `search.rs`
-/// now and this is their only door.
-pub(super) fn run(cmd: SearchCmd) -> bool {
-    // `crate::search`'s statics are a crate global reached from both `apply` above and
-    // `crate::stores::apply(StoreCmd::Search(..))` directly (the dispatcher's own delivery path,
-    // which some fixtures use without going through this module's `apply`) — guard the one point
-    // both funnel through, not each caller, so a test that writes it outside
-    // `crate::testlock::serial()` panics HERE rather than corrupting a bystander test. See
-    // `lib.rs::testlock` and D5.
+impl Default for SearchStore {
+    fn default() -> Self {
+        Self {
+            state: Default::default(),
+            adapter: Arc::new(Default::default()),
+            notice_gen: AtomicU32::new(0),
+            notice_dirty: AtomicBool::new(false),
+        }
+    }
+}
+
+impl SearchStore {
+    fn bump(&self) -> u32 {
+        self.notice_dirty.store(true, Ordering::Relaxed);
+        self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub(crate) fn gen(&self) -> u32 {
+        self.notice_gen.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn take_notice(&self) -> Option<u32> {
+        self.notice_dirty.swap(false, Ordering::Relaxed).then(|| self.gen())
+    }
+
+    /// Capture the store publication at the dispatcher frame boundary, not during paint.
     #[cfg(test)]
-    crate::testlock::assert_held("the search store (apply)");
-    let answer = crate::search::run(cmd);
-    super::bump(StoreId::Search);
-    answer
-}
+    pub(crate) fn snapshot(&self) -> SearchSnapshot {
+        self.state.snapshot()
+    }
 
-/// Synchronous command path with the Browse owner publication captured by the application.
-/// Query admission snapshots its favourite-library ranking from this directory.
-pub(crate) fn run_with_directory(
-    cmd: SearchCmd,
-    directory: crate::stores::browse::DirectoryView<'_>,
-) -> bool {
+    pub(crate) fn snapshot_with_directory(
+        &self,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> SearchSnapshot {
+        self.state.snapshot_with_directory(directory)
+    }
+
     #[cfg(test)]
-    crate::testlock::assert_held("the search store (owned apply)");
-    let answer = crate::search::run_with_directory(cmd, directory);
-    super::bump(StoreId::Search);
-    answer
-}
+    pub(crate) fn query(&self) -> &str {
+        self.state.query()
+    }
 
-pub(crate) fn pump_with_directory(
-    dt: f32,
-    directory: crate::stores::browse::DirectoryView<'_>,
-) -> bool {
-    note(StoreId::Search, crate::search::pump_with_directory(dt, directory))
+    #[cfg(test)]
+    pub(crate) fn state(&self) -> crate::search::State {
+        self.state.state()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn query_gen(&self) -> u32 {
+        self.state.query_gen()
+    }
+
+    /// Synchronous addressed command path. Reset rotates the adapter before clearing state, so an
+    /// old worker can only finish into the retired mailbox it captured.
+    #[cfg(test)]
+    pub(crate) fn run(&mut self, cmd: SearchCmd) -> bool {
+        if matches!(&cmd, SearchCmd::Reset) {
+            self.adapter = Arc::new(Default::default());
+        }
+        let answer = self.state.run(&self.adapter, cmd);
+        self.bump();
+        answer
+    }
+
+    /// Synchronous command path with the Browse owner publication captured by the application.
+    /// Query admission snapshots its favourite-library ranking from this directory.
+    pub(crate) fn run_with_directory(
+        &mut self,
+        cmd: SearchCmd,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> bool {
+        if matches!(&cmd, SearchCmd::Reset) {
+            self.adapter = Arc::new(Default::default());
+        }
+        let answer = self.state.run_with_directory(&self.adapter, cmd, directory);
+        self.bump();
+        answer
+    }
+
+    /// Route-unconditional landing/spawn pass for this owner's adapter.
+    pub(crate) fn pump_with_directory(
+        &mut self,
+        dt: f32,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> bool {
+        let changed = self.state.pump_with_directory(&self.adapter, dt, directory);
+        if changed {
+            self.bump();
+        }
+        changed
+    }
+
+    /// Test-only compatibility pump for fixtures without a retained directory.
+    #[cfg(test)]
+    pub(crate) fn pump(&mut self, dt: f32) -> bool {
+        let changed = self.state.pump(&self.adapter, dt);
+        if changed {
+            self.bump();
+        }
+        changed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_shelves_for_test(&mut self, shelves: Vec<crate::search::Shelf>) {
+        self.state.publish_shelves_for_test(shelves);
+        self.bump();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settling(&self) -> bool {
+        self.state.settling()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debounce_elapsed_for_test(&self) -> f32 {
+        self.state.debounce_elapsed_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn adapter_for_test(&self) -> Arc<crate::search::SearchAdapter> {
+        Arc::clone(&self.adapter)
+    }
 }

@@ -61,6 +61,7 @@ fn shelf(kind: Kind, tag: &str, n: usize) -> Shelf {
 }
 
 struct Fixture {
+    store: crate::stores::search::SearchStore,
     search: crate::stores::search::SearchSnapshot,
     measure: FixtureMeasure,
 }
@@ -68,19 +69,20 @@ struct Fixture {
 impl Fixture {
     /// A store with no query, no shelves and no remembered terms — a fresh boot.
     fn new() -> Self {
-        crate::stores::search::apply(SearchCmd::Reset);
-        Self { search: crate::stores::search::snapshot(), measure: FixtureMeasure }
+        let store = crate::stores::search::SearchStore::default();
+        let search = store.snapshot();
+        Self { store, search, measure: FixtureMeasure }
     }
     fn query(&mut self, q: &str) -> &mut Self {
-        crate::stores::search::apply(SearchCmd::SetQuery(q.into()));
+        self.store.run(SearchCmd::SetQuery(q.into()));
         self.capture()
     }
     fn shelves(&mut self, shelves: Vec<Shelf>) -> &mut Self {
-        crate::search::publish_shelves_for_test(shelves);
+        self.store.publish_shelves_for_test(shelves);
         self.capture()
     }
     fn capture(&mut self) -> &mut Self {
-        self.search = crate::stores::search::snapshot();
+        self.search = self.store.snapshot();
         self
     }
     fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
@@ -238,7 +240,6 @@ fn down_from_the_field_reaches_only_a_region_that_is_drawn() {
     let tile = step_dir(&mut screen, &fixture, &mut engine, Dir::Down).unwrap();
     assert_eq!(Some(tile.elem), screen.rows[0].elems.first().copied());
     drop(session);
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 /// Legacy `a_query_below_the_stores_own_threshold_is_not_a_query`: one character never reaches a
@@ -250,7 +251,7 @@ fn a_query_below_the_stores_own_threshold_keeps_the_remembered_terms() {
     let mut fixture = Fixture::new();
     fixture.query("w");
     let screen = fixture.screen();
-    assert_eq!(crate::search::state(), crate::search::State::Idle,
+    assert_eq!(fixture.store.state(), crate::search::State::Idle,
         "one character never reaches the server — `search::MIN_QUERY` is 2");
     assert_eq!(screen.recents.len(), 2, "so the remembered terms stay on screen");
     assert!(screen.rows.is_empty());
@@ -260,7 +261,6 @@ fn a_query_below_the_stores_own_threshold_keeps_the_remembered_terms() {
     assert!(screen.recents.is_empty(), "now it IS a search, and an empty answer says so");
     assert!(screen.rows.is_empty());
     drop(session);
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 // ---- the shelves: visual column, ragged rows, and a set that empties -------------------------
@@ -286,7 +286,6 @@ fn a_vertical_step_between_shelves_keeps_the_visual_column() {
         "▼ lands in the column that is drawn under the cursor, not on the same index");
     let up = step_dir(&mut screen, &fixture, &mut engine, Dir::Up).unwrap();
     assert_eq!(up, sixth, "…and ▲ returns to the tile it came from rather than drifting");
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 /// Legacy `a_shelf_that_shrinks_under_the_cursor_re_seats_it`: a column carried onto a SHORTER
@@ -321,7 +320,6 @@ fn a_shelf_that_shrinks_under_the_cursor_re_seats_it() {
     // ▲ off shelf 0 leaves the shelves entirely — the field.
     engine.set(OWNER, screen.key(screen.rows[0].elems[3]), Some(screen.rows[0].group), By::Restore);
     assert_eq!(step_dir(&mut screen, &fixture, &mut engine, Dir::Up), Some(screen.key(FIELD)));
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 /// Legacy `focus_is_clamped_when_the_shelves_shrink_under_it` and
@@ -361,7 +359,6 @@ fn focus_is_clamped_when_the_shelves_shrink_under_it() {
         assert!(engine.current(OWNER).is_some_and(|key| screen.index(key.elem).is_some()),
             "{dir:?} inside an emptied result set must land on something drawn");
     }
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 /// Legacy `an_empty_result_set_is_not_a_card`: `app.rs` never arms a tvOS press on a screen with
@@ -388,7 +385,6 @@ fn an_empty_result_set_is_not_a_card() {
     assert_eq!(groups.iter().find(|g| g.id == screen.rows[0].group).map(|g| g.elem), Some(ElemKind::Card));
     assert_eq!(groups.iter().find(|g| g.id == screen.rows[1].group).map(|g| g.elem), Some(ElemKind::Bare),
         "a person is not a press-and-hold card either");
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 /// Legacy `the_recents_cursor_stops_on_the_clear_control`: ▼ walks the terms that are DRAWN and
@@ -430,7 +426,6 @@ fn the_recents_cursor_stops_on_the_clear_control() {
     assert!(<SearchScreen as Focusable<HostFixture>>::place(&screen, &CLEAR,
         &fixture.cx(None), At::Drawn).is_none(), "…and Clear is no longer a stop at all");
     drop(session);
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 // ---- the document's geometry, as the pointer sees it ------------------------------------------
@@ -466,7 +461,6 @@ fn a_tile_scrolled_under_the_chrome_is_not_a_pointer_target() {
     screen.scroll.jump(rest.y + rest.h - floor + 0.5);
     assert_eq!(hit(&screen, &fixture, &[elem], rest.cx(), floor), None);
     assert_eq!(hit(&screen, &fixture, &[elem], rest.cx(), floor + 1.0), None);
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 /// Legacy `the_fields_hit_rect_rides_the_scroll_and_stops_at_the_track`: the query field is a
@@ -494,7 +488,6 @@ fn the_fields_hit_rect_rides_the_scroll_and_stops_at_the_track() {
     screen.scroll.jump(layout::FIELD.y + layout::FIELD.h - floor + 0.5);
     assert_eq!(hit(&screen, &fixture, &[FIELD], layout::FIELD.cx(), floor), None,
         "once the whole box is behind the track it is not a target at all");
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 /// Legacy `results.rs`'s `revealing_the_second_shelf_carries_the_query_field_under_the_track`:
@@ -522,7 +515,6 @@ fn revealing_the_second_shelf_carries_the_query_field_under_the_track() {
         .is_some_and(|stop| stop.rect.intersect(stop.clip).h <= 0.0));
     assert_eq!(hit(&screen, &fixture, &[FIELD], layout::FIELD.cx(), floor), None,
         "a query box carried into the chrome is not something a click can raise the keyboard on");
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 // ---- motion: every spring this instance owns owes the gate both halves ------------------------
@@ -550,7 +542,6 @@ fn the_scroll_spring_reports_while_it_runs_and_goes_quiet_at_rest() {
     while frame(&mut screen, &fixture, &engine, 103 + frames) && frames < 600 { frames += 1; }
     assert!(frames < 600, "the scroll must arrive, not ring forever");
     assert!(screen.scroll.pos.abs() < 0.25, "with focus off the shelves the flow rests at zero");
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 /// Legacy `the_fields_focus_fade_runs_when_focus_leaves_it_and_settles`: the field's two faces
@@ -577,7 +568,6 @@ fn the_fields_focus_fade_runs_when_focus_leaves_it_and_settles() {
     assert!(frame(&mut screen, &fixture, &engine, 400), "focus returning to the field animates too");
     for i in 0..200 { frame(&mut screen, &fixture, &engine, 401 + i); }
     assert!(screen.hot.pos > 0.98, "…and arrives on the focused face (got {})", screen.hot.pos);
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 /// Legacy `the_caret_blinks_and_reports_only_on_the_flip`: the blink is a CLOCK, so it must ask
@@ -613,7 +603,6 @@ fn the_caret_blinks_and_reports_only_on_the_flip() {
             "frame {f}: the caret asked for a repaint with no keyboard up");
         assert_eq!(screen.blink_us, 0, "the phase parks ON so the next open does not start invisible");
     }
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 // ---- the mount: a return is not a reset -------------------------------------------------------
@@ -634,7 +623,7 @@ fn a_mount_seats_the_field_and_parks_every_cursor_without_replacing_the_search()
     let screen = fixture.screen();
     let mut probe = String::new();
     <SearchScreen as Screen<HostFixture>>::state(&screen).probe(&mut probe);
-    assert_eq!(crate::search::state(), crate::search::State::Idle);
+    assert_eq!(fixture.store.state(), crate::search::State::Idle);
     assert!(probe.contains("editing=false") && probe.contains("caret=0") && probe.contains("rows=0"));
     assert_eq!(screen.scroll_target, 0.0);
     assert_eq!(screen.hot.pos, 1.0, "the field mounts focused and SEATED, or it reports motion on arrival");
@@ -642,13 +631,13 @@ fn a_mount_seats_the_field_and_parks_every_cursor_without_replacing_the_search()
     // A search in progress, with a cursor deep in its results: mounting again over it keeps the
     // query, its generation and its shelves, and re-seats the posture.
     fixture.query("wallace").shelves(vec![shelf(Kind::Movie, "mount", 8)]);
-    let generation = crate::search::query_gen();
+    let generation = fixture.store.query_gen();
     let mut screen = fixture.screen();
     screen.scroll.jump(400.0);
     screen.scroll_target = 400.0;
     let (_, out, _) = deliver(&mut screen, &fixture, None, ScreenEvent::Mount);
-    assert_eq!(crate::search::query(), "wallace", "a mount must not wipe the term still on screen");
-    assert_eq!(crate::search::query_gen(), generation, "…nor supersede the answer under it");
+    assert_eq!(fixture.store.query(), "wallace", "a mount must not wipe the term still on screen");
+    assert_eq!(fixture.store.query_gen(), generation, "…nor supersede the answer under it");
     assert!(out.iter().any(|effect| matches!(&effect.fx, Fx::Deliver(_, Delivery::Screen(
         ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(key) }))) if key.elem == FIELD)),
         "a mount opens on the field, whatever the last visit left");
@@ -663,7 +652,6 @@ fn a_mount_seats_the_field_and_parks_every_cursor_without_replacing_the_search()
     assert!(probe.contains("caret=7"), "the caret is the LIVE string's end: {probe}");
     assert!(screen.recents.is_empty() && screen.scroll_target == 0.0, "every cursor parks");
     drop(session);
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 // ---- the television's own keyboard: the four keys it delegates --------------------------------
@@ -739,7 +727,6 @@ fn the_panels_edit_keys_move_the_caret_clear_the_field_and_type_in_the_middle() 
     assert!(out.iter().any(|effect| matches!(&effect.fx, Fx::App(AppFx::Store(StoreId::Search,
         StoreCmd::Search(SearchCmd::RememberRecent { term, .. }))) if term == "wallace")),
         "a committed search is what earns a place in the remembered terms");
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 /// Legacy `the_shelf_flow_is_frozen_unless_the_shelves_hold_focus_with_the_keyboard_down`: the
@@ -783,7 +770,6 @@ fn the_shelf_flow_is_frozen_unless_the_shelves_hold_focus_with_the_keyboard_down
             from: Some(deep), to: key, by: By::Dir });
         assert_eq!(screen.scroll_target, 0.0, "elem {elem} is not below the fold");
     }
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 // ---- the borrowed-source annotation -----------------------------------------------------------
@@ -868,7 +854,6 @@ fn the_owner_annotation_swaps_its_words_only_while_it_is_invisible() {
     assert_eq!(screen.owner_row, Some(1), "the annotation belongs to the row the cursor is in");
     assert_eq!(screen.owner, "", "…and that row's item is the household's own");
     crate::plex::reset_servers_for_test();
-    crate::stores::search::apply(SearchCmd::Reset);
 }
 
 /// Legacy `results.rs`'s `a_settled_annotation_goes_quiet_and_a_moving_one_does_not` — the other
@@ -901,5 +886,4 @@ fn a_settled_annotation_goes_quiet_and_a_moving_one_does_not() {
             "frame {i}: a settled annotation asked for a repaint");
     }
     crate::plex::reset_servers_for_test();
-    crate::stores::search::apply(SearchCmd::Reset);
 }

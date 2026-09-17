@@ -414,7 +414,7 @@ fn search_capture_and_pump_keep_the_frame_directory_policy() {
     let directory = directory_policy_fixture(own, hidden);
     rig.directory = directory.clone();
     rig.search_run(crate::stores::search::SearchCmd::SetQuery("same frame".into()));
-    let query_generation = crate::search::query_gen();
+    let query_generation = rig.stores.search.query_gen();
     let _ = crate::stores::take_notices();
     let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
         owner: InputOwner::Entry(EntryId(0)) };
@@ -423,10 +423,125 @@ fn search_capture_and_pump_keep_the_frame_directory_policy() {
     let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Search.ord()), &mut present);
     assert_eq!(rig.deliver(MachineId::Store(StoreId::Search.ord()),
         &AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us: 0 }), &parts, &mut fx), Handled::Yes);
-    assert_eq!(crate::search::query_gen(), query_generation,
+    assert_eq!(rig.stores.search.query_gen(), query_generation,
         "the pump must not supersede against a different directory in the same frame");
     assert!(crate::stores::take_notices().is_empty(),
         "an idle retained-directory Search pump invents no notice");
+}
+
+/// The Search two-owner regression the store-ownership contract requires: two `Bridge`s must
+/// share neither Search's query/shelves/notice-generation state nor its notice queue — including
+/// a LANDED result, which is the part the query/notice checks alone cannot see, since both live on
+/// `SearchState` and neither exercises the adapter mailbox a real fetch actually lands through.
+/// Simulated RED against the pre-port process-wide `static`s this ported, and independently
+/// against a shared-adapter regression a query/notice-only test would miss: temporarily making
+/// `SearchStore::default` hand out one process-wide `Arc<SearchAdapter>` to every owner makes the
+/// row `land_for_test` posts for A's adapter visible to whichever Bridge pumps next, so Bridge B's
+/// pump would pick up the row landed for A (B's `pump` returns `true`, and its snapshot's shelves
+/// are no longer empty) — that older process-wide code no longer exists on disk to run directly (see
+/// `person.rs`'s and `viewstate.rs`'s sibling tests for the same shape, ported the same way), so
+/// the red here is simulated rather than historical, exactly as `reproduce-before-fixing` requires
+/// when a fix changes the seam a test would otherwise call.
+#[test]
+fn separate_bridges_do_not_share_any_search_owner_state_or_notice() {
+    let _guard = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let server = crate::plex::register_for_test(
+        "bridge-search-landing", "127.0.0.1", 11, "synthetic", "landing");
+    let _cleanup = DirectoryPolicyCleanup;
+    let mut first = Bridge::for_test(|| 0);
+    let mut second = Bridge::for_test(|| 0);
+    // Settle each owner's roster-generation baseline BEFORE landing anything: a store's first pump
+    // ever sees the registry as "changed" from its fresh `visible = 0`, and that path supersedes —
+    // wiping the very mailbox this test is about to fill.
+    first.stores.search.pump(0.0);
+    second.stores.search.pump(0.0);
+
+    first.search_run(crate::stores::search::SearchCmd::SetQuery("first-owner".into()));
+    let before_reset = first.stores.search.query().to_string();
+    second.search_run(crate::stores::search::SearchCmd::Reset);
+    let after_reset = first.stores.search.query().to_string();
+
+    assert_eq!(before_reset, after_reset, "resetting Bridge B must not clear Bridge A's query");
+    assert_eq!(after_reset, "first-owner");
+    assert!(second.stores.search.query().is_empty(), "Bridge B starts with no query of its own");
+
+    // Bridge A searches again (Bridge B's Reset above only had to leave A's TEXT alone; a fresh
+    // query is what actually arms a fetch) and land a row straight into A's adapter, at A's own
+    // generation, bypassing the worker.
+    first.search_run(crate::stores::search::SearchCmd::SetQuery("landed-owner".into()));
+    let gen = first.stores.search.query_gen();
+    let idx = server.raw() as usize;
+    let item = crate::search::Item::Media(crate::pms::PmsMovie {
+        sid: server, rk: "landed-row".into(), title: "Landed row".into(), ..Default::default()
+    });
+    crate::search::land_for_test(&first.stores.search.adapter_for_test(), idx, gen, item);
+
+    // Bridge B pumps FIRST: if the two owners shared an adapter, this is the call that would have
+    // picked A's landing up.
+    second.stores.search.pump(0.0);
+    assert!(second.stores.search.snapshot().view().shelves().is_empty(),
+        "Bridge B must not see a row landed only in Bridge A's adapter");
+
+    assert!(first.stores.search.pump(0.0), "Bridge A's own pump must land its own row");
+    let shelves = first.stores.search.snapshot().view().shelves().to_vec();
+    assert!(shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it,
+        crate::search::Item::Media(m) if m.rk == "landed-row")),
+        "Bridge A's pump must land the row addressed to its own adapter");
+
+    let second_notices = second.stores.take_notices();
+    let first_notices = first.stores.take_notices();
+    assert_eq!(second_notices.iter().filter(|(id, _)| *id == StoreId::Search).count(), 1,
+        "Bridge B owns only its own reset notice");
+    assert_eq!(first_notices.iter().filter(|(id, _)| *id == StoreId::Search).count(), 1,
+        "Bridge A's own notices survive Bridge B draining its own queue");
+}
+
+/// The other half of the contract's Required #3: `Reset` must rotate the live adapter so a worker
+/// spawned before the reset can only land into the retired `Arc`, never the replacement's mailbox
+/// — the same fetch/adapter-bundling pattern `person.rs`'s
+/// `person_reset_rotates_the_adapter_and_fences_a_late_old_worker` pins for Person. Landing into an
+/// adapter NOTHING has spawned against (the shape this test had before) passes even without
+/// rotation, since `reset()` also clears every mailbox on the CURRENT adapter regardless — that
+/// assertion cannot tell "rotated" from "cleared in place" apart. Landing into the RETIRED
+/// `old_adapter`, at the POST-reset generation, is the one scenario only rotation defeats: without
+/// it `old_adapter` and the store's live adapter are the same `Arc`, so this late "worker" writes
+/// straight into the mailbox the next pump reads. Simulated RED the same way: temporarily skip the
+/// `Arc::new(Default::default())` rotation in `SearchStore::run`'s `Reset` arm and this landing
+/// reaches the pump (`pump` returns `true`, the row is in the snapshot's shelves) — that unrotated
+/// shape no longer exists on disk to run directly, so the red is simulated per
+/// `reproduce-before-fixing`.
+#[test]
+fn search_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
+    let _guard = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let server = crate::plex::register_for_test(
+        "bridge-search-late-worker", "127.0.0.1", 12, "synthetic", "late-worker");
+    let _cleanup = DirectoryPolicyCleanup;
+    let mut bridge = Bridge::for_test(|| 0);
+    let old_adapter = bridge.stores.search.adapter_for_test();
+
+    bridge.search_run(crate::stores::search::SearchCmd::Reset);
+    let new_adapter = bridge.stores.search.adapter_for_test();
+    assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
+        "reset must rotate the Search worker adapter");
+
+    // A worker spawned before the reset captured `old_adapter`, not `bridge`'s (now different)
+    // live one; simulate it finishing late by landing straight into the RETIRED `Arc`, at the
+    // generation the store carries right now (i.e. exactly the generation a real late completion
+    // would still match, if it could reach the current adapter at all).
+    let gen = bridge.stores.search.query_gen();
+    let idx = server.raw() as usize;
+    let item = crate::search::Item::Media(crate::pms::PmsMovie {
+        sid: server, rk: "late-row".into(), title: "Late row".into(), ..Default::default()
+    });
+    crate::search::land_for_test(&old_adapter, idx, gen, item);
+
+    // The retired adapter is orphaned, not observed: `pump` only ever drains the CURRENT adapter,
+    // so a worker that captured `old_adapter` before the reset has nothing left to land into.
+    assert!(!bridge.stores.search.pump(0.0), "an idle rotated adapter has nothing to land");
+    assert!(bridge.stores.search.snapshot().view().shelves().is_empty(),
+        "a late landing into the retired adapter must never reach the current store's shelves");
 }
 
 /// The account-menu lift is a second PAINT of this bridge's captured chrome, not a second

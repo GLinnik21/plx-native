@@ -557,7 +557,7 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
             &mut out, MachineId::Store(StoreId::ViewState.ord()), &mut present);
         stores.viewstate.borrow_mut().pump(&mut |_| false, &mut |cmd| {
             crate::stores::hubs::apply(cmd)
-        }, &mut |_| false).emit(&mut fx);
+        }, &mut |_| false, &mut |_| false).emit(&mut fx);
         drop(fx);
         drop(cx);
         assert_eq!(out.len(), 2);

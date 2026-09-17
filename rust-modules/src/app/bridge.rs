@@ -409,7 +409,7 @@ impl Bridge {
         let stores = crate::stores::Stores::default();
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
         let browse = stores.capture_browse(&mut directory);
-        let search = crate::stores::search::snapshot_with_directory(browse.directory.view());
+        let search = stores.search_snapshot(browse.directory.view());
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
             consent_adapter,
             StorePublications {
@@ -735,7 +735,7 @@ impl Bridge {
         let browse_changed = listing_changed || !self.directory.same_publication(&directory_before)
             || hubs_before != (self.section_hubs.view().id(), self.section_hubs.view().revision());
         let search = if self.home_io.is_some() { self.search.clone() } else {
-            crate::stores::search::snapshot_with_directory(self.directory.view())
+            self.stores.search_snapshot(self.directory.view())
         };
         let search_changed = !self.search.same_publication(&search);
         if search_changed {
@@ -1009,8 +1009,8 @@ impl Bridge {
 
     /// Search commands snapshot their initial favourite-library ranking from the same retained
     /// directory the screen read when it emitted the command.
-    pub(crate) fn search_run(&self, cmd: crate::stores::search::SearchCmd) -> bool {
-        crate::stores::search::run_with_directory(cmd, self.directory.view())
+    pub(crate) fn search_run(&mut self, cmd: crate::stores::search::SearchCmd) -> bool {
+        self.stores.search_run(cmd, self.directory.view())
     }
 
     pub(crate) fn browse_directory(&self) -> crate::stores::browse::DirectoryView<'_> {
@@ -1268,8 +1268,7 @@ impl Rig<AppHost> for Bridge {
                     .step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us }) => {
-                crate::stores::search::pump_with_directory(
-                    *dt_us as f32 / 1_000_000.0, self.directory.view());
+                self.stores.search_pump(*dt_us as f32 / 1_000_000.0, self.directory.view());
                 Handled::Yes
             }
             _ => Handled::No,
@@ -1601,7 +1600,7 @@ fn frame_ingest(
     // Search can still change through a producer outside the dispatcher queue. Announce that
     // captured change, but do not double-deliver an ordinary queued Search notice.
     if search_changed && !search_notified {
-        d.store_changed(StoreId::Search.ord(), crate::stores::gen(StoreId::Search));
+        d.store_changed(StoreId::Search.ord(), rig.stores.gen(StoreId::Search));
     }
     let surface = d.surface_up();
     // A surface's INPUTS are the panel's own damage — the glass cadence's ledger, which asks
