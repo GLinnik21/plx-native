@@ -656,14 +656,18 @@ img {
 .built-card .built-copy {
   flex: 1 1 440px;
 }
-.built-card .kicker {
-  font-size: 13px;
-  letter-spacing: 1.2px;
-  text-transform: uppercase;
-  color: var(--text-tertiary);
-  margin: 0 0 14px;
+.built-card .built-copy--offline {
+  flex: 1 1 340px;
 }
-.built-card .built-copy p:not(.kicker) {
+.built-card .built-title {
+  font-size: clamp(18px, 1.9vw, 21px);
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--text-primary);
+  margin: 0 0 10px;
+  text-wrap: pretty;
+}
+.built-card .built-copy p {
   font-size: clamp(16px, 1.6vw, 17px);
   line-height: 1.55;
   color: var(--text-reading);
@@ -671,21 +675,14 @@ img {
   max-width: 68ch;
   text-wrap: pretty;
 }
-.tech-list {
-  flex: 0 1 200px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  flex-wrap: nowrap;
-  gap: 10px;
-  align-self: center;
-  font-size: 15px;
+.built-card .built-copy--offline p {
+  max-width: 62ch;
 }
-.tech-list li {
-  color: var(--text-primary);
-  white-space: nowrap;
+.built-card .built-copy p.built-tech {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+  margin: 12px 0 0;
 }
 
 /* ---------- Community quote cloud ---------- */
@@ -1073,13 +1070,6 @@ img {
   }
   .closeup-grid {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .tech-list {
-    flex: 1 1 100%;
-    flex-direction: row;
-    gap: 10px;
-    font-size: 13px;
   }
 
   .quote-cloud {
