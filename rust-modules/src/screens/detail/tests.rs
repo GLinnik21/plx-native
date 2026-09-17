@@ -101,6 +101,9 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         season_metrics: season::Metrics::new(),
         about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP),
+        selected: crate::pms::movie(crate::pms::index_of_rk(sid, rk).max(0) as usize)
+            .filter(|_| crate::pms::index_of_rk(sid, rk) >= 0)
+            .cloned(),
         spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),
         layout: std::cell::Cell::new(None),

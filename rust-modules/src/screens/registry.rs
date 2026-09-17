@@ -820,8 +820,11 @@ pub(crate) enum PlayIntent {
         title: String,
         context: String,
     },
-    /// The alternative source the page had selected (`route::request_play_movie`).
-    Movie(&'static crate::pms::PmsMovie),
+    /// The alternative source the page had selected (`route::request_play_movie`). Owned rather
+    /// than a `&'static` catalog borrow: it is held inside `PageAction`/`AppFx` across a frame
+    /// boundary, and once Detail's `selected` becomes an owned per-page snapshot (rather than a
+    /// process-wide catalog read) there is no `'static` row left to borrow.
+    Movie(crate::pms::PmsMovie),
 }
 
 pub(crate) trait ContentLike: AppLike<Memory = PageMemory> {}
