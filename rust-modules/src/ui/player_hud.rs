@@ -1621,8 +1621,13 @@ pub(crate) fn draw_hud(
                 &n.ep_title,
             ))
             .unwrap_or_default();
-            let title = CString::new(n.title.clone()).unwrap_or_default();
-            draw_title(p, Kicker::Episode(kicker.as_ptr()), title.as_ptr());
+            // `if let Ok`, not `.unwrap_or_default()`: before this function was factored out, an
+            // interior-NUL title (the one CString::new can fail on) simply drew nothing — the
+            // refactor was supposed to be visual-no-op, and an `unwrap_or_default()` here draws an
+            // EMPTY title line instead of skipping it, which is a real (if rare) behavior change.
+            if let Ok(title) = CString::new(n.title.clone()) {
+                draw_title(p, Kicker::Episode(kicker.as_ptr()), title.as_ptr());
+            }
         } else {
             draw_title(
                 p,
