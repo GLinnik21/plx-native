@@ -49,6 +49,10 @@ impl<'a> MetadataView<'a> {
     pub(crate) fn detail_request_status(&self, sid: crate::plex::ServerId, rk: &str) -> Option<bool> {
         detail_request_status(self.adapter, sid, rk)
     }
+    /// See [`detail_generation`] (free fn) for why a bare terminal `bool` is not enough identity.
+    pub(crate) fn detail_generation(&self) -> u32 {
+        detail_generation(self.adapter)
+    }
     pub(crate) fn cached_playing(&self, sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
         cached_playing(self.state, sid, rk)
     }
@@ -2519,6 +2523,15 @@ fn detail_request_status(adapter: &MetadataAdapter, sid: crate::plex::ServerId, 
     let want = adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner());
     want.as_ref().filter(|(wanted_sid, wanted_rk)| *wanted_sid == sid && wanted_rk == rk)
         .map(|_| detail_loading(adapter))
+}
+
+/// Generation of the most recently admitted detail request (bumped once, synchronously, by
+/// [`begin_detail_request`]). A bare `Option<bool>` from [`detail_request_status`] answers
+/// "settled?" with no identity — it cannot distinguish "MY request settled" from "an older
+/// request for the same address settled". Callers that need to pin an obligation to their own
+/// request read this generation before admission and require a later read to be strictly newer.
+fn detail_generation(adapter: &MetadataAdapter) -> u32 {
+    adapter.detail_gen.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 #[cfg(test)]

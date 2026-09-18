@@ -139,6 +139,13 @@ pub(crate) struct DetailScreen {
     /// Server reconciliation owed by this item, independent of cancellable focus restoration.
     /// Navigation memory cannot rewind it; only a new refresh or its terminal request changes it.
     refresh: DetailRefreshPhase,
+    /// The detail-store generation (`MetadataView::detail_generation`) observed the instant
+    /// BEFORE `refresh` was last promoted to `Requested` — i.e. the newest generation that
+    /// already existed and so cannot be OUR request's own terminal. T2: `pump_restore` may only
+    /// retire the obligation on a terminal whose current generation is strictly newer than this,
+    /// never on a bare `Some(false)`, which carries no identity and can belong to a stale request
+    /// for the same (sid, rk) that predates this promotion's own admission.
+    refresh_gen: u32,
     restore_intent: Option<RestoreIntent>,
     /// This page has already asked the Metadata store to drop the slot it owned. §3.4's
     /// `pop_sequence` delivers `WillLeave(ForGood)` AND `Unmount` to the same body, and both land
@@ -322,6 +329,7 @@ impl DetailScreen {
             preview_started_for: None,
             preview_had_picture: false,
             refresh: DetailRefreshPhase::None,
+            refresh_gen: 0,
             restore_intent: None,
             teardown_cleared: false,
             scroll: Spring::at(0.0),
@@ -1440,7 +1448,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                     )));
                 }
                 if request && refresh != DetailRefreshPhase::None {
-                    self.start_reconciliation(fx);
+                    self.start_reconciliation(fx, meta);
                 }
                 self.reveal_focus(cx.focus.current, cx.measure, meta);
                 fx.invalidate(Provenance::Input);
@@ -1612,7 +1620,15 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                 match refresh {
                     DetailRefreshPhase::None => {}
                     DetailRefreshPhase::Deferred => self.refresh = DetailRefreshPhase::Deferred,
-                    DetailRefreshPhase::Requested => self.refresh = DetailRefreshPhase::Requested,
+                    DetailRefreshPhase::Requested => {
+                        // T2: the sender already admitted this request synchronously (see the
+                        // comment above), so `meta.detail_generation()` here IS our own request's
+                        // generation. The threshold must be the generation that existed before
+                        // that admission, or our own real terminal (landing at this same,
+                        // unchanged generation number) would never look "newer" than itself.
+                        self.refresh_gen = meta.detail_generation().saturating_sub(1);
+                        self.refresh = DetailRefreshPhase::Requested;
+                    }
                 }
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
@@ -1670,7 +1686,12 @@ impl DetailScreen {
     fn start_reconciliation<H: crate::screens::registry::MetadataLike>(
         &mut self,
         fx: &mut Effects<'_, H>,
+        meta: crate::metadata::MetadataView<'_>,
     ) {
+        // T2: record the generation that already exists BEFORE this request is admitted (the
+        // queued `RequestDetail` below is only admitted later, when the drain reaches it). Any
+        // terminal `pump_restore` observes at this generation or older is not ours to consume.
+        self.refresh_gen = meta.detail_generation();
         fx.push(Fx::App(AppFx::Store(
             StoreId::Metadata,
             StoreCmd::Metadata(MetadataCmd::RequestDetail {
@@ -2595,7 +2616,13 @@ impl DetailScreen {
         match (self.refresh, meta.detail_request_status(self.sid, &self.rk)) {
             (DetailRefreshPhase::Deferred, _) | (DetailRefreshPhase::Requested, None | Some(true)) => return,
             (DetailRefreshPhase::Requested, Some(false)) => {
-                self.refresh = DetailRefreshPhase::None;
+                // T2: a bare `Some(false)` has no identity — it may be a stale terminal for an
+                // OLDER request at this same (sid, rk) that predates the admission of the
+                // request this promotion queued. Only retire once the store's generation counter
+                // has moved past what existed when `refresh` was promoted to `Requested`.
+                if meta.detail_generation() > self.refresh_gen {
+                    self.refresh = DetailRefreshPhase::None;
+                }
             }
             (DetailRefreshPhase::None, _) => {}
         }

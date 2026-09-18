@@ -98,6 +98,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         restore_intent: None,
         teardown_cleared: false,
         refresh: DetailRefreshPhase::None,
+        refresh_gen: 0,
         scroll: Spring::at(0.0),
         scroll_target: 0.0,
         episode_scroll: Spring::at(0.0),

@@ -108,6 +108,7 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         preview_started_for: None,
         preview_had_picture: false,
         refresh: DetailRefreshPhase::None,
+        refresh_gen: 0,
         restore_intent: None,
         teardown_cleared: false,
         scroll: Spring::at(0.0),
@@ -367,30 +368,17 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
 /// drain iteration (`Bridge::app_fx` -> `Fx::Deliver` to the store machine, several queue pops
 /// later; see `ui/dispatch.rs::drain`/`absorb`). If a `StoreChanged` or `Tick` reaches this
 /// screen's `pump_restore` inside that window, the store still answers with the STALE terminal
-/// (`Some(false)`) left by the PREVIOUS reconciliation at this exact `(sid, rk)` address, and
-/// `pump_restore`'s `(Requested, Some(false))` arm retires the freshly promoted obligation before
-/// the new request has even been admitted.
+/// (`Some(false)`) left by the PREVIOUS reconciliation at this exact `(sid, rk)` address.
 ///
-/// Unlike `refresh_content`'s route (`app::content::refresh_content` runs `RequestDetail` through
-/// `Bridge::metadata_run` in the same synchronous step that emits `DetailRestore{Requested}` —
-/// see C1fix, `3b628b23`), `DetailScreen::step` has no same-turn boundary to call: `Cx` publishes
-/// stores as read-only views, so there is no `&mut Stores` here by construction, and the engine's
-/// own drain runs the delivery to the store machine strictly after this step returns. Closing this
-/// window from inside `DetailScreen` alone is not possible without giving screens a synchronous
-/// store-write path for `Enter` the way `app/content.rs` has for `DetailRestore` — that is a
-/// widening of `Cx`/`Rig`, not a Metadata-layer fix, so this test is pinned RED rather than
-/// "fixed" by weakening the assertion. See the C2 stage report for the STOP-AND-REPORT this test
-/// backs.
-///
-/// Pinned `#[ignore]`, not fixed: this is a confirmed defect (see doc comment above), but closing
-/// it needs `Cx`/`Rig` widened so a screen can write a store synchronously from `step` — an
-/// architecture change outside this layer's scope. Left red-and-ignored, not weakened, so
-/// `make check`'s green baseline still means what it says while the gap stays documented and
-/// runnable (`cargo test -- --ignored`).
+/// Closed by IDENTITY, not synchrony: `DetailScreen::step` has no same-turn boundary the way
+/// `app::content::refresh_content` does for `DetailRestore` (see C1fix, `3b628b23`) — `Cx`
+/// publishes stores as read-only views, so there is no `&mut Stores` here by construction. Rather
+/// than widen `Cx`/`Rig`, `start_reconciliation` now records `self.refresh_gen =
+/// meta.detail_generation()` — the generation that already existed BEFORE this promotion's own
+/// request is admitted — and `pump_restore`'s `(Requested, Some(false))` arm only retires the
+/// obligation once `meta.detail_generation() > self.refresh_gen`, mirroring the generation check
+/// completions already use for T3 (`metadata.rs`'s `if gen != adapter.detail_gen...`).
 #[test]
-#[ignore = "T2 pin (confirmed, unfixed): Enter(Restored) promotion is not admitted synchronously; \
-            closing this needs Cx/Rig widened for a screen to write a store from `step`, which is \
-            an architecture change and the owner's call, not this layer's — see the C2 stage report"]
 fn enter_restored_promotion_survives_a_stale_terminal_before_admission_t2() {
     let guard = install(detail(ServerId::UNSET, "show"));
     // Seed a stale, already-completed reconciliation at this exact address so the store answers

@@ -72,6 +72,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         preview_had_picture: false,
         restore_intent: None, teardown_cleared: false, scroll: Spring::at(0.0),
         refresh: DetailRefreshPhase::None,
+        refresh_gen: 0,
         scroll_target: 0.0, episode_scroll: Spring::at(0.0), tab_scroll: Spring::at(0.0),
         episode_scale: [Spring::at(1.0); EP_SCALE_MAX], related: CardRow::new(),
         extras: CardRow::new(),
