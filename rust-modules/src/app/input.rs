@@ -278,18 +278,6 @@ mod activate_card_tests {
     #[test]
     fn a_show_or_season_play_no_longer_decides_on_the_press_frame() {
         let _guard = crate::testlock::serial();
-        struct Cleanup;
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-                crate::plex::reset_servers_for_test();
-            }
-        }
-        let _cleanup = Cleanup;
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test("press-frame", "127.0.0.1", 1, "t", "c-press-frame");
-        let mm = crate::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
-
         let mut ps = crate::route::PlaybackSession::default();
         let mt = unsafe { crate::task::MainThread::assume() };
         let mut pa = crate::player::adapter::PlayerAdapter::new(mt);
@@ -297,13 +285,27 @@ mod activate_card_tests {
         let mut bridge = super::bridge::Bridge::for_test(|| 0);
         let mut menu_play_await = None;
 
+        struct Cleanup(*mut super::bridge::Bridge);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                // SAFETY: captured from `bridge` just above, which outlives this guard for the
+                // whole test body.
+                unsafe { &mut *self.0 }.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
+                crate::plex::reset_servers_for_test();
+            }
+        }
+        let _cleanup = Cleanup(&mut bridge as *mut _);
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test("press-frame", "127.0.0.1", 1, "t", "c-press-frame");
+        let mm = crate::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
+
         unsafe {
             activate_card(&mut ps, &mut pa, &mm, true, 1000, None,
                 &mut pages, &mut bridge, &mut menu_play_await, 0);
         }
 
         assert!(
-            crate::metadata::detail_loading(),
+            crate::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
             "the parent detail must still be IN FLIGHT right after the press — the play/open \
              decision must wait for menu_play_tick, not run on this call"
         );
