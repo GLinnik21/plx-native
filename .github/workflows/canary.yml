@@ -94,6 +94,11 @@ jobs:
       artifact: public-storage-canary
       caches: true
       fwcompat: true
+      # false is NOT because canary is exempt from LGPL's source obligation — any caller that
+      # publishes the package redistributes FFmpeg and owes the corresponding source, so
+      # build-package.yml's default is true (fail-closed) for exactly that reason. This is a
+      # known gap: the public canary prerelease ships with no FFmpeg source attached today, to
+      # close when the nightly caller replaces it.
       source-asset: false
     secrets:
       SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}

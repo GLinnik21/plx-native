@@ -43,7 +43,11 @@ on:
       source-asset:
         description: >
           Attach the LGPL corresponding source for the bundled FFmpeg and build the versioned,
-          independently-reconstructible source tarball. Release only — canary never had these.
+          independently-reconstructible source tarball. Defaults true because it is the
+          fail-closed choice: any caller that publishes the package redistributes FFmpeg and
+          owes LGPL corresponding source, not just release. Canary opts out today — publishing
+          a public prerelease with no FFmpeg source is a known gap, to close when the nightly
+          caller replaces it.
         type: boolean
         default: true
       caches:
@@ -63,7 +67,7 @@ on:
         default: false
     secrets:
       SENTRY_AUTH_TOKEN:
-        required: false
+        required: true
     outputs:
       ipk:
         description: Path to the built .ipk inside the runner's workspace (pkg/*.ipk).
