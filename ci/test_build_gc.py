@@ -141,6 +141,63 @@ class BuildGcTests(unittest.TestCase):
                 self.assertIn("cannot enumerate", result.stderr)
                 self.assertTrue(all(p.exists() for p in fixture[2]))
 
+    # Regression for a `set -e` + pipeline-subshell bug: every derived-tree helper
+    # (`vendor_trees`, `lane_trees`, `incremental_trees`, `external_trees`, ...) used to end its
+    # `for` loop body in `[ -d "$d" ] && echo "$d"`. When the LAST glob candidate did not exist —
+    # true of every repo here, since none of these fixtures create a `vendor/` dir — that line's
+    # exit status was non-zero, which became the function's own return status. A bare call to a
+    # function shaped like that (`lane_trees "$w"` as the final statement of a
+    # `worktrees | while read w; do ...; done` loop body) is NOT exempt from `set -e`, so the
+    # `while` loop's own subshell exited the moment it hit the first worktree — silently
+    # truncating `--lanes`/`--incremental`/`--worktrees` to their first entry, with exit code 0
+    # and no error printed. Real repo measured 2026-09-18: `--lanes -n` listed nothing while a
+    # linked worktree's `rust-modules/target` alone was 3.1 GB.
+    def _add_worktrees(self, fixture, n, prefix="lane", add_target=True):
+        repo, env, _, _ = fixture
+        (repo / "README").write_text("seed\n")
+        subprocess.run(["git", "-C", str(repo), "add", "README"], env=env, check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-q", "-m", "seed"], env=env, check=True)
+        # `worktree_reason()` (the `--worktrees` mode) tests ancestry against the literal ref
+        # `main`; `git init` here has no global `init.defaultBranch` to read (the fixture strips
+        # GIT_CONFIG_GLOBAL) and falls back to `master`. Rename so both modes see a real `main`.
+        subprocess.run(["git", "-C", str(repo), "branch", "-m", "main"], env=env, check=True)
+        worktree_roots = []
+        for i in range(n):
+            wt = repo.parent / f"{prefix}{i}"
+            subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "-b",
+                            f"{prefix}{i}", str(wt)], env=env, check=True)
+            if add_target:
+                tgt = wt / "rust-modules/target"
+                tgt.mkdir(parents=True)
+                (tgt / "sentinel").write_text("synthetic build output\n")
+            worktree_roots.append(wt)
+        return worktree_roots
+
+    def test_lanes_enumerates_every_worktree_not_just_the_first(self):
+        fixture = self.fixture(0, 0)
+        roots = self._add_worktrees(fixture, 3)
+        result = self.run_gc(fixture, "--lanes", "-n")
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        for wt in roots:
+            tgt = wt / "rust-modules/target"
+            self.assertIn(str(tgt), diagnostic,
+                          "worktree target missing from --lanes output: " + diagnostic)
+
+    def test_worktrees_mode_enumerates_past_the_first_record(self):
+        # No target dir here: an untracked build tree would make every worktree read `dirty`,
+        # which is a real (and correctly refused) state but not what this test is checking. This
+        # test asks whether `--worktrees` enumerates past the first CLEAN, already-on-`main`
+        # worktree — so every worktree here is left exactly at the seed commit.
+        fixture = self.fixture(0, 0)
+        roots = self._add_worktrees(fixture, 3, prefix="finished", add_target=False)
+        result = self.run_gc(fixture, "--worktrees", "-n")
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        for wt in roots:
+            self.assertIn(f"would remove  {wt}", diagnostic,
+                          "worktree missing from --worktrees output: " + diagnostic)
 
     # A build in ONE checkout must not veto reclaiming every OTHER tree on the volume. The guard
     # used to be all-or-nothing: any `cargo`/`make` anywhere and the script deleted nothing. On a
