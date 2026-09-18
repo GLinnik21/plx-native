@@ -551,6 +551,16 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
     crate::ui::landgate::disarm();
 
     crate::app::bootstrap::stores::init(&initial, true);
+    // The replay run must start from a ZEROED Tracker, exactly as the recording run did: the
+    // recorded batches carry `seq` 1..=8 and `publish_replies` refuses any reply whose seq is not
+    // `tracker.seq + 1`. Before Stage B this reset came for free -- `stores::init` ended with
+    // `crate::metadata::record::reset(initial.content.is_some())` (see `stores.rs` at d067a796),
+    // so re-entering the controlled domain rewound the one crate-global TRACKER. Stage B deleted
+    // that line with the static (0d466527); `init` cannot reach a per-owner adapter, so the
+    // rewind is the fixture's to do now. Without it the replay phase inherits the recording
+    // phase's seq=8, the very first supplied batch (seq=1) is rejected as "incoherent detail
+    // reply sequence", and `take_results()` answers `[]`.
+    crate::metadata::record::reset_tracker_for_test(test_adapter(), true);
     test_adapter().detail_gen.store(0, Ordering::SeqCst);
     test_adapter().detail_done.store(0, Ordering::SeqCst);
     clear(test_state(), test_adapter());
