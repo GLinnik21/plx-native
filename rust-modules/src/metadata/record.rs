@@ -56,6 +56,17 @@ fn tracker(adapter: &super::MetadataAdapter) -> std::sync::MutexGuard<'_, Tracke
     adapter.tracker_mutex().lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// TEST ONLY: arms/disarms this adapter's own `Tracker` so a test can observe the
+/// `crate::app::bootstrap::stores` recording path. `Tracker` has no production setter, by
+/// design — nothing after boot ever resets one — so this is the one seam, `pub(super)` (visible
+/// to `crate::metadata` and every descendant) so the sibling `metadata_*_tests.rs` files can
+/// reach it too, not just this module's own `mod tests` (which used to reach the OLD crate-global
+/// `TRACKER` static directly; each per-owner adapter now needs its own admission).
+#[cfg(test)]
+pub(super) fn reset_tracker_for_test(adapter: &super::MetadataAdapter, enabled: bool) {
+    *tracker(adapter) = Tracker::new(enabled);
+}
+
 pub(super) fn admit(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Addr)
     -> Result<(), crate::ui::landing::AdmissionError> {
     let mut tracker = tracker(adapter);
@@ -344,12 +355,8 @@ mod tests {
     // visible to `crate::metadata` and every descendant — this module included.
     use super::super::test_support::{test_state, test_adapter};
 
-    // The old crate-global `reset(bool)` free function retired the shared `TRACKER` and rearmed
-    // it — replaced here by reaching the per-owner `Tracker` the same way production does, through
-    // `tracker(adapter)`, and overwriting it directly (there is no other seam: `Tracker` has no
-    // setter, by design, since production itself never resets one after boot).
     fn reset(enabled: bool) {
-        *tracker(test_adapter()) = Tracker::new(enabled);
+        reset_tracker_for_test(test_adapter(), enabled);
     }
 
     fn controlled(replay: bool) {

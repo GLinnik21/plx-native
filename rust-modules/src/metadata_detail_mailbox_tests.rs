@@ -500,6 +500,11 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
     let initial = crate::app::bootstrap::Initial::from_value(value).unwrap();
     crate::app::bootstrap::stores::init(&initial, false);
     crate::ui::landgate::arm_recording();
+    // Arms this test's own thread-confined adapter's Tracker so cancel_all/admit/land_detail
+    // below actually record into crate::app::bootstrap::stores -- each per-owner MetadataAdapter
+    // now starts with its Tracker disabled (there is no more single crate-global TRACKER static
+    // for some earlier test to have left armed).
+    crate::metadata::record::reset_tracker_for_test(test_adapter(), true);
     test_adapter().detail_gen.store(0, Ordering::SeqCst);
     test_adapter().detail_done.store(0, Ordering::SeqCst);
     clear(test_state(), test_adapter());
