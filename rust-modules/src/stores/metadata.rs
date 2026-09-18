@@ -368,3 +368,72 @@ mod pump_wiring_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod two_owner_tests {
+    use super::*;
+
+    /// **The two-owner regression (contract Required 3).** A worker captures the `Arc` of its
+    /// owner's `MetadataAdapter` before it spawns (mirrors `HubsStore`'s own two-owner test,
+    /// `stores/hubs.rs::a_landing_reaches_only_the_owner_whose_adapter_it_was_minted_from`), and
+    /// its landing is applied into a `MetadataState` the caller supplies (`land_detail_for_test`).
+    /// Two independently-owned `MetadataStore`s (as two `Bridge`s would be, one per signed-in
+    /// session) must not observe each other's requests, landings or notice generations.
+    ///
+    /// This is deliberately NOT an assertion that would also pass against a shared adapter:
+    /// checked by hand (simulated red, not left in the tree — a real historical pre-ownership
+    /// commit predates this test harness and no longer builds against it) by routing B's
+    /// `begin_detail_for_test` through A's `adapter_ref()` instead of its own, reproducing the
+    /// shape a process-wide static or a shared `Arc` would have had before this layer's ownership
+    /// port. With that single substitution the very first cross-owner assertion below
+    /// (`a.view().detail_request_status(sid, a_rk)`) goes from `Some(true)` to `None`, because B's
+    /// `begin` on the shared mailbox silently supersedes A's — this test could not have passed
+    /// against the broken shape.
+    #[test]
+    fn a_landing_reaches_only_the_owner_whose_adapter_it_was_minted_from() {
+        let _guard = crate::testlock::serial();
+        let sid = crate::plex::ServerId::UNSET;
+        let a_rk = "owner-a-item";
+        let b_rk = "owner-b-item";
+
+        let mut a = MetadataStore::default();
+        let mut b = MetadataStore::default();
+
+        let a_gen = crate::metadata::begin_detail_for_test(a.adapter_ref(), sid, a_rk);
+        let b_gen = crate::metadata::begin_detail_for_test(b.adapter_ref(), sid, b_rk);
+
+        // Each owner's own mailbox sees only the request it minted.
+        assert_eq!(a.view().detail_request_status(sid, a_rk), Some(true));
+        assert_eq!(a.view().detail_request_status(sid, b_rk), None, "A never saw B's request");
+        assert_eq!(b.view().detail_request_status(sid, b_rk), Some(true));
+        assert_eq!(b.view().detail_request_status(sid, a_rk), None, "B never saw A's request");
+
+        let a_detail = crate::metadata::Detail { sid, rk: a_rk.into(), ..Default::default() };
+        let b_detail = crate::metadata::Detail { sid, rk: b_rk.into(), ..Default::default() };
+
+        {
+            let (a_state, a_adapter) = a.split_for_test();
+            crate::metadata::land_detail_for_test(a_state, a_adapter, sid, a_rk, a_gen, Some(a_detail.clone()));
+        }
+        {
+            let (b_state, b_adapter) = b.split_for_test();
+            crate::metadata::land_detail_for_test(b_state, b_adapter, sid, b_rk, b_gen, Some(b_detail.clone()));
+        }
+
+        // POSITIVE: each owner's landing settled its own mailbox and installed its own item, and
+        // notice generations advanced independently (per-owner `AtomicU32`, not a shared counter).
+        assert_eq!(a.view().detail_request_status(sid, a_rk), Some(false), "A's own landing settled A's mailbox");
+        assert_eq!(a.view().current().map(|d| d.rk.as_str()), Some(a_rk), "A holds the item it landed");
+        assert_eq!(b.view().detail_request_status(sid, b_rk), Some(false), "B's own landing settled B's mailbox");
+        assert_eq!(b.view().current().map(|d| d.rk.as_str()), Some(b_rk), "B holds the item it landed");
+        // Notice generations are independent counters, not a shared one: a command run against A
+        // alone must bump only A's `gen()`. `land_detail_for_test` above drives the bare
+        // `crate::metadata::pump_detail` free function directly (a test seam, not `MetadataStore`'s
+        // own `run`/`pump_detail` wrapper), so it does not exercise `bump()` — a real command does.
+        assert_eq!(a.gen(), 0);
+        assert_eq!(b.gen(), 0);
+        a.run(MetadataCmd::Clear);
+        assert_eq!(a.gen(), 1, "A's own command must advance A's own notice generation");
+        assert_eq!(b.gen(), 0, "A's command must not advance B's notice generation");
+    }
+}
