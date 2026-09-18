@@ -319,11 +319,18 @@ mod pump_wiring_tests {
         // route/feature gate, buried behind a route check, or merely mentioned in a comment (none
         // of which pump the mailbox route-unconditionally). Matching by WHOLE LINE (not a
         // substring search, which extra leading indentation would still satisfy) against the
-        // literal `if crate::…::pump_season() {` at the SAME indentation as `pump_detail()`'s own
-        // `if` proves it is a sibling statement in the same block — not nested one level deeper
-        // inside some other conditional.
-        const DETAIL_STMT: &str = "        if crate::stores::metadata::pump_detail() {";
-        const SEASON_STMT: &str = "        if crate::stores::metadata::pump_season() {";
+        // literal `if app.bridge.metadata_pump_season() {` at the SAME indentation as
+        // `metadata_pump_detail()`'s own `if` proves it is a sibling statement in the same block
+        // — not nested one level deeper inside some other conditional.
+        //
+        // Stage C1 note: these two now name `Bridge`'s own owned-store wrappers
+        // (`metadata_pump_detail`/`metadata_pump_season`), not the old free
+        // `crate::stores::metadata::pump_detail`/`pump_season` — Metadata moved from a
+        // crate-global dispatcher to a per-`Bridge` owner in Stage B, and `run.rs`'s call site
+        // moved with it. The pin exists to catch exactly that kind of silent drop, so it must
+        // track the real call shape rather than the pre-ownership one.
+        const DETAIL_STMT: &str = "        if app.bridge.metadata_pump_detail() {";
+        const SEASON_STMT: &str = "        if app.bridge.metadata_pump_season() {";
         let line_index = |needle: &str| {
             src.lines().position(|line| line == needle)
         };
@@ -331,22 +338,23 @@ mod pump_wiring_tests {
             .expect("run.rs must still pump the async detail landing every frame, at this exact indentation");
         let season_at = line_index(SEASON_STMT).unwrap_or_else(|| {
             panic!(
-                "pump_season() must be called route-unconditionally, at the same nesting depth \
-                 as pump_detail() (found no `{SEASON_STMT}` line) — its call site went missing in \
-                 the phase-7 owned-screens migration and nothing replaced it, so \
+                "metadata_pump_season() must be called route-unconditionally, at the same nesting \
+                 depth as metadata_pump_detail() (found no `{SEASON_STMT}` line) — its call site \
+                 went missing in the phase-7 owned-screens migration and nothing replaced it, so \
                  season_loading() never clears after a season switch: the episode row's spinner \
                  spins forever and every episode press is refused (episodes::action gates on \
                  season_loading())."
             )
         });
-        // pump_detail() must run FIRST: a landed detail's `install_landed_detail` calls
+        // metadata_pump_detail() must run FIRST: a landed detail's `install_landed_detail` calls
         // `supersede_season()`, invalidating any season fetch for the item being replaced.
         // Pumping season first could apply a stale season landing to CURRENT in the one frame
-        // before pump_detail() replaces it.
+        // before metadata_pump_detail() replaces it.
         assert!(
             season_at > detail_at,
-            "pump_season() must be pumped AFTER pump_detail(), not before — pump_detail() is what \
-             supersedes a stale in-flight season fetch when a fresh detail lands"
+            "metadata_pump_season() must be pumped AFTER metadata_pump_detail(), not before — \
+             metadata_pump_detail() is what supersedes a stale in-flight season fetch when a \
+             fresh detail lands"
         );
         // Both statements must be in the SAME enclosing function: no line starting a new `fn` —
         // a new function's own leading `fn`, not the word appearing mid-identifier — between them.
