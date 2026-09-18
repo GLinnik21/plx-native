@@ -1559,11 +1559,27 @@ const KEYCAP_BOLD: c_int = 1;
 /// spec; two pixels either side of one cap is not a thing anyone would have found by looking.
 const KEYCAP_GAP: f32 = 12.0;
 
-/// The width [`key_cap`] will occupy for `label` — the measure-first companion, so a caller can
+/// The glyph box inside a [`CapFace::Glyph`] cap. A remote's arrow keys carry an arrow, not a
+/// word, so their cap wears the design system's chevron; 20px lands the chevron's ink at about the
+/// cap height of the bold `MICRO` label a word cap carries, so the two kinds of cap read as one family.
+const KEYCAP_GLYPH: f32 = 20.0;
+
+/// What is printed on a [`key_cap`]: the key's NAME (`BACK`, `OK`) or, for a key whose face is a
+/// symbol (the remote's arrows), the design system's glyph for it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CapFace<'a> {
+    Label(&'a std::ffi::CStr),
+    Glyph(crate::ui::icons::Icon),
+}
+
+/// The width [`key_cap`] will occupy for `face` — the measure-first companion, so a caller can
 /// right-align or centre the whole line before drawing any of it.
-pub(crate) fn key_cap_w(label: &std::ffi::CStr, measure: &dyn crate::ui::machine::Measure) -> f32 {
-    (measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0) + 2.0 * KEYCAP_PAD_X)
-        .max(KEYCAP_MIN_W)
+pub(crate) fn key_cap_w(face: CapFace<'_>, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    let inner = match face {
+        CapFace::Label(label) => measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0),
+        CapFace::Glyph(_) => KEYCAP_GLYPH,
+    };
+    (inner + 2.0 * KEYCAP_PAD_X).max(KEYCAP_MIN_W)
 }
 
 /// Draw one key cap with its LEFT edge at `x`, centred on `cy`; returns its width.
@@ -1571,27 +1587,42 @@ pub(crate) fn key_cap(
     p: Painter,
     x: f32,
     cy: f32,
-    label: &std::ffi::CStr,
+    face: CapFace<'_>,
     ink: [f32; 4],
     measure: &dyn crate::ui::machine::Measure,
 ) -> f32 {
-    let w = key_cap_w(label, measure);
+    let w = key_cap_w(face, measure);
     p.rring(
         Rect::new(x, cy - KEYCAP_H * 0.5, w, KEYCAP_H),
         KEYCAP_RAD,
         KEYCAP_W,
         ink,
     );
-    let tw = measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0);
-    p.text(
-        label.as_ptr(),
-        x + (w - tw) * 0.5,
-        crate::text::text_vcenter_y(theme::size::MICRO, KEYCAP_BOLD, cy),
-        theme::size::MICRO,
-        ink,
-        0,
-        KEYCAP_BOLD,
-    );
+    match face {
+        CapFace::Label(label) => {
+            let tw = measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0);
+            p.text(
+                label.as_ptr(),
+                x + (w - tw) * 0.5,
+                crate::text::text_vcenter_y(theme::size::MICRO, KEYCAP_BOLD, cy),
+                theme::size::MICRO,
+                ink,
+                0,
+                KEYCAP_BOLD,
+            );
+        }
+        CapFace::Glyph(icon) => crate::ui::icons::draw(
+            p,
+            icon,
+            Rect::new(
+                x + (w - KEYCAP_GLYPH) * 0.5,
+                cy - KEYCAP_GLYPH * 0.5,
+                KEYCAP_GLYPH,
+                KEYCAP_GLYPH,
+            ),
+            ink,
+        ),
+    }
     w
 }
 
@@ -1603,11 +1634,11 @@ pub(crate) fn key_cap(
 /// than centring itself precisely so that both are the caller's to choose — the alignment is the
 /// half that belongs to the screen, the assembled line is the half that does not.
 ///
-/// The three `&CStr`s are BORROWED for the widget's lifetime — the `Label` rule in `ui/CLAUDE.md`:
+/// The `&CStr`s are BORROWED for the widget's lifetime — the `Label` rule in `ui/CLAUDE.md`:
 /// keep the `CString` (or a `c"…"` literal) alive across the draw.
 pub(crate) struct KeyHint<'a> {
     pre: &'a std::ffi::CStr,
-    key: &'a std::ffi::CStr,
+    key: CapFace<'a>,
     post: &'a std::ffi::CStr,
 }
 
@@ -1617,7 +1648,24 @@ impl<'a> KeyHint<'a> {
         key: &'a std::ffi::CStr,
         post: &'a std::ffi::CStr,
     ) -> Self {
-        Self { pre, key, post }
+        Self {
+            pre,
+            key: CapFace::Label(key),
+            post,
+        }
+    }
+
+    /// The same line for a key whose face is a SYMBOL rather than a word — the remote's arrows.
+    pub(crate) fn glyph(
+        pre: &'a std::ffi::CStr,
+        key: crate::ui::icons::Icon,
+        post: &'a std::ffi::CStr,
+    ) -> Self {
+        Self {
+            pre,
+            key: CapFace::Glyph(key),
+            post,
+        }
     }
 
     /// Total width of the assembled line.
@@ -7275,7 +7323,7 @@ pub(crate) fn badge(
 
 /// Mark box (px). A little over the meta line's cap height so a 26-unit silhouette still resolves
 /// at couch distance — these marks carry the VERDICT, so legibility here is not cosmetic.
-const RATING_MARK_D: f32 = 30.0;
+pub(crate) const RATING_MARK_D: f32 = 30.0;
 /// Glyph → its score. They are one unit, so it stays tight.
 const RATING_GAP: f32 = 10.0;
 /// Provider caption → the first score under it.

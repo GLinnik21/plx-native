@@ -76,7 +76,15 @@ is what let first-run consent put its two answers there. The sweep is complete �
 reader's was the one that survived the first pass, so that route said where BACK went twice.
 `KeyHint` is unchanged and still correct where it lives: the read-only ALERT panels
 (`screens::about_panel`, `screens::person_bio` and `screens::tracks_panel`), which hold no control at all, so
-there the line really is the whole affordance.
+there the line really is the whole affordance. **One ROUTE draws one since 2026-09-17 and it is the
+opposite object** — `screens::detail::trailer`'s `[^] Full screen`, under the hero's
+control row while a trailer is playing behind the page. What the sweep removed was a line naming a
+key the viewer already knows (BACK) for a destination it could not name; this one names a key that
+does something the page gives NO other sign of, and it is drawn only in the seconds the trailer's
+picture is up, fading with it. That is the test to apply to the next one: does the hint teach an
+affordance that is otherwise invisible, or restate the remote? It reaches the cap through
+`KeyHint::glyph`, the `CapFace::Glyph` face added with it — a cap whose legend is an `Icon` centred
+in the same keyline rather than a `MICRO` word, because the chevron IS the key's face.
 
 ## What lives where
 
@@ -651,7 +659,11 @@ left for this note to paper over.
 - **`detail.rs` below-hero layout is a computed flow, not magic constants.** The below-hero sections
   are the children of a shared `ScrollColumn` (`impl Column for DetailView`): the container's
   `child_top(i)` stacks the *present* blocks' `block_h()` heights (via `Column::height`) from
-  `CONTENT_TOP` with one `SECTION_GAP` (season tabs → episodes hug with `TAB_EP_GAP`). To resize/space
+  `CONTENT_TOP` with one of THREE gaps, and which one is `section_gap`'s whole job: `SECTION_GAP`
+  between ordinary sections, `TAB_EP_GAP` where the season tabs hug their episodes, and
+  `consts::UNDER_LABEL_AIR` after a SHELF section (Related, Cast, Extras), which already carries its
+  own label band — stacking a region gap on top of that band is the double-count that made every gap
+  below the hero read as a hole. To resize/space
   a section, change its `block_h` (content-derived — e.g. Related tracks `REL_H`=`CARD_H`) or the gap —
   never reintroduce a hard-coded per-section Y. `ScrollColumn::draw` culls off-screen sections with
   `on_axis` and pre-translates each child painter to its origin, so each `draw_*` draws from local

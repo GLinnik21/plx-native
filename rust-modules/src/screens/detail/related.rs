@@ -10,8 +10,10 @@ use crate::ui::{theme, Painter, Rect};
 pub(crate) const RELATED_ELEM_RANGE_START: u32 = 640;
 pub(crate) const RELATED_ELEM_RANGE_END: u32 = 1152;
 pub(crate) const RELATED_GROUP: GroupId = GroupId(3);
-pub(crate) const LABEL_H: f32 = 46.0;
-pub(crate) const UNDER_H: f32 = 54.0;
+/// Heading cap top to card top — the SHARED shelf pitch (`consts::TITLE_DY + CARD_DY`), the same
+/// 60 a Home or Library shelf puts between its heading and its posters. It was a local 46, so the
+/// one object this page shares with every browsing screen sat 14px tighter here than anywhere else.
+pub(crate) const LABEL_H: f32 = crate::ui::consts::TITLE_DY + crate::ui::consts::CARD_DY;
 
 pub(crate) fn elem(index: usize) -> Option<u32> {
     (index < (RELATED_ELEM_RANGE_END - RELATED_ELEM_RANGE_START) as usize)
@@ -60,8 +62,12 @@ pub(crate) fn rect(row: &CardRow, index: usize, top: f32, at_drawn: bool) -> Rec
     }
 }
 
-pub(crate) fn block_h() -> f32 {
-    LABEL_H + RowStyle::HOME.h + UNDER_H
+/// `band` is this shelf's live label-band expansion ([`CardRow::band_expand`]), 0 collapsed → 1
+/// focused. The band is the SHARED collapse every other screen uses, not a fixed reservation: a
+/// shelf that holds no focus draws no label, so it gives the room back and the next section's
+/// heading rises to the design system's own region gap behind it.
+pub(crate) fn block_h(band: f32) -> f32 {
+    LABEL_H + RowStyle::HOME.h + card_row::under_band(band)
 }
 
 pub(crate) fn draw(

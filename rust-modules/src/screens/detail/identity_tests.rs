@@ -51,6 +51,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         preview_played_for: None,
         preview_started_for: None,
         preview_had_picture: false,
+        trailer_ctl: super::trailer::Transport::IDLE,
         restore_intent: None, scroll: Spring::at(0.0),
         refresh: DetailRefreshPhase::None,
         scroll_target: 0.0, episode_scroll: Spring::at(0.0), tab_scroll: Spring::at(0.0),

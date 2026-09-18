@@ -112,8 +112,10 @@ The focus pop values differ on purpose and each carries the reasoning at its def
 of widely spaced circles needs a bigger pop than a tight poster shelf to read as selected at all.
 
 Tile text is `TileLabel::title(t)` or `TileLabel::titled(t, caption)`, with the focused-label band
-driven by `band_reveal` and `under_band`. Row headings are `theme::size::HEADLINE` at `LABEL_H` 46
-(see `related.rs`).
+driven by `band_reveal` and `under_band`. Row headings are `theme::size::HEADLINE` at the SHARED
+shelf pitch, `consts::TITLE_DY + CARD_DY` (see `related.rs`, `cast.rs`, `extras.rs`) — the same
+heading-to-card distance Home and the Library use, quoted as the sum rather than as a number this
+file would then have to keep in step.
 
 Surfaces over a page use the `Glass` policy, which has exactly one axis: how often the backdrop
 snapshot refreshes. `Glass::CACHED` is the default, capture once on open. A surface over a moving
