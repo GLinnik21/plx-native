@@ -320,7 +320,12 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
                 let mut screen = bare(&guard, sid, "show");
                 screen.refresh = phase;
                 let generation = crate::metadata::detail_generation_for_test(test_store().adapter_ref());
-                step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Restored), None);
+                let (_, entered) = step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Restored), None);
+                // Both request paths (the direct RequestDetail push and start_reconciliation's
+                // own) only ENQUEUE the command; a real Bridge applies it on its next dispatch
+                // turn. This file drives no dispatcher, so it must apply it itself before reading
+                // the generation the request is expected to have minted.
+                apply_metadata_effects(&entered);
                 let requests = match phase {
                     DetailRefreshPhase::Deferred => 1,
                     DetailRefreshPhase::Requested => u32::from(status.is_none()),
