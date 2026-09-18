@@ -36,7 +36,7 @@ pub(super) fn p5() -> crate::metadata::Dovi {
 /// synthetic boundary explicit in the fixture layer so production `apply_plan` and tests of
 /// the start reducer both retain the real `Prepared -> Starting -> result` semantics.
 pub(super) fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) {
-    let start = super::apply_plan(ps, plan, rk);
+    let start = super::apply_plan(ps, &mut crate::stores::metadata::MetadataStore::default(), plan, rk);
     settle_plan_start_in_unit_test(ps, start);
 }
 

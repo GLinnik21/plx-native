@@ -541,6 +541,31 @@ else
   fail "hubs-owner: retired Hubs compatibility surface returned"
 fi
 
+# metadata-owner: Detail's item/season/playing model (`MetadataState`) and its worker adapter
+# (`Arc<MetadataAdapter>`, D3's `record::Tracker` included) belong to one `MetadataStore` per
+# Bridge (`stores/mod.rs`'s `Stores::metadata`, `metadata_run`/`metadata_pump`/`metadata_view`).
+# Zero tolerance, no allowlist: any free process-wide selector or module-level dispatcher
+# reconnects that owner and lets an unaddressed Clear or landing cross the Bridge boundary —
+# exactly the pre-port shape `crate::stores::metadata::apply` had, a free function reading/writing
+# process-wide `metadata.rs` statics instead of one owner's `MetadataState`/`Arc<MetadataAdapter>`
+# pair. `metadata::run`/`pump`/`pump_detail`/`pump_season`/`pump_alt_sources` are deliberately NOT
+# listed: they keep the explicit-parameter architecture, taking `state`/`adapter` in, exactly like
+# hubs' and search's own owned stores.
+metadata_facades='apply'
+metadata_selectors='DETAIL_LANDING|SEASON_LANDING|ALT_LANDING|NOW|CURRENT|TRACKER|NOTICES'
+metadata_owner_matches=$({
+  owner_declarations "$metadata_facades" "$metadata_selectors" \
+    'MetadataState|MetadataAdapter|MetadataStore|Tracker' \
+    "$SRC/metadata.rs" "$SRC/stores/metadata.rs"
+  grep_code "(crate::metadata|crate::stores::metadata|stores::metadata)::($metadata_facades)\(" "$SRC"
+} | sort -u)
+if [ -z "$metadata_owner_matches" ]; then
+  ok "metadata-owner: zero global storage, transport, selectors, and free facades"
+else
+  echo "$metadata_owner_matches" | sed 's/^/    /'
+  fail "metadata-owner: retired Metadata compatibility surface returned"
+fi
+
 # libm: the method-call spelling, OUTSIDE ui/motion.rs (which owns the integrators and their
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
 # Wholly-test files (see `wholly_test_files`) are skipped like inline `#[cfg(test)]` blocks: a

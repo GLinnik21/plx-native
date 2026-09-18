@@ -5,7 +5,143 @@
 use std::os::raw::c_int;
 pub(crate) mod record;
 use std::panic::catch_unwind;
-use std::ptr::{addr_of, addr_of_mut};
+
+/// **Stage B of the store-ownership migration** (`docs/stores-as-machines.md`, D4): a borrowed
+/// handle onto this layer's read surface, shaped like `crate::person::PersonView`. Every method
+/// reads straight off the owning `MetadataStore`'s own `MetadataState`/`MetadataAdapter` — there is
+/// no process-wide state left for it to forward to. The `'a` lifetime borrows the owner (`new`
+/// takes `&'a MetadataStore`), so a `MetadataView` can only be produced from an owner — there is no
+/// argument-less constructor, `Default` impl or `'static` substitute. See
+/// `crate::stores::metadata::MetadataStore::view(&self) -> MetadataView<'_>`.
+#[derive(Clone, Copy)]
+pub(crate) struct MetadataView<'a> {
+    state: &'a MetadataState,
+    adapter: &'a MetadataAdapter,
+}
+
+impl<'a> MetadataView<'a> {
+    pub(crate) fn new(owner: &'a crate::stores::metadata::MetadataStore) -> Self {
+        Self { state: owner.state(), adapter: owner.adapter_ref() }
+    }
+    pub(crate) fn current(&self) -> Option<&'a Detail> {
+        self.state.current.as_ref()
+    }
+    pub(crate) fn now_playing(&self) -> Option<&'a NowPlaying> {
+        self.state.now.as_ref()
+    }
+    pub(crate) fn playing(&self) -> Option<&'a PlayingItem> {
+        self.state.playing.as_ref()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn playing_markers(&self) -> &'a [Marker] {
+        self.playing().map(|p| p.markers.as_slice()).unwrap_or(&[])
+    }
+    #[allow(dead_code)]
+    pub(crate) fn playing_chapters(&self) -> &'a [Chapter] {
+        self.playing().map(|p| p.chapters.as_slice()).unwrap_or(&[])
+    }
+    pub(crate) fn detail_loading(&self) -> bool {
+        detail_loading(self.adapter)
+    }
+    pub(crate) fn season_loading(&self) -> bool {
+        season_loading(self.adapter)
+    }
+    pub(crate) fn detail_request_status(&self, sid: crate::plex::ServerId, rk: &str) -> Option<bool> {
+        detail_request_status(self.adapter, sid, rk)
+    }
+    /// See [`detail_generation`] (free fn) for why a bare terminal `bool` is not enough identity.
+    pub(crate) fn detail_generation(&self) -> u32 {
+        detail_generation(self.adapter)
+    }
+    pub(crate) fn cached_playing(&self, sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
+        cached_playing(self.state, sid, rk)
+    }
+    pub(crate) fn active_marker(&self, ps: &crate::route::PlaybackSession) -> Option<Marker> {
+        if !crate::player::is_playing(ps) {
+            return None;
+        }
+        let m = marker_at(self.playing_markers(), crate::player::playpos_ns() / 1_000_000)?;
+        (!self.state.skipped.contains(&(m.kind, m.start_ms))).then_some(m)
+    }
+    pub(crate) fn synthesized_tail_marker(&self, ps: &crate::route::PlaybackSession, has_next: bool) -> Option<Marker> {
+        if !has_next || !crate::player::is_playing(ps) {
+            return None;
+        }
+        if self.playing_markers().iter().any(|m| m.kind == MarkerKind::Credits) {
+            return None;
+        }
+        let dur_ms = crate::player::duration_ns() / 1_000_000;
+        let pos_ms = crate::player::playpos_ns() / 1_000_000;
+        tail_marker(pos_ms, dur_ms)
+    }
+    pub(crate) fn alt_copies(&self, sid: crate::plex::ServerId, rk: &str) -> &'a [AltCopy] {
+        alt_copies(self.state, sid, rk)
+    }
+    pub(crate) fn alt_available(&self, sid: crate::plex::ServerId, rk: &str) -> bool {
+        alt_available(self.state, sid, rk)
+    }
+}
+
+/// One Metadata owner's main-thread-only logical state (`docs/stores-as-machines.md`). Production
+/// gains one through `stores::metadata::MetadataStore`; the worker-touched half is
+/// [`MetadataAdapter`].
+#[derive(Default)]
+pub(crate) struct MetadataState {
+    current: Option<Detail>,
+    now: Option<NowPlaying>,
+    playing: Option<PlayingItem>,
+    /// Segments the user has already skipped in THIS playback — see the retired `SKIPPED` static's
+    /// doc.
+    skipped: Vec<(MarkerKind, i64)>,
+    alt: AltStore,
+}
+
+/// The `Arc`'d worker half of one Metadata owner: the detail/season/alt-sources landing mailboxes,
+/// their generation counters, and (D3) the replay recorder's admission ledger over the detail
+/// landing. A worker captures a clone of the owning `Bridge`'s `Arc<MetadataAdapter>` before it
+/// spawns; the adapter is never rotated (D3), so an old worker can always land into it.
+pub(crate) struct MetadataAdapter {
+    detail_gen: std::sync::atomic::AtomicU32,
+    detail_done: std::sync::atomic::AtomicU32,
+    detail_landing: crate::ui::landing::Landing<DetailKey, Option<Detail>>,
+    detail_want: std::sync::Mutex<Option<DetailKey>>,
+    alt_gen: std::sync::atomic::AtomicU32,
+    alt_roster_gen: std::sync::atomic::AtomicU32,
+    alt_facts_gen: std::sync::atomic::AtomicU32,
+    alt_slot: std::sync::Mutex<Option<AltResult>>,
+    season_gen: std::sync::atomic::AtomicU32,
+    season_done: std::sync::atomic::AtomicU32,
+    season_result: std::sync::Mutex<Option<SeasonResult>>,
+    tracker: std::sync::Mutex<record::Tracker>,
+}
+
+impl Default for MetadataAdapter {
+    fn default() -> Self {
+        Self {
+            detail_gen: std::sync::atomic::AtomicU32::new(0),
+            detail_done: std::sync::atomic::AtomicU32::new(0),
+            detail_landing: crate::ui::landing::Landing::with_inflight(2, 4),
+            detail_want: std::sync::Mutex::new(None),
+            alt_gen: std::sync::atomic::AtomicU32::new(0),
+            alt_roster_gen: std::sync::atomic::AtomicU32::new(0),
+            alt_facts_gen: std::sync::atomic::AtomicU32::new(0),
+            alt_slot: std::sync::Mutex::new(None),
+            season_gen: std::sync::atomic::AtomicU32::new(0),
+            season_done: std::sync::atomic::AtomicU32::new(0),
+            season_result: std::sync::Mutex::new(None),
+            tracker: std::sync::Mutex::new(record::Tracker::new(false)),
+        }
+    }
+}
+
+impl MetadataAdapter {
+    fn detail_landing_ref(&self) -> &crate::ui::landing::Landing<DetailKey, Option<Detail>> {
+        &self.detail_landing
+    }
+    fn tracker_mutex(&self) -> &std::sync::Mutex<record::Tracker> {
+        &self.tracker
+    }
+}
 
 /// Where the Detail page was standing — enough to put it back when BACK returns to it, and nothing
 /// more. **Moved here from `ui::detail` for restructure phase 7a** (`stores/metadata.rs`'s module
@@ -79,7 +215,7 @@ pub(crate) fn friendly_codec(codec: &str) -> String {
 /// One credit on the Cast & Crew shelf. PMS ships crew (`Director[]`/`Writer[]`) in the SAME shape
 /// as the actors (`Role[]`) minus the `role` attribute, so a crew credit is this same struct with
 /// its JOB in `role` — see [`crew_credits`].
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Cast {
     pub(crate) tag: String,   // person's name
     pub(crate) role: String,  // character (an actor) — or the job, "Director"/"Writer" (crew)
@@ -515,7 +651,7 @@ impl Stream {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Episode {
     pub(crate) rk: String,
@@ -635,6 +771,7 @@ pub(crate) fn extras_wanted(kind: &str) -> bool {
 // Deliberately NOT `Default`: every construction site spells every field, so adding one to a
 // season is a compile error at each of them rather than a silent zero (the counts below are
 // exactly the kind of field that reads as a legitimate value when it defaults).
+#[derive(Clone)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Season {
     pub(crate) rk: String,
@@ -763,10 +900,6 @@ fn convert_markers(markers: &[crate::plex::Marker]) -> Vec<Marker> {
         .collect()
 }
 
-/// Segments the user has already skipped in THIS playback, identified by kind + start (a leaf has
-/// at most an intro and a credits, so this never grows past two).
-static mut SKIPPED: Vec<(MarkerKind, i64)> = Vec::new();
-
 /// Record that `m` has been skipped, so it is never offered again for this item.
 ///
 /// This is what makes skipping terminal, and it is not belt-and-braces. `av_seek_frame` is called
@@ -776,30 +909,11 @@ static mut SKIPPED: Vec<(MarkerKind, i64)> = Vec::new();
 /// and pressing it seeked to the same place again: press → jump back a little → press → forever.
 /// Padding the seek target cannot fix that (keyframe intervals vary from 2 s to 10 s); refusing to
 /// re-offer a segment the user has already dismissed can, and is what they meant by the press.
-fn mark_skipped(m: Marker) {
+fn mark_skipped(state: &mut MetadataState, m: Marker) {
     let key = (m.kind, m.start_ms);
-    unsafe {
-        let v = &mut *addr_of_mut!(SKIPPED);
-        if !v.contains(&key) {
-            v.push(key);
-        }
+    if !state.skipped.contains(&key) {
+        state.skipped.push(key);
     }
-}
-
-/// The segment the playhead is inside right now, or None — the ONE live "what am I in" read, so
-/// no UI module has to re-derive it (and none has to ask another module a question about it).
-///
-/// Gated on `is_playing()`: through the whole pre-roll (Connecting/Buffering/Seeking) `playpos_ns`
-/// is still 0 or frozen at a seek target, and an item whose intro starts at 0 would otherwise
-/// report a segment during every load. Segments already skipped are filtered out — see
-/// [`mark_skipped`].
-pub(crate) fn active_marker(ps: &crate::route::PlaybackSession) -> Option<Marker> {
-    if !crate::player::is_playing(ps) {
-        return None;
-    }
-    let m = marker_at(playing_markers(), crate::player::playpos_ns() / 1_000_000)?;
-    let skipped = unsafe { &*addr_of!(SKIPPED) };
-    (!skipped.contains(&(m.kind, m.start_ms))).then_some(m)
 }
 
 /// The last stretch of an episode counts as its credits when the server never said where the
@@ -816,22 +930,8 @@ pub(crate) fn active_marker(ps: &crate::route::PlaybackSession) -> Option<Marker
 /// when the item is long enough that its tail is clearly an ending (> 3x the window, so a short
 /// clip does not spend a third of its runtime offering the next one).
 pub(crate) const TAIL_WINDOW_MS: i64 = 30_000;
-pub(crate) fn synthesized_tail_marker(ps: &crate::route::PlaybackSession, has_next: bool) -> Option<Marker> {
-    if !has_next || !crate::player::is_playing(ps) {
-        return None;
-    }
-    if playing_markers()
-        .iter()
-        .any(|m| m.kind == MarkerKind::Credits)
-    {
-        return None;
-    }
-    let dur_ms = crate::player::duration_ns() / 1_000_000;
-    let pos_ms = crate::player::playpos_ns() / 1_000_000;
-    tail_marker(pos_ms, dur_ms)
-}
 
-/// The pure half of [`synthesized_tail_marker`] — the window geometry alone, host-testable.
+/// The pure half of [`MetadataView::synthesized_tail_marker`] — the window geometry alone, host-testable.
 pub(crate) fn tail_marker(pos_ms: i64, dur_ms: i64) -> Option<Marker> {
     if dur_ms < TAIL_WINDOW_MS * 3 {
         return None;
@@ -965,6 +1065,7 @@ impl RatingArt {
 /// One review score to badge on the detail hero: the artwork the server named, the score as PMS
 /// normalises it (0–10 for every provider — a 91% tomato arrives as 9.1), and whether PMS filed it
 /// as a critic or an audience score.
+#[derive(Clone)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Rating {
     pub(crate) art: RatingArt,
@@ -1027,7 +1128,7 @@ fn convert_ratings(it: &crate::plex::Metadata) -> Vec<Rating> {
     out
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Detail {
     /// WHICH SERVER this item was fetched from — the other half of its identity. `rk` on its own
@@ -1258,21 +1359,18 @@ impl Detail {
     }
 }
 
-// The one loaded detail item (the detail page shows a single item at a time).
-static mut CURRENT: Option<Detail> = None;
-
 /// the currently-loaded detail item, or None
-pub(crate) fn current() -> Option<&'static Detail> {
-    unsafe { (*addr_of!(CURRENT)).as_ref() }
+fn current(state: &MetadataState) -> Option<&Detail> {
+    state.current.as_ref()
 }
 /// TEST-ONLY installer for the loaded item. The UI's layout tests need a `Detail` on screen with
 /// no PMS behind them; every other writer of `CURRENT` goes through the landing mailbox, which is
 /// exactly the invariant those tests must not have to fake. Crate-global, so callers hold
 /// [`crate::testlock::serial`].
 #[cfg(test)]
-pub(crate) fn install_for_test(d: Option<Detail>) {
+pub(crate) fn install_for_test(state: &mut MetadataState, d: Option<Detail>) {
     crate::testlock::assert_held("the detail store (install_for_test)");
-    unsafe { *addr_of_mut!(CURRENT) = d }
+    state.current = d;
 }
 
 /// **OPTIMISTIC**, MAIN THREAD: flip what the LOADED item says about `(sid, rk)`'s watch state,
@@ -1302,9 +1400,9 @@ pub(crate) fn install_for_test(d: Option<Detail>) {
 /// episode keeping its old `viewOffset` would still draw its resume bar and no check.
 ///
 /// The landed refresh is the truth and silently corrects any of this; see [`crate::viewstate`].
-fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
-    unsafe {
-        let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() else {
+fn set_watched_local(state: &mut MetadataState, sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
+    {
+        let Some(d) = state.current.as_mut() else {
             return false;
         };
         // The RELATED shelf first, and unconditionally — it is the one store here whose rows are
@@ -1362,14 +1460,29 @@ fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
 /// drop the loaded detail (on leaving the detail page). Also supersedes any in-flight async
 /// fetch — otherwise a load requested on the way in lands after the page closed and silently
 /// repopulates CURRENT (and NOW, via `sync_now_playing`) behind whatever screen is now mounted.
-fn clear() {
-    supersede_detail();
-    unsafe { *addr_of_mut!(CURRENT) = None }
+fn clear(state: &mut MetadataState, adapter: &MetadataAdapter) {
+    supersede_detail(adapter);
+    state.current = None;
     // The *Also available* copies describe the item that is going, so they go with it. Nothing
     // reads them afterwards — the store is addressed and no page's pair can match an empty one —
     // but a departing page should not leave another item's list in memory for the next one to be
     // handed if it ever happened to share both halves of the address.
-    alt_clear();
+    alt_clear(state);
+}
+
+/// The server/profile switch: unlike `clear()`, this drops the COMPLETE owned state — the `now`
+/// caption and `playing` track store `clear()` deliberately spares (D3, for a Detail page torn
+/// down and reopened mid-playback) do not belong to the NEXT profile. Adapter rotation is done by
+/// the caller (`stores::metadata::MetadataStore::run`, mirroring `PersonStore`/`SearchStore`), so
+/// this only clears state; `supersede_detail` still runs here for the in-flight work on THIS
+/// (about-to-be-retired) adapter, exactly as `clear()` does.
+fn reset(state: &mut MetadataState, adapter: &MetadataAdapter) {
+    supersede_detail(adapter);
+    state.current = None;
+    state.now = None;
+    state.playing = None;
+    state.skipped.clear();
+    alt_clear(state);
 }
 
 /// TEST ONLY — install `d` as the loaded item, bypassing the fetch and its mailbox. The screens'
@@ -1378,9 +1491,9 @@ fn clear() {
 /// crate-wide global that this module's own tests also drive, so hold `crate::testlock::serial()`
 /// across any test that calls this.
 #[cfg(test)]
-pub(crate) fn set_current_for_test(d: Option<Detail>) {
+pub(crate) fn set_current_for_test(state: &mut MetadataState, d: Option<Detail>) {
     crate::testlock::assert_held("the detail store (set_current_for_test)");
-    unsafe { *addr_of_mut!(CURRENT) = d }
+    state.current = d;
 }
 
 /// A compact descriptor of the item currently *playing*, for the in-player Info card. Unlike
@@ -1413,17 +1526,13 @@ pub(crate) struct NowPlaying {
     pub(crate) thumb: String, // 16:9 still (episode) / landscape art (movie)
     pub(crate) detail_rk: String, // "Go to Show"/"Go to Movie" target
 }
-static mut NOW: Option<NowPlaying> = None;
-pub(crate) fn now_playing() -> Option<&'static NowPlaying> {
-    unsafe { (*addr_of!(NOW)).as_ref() }
-}
-fn set_now_playing(np: Option<NowPlaying>) {
-    unsafe { *addr_of_mut!(NOW) = np }
+fn set_now_playing(state: &mut MetadataState, np: Option<NowPlaying>) {
+    state.now = np;
 }
 /// Refresh `now_playing` from `current()` — call after a leaf `load_detail` (Continue-Watching /
 /// off-catalog play, where `current()` becomes the played leaf). A show/season load leaves it None.
-pub(crate) fn sync_now_playing() {
-    let np = current().and_then(|d| match d.kind.as_str() {
+fn sync_now_playing(state: &mut MetadataState) {
+    let np = current(state).and_then(|d| match d.kind.as_str() {
         "episode" => Some(NowPlaying {
             is_episode: true,
             is_real_episode: true,
@@ -1458,7 +1567,7 @@ pub(crate) fn sync_now_playing() {
         }),
         _ => None, // show / season → not a playing leaf
     });
-    set_now_playing(np);
+    state.now = np;
 }
 
 /// Info-card descriptor for a trailer extra: parent identity (Go to Movie/Show, art, summary)
@@ -1466,10 +1575,11 @@ pub(crate) fn sync_now_playing() {
 /// Call only after `request_play` accepted the session, so a refused play cannot wipe a leftover
 /// episode descriptor.
 pub(crate) fn trailer_now_playing(
+    state: &MetadataState,
     sid: crate::plex::ServerId,
     extra_rk: &str,
 ) -> Option<NowPlaying> {
-    let d = current()?;
+    let d = current(state)?;
     let extra = d
         .extras
         .iter()
@@ -1850,28 +1960,6 @@ pub(crate) struct PlayingItem {
     pub(crate) markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
     pub(crate) chapters: Vec<Chapter>, // chapter boundaries — the in-player Chapters tab/strip
 }
-static mut PLAYING: Option<PlayingItem> = None;
-
-/// the playing leaf's own streams + markers (None until a catalog item starts playing).
-/// Main-thread only.
-pub(crate) fn playing() -> Option<&'static PlayingItem> {
-    unsafe { (*addr_of!(PLAYING)).as_ref() }
-}
-
-/// The playing leaf's markers, or an empty slice — the ONE accessor the in-player skip prompt
-/// reads, so no call site has to know the store can be absent mid-resolve.
-pub(crate) fn playing_markers() -> &'static [Marker] {
-    playing().map(|p| p.markers.as_slice()).unwrap_or(&[])
-}
-
-/// The playing leaf's chapters, or an empty slice — the ONE accessor the Chapters strip reads.
-/// Deliberately NOT `current()`: during a show-page episode play `current()` is the SHOW (no
-/// `Chapter[]` at all), which is why the tab never appeared on that path, and a `current()` holding
-/// a different leaf would seek with another item's offsets.
-pub(crate) fn playing_chapters() -> &'static [Chapter] {
-    playing().map(|p| p.chapters.as_slice()).unwrap_or(&[])
-}
-
 /// Load the playing-item track store for `rk` at play time (route::build_stream). Reuses the
 /// loaded detail's streams when it IS this item (no extra GET on the play path — the same
 /// optimization the old `audio_tracks` fetch had); otherwise one metadata fetch. An empty `rk`
@@ -1894,8 +1982,8 @@ pub(crate) fn playing_chapters() -> &'static [Chapter] {
 /// This closed a TODO that stood here through the foundation commits: `Detail` had no server, so
 /// the filter was the rk alone and the parameter was deliberately unused. `Detail.sid` is what
 /// made the pair test possible.
-pub(crate) fn cached_playing(sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
-    current()
+fn cached_playing(state: &MetadataState, sid: crate::plex::ServerId, rk: &str) -> Option<PlayingItem> {
+    current(state)
         .filter(|d| crate::plex::same_item((d.sid, &d.rk), (sid, rk)) && !d.audio.is_empty())
         .map(|d| PlayingItem {
             sid,
@@ -1967,9 +2055,9 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
 /// `i64::MAX`, so a stale one matches any playhead: the new episode would offer to skip its own
 /// credits seconds after starting. Nothing fires today, but only by incidental ordering — this
 /// makes it a contract instead.
-fn retire_playing() {
-    set_now_playing(None);
-    retire_playing_item();
+fn retire_playing(state: &mut MetadataState) {
+    set_now_playing(state, None);
+    retire_playing_item(state);
 }
 
 /// Retire ONLY the track/marker/chapter store, leaving the `NowPlaying` caption alone — what a NEW
@@ -1981,16 +2069,14 @@ fn retire_playing() {
 /// window (0.5-3 s, longer through a `/decision` handshake) and the HUD is up for all of it. With
 /// chapters in here that became user-reachable — the transport advertised a Chapters tab whose OK
 /// seeked the NEW episode to some other item's offset.
-fn retire_playing_item() {
-    unsafe {
-        *addr_of_mut!(PLAYING) = None;
-        (*addr_of_mut!(SKIPPED)).clear();
-    }
+fn retire_playing_item(state: &mut MetadataState) {
+    state.playing = None;
+    state.skipped.clear();
 }
 
 /// MAIN THREAD: install a fetched playing-item store.
-fn install_playing(pt: Option<PlayingItem>) {
-    unsafe { (*addr_of_mut!(SKIPPED)).clear() }; // a different leaf's markers, so a fresh slate
+fn install_playing(state: &mut MetadataState, pt: Option<PlayingItem>) {
+    state.skipped.clear(); // a different leaf's markers, so a fresh slate
     if let Some(pt) = &pt {
         crate::player::log(&format!(
             "playing item: rk={} audio={} subs={} markers={} chapters={}",
@@ -2001,7 +2087,7 @@ fn install_playing(pt: Option<PlayingItem>) {
             pt.chapters.len()
         ));
     }
-    unsafe { *addr_of_mut!(PLAYING) = pt };
+    state.playing = pt;
 }
 
 // ---- list-position → demuxer-ordinal conversion --------------------------------------------
@@ -2451,50 +2537,43 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
 // sites read within a frame, so a background store would drop the old `Detail` under a live
 // reference — a use-after-free, not a lint. Keeping the main thread the sole writer is precisely
 // what makes that `&'static` sound, so the worker's only output is the mailbox.
-static DETAIL_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-static DETAIL_DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// The detail landing — a `Landing` (restructure spec §5.2; `docs/stores-as-machines.md` §2.5)
-/// rather than the one-slot mailbox it was until phase 4, and keyed on the item's IDENTITY:
-/// `(server, ratingKey)`. Both servers in a household number their items from 1, so a rating key
-/// alone cannot say whose page a landing belongs to; the key carries the server, and
-/// [`pump_detail`] asks only for the item the page is awaiting ([`DETAIL_WANT`]). A landing for
-/// another server's item of the same number is skipped and counted, never installed. The data
-/// lane holds two (the awaited landing and one it superseded); the addressee is the store
-/// itself while the page's own focus is still the loop's. A worker that panicked lands `None`.
-static DETAIL_LANDING: crate::ui::landing::Landing<DetailKey, Option<Detail>> =
-    crate::ui::landing::Landing::with_inflight(2, 4);
 type DetailKey = (crate::plex::ServerId, String);
-/// The item the page is awaiting, or `None` when nothing is (then every landing is wanted —
-/// the shape the tests drive through a bare generation bump).
-static DETAIL_WANT: std::sync::Mutex<Option<DetailKey>> = std::sync::Mutex::new(None);
 
 /// The addressed request's status: None means another item (or no request), true means
 /// in flight, false means the matching request settled, including failure/refusal.
-pub(crate) fn detail_request_status(sid: crate::plex::ServerId, rk: &str) -> Option<bool> {
-    let want = DETAIL_WANT.lock().unwrap_or_else(|e| e.into_inner());
+fn detail_request_status(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str) -> Option<bool> {
+    let want = adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner());
     want.as_ref().filter(|(wanted_sid, wanted_rk)| *wanted_sid == sid && wanted_rk == rk)
-        .map(|_| detail_loading())
+        .map(|_| detail_loading(adapter))
+}
+
+/// Generation of the most recently admitted detail request (bumped once, synchronously, by
+/// [`begin_detail_request`]). A bare `Option<bool>` from [`detail_request_status`] answers
+/// "settled?" with no identity — it cannot distinguish "MY request settled" from "an older
+/// request for the same address settled". Callers that need to pin an obligation to their own
+/// request read this generation before admission and require a later read to be strictly newer.
+fn detail_generation(adapter: &MetadataAdapter) -> u32 {
+    adapter.detail_gen.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 #[cfg(test)]
-pub(crate) fn begin_detail_for_test(sid: crate::plex::ServerId, rk: &str) -> u32 {
+pub(crate) fn begin_detail_for_test(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str) -> u32 {
     crate::testlock::assert_held("the detail store (begin_detail_for_test)");
-    let (gen, _, admission) = begin_detail_request(sid, rk);
+    let (gen, _, admission) = begin_detail_request(adapter, sid, rk);
     admission.expect("synthetic detail request must have a reserved completion");
     gen
 }
 
 #[cfg(test)]
-pub(crate) fn detail_generation_for_test() -> u32 {
-    DETAIL_GEN.load(std::sync::atomic::Ordering::SeqCst)
+pub(crate) fn detail_generation_for_test(adapter: &MetadataAdapter) -> u32 {
+    adapter.detail_gen.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 #[cfg(test)]
-pub(crate) fn land_detail_for_test(sid: crate::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
+pub(crate) fn land_detail_for_test(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: crate::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
     crate::testlock::assert_held("the detail store (land_detail_for_test)");
-    land_detail(sid, rk, gen, detail);
-    pump_detail()
+    land_detail(adapter, sid, rk, gen, detail);
+    pump_detail(state, adapter)
 }
 
 fn detail_addr(gen: u32) -> crate::ui::machine::Addr {
@@ -2507,12 +2586,12 @@ fn detail_addr(gen: u32) -> crate::ui::machine::Addr {
 /// Invalidate any in-flight/pending detail fetch and mark the mailbox settled: bump the
 /// generation (so a late landing is discarded by `pump_detail`), catch DETAIL_DONE up to it
 /// (`detail_loading()` → false), and clear the landing. Returns the fresh generation.
-fn supersede_detail() -> u32 {
+fn supersede_detail(adapter: &MetadataAdapter) -> u32 {
     use std::sync::atomic::Ordering;
-    let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    DETAIL_DONE.store(gen, Ordering::SeqCst);
-    record::cancel_all();
-    *DETAIL_WANT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let gen = adapter.detail_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    adapter.detail_done.store(gen, Ordering::SeqCst);
+    record::cancel_all(adapter);
+    *adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner()) = None;
     gen
 }
 
@@ -2520,33 +2599,33 @@ fn supersede_detail() -> u32 {
 /// keyed by the item it fetched. An older fetch landing late is refused by [`pump_detail`]'s
 /// generation check, so ordering in the queue is never what protects a newer result. Called from
 /// the worker (and from the tests, which is the point of it being a named function).
-fn land_detail(sid: crate::plex::ServerId, rk: &str, gen: u32, d: Option<Detail>) {
+fn land_detail(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str, gen: u32, d: Option<Detail>) {
     let addr = detail_addr(gen);
     // Full has already queued one Dropped terminal. Unknown/duplicate results queue nothing;
     // cancelled worker completions acknowledge only their own retained reservation.
-    record::put(addr, (sid, rk.to_string()), d);
+    record::put(adapter, addr, (sid, rk.to_string()), d);
 }
 
 /// Mint the request: supersede the season, bump the generation, record what the page awaits
 /// and admit the request. The spawn is the caller's; a refused one is `refused` back.
-fn begin_detail_request(sid: crate::plex::ServerId, rk: &str) -> (
+fn begin_detail_request(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str) -> (
     u32, crate::ui::machine::Addr, Result<(), crate::ui::landing::AdmissionError>,
 ) {
     use std::sync::atomic::Ordering;
     // drop any season fetch in flight for the OLD item — its landing would patch the new one
-    supersede_season();
+    supersede_season(adapter);
     // NOT supersede_detail(): the generation must move (a stale landing is discarded) but
     // DETAIL_DONE must stay behind so `detail_loading()` reports this fetch as in flight
-    let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    record::cancel_all();
-    *DETAIL_WANT.lock().unwrap_or_else(|e| e.into_inner()) = Some((sid, rk.to_string()));
+    let gen = adapter.detail_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    record::cancel_all(adapter);
+    *adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner()) = Some((sid, rk.to_string()));
     let addr = detail_addr(gen);
-    let admission = record::admit(addr);
+    let admission = record::admit(adapter, addr);
     if admission.is_err() {
         // Rejected admission owns no queued terminal: settle this new generation synchronously.
         // clear() cancelled previous workers but kept their reservations until acknowledgement.
-        DETAIL_DONE.store(gen, Ordering::SeqCst);
-        crate::log(&format!("detail: request rk={rk} REFUSED — {} in flight", DETAIL_LANDING.inflight(addr.to)));
+        adapter.detail_done.store(gen, Ordering::SeqCst);
+        crate::log(&format!("detail: request rk={rk} REFUSED — {} in flight", adapter.detail_landing_ref().inflight(addr.to)));
     }
     (gen, addr, admission)
 }
@@ -2557,35 +2636,36 @@ fn begin_detail_request(sid: crate::plex::ServerId, rk: &str) -> (
 /// `sid` names the server to ask and is captured by the CALLER, on the main thread — the worker
 /// must not read the current server (see the fetch block's note), and the page being opened may
 /// belong to a machine that is not the current one at all.
-fn request_detail(sid: crate::plex::ServerId, rk: &str) {
-    request_detail_with_spawn(sid, rk, |gen| {
+fn request_detail(adapter: &std::sync::Arc<MetadataAdapter>, sid: crate::plex::ServerId, rk: &str) {
+    request_detail_with_spawn(adapter, sid, rk, |gen| {
         let rk = rk.to_string();
+        let adapter = std::sync::Arc::clone(adapter);
         crate::app::bootstrap::stores::admit(serde_json::json!({"store":"metadata",
             "sid":sid.raw(),"rk":rk,"gen":gen,
             "client":crate::plex::client_for(sid).map(|c| c.instance_gen())}), || crate::task::spawn_small("detail", move || {
-            finish_detail_fetch(sid, &rk, gen, || fetch_full(sid, &rk));
+            finish_detail_fetch(&adapter, sid, &rk, gen, || fetch_full(sid, &rk));
         }))
     });
 }
 
 /// Shared admission/spawn path; tests inject a spawn outcome without starting network workers.
-fn request_detail_with_spawn(sid: crate::plex::ServerId, rk: &str, spawn: impl FnOnce(u32) -> bool) {
-    let (gen, addr, admission) = begin_detail_request(sid, rk);
+fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str, spawn: impl FnOnce(u32) -> bool) {
+    let (gen, addr, admission) = begin_detail_request(adapter, sid, rk);
     if admission.is_err() { return; }
     if !spawn(gen) {
         // no worker means nothing will ever land on its own: the refusal record is what settles
         // the spinner (`pump_detail`), exactly one event for the request (§5.2)
-        record::refused(addr);
+        record::refused(adapter, addr);
     }
 }
 
 fn finish_detail_fetch(
-    sid: crate::plex::ServerId, rk: &str, gen: u32,
+    adapter: &MetadataAdapter, sid: crate::plex::ServerId, rk: &str, gen: u32,
     fetch: impl FnOnce() -> Option<Detail> + std::panic::UnwindSafe,
 ) {
     // Publish outside the catch so fetch failure/unwind still acknowledges this reservation.
     let d = catch_unwind(fetch).unwrap_or(None);
-    land_detail(sid, rk, gen, d);
+    land_detail(adapter, sid, rk, gen, d);
 }
 
 /// `stores::metadata`'s one door onto every [`MetadataCmd`](crate::stores::metadata::MetadataCmd)
@@ -2594,50 +2674,54 @@ fn finish_detail_fetch(
 /// `#[cfg(test)]` arms (`AltInstall`, `AltRestampOwners`) exist only so tests can seed the
 /// alt-sources store the way a landed resolve or a facts-epoch move would — production reaches
 /// both through `pump_alt_sources`, a same-file call, never as a dispatched `Cmd`.
-pub(crate) fn run(cmd: crate::stores::metadata::MetadataCmd) -> bool {
+pub(crate) fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, cmd: crate::stores::metadata::MetadataCmd) -> bool {
     use crate::stores::metadata::MetadataCmd;
     match cmd {
         MetadataCmd::RequestDetail { sid, rk } => {
-            request_detail(sid, &rk);
+            request_detail(adapter, sid, &rk);
             true
         }
         MetadataCmd::Clear => {
-            clear();
+            clear(state, adapter);
+            true
+        }
+        MetadataCmd::Reset => {
+            reset(state, adapter);
             true
         }
         MetadataCmd::LoadSeason(i) => {
-            load_season(i);
+            load_season(state, adapter, i);
             true
         }
         MetadataCmd::LoadSeasonNow(i) => {
-            load_season_now(i);
+            load_season_now(state, adapter, i);
             true
         }
         MetadataCmd::SetNowPlaying(np) => {
-            set_now_playing(np);
+            set_now_playing(state, np);
             true
         }
-        MetadataCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(sid, &rk, on),
+        MetadataCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(state, sid, &rk, on),
         MetadataCmd::InstallPlaying(p) => {
-            install_playing(p);
+            install_playing(state, p);
             true
         }
         MetadataCmd::MarkSkipped(m) => {
-            mark_skipped(m);
+            mark_skipped(state, m);
             true
         }
         MetadataCmd::RetirePlaying => {
-            retire_playing();
+            retire_playing(state);
             true
         }
         MetadataCmd::RetirePlayingItem => {
-            retire_playing_item();
+            retire_playing_item(state);
             true
         }
         #[cfg(test)]
-        MetadataCmd::AltInstall { sid, rk, copies } => alt_install(sid, &rk, copies),
+        MetadataCmd::AltInstall { sid, rk, copies } => alt_install(state, sid, &rk, copies),
         #[cfg(test)]
-        MetadataCmd::AltRestampOwners => alt_restamp_owners(),
+        MetadataCmd::AltRestampOwners => alt_restamp_owners(state),
     }
 }
 
@@ -2646,39 +2730,39 @@ pub(crate) fn run(cmd: crate::stores::metadata::MetadataCmd) -> bool {
 /// a landed fetch into CURRENT and returns true when a fresh item was published. A stale landing —
 /// superseded by a newer request, by a blocking load, or by `clear()` when the page closed — is
 /// dropped.
-pub(crate) fn pump_detail() -> bool {
+pub(crate) fn pump_detail(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>) -> bool {
     use crate::ui::landing::Lane;
     use std::sync::atomic::Ordering;
-    let want = DETAIL_WANT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let want = adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner()).clone();
     // Under a replay this drains on the frame the recording drained it on (§3.3 step 3,
     // `ui::landgate`); off one it is the same call. The gate wraps the QUEUE drain and not the
     // supersede/install below, so a held frame leaves the record in the landing untouched.
     let out = if crate::app::bootstrap::stores::active() {
         crate::stores::take_landings(crate::stores::StoreId::Metadata, || {
             crate::app::bootstrap::stores::poll_apply("metadata", 0,
-                || record::drain_live(&want), |replies| record::supply(replies, &want))
+                || record::drain_live(adapter, &want), |replies| record::supply(adapter, replies, &want))
                 .into_iter().collect::<Vec<_>>()
         }).into_iter().flat_map(|drain| drain.landed).collect()
     } else {
         crate::stores::take_landings(crate::stores::StoreId::Metadata, || {
             let mut out = Vec::new();
-            DETAIL_LANDING.take_for(&|_| true, &|key| want.as_ref().is_none_or(|wanted| key == wanted), &mut out);
+            adapter.detail_landing_ref().take_for(&|_| true, &|key| want.as_ref().is_none_or(|wanted| key == wanted), &mut out);
             out
         })
     };
     let mut fresh = false;
     for rec in out {
         let gen = rec.addr.req.0;
-        if gen != DETAIL_GEN.load(Ordering::SeqCst) {
+        if gen != adapter.detail_gen.load(Ordering::SeqCst) {
             continue; // superseded while in flight
         }
-        DETAIL_DONE.store(gen, Ordering::SeqCst);
+        adapter.detail_done.store(gen, Ordering::SeqCst);
         let d = match rec.lane {
             Lane::Data(_, d) => d,
             // nothing arrived and nothing will: the spinner is settled, the page keeps its item
             Lane::Dropped(_) | Lane::Refused(_) => None,
         };
-        fresh |= install_landed_detail(d);
+        fresh |= install_landed_detail(state, adapter, d);
     }
     fresh
 }
@@ -2690,19 +2774,19 @@ pub(crate) fn pump_detail() -> bool {
 /// reached `fetch_full`'s line. `task`'s panic logger names the thread and the source location,
 /// so the failure is in the log — it just is not in these words, and a `None` here with no
 /// `detail:` line above it is that case.
-fn install_landed_detail(d: Option<Detail>) -> bool {
+fn install_landed_detail(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, d: Option<Detail>) -> bool {
     let Some(d) = d else { return false };
     // The LANDING is what defines which show's episodes are current, so the season supersede has
     // to happen here as well as at request time: a tab hop issued while this load was in flight
     // spawned a fetch against the OLD item, and its landing would patch these fresh episodes.
-    supersede_season();
+    supersede_season(adapter);
     // Ask the other sources about this item BEFORE the move: the resolve needs the item's own
     // server and its portable guid, and this is the one place both are known on the main thread.
     // A page with no guid, or a one-server install, spawns nothing.
-    request_alt_sources(d.sid, &d.rk, &d.guid);
-    unsafe { *addr_of_mut!(CURRENT) = Some(d) }
+    request_alt_sources(state, adapter, d.sid, &d.rk, &d.guid);
+    state.current = Some(d);
     // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
-    sync_now_playing();
+    sync_now_playing(state);
     true
 }
 
@@ -2721,13 +2805,6 @@ fn install_landed_detail(d: Option<Detail>) -> bool {
 // It runs off the back of a landed detail rather than beside it, because it needs that detail's
 // `guid` — which only the fetch can supply — and because a page with no guid (a server that sent
 // none) must cost nothing at all.
-static ALT_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-static ALT_ROSTER_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-/// The facts epoch this panel's rows were last STAMPED at — `plex::servers::facts_gen`, which moves
-/// when the registry re-describes a server and not when the roster changes. Beside
-/// [`ALT_ROSTER_GEN`] rather than folded into it: the two events want opposite answers (discard vs
-/// restamp), which is the whole reason the registry publishes them as two counters.
-static ALT_FACTS_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 struct AltResult {
     gen: u32,
     roster_gen: u32,
@@ -2744,7 +2821,6 @@ struct AltResult {
     rk: String,
     list: Vec<AltCopy>,
 }
-static ALT_SLOT: std::sync::Mutex<Option<AltResult>> = std::sync::Mutex::new(None);
 
 /// One copy of the item on ONE source — everything an *Also available* row needs, and nothing
 /// about layout.
@@ -2810,6 +2886,7 @@ pub(crate) struct AltCopy {
 /// resolve outliving the page that asked for it, which matters because a `ratingKey` is a
 /// server-local integer dense from 1 and both servers in a household have a film 4
 /// (`docs/shared-servers.md` §1) — is enforced by the READER, which always knows which page it is.
+#[derive(Default)]
 struct AltStore {
     sid: crate::plex::ServerId,
     rk: String,
@@ -2822,22 +2899,10 @@ struct AltStore {
     stand_in_rk: String,
 }
 
-static mut ALT: AltStore = AltStore {
-    sid: crate::plex::ServerId::UNSET,
-    rk: String::new(),
-    copies: Vec::new(),
-    stand_in: false,
-    stand_in_rk: String::new(),
-};
-
-fn alt() -> &'static mut AltStore {
-    unsafe { &mut *addr_of_mut!(ALT) }
-}
-
 /// The copies held for `(sid, rk)` — EMPTY for any other item, and for an item nothing has landed
 /// for yet.
-pub(crate) fn alt_copies(sid: crate::plex::ServerId, rk: &str) -> &'static [AltCopy] {
-    let held = unsafe { &*addr_of!(ALT) };
+fn alt_copies<'a>(state: &'a MetadataState, sid: crate::plex::ServerId, rk: &str) -> &'a [AltCopy] {
+    let held = &state.alt;
     if crate::plex::same_item((held.sid, held.rk.as_str()), (sid, rk)) {
         &held.copies
     } else {
@@ -2862,13 +2927,14 @@ pub(crate) fn alt_source_count(list: &[AltCopy]) -> usize {
 /// **The gate**: is a second pinned source holding `(sid, rk)`? The Detail page's actions row asks
 /// before it draws the control, so with one source there is no button, no layout for it and no
 /// draw call.
-pub(crate) fn alt_available(sid: crate::plex::ServerId, rk: &str) -> bool {
-    alt_source_count(alt_copies(sid, rk)) >= 2
+fn alt_available(state: &MetadataState, sid: crate::plex::ServerId, rk: &str) -> bool {
+    alt_source_count(alt_copies(state, sid, rk)) >= 2
 }
 
 /// Install the copies resolved for `(item_sid, item_rk)`. Answers whether anything a reader can
 /// see changed, which is what raises the Metadata store's notice.
 fn alt_install(
+    state: &mut MetadataState,
     item_sid: crate::plex::ServerId,
     item_rk: &str,
     list: Vec<AltCopy>,
@@ -2879,7 +2945,7 @@ fn alt_install(
     // it — past `pump_alt_sources`' facts epoch, which it has already consumed. Regrading here is
     // the only point that sees both the list and the current answer.
     alt_regrade(&mut list, false);
-    let held = alt();
+    let held = &mut state.alt;
     let same = crate::plex::same_item((held.sid, held.rk.as_str()), (item_sid, item_rk))
         && held.copies == list
         && !held.stand_in;
@@ -2906,8 +2972,8 @@ fn alt_install(
 /// **MAIN THREAD**, like every other reader and writer of this store — [`pump_alt_sources`] is its
 /// only caller and runs on the SDL loop. The workers in this chain touch the mutex-protected
 /// result slot and never the store.
-fn alt_restamp_owners() -> bool {
-    let held = alt();
+fn alt_restamp_owners(state: &mut MetadataState) -> bool {
+    let held = &mut state.alt;
     let stand_in = held.stand_in;
     alt_regrade(&mut held.copies, stand_in)
 }
@@ -2951,8 +3017,8 @@ fn alt_regrade(list: &mut [AltCopy], stand_in_owns: bool) -> bool {
 
 /// Drop copies whose grant left the live registry while the page holding them stayed mounted.
 /// Called only when the registry generation moves, so the ordinary per-frame path pays nothing.
-fn alt_prune_inactive() -> bool {
-    let held = alt();
+fn alt_prune_inactive(state: &mut MetadataState) -> bool {
+    let held = &mut state.alt;
     let before = held.copies.len();
     held.copies
         .retain(|c| crate::plex::client_for(c.sid).is_some());
@@ -2960,8 +3026,8 @@ fn alt_prune_inactive() -> bool {
 }
 
 /// Forget the whole store — paired with [`clear`], whose caller is a page being torn down.
-fn alt_clear() {
-    let held = alt();
+fn alt_clear(state: &mut MetadataState) {
+    let held = &mut state.alt;
     held.sid = crate::plex::ServerId::UNSET;
     held.rk = String::new();
     held.copies = Vec::new();
@@ -2988,12 +3054,18 @@ fn alt_clear() {
 /// under the rk alone. Without it a resolve parked on a dead share's `connect(2)` timeout lands on
 /// whatever page holds the same ratingKey when it finally answers, which across two servers is the
 /// ordinary case rather than an exotic one.
-fn request_alt_sources(sid: crate::plex::ServerId, rk: &str, guid: &str) {
+fn request_alt_sources(
+    _state: &mut MetadataState,
+    adapter: &std::sync::Arc<MetadataAdapter>,
+    sid: crate::plex::ServerId,
+    rk: &str,
+    guid: &str,
+) {
     use std::sync::atomic::Ordering;
-    let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let gen = adapter.alt_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let roster_gen = crate::plex::server_roster_gen();
-    ALT_ROSTER_GEN.store(roster_gen, Ordering::SeqCst);
-    *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    adapter.alt_roster_gen.store(roster_gen, Ordering::SeqCst);
+    *adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if guid.is_empty() {
         return; // nothing portable to match on; the panel stays absent
     }
@@ -3003,6 +3075,7 @@ fn request_alt_sources(sid: crate::plex::ServerId, rk: &str, guid: &str) {
     }
     let (rk, guid) = (rk.to_string(), guid.to_string());
     let n = others.len();
+    let adapter = std::sync::Arc::clone(adapter);
     let _ = crate::task::spawn_small("altsrc", move || {
         let list = catch_unwind(|| resolve_alt_sources(&others, &guid)).unwrap_or_default();
         // The one line that makes this chain debuggable from a device log. A guid is a public
@@ -3016,7 +3089,7 @@ fn request_alt_sources(sid: crate::plex::ServerId, rk: &str, guid: &str) {
             "altsrc: asked {n} source(s) for {guid} -> {} copy(ies)",
             list.len()
         ));
-        *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(AltResult {
+        *adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(AltResult {
             gen,
             roster_gen,
             sid,
@@ -3076,28 +3149,34 @@ fn resolve_alt_sources(
 /// `pump_detail` and `pump_season` are folded, so the Detail page hears one `StoreChanged` and
 /// repaints from its own arm. `alt_sources::install` used to call `idle::invalidate()` from inside
 /// the data layer instead, which is the shape phase 4 replaced.
-pub(crate) fn pump_alt_sources() -> bool {
-    pump_alt_sources_with_library(None)
+pub(crate) fn pump_alt_sources(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
+    pump_alt_sources_with_library(state, adapter, None)
 }
 
 pub(crate) fn pump_alt_sources_with_directory(
+    state: &mut MetadataState,
+    adapter: &MetadataAdapter,
     directory: crate::stores::browse::DirectoryView<'_>,
 ) -> bool {
     let library = directory.current()
         .and_then(|section| directory.sections().get(section))
         .map(|section| section.row.title.as_str())
         .unwrap_or("");
-    pump_alt_sources_with_library(Some(library))
+    pump_alt_sources_with_library(state, adapter, Some(library))
 }
 
-fn pump_alt_sources_with_library(library: Option<&str>) -> bool {
+fn pump_alt_sources_with_library(
+    state: &mut MetadataState,
+    adapter: &MetadataAdapter,
+    library: Option<&str>,
+) -> bool {
     use std::sync::atomic::Ordering;
     let mut changed = false;
     let roster_gen = crate::plex::server_roster_gen();
-    if ALT_ROSTER_GEN.swap(roster_gen, Ordering::SeqCst) != roster_gen {
-        ALT_GEN.fetch_add(1, Ordering::SeqCst);
-        *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        changed |= alt_prune_inactive();
+    if adapter.alt_roster_gen.swap(roster_gen, Ordering::SeqCst) != roster_gen {
+        adapter.alt_gen.fetch_add(1, Ordering::SeqCst);
+        *adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        changed |= alt_prune_inactive(state);
     }
     // A source being RE-DESCRIBED is not the server set changing, and answering it the same way
     // would be wrong twice: the copies are still the right copies (a re-graded "Shared by …" credit
@@ -3105,25 +3184,25 @@ fn pump_alt_sources_with_library(library: Option<&str>) -> bool {
     // leave the control absent until the page was remounted, since nothing here re-asks. So the
     // two epochs are read separately and this one only re-stamps what the rows SAY.
     let facts_gen = crate::plex::server_facts_gen();
-    if ALT_FACTS_GEN.swap(facts_gen, Ordering::SeqCst) != facts_gen {
-        changed |= alt_restamp_owners();
+    if adapter.alt_facts_gen.swap(facts_gen, Ordering::SeqCst) != facts_gen {
+        changed |= alt_restamp_owners(state);
     }
-    changed |= alt_pump_stand_in(library);
+    changed |= alt_pump_stand_in(state, library);
     // the landing GATE (§3.3 step 3): a replay takes this on its recorded frame. The roster and
     // facts re-stamps above are NOT gated — they follow other stores' landings, which are gated
     // where those land.
     let taken = crate::stores::take_landing(crate::stores::StoreId::Metadata, || {
-        ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take()
+        adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner()).take()
     });
     let Some(r) = taken else { return changed };
-    if r.gen != ALT_GEN.load(Ordering::SeqCst) || r.roster_gen != roster_gen {
+    if r.gen != adapter.alt_gen.load(Ordering::SeqCst) || r.roster_gen != roster_gen {
         return changed; // superseded: the page moved on while this was in flight
     }
     // The store is ADDRESSED, so this landing is filed under the PAIR it was asked for and a reader
     // on another page sees nothing — the generation test alone cannot see a page that was opened,
     // left and re-opened between spawn and landing, and the rk alone cannot see the two servers'
     // keys colliding, which they do by default.
-    changed | alt_install(r.sid, &r.rk, r.list)
+    changed | alt_install(state, r.sid, &r.rk, r.list)
 }
 
 // ---- the headless stand-in ---------------------------------------------------------------------
@@ -3139,17 +3218,19 @@ fn pump_alt_sources_with_library(library: Option<&str>) -> bool {
 /// It cannot be built when the fetch is dispatched: a mount deliberately clears [`current`] for the
 /// whole 2-5 round-trip window, so at that moment there is no runtime, no resolution class and no
 /// title to build a copy of the item FROM.
-fn alt_pump_stand_in(library: Option<&str>) -> bool {
+fn alt_pump_stand_in(state: &mut MetadataState, library: Option<&str>) -> bool {
     if crate::app::bootstrap::stores::active() { return false; }
-    let Some(d) = current() else { return false };
-    if d.rk == alt().stand_in_rk {
+    let Some(d) = state.current.as_ref() else { return false };
+    if d.rk == state.alt.stand_in_rk {
         return false; // this item has already had its chance — one string compare
     }
     // Marked whatever the outcome, so the ordinary build — where the trigger is not armed at all —
     // opens the `/tmp` file ONCE per item rather than on every frame of it.
-    alt().stand_in_rk = d.rk.clone();
+    state.alt.stand_in_rk = d.rk.clone();
+    let d = state.current.as_ref().unwrap();
     let Some(list) = alt_dev_stand_in(d, library) else { return false };
-    let held = alt();
+    let d = state.current.as_ref().unwrap();
+    let held = &mut state.alt;
     held.sid = d.sid;
     held.rk = d.rk.clone();
     held.copies = list;
@@ -3300,10 +3381,10 @@ fn alt_one_class_better(res: &str) -> String {
 }
 
 /// True while a detail fetch is in flight — drives the detail page's loading spinner.
-pub(crate) fn detail_loading() -> bool {
+pub(crate) fn detail_loading(adapter: &MetadataAdapter) -> bool {
     use std::sync::atomic::Ordering;
-    let gen = DETAIL_GEN.load(Ordering::SeqCst);
-    gen != 0 && gen != DETAIL_DONE.load(Ordering::SeqCst)
+    let gen = adapter.detail_gen.load(Ordering::SeqCst);
+    gen != 0 && gen != adapter.detail_done.load(Ordering::SeqCst)
 }
 
 // ---- season switching ----------------------------------------------------------------------
@@ -3312,8 +3393,6 @@ pub(crate) fn detail_loading() -> bool {
 // the detail page once a frame) applies the landed list on the main thread. The blocking
 // `/children` GET used to run on the main loop, freezing the UI for every rapid season hop.
 // Generations guard against out-of-order landings; results for a different item are discarded.
-static SEASON_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-static SEASON_DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 struct SeasonResult {
     gen: u32,
     /// the SERVER the show is on — the other half of `rk`. Without it, hopping from server A's show
@@ -3326,7 +3405,6 @@ struct SeasonResult {
     prev: usize, // the season `cur_season` held before the optimistic flip — restored on failure
     eps: Option<Vec<Episode>>, // None = the fetch failed or panicked — the row keeps its episodes
 }
-static SEASON_RESULT: std::sync::Mutex<Option<SeasonResult>> = std::sync::Mutex::new(None);
 
 /// Post a finished season fetch to the mailbox. MONOTONE: an older fetch landing late must never
 /// clobber a newer result the pump hasn't consumed yet — that lost the newest season forever, and
@@ -3334,6 +3412,7 @@ static SEASON_RESULT: std::sync::Mutex<Option<SeasonResult>> = std::sync::Mutex:
 /// the worker closure for the same reason as `land_detail`: the guard is the one piece of this
 /// machinery a test cannot reach through `load_season`.
 fn land_season(
+    adapter: &MetadataAdapter,
     gen: u32,
     sid: crate::plex::ServerId,
     rk: String,
@@ -3341,7 +3420,7 @@ fn land_season(
     prev: usize,
     eps: Option<Vec<Episode>>,
 ) {
-    let mut slot = SEASON_RESULT.lock().unwrap_or_else(|e| e.into_inner());
+    let mut slot = adapter.season_result.lock().unwrap_or_else(|e| e.into_inner());
     if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
         *slot = Some(SeasonResult {
             gen,
@@ -3361,24 +3440,24 @@ fn land_season(
 /// supersedes the old show's pending fetch): `request_detail` (dropping the OLD item's fetch) and
 /// `pump_detail` (dropping one issued WHILE the load was in flight). A third caller,
 /// `load_detail_now`, was deleted in phase 12/D7 — see its old definition site's note.
-fn supersede_season() -> u32 {
+fn supersede_season(adapter: &MetadataAdapter) -> u32 {
     use std::sync::atomic::Ordering;
-    let gen = SEASON_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    SEASON_DONE.store(gen, Ordering::SeqCst);
-    *SEASON_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let gen = adapter.season_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    adapter.season_done.store(gen, Ordering::SeqCst);
+    *adapter.season_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
     gen
 }
 
 /// Switch the loaded show to season `idx` (the season tabs): `cur_season` flips immediately, the
-/// episodes arrive via [`pump_season`]. Main-thread only (touches CURRENT).
-fn load_season(idx: usize) {
+/// episodes arrive via [`pump_season`]. Main-thread only (touches `state.current`).
+fn load_season(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, idx: usize) {
     use std::sync::atomic::Ordering;
     // `prev` rides along so a FAILED fetch can put the tab back on the season whose episodes are
     // still listed (see `pump_season`) — the optimistic flip below is what has to be undone.
     // the loaded show's own server, read here on the MAIN thread — a season belongs to the item it
     // hangs off, so this is the one honest source for it (never `plex::current_server()`, which the
     // user may have moved since the page was opened)
-    let (sid, rk, season_rk, prev) = match current().and_then(|d| {
+    let (sid, rk, season_rk, prev) = match state.current.as_ref().and_then(|d| {
         d.seasons
             .get(idx)
             .map(|s| (d.sid, d.rk.clone(), s.rk.clone(), d.cur_season))
@@ -3386,34 +3465,33 @@ fn load_season(idx: usize) {
         Some(t) => t,
         None => return,
     };
-    unsafe {
-        if let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() {
-            d.cur_season = idx;
-        }
+    if let Some(d) = state.current.as_mut() {
+        d.cur_season = idx;
     }
-    let gen = SEASON_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let gen = adapter.season_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    let adapter_worker = std::sync::Arc::clone(adapter);
     let spawned = crate::task::spawn_small("season", move || {
         // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a
         // FAILURE (None), not as an empty season: a panic is not "this season has no episodes",
         // and otherwise season_loading() would report an in-flight fetch forever
         let eps = catch_unwind(|| fetch_episodes(sid, &season_rk)).unwrap_or(None);
-        land_season(gen, sid, rk, idx, prev, eps);
+        land_season(&adapter_worker, gen, sid, rk, idx, prev, eps);
     });
     if !spawned {
         // no worker means nothing will ever land: catch DONE up or the episode row keeps its
         // loading dim + spinner for the rest of the session. `cur_season` already moved, so the
         // tab highlight stays where the user put it and the old episodes stay listed.
-        SEASON_DONE.store(gen, Ordering::SeqCst);
+        adapter.season_done.store(gen, Ordering::SeqCst);
     }
 }
 
 /// [`load_season`] but BLOCKING — for the page-open paths (`open_rk_season`, and any caller that
 /// plays `episodes[0]` right after) where the episode list must be right before the next line
 /// runs. Invalidates any in-flight async fetch so a stale landing can't overwrite this one.
-fn load_season_now(idx: usize) {
-    let _ = catch_unwind(move || {
+fn load_season_now(state: &mut MetadataState, adapter: &MetadataAdapter, idx: usize) {
+    let _ = catch_unwind(std::panic::AssertUnwindSafe(|| {
         let (sid, season_rk) =
-            match current().and_then(|d| d.seasons.get(idx).map(|s| (d.sid, s.rk.clone()))) {
+            match state.current.as_ref().and_then(|d| d.seasons.get(idx).map(|s| (d.sid, s.rk.clone()))) {
                 Some(t) => t,
                 None => return,
             };
@@ -3423,72 +3501,68 @@ fn load_season_now(idx: usize) {
         // episode under the requested season's name — and that path has no host coverage and needs
         // the full on-device suite. Deferred deliberately.
         let eps = fetch_episodes(sid, &season_rk).unwrap_or_default();
-        supersede_season(); // drop any async fetch in flight; this synchronous list wins
-        unsafe {
-            if let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() {
-                d.episodes = eps;
-                d.cur_season = idx;
-            }
+        supersede_season(adapter); // drop any async fetch in flight; this synchronous list wins
+        if let Some(d) = state.current.as_mut() {
+            d.episodes = eps;
+            d.cur_season = idx;
         }
-    });
+    }));
 }
 
 /// True while a season fetch is in flight — drives the episode row's loading dim + spinner.
-pub(crate) fn season_loading() -> bool {
+pub(crate) fn season_loading(adapter: &MetadataAdapter) -> bool {
     use std::sync::atomic::Ordering;
-    let gen = SEASON_GEN.load(Ordering::SeqCst);
-    gen != 0 && gen != SEASON_DONE.load(Ordering::SeqCst)
+    let gen = adapter.season_gen.load(Ordering::SeqCst);
+    gen != 0 && gen != adapter.season_done.load(Ordering::SeqCst)
 }
 
-/// Main-thread pump: apply a landed season fetch to CURRENT, discarding stale generations (a newer
-/// request is in flight) and results for a different item. Returns true when the episode list just
-/// changed — the detail page resets its episode focus/scroll on it.
-pub(crate) fn pump_season() -> bool {
+/// Main-thread pump: apply a landed season fetch to `state.current`, discarding stale generations
+/// (a newer request is in flight) and results for a different item. Returns true when the episode
+/// list just changed — the detail page resets its episode focus/scroll on it.
+pub(crate) fn pump_season(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
     use std::sync::atomic::Ordering;
     // the landing GATE (§3.3 step 3): a replay takes this on its recorded frame
     let res = crate::stores::take_landing(crate::stores::StoreId::Metadata, || {
-        SEASON_RESULT
+        adapter.season_result
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
     });
     let Some(r) = res else { return false };
-    if r.gen != SEASON_GEN.load(Ordering::SeqCst) {
+    if r.gen != adapter.season_gen.load(Ordering::SeqCst) {
         return false; // superseded — the newer fetch will land after this
     }
     // SETTLE THE SPINNER FIRST — on failure as much as on success. `season_loading()` drives the
     // episode row's loading dim + spinner AND gates `play_episode_at`, so a failure that returned
     // before this store would spin that row and refuse every episode press for the rest of the
     // session.
-    SEASON_DONE.store(r.gen, Ordering::SeqCst);
-    unsafe {
-        let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() else {
-            return false;
-        };
-        // OWNERSHIP, as the (server, key) PAIR. The rk alone was enough while one machine was
-        // reachable; with a share registered, hopping from A's show to B's show with the same rk
-        // while a `/children` is in flight passes an rk-only test and installs A's episodes onto
-        // B's page.
-        if !crate::plex::same_item((d.sid, &d.rk), (r.sid, &r.rk)) {
-            return false; // the page moved to another item — not ours to patch
+    adapter.season_done.store(r.gen, Ordering::SeqCst);
+    let Some(d) = state.current.as_mut() else {
+        return false;
+    };
+    // OWNERSHIP, as the (server, key) PAIR. The rk alone was enough while one machine was
+    // reachable; with a share registered, hopping from A's show to B's show with the same rk
+    // while a `/children` is in flight passes an rk-only test and installs A's episodes onto
+    // B's page.
+    if !crate::plex::same_item((d.sid, &d.rk), (r.sid, &r.rk)) {
+        return false; // the page moved to another item — not ours to patch
+    }
+    match r.eps {
+        Some(eps) => {
+            d.episodes = eps;
+            d.cur_season = r.idx;
+            true
         }
-        match r.eps {
-            Some(eps) => {
-                d.episodes = eps;
-                d.cur_season = r.idx;
-                true
-            }
-            None => {
-                // THE FETCH FAILED. Keep the episodes already on screen — one transient
-                // `/children` failure used to blank a populated row, with no spinner and no error.
-                // And put `cur_season` back on the season those episodes belong to: the tab
-                // highlight and the row must agree (`play_episode_at` launches `episodes[i]` under
-                // whichever tab reads selected), and it is what makes the tab RETRYABLE — both
-                // load paths fetch only when the target `!= cur_season`, so a tab left marked
-                // selected could never be asked for again.
-                d.cur_season = r.prev;
-                false
-            }
+        None => {
+            // THE FETCH FAILED. Keep the episodes already on screen — one transient
+            // `/children` failure used to blank a populated row, with no spinner and no error.
+            // And put `cur_season` back on the season those episodes belong to: the tab
+            // highlight and the row must agree (`play_episode_at` launches `episodes[i]` under
+            // whichever tab reads selected), and it is what makes the tab RETRYABLE — both
+            // load paths fetch only when the target `!= cur_season`, so a tab left marked
+            // selected could never be asked for again.
+            d.cur_season = r.prev;
+            false
         }
     }
 }
@@ -4129,7 +4203,8 @@ mod trailer_tests {
     #[test]
     fn trailer_now_playing_keeps_the_parent_and_the_extra_duration() {
         let _g = crate::testlock::serial();
-        set_current_for_test(Some(Detail {
+        let mut state = MetadataState::default();
+        set_current_for_test(&mut state, Some(Detail {
             sid: crate::plex::ServerId::UNSET,
             rk: "movie".into(),
             kind: "movie".into(),
@@ -4147,7 +4222,7 @@ mod trailer_tests {
             }],
             ..Default::default()
         }));
-        let np = trailer_now_playing(crate::plex::ServerId::UNSET, "9").unwrap();
+        let np = trailer_now_playing(&state, crate::plex::ServerId::UNSET, "9").unwrap();
         assert!(!np.is_episode);
         assert!(!np.is_real_episode, "an extra is never a real episode leaf");
         assert_eq!(np.title, "Movie");
@@ -4155,8 +4230,8 @@ mod trailer_tests {
         assert_eq!(np.dur_ms, 120_000);
         assert_eq!(np.detail_rk, "movie");
         assert_eq!(np.thumb, "/art");
-        assert!(trailer_now_playing(crate::plex::ServerId::UNSET, "other").is_none());
-        set_current_for_test(Some(Detail {
+        assert!(trailer_now_playing(&state, crate::plex::ServerId::UNSET, "other").is_none());
+        set_current_for_test(&mut state, Some(Detail {
             sid: crate::plex::ServerId::UNSET,
             rk: "show".into(),
             kind: "show".into(),
@@ -4171,7 +4246,7 @@ mod trailer_tests {
             }],
             ..Default::default()
         }));
-        let show = trailer_now_playing(crate::plex::ServerId::UNSET, "9").unwrap();
+        let show = trailer_now_playing(&state, crate::plex::ServerId::UNSET, "9").unwrap();
         assert!(show.is_episode, "a show parent labels Go to Show");
         assert!(
             !show.is_real_episode,
@@ -4182,7 +4257,7 @@ mod trailer_tests {
         assert_eq!(show.ep_title, "Show");
         assert_eq!(show.dur_ms, 90_000);
         assert_eq!(show.detail_rk, "show");
-        set_current_for_test(None);
+        set_current_for_test(&mut state, None);
     }
 }
 

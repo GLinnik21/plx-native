@@ -67,7 +67,7 @@ fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page(
     let _g = crate::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    let _ = crate::stores::take_notices();
+    let _ = rig.stores.take_notices();
     // **This used to also assert the retired route-word page's generic notice COUNTER, and
     // cannot any more.** Search left that population with the phase 7 cutover
     // and `Player` with phase 9, and `Account`/`ItemMenu` never had a page of their own —
@@ -328,7 +328,7 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let home = d.nav.top_page().map(|e| e.id);
     assert_eq!(frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]).0, "player");
-    open_player_overlay(crate::route::idle_session_for_test(), &mut d, OverlayKind::Info);
+    open_player_overlay(crate::route::idle_session_for_test(), crate::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Info);
     frame(&mut d, &mut rig, AppArg::Player, tick(2), vec![]);
     assert!(player_overlay_up(&d), "the panel is on the player page's own ModalStack");
     // …`exit_player`'s own order: the panels are dismissed, then the route is the origin's.
@@ -675,7 +675,7 @@ fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_a
         crate::screens::player::overlay::OverlayKind::Chapters,
         crate::screens::player::overlay::OverlayKind::More { quality: false },
     ] {
-        open_player_overlay(&ps, &mut d, kind);
+        open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, kind);
         frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]);
         assert_eq!(player_overlay_kind(&d), Some(kind), "{kind:?} is up");
         assert_eq!(

@@ -19,7 +19,7 @@ fn a_plan_round_trips_the_server_the_request_captured() {
     let _g = fresh_registry(&mut ps);
     let sid = unregistered_sid();
 
-    let env = ResolveEnv::snapshot(&ps, sid, "rk-7");
+    let env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-7");
     assert_eq!(
         env.sid, sid,
         "the snapshot carries the id the request was made with"
@@ -59,7 +59,7 @@ fn a_plan_that_never_resolved_makes_no_claim_about_the_source() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let sid = unregistered_sid();
-    let env = ResolveEnv::snapshot(&ps, sid, "rk-7");
+    let env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-7");
 
     let plan = build_stream("rk-7", "/library/parts/5/1/f.mkv", "h264", "ac3", &env);
     assert!(
@@ -89,7 +89,7 @@ fn remux_review_probe_installs_effective_selection_before_decision_and_start() {
         let (port, done, server) = selection_probe_pms(false, burn);
         let sid = crate::plex::register_for_test("selection-probe", "127.0.0.1", port, "token", "selection-probe-client");
         crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Remote);
-        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
         env.audio_sid = 1;
         env.sub_sid = burn;
         let mut item = fourk_item_with_subs(sid, vec![
@@ -155,7 +155,7 @@ fn original_hevc_eac3_registers_mde_before_returning_the_part() {
         "token",
         "mde-dp-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
     let plan = build_stream(
         "rk-4k",
@@ -216,7 +216,7 @@ fn smart_dp_names_the_ac3_sibling_on_mde() {
         "token",
         "mde-smart-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item(
         sid,
         vec![
@@ -286,7 +286,7 @@ fn mde_transcode_does_not_return_the_part_url() {
         "token",
         "mde-tc-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
     let plan = build_stream(
         "rk-4k",
@@ -341,7 +341,7 @@ fn mde_transcode_for_truehd_only_still_remuxes() {
         "token",
         "mde-truehd-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item(
         sid,
         vec![crate::metadata::Stream {
@@ -402,7 +402,7 @@ fn mde_video_stream_transcode_forbids_remux() {
         "token",
         "mde-vid-tc-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
     let plan = build_stream(
         "rk-4k",
@@ -450,7 +450,7 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
         "token",
         "mde-p5-copy-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     let mut item = fourk_item(sid, vec![eac3_track()]);
     item.dovi = p5();
     env.cached_item = Some(item);
@@ -511,7 +511,7 @@ fn remote_auto_truehd_remux_probes_start_mkv_not_the_part() {
     crate::plex::client_for(sid)
         .expect("registered")
         .set_link(crate::plex::probe::Location::Remote);
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     let mut item = fourk_item(
         sid,
         vec![crate::metadata::Stream {
@@ -600,7 +600,7 @@ fn remote_auto_truehd_remux_probe_names_the_ac3_sibling_not_env_audio_sid() {
     crate::plex::client_for(sid)
         .expect("registered")
         .set_link(crate::plex::probe::Location::Remote);
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.audio_sid = 1;
     let mut item = fourk_item(
         sid,
@@ -703,7 +703,7 @@ fn a_720p_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
         "token",
         "reencode-selected-dts-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.quality = Quality::P720;
     env.src_kbps = 48_000;
     env.audio_sid = 0;
@@ -790,7 +790,7 @@ fn a_720p_reencode_does_not_put_a_default_echo_over_english() {
         "token",
         "reencode-default-echo-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.quality = Quality::P720;
     env.src_kbps = 48_000;
     env.audio_sid = 0;
@@ -876,7 +876,7 @@ fn a_720p_reencode_puts_pref_lang_dts_not_the_foreign_ac3_sibling() {
         "token",
         "reencode-pref-lang-dts-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.quality = Quality::P720;
     env.src_kbps = 48_000;
     env.audio_sid = 0;
@@ -965,7 +965,7 @@ fn a_auto_hls_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
     crate::plex::client_for(sid)
         .expect("registered")
         .set_link(crate::plex::probe::Location::Relay);
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.quality = Quality::Auto;
     env.src_kbps = 48_000;
     env.audio_sid = 0;
@@ -1058,7 +1058,7 @@ fn remote_auto_failed_remux_sample_physical_stops_before_hls() {
     crate::plex::client_for(sid)
         .expect("registered")
         .set_link(crate::plex::probe::Location::Remote);
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     let mut item = fourk_item(
         sid,
         vec![crate::metadata::Stream {
@@ -1131,7 +1131,7 @@ fn unreachable_mde_does_not_return_the_part_url() {
         "token",
         "mde-empty-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item(sid, vec![eac3_track()]));
     let plan = build_stream(
         "rk-4k",
@@ -1187,7 +1187,7 @@ fn selected_embedded_srt_names_id_and_client_rendered_mode_on_mde() {
         "token",
         "mde-srt-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item_with_subs(
         sid,
         vec![eac3_track()],
@@ -1238,7 +1238,7 @@ fn selected_pgs_names_subtitle_stream_id_on_mde() {
     let (port, rx, server) = plan_pms(2, MDE_DIRECTPLAY);
     let sid =
         crate::plex::register_for_test("mde-pgs", "127.0.0.1", port, "token", "mde-pgs-client");
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item_with_subs(
         sid,
         vec![eac3_track()],
@@ -1294,7 +1294,7 @@ fn external_selected_sub_sends_subtitle_stream_id_zero_on_mde() {
         "token",
         "mde-ext-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item_with_subs(
         sid,
         vec![eac3_track()],
@@ -1354,7 +1354,7 @@ fn selected_mov_text_names_subtitle_stream_id_on_mde() {
         "token",
         "mde-mov-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item_with_subs(
         sid,
         vec![eac3_track()],
@@ -1405,7 +1405,7 @@ fn selected_dvd_subtitle_names_subtitle_stream_id_on_mde() {
         "token",
         "mde-dvd-client",
     );
-    let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
     env.cached_item = Some(fourk_item_with_subs(
         sid,
         vec![eac3_track()],

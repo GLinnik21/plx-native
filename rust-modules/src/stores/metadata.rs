@@ -136,10 +136,13 @@
 //! the `EntryId` origin that replaced it. It moved with its subject in D1: it is
 //! `app::playback::player_return_tests`' now, not `app/mod.rs`'s.
 
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
+
 use crate::plex::ServerId;
 use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
 
-use super::{note, StoreEv, StoreId};
+use super::StoreEv;
 
 #[derive(Clone)]
 pub(crate) enum MetadataCmd {
@@ -147,6 +150,12 @@ pub(crate) enum MetadataCmd {
     RequestDetail { sid: ServerId, rk: String },
     /// Close the page: drop the item and supersede everything in flight.
     Clear,
+    /// The server/profile switch: drop the COMPLETE owned state — including the `now`/`playing`
+    /// that `Clear` deliberately spares (D3) — and rotate the worker adapter, so a worker spawned
+    /// before the reset can only land into the retired `Arc`, never the replacement's mailbox.
+    /// Unlike `Clear`, this one must not leave a previous profile's playback descriptor or track
+    /// store reachable from the next profile's Bridge.
+    Reset,
     /// The season strip: flip optimistically, fetch the episodes off-thread.
     LoadSeason(usize),
     /// The BLOCKING season load, for a caller that indexes the episodes in the same frame.
@@ -178,37 +187,126 @@ pub(crate) enum MetadataCmd {
     AltRestampOwners,
 }
 
-pub(crate) struct MetadataStore;
-
-/// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
-pub(crate) fn apply(cmd: MetadataCmd) -> bool {
-    super::apply(super::StoreCmd::Metadata(cmd)).changed
+/// One Metadata owner: logical state, the worker adapter every current fetch captures, and
+/// notice. D3: unlike Hubs' `Reset`, `Clear` must NOT rotate the adapter — a Detail page can be
+/// torn down and reopened with an alt-sources resolve still legitimately in flight for it, and
+/// the tracker's admission ledger (`metadata::record::Tracker`) lives on this same adapter, so
+/// rotating it on every `Clear` would also drop replay's in-flight bookkeeping.
+pub(crate) struct MetadataStore {
+    state: crate::metadata::MetadataState,
+    adapter: Arc<crate::metadata::MetadataAdapter>,
+    notice_gen: AtomicU32,
+    notice_dirty: AtomicBool,
 }
 
-/// The store's own step, reached only through [`super::apply`]. D3 moved the match itself into
-/// `metadata::run` — its arms called ten `pub(crate)` mutators across this module boundary;
-/// those ten are private to `metadata.rs` now and this is their only door.
-pub(super) fn run(cmd: MetadataCmd) -> bool {
-    // `crate::metadata`'s statics are a crate global reached from both `apply` above and
-    // `crate::stores::apply(StoreCmd::Metadata(..))` directly (some fixtures deliver a `StoreCmd`
-    // without going through this module's `apply`) — guard the one point both funnel through. See
-    // `lib.rs::testlock` and D5.
+impl Default for MetadataStore {
+    fn default() -> Self {
+        Self {
+            state: Default::default(),
+            adapter: Arc::new(Default::default()),
+            notice_gen: AtomicU32::new(0),
+            notice_dirty: AtomicBool::new(false),
+        }
+    }
+}
+
+impl MetadataStore {
+    fn bump(&self) -> u32 {
+        self.notice_dirty.store(true, Ordering::Relaxed);
+        self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub(crate) fn gen(&self) -> u32 {
+        self.notice_gen.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn take_notice(&self) -> Option<u32> {
+        self.notice_dirty.swap(false, Ordering::Relaxed).then(|| self.gen())
+    }
+
+    pub(crate) fn state(&self) -> &crate::metadata::MetadataState { &self.state }
+
+    /// Test seam: reach this owner's own `MetadataState` to call a `_for_test` helper (e.g.
+    /// `crate::metadata::set_current_for_test`) that needs `&mut MetadataState`. Mirrors
+    /// `HubsStore::state_mut` (`stores/hubs.rs`).
     #[cfg(test)]
-    crate::testlock::assert_held("the metadata store (apply)");
-    let answer = crate::metadata::run(cmd);
-    super::bump(StoreId::Metadata);
-    answer
-}
+    pub(crate) fn state_mut(&mut self) -> &mut crate::metadata::MetadataState { &mut self.state }
 
-/// The three route-unconditional landings the loop runs every frame.
-pub(crate) fn pump_detail() -> bool {
-    note(StoreId::Metadata, crate::metadata::pump_detail())
-}
-pub(crate) fn pump_season() -> bool {
-    note(StoreId::Metadata, crate::metadata::pump_season())
-}
-pub(crate) fn pump_alt_sources() -> bool {
-    note(StoreId::Metadata, crate::metadata::pump_alt_sources())
+    /// Test seam: state and the OWNING `Arc<MetadataAdapter>` borrowed together, for `_for_test`
+    /// helpers (e.g. `crate::metadata::land_detail_for_test`, which forwards into
+    /// `pump_detail`'s `install_landed_detail` -> `request_alt_sources`, and that last one
+    /// clones the Arc to spawn a resolve worker) — a single `&mut self` split into its two
+    /// disjoint fields, not a second way to reach either one.
+    #[cfg(test)]
+    pub(crate) fn split_for_test(&mut self) -> (&mut crate::metadata::MetadataState, &Arc<crate::metadata::MetadataAdapter>) {
+        (&mut self.state, &self.adapter)
+    }
+
+    pub(crate) fn adapter_ref(&self) -> &crate::metadata::MetadataAdapter { &self.adapter }
+
+    /// Arms this owner's replay-tracking `Tracker` for controlled-content recording/replay. Call
+    /// exactly once, right after construction (`crate::metadata::record::arm`'s own doc has the
+    /// full rationale and history) — the one caller is `Bridge::controlled_home`.
+    pub(crate) fn arm_detail_tracker(&self, enabled: bool) {
+        crate::metadata::record::arm(&self.adapter, enabled);
+    }
+
+    /// Synchronous command path over this owner's own state/adapter. D3: no adapter rotation for
+    /// `Clear` — see the struct doc. `Reset` (the server/profile switch) DOES rotate, before the
+    /// state clears, so a worker spawned before the reset can only land into the retired `Arc` —
+    /// mirrors `PersonStore::run`/`SearchStore::run_with_directory`'s `Reset` arm.
+    pub(crate) fn run(&mut self, cmd: MetadataCmd) -> bool {
+        if matches!(&cmd, MetadataCmd::Reset) {
+            self.adapter = Arc::new(Default::default());
+        }
+        let changed = crate::metadata::run(&mut self.state, &self.adapter, cmd);
+        self.bump();
+        changed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn adapter_for_test(&self) -> Arc<crate::metadata::MetadataAdapter> {
+        self.adapter.clone()
+    }
+
+    /// Route-unconditional landing/spawn pass across detail, season and alt-sources — the same
+    /// three pumps `Machine::step`'s `StoreEv::Pump` arm already drives.
+    pub(crate) fn pump(&mut self) -> bool {
+        let detail = self.pump_detail();
+        let season = self.pump_season();
+        let alt = crate::metadata::pump_alt_sources(&mut self.state, &self.adapter);
+        if alt { self.bump(); }
+        detail || season || alt
+    }
+
+    /// The async detail landing alone — `app/run.rs`'s own call site, pumped before season.
+    pub(crate) fn pump_detail(&mut self) -> bool {
+        let changed = crate::metadata::pump_detail(&mut self.state, &self.adapter);
+        if changed { self.bump(); }
+        changed
+    }
+
+    /// The async season landing alone — `app/run.rs`'s own call site, pumped after detail.
+    pub(crate) fn pump_season(&mut self) -> bool {
+        let changed = crate::metadata::pump_season(&mut self.state, &self.adapter);
+        if changed { self.bump(); }
+        changed
+    }
+
+    /// The cross-source alt-sources resolve, scoped by the Bridge's retained Browse directory.
+    pub(crate) fn pump_alt_sources_with_directory(
+        &mut self,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> bool {
+        let changed = crate::metadata::pump_alt_sources_with_directory(&mut self.state, &self.adapter, directory);
+        if changed { self.bump(); }
+        changed
+    }
+
+    /// Borrowed read handle, shaped like `crate::person::PersonStore::view`.
+    pub(crate) fn view(&self) -> crate::metadata::MetadataView<'_> {
+        crate::metadata::MetadataView::new(self)
+    }
 }
 
 impl<H: Host> Machine<H> for MetadataStore {
@@ -216,12 +314,10 @@ impl<H: Host> Machine<H> for MetadataStore {
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             StoreEv::Cmd(c) => {
-                run(c.clone());
+                self.run(c.clone());
             }
             StoreEv::Pump { .. } => {
-                pump_detail();
-                pump_season();
-                pump_alt_sources();
+                self.pump();
             }
         }
         Handled::Yes
@@ -246,11 +342,18 @@ mod pump_wiring_tests {
         // route/feature gate, buried behind a route check, or merely mentioned in a comment (none
         // of which pump the mailbox route-unconditionally). Matching by WHOLE LINE (not a
         // substring search, which extra leading indentation would still satisfy) against the
-        // literal `if crate::…::pump_season() {` at the SAME indentation as `pump_detail()`'s own
-        // `if` proves it is a sibling statement in the same block — not nested one level deeper
-        // inside some other conditional.
-        const DETAIL_STMT: &str = "        if crate::stores::metadata::pump_detail() {";
-        const SEASON_STMT: &str = "        if crate::stores::metadata::pump_season() {";
+        // literal `if app.bridge.metadata_pump_season() {` at the SAME indentation as
+        // `metadata_pump_detail()`'s own `if` proves it is a sibling statement in the same block
+        // — not nested one level deeper inside some other conditional.
+        //
+        // Stage C1 note: these two now name `Bridge`'s own owned-store wrappers
+        // (`metadata_pump_detail`/`metadata_pump_season`), not the old free
+        // `crate::stores::metadata::pump_detail`/`pump_season` — Metadata moved from a
+        // crate-global dispatcher to a per-`Bridge` owner in Stage B, and `run.rs`'s call site
+        // moved with it. The pin exists to catch exactly that kind of silent drop, so it must
+        // track the real call shape rather than the pre-ownership one.
+        const DETAIL_STMT: &str = "        if app.bridge.metadata_pump_detail() {";
+        const SEASON_STMT: &str = "        if app.bridge.metadata_pump_season() {";
         let line_index = |needle: &str| {
             src.lines().position(|line| line == needle)
         };
@@ -258,22 +361,23 @@ mod pump_wiring_tests {
             .expect("run.rs must still pump the async detail landing every frame, at this exact indentation");
         let season_at = line_index(SEASON_STMT).unwrap_or_else(|| {
             panic!(
-                "pump_season() must be called route-unconditionally, at the same nesting depth \
-                 as pump_detail() (found no `{SEASON_STMT}` line) — its call site went missing in \
-                 the phase-7 owned-screens migration and nothing replaced it, so \
+                "metadata_pump_season() must be called route-unconditionally, at the same nesting \
+                 depth as metadata_pump_detail() (found no `{SEASON_STMT}` line) — its call site \
+                 went missing in the phase-7 owned-screens migration and nothing replaced it, so \
                  season_loading() never clears after a season switch: the episode row's spinner \
                  spins forever and every episode press is refused (episodes::action gates on \
                  season_loading())."
             )
         });
-        // pump_detail() must run FIRST: a landed detail's `install_landed_detail` calls
+        // metadata_pump_detail() must run FIRST: a landed detail's `install_landed_detail` calls
         // `supersede_season()`, invalidating any season fetch for the item being replaced.
         // Pumping season first could apply a stale season landing to CURRENT in the one frame
-        // before pump_detail() replaces it.
+        // before metadata_pump_detail() replaces it.
         assert!(
             season_at > detail_at,
-            "pump_season() must be pumped AFTER pump_detail(), not before — pump_detail() is what \
-             supersedes a stale in-flight season fetch when a fresh detail lands"
+            "metadata_pump_season() must be pumped AFTER metadata_pump_detail(), not before — \
+             metadata_pump_detail() is what supersedes a stale in-flight season fetch when a \
+             fresh detail lands"
         );
         // Both statements must be in the SAME enclosing function: no line starting a new `fn` —
         // a new function's own leading `fn`, not the word appearing mid-identifier — between them.
@@ -285,5 +389,74 @@ mod pump_wiring_tests {
             "pump_detail() and pump_season() must be pumped from the same function — found what \
              looks like an intervening function boundary between them"
         );
+    }
+}
+
+#[cfg(test)]
+mod two_owner_tests {
+    use super::*;
+
+    /// **The two-owner regression (contract Required 3).** A worker captures the `Arc` of its
+    /// owner's `MetadataAdapter` before it spawns (mirrors `HubsStore`'s own two-owner test,
+    /// `stores/hubs.rs::a_landing_reaches_only_the_owner_whose_adapter_it_was_minted_from`), and
+    /// its landing is applied into a `MetadataState` the caller supplies (`land_detail_for_test`).
+    /// Two independently-owned `MetadataStore`s (as two `Bridge`s would be, one per signed-in
+    /// session) must not observe each other's requests, landings or notice generations.
+    ///
+    /// This is deliberately NOT an assertion that would also pass against a shared adapter:
+    /// checked by hand (simulated red, not left in the tree — a real historical pre-ownership
+    /// commit predates this test harness and no longer builds against it) by routing B's
+    /// `begin_detail_for_test` through A's `adapter_ref()` instead of its own, reproducing the
+    /// shape a process-wide static or a shared `Arc` would have had before this layer's ownership
+    /// port. With that single substitution the very first cross-owner assertion below
+    /// (`a.view().detail_request_status(sid, a_rk)`) goes from `Some(true)` to `None`, because B's
+    /// `begin` on the shared mailbox silently supersedes A's — this test could not have passed
+    /// against the broken shape.
+    #[test]
+    fn a_landing_reaches_only_the_owner_whose_adapter_it_was_minted_from() {
+        let _guard = crate::testlock::serial();
+        let sid = crate::plex::ServerId::UNSET;
+        let a_rk = "owner-a-item";
+        let b_rk = "owner-b-item";
+
+        let mut a = MetadataStore::default();
+        let mut b = MetadataStore::default();
+
+        let a_gen = crate::metadata::begin_detail_for_test(a.adapter_ref(), sid, a_rk);
+        let b_gen = crate::metadata::begin_detail_for_test(b.adapter_ref(), sid, b_rk);
+
+        // Each owner's own mailbox sees only the request it minted.
+        assert_eq!(a.view().detail_request_status(sid, a_rk), Some(true));
+        assert_eq!(a.view().detail_request_status(sid, b_rk), None, "A never saw B's request");
+        assert_eq!(b.view().detail_request_status(sid, b_rk), Some(true));
+        assert_eq!(b.view().detail_request_status(sid, a_rk), None, "B never saw A's request");
+
+        let a_detail = crate::metadata::Detail { sid, rk: a_rk.into(), ..Default::default() };
+        let b_detail = crate::metadata::Detail { sid, rk: b_rk.into(), ..Default::default() };
+
+        {
+            let (a_state, a_adapter) = a.split_for_test();
+            crate::metadata::land_detail_for_test(a_state, a_adapter, sid, a_rk, a_gen, Some(a_detail.clone()));
+        }
+        {
+            let (b_state, b_adapter) = b.split_for_test();
+            crate::metadata::land_detail_for_test(b_state, b_adapter, sid, b_rk, b_gen, Some(b_detail.clone()));
+        }
+
+        // POSITIVE: each owner's landing settled its own mailbox and installed its own item, and
+        // notice generations advanced independently (per-owner `AtomicU32`, not a shared counter).
+        assert_eq!(a.view().detail_request_status(sid, a_rk), Some(false), "A's own landing settled A's mailbox");
+        assert_eq!(a.view().current().map(|d| d.rk.as_str()), Some(a_rk), "A holds the item it landed");
+        assert_eq!(b.view().detail_request_status(sid, b_rk), Some(false), "B's own landing settled B's mailbox");
+        assert_eq!(b.view().current().map(|d| d.rk.as_str()), Some(b_rk), "B holds the item it landed");
+        // Notice generations are independent counters, not a shared one: a command run against A
+        // alone must bump only A's `gen()`. `land_detail_for_test` above drives the bare
+        // `crate::metadata::pump_detail` free function directly (a test seam, not `MetadataStore`'s
+        // own `run`/`pump_detail` wrapper), so it does not exercise `bump()` — a real command does.
+        assert_eq!(a.gen(), 0);
+        assert_eq!(b.gen(), 0);
+        a.run(MetadataCmd::Clear);
+        assert_eq!(a.gen(), 1, "A's own command must advance A's own notice generation");
+        assert_eq!(b.gen(), 0, "A's command must not advance B's notice generation");
     }
 }

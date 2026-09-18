@@ -579,12 +579,11 @@ pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool) 
 /// around: `playpos_ns` is written by LG's media thread and `player::pump` runs between the input
 /// handlers and the draw, so re-deriving per call site let a keypress dispatch to a control that
 /// the same frame then declined to draw.
-pub(crate) fn slot(ps: &crate::route::PlaybackSession) -> ControlSlot {
+pub(crate) fn slot(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> ControlSlot {
     let has_next = crate::route::up_next(ps).is_some();
     // Server marker first; the synthesized tail only exists where credits DETECTION does not
     // (a Plex Pass server feature) — see `metadata::synthesized_tail_marker`.
-    let m = crate::metadata::active_marker(ps)
-        .or_else(|| crate::metadata::synthesized_tail_marker(ps, has_next));
+    let m = meta.active_marker(ps).or_else(|| meta.synthesized_tail_marker(ps, has_next));
     slot_for(m, has_next)
 }
 
@@ -1610,6 +1609,7 @@ pub(crate) fn draw_hud(
     transport: bool,
     stops: &mut Vec<(u32, Rect)>,
     measure: &dyn crate::ui::machine::Measure,
+    meta: crate::metadata::MetadataView<'_>,
 ) {
     // A FAILURE owns the frame, and it outranks every branch below — including the Up Next card,
     // which cannot coexist with one but must not be the arm that decides so. `Player Screen.dc.html`
@@ -1642,7 +1642,7 @@ pub(crate) fn draw_hud(
         // has `is_episode == true` (it still labels "Go to Show" elsewhere) but no real S#/E# address,
         // so it takes this same "Trailer" ctxline + title treatment a movie trailer already gets,
         // instead of a fabricated `S0 · E0` kicker.
-        if let Some(n) = crate::metadata::now_playing().filter(|n| n.is_real_episode) {
+        if let Some(n) = meta.now_playing().filter(|n| n.is_real_episode) {
             // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
             // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
             // caption already read it, and the whole point is that all three say the same thing).
@@ -1700,7 +1700,7 @@ pub(crate) fn draw_hud(
     } // end `if transport`
 
     // bottom tabs as pills — Chapters only appears when the item actually has chapters
-    let tabs: &[&str] = if crate::ui::chapters_panel::has_chapters() {
+    let tabs: &[&str] = if crate::ui::chapters_panel::has_chapters(meta) {
         &["Info", "Chapters"]
     } else {
         &["Info"]

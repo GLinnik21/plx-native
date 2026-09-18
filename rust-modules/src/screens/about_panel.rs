@@ -465,7 +465,7 @@ impl crate::ui::machine::LogicalState for AboutPanelScreen {
     }
 }
 
-impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for AboutPanelScreen {
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLike> crate::ui::screen::Screen<H> for AboutPanelScreen {
     fn name(&self) -> &'static str {
         "about"
     }
@@ -500,7 +500,8 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for Abou
         // one page and dismissed with it, so in practice they are the same item; reading
         // `metadata::current()` keeps this module's dependency at the store it always had rather
         // than adding a copy of the page's identity to an argument that carries nothing.
-        let Some(d) = metadata::current() else { return };
+        let meta = H::metadata(f.cx);
+        let Some(d) = meta.current() else { return };
         // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`
         // for a surface, which is what this panel's own `Popover` used to hold.
         let appear = f.page_alpha;
@@ -827,6 +828,21 @@ mod tests {
         type Views<'a> = ();
         type Init = TestInit;
         type Memory = TestInit;
+    }
+
+    thread_local! {
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+
+    impl crate::screens::registry::MetadataLike for TestHost {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            test_store().view()
+        }
     }
 
     const ENTRY: EntryId = EntryId(7);

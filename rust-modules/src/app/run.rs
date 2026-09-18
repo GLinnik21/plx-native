@@ -50,10 +50,10 @@ pub(super) fn recorder_end_frame(
 ) -> bool {
     rec.measurements(bridge);
     rec.content_end();
-    rec.end_frame(&|| super::recorder::state_hash(
+    rec.end_frame_with(&|| super::recorder::state_hash(
         press, route, overlay, focus, tree, bridge.session_subhash(), bridge.consent_subhash(),
         bridge.initial_subhash(),
-    ))
+    ), &|id| bridge.store_gen(id))
 }
 
 /// The per-iteration values that cross a phase boundary. Reset at the top of every iteration
@@ -78,9 +78,9 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    fn begin(ps: &crate::route::PlaybackSession) -> Frame {
+    fn begin(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> Frame {
         Frame {
-            ctrl: crate::ui::player_hud::slot(ps),
+            ctrl: crate::ui::player_hud::slot(ps, meta),
             now: 0,
             dt: 0.0,
             underlay_moving: false,
@@ -111,7 +111,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // the input. Eight phases between the nine stamps, named after the frame algorithm
         // the restructure moves this loop onto (spec §3.3/§8.4); on THIS loop navcommit
         // precedes tick_drain, and the FRAMEDROP line prints them in the algorithm's order.
-        let mut fr = Frame::begin(&app.player.session);
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
         let first_controlled_frame = app.boot_initial.is_some() && app.prev == 0;
         let fr = &mut fr;
         app.instr.mark(crate::diag::heartbeat::Phase::Top);
@@ -983,6 +983,7 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
                 &mut app.ok_armed,
                 &mut app.input.press,
                 &mut app.pages,
+                &mut app.bridge,
             );
         } else if matches!(key, Key::Pause) {
             key_pause(&mut app.adapters.player, app.last_input, &mut app.pages);
@@ -1613,6 +1614,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                             &mut app.adapters.player,
                             &mut app.refresh_hubs_at,
                             &mut app.pages,
+                            &mut app.bridge,
                         )
                     }
                     AppArg::Player => activate_player_row(&mut app.player.session,
@@ -1951,7 +1953,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                 if !playback_may_run(app) {
                     return;
                 }
-                if let Some(r) = crate::route::pump_play(&mut app.player.session) {
+                if let Some(r) = crate::route::pump_play(&mut app.player.session, app.bridge.metadata_mut()) {
                     crate::ui::idle::invalidate();
                     let resume_prepared = r <= 0
                         || matches!(
@@ -2012,7 +2014,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // Async detail load: install the worker's item into CURRENT. Route-unconditional for
         // the same reason as pump_play — play_item_now requests a detail from Home and flips
         // straight to the player, so a Detail-gated pump would never land it.
-        if crate::stores::metadata::pump_detail() {
+        if app.bridge.metadata_pump_detail() {
             crate::ui::idle::invalidate(); // a detail landing rewrites the page under us
         }
         // Async season load: install the worker's episode list into CURRENT. Route-unconditional
@@ -2022,7 +2024,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // `supersede_season()`, invalidating any season fetch for the item being replaced.
         // Pumping season first could apply a stale season landing to CURRENT in the one frame
         // before pump_detail() replaces it.
-        if crate::stores::metadata::pump_season() {
+        if app.bridge.metadata_pump_season() {
             crate::ui::idle::invalidate(); // a season landing rewrites the episode row under us
         }
         // D7: the continuation half of `activate_card`'s show/season Play — see
@@ -2043,16 +2045,14 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
         app.bridge.person_pump();
         if let Some(target) = app.bridge.take_detail_refresh() {
-            refresh_content(&mut app.pages, target);
+            refresh_content(&mut app.pages, &mut app.bridge, target);
         }
         // …and the cross-source resolve it kicked off. Route-unconditional for the same reason,
         // and separate because it lands one round trip per source LATER than the page does —
         // "Also available" appears when the other servers have answered, not when the page
         // mounts. It raises the Metadata store's notice, since a landing that grows
         // the actions row must be drawn without waiting for a keypress.
-        if crate::metadata::pump_alt_sources_with_directory(app.bridge.browse_directory()) {
-            crate::stores::bump(crate::stores::StoreId::Metadata);
-        }
+        app.bridge.metadata_pump_alt_sources();
 }
 
 /// The draw phase, entered only on a presenting frame: `clear_opaque_region` at entry, the
@@ -2547,7 +2547,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
         };
         if crate::focusprobe::armed() {
             let content = super::bridge::content_probe(&app.pages, &app.bridge);
-            crate::focusprobe::sample(&app.player.session, fr.rn, probe_screen(app), probe_hud(app), fr.ctrl, &content);
+            crate::focusprobe::sample(&app.player.session, fr.rn, probe_screen(app), probe_hud(app), fr.ctrl, &content, app.bridge.metadata_view());
         }
         // The recorder's frame tail (spec §5.3): on an event frame the logical-state hash —
         // the press machine, the route and overlay words, the focus fingerprint and, since phase
@@ -2562,7 +2562,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
         // read lazily by recorder_end_frame for both recording and replay; no raw state is logged.
         if !matches!(app.rec, super::recorder::Recplay::Off) {
             let content = super::bridge::content_probe(&app.pages, &app.bridge);
-            let focus = crate::focusprobe::line(&app.player.session, fr.rn, probe_screen(app), probe_hud(app), fr.ctrl, &content);
+            let focus = crate::focusprobe::line(&app.player.session, fr.rn, probe_screen(app), probe_hud(app), fr.ctrl, &content, app.bridge.metadata_view());
             // The bare WORD, not the heartbeat's ` overlay=<word>` spelling: the prefix is that
             // line's grammar and has no business in a state hash (phase 10 item 4).
             let ov = super::words::overlay_word(&app.pages, &app.route()).unwrap_or("");
@@ -3033,7 +3033,7 @@ mod lifecycle_regression_tests {
             if controlled {
                 app.boot_initial=Some(super::super::bootstrap::Initial::synthetic_home(1,32517,Some("root".into())).unwrap());
             }
-            let mut fr=Frame::begin(&app.player.session);
+            let mut fr=Frame::begin(&app.player.session, app.bridge.metadata_view());
             let mut steps=Vec::new();
             for (et,x,y) in [(SDL_MOUSEBUTTONDOWN,200i32,300i32),
                 (SDL_MOUSEMOTION,400,300),(SDL_MOUSEBUTTONUP,400,300)] {
@@ -3086,7 +3086,7 @@ mod lifecycle_regression_tests {
         app.rec.prepare_resources(&mut app.bridge);
         app.rec.tick(100,0.016);
         clock::set_replay(100);
-        let mut fr=Frame::begin(&app.player.session);
+        let mut fr=Frame::begin(&app.player.session, app.bridge.metadata_view());
         for et in [SDL_MOUSEBUTTONDOWN,SDL_MOUSEMOTION,SDL_MOUSEBUTTONUP] {
             app.ev[20..24].copy_from_slice(&400i32.to_ne_bytes());
             app.ev[24..28].copy_from_slice(&300i32.to_ne_bytes());
@@ -3239,6 +3239,7 @@ mod lifecycle_regression_tests {
         fn request(&mut self) {
             assert!(crate::route::request_play(
                 &mut self.app.player.session,
+                self.app.bridge.metadata_mut(),
                 self.sid,
                 "1",
                 "/library/parts/1/file.mkv",
@@ -3266,7 +3267,7 @@ mod lifecycle_regression_tests {
         fn resolve(&mut self) {
             self.release.send(()).unwrap();
             poll_until("fixture plan did not land", || {
-                crate::route::pump_play(&mut self.app.player.session).is_some()
+                crate::route::pump_play(&mut self.app.player.session, self.app.bridge.metadata_mut()).is_some()
             });
             assert_eq!(
                 crate::route::up_next(&self.app.player.session).unwrap().rk,
@@ -3291,7 +3292,7 @@ mod lifecycle_regression_tests {
                 }),
                 20,
             );
-            let mut fr = Frame::begin(&self.app.player.session);
+            let mut fr = Frame::begin(&self.app.player.session, self.app.bridge.metadata_view());
             fr.now = 20 + crate::ui::up_next::COUNTDOWN_MS;
             assert!(player.up_next.expired(fr.now));
             fr
@@ -3340,7 +3341,7 @@ mod lifecycle_regression_tests {
         rig.accept_start();
         assert!(super::super::bridge::player(&rig.app.pages).is_none());
         assert!(crate::route::play_pending());
-        let mut fr = Frame::begin(&rig.app.player.session);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         fr.now = 16;
         event(&mut rig.app, &mut fr, 0x104);
         assert!(
@@ -3413,7 +3414,7 @@ mod lifecycle_regression_tests {
             "fixture must create the actual Engine"
         );
         assert!(super::super::bridge::player(&rig.app.pages).is_none());
-        let mut fr = Frame::begin(&rig.app.player.session);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         event(&mut rig.app, &mut fr, 0x104);
         assert!(
             !rig.app.adapters.player.is_live(),
@@ -3516,7 +3517,7 @@ mod lifecycle_regression_tests {
         frame(&mut rig.app, 16);
         assert!(super::super::bridge::player(&rig.app.pages).is_some());
 
-        let mut fr = Frame::begin(&rig.app.player.session);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         fr.now = 32;
         event(&mut rig.app, &mut fr, 0x104);
         assert!(rig.app.player.lifecycle.awaiting_load());
@@ -3576,6 +3577,7 @@ mod lifecycle_regression_tests {
 
         assert!(crate::route::request_play(
             &mut rig.app.player.session,
+            rig.app.bridge.metadata_mut(),
             rig.sid,
             "replacement",
             "/library/parts/2/file.mkv",

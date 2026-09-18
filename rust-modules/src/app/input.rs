@@ -144,7 +144,7 @@ pub(crate) unsafe fn activate_card(
                 };
                 // a show/season row's parent lives on the SAME server as the row itself
                 let sid = mm.sid;
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
+                bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
                 *menu_play_await = Some(MenuPlayAwait {
                     sid,
                     expect,
@@ -196,7 +196,7 @@ pub(crate) unsafe fn menu_play_tick(
         *menu_play_await = None;
         return;
     }
-    let landed = crate::metadata::current()
+    let landed = bridge.metadata_view().current()
         .map(|d| crate::plex::same_item((d.sid, &d.rk), (sid, &expect)))
         .unwrap_or(false);
     if !landed {
@@ -205,7 +205,7 @@ pub(crate) unsafe fn menu_play_tick(
         // `Some(false)`), or past the ceiling — the same two ways `dev::scenarios::play_arm`'s own
         // wait ends without a play, both logged rather than silent there for the same reason: a
         // wait that neither played nor said why would read as a hang.
-        let settled = crate::metadata::detail_request_status(sid, &expect) == Some(false);
+        let settled = bridge.metadata_view().detail_request_status(sid, &expect) == Some(false);
         let expired = now.wrapping_sub(deadline) < u32::MAX / 2;
         if !settled && !expired {
             return; // still waiting — try again next frame
@@ -224,11 +224,11 @@ pub(crate) unsafe fn menu_play_tick(
     // against a stale, unrelated show that happened to still be loaded; gating it on `landed`
     // here is strictly narrower, not a new capability.
     if let Some(i) = season_index {
-        if let Some(idx) = crate::metadata::current().and_then(|d| d.seasons.iter().position(|s| s.index == i)) {
-            crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadSeasonNow(idx));
+        if let Some(idx) = bridge.metadata_view().current().and_then(|d| d.seasons.iter().position(|s| s.index == i)) {
+            bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::LoadSeasonNow(idx));
         }
     }
-    if let Some(resume_ns) = request_loaded_hero(ps) {
+    if let Some(resume_ns) = super::playback::request_loaded_hero(ps, bridge.metadata_mut()) {
         start_playback(ps, pa, resume_ns, Origin::Here, hud_ms, None, pages, bridge);
     } else {
         super::bridge::open_detail(pages, bridge, sid, &expect, None, None);
@@ -278,18 +278,6 @@ mod activate_card_tests {
     #[test]
     fn a_show_or_season_play_no_longer_decides_on_the_press_frame() {
         let _guard = crate::testlock::serial();
-        struct Cleanup;
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-                crate::plex::reset_servers_for_test();
-            }
-        }
-        let _cleanup = Cleanup;
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test("press-frame", "127.0.0.1", 1, "t", "c-press-frame");
-        let mm = crate::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
-
         let mut ps = crate::route::PlaybackSession::default();
         let mt = unsafe { crate::task::MainThread::assume() };
         let mut pa = crate::player::adapter::PlayerAdapter::new(mt);
@@ -297,13 +285,27 @@ mod activate_card_tests {
         let mut bridge = super::bridge::Bridge::for_test(|| 0);
         let mut menu_play_await = None;
 
+        struct Cleanup(*mut super::bridge::Bridge);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                // SAFETY: captured from `bridge` just above, which outlives this guard for the
+                // whole test body.
+                unsafe { &mut *self.0 }.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
+                crate::plex::reset_servers_for_test();
+            }
+        }
+        let _cleanup = Cleanup(&mut bridge as *mut _);
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test("press-frame", "127.0.0.1", 1, "t", "c-press-frame");
+        let mm = crate::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
+
         unsafe {
             activate_card(&mut ps, &mut pa, &mm, true, 1000, None,
                 &mut pages, &mut bridge, &mut menu_play_await, 0);
         }
 
         assert!(
-            crate::metadata::detail_loading(),
+            crate::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
             "the parent detail must still be IN FLIGHT right after the press — the play/open \
              decision must wait for menu_play_tick, not run on this call"
         );
@@ -344,7 +346,7 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
         pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
         bridge: &mut super::bridge::Bridge,
     ) {
-        if self.0.request_episode(ps, rk) {
+        if self.0.request_episode(ps, bridge.metadata_mut(), rk) {
             super::playback::start_playback_with(ps, pa, 0, Origin::Here, HUD_LINGER_MS,
                 None, pages, bridge, self.0);
         }
@@ -545,7 +547,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
                 super::content::hold_feature(intent, 0, None);
                 return;
             }
-            if !super::content::request_play_intent(ps, &intent) {
+            if !super::content::request_play_intent(ps, bridge.metadata_mut(), &intent) {
                 return;
             }
             super::playback::start_playback_with(
@@ -971,7 +973,7 @@ pub(crate) fn delete_outcome(leftovers: usize) -> DeleteOutcome {
 ///
 /// Extra local-file sweep after the Session adapter closes telemetry and clears credentials.
 /// Returns paths it could NOT unlink, never a decision to keep the erased account active.
-pub(crate) fn delete_all_local_data() -> Vec<String> {
+pub(crate) fn delete_all_local_data(meta: &mut crate::stores::metadata::MetadataStore) -> Vec<String> {
     let remove = |path: &std::path::Path| match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1001,7 +1003,7 @@ pub(crate) fn delete_all_local_data() -> Vec<String> {
             failures.push(e);
         }
     }
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+    meta.run(crate::stores::metadata::MetadataCmd::Clear);
     // No explicit `ClearRecents` here (phase 7 Search cutover retired the legacy screen's own
     // thin `recents::clear()` wrapper this used to call): recent Search terms
     // live INSIDE the session file (`crate::search::recents`'s doc — "profile-scoped … the
@@ -1098,6 +1100,7 @@ pub(crate) unsafe fn key_ok(
     ok_armed: &mut bool,
     press: &mut crate::ui::press::Press,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
 ) {
     // The shared top bar's PROFILE CHIP used to be answered here, ahead of the per-route ladder
     // below, off `top_focus` — retired with that function (Home/Library/Search are all owned
@@ -1126,9 +1129,9 @@ pub(crate) unsafe fn key_ok(
             *ok_armed = true;
         } else if vis && focus == 2 {
             if tab == 0 {
-                super::bridge::open_player_overlay(ps, pages, crate::screens::player::overlay::OverlayKind::Info);
+                super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::Info);
             } else if tab == 1 {
-                super::bridge::open_player_overlay(ps, pages, crate::screens::player::overlay::OverlayKind::Chapters);
+                super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::Chapters);
             }
         } else {
             let np = !paused();

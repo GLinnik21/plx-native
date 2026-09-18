@@ -464,10 +464,11 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
                 && (boot.bio || (p.credited && p.landed)))
         })
     } else {
-        let loaded = crate::metadata::current().map(|d|
+        let meta = app.bridge.metadata_view();
+        let loaded = meta.current().map(|d|
             (d.sid, d.rk.as_str(), d.seasons.get(d.cur_season).map(|s| s.index)));
         boot.is_top(&app.pages)
-            && detail_boot_ready(boot.sid, &boot.rk, boot.season, loaded, crate::metadata::detail_loading(), crate::metadata::season_loading())
+            && detail_boot_ready(boot.sid, &boot.rk, boot.season, loaded, meta.detail_loading(), meta.season_loading())
     };
     // A complete landing must have passed through the screen's StoreChanged step first.
     if !boot.admit_landing(ready) {
@@ -530,6 +531,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
             // page would refuse: availability is the PAGE's answer about the page's own item.
             if let Some(pg) = app.boot_initial.is_none().then(|| crate::dev::read("tracks")).flatten() {
                 let host = app.pages.top_page();
+                let meta = app.bridge.metadata_view();
                 let available = app
                     .pages
                     .nav
@@ -537,7 +539,7 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
                     .and_then(|e| e.inst.as_ref())
                     .and_then(|i| i.screen.as_any())
                     .and_then(|a| a.downcast_ref::<crate::screens::detail::DetailScreen>())
-                    .is_some_and(|d| d.tracks_available());
+                    .is_some_and(|d| d.tracks_available(meta));
                 if let (Some(host), true) = (host, available) {
                     let (sid, rk) = (boot.sid, boot.rk.clone());
                     bridge::open_content_panel(
@@ -705,7 +707,7 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
                     snapshot.view().hub(hub).and_then(|h| h.items.get(col))
                 });
                 if let Some(pmm) = pmm {
-                    let requested = crate::route::request_play_movie(&mut app.player.session, pmm);
+                    let requested = crate::route::request_play_movie(&mut app.player.session, app.bridge.metadata_mut(), pmm);
                     if requested {
                         // ASYNC (phase 11): nothing here reads `metadata::current()` — the play
                         // plan came from the catalog row itself. The detail is wanted only so the
@@ -713,7 +715,7 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
                         // `install_landed_detail` calls the same `sync_now_playing` the blocking
                         // load did. So there is nothing to wait for, and no reason to spend two
                         // PMS round trips of the SDL thread on the frame that starts a playback.
-                        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid: pmm.sid, rk: pmm.rk.to_string() });
+                        app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid: pmm.sid, rk: pmm.rk.to_string() });
                     }
                     requested
                 } else {
@@ -877,7 +879,7 @@ fn detail_arm(app: &mut App, fr: &mut Frame) -> bool {
                         return false;
                     }
                 };
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
+                app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
                 crate::log(&format!("plxnative-detail: rk={rk} server={} start", sid.raw()));
                 // A HARD CUT onto the page: at boot there is no outgoing screen to replace, so a
                 // dip would fade the page up out of nothing and read as a slow app rather than a
@@ -927,7 +929,7 @@ fn play_arm(app: &mut App, fr: &mut Frame) -> bool {
                         return false;
                     }
                 };
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
+                app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
                 crate::log(&format!("plxnative-play: rk={rk} server={} request", sid.raw()));
                 app.scenarios.play_await = Some((sid, rk.to_string(), fr.now.wrapping_add(12_000)));
             }
@@ -945,7 +947,7 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
         app.scenarios.play_await = None;
         return;
     }
-    let leaf = crate::metadata::current()
+    let leaf = app.bridge.metadata_view().current()
         .filter(|d| crate::plex::same_item((d.sid, &d.rk), (sid, &rk)))
         .map(|d| {
             if !d.part.is_empty() {
@@ -959,7 +961,7 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
     let Some((part, vc, ac, title, resume_ms, dur_ms)) = leaf else {
         // nothing published for this item yet. Give up when the request itself has settled with
         // something else in place (a failed fetch keeps the previous item), or on the ceiling.
-        let settled = crate::metadata::detail_request_status(sid, &rk) == Some(false);
+        let settled = app.bridge.metadata_view().detail_request_status(sid, &rk) == Some(false);
         let expired = fr.now.wrapping_sub(deadline) < u32::MAX / 2;
         if settled || expired {
             app.scenarios.play_await = None;
@@ -977,7 +979,7 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
         return;
     }
     crate::log(&format!("plxnative-play: rk={rk} server={} start", sid.raw()));
-    if crate::route::request_play(&mut app.player.session, sid, &rk, &part, &vc, &ac, &title, "") {
+    if crate::route::request_play(&mut app.player.session, app.bridge.metadata_mut(), sid, &rk, &part, &vc, &ac, &title, "") {
         let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
         crate::app::playback::start_playback(&mut app.player.session,
             &mut app.adapters.player,
@@ -1105,17 +1107,18 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
         app.scenarios.menu_tried = true;
         if let Some(t) = crate::dev::read("menu") {
             crate::app::bridge::open_player_overlay(&mut app.player.session,
+                app.bridge.metadata_view(),
                 &mut app.pages,
                 crate::screens::player::overlay::OverlayKind::Tracks { tab: t.parse::<c_int>().unwrap_or(0) },
             );
             pin_headless_hud(app, fr.now, None);
         }
         if crate::dev::flag("info") {
-            crate::app::bridge::open_player_overlay(&mut app.player.session, &mut app.pages, crate::screens::player::overlay::OverlayKind::Info);
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::Info);
             pin_headless_hud(app, fr.now, Some(0));
         }
         if crate::dev::flag("chapters") {
-            crate::app::bridge::open_player_overlay(&mut app.player.session, &mut app.pages, crate::screens::player::overlay::OverlayKind::Chapters);
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::Chapters);
             pin_headless_hud(app, fr.now, Some(1));
         }
     }
@@ -1128,14 +1131,15 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
             let mut it = s.split(',');
             let tab = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
             let row = it.next().and_then(|x| x.trim().parse::<c_int>().ok()).unwrap_or(0);
-            crate::app::bridge::open_player_overlay(&mut app.player.session, &mut app.pages, crate::screens::player::overlay::OverlayKind::Tracks { tab });
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, crate::screens::player::overlay::OverlayKind::Tracks { tab });
             app.scenarios.menupick_row = Some(row);
         }
     }
     if let Some(row) = app.scenarios.menupick_row.take() {
+        let meta = app.bridge.metadata_view();
         match crate::app::bridge::player_overlay_mut(&mut app.pages) {
             Some(surface) => {
-                if let Some(commit) = surface.pick_track_row(&app.player.session, row) {
+                if let Some(commit) = surface.pick_track_row(&app.player.session, meta, row) {
                     crate::app::playback::commit_track(&mut app.player.session, commit);
                 }
             }
@@ -1153,7 +1157,8 @@ fn marker_arm(app: &mut App, _fr: &mut Frame) {
                 } else {
                     crate::metadata::MarkerKind::Credits
                 };
-                let markers = crate::metadata::playing_markers();
+                let meta = app.bridge.metadata_view();
+                let markers = meta.playing_markers();
                 if !markers.is_empty() {
                     app.scenarios.marker_tried = true;
                     if let Some(m) = markers.iter().find(|m| m.kind == want) {

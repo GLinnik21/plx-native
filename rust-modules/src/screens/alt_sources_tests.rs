@@ -6,14 +6,26 @@ use super::*;
 use crate::metadata::{alt_source_count, alt_stand_in};
 use crate::stores::metadata::MetadataCmd;
 
+// TEST ONLY: see `screens::detail::tests`'s `TEST_METADATA` for why the owner lives here,
+// thread-confined, rather than being threaded through every call site in this file. Reached only
+// through `MetadataStore::run`/`state_mut`/`view` (the sole owner API).
+thread_local! {
+    static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+        std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+}
+
+fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+}
+
 /// D3 test helper: `metadata::alt_install`/`alt_restamp_owners` are private now, reached only
-/// through `stores::metadata::apply` — these wrap that so the call sites below read exactly as
-/// they did before the visibility change.
+/// through `MetadataStore::run` — these wrap that so the call sites below read exactly as they
+/// did before the visibility change.
 fn alt_install(sid: ServerId, rk: &str, copies: Vec<AltCopy>) -> bool {
-    crate::stores::metadata::apply(MetadataCmd::AltInstall { sid, rk: rk.to_string(), copies })
+    test_store().run(MetadataCmd::AltInstall { sid, rk: rk.to_string(), copies })
 }
 fn alt_restamp_owners() -> bool {
-    crate::stores::metadata::apply(MetadataCmd::AltRestampOwners)
+    test_store().run(MetadataCmd::AltRestampOwners)
 }
 
 fn sid(n: u16) -> ServerId {
@@ -47,6 +59,7 @@ fn panel(host_sid: ServerId, rk: &str) -> AltSourcesScreen {
             rk: rk.to_string(),
             anchor: [0.0f32, 0.0, 100.0, 40.0].map(f32::to_bits),
         },
+        test_store().view(),
     )
 }
 
@@ -376,7 +389,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
-            crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+            test_store().run(crate::stores::metadata::MetadataCmd::Clear);
             crate::plex::reset_servers_for_test();
         }
     }
@@ -398,7 +411,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
             copy(1, "Film Club", "friend", "318", "1080"),
         ],
     );
-    let copies = || crate::metadata::alt_copies(house, "4");
+    let copies = || test_store().view().alt_copies(house, "4");
     assert_eq!(
         rows(copies(), house, "4")
             .iter()
@@ -437,7 +450,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
 
     crate::plex::describe_server(house, "Mac mini", "", false);
     alt_restamp_owners();
-    assert!(p.refresh(), "the correction reached the drawn table");
+    assert!(p.refresh(test_store().view()), "the correction reached the drawn table");
     assert_eq!(
         p.table.n_rows(),
         2,
@@ -449,7 +462,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
         "an OPEN panel follows the correction; it is a snapshot, not a view of the store"
     );
     assert!(
-        !p.refresh(),
+        !p.refresh(test_store().view()),
         "…and a refresh with nothing to say rebuilds nothing"
     );
 }
@@ -465,7 +478,7 @@ fn a_resolve_that_landed_after_the_correction_is_regraded_on_the_way_in() {
     struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
-            crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+            test_store().run(crate::stores::metadata::MetadataCmd::Clear);
             crate::plex::reset_servers_for_test();
         }
     }
@@ -489,7 +502,7 @@ fn a_resolve_that_landed_after_the_correction_is_regraded_on_the_way_in() {
     // …and only now does the resolve arrive
     alt_install(house, "4", in_flight);
 
-    let copies = crate::metadata::alt_copies(house, "4");
+    let copies = test_store().view().alt_copies(house, "4");
     assert_eq!(
         copies[0].owner, None,
         "the list is graded against the registry as it is NOW, not as the worker found it"
@@ -516,12 +529,12 @@ fn a_landing_for_another_servers_copy_with_the_same_key_is_refused() {
     struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
-            crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+            test_store().run(crate::stores::metadata::MetadataCmd::Clear);
         }
     }
     let _g = Fresh(crate::testlock::serial());
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-    let available = crate::metadata::alt_available;
+    test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+    let available = |sid: ServerId, rk: &str| test_store().view().alt_available(sid, rk);
     let two_sources = || {
         vec![
             copy(0, "Movies", "", "4", "1080"),
@@ -618,6 +631,7 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
             rk: String::new(),
             anchor: [low.x, low.y, low.w, low.h].map(f32::to_bits),
         },
+        crate::stores::metadata::MetadataStore::default().view(),
     );
     let want = panel_at(low, p.table.measured_height());
     let got = p.frame();
@@ -735,6 +749,11 @@ mod focus_and_hit {
         type Views<'a> = ();
         type Init = FixtureArg;
         type Memory = PageMemory;
+    }
+    impl crate::screens::registry::MetadataLike for HostFixture {
+        fn metadata<'a>(_cx: &crate::ui::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            test_store().view()
+        }
     }
     fn fixture_cx(focus: Option<FocusKey<u32>>) -> crate::ui::machine::Cx<'static, HostFixture> {
         crate::ui::machine::Cx {

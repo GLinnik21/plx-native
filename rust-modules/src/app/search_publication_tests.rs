@@ -14,7 +14,7 @@ fn search_publication_is_frozen_for_the_frame_then_notified_once_at_the_next_spl
     // Search is owned by `rig` now, so there is no process-wide state to reset — the store's
     // whole lifetime is this test's own `rig` binding.
     rig.search_run(SearchCmd::SetQuery("before".into()));
-    let _ = crate::stores::take_notices();
+    let _ = rig.stores.take_notices();
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let count = |d: &Dispatcher<AppHost>| notices(d).split("notices=").nth(1).unwrap().parse::<u32>().unwrap();
     let baseline = count(&d);
@@ -42,7 +42,7 @@ fn search_publication_is_frozen_for_the_frame_then_notified_once_at_the_next_spl
     assert_eq!(rig.search.view().query_gen(), settled.view().query_gen());
     assert_eq!(count(&d), baseline + 2, "raw text changes still update the field");
     rig.search_run(SearchCmd::SetQuery("unqueued".into()));
-    let _ = crate::stores::take_notices();
+    let _ = rig.stores.take_notices();
     frame(&mut d, &mut rig, AppArg::Search, tick(8), vec![]);
     assert_eq!(rig.search.view().query(), "unqueued");
     assert_eq!(count(&d), baseline + 3, "a changed publication with no queued notice still reconciles");
