@@ -621,11 +621,11 @@ fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
                 crate::route::Preview::Remux => c"Direct Stream",
                 crate::route::Preview::Converts => CONVERTS_ON_SERVER_C,
             },
-            theme::TEXT_TERTIARY,
+            crate::ui::detail_layout::FACTS_INK,
             0,
         )),
         PlayNote::Soft => {
-            push(Bit::Word(CONVERTS_ON_SERVER_C, theme::TEXT_TERTIARY, 0));
+            push(Bit::Word(CONVERTS_ON_SERVER_C, crate::ui::detail_layout::FACTS_INK, 0));
             push(Bit::Sep(theme::space::SM));
             push(Bit::Word(
                 c"hardware conversion needs",
@@ -756,7 +756,7 @@ fn facts_flow(
         if any {
             dx += separator(&mut run, dx);
         }
-        dx += run(part, dx, theme::size::CAPTION, theme::TEXT_TERTIARY);
+        dx += run(part, dx, theme::size::CAPTION, crate::ui::detail_layout::FACTS_INK);
         any = true;
     }
     let mode_w = mode(dx, any);
@@ -766,7 +766,7 @@ fn facts_flow(
         if any {
             dx += separator(&mut run, dx);
         }
-        dx += run(credit, dx, theme::size::CAPTION, theme::TEXT_TERTIARY);
+        dx += run(credit, dx, theme::size::CAPTION, crate::ui::detail_layout::FACTS_INK);
     }
     dx
 }

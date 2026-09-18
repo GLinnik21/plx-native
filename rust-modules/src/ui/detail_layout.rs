@@ -9,8 +9,19 @@ pub(crate) const PEOPLE_W: f32 = 560.0;
 pub(crate) const PEOPLE_LEAD: f32 = 32.0;
 pub(crate) const PEOPLE_MAX_LINES: usize = 4;
 pub(crate) const PEOPLE_INK: [f32; 4] = theme::TEXT_SECONDARY;
+/// The facts row's ink, and the second time this trade has been made: at `TEXT_TERTIARY`
+/// (L=0.317) the row needed α≈0.79 of scrim for 4.5:1 — an essentially black hero corner — so
+/// `widgets_hero_scrim_tests` carried it at a lowered 2.6 floor and wrote the ink step down as
+/// deferred. Tightening the hero rhythm is what came due: every rung the row moves up sits in
+/// less of the atmospheric ramp (it is linear in `y`), and the two named rungs the owner asked
+/// for cost 0.16 of contrast, which no scrim retune buys back cheaply — the ramp's own
+/// measurement says it is 97% of the drop, and steepening it darkens the artwork the hero exists
+/// to show. One ink step costs nothing on screen and takes the row to the ordinary 3.0 floor,
+/// exactly as [`PEOPLE_INK`] did for the people column.
+pub(crate) const FACTS_INK: [f32; 4] = theme::TEXT_SECONDARY;
 pub(crate) const COMPACT_TITLE_BOT: f32 = MARGIN_Y + theme::logo::COMPACT_H_MAX;
 pub(crate) const TOP_MARGIN: f32 = COMPACT_TITLE_BOT + 26.0;
+
 
 /// Top-left anchor for the hero logo while a trailer plays in the background — independent of
 /// scroll, unlike the pinned [`COMPACT_TITLE_BOT`] title (which answers "how far down have I
@@ -31,6 +42,24 @@ pub(crate) struct HeroChain {
 
 /// Every row below the title is placed the same way: the previous row's own MEASURED bottom edge
 /// plus one named rung from [`theme::space`] — never an absolute offset picked to match a mock.
+///
+/// The rungs are not a rhythm to be kept even; they are the page's GRAMMAR, and what they say is
+/// how strongly two things belong together (owner, 2026-09-18). The closer the relation, the
+/// smaller the distance — so an even ladder of one rung all the way down would be the worst answer
+/// available, not the tidiest: it reads as one undifferentiated list and the eye stops seeing any
+/// structure at all. Three degrees are in play here, and the hero uses all three:
+///
+/// * `SM` — one group. Title, identity line and ratings are the item SAYING WHAT IT IS, and are
+///   meant to read almost as a single object.
+/// * `MD` — a change in the KIND of information. The synopsis is prose; the facts line is date,
+///   extent and how it plays. Both still belong to the hero.
+/// * `LG` — information giving way to ACTION (see [`btn_y`]'s own note), and
+/// * `XL` — the hero giving way to the next region entirely, which is `content_top`'s rung in
+///   `screens::detail`, measured off the action row's bottom rather than stated as a page offset.
+///
+/// A gap is between visual OBJECTS, never between coordinates — which is the whole reason this
+/// function adds a measured height before every rung. `+50` between two baselines of 26-tall text
+/// is a 24 gap wearing a number that belongs to neither the type nor the scale.
 /// "Measured" means the row's real bounding box, which for the identity and ratings lines is
 /// their badge/mark (`widgets::BADGE_H`, `widgets::RATING_MARK_D` — both centred on, and taller
 /// than, the caption text beside them), and for the facts line is the `CAPTION` cap band its own
@@ -43,7 +72,7 @@ pub(crate) fn hero_chain(
     has_ratings: bool,
     measure: &dyn crate::ui::machine::Measure,
 ) -> HeroChain {
-    let meta_y = TITLE_BOTTOM + theme::space::MD;
+    let meta_y = TITLE_BOTTOM + theme::space::SM;
     // The identity line's own bounding box is its BADGE, not its caption: `draw_identity_line`
     // centres the resolution/HDR/audio badges on the text's cap band, and at `BADGE_H` (34) they
     // stand taller than the `BODY` caption (cap_h ~21) that shares their row.
@@ -52,7 +81,7 @@ pub(crate) fn hero_chain(
     // Same reasoning: the rating marks (`RATING_MARK_D`, 30) are centred on the caption's cap band
     // and are the row's tallest element, not the `LABEL` text (cap_h ~19.5) beside them.
     let ratings_h = widgets::RATING_MARK_D;
-    let syn_y = (if has_ratings { ratings_y + ratings_h } else { meta_y + meta_h }) + theme::space::MD;
+    let syn_y = (if has_ratings { ratings_y + ratings_h } else { meta_y + meta_h }) + theme::space::SM;
     let facts_y = syn_y + syn_h.max(34.0) + theme::space::MD;
     // The facts row's own icons (`FACTS_GLYPH_D`/capsule) are sized to the `CAPTION` text itself,
     // unlike the two rows above, so its measured height is the plain cap band — read through the
@@ -60,7 +89,17 @@ pub(crate) fn hero_chain(
     // reachable outside `text.rs`/`ui/text_view.rs`/`ui/text_buffer.rs`/a `Measure` impl body),
     // the same capability `compute_hero_chain`'s caller already threads down for the synopsis.
     let facts_h = measure.cap_h(theme::size::CAPTION);
-    let btn_y = facts_y + facts_h + theme::space::MD;
+    // The one rung in this chain that is a JUDGEMENT rather than a measurement, and the one place
+    // the ladder steps twice. Everything above this line is information about the item and is
+    // spaced by how closely it belongs together — `SM` inside the identity group, `MD` where the
+    // kind of information changes. The action row is not information: it is what you can DO, so
+    // the step up to `LG` is the grammar saying so.
+    //
+    // It is also an optical correction, which is why it is not simply "the next rung". The Play
+    // pill is a filled white capsule ~72 tall against a `CAPTION` line of ~18 — at an equal
+    // mathematical gap the heavier object reads as CLOSER, because its mass crowds the air above
+    // it. Equal by eye is what the page is judged on, and that is one rung more here.
+    let btn_y = facts_y + facts_h + theme::space::LG;
     HeroChain { meta_y, ratings_y, syn_y, facts_y, btn_y }
 }
 
@@ -97,10 +136,22 @@ mod tests {
             facts_r < SCR_W - MARGIN_X - PEOPLE_W,
             "the facts row's bound must sit LEFT of the column it is bounded against"
         );
-        let ch = hero_chain(76.0, true, &crate::ui::fixture::FixtureMeasure);
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let ch = hero_chain(76.0, true, &measure);
+        let facts_bot = ch.facts_y + measure.cap_h(theme::size::CAPTION);
+        // The case the bound exists for is a FULL column. It is anchored on the action row's
+        // bottom and grows upward, so at `PEOPLE_MAX_LINES` its top line rises past the facts
+        // row's own band and the two share a horizontal strip — nothing but the width keeps the
+        // text apart. A short column does not reach that strip, and since the action row took its
+        // optical rung the three-line case clears it by a few pixels; grading the collision at a
+        // height the column may or may not have is what made this assertion brittle.
         assert!(
-            people_top(ch.btn_y, 3) < ch.facts_y + 17.0,
-            "three lines puts the column's top line level with the facts row — that is the case the +             width bound exists for"
+            people_top(ch.btn_y, PEOPLE_MAX_LINES) < facts_bot,
+            "the tallest people column rises into the facts row's band"
+        );
+        assert!(
+            people_top(ch.btn_y, 1) > facts_bot,
+            "a single line hangs below the facts row entirely"
         );
     }
 
@@ -130,7 +181,7 @@ mod tests {
                 let ch = hero_chain(syn_h, ratings, &m);
                 assert_eq!(
                     ch.btn_y,
-                    ch.facts_y + facts_h + theme::space::MD,
+                    ch.facts_y + facts_h + theme::space::LG,
                     "the action row hangs off the facts line's measured height, credit or no credit"
                 );
             }
@@ -149,8 +200,8 @@ mod tests {
             let some = hero_chain(syn_h, true, &m);
 
             assert_eq!(some.meta_y, none.meta_y);
-            assert_eq!(none.syn_y, none.meta_y + meta_h + theme::space::MD);
-            assert_eq!(some.syn_y, some.ratings_y + ratings_h + theme::space::MD);
+            assert_eq!(none.syn_y, none.meta_y + meta_h + theme::space::SM);
+            assert_eq!(some.syn_y, some.ratings_y + ratings_h + theme::space::SM);
             let shift = some.syn_y - none.syn_y;
             assert_eq!(shift, ratings_h + theme::space::SM);
             assert_eq!(some.facts_y - none.facts_y, shift);
@@ -172,15 +223,40 @@ mod tests {
         let facts_h = m.cap_h(theme::size::CAPTION);
 
         let some = hero_chain(syn_h, true, &m);
-        assert_eq!(some.meta_y - TITLE_BOTTOM, theme::space::MD, "logo/title -> meta");
+        assert_eq!(some.meta_y - TITLE_BOTTOM, theme::space::SM, "logo/title -> meta");
         assert_eq!(some.ratings_y - (some.meta_y + meta_h), theme::space::SM, "meta -> ratings");
-        assert_eq!(some.syn_y - (some.ratings_y + ratings_h), theme::space::MD, "ratings -> synopsis");
+        assert_eq!(some.syn_y - (some.ratings_y + ratings_h), theme::space::SM, "ratings -> synopsis");
         assert_eq!(some.facts_y - (some.syn_y + syn_h.max(34.0)), theme::space::MD, "synopsis -> facts");
-        assert_eq!(some.btn_y - (some.facts_y + facts_h), theme::space::MD, "facts -> action row");
+        assert_eq!(some.btn_y - (some.facts_y + facts_h), theme::space::LG, "facts -> action row");
 
         // No ratings: the synopsis follows the meta line directly, off ITS measured bottom.
         let none = hero_chain(syn_h, false, &m);
-        assert_eq!(none.syn_y - (none.meta_y + meta_h), theme::space::MD, "meta -> synopsis (no ratings)");
+        assert_eq!(none.syn_y - (none.meta_y + meta_h), theme::space::SM, "meta -> synopsis (no ratings)");
+    }
+
+    /// The ladder only ever WIDENS on the way down the hero, and it widens where the meaning
+    /// changes — inside the identity group, then at the change of information kind, then at the
+    /// step from information to action. An even ladder would pass every other test in this file
+    /// and is exactly the answer the owner ruled out: distance is the grammar, so a chain that
+    /// says the same thing at every step says nothing.
+    #[test]
+    fn the_hero_ladder_widens_at_every_change_of_meaning_and_never_narrows() {
+        let m = crate::ui::fixture::FixtureMeasure;
+        let syn_h = 108.0_f32;
+        let ch = hero_chain(syn_h, true, &m);
+        let within_identity = ch.ratings_y - (ch.meta_y + widgets::BADGE_H);
+        let kind_change = ch.facts_y - (ch.syn_y + syn_h);
+        let to_action = ch.btn_y - (ch.facts_y + m.cap_h(theme::size::CAPTION));
+
+        assert!(within_identity < kind_change, "a group must sit tighter than a change of kind");
+        assert!(
+            kind_change < to_action,
+            "the action row is not more information: it takes the next rung up, and the pill's own \
+             mass is why the correction is optical rather than merely the next number"
+        );
+        // And the hero as a whole is further from what follows it than any two rows inside it are
+        // from each other — the region rung `screens::detail::build_layout` adds to `btn_y`.
+        assert!(to_action < theme::space::XL);
     }
 
     #[test]

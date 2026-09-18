@@ -334,15 +334,18 @@ fn the_hero_text_reads_over_bright_artwork() {
             3.0,
             2.5,
         ),
-        // ⚠ the deferred ink decision — see the doc above
+        // The deferred ink decision, now taken — `detail::FACTS_INK`, and with it the ordinary
+        // floor. What came due was the hero rhythm: the atmospheric ramp is linear in `y`, so
+        // every rung this row moves up sits in less of it, and at tertiary the row had no
+        // headroom left to spend (2.63 against a lowered 2.6).
         (
             "detail facts",
             1270.0,
             hc.facts_y,
-            theme::TEXT_TERTIARY,
+            crate::ui::detail_layout::FACTS_INK,
             true,
-            2.6,
-            2.1,
+            3.0,
+            2.5,
         ),
         // The people column at its WORST case: the top line of the tallest block it can produce
         // (a wrapped credit over a wrapped cast list), `PEOPLE_MAX_LINES` above the buttons —

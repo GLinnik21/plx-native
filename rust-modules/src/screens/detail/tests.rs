@@ -1525,7 +1525,9 @@ fn ok_toggles_the_trailers_pause_and_play_pause_pick_a_direction() {
 /// `trailer_act`'s `Scrub` arm reads `player::duration_ns()`/`playpos_ns()` on `Down`
 /// (`Transport::scrub_fresh`'s own doc: passed in rather than read inside `trailer.rs`, but
 /// `trailer_act` is exactly the one caller that does the reading). Those are the crate-wide
-/// `SHARED` atomics — held together with `testlock::serial()` by every caller, same as
+/// `SHARED` atomics — held together with the `testlock::serial()` guard `install` already hands
+/// back (construct the fixture AFTER it, never beside a second `serial()`: that lock is a plain
+/// mutex and taking it twice on one thread hangs the suite rather than failing it), same as
 /// `screens::player::mod`'s own scrub `Fixture`. `duration_ns` must be positive or
 /// `scrub_fresh` is a deliberate no-op (nothing to scrub within).
 struct DurationFixture(i64, i64);
@@ -1559,10 +1561,9 @@ impl Drop for DurationFixture {
 /// `screens::detail::trailer`'s own tests.
 #[test]
 fn left_right_scrub_hops_on_down_and_asks_for_no_transport_request() {
-    let _serial = crate::testlock::serial();
-    let _dur = DurationFixture::new();
     let sid = ServerId::UNSET;
     let _guard = install(detail(sid, "show"));
+    let _dur = DurationFixture::new();
     let mut screen = bare(&_guard, sid, "show");
     screen.preview_promoted = true;
 
@@ -1582,10 +1583,9 @@ fn left_right_scrub_hops_on_down_and_asks_for_no_transport_request() {
 /// and `player/preview.rs`'s own module doc for the watch-state promise this keeps).
 #[test]
 fn a_held_left_right_scrub_commits_a_preview_seek_on_key_up() {
-    let _serial = crate::testlock::serial();
-    let _dur = DurationFixture::new();
     let sid = ServerId::UNSET;
     let _guard = install(detail(sid, "show"));
+    let _dur = DurationFixture::new();
     let mut screen = bare(&_guard, sid, "show");
     screen.preview_promoted = true;
 
@@ -2324,19 +2324,28 @@ fn cached_section_tops_match_the_stacking_walk() {
         cast_first,
         "asking a later section first must not change earlier tops"
     );
+    // The walk asks for each gap the same way the flow does, because there are three of them and
+    // which one applies is a property of the section ABOVE: a shelf (4 cast, 3 related) already
+    // carries its own label band, so what follows it is `UNDER_LABEL_AIR` and not a second full
+    // region gap stacked on top of it. Hard-coding `SECTION_GAP` here is what made this test read
+    // the layout as 42px out when the shelves stopped double-spacing.
+    let gap = |above: i32, below: i32| DetailScreen::section_gap(above, Some(below));
+    assert_eq!(gap(4, 3), crate::ui::consts::UNDER_LABEL_AIR, "a shelf brings its own band");
+    assert_eq!(gap(2, 4), super::SECTION_GAP, "a bare list does not");
+
     assert_eq!(seasons, screen.content_top(&measure));
     assert_eq!(episodes, seasons + season::ROW_H + super::TAB_EP_GAP);
     assert_eq!(
         cast_first,
-        episodes + screen.block_h(2, detail, &measure) + super::SECTION_GAP
+        episodes + screen.block_h(2, detail, &measure) + gap(2, 4)
     );
     assert_eq!(
         related,
-        cast_first + screen.block_h(4, detail, &measure) + super::SECTION_GAP
+        cast_first + screen.block_h(4, detail, &measure) + gap(4, 3)
     );
     assert_eq!(
         about,
-        related + screen.block_h(3, detail, &measure) + super::SECTION_GAP
+        related + screen.block_h(3, detail, &measure) + gap(3, 5)
     );
     clear();
 }
@@ -2501,8 +2510,12 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
         &[0, 1, 2, 4, 6, 3, 5],
         "extras sits after Cast and before Related"
     );
-    let hide = super::compact_title_hide_pos(&sections, n, true).unwrap();
-    assert_eq!(sections[hide], 4, "a show still hides the compact title at Cast");
+    // The pinned title is no longer anchored to a NAMED section: it leaves as soon as the first
+    // block below the hero starts to travel, whichever section that is.
+    let first_top = screen.section_top_settled(sections[1], loaded, &crate::ui::fixture::FixtureMeasure);
+    let hide_at = first_top - crate::ui::detail_layout::TOP_MARGIN;
+    assert_eq!(super::compact_title_alpha(hide_at, first_top, 0.0), 1.0);
+    assert_eq!(super::compact_title_alpha(hide_at + 400.0, first_top, 0.0), 0.0);
 
     let mut spot = crate::metadata::Spot::default();
     spot.section = 6;
@@ -2545,8 +2558,12 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     };
     let (sections, n) = screen.sections(Some(&movie));
     assert_eq!(&sections[..n], &[0, 4, 6, 3, 5]);
-    let hide = super::compact_title_hide_pos(&sections, n, false).unwrap();
-    assert_eq!(sections[hide], 3, "a movie still hides the compact title at Related");
+    // Same rule on a movie, whose first below-hero section is Cast rather than the season strip:
+    // the title is out by the time that block has moved a fraction of its own height.
+    let first_top = screen.section_top_settled(sections[1], &movie, &crate::ui::fixture::FixtureMeasure);
+    let hide_at = first_top - crate::ui::detail_layout::TOP_MARGIN;
+    assert!(super::compact_title_alpha(hide_at - 1.0, first_top, 0.0) > 0.99);
+    assert!(super::compact_title_alpha(hide_at + 400.0, first_top, 0.0) < 0.01);
     clear();
 }
 

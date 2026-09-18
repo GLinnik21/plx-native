@@ -55,7 +55,25 @@ const FIRST_ITEM_ELEM: u32 = 2048;
 
 const SECTION_GAP: f32 = theme::space::XL;
 const TAB_EP_GAP: f32 = theme::space::MD;
+/// How present the pinned compact title is: the hero's own fade brings it IN, and the first block
+/// below the hero taking its first stretch of travel takes it out again.
+///
+/// `first_top` is the SETTLED top of that block, so `first_top - TOP_MARGIN` is the scroll at which
+/// it has come to rest under the title — every pixel past that is the block moving up THROUGH the
+/// title's band, which is the moment the owner asked for it to be gone. Pure, and separate from the
+/// draw, because the direction of this ramp is the whole rule and both wrong directions shipped to
+/// the panel once each.
+fn compact_title_alpha(scroll: f32, first_top: f32, hero_visible: f32) -> f32 {
+    let hide_at = (first_top - crate::ui::detail_layout::TOP_MARGIN).max(0.0);
+    let travelled = ((scroll - hide_at) / COMPACT_TITLE_FADE).clamp(0.0, 1.0);
+    ((1.0 - hero_visible) * (1.0 - travelled)).clamp(0.0, 1.0)
+}
+
 const HERO_FADE: f32 = 400.0;
+/// Over how much scroll the pinned compact title leaves once the first below-hero block starts to
+/// travel. Half the hero's own fade: the title is chrome the page has already handed over, so it
+/// should be gone by the time the block above it is properly on its way.
+const COMPACT_TITLE_FADE: f32 = 200.0;
 const EP_SCALE_MAX: usize = 40;
 const K_SCROLL: f32 = crate::ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
@@ -592,6 +610,11 @@ impl DetailScreen {
         c
     }
 
+    /// The SETTLED height of a section — every shelf's label band COLLAPSED, which is the flow as
+    /// it stands when focus is anywhere else. The live expansion is deliberately not in here:
+    /// it is a spring, and folding it into [`LayoutStamp`] would rebuild the whole flow — episode
+    /// text measurement included — on every frame of every focus move. [`DetailScreen::band_open`]
+    /// is what the cached number is lifted by at read time.
     fn section_block_h(
         section: i32,
         d: &Detail,
@@ -600,18 +623,53 @@ impl DetailScreen {
         match section {
             1 => season::ROW_H,
             2 => episodes::block_h(d, measure),
-            3 => related::block_h(),
+            3 => related::block_h(0.0),
             4 => cast::block_h(),
-            6 => extras::block_h(),
+            6 => extras::block_h(0.0),
             _ => 0.0,
         }
     }
 
+    /// How much room a shelf section is holding open RIGHT NOW above its settled, collapsed block —
+    /// the shared `card_row` collapse driven by that shelf's own live spring, so Detail gives its
+    /// inter-section room back exactly as Home, the Library, Search and the person page do. Before
+    /// this, each section reserved a fixed band whether or not it drew a label, which is what the
+    /// owner saw as the gap between Extras and Related refusing to close.
+    fn band_open(&self, section: i32) -> f32 {
+        // Cast is deliberately absent: it prints a name under every headshot, so its band is
+        // occupied whether or not it holds focus (`cast::block_h`).
+        let row = match section {
+            3 => &self.related,
+            6 => &self.extras,
+            _ => return 0.0,
+        };
+        card_row::BAND_OPEN * row.band_expand().clamp(0.0, 1.0)
+    }
+
+    /// Sum of [`DetailScreen::band_open`] over every section that flows ABOVE `section` — the whole
+    /// document when it is `None`. This is the one place the live flow differs from the cached one.
+    fn band_lift(&self, d: &Detail, section: Option<i32>) -> f32 {
+        let (sections, n) = self.sections(Some(d));
+        let mut lift = 0.0;
+        for &sec in &sections[1..n] {
+            if Some(sec) == section {
+                break;
+            }
+            lift += self.band_open(sec);
+        }
+        lift
+    }
+
+    /// A shelf carries its own label band, so what follows it is the SHARED shelf pitch's air —
+    /// `consts::UNDER_LABEL_AIR`, exactly what Home and the Library put between two rows — and not
+    /// this page's `SECTION_GAP` on top of it. Stacking the two is what made every gap below the
+    /// hero read as a hole: 18px of collapsed band plus 64 of region gap, 42px looser than the same
+    /// two objects anywhere else in the app.
     fn section_gap(section: i32, next: Option<i32>) -> f32 {
-        if section == 1 && next == Some(2) {
-            TAB_EP_GAP
-        } else {
-            SECTION_GAP
+        match section {
+            1 if next == Some(2) => TAB_EP_GAP,
+            3 | 4 | 6 => crate::ui::consts::UNDER_LABEL_AIR,
+            _ => SECTION_GAP,
         }
     }
 
@@ -690,7 +748,22 @@ impl DetailScreen {
         (out, n)
     }
 
+    /// Where a section sits THIS FRAME — the settled flow plus whatever the shelves above it are
+    /// still holding open.
     fn section_top(&self, section: i32, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        self.section_top_settled(section, d, measure) + self.band_lift(d, Some(section))
+    }
+
+    /// Where a section comes to REST, with every band collapsed behind it. A scroll target must be
+    /// measured against this and never against the live column: the band and the scroll are two
+    /// springs at one rate, so a target taken from the live flow moves every frame while the column
+    /// chases it and the row arrives and then drifts (`card_row::settled_top` is the same rule).
+    fn section_top_settled(
+        &self,
+        section: i32,
+        d: &Detail,
+        measure: &dyn crate::ui::machine::Measure,
+    ) -> f32 {
         let c = self.ensure_layout(d, measure);
         let si = section as usize;
         if (1..section::SLOTS).contains(&si) && c.seen & (1 << si) != 0 {
@@ -699,13 +772,29 @@ impl DetailScreen {
         c.end
     }
 
+    /// [`DetailScreen::section_top`] or [`DetailScreen::section_top_settled`], whichever matches the
+    /// scroll basis the caller is measuring against — mixing the two is how a rect ends up a band
+    /// out of place on exactly the frames a shelf is opening.
+    fn section_top_at(
+        &self,
+        section: i32,
+        d: &Detail,
+        measure: &dyn crate::ui::machine::Measure,
+        at: At,
+    ) -> f32 {
+        match at {
+            At::Drawn => self.section_top(section, d, measure),
+            At::SpringTarget => self.section_top_settled(section, d, measure),
+        }
+    }
+
     fn block_h(&self, section: i32, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
         let c = self.ensure_layout(d, measure);
         let si = section as usize;
         if (1..section::SLOTS).contains(&si) && c.seen & (1 << si) != 0 {
-            return c.block[si];
+            return c.block[si] + self.band_open(section);
         }
-        Self::section_block_h(section, d, measure)
+        Self::section_block_h(section, d, measure) + self.band_open(section)
     }
 
     fn locate(&self, elem: u32) -> Option<Located> {
@@ -857,7 +946,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
         let Some(d) = self.detail() else { return };
         let (sections, n) = self.sections(Some(d));
         for &section in &sections[1..n] {
-            let top = self.section_top(section, d, measure) - self.scroll_target;
+            let top = self.section_top_settled(section, d, measure) - self.scroll_target;
             match section {
                 1 => out.push(GroupSpec {
                     id: season::SEASON_GROUP,
@@ -1060,7 +1149,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             Located::Season(i) => {
                 let base = self.season_metrics.rect(
                     i,
-                    self.section_top(1, d?, measure) - vertical,
+                    self.section_top_at(1, d?, measure, at) - vertical,
                     self.tab_scroll.pos,
                 )?;
                 (
@@ -1071,7 +1160,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             }
             Located::Episode(i, row) => {
                 let d = d?;
-                let top = self.section_top(2, d, measure) - vertical;
+                let top = self.section_top_at(2, d, measure, at) - vertical;
                 let base = match row {
                     episodes::Row::Still => episodes::still_rect(i, top, self.episode_scroll.pos),
                     episodes::Row::Text => {
@@ -1091,7 +1180,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 (drawn, rest, Some(i as u32))
             }
             Located::Related(i) => {
-                let top = self.section_top(3, d?, measure) - vertical;
+                let top = self.section_top_at(3, d?, measure, at) - vertical;
                 (
                     related::rect(&self.related, i, top, at == At::Drawn),
                     related::rect(&self.related, i, top, false),
@@ -1099,7 +1188,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 )
             }
             Located::Extras(i) => {
-                let top = self.section_top(6, d?, measure) - vertical;
+                let top = self.section_top_at(6, d?, measure, at) - vertical;
                 (
                     extras::rect(&self.extras, i, top, at == At::Drawn),
                     extras::rect(&self.extras, i, top, false),
@@ -1107,7 +1196,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 )
             }
             Located::Cast(i) => {
-                let top = self.section_top(4, d?, measure) - vertical;
+                let top = self.section_top_at(4, d?, measure, at) - vertical;
                 (
                     cast::rect(&self.cast, i, top, at == At::Drawn),
                     cast::rect(&self.cast, i, top, false),
@@ -1116,7 +1205,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
             }
             Located::About(i) => {
                 let d = d?;
-                let top = self.section_top(5, d, measure) - vertical;
+                let top = self.section_top_at(5, d, measure, at) - vertical;
                 let base = if i == 0 {
                     self.about_rows.card_rect(d, top, measure)
                 } else {
@@ -1229,7 +1318,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 from_i,
             );
             let row = if d.is_some_and(|d| {
-                from.rect.cy() > self.section_top(2, d, measure) - self.scroll_target + self.block_h(2, d, measure)
+                from.rect.cy() > self.section_top_settled(2, d, measure) - self.scroll_target + self.block_h(2, d, measure)
             }) {
                 episodes::Row::Text
             } else {
@@ -2180,15 +2269,21 @@ impl DetailScreen {
         if hero_visible >= 0.99 {
             return;
         }
+        // The title holds the band the hero left, and it goes as soon as the FIRST block below the
+        // hero starts to TRAVEL — the scroll at which that block has reached its resting top margin
+        // and everything beyond is it moving up past the title (owner directive, 2026-09-18).
+        //
+        // The direction is the whole rule and both wrong answers have been on the panel. Fading on
+        // the APPROACH to that scroll (`(hide_at - scroll) / ramp`) never shows the title at all:
+        // the hero has barely finished fading when the ramp is already through. Hiding at a named
+        // ANCHOR two sections further down showed it for the whole cast row — with the wordmark
+        // drawn straight through the headshots' names, since the flow is not clipped and must not
+        // be: content stopping dead at a line is not what the page does anywhere else.
         let (sections, n) = self.sections(Some(d));
-        let hide_at = compact_title_hide_pos(&sections, n, d.is_show)
-            .map(|position| {
-                (self.section_top(sections[position], d, measure) - crate::ui::detail_layout::TOP_MARGIN)
-                    .max(0.0)
-            })
+        let first_top = (n > 1)
+            .then(|| self.section_top_settled(sections[1], d, measure))
             .unwrap_or(f32::MAX);
-        let deep_visible = ((hide_at - self.scroll.pos) / 300.0).clamp(0.0, 1.0);
-        let alpha = (1.0 - hero_visible) * deep_visible;
+        let alpha = compact_title_alpha(self.scroll.pos, first_top, hero_visible);
         if alpha <= 0.01 {
             return;
         }
@@ -2301,26 +2396,6 @@ fn preview_already_played(played_for: Option<&str>, current_cache_rk: &str) -> b
 fn preview_logo_scroll_alpha(scroll_pos: f32, hero_extent: f32, t: f32) -> f32 {
     let past_hero = (scroll_pos / hero_extent.max(1.0)).clamp(0.0, 1.0);
     1.0 - t * past_hero
-}
-
-fn compact_title_hide_pos(sections: &[i32], n: usize, is_show: bool) -> Option<usize> {
-    // Named hide anchors (Cast, Related, About), not `id >= 3`. Extras is not an anchor, so
-    // inserting it does not move the hide point. A movie hides at the second anchor, a show at
-    // the first — the same rule the position walk used when those three were the only ids >= 3.
-    let wanted = usize::from(!is_show);
-    let mut seen = 0;
-    let mut first = None;
-    for (position, &section) in sections[..n].iter().enumerate() {
-        if position == 0 || !section::is_hide_anchor(section) {
-            continue;
-        }
-        first.get_or_insert(position);
-        if seen == wanted {
-            return Some(position);
-        }
-        seen += 1;
-    }
-    first
 }
 
 fn play_resume_ns(from_start: bool, resume_ms: i64, duration_ms: i64) -> i64 {
@@ -2562,7 +2637,9 @@ impl DetailScreen {
         let Some(located) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.locate(key.elem)) else { return };
         let Some(detail) = self.detail() else { return };
         self.scroll_target = if located.section() == 0 { 0.0 } else {
-            (self.section_top(located.section(), detail, measure) - crate::ui::detail_layout::TOP_MARGIN).max(0.0)
+            (self.section_top_settled(located.section(), detail, measure)
+                - crate::ui::detail_layout::TOP_MARGIN)
+                .max(0.0)
         };
     }
 

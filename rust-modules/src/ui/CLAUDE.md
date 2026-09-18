@@ -659,7 +659,11 @@ left for this note to paper over.
 - **`detail.rs` below-hero layout is a computed flow, not magic constants.** The below-hero sections
   are the children of a shared `ScrollColumn` (`impl Column for DetailView`): the container's
   `child_top(i)` stacks the *present* blocks' `block_h()` heights (via `Column::height`) from
-  `CONTENT_TOP` with one `SECTION_GAP` (season tabs → episodes hug with `TAB_EP_GAP`). To resize/space
+  `CONTENT_TOP` with one of THREE gaps, and which one is `section_gap`'s whole job: `SECTION_GAP`
+  between ordinary sections, `TAB_EP_GAP` where the season tabs hug their episodes, and
+  `consts::UNDER_LABEL_AIR` after a SHELF section (Related, Cast, Extras), which already carries its
+  own label band — stacking a region gap on top of that band is the double-count that made every gap
+  below the hero read as a hole. To resize/space
   a section, change its `block_h` (content-derived — e.g. Related tracks `REL_H`=`CARD_H`) or the gap —
   never reintroduce a hard-coded per-section Y. `ScrollColumn::draw` culls off-screen sections with
   `on_axis` and pre-translates each child painter to its origin, so each `draw_*` draws from local
