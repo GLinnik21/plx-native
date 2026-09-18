@@ -59,7 +59,7 @@ fn panel(host_sid: ServerId, rk: &str) -> AltSourcesScreen {
             rk: rk.to_string(),
             anchor: [0.0f32, 0.0, 100.0, 40.0].map(f32::to_bits),
         },
-        crate::stores::metadata::MetadataStore::default().view(),
+        test_store().view(),
     )
 }
 
@@ -450,7 +450,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
 
     crate::plex::describe_server(house, "Mac mini", "", false);
     alt_restamp_owners();
-    assert!(p.refresh(crate::stores::metadata::MetadataStore::default().view()), "the correction reached the drawn table");
+    assert!(p.refresh(test_store().view()), "the correction reached the drawn table");
     assert_eq!(
         p.table.n_rows(),
         2,
@@ -462,7 +462,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
         "an OPEN panel follows the correction; it is a snapshot, not a view of the store"
     );
     assert!(
-        !p.refresh(crate::stores::metadata::MetadataStore::default().view()),
+        !p.refresh(test_store().view()),
         "…and a refresh with nothing to say rebuilds nothing"
     );
 }
