@@ -1205,7 +1205,7 @@ fn full_trailer_mode_registers_no_hero_stops_at_all() {
     let mut draw = DrawFrame::new(&context, crate::ui::Painter::root());
     screen.record_stops(&mut draw);
     let stops = draw.into_stops();
-    let set = screen.hero_set();
+    let set = screen.hero_set(test_store().view());
     let (all, n) = hero::hero_ctls(set);
     for ctl in &all[..n] {
         assert!(
@@ -1244,7 +1244,7 @@ fn preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_an
     let mut now = 0u32;
     for _ in 0..300 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
     }
     assert!(
         screen.preview_chrome < 0.01,
@@ -1257,7 +1257,7 @@ fn preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_an
     screen.preview_promoted = false;
     for _ in 0..300 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
     }
     assert!(
         screen.preview_chrome > 0.99,
@@ -1302,7 +1302,7 @@ fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_
     let mut now = 0u32;
     for _ in 0..300 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
     }
     assert!(
         screen.preview_prose < 0.01,
@@ -1324,7 +1324,7 @@ fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_
     assert!(screen.full_trailer());
     for _ in 0..300 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
     }
     assert!(
         screen.preview_chrome < 0.01,
@@ -1428,13 +1428,13 @@ fn the_hero_chain_is_identical_whether_or_not_the_trailer_preview_has_faded_its_
     let _guard = install(d);
     let mut screen = bare(&_guard, sid, "show");
 
-    let rest = screen.compute_hero_chain(screen.detail(), &crate::ui::fixture::FixtureMeasure);
+    let rest = screen.compute_hero_chain(screen.detail(test_store().view()), &crate::ui::fixture::FixtureMeasure);
 
     screen.preview_prose = 0.0;
     screen.preview_synopsis = 0.0;
     screen.preview_chrome = 0.0;
     screen.preview_field = 0.0;
-    let faded = screen.compute_hero_chain(screen.detail(), &crate::ui::fixture::FixtureMeasure);
+    let faded = screen.compute_hero_chain(screen.detail(test_store().view()), &crate::ui::fixture::FixtureMeasure);
 
     assert_eq!(rest.meta_y, faded.meta_y, "meta line must not move when it fades");
     assert_eq!(rest.ratings_y, faded.ratings_y, "ratings row must not move when it fades");
