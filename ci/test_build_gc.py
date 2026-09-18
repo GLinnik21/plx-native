@@ -11,7 +11,7 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-MODES = ("--incremental", "--orphans", "--lanes", "--cache", "--all")
+MODES = ("--incremental", "--orphans", "--lanes", "--cache", "--worktrees", "--all")
 
 
 class BuildGcTests(unittest.TestCase):
@@ -198,6 +198,31 @@ class BuildGcTests(unittest.TestCase):
         for wt in roots:
             self.assertIn(f"would remove  {wt}", diagnostic,
                           "worktree missing from --worktrees output: " + diagnostic)
+
+    def test_worktrees_removal_guards_empty_fleet_dir(self):
+        # Copilot review point: `FLEET_DIR=${PLX_FLEET_DIR-$HOME/plx-fleet}` only substitutes the
+        # default when PLX_FLEET_DIR is UNSET. A caller that exports it as the EMPTY STRING
+        # leaves FLEET_DIR empty, and the old code built `ext="$FLEET_DIR/$(basename "$w")"`
+        # unconditionally — a ROOT-level path such as `/lane0`. Proving this safely, without ever
+        # creating or testing a real root-level directory, means watching CONTROL FLOW rather
+        # than a filesystem effect: `sh -x` traces every command it executes, including an
+        # assignment and a `[ -d ... ]` test on a path that does not exist. Before the fix, the
+        # trace shows `ext=/<name>` being built; after the fix, the guard
+        # (`[ -n "$FLEET_DIR" ] && [ -d "$FLEET_DIR" ]`) is false and the whole block — including
+        # the `ext=` assignment — never runs.
+        fixture = self.fixture(0, 0)
+        roots = self._add_worktrees(fixture, 1, prefix="lane", add_target=False)
+        repo, env, _, _ = fixture
+        env = dict(env, PLX_FLEET_DIR="")
+        result = subprocess.run(["sh", "-x", "tools/build-gc.sh", "--worktrees"], cwd=repo,
+                                env=env, text=True, capture_output=True, timeout=20)
+        trace = result.stdout + result.stderr
+        name = roots[0].name
+        self.assertEqual(result.returncode, 0, trace)
+        self.assertNotIn(f"ext=/{name}", trace,
+                         "built a root-anchored external path from an empty PLX_FLEET_DIR: "
+                         + trace)
+        self.assertFalse(roots[0].exists(), "worktree was not actually removed: " + trace)
 
     # A build in ONE checkout must not veto reclaiming every OTHER tree on the volume. The guard
     # used to be all-or-nothing: any `cargo`/`make` anywhere and the script deleted nothing. On a

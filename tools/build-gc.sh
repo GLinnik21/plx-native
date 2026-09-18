@@ -849,6 +849,18 @@ worktrees)
       printf '  would remove  %s  (%s)\n' "$w" "$branch"
       continue
     fi
+    # `worktree_reason` answered "building?" from the snapshot taken once before this whole loop
+    # started (`live_checkouts`, above the mode dispatch) — a build that started in `$w` AFTER
+    # that snapshot and before we reach it here is invisible to that answer. `live_checkouts` is
+    # cheap (pgrep + lsof, not a `du`), so refresh it right before the one irreversible step
+    # instead of trusting a snapshot that can be several worktrees stale. This narrows the race to
+    # the moment between this refresh and `git worktree remove` itself — not zero, but far
+    # smaller than the whole loop.
+    live_checkouts >/dev/null 2>&1 || true
+    if in_live_checkout "$w" 2>/dev/null; then
+      printf '  in use, skipped  %s  (%s)\n' "$w" "$branch"
+      continue
+    fi
     # No --force: a worktree this reached is already known clean, so a plain `remove` succeeding
     # is a second, independent confirmation of that — and if it somehow fails (a lock file, a
     # race with something else touching it this instant), refusing is the right answer, not
@@ -857,12 +869,20 @@ worktrees)
     # all).
     if git worktree remove "$w" 2>&1; then
       printf '  removed       %s  (%s)\n' "$w" "$branch"
-      ext="$FLEET_DIR/$(basename "$w")"
-      if [ -d "$ext" ]; then
-        if in_live_checkout "$ext" 2>/dev/null; then
-          printf '    in use, skipped  %s\n' "$ext"
-        else
-          printf '%s\n' "$ext" | drop | sed 's/^/  /'
+      # Same staleness risk as above for the external tree, plus `$FLEET_DIR` itself: `${VAR-def}`
+      # only substitutes when VAR is UNSET, so `PLX_FLEET_DIR=""` in the environment leaves
+      # `FLEET_DIR` empty rather than defaulted, and `"$FLEET_DIR/$(basename "$w")"` would then be
+      # a ROOT-level path like `/agent-abc`. Guard exactly like `external_trees()` does — non-empty
+      # AND an existing directory — before ever building that path.
+      if [ -n "$FLEET_DIR" ] && [ -d "$FLEET_DIR" ]; then
+        ext="$FLEET_DIR/$(basename "$w")"
+        live_checkouts >/dev/null 2>&1 || true
+        if [ -d "$ext" ]; then
+          if in_live_checkout "$ext" 2>/dev/null; then
+            printf '    in use, skipped  %s\n' "$ext"
+          else
+            printf '%s\n' "$ext" | drop | sed 's/^/  /'
+          fi
         fi
       fi
       case "$branch" in
