@@ -404,7 +404,12 @@ crate::dev::latched_flag!(
 );
 
 pub(crate) fn enabled() -> bool {
-    !nopreview_armed() && crate::plex::session::peek().trailer_autoplay()
+    // `snapshot().trailer_autoplay()`, not `peek().trailer_autoplay()`: this runs on
+    // `preview_tick`'s every-frame path (via `blocked`), and `peek` takes `session::IO` — on the
+    // television that lock guards a `recv(2)` round trip to the storage helper, measured at ~27
+    // ms/frame here before the cache existed (2026-09-18, the detail-page 60->26 fps regression).
+    // See the doc on `session::IO`/`session::WRITE_REV`/`session::snapshot`.
+    !nopreview_armed() && crate::plex::session::snapshot().trailer_autoplay()
 }
 
 fn slot() -> &'static std::sync::Mutex<Machine> {
