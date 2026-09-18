@@ -1474,9 +1474,9 @@ fn clear(state: &mut MetadataState, adapter: &MetadataAdapter) {
 /// caption and `playing` track store `clear()` deliberately spares (D3, for a Detail page torn
 /// down and reopened mid-playback) do not belong to the NEXT profile. Adapter rotation is done by
 /// the caller (`stores::metadata::MetadataStore::run`, mirroring `PersonStore`/`SearchStore`),
-/// and it rotates BEFORE this runs, so `adapter` here is already the fresh one; `supersede_detail`
-/// still runs against it, for the same reason `clear()` calls it — fencing whatever the OLD
-/// adapter had in flight, which can now only land into the retired `Arc`.
+/// and it rotates BEFORE this runs, so `adapter` here is already the fresh one and nothing still
+/// targeting the retired `Arc` can land into this state. `supersede_detail` is still called, for
+/// symmetry with `clear()`, but rotation alone is what fences the old adapter's in-flight work.
 fn reset(state: &mut MetadataState, adapter: &MetadataAdapter) {
     supersede_detail(adapter);
     state.current = None;
@@ -1489,9 +1489,11 @@ fn reset(state: &mut MetadataState, adapter: &MetadataAdapter) {
 /// TEST ONLY — install `d` as the loaded item, bypassing the fetch and its mailbox. The screens'
 /// pure focus/label math reads `current()`, and the only real way to populate it is a PMS round
 /// trip, which the host suite has no server for. Compiled out of the shipped binary. `state` is
-/// the owner's own `MetadataState`, not a global — but this module's own tests also drive
-/// still-process-wide async seams (the detail/season mailbox landings), so hold
-/// `crate::testlock::serial()` across any test that calls this.
+/// the owner's own `MetadataState`, not a global — the detail and season mailboxes are per-owner
+/// fields too, like the other five stores — but `assert_held` below enforces the same crate-wide
+/// lock the genuinely-still-global seams (route's play mailbox, the player's SHARED block) also
+/// take, by convention one lock rather than one per module. Hold `crate::testlock::serial()`
+/// across any test that calls this.
 #[cfg(test)]
 pub(crate) fn set_current_for_test(state: &mut MetadataState, d: Option<Detail>) {
     crate::testlock::assert_held("the detail store (set_current_for_test)");

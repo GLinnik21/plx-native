@@ -556,6 +556,19 @@ class ReplayFixtures(unittest.TestCase):
                                         "%s/%s: a %d-char string outside the alphabet" % (name, fn, len(v)))
         self.assertGreater(checked, 0)
 
+    # Fixture 12 cannot be re-recorded until the controlled-effect encoder
+    # (`app/bootstrap/effects.rs`) learns `ContentReq::PreviewStart`: it currently handles only
+    # `ContentReq::Push`/`Present`/`Back`, and Flow 12's own flow trips the Detail hero-preview
+    # autostart. Quarantined explicitly rather than silently passed by a schema-only check — a
+    # reader of `make check` output should see "known-stale, encoder gap" instead of silence.
+    QUARANTINED_FIXTURES = {
+        "12-filmography-detail-return":
+            "state_fp stale (0x8fac311a39190e46, anchors 1/6 moved to 0x155947674871ffe8): "
+            "the controlled-effect encoder cannot record the Detail hero-preview autostart this "
+            "flow trips, so it cannot be re-recorded until app/bootstrap/effects.rs gains "
+            "ContentReq::PreviewStart",
+    }
+
     def test_every_committed_fixture_carries_the_trees_recording_schema(self):
         """`ui/rec.rs`'s SCHEMA moved 1 -> 2 in restructure phase 11 and this suite did not
         notice: a stale fixture's manifest only refuses to LOAD at replay time
@@ -563,7 +576,16 @@ class ReplayFixtures(unittest.TestCase):
         the tree the way `ci/flavor.py` reads other Rust constants agreed with a second language —
         a plain regex over the source, no cargo invocation — and check every committed fixture's
         manifest agrees with it, so a fixture left behind by a schema bump fails loudly beside the
-        alphabet check above instead of only at `tests/focusfp.sh --replay` time."""
+        alphabet check above instead of only at `tests/focusfp.sh --replay` time.
+
+        `schema` alone is not the only way a fixture goes stale: two anchors can share `schema`
+        while their `state_fp` (the recorded state SHAPE — route/overlay/focus/tree/session/
+        consent/initial) has moved apart, which is exactly what `tools/plxnative-rec rerecord`
+        reports as a load-time REFUSED and what the README documents happened to fixture 12. So
+        this also checks every non-quarantined fixture's `state_fp` agrees with the majority
+        value among committed anchors, and reports (without reddening `make check`) any
+        quarantined fixture whose `state_fp` has drifted onto the current value — at that point
+        the quarantine itself is stale and should be lifted."""
         rec_rs_path = os.path.join(REPO_ROOT, "rust-modules", "src", "ui", "rec.rs")
         with open(rec_rs_path, encoding="utf-8") as f:
             rec_rs = f.read()
@@ -571,6 +593,7 @@ class ReplayFixtures(unittest.TestCase):
         self.assertIsNotNone(m, "ui/rec.rs SCHEMA constant found")
         schema = int(m.group(1))
         checked = 0
+        fps = {}
         for name in sorted(os.listdir(self.FIXTURES)):
             d = os.path.join(self.FIXTURES, name)
             if not os.path.isdir(d):
@@ -585,7 +608,27 @@ class ReplayFixtures(unittest.TestCase):
                               "%s/manifest.json: schema %r does not match ui/rec.rs SCHEMA=%d "
                               "(tools/plxnative-rec rerecord it)"
                               % (name, manifest.get("schema"), schema))
+            fps[name] = manifest.get("state_fp")
         self.assertGreater(checked, 0)
+
+        live_fps = {n: fp for n, fp in fps.items() if n not in self.QUARANTINED_FIXTURES}
+        if live_fps:
+            from collections import Counter
+            current_fp, _ = Counter(live_fps.values()).most_common(1)[0]
+            for name, fp in live_fps.items():
+                self.assertEqual(fp, current_fp,
+                                  "%s/manifest.json: state_fp %r does not match the other "
+                                  "committed anchors' %r (tools/plxnative-rec rerecord it, or "
+                                  "quarantine it in QUARANTINED_FIXTURES with a reason)"
+                                  % (name, fp, current_fp))
+            for name, reason in self.QUARANTINED_FIXTURES.items():
+                if name not in fps:
+                    continue
+                if fps[name] == current_fp:
+                    print("NOTE: quarantined fixture %s now shares state_fp with the live "
+                          "anchors (%r) — lift its QUARANTINED_FIXTURES entry" % (name, current_fp))
+                else:
+                    print("QUARANTINED: %s/manifest.json — %s" % (name, reason))
 
     def _tool(self, *args):
         tool = os.path.join(os.path.dirname(self.FIXTURES), "..", "..", "tools", "plxnative-rec")

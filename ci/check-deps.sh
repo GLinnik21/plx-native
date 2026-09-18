@@ -18,8 +18,8 @@
 # Phase 4 rule (D3 rewrite, phase 12):
 #   mutators — a screen (ui/, screens/) or the loop (app/) never calls a data module's MUTATOR directly
 #              (`crate::browse::set_cur(`, `crate::search::set_query(`, …): every mutation is a
-#              `stores::StoreCmd` applied through `stores::<store>::apply` (spec §14, the
-#              (caller, mutator) allowlist — `docs/stores-as-machines.md`). PRODUCTION lines only:
+#              `StoreCmd` applied through the owner's run/step method (e.g. `Bridge::<store>_run`)
+#              (spec §14, the (caller, mutator) allowlist — `docs/stores-as-machines.md`). PRODUCTION lines only:
 #              a `#[cfg(test)] mod` seeds a store however it likes. The player side joins in phase
 #              9: `route/` (both halves of the split — `plan.rs`, the pure selection half, and
 #              `decision.rs`, the network/adapter half) and `player/` are scanned the same as
@@ -34,8 +34,9 @@
 #              is one accidental `use` away from a violation the gate would then have to catch by
 #              name a second time. `mutators-visibility` (below) is the fix: it reads the
 #              DECLARATION line of every real mutator in its owning legacy module and fails if it
-#              is anything looser than private/`pub(super)`, so `stores::<store>::apply` (or, for
-#              `browse::section_hubs`, a `pub(super)` reached only from its parent `browse`) is
+#              is anything looser than private/`pub(super)`, so the owner's run/step method (e.g.
+#              `Bridge::<store>_run`) (or, for `browse::section_hubs`, a `pub(super)` reached only
+#              from its parent `browse`) is
 #              the only door BY CONSTRUCTION, not by nobody having tried the other one yet. The
 #              two gates are independent and both must be green: a name absent from
 #              `mutators-visibility`'s per-file list (a PUMP/landing door like `pump`/`tick`/
@@ -694,7 +695,7 @@ for entry in "${MUT_FNS_TABLE[@]}"; do
   for fn in $fns; do
     hit=$(grep -nE "^[[:space:]]*pub(\(crate\))?[[:space:]]+fn[[:space:]]+${fn}\b" "$f" 2>/dev/null || true)
     if [ -n "$hit" ] && ! store_seamed "$relf" "$fn"; then
-      echo "    $relf: fn $fn is still pub(crate)/pub — narrow to private (stores::<store>::apply must be the only door)"
+      echo "    $relf: fn $fn is still pub(crate)/pub — narrow to private (the owner's run/step method, e.g. Bridge::<store>_run, must be the only door)"
       vis_bad=$((vis_bad+1))
     fi
   done
