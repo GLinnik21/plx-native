@@ -207,9 +207,10 @@ fn auth_paths() -> Vec<std::path::PathBuf> {
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
     let _io = io();
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
-    // A test swapping the scratch file changes what `peek` answers just as surely as a write
-    // does — a cache primed against the old file must not survive the swap. See `WRITE_REV`.
-    WRITE_REV.fetch_add(1, Ordering::AcqRel);
+    // A test swapping the scratch file changes what `peek`/`snapshot` answer just as surely as a
+    // write does — a cache primed against the old file must not survive the swap. See `WRITE_REV`
+    // and `invalidate_snapshot`.
+    invalidate_snapshot();
 }
 
 /// Snapshot the current [`TEST_FILE`] redirect so a caller can restore it exactly with
@@ -1737,6 +1738,11 @@ fn io() -> std::sync::MutexGuard<'static, ()> {
 /// to use instead of taking [`IO`] on a per-frame path — see the note on [`IO`] for why that lock
 /// cannot be taken there at all.
 ///
+/// All three bump through [`invalidate_snapshot`] rather than touching this atomic directly — the
+/// bump and the drop of [`SNAPSHOT_CACHE`] must happen together, or a stale `Arc<Session>` (the
+/// one [`clear`] means to get rid of, tokens and all) can sit in the cache until an unrelated
+/// later write happens to overwrite it.
+///
 /// **Always bumped from inside the same [`IO`] critical section as the write, and a reader loads
 /// this BEFORE calling [`peek`]/[`snapshot`], never after.** That ordering is what keeps a race
 /// from ever producing staleness: the only interleaving is a reader loading the revision, then a
@@ -1772,54 +1778,134 @@ pub fn peek() -> Session {
     peek_locked()
 }
 
+/// One cached answer in [`SNAPSHOT_CACHE`] — which arm a [`ReadState`] lands in is [`snapshot`]'s
+/// doc.
+enum SnapshotEntry {
+    /// [`ReadState::Ready`], `Missing` or `Cleared`: a settled fact about the file. Good until
+    /// [`WRITE_REV`] moves — nothing else can change what the next read would answer.
+    Settled(std::sync::Arc<Session>),
+    /// [`ReadState::Locked`] or `Blocked`: a transient failure (a helper timeout, a keymanager
+    /// hiccup), not a fact about the file. `WRITE_REV` may never move again while this is stuck,
+    /// so time is what invalidates it instead: good only until `retry_at`.
+    Transient {
+        session: std::sync::Arc<Session>,
+        retry_at: std::time::Instant,
+    },
+}
+
 /// A cached whole-`Session` read, keyed on [`WRITE_REV`] — the per-frame escape from [`peek`] (see
 /// the note on [`IO`]). A cache hit is one uncontended `Mutex` lock and an `Arc` clone; a miss is
 /// an ordinary locked read.
 ///
 /// Lock order, so nothing here can deadlock against the rest of this module: `player::preview`'s
-/// own `MACHINE` mutex is always taken before this one — [`snapshot`] never calls back into
-/// `preview`, which is what makes calling it from `preview::enabled()` sound — and this is always
-/// taken before [`IO`], which a miss acquires itself via [`read_live_locked`]. No `update()`
-/// closure may call into `preview`, for the same reason in reverse.
-static SNAPSHOT_CACHE: Mutex<Option<(u32, std::sync::Arc<Session>)>> = Mutex::new(None);
+/// own `MACHINE` mutex is always taken before this one — [`snapshot`]/[`snapshot_at`] never call
+/// back into `preview`, which is what makes calling it from `preview::enabled()` sound. **This
+/// lock is never held across [`IO`], in either direction.** A writer ([`invalidate_snapshot`])
+/// already holds `IO` when it takes this lock, but only to clear the entry, and it releases this
+/// lock immediately after — it never calls into [`read_live_locked`] or anything else that takes
+/// `IO` while holding it. [`snapshot_at`] does the mirror image on a miss: it releases this lock
+/// before taking `IO` via [`read_live_locked`], and only re-takes this lock afterward (having
+/// dropped `IO` first) to store the result — cache → release → IO → release → cache. Either
+/// ordering held across the other would let a writer parked on this lock and a reader parked on
+/// `IO` deadlock against each other. No `update()` closure may call into `preview`, for the same
+/// reason in reverse.
+static SNAPSHOT_CACHE: Mutex<Option<(u32, SnapshotEntry)>> = Mutex::new(None);
+
+/// Bump [`WRITE_REV`] and drop [`SNAPSHOT_CACHE`] together, so the two can never drift apart. Every
+/// in-process path that can change what [`peek`]/[`snapshot`] answer ([`save_locked_with_authority`],
+/// [`clear`], [`redirect_for_test`]) calls this rather than bumping the atomic directly: a bump
+/// alone would leave the previous `Arc<Session>` sitting in the cache, served to every `snapshot()`
+/// caller, until whatever next `Ready`/`Missing`/`Cleared` read happens to overwrite it — which for
+/// `clear()` means the very credentials sign-out means to get rid of.
+///
+/// Every caller already holds [`IO`]; this only ever takes the cache lock, never `IO` itself — see
+/// the lock-order note on [`SNAPSHOT_CACHE`].
+fn invalidate_snapshot() {
+    WRITE_REV.fetch_add(1, Ordering::AcqRel);
+    *SNAPSHOT_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// How long a [`ReadState::Locked`]/[`ReadState::Blocked`] answer is served from
+/// [`SNAPSHOT_CACHE`] before [`snapshot_at`] tries the disk again. These two states are transient
+/// by definition (see `snapshot`'s doc), so the interval only needs to be short enough that a real
+/// recovery is felt quickly, and long enough that a per-frame caller never pays for the retry more
+/// than about once a second.
+const SNAPSHOT_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// A cheap, [`WRITE_REV`]-keyed snapshot of the persisted session — what a per-frame reader
 /// (`player::preview::enabled`) calls instead of [`peek`]. Returns the same `Arc<Session>` across
 /// repeated calls as long as nothing in this process has written since the last one.
 ///
-/// Caches ONLY a [`ReadState::Ready`] read. `Missing`, `Locked`, `Blocked` and `Cleared` all return
-/// a fresh default [`Session`] **uncached**, so a read that failed for a reason that has nothing to
-/// do with what is actually persisted — a storage-helper timeout, say — is retried on the very next
-/// call rather than latching a wrong answer (e.g. trailer autoplay silently disabled) until some
-/// unrelated in-process write happens to bump [`WRITE_REV`].
+/// Every [`ReadState`] outcome is cached now, not only [`ReadState::Ready`] — see
+/// [`SnapshotEntry`] for which of the two cache arms each variant lands in, and [`SNAPSHOT_RETRY`]
+/// for how a transient `Locked`/`Blocked` answer still recovers on its own.
 ///
 /// **Test-only caveat:** a fixture that overwrites the redirected scratch file's bytes directly,
 /// bypassing [`save`]/[`update`], does not bump [`WRITE_REV`] — so a cache entry from before that
 /// write can still be served after it, and `snapshot` is in that sense **not** the disk oracle
 /// [`peek`] is. A test that needs to observe those exact bytes wants `peek()`.
 pub(crate) fn snapshot() -> std::sync::Arc<Session> {
+    snapshot_at(std::time::Instant::now())
+}
+
+/// [`snapshot`], parameterized on "now" so a test can simulate [`SNAPSHOT_RETRY`] elapsing without
+/// an actual one-second sleep: capture an `Instant`, call this with it, then call it again with
+/// that same instant plus `SNAPSHOT_RETRY` (or more) to observe the retry.
+fn snapshot_at(now: std::time::Instant) -> std::sync::Arc<Session> {
     // Loaded before the read, not after — see `WRITE_REV`'s doc for why that order is load-bearing.
     let rev = WRITE_REV.load(Ordering::Acquire);
     {
         let cache = SNAPSHOT_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((cached_rev, session)) = &*cache {
+        if let Some((cached_rev, entry)) = &*cache {
             if *cached_rev == rev {
-                return session.clone();
+                match entry {
+                    SnapshotEntry::Settled(session) => return session.clone(),
+                    SnapshotEntry::Transient { session, retry_at } if now < *retry_at => {
+                        return session.clone();
+                    }
+                    SnapshotEntry::Transient { .. } => {
+                        // Past the retry deadline — fall through and read the disk again.
+                    }
+                }
             }
         }
+        // Cache lock dropped here, before `IO` is ever touched — see the lock-order note on
+        // `SNAPSHOT_CACHE`.
     }
     let _io = io();
-    match read_live_locked() {
+    let (entry, session) = match read_live_locked() {
         ReadState::Ready { session, .. } => {
             let session = std::sync::Arc::new(session);
-            *SNAPSHOT_CACHE.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some((rev, session.clone()));
-            session
+            (SnapshotEntry::Settled(session.clone()), session)
         }
-        ReadState::Missing | ReadState::Locked | ReadState::Blocked | ReadState::Cleared => {
-            std::sync::Arc::new(Session::default())
+        ReadState::Missing | ReadState::Cleared => {
+            let session = std::sync::Arc::new(Session::default());
+            (SnapshotEntry::Settled(session.clone()), session)
         }
+        ReadState::Locked | ReadState::Blocked => {
+            let session = std::sync::Arc::new(Session::default());
+            (
+                SnapshotEntry::Transient {
+                    session: session.clone(),
+                    retry_at: now + SNAPSHOT_RETRY,
+                },
+                session,
+            )
+        }
+    };
+    drop(_io);
+    // Store only if nothing wrote in between while this read was in flight — an intervening write
+    // means this answer is already stale, and storing it anyway could resurrect exactly what an
+    // intervening `clear()`'s `invalidate_snapshot` just dropped.
+    if WRITE_REV.load(Ordering::Acquire) == rev {
+        *SNAPSHOT_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some((rev, entry));
     }
+    session
+}
+
+#[cfg(test)]
+pub(crate) fn snapshot_cache_is_empty_for_test() -> bool {
+    SNAPSHOT_CACHE.lock().unwrap_or_else(|e| e.into_inner()).is_none()
 }
 
 /// **Forget one profile's recorded favourite libraries.**
@@ -2260,8 +2346,9 @@ fn save_locked_with_authority(
 ) -> async_persistence::LiveWrite {
     // Every caller of this function holds `IO` already (it is private and reached only through
     // the entry points that took it), so this lands in the same critical section as the write
-    // below — which is what makes a cached reader keyed on it safe. See `WRITE_REV`.
-    WRITE_REV.fetch_add(1, Ordering::AcqRel);
+    // below — which is what makes a cached reader keyed on it safe. See `WRITE_REV` and
+    // `invalidate_snapshot`.
+    invalidate_snapshot();
     #[cfg(test)]
     {
         *LAST_WRITE_AUTHORITY.lock().unwrap_or_else(|e| e.into_inner()) = Some(authority);
@@ -2629,8 +2716,12 @@ fn clear_cleanup_outcome(outcome: persistence::ClearCleanupOutcome) -> ClearOutc
 /// straight back, account token and all.
 pub fn clear() -> ClearOutcome {
     let _io = io();
-    // Signing out changes what `peek` answers exactly as durably as a save does. See `WRITE_REV`.
-    WRITE_REV.fetch_add(1, Ordering::AcqRel);
+    // Signing out changes what `peek` answers exactly as durably as a save does — and it must
+    // drop the cached `Arc<Session>` too, not just move `WRITE_REV` past it: that `Arc` holds the
+    // very account/server tokens sign-out means to get rid of, and a bump with no drop leaves it
+    // reachable from `snapshot()` until some unrelated later write happens to overwrite it. See
+    // `WRITE_REV` and `invalidate_snapshot`.
+    invalidate_snapshot();
 
     // A redirected legacy-fixture test (`TempSession`/`redirect_for_test`) must never reach the
     // real canonical authority — exactly the guard `save_locked_with_authority` and

@@ -63,12 +63,16 @@ fn snapshot_caches_across_calls_and_observes_a_write() {
     );
 }
 
-/// The fix for the review finding this file exists to guard: the old per-field cache mapped a
-/// failed read (`ReadState::Missing | Locked | Blocked | Cleared`) to a cached `false`, so a single
-/// storage-helper glitch would disable trailer autoplay until the next in-process write happened to
-/// bump `WRITE_REV` — which could be arbitrarily far away, or never. `snapshot` must instead cache
-/// ONLY a `Ready` read, and hand back the uncached default for anything else, so the very next call
-/// retries the disk.
+/// The fix for the review finding this file used to guard: the old per-field cache mapped a
+/// failed read (`ReadState::Missing | Locked | Blocked | Cleared`) to a cached `false` with no way
+/// to ever un-latch it short of an unrelated write — so a single storage-helper glitch could
+/// disable trailer autoplay until whenever that next write happened to land, arbitrarily far away
+/// or never. The CURRENT behaviour (2026-09-18 review) still caches a `Locked`/`Blocked` answer —
+/// re-reading it every frame would reintroduce the ~27 ms/frame cost `snapshot` exists to remove —
+/// but only for `SNAPSHOT_RETRY`: at most one re-read per second, so a real recovery is still felt
+/// quickly and a per-frame caller never pays for the retry itself. This test drives that with
+/// `snapshot_at` rather than `snapshot`, so it can simulate the retry window elapsing without an
+/// actual one-second sleep.
 #[test]
 fn snapshot_never_caches_a_non_ready_read() {
     let _serial = crate::testlock::serial();
@@ -90,11 +94,11 @@ fn snapshot_never_caches_a_non_ready_read() {
     );
 
     // Redirect to a second scratch file and write a secure envelope this build cannot open
-    // directly, bypassing `save`/`update` — `ReadState::Locked` is one of the four non-Ready
-    // states `snapshot` must never cache; `Missing`/`Blocked`/`Cleared` share the exact same
-    // fallthrough arm, so this one stands for all of them. `TempSession::new`'s own
-    // `redirect_for_test` call bumps `WRITE_REV`, so the calls below are a genuine cache miss
-    // rather than a leftover hit against the previous fixture's cached value.
+    // directly, bypassing `save`/`update` — `ReadState::Locked` is one of the two transient states
+    // `snapshot` caches with a retry deadline rather than forever; `Blocked` shares the exact same
+    // arm, so this one stands for both. `TempSession::new`'s own `redirect_for_test` call bumps
+    // `WRITE_REV`, so the calls below are a genuine cache miss rather than a leftover hit against
+    // the previous fixture's cached value.
     let t2 = TempSession::new("snapshot-non-ready-locked");
     std::fs::write(
         t2.file(),
@@ -103,20 +107,68 @@ fn snapshot_never_caches_a_non_ready_read() {
     .expect("write the locked fixture");
 
     reset_reads_for_test();
+    let t0 = std::time::Instant::now();
     assert!(
-        !snapshot().trailer_autoplay(),
-        "a Locked read must fall back to the default session, not whatever was cached before"
+        !snapshot_at(t0).trailer_autoplay(),
+        "a Locked read must fall back to the default session"
     );
+    assert_eq!(reads_for_test(), 1, "the first call must actually read the session");
+
     assert!(
-        !snapshot().trailer_autoplay(),
-        "still Locked on the second call too"
+        !snapshot_at(t0).trailer_autoplay(),
+        "still the default within the retry window"
     );
     assert_eq!(
         reads_for_test(),
+        1,
+        "a Locked answer within SNAPSHOT_RETRY must be served from cache, not re-read every call \
+         — that is exactly the per-frame cost `snapshot` exists to remove"
+    );
+
+    // Advance past the retry deadline (no sleep — `snapshot_at` takes "now" as a parameter) and
+    // confirm the next call retries the disk exactly once, then settles into a new cache entry.
+    let past_retry = t0 + SNAPSHOT_RETRY;
+    assert!(!snapshot_at(past_retry).trailer_autoplay());
+    assert_eq!(
+        reads_for_test(),
         2,
-        "a non-Ready read must never be cached: WRITE_REV never moved between these two calls, so \
-         a cache that latched the first Locked answer would have skipped the second file read \
-         entirely — exactly the bug (one storage-helper glitch disabling trailer autoplay until \
-         the next unrelated write) this test exists to catch"
+        "a transient answer must be re-read after its retry deadline, so a real recovery (or a \
+         still-Locked file) is observed within about a second rather than latched forever"
+    );
+    assert!(!snapshot_at(past_retry).trailer_autoplay());
+    assert_eq!(
+        reads_for_test(),
+        2,
+        "the re-read establishes a fresh retry window, which the very next call must hit from \
+         cache rather than reading a third time"
+    );
+}
+
+/// The other half of the same review finding: bumping `WRITE_REV` alone is not enough for
+/// `clear()` (sign-out) — the previous `Arc<Session>`, which holds the account/server tokens, would
+/// otherwise sit in `SNAPSHOT_CACHE` until the next `Ready` read happens to overwrite it, so a
+/// `snapshot()` caller in between would still see the signed-out credentials. `invalidate_snapshot`
+/// exists so the bump and the drop can never drift apart; this pins the drop half directly, since
+/// nothing about `WRITE_REV` moving proves the cache slot is actually `None`.
+#[test]
+fn clear_drops_the_cached_snapshot() {
+    let _serial = crate::testlock::serial();
+    let _t = TempSession::new("snapshot-clear-drops-cache");
+    save(&signed_in());
+    set_trailer_autoplay(true);
+
+    assert!(snapshot().trailer_autoplay(), "prime the cache with a Ready read");
+    assert!(
+        !snapshot_cache_is_empty_for_test(),
+        "the priming call above must have populated the cache"
+    );
+
+    clear();
+
+    assert!(
+        snapshot_cache_is_empty_for_test(),
+        "clear() must drop the cached snapshot immediately, not merely bump WRITE_REV — a stale \
+         entry would keep serving the just-cleared account/server tokens to any snapshot() caller \
+         until some unrelated later write happened to overwrite it"
     );
 }
