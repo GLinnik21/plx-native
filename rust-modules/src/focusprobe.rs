@@ -385,6 +385,14 @@ fn b(v: bool) -> u8 {
 mod tests {
     use super::*;
 
+    thread_local! {
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+
     fn hud() -> Hud {
         Hud {
             focus: 0,
@@ -437,8 +445,8 @@ mod tests {
         let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         for (rn, sc) in every_screen() {
-            let a = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs);
-            let b = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs);
+            let a = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs, test_store().view());
+            let b = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs, test_store().view());
             assert_eq!(a, b, "{rn} fingerprinted differently twice in a row");
         }
     }
@@ -451,7 +459,7 @@ mod tests {
         let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         for (rn, sc) in every_screen() {
-            let line = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs);
+            let line = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs, test_store().view());
             assert!(
                 !line.contains('\n'),
                 "{rn}: a fingerprint is ONE line: {line}"
@@ -482,7 +490,7 @@ mod tests {
         let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         let keys = |rn, sc, ctrl| {
-            fingerprint(&ps, rn, sc, hud(), ctrl)
+            fingerprint(&ps, rn, sc, hud(), ctrl, test_store().view())
                 .split(' ')
                 .skip(1)
                 .filter_map(|f| f.split_once('=').map(|(k, _)| k.to_string()))
@@ -520,7 +528,7 @@ mod tests {
                 tab: 1,
                 visible: true,
             },
-            ControlSlot::Discs,
+            ControlSlot::Discs, test_store().view(),
         );
         let moved_keys: Vec<String> = moved
             .split(' ')
@@ -546,7 +554,7 @@ mod tests {
                     tab,
                     visible: true,
                 },
-                ControlSlot::Discs,
+                ControlSlot::Discs, test_store().view(),
             )
         };
         assert_ne!(
@@ -575,7 +583,7 @@ mod tests {
                     tab: 0,
                     visible: true
                 },
-                ControlSlot::Discs
+                ControlSlot::Discs, test_store().view()
             ),
             "the overlay tag is not observable"
         );
@@ -593,8 +601,8 @@ mod tests {
     fn the_login_screens_stalled_control_appearing_is_observable() {
         let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
-        let without = fingerprint(&ps, "login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: false }, hud(), ControlSlot::Discs);
-        let with = fingerprint(&ps, "login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: true }, hud(), ControlSlot::Discs);
+        let without = fingerprint(&ps, "login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: false }, hud(), ControlSlot::Discs, test_store().view());
+        let with = fingerprint(&ps, "login", Screen::Login { phase: crate::auth::Phase::Idle, has_control: true }, hud(), ControlSlot::Discs, test_store().view());
         assert_ne!(
             without, with,
             "the login screen's escape/retry/restart control appearing is not observable"

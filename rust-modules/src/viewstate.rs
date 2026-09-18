@@ -828,7 +828,7 @@ mod tests {
         let mut hubs = Vec::new();
         let mut person = Vec::new();
         let mut search = Vec::new();
-        let _ = crate::stores::take_notices();
+        let mut metadata_store = crate::stores::metadata::MetadataStore::default();
 
         assert!(store.run(
             crate::stores::viewstate::ViewStateCmd::Request {
@@ -845,7 +845,7 @@ mod tests {
             },
             &mut |cmd| { person.push(cmd); true },
             &mut |cmd| { search.push(cmd); true },
-            &mut |cmd| crate::stores::metadata::MetadataStore::default().run(cmd),
+            &mut |cmd| metadata_store.run(cmd),
         ));
 
         assert!(matches!(hubs.as_slice(), [crate::stores::hubs::HubsCmd::EditItem {
@@ -860,8 +860,7 @@ mod tests {
         assert!(matches!(search.as_slice(), [crate::stores::search::SearchCmd::SetWatchedLocal {
             sid: seen, rk, on: true
         }] if *seen == sid && rk == "7"));
-        let notices = crate::stores::take_notices();
-        assert_eq!(notices.iter().filter(|(seen, _)| *seen == crate::stores::StoreId::Metadata).count(), 1,
+        assert!(metadata_store.take_notice().is_some(),
             "the optimistic edit reaches {} before run returns", crate::stores::StoreId::Metadata.name());
         assert!(store.take_notice().is_some(), "the owning ViewState store notices its command");
         crate::plex::reset_servers_for_test();
@@ -1257,8 +1256,9 @@ mod tests {
     #[test]
     fn the_landing_flips_another_sources_copy_the_press_could_not_reach() {
         let _g = crate::testlock::serial();
+        let mut metadata_store = crate::stores::metadata::MetadataStore::default();
         // the page is mounted on the SHARE's copy, which the press on our own copy never touched
-        crate::metadata::install_for_test(Some(crate::metadata::Detail {
+        crate::metadata::install_for_test(metadata_store.state_mut(), Some(crate::metadata::Detail {
             sid: SRV_B,
             rk: "4".into(),
             resume_ms: 900_000,
@@ -1267,23 +1267,23 @@ mod tests {
 
         edit_local_with_owners(SRV_A, "4", Write::Watched, &mut |_| false,
             &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
-            &mut |cmd| crate::stores::metadata::MetadataStore::default().run(cmd));
+            &mut |cmd| metadata_store.run(cmd));
         assert!(
-            !crate::metadata::current().unwrap().watched,
+            !metadata_store.view().current().unwrap().watched,
             "A's 4 is not B's 4"
         );
 
         edit_local_with_owners(SRV_B, "4", Write::Watched, &mut |_| false,
             &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
-            &mut |cmd| crate::stores::metadata::MetadataStore::default().run(cmd));
-        assert!(crate::metadata::current().unwrap().watched);
+            &mut |cmd| metadata_store.run(cmd));
+        assert!(metadata_store.view().current().unwrap().watched);
         assert_eq!(
-            crate::metadata::current().unwrap().resume_ms,
+            metadata_store.view().current().unwrap().resume_ms,
             0,
             "watched stops offering to resume"
         );
 
-        crate::metadata::install_for_test(None);
+        crate::metadata::install_for_test(metadata_store.state_mut(), None);
     }
 
     /// **The landing itself, driven through [`ViewStateState::pump`].** The test above grades what
@@ -1294,8 +1294,9 @@ mod tests {
     #[test]
     fn the_landing_applies_the_workers_whole_report_and_retires_the_write() {
         let _g = crate::testlock::serial();
+        let mut metadata_store = crate::stores::metadata::MetadataStore::default();
         // the mounted page is the SHARE's copy — the one the press could not reach
-        crate::metadata::install_for_test(Some(crate::metadata::Detail {
+        crate::metadata::install_for_test(metadata_store.state_mut(), Some(crate::metadata::Detail {
             sid: SRV_B,
             rk: "4".into(),
             ..Default::default()
@@ -1320,10 +1321,10 @@ mod tests {
 
         let _outcome = state.pump(&adapter, &mut |_| false,
             &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
-            &mut |cmd| crate::stores::metadata::MetadataStore::default().run(cmd));
+            &mut |cmd| metadata_store.run(cmd));
 
         assert!(
-            crate::metadata::current().unwrap().watched,
+            metadata_store.view().current().unwrap().watched,
             "the page mounted on the share's copy is flipped by the landing, not by the press"
         );
         assert!(
@@ -1335,7 +1336,7 @@ mod tests {
             "the mailbox is drained"
         );
 
-        crate::metadata::install_for_test(None);
+        crate::metadata::install_for_test(metadata_store.state_mut(), None);
     }
 
     #[test]
