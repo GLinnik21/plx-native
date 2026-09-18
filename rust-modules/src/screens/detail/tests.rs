@@ -1338,6 +1338,60 @@ fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_
     clear();
 }
 
+/// **Regression, 2026-09-18: `preview_tick`'s per-frame path must not read the session file every
+/// frame.** `preview::blocked` (called unconditionally from `preview_tick`, hero-focused or not)
+/// calls `preview::enabled()`, which used to call `session::peek()` directly — and `peek` takes
+/// `session::IO`, which on the television guards a `recv(2)` round trip to the storage helper,
+/// measured at ~27 ms/frame: the whole gap between 60 fps and the 26 fps the detail page actually
+/// drew. The fix is `session::snapshot()`, a `WRITE_REV`-keyed cache; this drives 30 real frames
+/// with the hero focused (dwelling toward a preview, same as
+/// `preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_and_back`'s setup)
+/// and asserts the underlying session read happens at most once — the first snapshot fill — not
+/// once per frame. Watched RED against the original bug: pointing `preview::enabled()` back at
+/// `peek().trailer_autoplay()` fails this with `reads=30`.
+#[test]
+fn preview_tick_does_not_read_the_session_file_every_frame() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+
+    // A readable session, so `preview::enabled()`'s `snapshot()` call has real Ready bytes to
+    // read on its one allowed fill, rather than the trivially-cheap Missing/default path.
+    let _session = crate::plex::session::TempSession::new("detail-preview-fps");
+    crate::plex::session::save(&crate::plex::session::Session {
+        client_id: "cid-detail-preview-fps".into(),
+        trailer_autoplay: true,
+        ..Default::default()
+    });
+
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut sink = Effects::new(
+        &mut effects,
+        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        &mut present,
+    );
+    let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
+
+    crate::plex::session::reset_reads_for_test();
+    let mut now = 0u32;
+    for _ in 0..30 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+    }
+    let reads = crate::plex::session::reads_for_test();
+    assert!(
+        reads <= 1,
+        "preview_tick must not re-read the session file every frame -- {reads} session reads over \
+         30 frames of hero focus reproduces the 60->26 fps regression (2026-09-18); the first \
+         snapshot fill is allowed, a read per frame is not"
+    );
+
+    drop(sink);
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
 #[test]
 fn an_item_with_no_ultrablur_keeps_the_flat_app_ground() {
     let wash = AmbientWash::flat(theme::SURFACE_APP);

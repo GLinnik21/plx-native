@@ -23,6 +23,7 @@ use super::probe::Location;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::collections::BTreeMap;
 use serde_json::Value;
 
@@ -206,6 +207,9 @@ fn auth_paths() -> Vec<std::path::PathBuf> {
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
     let _io = io();
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    // A test swapping the scratch file changes what `peek` answers just as surely as a write
+    // does — a cache primed against the old file must not survive the swap. See `WRITE_REV`.
+    WRITE_REV.fetch_add(1, Ordering::AcqRel);
 }
 
 /// Snapshot the current [`TEST_FILE`] redirect so a caller can restore it exactly with
@@ -1711,7 +1715,12 @@ pub fn current_profile_key() -> String {
 /// doing an `fs::read` per frame (the legacy Library's failed-source labels; the owned screen now
 /// uses retained views). **Do not add a per-frame
 /// reader of this file**; the answer for that is a snapshot keyed on something cheap, the way
-/// `search::recents` caches by [`current_gen`].
+/// `search::recents` caches by [`current_gen`] and every other per-frame reader calls [`snapshot`]
+/// instead, which caches by [`WRITE_REV`]. `snapshot` exists because the rule was broken once: the
+/// detail page's per-frame preview tick called `peek().trailer_autoplay()` directly, and on the
+/// television [`peek`]'s wait for this lock is a `recv(2)` round trip to the storage helper over a
+/// Unix socket — measured at ~27 ms/frame, the whole gap between 60 fps and the 26 fps the page
+/// actually drew (2026-09-18).
 static IO: Mutex<()> = Mutex::new(());
 
 fn io() -> std::sync::MutexGuard<'static, ()> {
@@ -1720,15 +1729,97 @@ fn io() -> std::sync::MutexGuard<'static, ()> {
     IO.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Process-wide write revision — bumped by every in-process path that can change what [`peek`]
+/// answers: [`save_locked_with_authority`] (which `save`, `save_fresh_reauthentication`,
+/// `save_locked` and [`update_with_outcome`]/[`replace_after_reauthentication_with_outcome`] all
+/// funnel through), [`clear`], and [`redirect_for_test`] (a test swapping the scratch file must
+/// not leave a cache pointed at the old one's answer). This is the mechanism [`snapshot`] exists
+/// to use instead of taking [`IO`] on a per-frame path — see the note on [`IO`] for why that lock
+/// cannot be taken there at all.
+///
+/// **Always bumped from inside the same [`IO`] critical section as the write, and a reader loads
+/// this BEFORE calling [`peek`]/[`snapshot`], never after.** That ordering is what keeps a race
+/// from ever producing staleness: the only interleaving is a reader loading the revision, then a
+/// writer bumping it and finishing its write, then the reader's own (blocked-on-`IO`) read call
+/// returning the NEW data — tagged with the OLD number it loaded first. The next call's load sees
+/// the writer's number, finds it does not match the cached tag, and re-reads once more to catch
+/// up.
+///
+/// Bumping happens BEFORE the write here (not after), but that is not a safety requirement — a
+/// post-write bump inside the same `IO` section would be equally safe, because every reader that
+/// could possibly observe the new number is, by construction, either fully before this critical
+/// section (blocked on nothing, sees the old number and the old file) or already parked on `IO`
+/// waiting for this whole section — bump and write both — to finish. There is no window in which a
+/// reader can observe one without the other, whichever order they run in inside the section. It
+/// runs first here for a narrower reason: [`save_locked_with_authority`] has several early
+/// `return`s and fallible steps below this line, and bumping first means every one of them still
+/// counts as a change without needing to duplicate the bump on each exit path.
+static WRITE_REV: AtomicU32 = AtomicU32::new(0);
+
 /// Read the persisted session and nothing else — **no minting, no write.** For readers that merely
 /// want to know what the session says (the account surfaces): [`load`]'s client-id minting means a
 /// read can turn into a `save`, so a file that momentarily fails to parse would be overwritten with
 /// a bare client_id — a silent sign-out. That is an acceptable trade on the boot path, which must
 /// end up with an id; it is not one on a path a keypress can reach. Falls back to the
 /// pre-relocation path (migration), same as `load`.
+///
+/// **This is the uncached disk oracle — it always takes [`IO`] and always reads.** It answers "what
+/// is on disk right now", which is exactly what makes it wrong for a per-frame caller: see the note
+/// on [`IO`] for the ~27 ms/frame cost of calling this every frame, and reach for [`snapshot`]
+/// instead there.
 pub fn peek() -> Session {
     let _io = io();
     peek_locked()
+}
+
+/// A cached whole-`Session` read, keyed on [`WRITE_REV`] — the per-frame escape from [`peek`] (see
+/// the note on [`IO`]). A cache hit is one uncontended `Mutex` lock and an `Arc` clone; a miss is
+/// an ordinary locked read.
+///
+/// Lock order, so nothing here can deadlock against the rest of this module: `player::preview`'s
+/// own `MACHINE` mutex is always taken before this one — [`snapshot`] never calls back into
+/// `preview`, which is what makes calling it from `preview::enabled()` sound — and this is always
+/// taken before [`IO`], which a miss acquires itself via [`read_live_locked`]. No `update()`
+/// closure may call into `preview`, for the same reason in reverse.
+static SNAPSHOT_CACHE: Mutex<Option<(u32, std::sync::Arc<Session>)>> = Mutex::new(None);
+
+/// A cheap, [`WRITE_REV`]-keyed snapshot of the persisted session — what a per-frame reader
+/// (`player::preview::enabled`) calls instead of [`peek`]. Returns the same `Arc<Session>` across
+/// repeated calls as long as nothing in this process has written since the last one.
+///
+/// Caches ONLY a [`ReadState::Ready`] read. `Missing`, `Locked`, `Blocked` and `Cleared` all return
+/// a fresh default [`Session`] **uncached**, so a read that failed for a reason that has nothing to
+/// do with what is actually persisted — a storage-helper timeout, say — is retried on the very next
+/// call rather than latching a wrong answer (e.g. trailer autoplay silently disabled) until some
+/// unrelated in-process write happens to bump [`WRITE_REV`].
+///
+/// **Test-only caveat:** a fixture that overwrites the redirected scratch file's bytes directly,
+/// bypassing [`save`]/[`update`], does not bump [`WRITE_REV`] — so a cache entry from before that
+/// write can still be served after it, and `snapshot` is in that sense **not** the disk oracle
+/// [`peek`] is. A test that needs to observe those exact bytes wants `peek()`.
+pub(crate) fn snapshot() -> std::sync::Arc<Session> {
+    // Loaded before the read, not after — see `WRITE_REV`'s doc for why that order is load-bearing.
+    let rev = WRITE_REV.load(Ordering::Acquire);
+    {
+        let cache = SNAPSHOT_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_rev, session)) = &*cache {
+            if *cached_rev == rev {
+                return session.clone();
+            }
+        }
+    }
+    let _io = io();
+    match read_live_locked() {
+        ReadState::Ready { session, .. } => {
+            let session = std::sync::Arc::new(session);
+            *SNAPSHOT_CACHE.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((rev, session.clone()));
+            session
+        }
+        ReadState::Missing | ReadState::Locked | ReadState::Blocked | ReadState::Cleared => {
+            std::sync::Arc::new(Session::default())
+        }
+    }
 }
 
 /// **Forget one profile's recorded favourite libraries.**
@@ -1833,6 +1924,8 @@ fn read_locked() -> ReadState {
 /// state. On ARM `read_legacy_locked` is absent by configuration, so the canonical store is the
 /// only authority a live read can consult.
 fn read_live_locked() -> ReadState {
+    #[cfg(test)]
+    READS_FOR_TEST.with(|c| c.set(c.get() + 1));
     #[cfg(test)]
     if TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
         // A redirected scratch path is an explicit host fixture. It is also deliberately not
@@ -2165,6 +2258,10 @@ fn save_locked_with_authority(
     s: &Session,
     authority: SaveAuthority,
 ) -> async_persistence::LiveWrite {
+    // Every caller of this function holds `IO` already (it is private and reached only through
+    // the entry points that took it), so this lands in the same critical section as the write
+    // below — which is what makes a cached reader keyed on it safe. See `WRITE_REV`.
+    WRITE_REV.fetch_add(1, Ordering::AcqRel);
     #[cfg(test)]
     {
         *LAST_WRITE_AUTHORITY.lock().unwrap_or_else(|e| e.into_inner()) = Some(authority);
@@ -2532,6 +2629,8 @@ fn clear_cleanup_outcome(outcome: persistence::ClearCleanupOutcome) -> ClearOutc
 /// straight back, account token and all.
 pub fn clear() -> ClearOutcome {
     let _io = io();
+    // Signing out changes what `peek` answers exactly as durably as a save does. See `WRITE_REV`.
+    WRITE_REV.fetch_add(1, Ordering::AcqRel);
 
     // A redirected legacy-fixture test (`TempSession`/`redirect_for_test`) must never reach the
     // real canonical authority — exactly the guard `save_locked_with_authority` and
@@ -2757,6 +2856,10 @@ mod persistence_tests;
 #[path = "session_profile_cache_tests.rs"]
 mod profile_cache_tests;
 
+#[cfg(test)]
+#[path = "session_write_rev_tests.rs"]
+mod write_rev_tests;
+
 // Storage-facing capability only. Session owner admission is integrated in Stage B.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[allow(dead_code)]
@@ -2776,6 +2879,31 @@ pub(crate) fn last_write_authority_for_test() -> Option<SaveAuthority> {
 #[cfg(test)]
 pub(crate) fn reset_last_write_authority_for_test() {
     *LAST_WRITE_AUTHORITY.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only witness of how many times [`read_live_locked`] actually ran, on THIS thread — the
+    /// number [`snapshot`]'s [`WRITE_REV`] cache exists to keep flat across repeated per-frame
+    /// calls with no intervening write. Every real read (`peek`, `update`, `clear`'s own re-read,
+    /// …) funnels through `read_live_locked`, so this counts the thing a per-frame caller must not
+    /// cause.
+    ///
+    /// `thread_local!`, not a process-wide atomic: the host test runner puts every `#[test]` on
+    /// its own thread and runs many concurrently, and a test asserting an exact count wants to
+    /// know what ITS OWN reads did, not what some unrelated test running in parallel on another
+    /// thread also caused — a shared atomic made this counter's answer depend on scheduling.
+    static READS_FOR_TEST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reads_for_test() -> u32 {
+    READS_FOR_TEST.with(|c| c.get())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_reads_for_test() {
+    READS_FOR_TEST.with(|c| c.set(0));
 }
 
 #[allow(dead_code)]
