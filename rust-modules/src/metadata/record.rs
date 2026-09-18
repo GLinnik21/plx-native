@@ -56,15 +56,23 @@ fn tracker(adapter: &super::MetadataAdapter) -> std::sync::MutexGuard<'_, Tracke
     adapter.tracker_mutex().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// TEST ONLY: arms/disarms this adapter's own `Tracker` so a test can observe the
-/// `crate::app::bootstrap::stores` recording path. `Tracker` has no production setter, by
-/// design — nothing after boot ever resets one — so this is the one seam, `pub(super)` (visible
-/// to `crate::metadata` and every descendant) so the sibling `metadata_*_tests.rs` files can
-/// reach it too, not just this module's own `mod tests` (which used to reach the OLD crate-global
-/// `TRACKER` static directly; each per-owner adapter now needs its own admission).
+/// Arms (or disarms) this adapter's own `Tracker`. Call exactly once, right after the owning
+/// `MetadataStore`/`MetadataAdapter` is constructed and before anything else can have touched it
+/// — a mid-life rearm would race admissions already queued against the tracker it replaces, so
+/// this is deliberately not a general-purpose setter.
+///
+/// The one production caller is `crate::app::bridge::Bridge::controlled_home`, deciding `enabled`
+/// from `initial.content.is_some()` — exactly what the retired crate-global `record::reset` did
+/// (`bootstrap::stores::init`'s trailing call, deleted at `d067a796` with the `static` Stage B
+/// (`0d466527`) replaced; nothing took its place until this function, so controlled-content
+/// recording of detail terminals was dead on the device between those two commits and this one).
+pub(crate) fn arm(adapter: &super::MetadataAdapter, enabled: bool) {
+    *tracker(adapter) = Tracker::new(enabled);
+}
+
 #[cfg(test)]
 pub(super) fn reset_tracker_for_test(adapter: &super::MetadataAdapter, enabled: bool) {
-    *tracker(adapter) = Tracker::new(enabled);
+    arm(adapter, enabled);
 }
 
 pub(super) fn admit(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Addr)

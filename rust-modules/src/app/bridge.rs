@@ -375,6 +375,12 @@ impl Bridge {
         let mut stores = crate::stores::Stores::default();
         stores.hubs = crate::stores::hubs::HubsStore::from_parts(state, adapter);
         let hubs = stores.hubs.snapshot();
+        // Arms controlled-content recording/replay's admission ledger over detail terminals —
+        // exactly the decision the retired crate-global `record::reset(initial.content.is_some())`
+        // made at `bootstrap::stores::init` before Stage B moved the Tracker onto this per-owner
+        // adapter (`crate::metadata::record::arm`'s own doc has the history). Must run before this
+        // `Bridge` can admit any detail request.
+        stores.metadata.arm_detail_tracker(initial.content.is_some());
         let mut bridge = Self::with_publications_and_stores(&TTF, now_us, initial.session.clone(),
             super::adapters::session::SessionAdapter::controlled_home(mt, replay),
             initial.consent.clone(), super::adapters::consent::ConsentAdapter::live(),

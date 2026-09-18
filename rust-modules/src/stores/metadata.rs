@@ -238,6 +238,13 @@ impl MetadataStore {
 
     pub(crate) fn adapter_ref(&self) -> &crate::metadata::MetadataAdapter { &self.adapter }
 
+    /// Arms this owner's replay-tracking `Tracker` for controlled-content recording/replay. Call
+    /// exactly once, right after construction (`crate::metadata::record::arm`'s own doc has the
+    /// full rationale and history) — the one caller is `Bridge::controlled_home`.
+    pub(crate) fn arm_detail_tracker(&self, enabled: bool) {
+        crate::metadata::record::arm(&self.adapter, enabled);
+    }
+
     /// Synchronous command path over this owner's own state/adapter. D3: no adapter rotation here
     /// — see the struct doc.
     pub(crate) fn run(&mut self, cmd: MetadataCmd) -> bool {
