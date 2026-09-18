@@ -454,6 +454,15 @@ fn restore_memory_cannot_rewind_a_newer_refresh_obligation() {
     clear();
 }
 
+/// **T1 pin (contract).** A refresh/reconciliation obligation must survive a CANCELLED
+/// focus-restore intent: directional input cancels `restore_intent` (the `ScreenEvent::Input`
+/// arm below, `mod.rs`'s `Key::Up|Down|Left|Right` guard), but it must leave `self.refresh` alone
+/// — the two are independent obligations, and only the store's own terminal landing may retire
+/// the server one. Checked red by mutation: making that same guard also zero `self.refresh`
+/// (simulating the T1 defect — an obligation folded into the cancellable intent) turns the first
+/// assertion below red (`left: None, right: Requested`); reverted before commit, not left in the
+/// tree. This test predates Stage C2 (landed with ViewState's own refactor, `4b390cdd`) but was
+/// not labelled as the T1 pin the contract calls for until now.
 #[test]
 fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_failure() {
     let guard = crate::testlock::serial();
