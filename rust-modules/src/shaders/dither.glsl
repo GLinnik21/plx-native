@@ -57,9 +57,13 @@
 //
 // WHO SETS `u_dither` IS A CPU DECISION — `gfx::dither_for_field`, the one policy — because the
 // question is one only the caller can answer: is the field broad enough for a plateau to be
-// findable. Motion is NOT part of it for a field: a focus spring on Settings must not strip the
-// ground's noise (it did, for one day, and the bands flickered in and out with every animation).
-// Only the two page washes under moving artwork read the present gate, `gfx::page_wash_dither`.
+// findable. MOTION IS NOT PART OF IT, for any surface here, and the app has now made the opposite
+// mistake twice. A focus spring on Settings must not strip the ground's noise: it did, for one day
+// (2026-09-04), and the bands flickered in and out with every animation. Nor may the page's own
+// verdict strip a WASH's: it did, until 2026-09-19, and since `AmbientWash::step` drives twelve
+// corner springs the wash undithered itself for the whole of its own colour dissolve. The two page
+// washes with artwork over them (Home's, Detail's) still answer through `gfx::page_wash_dither` —
+// but that function now asks the owning screen about its ARTWORK's springs, never the frame's.
 precision mediump float;
 uniform float u_dither;
 uniform sampler2D u_dither_tex; // gfx::noise_tex — 256², TPDF, GL_REPEAT + GL_NEAREST, unit 2

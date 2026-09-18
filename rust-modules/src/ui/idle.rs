@@ -132,14 +132,6 @@ thread_local! {
     /// press frame, so its motion may not be masked by the fade's own. Same thread-local
     /// rationale as `MOVING`.
     static PAGE_MOVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// The UNDERLAY's motion verdict for this frame — `app.rs`'s `underlay_moving` (the OR of every
-    /// SCOPED page update: Home, the Library, Search, the press dip) OR [`PAGE_MOVING`] (the
-    /// UNSCOPED page springs: Detail updates outside `scoped_motion`), and nothing a popover
-    /// stepped — published by `popover::host::begin_frame` before anything draws. It is what
-    /// `gfx::page_wash_dither` reads: the merged [`MOVING`] would also count a popover's own appear
-    /// spring, and a frozen-host snapshot captured on that frame would then keep an undithered
-    /// page under the panel for as long as it stayed open (Codex review, 2026-09-04).
-    static UNDERLAY_MOVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// How many [`MotionScope`]s are open right now — zero means a spring reporting now belongs
     /// to the page.
     static SCOPE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -222,9 +214,9 @@ pub(crate) fn enabled() -> bool {
 ///   ledger to record it on (`Present::why` is the machine's, and the recorder reads that one).
 /// * `Motion` — [`invalidate`] as well, deliberately NOT the `MOVING` thread-local. `MOVING` is
 ///   the *rest test*'s answer, judged from a spring's own post-step state by [`note_spring`], and
-///   it feeds `page_moving`, which decides whether a frozen host is re-snapshotted and whether the
-///   page wash is dithered. A caller who only knows "something moved" cannot answer those, so it
-///   gets one frame — never a claim about which springs were in flight.
+///   it feeds `page_moving`, which decides whether a frozen host is re-snapshotted. A caller who
+///   only knows "something moved" cannot answer that, so it gets one frame — never a claim about
+///   which springs were in flight.
 pub(crate) fn note(ev: crate::ui::present::PresentEvent) {
     use crate::ui::present::PresentEvent;
     match ev {
@@ -431,22 +423,9 @@ pub(crate) fn wake() {
 pub(crate) fn frame_begin(dt: f32) {
     MOVING.with(|m| m.set(false));
     PAGE_MOVING.with(|m| m.set(false));
-    UNDERLAY_MOVING.with(|m| m.set(false));
     DT.with(|d| d.set(dt));
     let dt_us = (dt * 1_000_000.0).round().max(0.0) as u64;
     MS_CLOCK_US.with(|c| c.set(c.get() + dt_us));
-}
-/// Publish this frame's page-under-everything motion verdict (`app.rs`'s `underlay_moving`) for
-/// [`underlay_moving`]. Once per drawn frame, by `popover::host::begin_frame`.
-#[inline]
-pub(crate) fn note_underlay_motion(moving: bool) {
-    UNDERLAY_MOVING.with(|m| m.set(moving));
-}
-/// Did the PAGE under any popover move this frame, by its own scoped verdict — never a popover's
-/// spring? See [`UNDERLAY_MOVING`].
-#[inline]
-pub(crate) fn underlay_moving() -> bool {
-    UNDERLAY_MOVING.with(|m| m.get())
 }
 
 /// A monotonic millisecond reading, for a clock-driven animator that has no `Tick` of its own to
@@ -545,13 +524,13 @@ impl Drop for MotionScope {
 /// residual is under a quarter pixel; the frame after it, where the spring reports nothing, is the
 /// picture that stays on the panel until the next key. The one at-rest term in the renderer —
 /// `gfx::page_wash_dither`, which is what puts the ±1 LSB dither on Home's and Detail's page wash
-/// — reads THIS frame's page-motion verdict, so without one more present the resting picture
-/// would be the undithered in-flight one, and the banding the dither exists for would reappear at
-/// exactly the moment the eye rests on it. One frame, once per settle, and the idle gate then
-/// closes as before. (This repairs the LIVE page only. A frozen-host snapshot is drawn again on
-/// page damage or, under a fading panel, on page motion — `popover::host::begin_frame`'s rule —
-/// and never by this frame, which is why the wash reads the page's own verdict and not a
-/// popover's appear spring.)
+/// — is answered from the ARTWORK's own springs by the screen that owns them, and those springs
+/// come to rest on the frame that forces no present of its own, so without one more present the
+/// resting picture would be the undithered in-flight one and the banding the dither exists for
+/// would reappear at exactly the moment the eye rests on it. One frame, once per settle, and the
+/// idle gate then closes as before. (This repairs the LIVE page only. A frozen-host snapshot is
+/// drawn again on page damage or, under a fading panel, on page motion —
+/// `popover::host::begin_frame`'s rule — and never by this frame.)
 pub(crate) fn should_present(now: u32) -> bool {
     let damage_gen = DAMAGE_GEN.load(Relaxed);
     let new_damage = PRESENT_DAMAGE_GEN.with(|seen| {

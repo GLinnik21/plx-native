@@ -830,7 +830,9 @@ ramp policy had answered 0 for nearly all of them.
   per draw rather than a link-time constant. (The same day's GLOBAL motion gate — no field dithered
   while any spring was in flight — lasted one day: it flickered the wash's bands in and out on every
   focus spring on Settings, the picker and first run, screens that were at 60 fps with the noise on.
-  Only the two page washes under moving artwork keep a motion gate, `gfx::page_wash_dither`.)
+  Only the two page washes under moving artwork kept a motion gate, `gfx::page_wash_dither` — and
+  that one lost its own motion term on 2026-09-19, for the same reason at a smaller scale; see the
+  addendum at the end of this file.)
 - `ui::idle::should_present` presents one **settle frame** after motion stops, so the LIVE picture left
   on the panel is the dithered one.
 - The ambient field has an in-flight twin program (`fs_ambient.frag` linked behind
@@ -872,3 +874,30 @@ Still open from the same census, and not renderer work: the show detail's entry 
 CPU frames rasterising the episode list and the hero text (`dt.eps`, `dt.hero`); the Cast & Crew
 row's remaining drops are the page's fill (a full-screen wash plus fifteen shadowed circle
 composites) crossing the budget on the frames the ambient twin does not reach.
+
+### 2026-09-19 addendum: the page wash asks its own artwork, and the answer is unmeasured
+
+The gate this section left in place — `gfx::page_wash_dither`, the page wash's own slide flag AND
+the page's motion verdict — has been narrowed again, to the slide flag alone, spelled as a question
+about the ARTWORK rather than about the frame. The owner's report was the same sentence as
+2026-09-04's, one screen further in: "ambient background has discretisation during animations".
+
+The mechanism is the one this file already documents and did not follow far enough. Every spring
+integrator reports to `ui::idle::note_spring`, and `AmbientWash::step` drives TWELVE corner springs
+— so a wash dissolving toward a newly focused item reported page motion for the whole of its own
+dissolve, and a page-wide verdict therefore undithered the wash exactly while the wash was the thing
+changing. Every focus pop, shelf scroll and press dip on the page did the same. `page_wash_dither`
+is now the identity on its argument; Home answers it where it steps the snap dive and the hero
+slide (position AND velocity, `screens/home/mod.rs`'s `Backdrop::still`), Detail from its scroll
+velocity and its art ease's distance to target (`screens/detail/mod.rs`'s `art_still`), and
+`PageGround` — the browsing grounds, which never have artwork over them — dithers unconditionally.
+`ui::idle::underlay_moving` lost its last reader with it and is gone.
+
+**Nothing here is a device measurement.** The expected cost is confined to frames on which the wash
+now takes the noise that previously did not: the ~2.5M GPU cycles a frame the dither costs at full
+screen are paid during a wash dissolve and under a focus pop, on top of whatever the page was doing.
+The two numbers to take on the set are `fps:home-hero` and `fps:home-fold` (this section's 60 and
+55/53 are the baseline to beat, and the fold is the scene where the artwork IS moving, so it should
+not have changed at all), plus a captured still of a library page mid-dissolve to confirm the
+staircase is gone. Both are pending; treat the fps claims in the table above as the last measured
+state of this policy, not this one's.

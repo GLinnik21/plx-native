@@ -66,6 +66,16 @@ const HERO_FLIP_CD: f32 = 0.35;
 const HERO_AUTO_S: f32 = 8.0;
 const K_SLIDE: f32 = 130.0;
 const HERO_SLIDE_REST_PX: f32 = 0.5;
+/// How near its target the snap dive has to be, in snap units (0 = hero, 1 = grid), before this
+/// page calls the dive over — **together with [`SNAP_REST_VEL`], never alone.** `K_SNAP` is
+/// critically damped, so the dive spends its last dozen frames inside any position threshold worth
+/// picking while the picture is still visibly moving. Read by the present gate and by
+/// [`Backdrop::still`], the page wash's dither answer, from one expression: a wash that dithered on
+/// a frame the gate called moving would flicker its bands exactly where the eye is.
+const SNAP_REST_POS: f32 = 0.002;
+/// The velocity half of [`SNAP_REST_POS`], in snap units per second — the term that sees the
+/// critically damped tail the position test is blind to.
+const SNAP_REST_VEL: f32 = 0.01;
 const HERO_PREFETCH: usize = 1;
 const HERO_ART_CULL: f32 = 0.996;
 const HERO_WASH_W: [f32; 4] = [0.55, 0.55, 0.40, 0.40];
@@ -130,6 +140,19 @@ struct Backdrop {
     tex: (u32, f32, f32),
     outgoing_tex: (u32, f32, f32),
     keyed: Option<(crate::plex::ServerId, String)>,
+    /// **Is the backdrop ARTWORK still this frame** — nothing sliding across it, nothing diving
+    /// under it — which is the whole of this page's dither answer (`gfx::page_wash_dither`). The
+    /// wash is only ever LOOKED at when it is not being scrolled past by a photograph; under one
+    /// that is moving, the ±1 LSB noise costs ~2.5M GPU cycles a frame at full screen and buys
+    /// nothing the eye can use.
+    ///
+    /// Computed in [`update`](Self::update) rather than in the draw because the draw sees only
+    /// POSITIONS (`env.sp`, the slide offsets) and the answer needs the snap dive's velocity too:
+    /// a critically damped spring's last dozen frames sit inside any position threshold while the
+    /// picture is still moving. It is deliberately NOT any frame-wide or page-wide motion verdict
+    /// — those count the wash's own colour dissolve and every focus spring on the page, and the
+    /// bands then flicker in and out with every animation (2026-09-04, 2026-09-19).
+    still: bool,
 }
 
 impl Backdrop {
@@ -142,6 +165,7 @@ impl Backdrop {
             tex: (0, 0.0, 0.0),
             outgoing_tex: (0, 0.0, 0.0),
             keyed: None,
+            still: true,
         }
     }
 
@@ -152,6 +176,7 @@ impl Backdrop {
         grid_item: Option<&PmsMovie>,
         selected: Option<&(crate::plex::ServerId, String)>,
         snap: f32,
+        snap_moving: bool,
         sliding: bool,
         dt: f32,
     ) {
@@ -196,7 +221,11 @@ impl Backdrop {
             AmbientWash::K,
             dt,
         );
-        let _ = sliding;
+        // The two motions that put a moving photograph over this wash: the hero→grid dive (which
+        // slides the backdrop up and fades it out) and a hero flip (which slides one still off the
+        // screen while the next comes on). Nothing else on this page moves the artwork — the wash's
+        // own dissolve certainly does not, and it is what the eye is ON while it happens.
+        self.still = !snap_moving && !sliding;
     }
 
     fn draw(&self, p: Painter, env: &Env, slide: Option<(f32, f32)>) {
@@ -205,9 +234,8 @@ impl Backdrop {
         if !wash_hidden(env.sp, incoming_a, slide.map(|_| outgoing_a))
             && !self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS)
         {
-            let still = (env.sp <= 0.005 || env.sp >= 0.995) && slide.is_none();
             self.wash
-                .draw_with(p, Rect::FULL, crate::gfx::page_wash_dither(still));
+                .draw_with(p, Rect::FULL, crate::gfx::page_wash_dither(self.still));
         }
 
         let folded = env.hero_a > 0.01
@@ -705,6 +733,11 @@ impl HomeScreen {
         }
         self.snap
             .step(pinned_snap(self.snap_target, self.rows.len()), K_SNAP, dt);
+        // ONE answer for "is the dive still running", read twice below: by the backdrop, whose
+        // wash stops dithering while a photograph slides over it, and by the present gate. See
+        // `SNAP_REST_POS`/`SNAP_REST_VEL` for why both terms are needed.
+        let snap_moving = (self.snap.pos - self.snap_target).abs() > SNAP_REST_POS
+            || self.snap.vel.abs() > SNAP_REST_VEL;
         let engine_on_grid = self.focused_grid(cx.focus.current).is_some();
         let picture_is_grid = self.snap.pos >= 0.5;
         if engine_on_grid == picture_is_grid {
@@ -739,14 +772,14 @@ impl HomeScreen {
             grid_item,
             self.carousel.as_ref(),
             self.snap.pos,
+            snap_moving,
             self.outgoing.is_some(),
             dt,
         );
         self.prefetch(view);
 
         let moving = self.outgoing.is_some()
-            || (self.snap.pos - self.snap_target).abs() > 0.002
-            || self.snap.vel.abs() > 0.01
+            || snap_moving
             || matches!(status_read(view), Some((_, StatusKind::Working, _)));
         if moving {
             fx.note(PresentEvent::Motion);

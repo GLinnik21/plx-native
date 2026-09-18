@@ -56,8 +56,8 @@ pub(crate) use glsl;
 ///
 /// Every program built with this owes `gfx` two things at link time: `u_dither_tex` set to texture
 /// unit 2 ([`bind_dither_tile`]), and `u_dither` set per draw from [`dither_for_field`] (the ambient
-/// wash asks through its caller's flag instead — [`page_wash_dither`] for the two pages whose wash
-/// sits under moving artwork, `true` everywhere else).
+/// wash asks through its caller's flag instead — [`page_wash_dither`] for the two pages that slide
+/// artwork over their wash, `true` everywhere else).
 ///
 /// **Only the three SLOW-FIELD programs are built with it** — `fs_ambient`, `fs_modal_ground` and
 /// `fs_glass`, the ones whose ramp is a blur or a full-screen wash. `fs_src` and `fs_shadow`, the
@@ -1112,13 +1112,15 @@ pub(crate) fn draw_ambient(
         // moving translucent photograph (Home's hero fold and slide, Detail's art) is never seen
         // as a gradient, and the fetch plus its two arithmetic ops on 2M pixels are ~2.5M GPU
         // cycles a frame on the set (2026-09-02) — the difference between the fold passing its
-        // 50 fps gate and not; those two pages answer through `page_wash_dither`. A wash that IS
-        // the screen (Settings, the who's-watching picker, first run, sign-in) passes `true` and
-        // dithers on every frame, moving or not: for one day this function also gated on the
-        // frame's own motion, and every focus spring on those screens then drew the wash's bands
-        // and erased them again on the settle frame — a flicker of staircases the owner saw at
-        // once, bought for nothing, since those screens were at 60 fps with the noise on before
-        // the gate existed (2026-09-04). The tile lives permanently on unit 2
+        // 50 fps gate and not; those two pages answer through `page_wash_dither`, from their OWN
+        // artwork's springs and from nothing else. Every other wash — a browsing screen's ground,
+        // and the screens whose wash IS the picture (Settings, the who's-watching picker, first
+        // run, sign-in) — passes `true` and dithers on every frame, moving or not. Twice now a
+        // motion verdict has been wired into this decision and twice it has had to come back out:
+        // globally on 2026-09-04, where every focus spring on those screens drew the wash's bands
+        // and erased them again on the settle frame, and as the PAGE's verdict until 2026-09-19,
+        // where the wash's own colour dissolve undithered the wash it was dissolving. The tile
+        // lives permanently on unit 2
         // (`bind_dither_tile`), so the dithered draw is one uniform and no binding; the in-flight
         // draw is a different PROGRAM, with no branch to pay for — see `ambient_program`.
         let amp = if dither { DITHER_LSB } else { 0.0 };
@@ -3706,24 +3708,28 @@ const DITHER_LSB: f32 = 2.0 / 255.0;
 /// **THE ONE RULE for whether a surface's output needs dithering**, shared by the three programs
 /// built with `glsl_dithered!`. `shaders/dither.glsl` is the argument; this is the decision.
 ///
-/// **A field dithers whenever it is drawn, and only the two PAGE washes are gated on motion.**
+/// **A field dithers whenever it is drawn, and the two PAGE washes ask about their own ARTWORK.**
 /// The noise is a texture fetch plus two arithmetic ops per fragment, and it is priced by AREA:
 /// on a popover's glass or the Settings ground it is nothing anyone has measured, while on the
 /// 2M-fragment wash under Home's hero fold it was the difference between 45 and 50 fps
 /// (2026-09-02). So the wash that sits under moving artwork — Home's, Detail's — is the caller's
-/// decision through [`page_wash_dither`]: its own slide flag, AND the present gate's motion
-/// verdict, because a critically damped slide spends its last dozen frames under the slide's own
-/// threshold while the gate — which judges motion exactly — is still presenting every one of
-/// them; `ui::idle::should_present`'s SETTLE FRAME then presents the first still frame once more,
-/// so the picture that stays on the panel is the dithered one.
+/// decision through [`page_wash_dither`], and the question it answers is narrow: is translucent
+/// artwork sliding or fading over this wash right now? Only the screen that owns the artwork can
+/// answer that, and each one does, from the POSITION AND VELOCITY of the springs that move it
+/// (`screens::home`'s snap dive and hero slide, `screens::detail`'s scroll and art ease) — a
+/// position test alone misses the last dozen frames of a critically damped slide, which is the
+/// gap a motion verdict used to paper over. `ui::idle::should_present`'s SETTLE FRAME presents
+/// the first still frame once more, so the picture that stays on the panel is the dithered one.
 ///
-/// **For one day (2026-09-04) that motion gate was GLOBAL** — this function and `draw_ambient`
-/// both refused every draw while any spring was in flight — and it was wrong on every screen whose
-/// wash is the whole picture: Settings, the who's-watching picker, first run, sign-in. There a
-/// focus spring undithered the wash, the bands appeared for the length of the animation and the
-/// settle frame erased them, which the owner saw as "discretization patterns during the
-/// animation". Those screens ran at 60 fps with the noise on before the gate existed (Settings
-/// root, session 4), so the gate bought nothing there. The area test below is what is left.
+/// **No global motion verdict is in this decision, and putting one back is the recorded mistake.**
+/// For one day (2026-09-04) the gate was global — this function and `draw_ambient` both refused
+/// every draw while any spring was in flight — and it was wrong on every screen whose wash is the
+/// whole picture: Settings, the who's-watching picker, first run, sign-in. It was then narrowed to
+/// the PAGE's verdict, which was the same mistake one layer down (2026-09-19): `AmbientWash::step`
+/// drives twelve corner springs through [`spring`], so the wash's own colour dissolve — and every
+/// focus pop, shelf scroll and press dip beside it — reported page motion and undithered the wash
+/// for the length of the animation. Both times the owner saw the same thing: bands that appear
+/// while something moves and vanish when it stops. Ask the artwork, never the frame.
 ///
 /// **And no dither on a RECT at all.** Until 2026-09-04 `fs_src` and `fs_shadow` carried the
 /// prelude too, behind a per-draw ramp test (`dither_for_ramp`: slow enough, broad enough, a
@@ -3734,18 +3740,24 @@ const DITHER_LSB: f32 = 2.0 / 255.0;
 /// answered 0. A rect's ramp is a scrim or a two-stop fill, crossing tens of codes over hundreds
 /// of pixels, and nobody had reported a tread on one; the fields that DID band (the wash, the
 /// glass blur, the modal ground) are exactly the three that keep the prelude.
-/// **The page wash's answer** — Home's and Detail's, the two full-screen grounds under moving,
-/// fading artwork. `still` is the page's own slide/fold flag; the PAGE's motion verdict
-/// (`idle::underlay_moving` — the scoped `underlay_moving` app.rs threads into every frame OR'd
-/// with the unscoped `idle::page_moving`, Detail's) covers the last dozen sub-threshold frames of
-/// a critically damped slide that the flag cannot see. It is
-/// the page's verdict and not the merged one on purpose: a popover's appear spring is motion too,
-/// and the frozen-host snapshot is captured on exactly that frame — read the merged bit and the
-/// page under every panel is undithered for as long as the panel stays open (Codex review,
-/// 2026-09-04).
+/// **The page wash's answer** — Home's and Detail's, the two full-screen grounds that ever have
+/// moving, fading artwork over them.
+///
+/// `art_still` is the whole of it, and it is the OWNING SCREEN's answer to one question: is
+/// translucent artwork sliding or fading over this wash on this frame? Home computes it where it
+/// steps the snap dive and the hero slide (`screens::home`'s `Backdrop::still`), Detail where it
+/// draws the backdrop it is scrolling (`screens::detail`'s `art_still`) — in both cases from the
+/// springs' position AND velocity, because a critically damped slide spends its last dozen frames
+/// under any position threshold while still visibly moving.
+///
+/// **It reads no global motion state at all**, and the doc above says why twice over: a frame-wide
+/// or page-wide verdict counts every spring in the app, including the wash's own dissolve, and
+/// turns the noise off for the length of every animation on the page. A wash that is not under
+/// artwork — the browsing grounds through `ui::widgets::PageGround`, and every screen whose wash is
+/// the whole picture — does not come through here: it dithers unconditionally.
 #[inline]
-pub(crate) fn page_wash_dither(still: bool) -> bool {
-    still && !crate::ui::idle::underlay_moving()
+pub(crate) fn page_wash_dither(art_still: bool) -> bool {
+    art_still
 }
 
 /// **The rule for a surface whose ramp is in SAMPLED DATA or a whole-screen field** — the frosted
@@ -4932,24 +4944,24 @@ mod tests {
     /// refusals matter more than the acceptance: a flat fill has no ramp to quantise, and a chip
     /// too small to show a plateau must never take the branch. The app draws far more chips, pills
     /// and row highlights than it draws panels.
-    /// Only the PAGE wash is gated on motion; a field (glass, the modal ground) pays whenever it is
-    /// drawn, spring in flight or not. Observed RED against the day-old global gate, which
-    /// answered 0 for the field under motion and produced the banding-flicker the owner reported on
-    /// Settings, the picker and first run (2026-09-04). The page's verdict is exercised through the
-    /// real seam — `popover::host::begin_frame`, which publishes the scoped verdict app.rs threads
-    /// in OR'd with the unscoped `idle::page_moving` — because the bug Codex found twice lived in
-    /// exactly that publication: first the merged bit (a popover's own spring stripped the
-    /// snapshot under it), then the scoped half alone (Detail's unscoped springs never arrived).
+    /// The page wash is gated on its OWN ARTWORK and a field (glass, the modal ground) pays
+    /// whenever it is drawn, spring in flight or not. Observed RED against the day-old global gate,
+    /// which answered 0 for the field under motion and produced the banding-flicker the owner
+    /// reported on Settings, the picker and first run (2026-09-04) — and RED again against the
+    /// PAGE-scoped gate that replaced it, which did the same thing to the wash on every screen
+    /// (2026-09-19; the two cases above this one). Every motion this test can raise is raised
+    /// through the real seams — a popover's scope, the page's unscoped springs, the verdict app.rs
+    /// threads into `popover::host::begin_frame` — and NONE of them may move either answer.
     #[test]
-    fn only_the_page_wash_is_gated_on_motion() {
+    fn the_page_wash_is_gated_on_its_own_artwork_and_nothing_else() {
         use crate::ui::idle::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
         use crate::ui::popover::host::begin_frame;
         let _g = crate::testlock::serial();
         frame_begin(1.0 / 60.0);
         begin_frame(false);
         assert_eq!(dither_for_field(700.0, 700.0), DITHER_LSB, "at rest, the field pays");
-        assert!(page_wash_dither(true), "a still page wash pays at rest");
-        assert!(!page_wash_dither(false), "a page wash mid-slide never pays");
+        assert!(page_wash_dither(true), "a wash with its artwork at rest pays");
+        assert!(!page_wash_dither(false), "a wash under sliding artwork never does");
 
         // A POPOVER's spring: 100 units from its target, stepped inside its own scope, the way
         // `Popover::update` steps every appear spring. The frame is in motion — and the page is not.
@@ -4969,25 +4981,76 @@ mod tests {
             "a popover's own spring is not the page's: the snapshot under it stays dithered"
         );
 
-        // The page's UNSCOPED springs (Detail updates outside `scoped_motion`): reported at scope
-        // depth zero, they reach the wash only through `begin_frame`'s OR with `page_moving`.
+        // The page's UNSCOPED springs (Detail updates outside `scoped_motion`) and the SCOPED
+        // verdict app.rs threads in (Home, the Library, Search, the press dip). Both are real page
+        // motion; neither is artwork over a wash, and neither may reach this decision.
         frame_begin(1.0 / 60.0);
         note_spring(0.0, 100.0, 0.0);
         assert!(page_moving());
-        begin_frame(false);
+        begin_frame(true);
         assert!(
-            !page_wash_dither(true),
-            "Detail's unscoped motion gates its wash through the published verdict"
+            page_wash_dither(true),
+            "page motion is not artwork motion: the wash keeps its noise through the animation"
+        );
+        assert!(
+            !page_wash_dither(false),
+            "…and the owning screen's own answer is still the whole of it"
         );
 
-        // The page's SCOPED verdict (Home, the Library, Search), threaded in by app.rs.
+        // …and a frame that published nothing at all reads nothing stale, in either direction.
         frame_begin(1.0 / 60.0);
-        begin_frame(true);
-        assert!(!page_wash_dither(true), "the slide's last sub-threshold frames are motion too");
+        assert!(page_wash_dither(true));
+        assert!(!page_wash_dither(false));
+    }
 
-        // …and a frame that skipped every publication reads nothing stale.
+    /// **The wash's OWN dissolve is a spring like any other, and it must not undither the wash it
+    /// is dissolving.** `AmbientWash::step` drives twelve corner springs through `gfx::spring`, so
+    /// a `PageGround` keying to a new item reports motion at scope depth zero exactly the way a
+    /// card's focus pop does — and a page-wide motion verdict therefore answered "moving" for the
+    /// whole of the colour dissolve, which is the one animation in which the wash IS what the eye
+    /// is on. The owner saw it as banding that appears while the ground changes colour.
+    #[test]
+    fn a_wash_dissolving_to_a_new_item_still_dithers() {
+        use crate::ui::idle::{frame_begin, page_moving};
+        use crate::ui::popover::host::begin_frame;
+        use crate::ui::widgets::PageGround;
+        let _g = crate::testlock::serial();
+        let dt = 1.0 / 60.0;
+        let mut ground = PageGround::new();
+
+        frame_begin(dt);
+        // The real springs, stepped the way a browsing screen steps them once a frame.
+        ground.key(Some([[0.9, 0.2, 0.1]; 4]), PageGround::CARD_W, dt);
+        assert!(
+            page_moving(),
+            "the dissolve's own corner springs report motion at scope depth 0"
+        );
+        begin_frame(false);
+        assert!(
+            page_wash_dither(true),
+            "a wash dissolving toward a new item is still artwork-still: it must keep its noise"
+        );
+    }
+
+    /// A focus pop, a shelf scroll, a press dip — any spring the PAGE steps outside a popover's
+    /// scope — is not translucent artwork sliding over the wash, and must not take the wash's
+    /// noise away with it. This is the same shape as the 2026-09-04 global-gate regression, one
+    /// layer down: there it was every field on Settings, here it is the page wash on every
+    /// browsing screen.
+    #[test]
+    fn an_unrelated_focus_spring_does_not_strip_the_page_wash() {
+        use crate::ui::idle::{frame_begin, note_spring, page_moving};
+        use crate::ui::popover::host::begin_frame;
+        let _g = crate::testlock::serial();
         frame_begin(1.0 / 60.0);
-        assert!(page_wash_dither(true), "the settled frame pays again");
+        // 100 units from its target, at scope depth 0 — a card's focus pop mid-flight.
+        note_spring(0.0, 100.0, 0.0);
+        assert!(page_moving(), "the page's own spring is in flight");
+        begin_frame(false);
+        assert!(
+            page_wash_dither(true),
+            "a spring elsewhere on the page is not artwork over the wash"
+        );
     }
 
     #[test]
