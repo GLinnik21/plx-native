@@ -68,6 +68,7 @@ pub(crate) mod pins;
 pub(crate) mod discover;
 
 // The re-exports are the public surface the call sites import.
+pub(crate) use client::ArtFetch;
 pub(crate) use client::JsonDeadlineOutcome;
 // The one link/IP ⇄ u8 encode/decode pair — shared by `Client`'s own atomics and
 // `player::report`'s packed attempt snapshot, so the two never keep a private copy each.
