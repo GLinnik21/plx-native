@@ -301,7 +301,7 @@ mod tests {
         assert!(remember_with(snapshot().generation(), "old history", || {}));
         let old = crate::plex::session::peek();
         crate::plex::session::save(&crate::plex::session::Session {
-            client_id: old.client_id,
+            client_id: old.client_id.clone(),
             account_token: "synthetic-new-account".into(),
             ..Default::default()
         });

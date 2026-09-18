@@ -11,6 +11,11 @@ use crate::storage_worker::SubmitError;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// This Stage B coordinator is unwired (no production caller reaches it yet) and this `CACHE` is
+/// its own, separate from the live read cache `plex::session::peek()` actually serves from
+/// (`plex::session::CACHE`, next to `IO`). When Stage B is wired up, its coordinator must install
+/// into or drop THAT cache (`plex::session::install_locked`/`drop_cache_locked`, under `IO`)
+/// rather than keep a second copy of the session here.
 static CACHE: std::sync::RwLock<Option<Session>> = std::sync::RwLock::new(None);
 static LOCKED_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 const NOT_LOCKED: u8 = 0;
