@@ -31,11 +31,22 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 
-static TEST_METADATA_STORE: crate::stores::metadata::MetadataStore =
-    crate::stores::metadata::MetadataStore;
+// TEST ONLY: same thread-confined store as `screens::detail::tests`'s `TEST_METADATA` —
+// `MetadataStore` gained real owned fields in Stage B, so the old unit-struct `static` no
+// longer compiles, and every helper below needs a real, per-owner store rather than a second
+// mechanism.
+thread_local! {
+    static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+        std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+}
+
+fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+}
+
 impl crate::screens::registry::MetadataLike for TestHost {
     fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
-        TEST_METADATA_STORE.view()
+        test_store().view()
     }
 }
 
@@ -70,6 +81,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         ground: AmbientWash::flat(theme::SURFACE_APP), selected: None, spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),
         layout: std::cell::Cell::new(None),
+        spot_facts: SpotFacts::default(),
     }
 }
 struct Mount;
@@ -78,7 +90,7 @@ impl Mounter<TestHost> for Mount {
         cx: &Cx<'_, TestHost>, _: &mut Effects<'_, TestHost>) -> Box<dyn Screen<TestHost>> {
         let InputOwner::Entry(entry) = cx.owner else { panic!("page owner") };
         let mut page = body(entry, &arg.0);
-        if let PageMemory::Detail(memory) = &ret.memory { page.restore_memory(memory, crate::stores::metadata::MetadataStore::default().view()); }
+        if let PageMemory::Detail(memory) = &ret.memory { page.restore_memory(memory, test_store().view()); }
         Box::new(page)
     }
 }
@@ -122,8 +134,8 @@ fn item(rk: &str, reverse: bool) -> Detail {
     d
 }
 fn boot() -> (Dispatcher<TestHost>, TestRig) {
-    apply_metadata(MetadataCmd::Clear);
-    crate::metadata::set_current_for_test(Some(item("a", false)));
+    test_store().run(MetadataCmd::Clear);
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(item("a", false)));
     let mut d = Dispatcher::new();
     d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
     let mut rig = TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec::new() };
@@ -146,7 +158,7 @@ fn first(d: &Dispatcher<TestHost>, group: GroupId) -> FocusKey<u32> {
     Focusable::<TestHost>::seat(s, group, Placed { rect: r, rest_rect: r, clip: Rect::FULL, index: Some(0) }, &cx)
 }
 fn land(d: &mut Dispatcher<TestHost>, rig: &mut TestRig, data: Detail, ms: u32) {
-    crate::metadata::set_current_for_test(Some(data));
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(data));
     d.store_changed(StoreId::Metadata.ord(), ms);
     frame(d, rig, ms);
 }
@@ -157,14 +169,14 @@ fn repeated_detail_keys_follow_items_through_all_four_group_reorders() {
     for group in [season::SEASON_GROUP, episodes::EPISODES_GROUP, related::RELATED_GROUP, cast::CAST_GROUP] {
         let (mut d, mut rig) = boot();
         let key = first(&d, group);
-        assert_eq!(screen(&d).locate(key.elem, crate::stores::metadata::MetadataStore::default().view()).unwrap().index(), 0);
+        assert_eq!(screen(&d).locate(key.elem, test_store().view()).unwrap().index(), 0);
         d.set_focus_in(Some(key), Some(group));
         land(&mut d, &mut rig, item("a", true), 32);
         assert_eq!(d.focus(), Some(key), "reorder must preserve identity in {group:?}");
-        assert_eq!(screen(&d).locate(key.elem, crate::stores::metadata::MetadataStore::default().view()).unwrap().index(), 1,
+        assert_eq!(screen(&d).locate(key.elem, test_store().view()).unwrap().index(), 1,
             "the same key must now project to the item's NEW slot in {group:?}");
     }
-    crate::metadata::set_current_for_test(None);
+    crate::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 #[test]
@@ -177,7 +189,7 @@ fn a_removed_detail_item_is_not_reinterpreted_as_its_slot_replacement() {
     changed.related.remove(0);
     land(&mut d, &mut rig, changed, 32);
     assert_ne!(d.focus(), Some(key), "a removed item and its replacement cannot share a key");
-    crate::metadata::set_current_for_test(None);
+    crate::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 #[test]
@@ -188,29 +200,29 @@ fn retained_detail_back_keeps_the_engine_key_until_its_own_landing() {
     let instance = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
     d.request(MachineId::Nav, NavOp::Push(Arg("b".into())));
-    crate::metadata::set_current_for_test(Some(item("b", false)));
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(item("b", false)));
     frame(&mut d, &mut rig, 32);
     assert_eq!(d.nav.top_page().unwrap().arg.0, "b");
-    crate::metadata::set_current_for_test(None);
-    let request = crate::metadata::begin_detail_for_test(ServerId::UNSET, "a");
+    crate::metadata::set_current_for_test(test_store().state_mut(), None);
+    let request = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
     d.request(MachineId::Nav, NavOp::Pop);
     frame(&mut d, &mut rig, 48);
     assert_eq!(d.nav.top_page().unwrap().inst.as_ref().unwrap().id, instance);
     assert_eq!(d.focus(), Some(key), "unresolved return must not fall back to Hero");
-    assert!(!crate::metadata::land_detail_for_test(ServerId::UNSET, "wrong", request, Some(item("wrong", false))));
+    assert!(!{ let (__s, __a) = test_store().split_for_test(); crate::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "wrong", request, Some(item("wrong", false))) });
     d.store_changed(StoreId::Metadata.ord(), 64);
     frame(&mut d, &mut rig, 64);
     assert_eq!(d.focus(), Some(key), "another item's notice cannot complete restoration");
-    assert_eq!(crate::metadata::detail_request_status(ServerId::UNSET, "a"), Some(true));
+    assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "a"), Some(true));
     // The wrong-key completion was discarded; retry under a fresh admitted address.
-    let request = crate::metadata::begin_detail_for_test(ServerId::UNSET, "a");
-    assert!(crate::metadata::land_detail_for_test(ServerId::UNSET, "a", request, Some(item("a", true))));
+    let request = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
+    assert!({ let (__s, __a) = test_store().split_for_test(); crate::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, Some(item("a", true))) });
     d.store_changed(StoreId::Metadata.ord(), 80);
     frame(&mut d, &mut rig, 80);
     assert_eq!(d.focus(), Some(key));
-    assert_eq!(screen(&d).locate(key.elem, crate::stores::metadata::MetadataStore::default().view()).unwrap().index(), 1);
+    assert_eq!(screen(&d).locate(key.elem, test_store().view()).unwrap().index(), 1);
     assert!(screen(&d).scroll_target > 0.0, "matching landing must reveal the restored row even when its key never changed");
-    crate::metadata::set_current_for_test(None);
+    crate::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 #[test]
@@ -223,21 +235,21 @@ fn an_evicted_detail_reuses_its_item_registry_after_a_reordered_landing() {
     for i in 0..=crate::ui::containers::stack::CAP {
         let rk = format!("covered-{i}");
         d.request(MachineId::Nav, NavOp::Push(Arg(rk.clone())));
-        crate::metadata::set_current_for_test(Some(item(&rk, false)));
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(item(&rk, false)));
         frame(&mut d, &mut rig, 32 + i as u32 * 16);
         assert_eq!(d.nav.tabs.stack.entries.len(), i + 2, "each push must actually commit");
     }
     assert!(d.nav.entry(key.entry).unwrap().inst.is_none());
     // Remount sees a reordered model before receiving Mount. Its old registry must be seeded
     // first, otherwise the same integer is minted for the replacement at slot zero.
-    crate::metadata::set_current_for_test(Some(item("a", true)));
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(item("a", true)));
     d.request(MachineId::Nav, NavOp::PopTo(key.entry));
     frame(&mut d, &mut rig, 400);
     assert_ne!(d.nav.top_page().unwrap().inst.as_ref().unwrap().id, old_instance);
     assert_eq!(d.focus(), Some(key));
-    assert_eq!(screen(&d).locate(key.elem, crate::stores::metadata::MetadataStore::default().view()).unwrap().index(), 1);
+    assert_eq!(screen(&d).locate(key.elem, test_store().view()).unwrap().index(), 1);
     assert!(screen(&d).scroll_target > 0.0, "a cold body must reveal its restored row on Enter");
-    crate::metadata::set_current_for_test(None);
+    crate::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 #[test]
@@ -251,11 +263,11 @@ fn retained_detail_back_hydrates_saved_season_before_episode_focus() {
     let key = first(&d, episodes::EPISODES_GROUP);
     d.set_focus_in(Some(key), Some(episodes::EPISODES_GROUP));
     d.request(MachineId::Nav, NavOp::Push(Arg("b".into())));
-    crate::metadata::set_current_for_test(Some(item("b", false)));
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(item("b", false)));
     frame(&mut d, &mut rig, 48);
     assert_eq!(d.nav.top_page().unwrap().arg.0, "b");
-    crate::metadata::set_current_for_test(None);
-    let request = crate::metadata::begin_detail_for_test(ServerId::UNSET, "a");
+    crate::metadata::set_current_for_test(test_store().state_mut(), None);
+    let request = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
     d.request(MachineId::Nav, NavOp::Pop);
     frame(&mut d, &mut rig, 64);
     assert_eq!(screen(&d).restore_intent.as_ref().map(|intent| intent.spot.season),
@@ -264,12 +276,12 @@ fn retained_detail_back_hydrates_saved_season_before_episode_focus() {
     let mut landed = item("a", true);
     landed.cur_season = 0; // reversed seasons: season 2 is now at index zero
     for ep in &mut landed.episodes { ep.season = 2; }
-    assert!(crate::metadata::land_detail_for_test(ServerId::UNSET, "a", request, Some(landed)));
+    assert!({ let (__s, __a) = test_store().split_for_test(); crate::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, Some(landed)) });
     d.store_changed(StoreId::Metadata.ord(), 80);
     frame(&mut d, &mut rig, 80);
     assert_eq!(d.focus(), Some(key));
-    assert_eq!(screen(&d).locate(key.elem, crate::stores::metadata::MetadataStore::default().view()).unwrap().index(), 1);
-    crate::metadata::set_current_for_test(None);
+    assert_eq!(screen(&d).locate(key.elem, test_store().view()).unwrap().index(), 1);
+    crate::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 #[test]
@@ -291,7 +303,7 @@ fn reordered_detail_keys_activate_the_same_related_cast_and_episode_text_targets
         assert_eq!(rig.opened.len(), 1);
         assert!(rig.opened[0] == expected, "activation follows identity, never the stale local slot");
     }
-    apply_metadata(MetadataCmd::Clear);
+    test_store().run(MetadataCmd::Clear);
 }
 
 #[test]
@@ -301,22 +313,22 @@ fn a_failed_addressed_return_retires_the_intent_and_falls_back() {
     let key = first(&d, related::RELATED_GROUP);
     d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
     d.request(MachineId::Nav, NavOp::Push(Arg("b".into())));
-    crate::metadata::set_current_for_test(Some(item("b", false)));
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(item("b", false)));
     frame(&mut d, &mut rig, 32);
-    crate::metadata::set_current_for_test(None);
-    let request = crate::metadata::begin_detail_for_test(ServerId::UNSET, "a");
+    crate::metadata::set_current_for_test(test_store().state_mut(), None);
+    let request = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
     d.request(MachineId::Nav, NavOp::Pop);
     frame(&mut d, &mut rig, 48);
     assert_eq!(d.focus(), Some(key));
-    assert_eq!(crate::metadata::detail_request_status(ServerId::UNSET, "a"), Some(true));
-    assert_eq!(crate::metadata::detail_request_status(ServerId::UNSET, "b"), None);
-    assert!(!crate::metadata::land_detail_for_test(ServerId::UNSET, "a", request, None));
-    assert_eq!(crate::metadata::detail_request_status(ServerId::UNSET, "a"), Some(false));
+    assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "a"), Some(true));
+    assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "b"), None);
+    assert!(!{ let (__s, __a) = test_store().split_for_test(); crate::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, None) });
+    assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "a"), Some(false));
     d.store_changed(StoreId::Metadata.ord(), 64);
     frame(&mut d, &mut rig, 64);
     assert_eq!(d.focus().unwrap().elem, hero::ELEM_PLAY);
     assert!(!screen(&d).return_pending && screen(&d).restore_intent.is_none());
-    apply_metadata(MetadataCmd::Clear);
+    test_store().run(MetadataCmd::Clear);
 }
 
 #[test]
@@ -335,7 +347,7 @@ fn a_live_return_does_not_rewind_ids_minted_after_its_request_snapshot() {
     frame(&mut d, &mut rig, 48);
     assert_eq!(screen(&d).next_elem, counter);
     assert_eq!(screen(&d).key_of(Located::Related(2)), Some(third_key));
-    apply_metadata(MetadataCmd::Clear);
+    test_store().run(MetadataCmd::Clear);
 }
 
 #[test]
@@ -347,7 +359,7 @@ fn cold_entry_argument_and_return_memory_both_change_the_tree_hash() {
     for i in 0..=crate::ui::containers::stack::CAP {
         let rk = format!("covered-{i}");
         d.request(MachineId::Nav, NavOp::Push(Arg(rk.clone())));
-        crate::metadata::set_current_for_test(Some(item(&rk, false)));
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(item(&rk, false)));
         frame(&mut d, &mut rig, 32 + i as u32 * 16);
     }
     assert!(d.nav.entry(key.entry).unwrap().inst.is_none());
@@ -361,5 +373,5 @@ fn cold_entry_argument_and_return_memory_both_change_the_tree_hash() {
         .find(|key| matches!(key.identity, DetailIdentity::Related { .. })) else { panic!("related identity") };
     *rk = "changed-retained-key".into();
     assert_ne!(d.state_hash(), before, "cold registry CONTENTS are hashed, not only their count");
-    apply_metadata(MetadataCmd::Clear);
+    test_store().run(MetadataCmd::Clear);
 }
