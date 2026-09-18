@@ -1619,6 +1619,10 @@ pub(crate) fn trailer_now_playing(
 #[cfg(not(test))]
 fn dev_source() -> Option<&'static str> {
     if crate::app::bootstrap::stores::active() { return None; }
+    // Function-local, not process-wide mutable state: one dev-trigger stat per process, kept off
+    // the per-frame draw path the doc above forbids. Without `devtriggers`, `crate::dev::read`
+    // is a `None`-returning stub, so a release build pays one cheap `get_or_init` for a value
+    // that is always `None` — not worth a cfg to avoid.
     static SEEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     SEEN.get_or_init(|| crate::dev::read("shared")).as_deref()
 }

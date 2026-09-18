@@ -13,7 +13,8 @@
 #                                  legacy FILE, matched by path alone; it shrinks with each phase
 #                                  and is EMPTY at phase 12. A stale entry (a path with no static
 #                                  left) fails, so a deletion must also delete its entry.
-# Every `static mut` under ui/ and screens/, plus the two named globals, must match one of the two.
+# Every `static mut` under ui/, screens/, search/, person/, metadata.rs, pms.rs and stores/, plus
+# the two named globals, must match one of the two.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 SRC=rust-modules/src
@@ -23,7 +24,8 @@ ok()   { echo "  ok — $*"; }
 
 # matches: `path<TAB>NAME` for every static mut declaration in the gated set.
 matches() {
-  { grep -rnE --include='*.rs' '^\s*static mut [A-Za-z_][A-Za-z_0-9]*' "$SRC/ui" "$SRC/screens" 2>/dev/null
+  { grep -rnE --include='*.rs' '^\s*static mut [A-Za-z_][A-Za-z_0-9]*' \
+      "$SRC/ui" "$SRC/screens" "$SRC/search" "$SRC/person" "$SRC/metadata.rs" "$SRC/pms.rs" "$SRC/stores" 2>/dev/null
     grep -nE '^\s*static mut SESSION\b' "$SRC/route/decision.rs" 2>/dev/null | sed "s|^|$SRC/route/decision.rs:|"
     grep -nE '^\s*static mut ENGINE\b' "$SRC/player/engine.rs" 2>/dev/null | sed "s|^|$SRC/player/engine.rs:|"
     grep -nE '^\s*static mut S\b' "$SRC/ui/press.rs" 2>/dev/null | sed "s|^|$SRC/ui/press.rs:|"
