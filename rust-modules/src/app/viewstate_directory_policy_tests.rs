@@ -294,7 +294,7 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
     dispatcher.request(MachineId::Nav, NavOp::Root(route));
     dispatcher.frame_with(&mut rig, tick(0), Vec::new(), Vec::new(), &mut NoTap, false);
 
-    crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+    crate::metadata::set_current_for_test(rig.stores.metadata.state_mut(), Some(crate::metadata::Detail {
         sid,
         rk: "movie".into(),
         kind: "movie".into(),
@@ -319,11 +319,10 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
 
     assert_eq!((tap.app_effects, tap.store_deliveries), (1, 1),
         "the Detail effect must cross the addressed Bridge store delivery exactly once");
-    assert!(crate::metadata::current().is_some_and(|detail| detail.watched),
+    assert!(rig.stores.metadata.view().current().is_some_and(|detail| detail.watched),
         "the owning Bridge applies the optimistic edit before the press frame ends");
     assert_ne!(dispatcher.focus().expect("the watch control remains focused").elem, watch.elem,
         "same-frame reconciliation follows the watch control to its new identity");
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
 }
 
 #[test]
@@ -416,7 +415,7 @@ fn search_capture_and_pump_keep_the_frame_directory_policy() {
     rig.directory = directory.clone();
     rig.search_run(crate::stores::search::SearchCmd::SetQuery("same frame".into()));
     let query_generation = rig.stores.search.query_gen();
-    let _ = crate::stores::take_notices();
+    let _ = rig.stores.take_notices();
     let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
         owner: InputOwner::Entry(EntryId(0)) };
     let mut present = Present::new();
@@ -426,7 +425,7 @@ fn search_capture_and_pump_keep_the_frame_directory_policy() {
         &AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us: 0 }), &parts, &mut fx), Handled::Yes);
     assert_eq!(rig.stores.search.query_gen(), query_generation,
         "the pump must not supersede against a different directory in the same frame");
-    assert!(crate::stores::take_notices().is_empty(),
+    assert!(rig.stores.take_notices().is_empty(),
         "an idle retained-directory Search pump invents no notice");
 }
 

@@ -812,6 +812,19 @@ pub(crate) fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn crate::ui
 mod tests {
     use super::*;
 
+    // TEST ONLY: this module's few call sites still read/write metadata as free functions, a
+    // shape written for the old crate-global statics. A thread-confined store (same pattern as
+    // `screens::detail::tests`'s `TEST_METADATA`) gives them a real, per-owner `MetadataStore`
+    // without threading one through every helper here.
+    thread_local! {
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+
     fn set(restart: bool, alt: bool, mark: PosterMark) -> HeroSet {
         set_full(restart, alt, mark, false)
     }
@@ -1308,24 +1321,24 @@ mod tests {
     fn the_optimistic_flip_settles_a_leaf_at_once_and_a_container_a_round_trip_late() {
         let _guard = crate::testlock::serial();
         let sid = crate::plex::ServerId::UNSET;
-        crate::metadata::set_current_for_test(Some(Detail {
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
             sid,
             rk: "movie".into(),
             resume_ms: 1_800_000,
             dur_ms: 7_200_000,
             ..Default::default()
         }));
-        assert!(crate::stores::metadata::apply(
+        assert!(test_store().run(
             crate::stores::metadata::MetadataCmd::SetWatchedLocal { sid, rk: "movie".into(), on: true }
         ));
-        let movie = crate::metadata::current().unwrap();
+        let movie = test_store().view().current().unwrap();
         assert_eq!(hero_mark(movie), PosterMark::Watched);
         assert_eq!(
             movie.resume_ms, 0,
             "a leaf's restart disc disappears immediately"
         );
 
-        crate::metadata::set_current_for_test(Some(Detail {
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
             sid,
             rk: "show".into(),
             is_show: true,
@@ -1343,15 +1356,15 @@ mod tests {
             }),
             ..Default::default()
         }));
-        assert!(crate::stores::metadata::apply(
+        assert!(test_store().run(
             crate::stores::metadata::MetadataCmd::SetWatchedLocal { sid, rk: "show".into(), on: true }
         ));
         assert_eq!(
-            hero_mark(crate::metadata::current().unwrap()),
+            hero_mark(test_store().view().current().unwrap()),
             PosterMark::InProgress,
             "container progress remains server evidence until the re-read lands"
         );
-        crate::metadata::set_current_for_test(Some(Detail {
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
             sid,
             rk: "show".into(),
             is_show: true,
@@ -1359,10 +1372,10 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            hero_mark(crate::metadata::current().unwrap()),
+            hero_mark(test_store().view().current().unwrap()),
             PosterMark::Watched
         );
-        crate::metadata::set_current_for_test(None);
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     #[test]

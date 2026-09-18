@@ -993,6 +993,18 @@ mod focus_tests {
     use crate::screens::registry::{AppFx, AppMsg, PageMemory};
     use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
 
+    // TEST ONLY: a thread-confined store, so `set_current_for_test`/`apply` and the `view()`
+    // this test's `on_ok`/`is_episode` calls read from are the SAME owner, not two disconnected
+    // `MetadataStore::default()`s (same pattern as `screens::detail::tests`'s `TEST_METADATA`).
+    thread_local! {
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+
     struct HostFixture;
     impl Host for HostFixture {
         type Arg = crate::ui::fixture::FixtureArg;
@@ -1088,8 +1100,8 @@ mod focus_tests {
     #[test]
     fn go_to_after_a_trailer_opens_the_loaded_parent() {
         let _g = crate::testlock::serial();
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
             rk: "parent-movie".into(),
             kind: "movie".into(),
             ..Default::default()
@@ -1097,12 +1109,12 @@ mod focus_tests {
         let mut movie = InfoPanelState::new();
         movie.set_focus(1);
         assert_eq!(
-            movie.on_ok(crate::stores::metadata::MetadataStore::default().view()),
+            movie.on_ok(test_store().view()),
             InfoAction::GoToDetail("parent-movie".into())
         );
-        assert!(!is_episode(crate::stores::metadata::MetadataStore::default().view()), "a movie parent labels Go to Movie");
+        assert!(!is_episode(test_store().view()), "a movie parent labels Go to Movie");
 
-        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
             rk: "parent-show".into(),
             kind: "show".into(),
             is_show: true,
@@ -1110,10 +1122,10 @@ mod focus_tests {
         }));
         let mut show = InfoPanelState::new();
         show.set_focus(1);
-        assert_eq!(show.on_ok(crate::stores::metadata::MetadataStore::default().view()), InfoAction::GoToDetail("parent-show".into()));
-        assert!(is_episode(crate::stores::metadata::MetadataStore::default().view()), "a show parent labels Go to Show");
+        assert_eq!(show.on_ok(test_store().view()), InfoAction::GoToDetail("parent-show".into()));
+        assert!(is_episode(test_store().view()), "a show parent labels Go to Show");
 
-        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
             sid: crate::plex::ServerId::UNSET,
             rk: "parent-show".into(),
             kind: "show".into(),
@@ -1128,20 +1140,19 @@ mod focus_tests {
             }],
             ..Default::default()
         }));
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(
-            crate::metadata::trailer_now_playing(crate::plex::ServerId::UNSET, "9"),
-        ));
+        let trailer = crate::metadata::trailer_now_playing(test_store().state(), crate::plex::ServerId::UNSET, "9");
+        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(trailer));
         let mut playing = InfoPanelState::new();
         playing.set_focus(1);
-        assert_eq!(playing.on_ok(crate::stores::metadata::MetadataStore::default().view()), InfoAction::GoToDetail("parent-show".into()));
-        assert!(is_episode(crate::stores::metadata::MetadataStore::default().view()), "an installed show-trailer card still says Go to Show");
+        assert_eq!(playing.on_ok(test_store().view()), InfoAction::GoToDetail("parent-show".into()));
+        assert!(is_episode(test_store().view()), "an installed show-trailer card still says Go to Show");
         assert_eq!(
-            crate::metadata::now_playing().map(|n| n.dur_ms),
+            test_store().view().now_playing().map(|n| n.dur_ms),
             Some(120_000),
             "the extra's duration, not the show's"
         );
 
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(None);
+        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 }

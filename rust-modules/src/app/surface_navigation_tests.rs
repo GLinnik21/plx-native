@@ -67,7 +67,7 @@ fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page(
     let _g = crate::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    let _ = crate::stores::take_notices();
+    let _ = rig.stores.take_notices();
     // **This used to also assert the retired route-word page's generic notice COUNTER, and
     // cannot any more.** Search left that population with the phase 7 cutover
     // and `Player` with phase 9, and `Account`/`ItemMenu` never had a page of their own —

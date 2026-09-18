@@ -359,6 +359,19 @@ mod focus_tests {
         type Memory = PageMemory;
     }
 
+    thread_local! {
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+    impl crate::screens::registry::MetadataLike for HostFixture {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            test_store().view()
+        }
+    }
+
     fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
         let measure = crate::ui::fixture::FixtureMeasure;
         test(&Cx {
@@ -432,7 +445,7 @@ mod focus_tests {
             }
             assert_eq!(
                 <ChaptersPart as Focusable<HostFixture>>::group_of(&part, &0u32, cx),
-                (n() > 0).then_some(GroupId(0))
+                (n(test_store().view()) > 0).then_some(GroupId(0))
             );
         });
     }

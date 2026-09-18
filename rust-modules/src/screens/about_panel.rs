@@ -830,6 +830,21 @@ mod tests {
         type Memory = TestInit;
     }
 
+    thread_local! {
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+
+    impl crate::screens::registry::MetadataLike for TestHost {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            test_store().view()
+        }
+    }
+
     const ENTRY: EntryId = EntryId(7);
 
     fn cx(measure: &crate::ui::fixture::FixtureMeasure) -> Cx<'_, TestHost> {

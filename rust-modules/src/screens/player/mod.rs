@@ -2112,6 +2112,18 @@ mod repair_confirmation_tests {
     impl PlayerLike for TestHost {
         fn session<'a>(cx: &Cx<'a, Self>) -> &'a crate::route::PlaybackSession { cx.views }
     }
+    thread_local! {
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+    impl crate::screens::registry::MetadataLike for TestHost {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            test_store().view()
+        }
+    }
     fn context(ps: &crate::route::PlaybackSession, elem: Option<u32>) -> Cx<'_, TestHost> {
         let mut cx = Cx { views: ps, tick: Tick::default(), measure: &crate::ui::fixture::FixtureMeasure,
             focus: Default::default(), press: Default::default(), owner: InputOwner::Entry(EntryId(1)) };
