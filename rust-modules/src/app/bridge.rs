@@ -1013,6 +1013,16 @@ impl Bridge {
         &mut self.stores.metadata
     }
 
+    /// Metadata's same-turn boundary — the sibling of `browse_run`/`person_run`/`viewstate_run`
+    /// that Stage A/B left out. A caller uses it when the answer is consumed in the SAME
+    /// synchronous step, which for Metadata means one thing: a reconciliation whose `Requested`
+    /// phase becomes observable the moment the command returns (trap T2). Screen-issued Metadata
+    /// commands that are not same-turn boundaries still cross `AppFx::Store` like every other
+    /// store's; see `app/content.rs`'s `refresh_content`.
+    pub(crate) fn metadata_run(&mut self, cmd: crate::stores::metadata::MetadataCmd) -> bool {
+        self.stores.metadata_run(cmd)
+    }
+
     pub(crate) fn metadata_view(&self) -> crate::metadata::MetadataView<'_> {
         self.stores.metadata_view()
     }

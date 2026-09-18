@@ -140,6 +140,18 @@ pub(crate) struct DetailScreen {
     /// Navigation memory cannot rewind it; only a new refresh or its terminal request changes it.
     refresh: DetailRefreshPhase,
     restore_intent: Option<RestoreIntent>,
+    /// This page has already asked the Metadata store to drop the slot it owned. §3.4's
+    /// `pop_sequence` delivers `WillLeave(ForGood)` AND `Unmount` to the same body, and both land
+    /// in the teardown arm below; the `self.detail(meta).is_some()` guard there used to disarm
+    /// itself because the first `Clear` had already run against the process-wide slot by the time
+    /// the second event arrived. With the store owned per `Bridge` the `Clear` crosses
+    /// `AppFx::Store` and is still queued, so the guard reads a slot this page has already
+    /// disclaimed and emits a SECOND non-idempotent `Clear` — a second `supersede_detail`
+    /// generation against an item nobody is looking at. Not hashed: it is teardown bookkeeping for
+    /// one event pair, never a property of the page's logical shape.
+    /// (`screens/person.rs`'s `PersonCmd::Close` has the identical un-latched shape; reported
+    /// separately rather than fixed here.)
+    teardown_cleared: bool,
 
     // Render state.
     scroll: Spring,
@@ -311,6 +323,7 @@ impl DetailScreen {
             preview_had_picture: false,
             refresh: DetailRefreshPhase::None,
             restore_intent: None,
+            teardown_cleared: false,
             scroll: Spring::at(0.0),
             scroll_target: 0.0,
             episode_scroll: Spring::at(0.0),
@@ -1185,8 +1198,24 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
             }
         }
         let known = self.keys.iter().any(|key| key.elem == want.elem);
-        if known && (self.return_pending || self.restore_intent.is_some()) && (meta.detail_request_status(self.sid, &self.rk) == Some(true)
-            || self.detail(meta).is_some() && (meta.season_loading() || self.return_waiting(meta))) {
+        // `self.refresh != None` is the page's OWN outstanding server obligation, and it belongs
+        // beside the store's answer rather than behind it. The store's `Some(true)` only reports a
+        // request that has already been ADMITTED; a reconciliation this page started on the
+        // `Enter(Restored)` that Back just delivered has not been, because the command crosses
+        // `AppFx::Store` and the engine's `after_step` runs before the drain reaches that effect
+        // (`ui/dispatch.rs`: `execute_deliver` calls `after_step` immediately after `screen.step`,
+        // and `absorb` queues `Fx::App` at the BACK). Reading the store alone there answers "no
+        // request" for a page that is holding one, and the restored episode key — still in
+        // `self.keys`, still `known` — loses to the hero fallback for exactly one frame, after
+        // which `want.elem` is 0 and unrecoverable. This is not the phase standing in for the
+        // store (trap T2): T2 forbids treating an unadmitted `Requested` as a COMPLETED or
+        // in-flight request, which `pump_restore` above still asks the store about. Here the only
+        // question is whether this page is still waiting for something, and an obligation it has
+        // not discharged is precisely that.
+        if known && (self.return_pending || self.restore_intent.is_some())
+            && (self.refresh != DetailRefreshPhase::None
+                || meta.detail_request_status(self.sid, &self.rk) == Some(true)
+                || self.detail(meta).is_some() && (meta.season_loading() || self.return_waiting(meta))) {
             return want;
         }
         if self.detail(meta).is_some() {
@@ -1572,13 +1601,18 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
             ScreenEvent::App(AppMsg::DetailRestore { spot, episode, refresh }) => {
                 self.restore_episode(spot, episode.as_deref(), meta);
                 // A focus-only restore (including navigation memory) cannot discharge a newer
-                // write's server obligation. A visible completion starts through the Metadata
-                // compatibility boundary before Requested becomes observable; a covered page
-                // keeps Deferred until Enter gives it ownership of the shared Metadata slot.
+                // write's server obligation. `Requested` on this message means the sender ALREADY
+                // admitted the request: `app::content::refresh_content` runs `RequestDetail`
+                // through `Bridge::metadata_run` in the same synchronous step that emits this
+                // effect, so recording the phase here is a pure observation, not a start. Issuing
+                // the command again from this arm would run the non-idempotent request twice — a
+                // second `begin_detail_request` generation — and reopen the very T2 window the
+                // caller closed. A covered page keeps Deferred until Enter gives it ownership of
+                // the shared Metadata slot.
                 match refresh {
                     DetailRefreshPhase::None => {}
                     DetailRefreshPhase::Deferred => self.refresh = DetailRefreshPhase::Deferred,
-                    DetailRefreshPhase::Requested => self.start_reconciliation(fx),
+                    DetailRefreshPhase::Requested => self.refresh = DetailRefreshPhase::Requested,
                 }
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
@@ -1600,7 +1634,10 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                 self.restore_intent = None;
                 self.refresh = DetailRefreshPhase::None;
                 self.return_pending = false;
-                if self.detail(meta).is_some() {
+                // `&& !self.teardown_cleared`: see the field. One teardown, one `Clear`, even
+                // though §3.4 delivers this arm twice and the queued command has not run yet.
+                if self.detail(meta).is_some() && !self.teardown_cleared {
+                    self.teardown_cleared = true;
                     fx.push(Fx::App(AppFx::Store(
                         StoreId::Metadata,
                         StoreCmd::Metadata(MetadataCmd::Clear),
@@ -1616,11 +1653,20 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
 impl DetailScreen {
     /// **T2**: the addressed Metadata request must be (re)admitted in the same step that
     /// publishes `Requested` — never announce the phase before the command that backs it has
-    /// been queued. Metadata now crosses the same `AppFx::Store` boundary every other owned
-    /// store's commands do (compare `ViewStateCmd::Request` a few hundred lines below), so the
-    /// admission itself happens when Bridge drains this frame's effects, not inline here; this
-    /// function's obligation is only ever to enqueue the request before flipping the phase, so
-    /// the two can never observably reorder.
+    /// been queued. Metadata crosses the same `AppFx::Store` boundary every other owned store's
+    /// commands do (compare `ViewStateCmd::Request` a few hundred lines below), so the admission
+    /// itself happens when Bridge drains this frame's effects, not inline here; this function's
+    /// obligation is only ever to enqueue the request before flipping the phase, so the two can
+    /// never observably reorder.
+    ///
+    /// **A screen cannot close that window itself**: `Cx` publishes stores as VIEWS, so there is
+    /// no `&mut` here by construction, and the engine's `after_step` reconcile runs before the
+    /// drain reaches this effect. The one caller that IS a same-turn application boundary —
+    /// `app::content::refresh_content`, which holds the `Bridge` — therefore does not come
+    /// through here at all: it runs `RequestDetail` through `Bridge::metadata_run` and hands this
+    /// screen an already-backed `Requested` (see the `DetailRestore` arm). What is left on this
+    /// path is the `Enter` promotion of an obligation the page has carried while covered, whose
+    /// one observable consequence — the restored focus key — `reconcile` holds on `self.refresh`.
     fn start_reconciliation<H: crate::screens::registry::MetadataLike>(
         &mut self,
         fx: &mut Effects<'_, H>,

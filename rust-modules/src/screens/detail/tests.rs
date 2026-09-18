@@ -109,6 +109,7 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         preview_had_picture: false,
         refresh: DetailRefreshPhase::None,
         restore_intent: None,
+        teardown_cleared: false,
         scroll: Spring::at(0.0),
         scroll_target: 0.0,
         episode_scroll: Spring::at(0.0),

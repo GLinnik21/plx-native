@@ -948,7 +948,7 @@ mod library_publication_tests {
         }));
         let b_request = crate::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-b");
 
-        refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
+        refresh_content(&mut pages, &mut rig, crate::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
@@ -987,6 +987,17 @@ mod library_publication_tests {
             Some((spot, Some("episode-a".into()),
                 crate::screens::registry::DetailRefreshPhase::Requested)),
             "RestoreMemory must not overwrite the addressed episode/focus intent");
+        // EVIDENCE, so nobody re-derives it: this assertion is NOT stale. It fails on unmodified
+        // Stage C1 too — it was simply never reached there, because the `detail_generation_for_test`
+        // assertion above panicked first (9 vs 8, the double teardown `Clear`). Fix that alone and this
+        // one reports `elem: 0` against `elem: 3003`. The cause is measured, not inferred: in the
+        // pop frame the deliveries run `teardown detail-b WillLeave` -> `teardown detail-b
+        // Unmount` -> `Enter(Restored) detail-a` -> `reconcile want=3003 known=true status=None`,
+        // i.e. the engine reconciles the restored key in the same `execute_deliver` as the Enter
+        // that started A's reconciliation, before the drain has reached the queued `RequestDetail`.
+        // Pre-migration (`d067a796`) the Enter arm started that request synchronously through the
+        // process-wide Metadata shim, so `detail_request_status` already answered `Some(true)` and
+        // the key survived. See `DetailScreen::reconcile` for how it survives now.
         assert_eq!(pages.focus(), Some(focus),
             "the restored engine focus remains on the addressed episode row");
         let generation = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
@@ -1036,7 +1047,7 @@ mod library_publication_tests {
         let generation = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert_eq!(generation, stale_request);
 
-        refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
+        refresh_content(&mut pages, &mut rig, crate::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
@@ -1100,6 +1111,13 @@ mod library_publication_tests {
         requested_refresh_after_child(true, false);
     }
 
+    /// **The T2 pin for this layer.** Its red was historical, not simulated: Stage C1 moved the
+    /// visible reconciliation start onto the deferred `AppFx::Store` queue, so `Requested` became
+    /// observable two queue hops before the owning store admitted the request, and the `Tick` and
+    /// `StoreChanged` this test queues behind the restore could read the PREVIOUS reconciliation's
+    /// terminal `Some(false)` — which `pump_restore` answers by dropping the obligation outright.
+    /// `refresh_content` now runs `RequestDetail` through `Bridge::metadata_run` in the same
+    /// synchronous step that emits the restore, which is what the tap below observes.
     #[test]
     fn visible_refresh_starts_before_queued_tick_or_store_change_can_consume_it() {
         requested_refresh_after_child(true, true);
@@ -1172,7 +1190,7 @@ mod library_publication_tests {
                 }),
             ].into(), Default::default());
         }
-        refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
+        refresh_content(&mut pages, &mut rig, crate::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
@@ -1406,7 +1424,7 @@ mod library_publication_tests {
         let spot = memory.spot;
 
         let pre_refresh = crate::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
-        refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
+        refresh_content(&mut pages, &mut rig, crate::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
@@ -1500,7 +1518,7 @@ mod library_publication_tests {
         let spot = memory.spot;
 
         let pre_refresh = crate::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
-        refresh_content(&mut pages, crate::stores::viewstate::DetailRefresh {
+        refresh_content(&mut pages, &mut rig, crate::stores::viewstate::DetailRefresh {
             sid,
             rk: "detail-a".into(),
             keep: Some("episode-a".into()),
@@ -1619,14 +1637,23 @@ pub(crate) fn restore_played_entry(app: &mut App) {
 
 pub(crate) fn refresh_content(
     pages: &mut crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+    bridge: &mut bridge::Bridge,
     target: crate::stores::viewstate::DetailRefresh,
 ) {
     // A write may finish after another Detail has covered its origin. The covered instance must
     // retain the addressed restore intent, but the ONE Metadata slot belongs to the top page: an
-    // eager fetch here would supersede that visible Detail's load. The message tells a visible
-    // Detail to start synchronously before arming Requested; when Back uncovers a covered entry,
-    // its ordinary Enter(Restored) path performs that same atomic transition after it owns the
-    // slot again.
+    // eager fetch here would supersede that visible Detail's load. So a covered entry is armed
+    // with `Deferred` and starts nothing.
+    //
+    // A VISIBLE entry starts here, synchronously, through Metadata's same-turn boundary
+    // (`Bridge::metadata_run`, the sibling of `browse_run`/`person_run`/`viewstate_run` —
+    // `stores/mod.rs`'s "same-turn application boundaries call a method on the `Stores` value
+    // they already hold"). This is trap T2 and the reason this function takes the Bridge at all:
+    // `Requested` must not be observable before the owning store has admitted the request, or a
+    // Tick or `StoreChanged` already queued behind this effect reads the PREVIOUS reconciliation's
+    // terminal `Some(false)` and `pump_restore` silently drops the obligation. Queuing the command
+    // as an `AppFx::Store` instead puts two queue hops between the phase and its admission, which
+    // is exactly that window.
     let Some(entry) = pages.nav.tabs.stack.entries.iter().rev()
         .find(|e| detail_refresh_matches(&e.arg, &target)) else { return };
     let AppArg::Content(ContentArg::Detail { .. }) = &entry.arg else { return };
@@ -1637,6 +1664,12 @@ pub(crate) fn refresh_content(
     } else { entry.ret.memory.clone() };
     let PageMemory::Detail(spot) = memory else { return };
     let spot = spot.spot;
+    if owns_metadata {
+        bridge.metadata_run(crate::stores::metadata::MetadataCmd::RequestDetail {
+            sid: target.sid,
+            rk: target.rk.clone(),
+        });
+    }
     pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
         Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore {
             spot,
