@@ -186,7 +186,7 @@ fn a_server_without_the_film_contributes_no_row() {
 }
 
 /// **The cross-source resolve carries its SERVER through the mailbox, and the pump hands both
-/// halves to the panel.** The generation guard beside it cannot stand in for this: `ALT_GEN`
+/// halves to the panel.** The generation guard beside it cannot stand in for this: `test_adapter().alt_gen`
 /// only moves when a DETAIL lands, so a page opened while a resolve is out — the whole reason
 /// this is asynchronous, since one dead share costs a `connect(2)` timeout — is a page whose
 /// own detail is still in flight, and the landing sails through the generation test. The rk
@@ -204,7 +204,7 @@ fn a_server_without_the_film_contributes_no_row() {
 #[test]
 fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused() {
     let _serial = crate::testlock::serial();
-    alt_clear();
+    alt_clear(test_state());
     // two copies on two sources — enough for the gate, which counts distinct SOURCES
     let copies = || {
         vec![
@@ -221,8 +221,8 @@ fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused(
         ]
     };
     let land = |gen: u32, sid: crate::plex::ServerId, rk: &str| {
-        ALT_ROSTER_GEN.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
-        *ALT_SLOT.lock().unwrap() = Some(AltResult {
+        test_adapter().alt_roster_gen.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
+        *test_adapter().alt_slot.lock().unwrap() = Some(AltResult {
             gen,
             roster_gen: crate::plex::server_roster_gen(),
             sid,
@@ -232,30 +232,30 @@ fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused(
     };
 
     // our film 4 is the mounted page and its resolve is out…
-    let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let gen = test_adapter().alt_gen.fetch_add(1, Ordering::SeqCst) + 1;
     // …and while it is out the user lands on the SHARE's film 4
     land(gen, SRV_A, "4");
-    pump_alt_sources();
+    pump_alt_sources(test_state(), test_adapter());
     assert!(
-        !alt_available(SRV_B, "4"),
+        !alt_available(test_state(), SRV_B, "4"),
         "our copies are not news about the share's film"
     );
 
     // the control: the very same landing DOES reach the page that asked for it
-    assert!(alt_available(SRV_A, "4"), "the awaited landing installs");
+    assert!(alt_available(test_state(), SRV_A, "4"), "the awaited landing installs");
 
     // …and a SUPERSEDED landing is dropped one layer earlier, by the generation
-    alt_clear();
-    let stale = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    ALT_GEN.fetch_add(1, Ordering::SeqCst);
+    alt_clear(test_state());
+    let stale = test_adapter().alt_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    test_adapter().alt_gen.fetch_add(1, Ordering::SeqCst);
     land(stale, SRV_A, "4");
-    pump_alt_sources();
+    pump_alt_sources(test_state(), test_adapter());
     assert!(
-        !alt_available(SRV_A, "4"),
+        !alt_available(test_state(), SRV_A, "4"),
         "a landing from a superseded resolve is dropped"
     );
 
-    alt_clear();
+    alt_clear(test_state());
 }
 
 #[test]
@@ -276,14 +276,14 @@ fn an_alt_source_from_a_revoked_slot_is_pruned_and_its_inflight_result_is_discar
             ..Default::default()
         },
     ];
-    alt_clear();
-    alt_install(a, "4", copies.clone());
-    assert!(alt_available(a, "4"));
+    alt_clear(test_state());
+    alt_install(test_state(), a, "4", copies.clone());
+    assert!(alt_available(test_state(), a, "4"));
 
     let old_roster = crate::plex::server_roster_gen();
-    ALT_ROSTER_GEN.store(old_roster, Ordering::SeqCst);
-    let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    *ALT_SLOT.lock().unwrap() = Some(AltResult {
+    test_adapter().alt_roster_gen.store(old_roster, Ordering::SeqCst);
+    let gen = test_adapter().alt_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    *test_adapter().alt_slot.lock().unwrap() = Some(AltResult {
         gen,
         roster_gen: old_roster,
         sid: a,
@@ -293,13 +293,13 @@ fn an_alt_source_from_a_revoked_slot_is_pruned_and_its_inflight_result_is_discar
     crate::plex::revoke_for_profile_switch();
     crate::plex::register_for_test("alt-c", "127.0.0.1", 3, "c", "cid");
 
-    pump_alt_sources();
+    pump_alt_sources(test_state(), test_adapter());
     assert!(
-        !alt_available(a, "4"),
+        !alt_available(test_state(), a, "4"),
         "the removed source neither stays cached nor re-lands"
     );
 
-    alt_clear();
+    alt_clear(test_state());
     crate::plex::reset_servers_for_test();
 }
 
@@ -310,31 +310,31 @@ fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
     let _serial = crate::testlock::serial();
     // Other serialized tests may leave a request pending; serialization is not a reset.
     // Reproduce that predecessor deterministically rather than depend on suite ordering.
-    let previous = begin_detail_for_test(crate::plex::ServerId::UNSET, "previous-test-request");
-    clear();
+    let previous = begin_detail_for_test(test_adapter(), crate::plex::ServerId::UNSET, "previous-test-request");
+    clear(test_state(), test_adapter());
     // This synthetic worker is now finished; cancellation alone cannot release it.
-    land_detail(crate::plex::ServerId::UNSET, "previous-test-request", previous, None);
+    land_detail(test_adapter(), crate::plex::ServerId::UNSET, "previous-test-request", previous, None);
     // idle: nothing requested, nothing loading, nothing to pump
-    assert!(!detail_loading(), "the isolated fixture is not loading anything");
-    assert!(!pump_detail(), "an empty mailbox pumps nothing");
+    assert!(!detail_loading(test_adapter()), "the isolated fixture is not loading anything");
+    assert!(!pump_detail(test_state(), test_adapter()), "an empty mailbox pumps nothing");
 
     // a request is in flight until its landing is pumped
-    let gen = begin_detail_for_test(crate::plex::ServerId::UNSET, "movie-1");
+    let gen = begin_detail_for_test(test_adapter(), crate::plex::ServerId::UNSET, "movie-1");
     assert!(
-        detail_loading(),
+        detail_loading(test_adapter()),
         "a bumped generation with DONE behind it reads as in flight"
     );
     landing(gen, "movie-1");
-    assert!(pump_detail(), "the awaited landing installs");
+    assert!(pump_detail(test_state(), test_adapter()), "the awaited landing installs");
     assert_eq!(cur_rk().as_deref(), Some("movie-1"));
-    assert!(!detail_loading(), "pumping the landing settles the spinner");
+    assert!(!detail_loading(test_adapter()), "pumping the landing settles the spinner");
 
     // SUPERSEDED: a second request means the first one's landing is stale and must be dropped
-    let old = begin_detail_for_test(crate::plex::ServerId::UNSET, "stale-show");
-    let new = begin_detail_for_test(crate::plex::ServerId::UNSET, "fresh-show");
+    let old = begin_detail_for_test(test_adapter(), crate::plex::ServerId::UNSET, "stale-show");
+    let new = begin_detail_for_test(test_adapter(), crate::plex::ServerId::UNSET, "fresh-show");
     landing(old, "stale-show");
     assert!(
-        !pump_detail(),
+        !pump_detail(test_state(), test_adapter()),
         "a landing from a superseded generation is discarded"
     );
     assert_eq!(
@@ -342,34 +342,34 @@ fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         Some("movie-1"),
         "and it must not touch CURRENT"
     );
-    assert!(detail_loading(), "the NEWER request is still in flight");
+    assert!(detail_loading(test_adapter()), "the NEWER request is still in flight");
 
     // MONOTONE mailbox: with the newer result already sitting unconsumed, the OLDER fetch
     // finally returns — it must not overwrite it. (This is the case that wedged the season
     // mailbox before its guard existed: losing the newest result stalled the spinner on.)
     landing(new, "fresh-show");
     landing(old, "stale-show");
-    assert!(pump_detail(), "the late older landing is refused by its generation");
+    assert!(pump_detail(test_state(), test_adapter()), "the late older landing is refused by its generation");
     assert_eq!(cur_rk().as_deref(), Some("fresh-show"));
 
     // a FAILED fetch (None) settles the spinner but keeps the previously loaded item
-    let g = begin_detail_for_test(crate::plex::ServerId::UNSET, "fresh-show");
-    land_detail(crate::plex::ServerId::UNSET, "fresh-show", g, None);
-    assert!(!pump_detail(), "a failed fetch reports no fresh item");
+    let g = begin_detail_for_test(test_adapter(), crate::plex::ServerId::UNSET, "fresh-show");
+    land_detail(test_adapter(), crate::plex::ServerId::UNSET, "fresh-show", g, None);
+    assert!(!pump_detail(test_state(), test_adapter()), "a failed fetch reports no fresh item");
     assert_eq!(
         cur_rk().as_deref(),
         Some("fresh-show"),
         "and leaves the page as it was"
     );
-    assert!(!detail_loading(), "but it does settle the spinner");
+    assert!(!detail_loading(test_adapter()), "but it does settle the spinner");
 
     // CLOSING THE PAGE supersedes: a load requested on the way in must not repopulate
     // CURRENT behind whatever screen is mounted now.
-    let inflight = begin_detail_for_test(crate::plex::ServerId::UNSET, "arrived-after-close");
-    clear();
-    assert!(!detail_loading(), "clear() settles the in-flight fetch");
+    let inflight = begin_detail_for_test(test_adapter(), crate::plex::ServerId::UNSET, "arrived-after-close");
+    clear(test_state(), test_adapter());
+    assert!(!detail_loading(test_adapter()), "clear(test_state(), test_adapter()) settles the in-flight fetch");
     landing(inflight, "arrived-after-close");
-    assert!(!pump_detail(), "a landing after close is dropped");
+    assert!(!pump_detail(test_state(), test_adapter()), "a landing after close is dropped");
     assert_eq!(cur_rk(), None, "the page stays closed");
 }
 
@@ -380,14 +380,14 @@ fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
 #[test]
 fn a_detail_landing_for_another_servers_item_of_the_same_key_is_skipped() {
     let _serial = crate::testlock::serial();
-    clear();
+    clear(test_state(), test_adapter());
     let a = crate::plex::ServerId::from_raw(0);
     let b = crate::plex::ServerId::from_raw(1);
-    let gen = begin_detail_for_test(a, "7");
+    let gen = begin_detail_for_test(test_adapter(), a, "7");
     let addr = detail_addr(gen);
-    assert!(detail_loading());
-    let before = DETAIL_LANDING.dropped_for(addr.to);
-    land_detail(
+    assert!(detail_loading(test_adapter()));
+    let before = test_adapter().detail_landing.dropped_for(addr.to);
+    land_detail(test_adapter(), 
         b,
         "7",
         gen,
@@ -397,13 +397,13 @@ fn a_detail_landing_for_another_servers_item_of_the_same_key_is_skipped() {
             ..Default::default()
         }),
     );
-    assert!(!pump_detail(), "the other server's copy is not the awaited item");
+    assert!(!pump_detail(test_state(), test_adapter()), "the other server's copy is not the awaited item");
     assert_eq!(cur_rk(), None);
-    assert!(detail_loading(), "…and the page is still waiting for its own");
-    assert_eq!(DETAIL_LANDING.dropped_for(addr.to), before + 1, "counted");
-    assert_eq!(DETAIL_LANDING.inflight(addr.to), 0, "wrong key is a discarded terminal");
-    let gen = begin_detail_for_test(a, "7");
-    land_detail(
+    assert!(detail_loading(test_adapter()), "…and the page is still waiting for its own");
+    assert_eq!(test_adapter().detail_landing.dropped_for(addr.to), before + 1, "counted");
+    assert_eq!(test_adapter().detail_landing.inflight(addr.to), 0, "wrong key is a discarded terminal");
+    let gen = begin_detail_for_test(test_adapter(), a, "7");
+    land_detail(test_adapter(), 
         a,
         "7",
         gen,
@@ -413,10 +413,10 @@ fn a_detail_landing_for_another_servers_item_of_the_same_key_is_skipped() {
             ..Default::default()
         }),
     );
-    assert!(pump_detail());
-    assert_eq!(current().map(|d| d.title.clone()).as_deref(), Some("ours"));
-    assert!(!detail_loading());
-    clear();
+    assert!(pump_detail(test_state(), test_adapter()));
+    assert_eq!(current(test_state()).map(|d| d.title.clone()).as_deref(), Some("ours"));
+    assert!(!detail_loading(test_adapter()));
+    clear(test_state(), test_adapter());
 }
 
 /// Spec §15.1 `a_refused_spawn_lands_a_refusal_event`, on the real store: a request whose
@@ -425,65 +425,65 @@ fn a_detail_landing_for_another_servers_item_of_the_same_key_is_skipped() {
 #[test]
 fn a_refused_detail_spawn_settles_the_spinner_through_the_landing() {
     let _serial = crate::testlock::serial();
-    clear();
+    clear(test_state(), test_adapter());
     let a = crate::plex::ServerId::from_raw(0);
-    request_detail_with_spawn(a, "9", |_| false);
-    let addr = detail_addr(DETAIL_GEN.load(Ordering::SeqCst));
-    assert!(detail_loading());
-    assert_eq!(DETAIL_LANDING.inflight(addr.to), 1, "OS refusal reserves its queued terminal");
-    assert!(!pump_detail(), "no item arrived");
-    assert!(!detail_loading(), "but the refusal settled the wait");
-    assert_eq!(DETAIL_LANDING.inflight(addr.to), 0);
-    clear();
+    request_detail_with_spawn(test_adapter(), a, "9", |_| false);
+    let addr = detail_addr(test_adapter().detail_gen.load(Ordering::SeqCst));
+    assert!(detail_loading(test_adapter()));
+    assert_eq!(test_adapter().detail_landing.inflight(addr.to), 1, "OS refusal reserves its queued terminal");
+    assert!(!pump_detail(test_state(), test_adapter()), "no item arrived");
+    assert!(!detail_loading(test_adapter()), "but the refusal settled the wait");
+    assert_eq!(test_adapter().detail_landing.inflight(addr.to), 0);
+    clear(test_state(), test_adapter());
 }
 
 #[test]
 fn rapid_detail_supersedes_bound_spawns_and_settle_capacity_refusal() {
     let _serial = crate::testlock::serial();
-    clear();
+    clear(test_state(), test_adapter());
     let sid = crate::plex::ServerId::UNSET;
     let mut workers = Vec::new();
     for _ in 0..4 {
-        request_detail_with_spawn(sid, "old", |gen| { workers.push(gen); true });
-        assert!(detail_loading());
+        request_detail_with_spawn(test_adapter(), sid, "old", |gen| { workers.push(gen); true });
+        assert!(detail_loading(test_adapter()));
     }
     assert_eq!(workers.len(), 4);
-    request_detail_with_spawn(sid, "latest-refused", |_| panic!("refused admission must not spawn"));
-    assert!(!detail_loading(), "capacity refusal settles synchronously");
-    assert_eq!(detail_request_status(sid, "latest-refused"), Some(false));
-    assert_eq!(DETAIL_LANDING.inflight(detail_addr(0).to), 4);
-    assert!(DETAIL_LANDING.is_empty(), "no queued capacity refusal");
+    request_detail_with_spawn(test_adapter(), sid, "latest-refused", |_| panic!("refused admission must not spawn"));
+    assert!(!detail_loading(test_adapter()), "capacity refusal settles synchronously");
+    assert_eq!(detail_request_status(test_adapter(), sid, "latest-refused"), Some(false));
+    assert_eq!(test_adapter().detail_landing.inflight(detail_addr(0).to), 4);
+    assert!(test_adapter().detail_landing.is_empty(), "no queued capacity refusal");
     for gen in workers {
         landing(gen, "old");
-        assert!(!pump_detail());
-        assert!(current().is_none(), "old completion must not install");
-        assert!(!detail_loading());
+        assert!(!pump_detail(test_state(), test_adapter()));
+        assert!(current(test_state()).is_none(), "old completion must not install");
+        assert!(!detail_loading(test_adapter()));
     }
-    assert_eq!(DETAIL_LANDING.inflight(detail_addr(0).to), 0);
+    assert_eq!(test_adapter().detail_landing.inflight(detail_addr(0).to), 0);
     let mut next = None;
-    request_detail_with_spawn(sid, "fresh", |gen| { next = Some(gen); true });
-    assert!(detail_loading());
+    request_detail_with_spawn(test_adapter(), sid, "fresh", |gen| { next = Some(gen); true });
+    assert!(detail_loading(test_adapter()));
     landing(next.unwrap(), "fresh");
-    assert!(pump_detail());
+    assert!(pump_detail(test_state(), test_adapter()));
     assert_eq!(cur_rk().as_deref(), Some("fresh"));
-    assert!(!detail_loading());
-    clear();
+    assert!(!detail_loading(test_adapter()));
+    clear(test_state(), test_adapter());
 }
 
 #[test]
 fn a_panicking_detail_fetch_acknowledges_and_settles_its_request() {
     let _serial = crate::testlock::serial();
-    clear();
+    clear(test_state(), test_adapter());
     let sid = crate::plex::ServerId::UNSET;
-    request_detail_with_spawn(sid, "panic", |gen| {
-        finish_detail_fetch(sid, "panic", gen, || panic!("synthetic fetch panic"));
+    request_detail_with_spawn(test_adapter(), sid, "panic", |gen| {
+        finish_detail_fetch(test_adapter(), sid, "panic", gen, || panic!("synthetic fetch panic"));
         true
     });
-    assert!(detail_loading(), "terminal waits for pump");
-    assert!(!pump_detail());
-    assert!(!detail_loading());
-    assert_eq!(DETAIL_LANDING.inflight(detail_addr(0).to), 0);
-    clear();
+    assert!(detail_loading(test_adapter()), "terminal waits for pump");
+    assert!(!pump_detail(test_state(), test_adapter()));
+    assert!(!detail_loading(test_adapter()));
+    assert_eq!(test_adapter().detail_landing.inflight(detail_addr(0).to), 0);
+    clear(test_state(), test_adapter());
 }
 
 #[test]
@@ -500,17 +500,17 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
     let initial = crate::app::bootstrap::Initial::from_value(value).unwrap();
     crate::app::bootstrap::stores::init(&initial, false);
     crate::ui::landgate::arm_recording();
-    DETAIL_GEN.store(0, Ordering::SeqCst);
-    DETAIL_DONE.store(0, Ordering::SeqCst);
-    clear();
+    test_adapter().detail_gen.store(0, Ordering::SeqCst);
+    test_adapter().detail_done.store(0, Ordering::SeqCst);
+    clear(test_state(), test_adapter());
 
     let mut recorded = Vec::new();
     for n in 0..6 {
         crate::app::bootstrap::stores::begin(Default::default(), Default::default());
-        let gen = begin_detail_for_test(crate::plex::ServerId::UNSET, &format!("old-{n}"));
-        clear();
-        land_detail(crate::plex::ServerId::UNSET, &format!("old-{n}"), gen, None);
-        assert!(!pump_detail());
+        let gen = begin_detail_for_test(test_adapter(), crate::plex::ServerId::UNSET, &format!("old-{n}"));
+        clear(test_state(), test_adapter());
+        land_detail(test_adapter(), crate::plex::ServerId::UNSET, &format!("old-{n}"), gen, None);
+        assert!(!pump_detail(test_state(), test_adapter()));
         let results = crate::app::bootstrap::stores::take_results();
         assert_eq!(results.len(), 1,
             "the cancelled completion remains a recorded capacity-retiring observation");
@@ -519,58 +519,58 @@ fn controlled_cancelled_detail_ack_is_recorded_and_recovers_capacity() {
             vec![(crate::stores::StoreId::Metadata.ord(), 1)],
             "a filtered ACK retains its original observed landing frame");
         assert_eq!(crate::app::bootstrap::stores::finish().1, None);
-        assert_eq!(DETAIL_LANDING.inflight(detail_addr(gen).to), 0);
+        assert_eq!(test_adapter().detail_landing.inflight(detail_addr(gen).to), 0);
     }
 
     crate::app::bootstrap::stores::begin(Default::default(), Default::default());
-    let wrong = begin_detail_for_test(crate::plex::ServerId::from_raw(0), "same-key");
-    land_detail(crate::plex::ServerId::from_raw(1), "same-key", wrong, None);
-    assert!(!pump_detail(), "a wrong-server answer stays filtered");
+    let wrong = begin_detail_for_test(test_adapter(), crate::plex::ServerId::from_raw(0), "same-key");
+    land_detail(test_adapter(), crate::plex::ServerId::from_raw(1), "same-key", wrong, None);
+    assert!(!pump_detail(test_state(), test_adapter()), "a wrong-server answer stays filtered");
     let wrong_result = crate::app::bootstrap::stores::take_results().pop().unwrap();
-    assert_eq!(DETAIL_LANDING.inflight(detail_addr(wrong).to), 0);
+    assert_eq!(test_adapter().detail_landing.inflight(detail_addr(wrong).to), 0);
     assert_eq!(crate::ui::landgate::take_frame_lands(),
         vec![(crate::stores::StoreId::Metadata.ord(), 1)]);
     assert_eq!(crate::app::bootstrap::stores::finish().1, None);
 
     crate::app::bootstrap::stores::begin(Default::default(), Default::default());
-    let fresh = begin_detail_for_test(crate::plex::ServerId::UNSET, "fresh-after-cancel");
-    land_detail(crate::plex::ServerId::UNSET, "fresh-after-cancel", fresh,
+    let fresh = begin_detail_for_test(test_adapter(), crate::plex::ServerId::UNSET, "fresh-after-cancel");
+    land_detail(test_adapter(), crate::plex::ServerId::UNSET, "fresh-after-cancel", fresh,
         Some(Detail { sid:crate::plex::ServerId::UNSET, rk:"fresh-after-cancel".into(),
             ..Default::default() }));
-    assert!(pump_detail(), "more than the four-slot cap can run after cancelled ACKs retire");
+    assert!(pump_detail(test_state(), test_adapter()), "more than the four-slot cap can run after cancelled ACKs retire");
     let fresh_result = crate::app::bootstrap::stores::take_results().pop().unwrap();
     assert_eq!(crate::ui::landgate::take_frame_lands(),
         vec![(crate::stores::StoreId::Metadata.ord(), 1)]);
     assert_eq!(crate::app::bootstrap::stores::finish().1, None);
-    clear();
+    clear(test_state(), test_adapter());
     crate::ui::landgate::disarm();
 
     crate::app::bootstrap::stores::init(&initial, true);
-    DETAIL_GEN.store(0, Ordering::SeqCst);
-    DETAIL_DONE.store(0, Ordering::SeqCst);
-    clear();
+    test_adapter().detail_gen.store(0, Ordering::SeqCst);
+    test_adapter().detail_done.store(0, Ordering::SeqCst);
+    clear(test_state(), test_adapter());
     for (n, result) in recorded.into_iter().enumerate() {
         crate::app::bootstrap::stores::begin(Default::default(), [result.clone()].into());
-        let gen = begin_detail_for_test(crate::plex::ServerId::UNSET, &format!("old-{n}"));
-        clear();
-        assert!(!pump_detail());
+        let gen = begin_detail_for_test(test_adapter(), crate::plex::ServerId::UNSET, &format!("old-{n}"));
+        clear(test_state(), test_adapter());
+        assert!(!pump_detail(test_state(), test_adapter()));
         assert_eq!(crate::app::bootstrap::stores::take_results(), vec![result],
             "replay grades the ACK it actually applied");
         assert_eq!(crate::app::bootstrap::stores::finish().1, None);
-        assert_eq!(DETAIL_LANDING.inflight(detail_addr(gen).to), 0,
+        assert_eq!(test_adapter().detail_landing.inflight(detail_addr(gen).to), 0,
             "the replayed cancelled ACK retires its reservation");
     }
     crate::app::bootstrap::stores::begin(Default::default(), [wrong_result.clone()].into());
-    let wrong = begin_detail_for_test(crate::plex::ServerId::from_raw(0), "same-key");
-    assert!(!pump_detail(), "replay preserves the wrong-server filter");
+    let wrong = begin_detail_for_test(test_adapter(), crate::plex::ServerId::from_raw(0), "same-key");
+    assert!(!pump_detail(test_state(), test_adapter()), "replay preserves the wrong-server filter");
     assert_eq!(crate::app::bootstrap::stores::take_results(), vec![wrong_result]);
-    assert_eq!(DETAIL_LANDING.inflight(detail_addr(wrong).to), 0);
+    assert_eq!(test_adapter().detail_landing.inflight(detail_addr(wrong).to), 0);
     assert_eq!(crate::app::bootstrap::stores::finish().1, None);
     crate::app::bootstrap::stores::begin(Default::default(), [fresh_result].into());
-    let fresh = begin_detail_for_test(crate::plex::ServerId::UNSET, "fresh-after-cancel");
-    assert!(pump_detail(), "replay also admits beyond the recovered four-slot cap");
-    assert_eq!(DETAIL_LANDING.inflight(detail_addr(fresh).to), 0);
+    let fresh = begin_detail_for_test(test_adapter(), crate::plex::ServerId::UNSET, "fresh-after-cancel");
+    assert!(pump_detail(test_state(), test_adapter()), "replay also admits beyond the recovered four-slot cap");
+    assert_eq!(test_adapter().detail_landing.inflight(detail_addr(fresh).to), 0);
     assert_eq!(crate::app::bootstrap::stores::finish().1, None);
-    clear();
+    clear(test_state(), test_adapter());
     crate::app::bootstrap::stores::reset_for_test();
 }
