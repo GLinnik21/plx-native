@@ -627,12 +627,28 @@ fn an_open_request_does_not_outlive_its_page() {
             .any(|effect| matches!(&effect.fx, Fx::App(AppFx::Content(ContentReq::Push(_))))),
         "a replacement page cannot inherit an earlier instance's action"
     );
-    step(&mut screen, &ScreenEvent::Unmount, None);
+    // Unmount only ENQUEUES its `MetadataCmd::Clear` (a real Bridge applies it on the next
+    // dispatch turn); this test drives no dispatcher, so it must apply that effect itself before
+    // asking whether the page still answers a press — otherwise `test_store()` still holds the
+    // Detail this page unmounted from, and the assertion below would prove nothing.
+    let (_, unmount_effects) = step(&mut screen, &ScreenEvent::Unmount, None);
+    apply_metadata_effects(&unmount_effects);
     let (_, after) = step(&mut screen, &press, Some(related::elem(0).unwrap()));
     assert!(!after
         .iter()
         .any(|effect| matches!(&effect.fx, Fx::App(AppFx::Content(ContentReq::Push(_))))));
     clear();
+}
+
+/// Applies every `AppFx::Store(StoreId::Metadata, ..)` effect in `effects` to `test_store()` —
+/// the store-side half of what a real `Bridge` does on its next dispatch turn, for tests that
+/// drive a screen with no dispatcher around it (see `step`'s own module doc).
+fn apply_metadata_effects(effects: &[crate::ui::machine::Stamped<TestHost>]) {
+    for effect in effects {
+        if let Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(cmd))) = &effect.fx {
+            test_store().run(cmd.clone());
+        }
+    }
 }
 
 #[test]
