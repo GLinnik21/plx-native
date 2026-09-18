@@ -1,21 +1,23 @@
 //! **Stores as machines** (restructure spec §2.1/§2.2, phase 4; `docs/stores-as-machines.md`).
 //!
 //! Six data modules provide the application's server-derived state — `browse`, `pms` (the Home
-//! hubs), `metadata`, `search`, `person`, `viewstate`. Browse, Person and ViewState are physically owned by
-//! one [`Stores`] aggregate per `crate::app::bridge::Bridge`, with per-instance state, adapter and
-//! notice; the other three retain the compatibility global + mailbox shape. This layer puts ONE entrance in
-//! front of each: a [`StoreCmd`] is the complete, enumerated vocabulary of mutations, a store's
-//! owned command decoder is the one place its vocabulary is applied, and every command that changes
-//! observable state or landing that changes the store raises the store's NOTICE (a generation the
-//! bridge dispatcher delivers to every live instance as `ScreenEvent::StoreChanged`, spec §3.4).
+//! hubs), `metadata`, `search`, `person`, `viewstate`. All six are physically owned by one
+//! [`Stores`] aggregate per `crate::app::bridge::Bridge`, each with its own per-instance state,
+//! adapter and notice (Browse/Person/ViewState landed first; Search, Hubs and Metadata completed
+//! the port). This layer puts ONE entrance in front of each: a [`StoreCmd`] is the complete,
+//! enumerated vocabulary of mutations, a store's owned command decoder is the one place its
+//! vocabulary is applied, and every command that changes observable state or landing that changes
+//! the store raises the store's NOTICE (a generation the bridge dispatcher delivers to every live
+//! instance as `ScreenEvent::StoreChanged`, spec §3.4).
 //!
 //! Owned stores have two caller shapes and one explicit owner: screens emit `AppFx::Store(id, cmd)` for
 //! `app/bridge.rs` to deliver, while same-turn application boundaries call a method on the
-//! [`Stores`] value they already hold. The generic `apply(cmd)` dispatcher remains only for the
-//! three not-yet-owned stores and rejects Browse, Person and ViewState commands.
+//! [`Stores`] value they already hold. There is no generic `apply(cmd)` dispatcher any more — every
+//! store's vocabulary is applied only through its own owner.
 //!
-//! What lives here is the vocabulary and machines plus Browse/Person/ViewState's production aggregate; the remaining
-//! data stays in the legacy modules until its ownership slice (§14). This module names data crates, `ui::machine` and — since
+//! What lives here is the vocabulary and machines plus all six stores' production aggregate; no
+//! data stays in a legacy compatibility global any more (§14 complete). This module names data
+//! crates, `ui::machine` and — since
 //! phase 11's landing schedule — `ui::landgate`, and nothing else (spec §2.1's layer rule;
 //! `ci/check-deps.sh`'s `mutators` gate refuses the old spelling outside `stores/` and the data
 //! modules).
@@ -78,8 +80,8 @@ pub(crate) mod person;
 pub(crate) mod search;
 pub(crate) mod viewstate;
 
-/// Production store aggregate. Browse, Person and ViewState are physical owners here; the remaining stores
-/// retain their compatibility owners until their corresponding ownership slices land.
+/// Production store aggregate. All six stores are physical owners here — Browse, Person and
+/// ViewState landed first; Search, Hubs and Metadata completed the port.
 pub(crate) struct Stores {
     pub(crate) browse: std::rc::Rc<std::cell::RefCell<browse::BrowseStore>>,
     pub(crate) hubs: hubs::HubsStore,

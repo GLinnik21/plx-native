@@ -592,21 +592,24 @@ rule), and `Dispatcher::state_hash` is folded into the recorder frame as the `tr
 for 5b.
 
 **Phase 4 (2026-09-07) put the STORES behind one vocabulary and one step — `rust-modules/src/stores/`,
-designed in `docs/stores-as-machines.md`.** Browse, Person and ViewState are now physical owners: each
-`app::bridge::Bridge` owns a `Stores` aggregate containing a `BrowseStore`, `PersonStore` and `ViewStateStore`,
-each with per-instance state, worker adapter and notice. Browse's PAGE/GENRE/LETTER/SRC/HUB
-mailboxes, Person's model/generation/retry/indexed-fetch state and ViewState's queue/flight/retry/
-refresh/mailbox state are fields of those owners, not process-wide state. All three rotate worker
-adapters where applicable on reset so a late old worker cannot enter the new
-identity; ViewState additionally lands only an exact monotone request ID. `stores::StoreCmd`
-remains the complete mutation vocabulary; owned screens emit `AppFx::Store`, and `app/bridge.rs`
-delivers Browse, Person and ViewState commands to the owning machines. Browse retirement Wave 2 removed the active selector, global publication, bootstrap
+designed in `docs/stores-as-machines.md`.** Browse, Person and ViewState were the first physical
+owners; Search, Hubs and Metadata completed the port in later stages, so all six are now physical
+owners: each `app::bridge::Bridge` owns a `Stores` aggregate containing a `BrowseStore`,
+`PersonStore`, `ViewStateStore`, `SearchStore`, `HubsStore` and `MetadataStore`, each with
+per-instance state, worker adapter and notice. Browse's PAGE/GENRE/LETTER/SRC/HUB mailboxes,
+Person's model/generation/retry/indexed-fetch state, ViewState's queue/flight/retry/refresh/mailbox
+state and Metadata's detail/season/alt-sources mailboxes and `record::Tracker` are all fields of
+those owners now, not process-wide state. All of them rotate worker adapters where applicable on
+reset so a late old worker cannot enter the new identity (Metadata's `Clear` is the one exception —
+see `stores/metadata.rs`'s struct doc, D3); ViewState additionally lands only an exact monotone
+request ID. `stores::StoreCmd` remains the complete mutation vocabulary; owned screens emit
+`AppFx::Store`, and `app/bridge.rs` delivers every store's commands to its owning machine — there
+is no generic `apply(cmd)` dispatcher any more. Browse retirement Wave 2 removed the active selector, global publication, bootstrap
 handoff and free read/mutation shims: screens read per-owner retained `DirectoryView`/`ListingView`/
 `HubsView` publications, and fixtures that seed Browse own a `BrowseStore` or `Stores` before
 capturing those publications. Synchronous app boundaries call that explicit owner directly.
 Person, Filmography and PersonBio read Person only through the owner-borrowed `AppViews` publication.
-`app/bridge.rs` drains all three owned notices
-and the other stores' compatibility notices once per frame into `Dispatcher::store_changed`, so
+`app/bridge.rs` drains every owned store's notice once per frame into `Dispatcher::store_changed`, so
 a migrated screen hears `StoreChanged` for its own effect and for a changed landing. Store state
 is NOT in the recorder's hash yet (the phase-2 anchor fixture pins `state_fp`).
 
