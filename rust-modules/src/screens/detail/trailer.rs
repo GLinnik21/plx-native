@@ -455,14 +455,17 @@ impl Transport {
             return;
         }
         let p = p.alpha(self.alpha);
-        let kicker = CString::new(crate::metadata::TRAILER_CONTEXT).unwrap_or_default();
-        let title = CString::new(transport_title(film_title, extra_title)).unwrap_or_default();
         crate::ui::player_hud::draw_scrim(p);
-        crate::ui::player_hud::draw_title(
-            p,
-            crate::ui::player_hud::Kicker::Context(kicker.as_ptr()),
-            title.as_ptr(),
-        );
+        // `if let Ok`, not `.unwrap_or_default()` — the player HUD's own rule (5a221a54): a title
+        // with an interior NUL skips the title block rather than drawing an empty line under the
+        // kicker. The transport below it still draws; only the unprintable text is dropped.
+        if let Ok(title) = CString::new(transport_title(film_title, extra_title)) {
+            crate::ui::player_hud::draw_title(
+                p,
+                crate::ui::player_hud::Kicker::Context(crate::metadata::TRAILER_CONTEXT_C.as_ptr()),
+                title.as_ptr(),
+            );
+        }
         let live_ns = crate::player::playpos_ns();
         crate::ui::player_hud::draw_playbar(
             p,

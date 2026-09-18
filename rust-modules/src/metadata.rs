@@ -603,7 +603,14 @@ impl Extra {
 /// HUD context line AND the PlayQueue gate. [`crate::route::request_play`] omits `continuous`
 /// when `ctx` equals this, so EOS cannot Up-Next into a sibling extra. The HUD prints the
 /// same word.
-pub(crate) const TRAILER_CONTEXT: &str = "Trailer";
+pub(crate) const TRAILER_CONTEXT: &str = match std::str::from_utf8(TRAILER_CONTEXT_C.to_bytes()) {
+    Ok(s) => s,
+    Err(_) => panic!("TRAILER_CONTEXT_C is ASCII"),
+};
+/// The same word as a C string, for a painter that draws it every frame — ONE literal, with the
+/// `&str` above derived from it at compile time, so the two spellings cannot drift apart and the
+/// draw path never allocates to reach it.
+pub(crate) const TRAILER_CONTEXT_C: &std::ffi::CStr = c"Trailer";
 /// Non-trailer extras. Same queue rule as a trailer: omit `continuous` so EOS cannot Up-Next.
 pub(crate) const EXTRA_CONTEXT: &str = "Extra";
 
