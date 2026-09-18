@@ -280,6 +280,7 @@ pub(super) fn activate_server_owned(
     let _ = bridge.hubs_run(crate::stores::hubs::HubsCmd::Reset).changed;
     bridge.person_run(crate::stores::person::PersonCmd::Reset);
     bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Reset);
+    bridge.metadata_run(crate::stores::metadata::MetadataCmd::Reset);
     let mut endpoints = bridge.hubs_run(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints;
     endpoints.merge(bridge.browse_discover_pump().endpoints);
     log("pms: catalog activation queued");

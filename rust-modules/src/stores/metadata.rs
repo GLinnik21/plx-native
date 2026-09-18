@@ -150,6 +150,12 @@ pub(crate) enum MetadataCmd {
     RequestDetail { sid: ServerId, rk: String },
     /// Close the page: drop the item and supersede everything in flight.
     Clear,
+    /// The server/profile switch: drop the COMPLETE owned state — including the `now`/`playing`
+    /// that `Clear` deliberately spares (D3) — and rotate the worker adapter, so a worker spawned
+    /// before the reset can only land into the retired `Arc`, never the replacement's mailbox.
+    /// Unlike `Clear`, this one must not leave a previous profile's playback descriptor or track
+    /// store reachable from the next profile's Bridge.
+    Reset,
     /// The season strip: flip optimistically, fetch the episodes off-thread.
     LoadSeason(usize),
     /// The BLOCKING season load, for a caller that indexes the episodes in the same frame.
@@ -245,12 +251,22 @@ impl MetadataStore {
         crate::metadata::record::arm(&self.adapter, enabled);
     }
 
-    /// Synchronous command path over this owner's own state/adapter. D3: no adapter rotation here
-    /// — see the struct doc.
+    /// Synchronous command path over this owner's own state/adapter. D3: no adapter rotation for
+    /// `Clear` — see the struct doc. `Reset` (the server/profile switch) DOES rotate, before the
+    /// state clears, so a worker spawned before the reset can only land into the retired `Arc` —
+    /// mirrors `PersonStore::run`/`SearchStore::run_with_directory`'s `Reset` arm.
     pub(crate) fn run(&mut self, cmd: MetadataCmd) -> bool {
+        if matches!(&cmd, MetadataCmd::Reset) {
+            self.adapter = Arc::new(Default::default());
+        }
         let changed = crate::metadata::run(&mut self.state, &self.adapter, cmd);
         self.bump();
         changed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn adapter_for_test(&self) -> Arc<crate::metadata::MetadataAdapter> {
+        self.adapter.clone()
     }
 
     /// Route-unconditional landing/spawn pass across detail, season and alt-sources — the same

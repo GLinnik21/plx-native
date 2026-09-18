@@ -1470,6 +1470,21 @@ fn clear(state: &mut MetadataState, adapter: &MetadataAdapter) {
     alt_clear(state);
 }
 
+/// The server/profile switch: unlike `clear()`, this drops the COMPLETE owned state — the `now`
+/// caption and `playing` track store `clear()` deliberately spares (D3, for a Detail page torn
+/// down and reopened mid-playback) do not belong to the NEXT profile. Adapter rotation is done by
+/// the caller (`stores::metadata::MetadataStore::run`, mirroring `PersonStore`/`SearchStore`), so
+/// this only clears state; `supersede_detail` still runs here for the in-flight work on THIS
+/// (about-to-be-retired) adapter, exactly as `clear()` does.
+fn reset(state: &mut MetadataState, adapter: &MetadataAdapter) {
+    supersede_detail(adapter);
+    state.current = None;
+    state.now = None;
+    state.playing = None;
+    state.skipped.clear();
+    alt_clear(state);
+}
+
 /// TEST ONLY — install `d` as the loaded item, bypassing the fetch and its mailbox. The screens'
 /// pure focus/label math reads `current()`, and the only real way to populate it is a PMS round
 /// trip, which the host suite has no server for. Compiled out of the shipped binary. CURRENT is a
@@ -2668,6 +2683,10 @@ pub(crate) fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAd
         }
         MetadataCmd::Clear => {
             clear(state, adapter);
+            true
+        }
+        MetadataCmd::Reset => {
+            reset(state, adapter);
             true
         }
         MetadataCmd::LoadSeason(i) => {

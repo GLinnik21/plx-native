@@ -544,6 +544,84 @@ fn search_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
         "a late landing into the retired adapter must never reach the current store's shelves");
 }
 
+/// The Metadata equivalent of `person_reset_rotates_the_adapter_and_fences_a_late_old_worker` /
+/// `search_reset_rotates_the_adapter_and_fences_a_late_old_worker` (contract Required #3, and the
+/// defect `app/boot.rs::activate_server_owned` used to leave uncovered: it reset Browse, Search,
+/// Hubs, Person and ViewState but not Metadata). Pins BOTH halves:
+///  - state: `Reset` drops the previous profile's detail, alt copies, now-playing caption AND
+///    playing-item track store — unlike `Clear`, which deliberately spares `now`/`playing` (D3,
+///    a Detail page reopened mid-playback).
+///  - fencing: a worker that captured the PRE-reset adapter can still complete (proving the
+///    completion itself is real, not silently refused for some unrelated reason), but that
+///    completion lands nowhere once the store's own adapter has rotated — mirrors search's
+///    `land_for_test` + post-reset `pump` shape.
+#[test]
+fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
+    let _guard = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let sid = crate::plex::register_for_test(
+        "bridge-metadata-late-worker", "127.0.0.1", 15, "synthetic", "late-worker");
+    let _cleanup = DirectoryPolicyCleanup;
+    let mut bridge = Bridge::for_test(|| 0);
+
+    // Seed the pre-reset profile's full owned state.
+    crate::metadata::set_current_for_test(bridge.stores.metadata.state_mut(), Some(crate::metadata::Detail {
+        sid, rk: "old-rk".into(), kind: "movie".into(), title: "Old Title".into(),
+        guid: "plex://movie/old".into(), ..Default::default()
+    }));
+    assert!(bridge.metadata_run(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(crate::metadata::NowPlaying {
+        is_episode: false, is_real_episode: false, title: "Old Playing".into(), ep_title: String::new(),
+        season: 0, index: 0, summary: String::new(), year: 0, dur_ms: 0, rating: String::new(),
+        thumb: String::new(), detail_rk: "old-rk".into(),
+    }))));
+    assert!(bridge.metadata_run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(crate::metadata::PlayingItem {
+        sid, rk: "old-rk".into(), audio: Vec::new(), subs: Vec::new(), video_fps: 0.0,
+        width: 0, height: 0, bitrate: 0, dovi: Default::default(), markers: Vec::new(), chapters: Vec::new(),
+    }))));
+    bridge.metadata_run(crate::stores::metadata::MetadataCmd::AltInstall {
+        sid, rk: "old-rk".into(),
+        copies: vec![crate::metadata::AltCopy { sid, rk: "old-rk".into(), ..Default::default() }],
+    });
+    assert!(!bridge.metadata_view().alt_copies(sid, "old-rk").is_empty(), "alt copies seeded");
+    assert!(bridge.metadata_view().current().is_some());
+    assert!(bridge.metadata_view().now_playing().is_some());
+    assert!(bridge.metadata_view().playing().is_some());
+
+    let old_adapter = bridge.stores.metadata.adapter_for_test();
+    let gen = crate::metadata::begin_detail_for_test(&old_adapter, sid, "late-rk");
+
+    assert!(bridge.metadata_run(crate::stores::metadata::MetadataCmd::Reset));
+
+    let new_adapter = bridge.stores.metadata.adapter_for_test();
+    assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
+        "reset must rotate the Metadata worker adapter");
+
+    // State half: the previous profile's detail/alt/now/playing are gone.
+    assert!(bridge.metadata_view().current().is_none(),
+        "reset must drop the previous profile's detail");
+    assert!(bridge.metadata_view().alt_copies(sid, "old-rk").is_empty(),
+        "reset must drop the previous profile's alt copies");
+    assert!(bridge.metadata_view().now_playing().is_none(),
+        "reset must drop the previous profile's now-playing descriptor");
+    assert!(bridge.metadata_view().playing().is_none(),
+        "reset must drop the previous profile's playing-item track store");
+
+    // Fencing half: a worker spawned BEFORE the reset captured `old_adapter`, not the store's new
+    // one. Land its completion straight into the retired adapter, at the generation it reserved —
+    // a witness state proves the completion is real and deliverable, not silently dropped for some
+    // unrelated reason.
+    let mut witness = crate::metadata::MetadataState::default();
+    assert!(crate::metadata::land_detail_for_test(&mut witness, &old_adapter, sid, "late-rk", gen,
+        Some(crate::metadata::Detail { sid, rk: "late-rk".into(), title: "Late Title".into(), ..Default::default() })),
+        "the pre-reset worker really completes onto the adapter it captured");
+
+    // The live, post-reset store never touches the retired adapter, so its own pump has nothing
+    // to land, and the completion above must not reach it.
+    assert!(!bridge.metadata_pump(), "an idle rotated adapter has nothing to land");
+    assert!(bridge.metadata_view().current().is_none(),
+        "a completion from a worker started before reset must not land in the post-reset store");
+}
+
 /// The account-menu lift is a second PAINT of this bridge's captured chrome, not a second
 /// publication. Changing the process globals after A captured must not make A draw B's chip.
 #[test]
