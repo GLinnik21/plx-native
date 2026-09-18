@@ -645,7 +645,7 @@ while IFS= read -r f; do
 # block, a masked `crate::ui::…::…(`, a `stores::` line), so this prefilter is a superset of the files
 # that can produce a hit.
 done < <(grep -rlE --include='*.rs' "$MUTATORS" "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" 2>/dev/null | sort)
-if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use stores::<store>::apply)"; fi
+if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use the owner's run/step method, e.g. Bridge::<store>_run)"; fi
 
 # mutators-visibility (D3): the call-site rule above can only ever prove "nobody currently calls
 # this directly" — it says nothing about whether they COULD. This reads the DECLARATION line of
@@ -665,7 +665,7 @@ if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(
 #     `screens/alt_sources_tests.rs` calls directly to grade its own shape.
 # No other exceptions: `pms::reset` (once tracked as an open item — `app/bridge.rs` and
 # `app/recorder.rs` still called it directly from their own `#[cfg(test)] mod`s) is closed, routed
-# through `stores::hubs::apply(HubsCmd::Reset)` (the variant and `pms::run`'s arm both already
+# through `HubsStore::run`/`run_with_directory` (the variant and `pms::run`'s arm both already
 # existed) and narrowed to private like every other `pms.rs` mutator.
 # One "<file>|<space-separated fn list>" entry per store — a plain array, not `declare -A`: the
 # script's own shebang is `env bash` and the dev Mac's `/bin/bash` is 3.2 (Apple ships nothing

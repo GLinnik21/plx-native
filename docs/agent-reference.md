@@ -513,9 +513,10 @@ which the linking section explains is load-bearing rather than tidy.
   deadlocked the whole `auth` test block and put five `read`s on every log line.
 - `rust-modules/src/stores/` — **the data stores behind ONE vocabulary and ONE step** (restructure
   phase 4, 2026-09-07; `docs/stores-as-machines.md`): `StoreCmd` is the complete set of mutations
-  of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`. Browse, Hubs, Person, Search and
-  ViewState are physically owned per `Bridge` by `Stores`: `BrowseStore` owns its
+  of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`. Browse, Hubs, Metadata, Person,
+  Search and ViewState are physically owned per `Bridge` by `Stores`: `BrowseStore` owns its
   state/adapter/notice, `HubsStore` owns its `PmsState`/`Arc<PmsAdapter>`/notice,
+  `MetadataStore` owns its state/`Arc<MetadataAdapter>`/notice,
   `PersonStore` owns its model/generation/retry state plus a rotated indexed fetch adapter,
   `SearchStore` owns its state/adapter/notice with a rotated adapter, and `ViewStateStore`
   owns its queue, in-flight request, retry/refresh latches, rotated worker adapter and notice.
@@ -528,8 +529,8 @@ which the linking section explains is load-bearing rather than tidy.
   `Stores` before capturing those publications. Person's borrowed `PersonView` reaches its three
   live readers through `AppViews`/`Cx`, never a
   free selector. The aggregate notice drain in `app/bridge.rs` delivers `StoreChanged` to live
-  pages; `metadata` still retains its compatibility
-  global/mailbox implementation.
+  pages; `metadata` reads go through `MetadataView`, which borrows from the owner (`&'a`), not
+  a compatibility global or mailbox.
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Four** callers in a lab build and three in every other, each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
@@ -1100,12 +1101,15 @@ you get without waking a television. What it covers today, by module:
   — see `tools/sockprobe.c` above, where `shutdown`-during-`connect` behaves oppositely on the two
   kernels. A socket assertion that passes here is evidence about macOS, not about the TV.
   **(3) Some app async seams remain process-wide**, so some tests are serialized rather than parallel:
-  `metadata.rs`'s two take `lib.rs`'s crate-wide `testlock::serial()` (the detail and season
-  mailboxes contend across modules — a per-module mutex cannot see that, because the season
-  generation also moves under `pump_detail`), and `metadata`'s compatibility catalog statics are
-  still shared. Browse, Hubs, Person and ViewState are the exceptions: a production `Bridge` owns
-  those stores' state, adapters and notices, so separate owners share neither state nor landings;
-  their fixtures use explicit `Stores` owners. Those locks are load-bearing for the remaining globals, not incidental
+  `metadata.rs`'s test that drives `set_current_for_test` still takes `lib.rs`'s crate-wide
+  `testlock::serial()` — not because its own state is global any more (`MetadataState` and
+  `MetadataAdapter`, detail and season mailboxes included, are per-owner fields now, like the other
+  five stores), but because `set_current_for_test`'s `assert_held` enforces the SAME crate-wide
+  lock the genuinely-still-global seams (route's play mailbox, the player's SHARED block) also
+  take, and the convention is one lock, not one per module. Browse, Hubs, Metadata, Person, Search
+  and ViewState are all owned now: a production `Bridge` owns each store's state, adapters and
+  notices, so separate owners share neither state nor landings; their fixtures use explicit
+  `Stores` owners. Those locks are load-bearing for the remaining globals, not incidental
   — hold one for anything that touches the shared registry, compatibility state or the app frame.
   **Since 2026-09-10 the lock also records WHICH THREAD holds it, and the stores ASSERT it.** A
   mutex nobody is obliged to take is a convention, and a convention broken by one test in two

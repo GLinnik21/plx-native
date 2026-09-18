@@ -1680,8 +1680,8 @@ impl Bridge {
 /// **The trunk every app frame passes through, so it is where the test-only lock rule is
 /// ENFORCED** — the rule stated in prose below
 /// `route_flips_preserve_content_and_player_origin_entries` and broken from another module
-/// anyway. A frame is not a walk of a nav tree: it drains the aggregate's Browse notice plus the
-/// remaining stores' compatibility notices, and it pumps every store — and `browse`'s pump ends in
+/// anyway. A frame is not a walk of a nav tree: it drains each of the six owners' own notice, and it
+/// pumps every store — and `browse`'s pump ends in
 /// `sync_roster`, which calls `browse::reset()` the moment the section table holds a source the
 /// live registry does not. Every `browse` fixture in the suite leaves it holding exactly that
 /// (`ServerId::UNSET` sources), so an unguarded frame ANYWHERE empties another module's seeded
