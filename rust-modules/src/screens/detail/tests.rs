@@ -361,6 +361,76 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
     clear();
 }
 
+/// **T2 pin.** `start_reconciliation` (`Enter(Restored)`'s promotion of a `Deferred` obligation)
+/// pushes `RequestDetail` onto the deferred `AppFx::Store` queue and flips `self.refresh` to
+/// `Requested` in the SAME synchronous step — but the store only admits that command on a later
+/// drain iteration (`Bridge::app_fx` -> `Fx::Deliver` to the store machine, several queue pops
+/// later; see `ui/dispatch.rs::drain`/`absorb`). If a `StoreChanged` or `Tick` reaches this
+/// screen's `pump_restore` inside that window, the store still answers with the STALE terminal
+/// (`Some(false)`) left by the PREVIOUS reconciliation at this exact `(sid, rk)` address, and
+/// `pump_restore`'s `(Requested, Some(false))` arm retires the freshly promoted obligation before
+/// the new request has even been admitted.
+///
+/// Unlike `refresh_content`'s route (`app::content::refresh_content` runs `RequestDetail` through
+/// `Bridge::metadata_run` in the same synchronous step that emits `DetailRestore{Requested}` —
+/// see C1fix, `3b628b23`), `DetailScreen::step` has no same-turn boundary to call: `Cx` publishes
+/// stores as read-only views, so there is no `&mut Stores` here by construction, and the engine's
+/// own drain runs the delivery to the store machine strictly after this step returns. Closing this
+/// window from inside `DetailScreen` alone is not possible without giving screens a synchronous
+/// store-write path for `Enter` the way `app/content.rs` has for `DetailRestore` — that is a
+/// widening of `Cx`/`Rig`, not a Metadata-layer fix, so this test is pinned RED rather than
+/// "fixed" by weakening the assertion. See the C2 stage report for the STOP-AND-REPORT this test
+/// backs.
+///
+/// Pinned `#[ignore]`, not fixed: this is a confirmed defect (see doc comment above), but closing
+/// it needs `Cx`/`Rig` widened so a screen can write a store synchronously from `step` — an
+/// architecture change outside this layer's scope. Left red-and-ignored, not weakened, so
+/// `make check`'s green baseline still means what it says while the gap stays documented and
+/// runnable (`cargo test -- --ignored`).
+#[test]
+#[ignore = "T2 pin (confirmed, unfixed): Enter(Restored) promotion is not admitted synchronously; \
+            closing this needs Cx/Rig widened for a screen to write a store from `step`, which is \
+            an architecture change and the owner's call, not this layer's — see the C2 stage report"]
+fn enter_restored_promotion_survives_a_stale_terminal_before_admission_t2() {
+    let guard = install(detail(ServerId::UNSET, "show"));
+    // Seed a stale, already-completed reconciliation at this exact address so the store answers
+    // `Some(false)` (a completed reconciliation to consume) before the NEW request is admitted.
+    let generation = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "show");
+    {
+        let (__s, __a) = test_store().split_for_test();
+        crate::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "show", generation, None);
+    }
+    assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "show"), Some(false));
+
+    let mut screen = bare(&guard, ServerId::UNSET, "show");
+    screen.refresh = DetailRefreshPhase::Deferred; // obligation carried while this page was covered
+
+    // Enter(Restored) promotes Deferred -> Requested and pushes RequestDetail, synchronously with
+    // the phase flip, but the pushed effect is not yet admitted to the store.
+    let (_, entered) = step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Restored), None);
+    assert_eq!(screen.refresh, DetailRefreshPhase::Requested, "Enter(Restored) must promote the obligation");
+    assert!(
+        entered.iter().any(|e| matches!(
+            &e.fx,
+            Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(MetadataCmd::RequestDetail { .. })))
+        )),
+        "Enter(Restored) must have queued the reconciliation request"
+    );
+
+    // Simulate a StoreChanged/Tick landing BEFORE the drain admits that queued command:
+    // deliberately do NOT run `apply_metadata_effects` first, unlike every other test in this file.
+    pump_restore(&mut screen);
+
+    assert_ne!(
+        screen.refresh,
+        DetailRefreshPhase::None,
+        "T2: a freshly promoted reconciliation obligation must survive a stale terminal result that \
+         predates the request which is still only queued, not yet admitted to the owning store"
+    );
+    test_store().run(MetadataCmd::Clear);
+    clear();
+}
+
 #[test]
 fn restore_memory_cannot_rewind_a_newer_refresh_obligation() {
     let guard = install(detail(ServerId::UNSET, "show"));
