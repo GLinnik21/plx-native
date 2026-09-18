@@ -107,6 +107,7 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         preview_played_for: None,
         preview_started_for: None,
         preview_had_picture: false,
+        trailer_ctl: trailer::Transport::IDLE,
         refresh: DetailRefreshPhase::None,
         refresh_gen: 0,
         restore_intent: None,
@@ -1184,6 +1185,159 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
     crate::plex::reset_servers_for_test();
 }
 
+/// **A pointer click must not be able to reach the hero row — Play included — while full-trailer
+/// mode owns the screen.** `hero::focusable`/`valid()` keep Play "valid" so the engine has a
+/// legitimate keyboard anchor to stand on, but `draw_buttons` fades the whole row (Play too) to
+/// alpha 0 there. Before the fix, `record_stops` still registered Play's rect as a Stop, so a
+/// magic-remote click on the old pill position resolved and activated it — starting the FEATURE
+/// from a screen showing only a trailer. This drives the real `player::preview` singleton (behind
+/// `testlock::serial()`, reset before returning) because `full_trailer()` reads it live.
+#[test]
+fn full_trailer_mode_registers_no_hero_stops_at_all() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    crate::player::preview::force_playing_for_test();
+    assert!(screen.full_trailer(), "the fixture must land in full-trailer mode for this test to mean anything");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let context = cx(&measure, Some(hero::HeroCtl::Play.elem()));
+    let mut draw = DrawFrame::new(&context, crate::ui::Painter::root());
+    screen.record_stops(&mut draw);
+    let stops = draw.into_stops();
+    let set = screen.hero_set();
+    let (all, n) = hero::hero_ctls(set);
+    for ctl in &all[..n] {
+        assert!(
+            !stops.iter().any(|stop| stop.key.elem == ctl.elem()),
+            "{ctl:?} must not register a pointer stop while full_trailer() is up"
+        );
+    }
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
+/// **The mechanism, not a special case.** `preview_chrome` is the one scalar `draw_hero` already
+/// fades the hero's own chrome through, and `draw`'s below-hero loop (season/episodes, Extras,
+/// Related, Cast & Crew, About) now hands that SAME value to every section as `below_hero`'s
+/// alpha, rather than a second predicate one of them could drift from. Proving `preview_chrome`
+/// itself eases to 0 while `full_trailer()` holds and back to 1 on collapse is proving the
+/// sections hide and reappear too — the page draws no rendering harness can drive here, but this
+/// is the one number every one of them multiplies through.
+#[test]
+fn preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_and_back() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    crate::player::preview::force_playing_for_test();
+    screen.preview_promoted = true;
+    assert!(screen.full_trailer(), "the fixture must land in full-trailer mode for this test to mean anything");
+
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut sink = Effects::new(
+        &mut effects,
+        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        &mut present,
+    );
+    let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
+    let mut now = 0u32;
+    for _ in 0..300 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+    }
+    assert!(
+        screen.preview_chrome < 0.01,
+        "preview_chrome={} should have eased to 0 in full-trailer mode — the value every \
+         below-hero section now fades through",
+        screen.preview_chrome
+    );
+
+    // Collapse: full-trailer mode ends, and every section's alpha must climb back to full.
+    screen.preview_promoted = false;
+    for _ in 0..300 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+    }
+    assert!(
+        screen.preview_chrome > 0.99,
+        "preview_chrome={} should have eased back to full once full-trailer mode collapsed",
+        screen.preview_chrome
+    );
+
+    drop(sink);
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
+/// **Background autoplay must not fade the rows between the synopsis and Play.** `draw_hero`
+/// used to gate the identity/meta line, the ratings row, the facts row and the people column on
+/// `chrome * preview_prose` — and `preview_prose` tracks `player::preview::View::prose`, which
+/// drops to 0 the instant ANY picture is up, background autoplay included. `preview_chrome` is
+/// the value those rows are drawn through now (same as the buttons and the below-hero sections),
+/// and it only leaves 1.0 in FULL-trailer mode (`preview_promoted && picture`), not for a picture
+/// merely dwelling in the background. This pins that split: `preview_chrome` stays full while a
+/// background trailer plays even though the OLD gating value (`preview_prose`) has already
+/// dropped to zero underneath it, and only sinking into full-trailer mode (promoted) still takes
+/// it to zero.
+#[test]
+fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_people() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    crate::player::preview::force_playing_for_test();
+    assert!(
+        !screen.full_trailer(),
+        "not promoted yet — this must be the background-autoplay case, not full-trailer"
+    );
+
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut sink = Effects::new(
+        &mut effects,
+        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        &mut present,
+    );
+    let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
+    let mut now = 0u32;
+    for _ in 0..300 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+    }
+    assert!(
+        screen.preview_prose < 0.01,
+        "preview_prose={} must drop once a picture is up: draw_hero gates the identity/meta line \
+         and the rating marks on it, and the owner wants those two out of the way while the \
+         trailer answers the same question they do",
+        screen.preview_prose
+    );
+    assert!(
+        screen.preview_chrome > 0.99,
+        "preview_chrome={} must stay full during background autoplay: draw_hero gates the facts \
+         row (date · runtime · Direct Play) and the people column on it, and those must not \
+         vanish and come back under a playing preview",
+        screen.preview_chrome
+    );
+
+    // Promote to full-trailer mode: NOW everything hides, `preview_chrome` included.
+    screen.preview_promoted = true;
+    assert!(screen.full_trailer());
+    for _ in 0..300 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink);
+    }
+    assert!(
+        screen.preview_chrome < 0.01,
+        "preview_chrome={} should still ease to 0 once full-trailer mode takes over — that part \
+         is unchanged",
+        screen.preview_chrome
+    );
+
+    drop(sink);
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
 #[test]
 fn an_item_with_no_ultrablur_keeps_the_flat_app_ground() {
     let wash = AmbientWash::flat(theme::SURFACE_APP);
@@ -1257,6 +1411,36 @@ fn a_long_synopsis_keeps_the_first_section_one_region_gap_below_the_buttons() {
         chain.btn_y + hero::CD + theme::space::XL
     );
     assert_eq!(screen.content_top(&crate::ui::fixture::FixtureMeasure, test_store().view()), screen.section_top(1, detail, &crate::ui::fixture::FixtureMeasure));
+    clear();
+}
+
+/// **A landing must not move ground being read**, restated for the trailer preview: the
+/// identity/meta line, the review scores and the playback note fade to zero alpha while a
+/// trailer plays in the background (`preview_prose`/`preview_synopsis`/`preview_chrome`,
+/// `screens::detail::mod::draw_hero`'s `chrome`/`prose` painters), and back on collapse. Nothing
+/// about the hero's own Y chain may follow that fade: `compute_hero_chain` takes only the item's
+/// content (the synopsis text, whether it has ratings) and must return byte-identical geometry
+/// whichever way the same item's preview alphas sit.
+#[test]
+fn the_hero_chain_is_identical_whether_or_not_the_trailer_preview_has_faded_its_prose() {
+    let sid = ServerId::UNSET;
+    let d = detail(sid, "show");
+    let _guard = install(d);
+    let mut screen = bare(&_guard, sid, "show");
+
+    let rest = screen.compute_hero_chain(screen.detail(), &crate::ui::fixture::FixtureMeasure);
+
+    screen.preview_prose = 0.0;
+    screen.preview_synopsis = 0.0;
+    screen.preview_chrome = 0.0;
+    screen.preview_field = 0.0;
+    let faded = screen.compute_hero_chain(screen.detail(), &crate::ui::fixture::FixtureMeasure);
+
+    assert_eq!(rest.meta_y, faded.meta_y, "meta line must not move when it fades");
+    assert_eq!(rest.ratings_y, faded.ratings_y, "ratings row must not move when it fades");
+    assert_eq!(rest.syn_y, faded.syn_y, "synopsis must not move");
+    assert_eq!(rest.facts_y, faded.facts_y, "facts/playback-note line must not move when it fades");
+    assert_eq!(rest.btn_y, faded.btn_y, "the action row must not move");
     clear();
 }
 
@@ -1356,6 +1540,270 @@ fn back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise() {
     clear();
 }
 
+/// **The input arm's own claim: full-trailer mode answers a key it owns on EVERY edge, before any
+/// other arm, but a `Reveal`-mapped key only ACTS on the DOWN edge.** UP is the probe:
+/// `trailer::trailer_key` maps it to `Reveal`, which has no effect this test can mistake for
+/// ordinary UP navigation, so a `revealed()` flip after the DOWN edge (and none after the UP edge)
+/// can only have come from this arm running — and running before whatever ordinary UP handling
+/// exists further down. (LEFT/RIGHT now map to `Scrub`, which — unlike `Reveal` — DOES act on
+/// every edge; that contract is graded separately, by the scrub-specific tests below.)
+#[test]
+fn full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_down_edge() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    crate::player::preview::force_playing_for_test();
+    assert!(screen.full_trailer(), "the fixture must actually be in full-trailer mode");
+
+    fn key_event(key: Key, edge: Edge) -> ScreenEvent<TestHost> {
+        ScreenEvent::Input(InputEvent {
+            at: Default::default(),
+            source: crate::ui::machine::Source::Script,
+            kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false },
+        })
+    }
+    let play = Some(hero::HeroCtl::Play.elem());
+
+    let (handled, _) = step(&mut screen, &key_event(Key::Up, Edge::Up), play);
+    assert_eq!(handled, Handled::Yes, "the up edge of an owned key must still be swallowed");
+    assert!(!screen.trailer_ctl.revealed(), "the up edge must not act");
+
+    let (handled, _) = step(&mut screen, &key_event(Key::Up, Edge::Down), play);
+    assert_eq!(handled, Handled::Yes, "the down edge must be swallowed too");
+    assert!(
+        screen.trailer_ctl.revealed(),
+        "the down edge must act (Reveal) — proof this ran before ordinary UP handling"
+    );
+
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
+/// Drive one full-trailer key's EFFECT (`trailer_act`) directly. `full_trailer()`'s own guard
+/// (swallowing every edge, acting only on Down) is covered end to end at the input-arm level by
+/// `full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_down_edge` above,
+/// via the `player::preview::force_playing_for_test()`/`set_phase_for_test` seam; what is graded
+/// here is only this page's own per-key EFFECT, which does not need the live singleton at all. The
+/// key ladder that chooses the action is pure and graded in `screens::detail::trailer`.
+fn trailer_act(
+    screen: &mut DetailScreen,
+    act: trailer::TrailerKey,
+) -> Vec<crate::ui::machine::Stamped<TestHost>> {
+    trailer_act_edge(screen, act, Edge::Down, 0)
+}
+
+/// The edge-aware twin, for `Scrub`'s own tests below — every other variant here only ever acts
+/// on `Down`, which is what the plain [`trailer_act`] above always passes.
+fn trailer_act_edge(
+    screen: &mut DetailScreen,
+    act: trailer::TrailerKey,
+    edge: Edge,
+    now: u32,
+) -> Vec<crate::ui::machine::Stamped<TestHost>> {
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut sink = Effects::new(
+        &mut effects,
+        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        &mut present,
+    );
+    screen.trailer_act::<TestHost>(act, edge, now, &mut sink);
+    drop(sink);
+    effects
+}
+
+fn transport_reqs(
+    effects: &[crate::ui::machine::Stamped<TestHost>],
+) -> Vec<Option<bool>> {
+    effects
+        .iter()
+        .filter_map(|effect| match &effect.fx {
+            Fx::App(AppFx::Content(ContentReq::PreviewTransport(play))) => Some(*play),
+            _ => None,
+        })
+        .collect()
+}
+
+fn seek_reqs(effects: &[crate::ui::machine::Stamped<TestHost>]) -> Vec<i64> {
+    effects
+        .iter()
+        .filter_map(|effect| match &effect.fx {
+            Fx::App(AppFx::Content(ContentReq::PreviewSeek(target_ns))) => Some(*target_ns),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **Full-trailer mode's transport keys.** OK/PLAYPAUSE ask for the toggle, the remote's dedicated
+/// PLAY and PAUSE ask for their own direction, and every one of the three leaves the controls on
+/// screen. (LEFT/RIGHT's own `Scrub` request — `ContentReq::PreviewSeek` — is graded separately,
+/// by `a_held_left_right_scrub_commits_a_preview_seek_on_key_up` below: unlike these three, it
+/// only fires once the gesture ends, and only on some edges.)
+#[test]
+fn ok_toggles_the_trailers_pause_and_play_pause_pick_a_direction() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    for (act, want) in [
+        (trailer::TrailerKey::Toggle, None),
+        (trailer::TrailerKey::Play, Some(true)),
+        (trailer::TrailerKey::Pause, Some(false)),
+    ] {
+        let mut screen = bare(&_guard, sid, "show");
+        screen.preview_promoted = true;
+        let effects = trailer_act(&mut screen, act);
+        assert_eq!(transport_reqs(&effects), vec![want], "act={act:?}");
+        assert!(
+            screen.trailer_ctl.revealed(),
+            "act={act:?} must leave the controls on screen"
+        );
+        assert!(screen.preview_promoted, "act={act:?} must not leave the mode");
+    }
+    clear();
+}
+
+/// `trailer_act`'s `Scrub` arm reads `player::duration_ns()`/`playpos_ns()` on `Down`
+/// (`Transport::scrub_fresh`'s own doc: passed in rather than read inside `trailer.rs`, but
+/// `trailer_act` is exactly the one caller that does the reading). Those are the crate-wide
+/// `SHARED` atomics — held together with the `testlock::serial()` guard `install` already hands
+/// back (construct the fixture AFTER it, never beside a second `serial()`: that lock is a plain
+/// mutex and taking it twice on one thread hangs the suite rather than failing it), same as
+/// `screens::player::mod`'s own scrub `Fixture`. `duration_ns` must be positive or
+/// `scrub_fresh` is a deliberate no-op (nothing to scrub within).
+struct DurationFixture(i64, i64);
+impl DurationFixture {
+    const DUR: i64 = 100_000_000_000;
+    fn new() -> Self {
+        use std::sync::atomic::Ordering::Relaxed;
+        let was = DurationFixture(
+            crate::player::SHARED.duration_ns.load(Relaxed),
+            crate::player::SHARED.playpos_ns.load(Relaxed),
+        );
+        crate::player::SHARED.duration_ns.store(Self::DUR, Relaxed);
+        crate::player::SHARED.playpos_ns.store(0, Relaxed);
+        was
+    }
+}
+impl Drop for DurationFixture {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        crate::player::SHARED.duration_ns.store(self.0, Relaxed);
+        crate::player::SHARED.playpos_ns.store(self.1, Relaxed);
+    }
+}
+
+/// **`TrailerKey::Scrub` is dispatched on every edge, not just `Down`** — `Down` hops the fixed
+/// step, `Up` (with no repeat in between, i.e. a tap) arms the debounce rather than committing at
+/// once, and it fires a `ContentReq::PreviewSeek` — never `PreviewTransport` — once the debounce's
+/// own tick (driven by `preview_tick`, not exercised by this direct `trailer_act` harness) elapses.
+/// This proves the wiring from the key ladder into `Transport::scrub_fresh`/`scrub_release`; the
+/// gesture math itself (accumulation, the hold ramp, the lost-keyup net) is graded in
+/// `screens::detail::trailer`'s own tests.
+#[test]
+fn left_right_scrub_hops_on_down_and_asks_for_no_transport_request() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let _dur = DurationFixture::new();
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+
+    let effects = trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Down, 0);
+
+    assert!(transport_reqs(&effects).is_empty(), "a scrub press is not a pause/resume");
+    assert!(seek_reqs(&effects).is_empty(), "a fresh press previews — it does not commit yet");
+    assert!(screen.trailer_ctl.scrubbing(), "the gesture is now tracked on the transport");
+    assert!(screen.trailer_ctl.revealed(), "any key the mode keeps re-arms the linger");
+    assert!(screen.preview_promoted, "a scrub must not leave the mode");
+    clear();
+}
+
+/// A HELD scrub commits at once on its key-up, through `ContentReq::PreviewSeek` — never
+/// `route::request_seek`'s own `PlayerReq::SeekTo`/`CommitSeek`, which is the whole point of
+/// routing a preview's seek through `player::preview::seek` instead (see `ContentReq::PreviewSeek`
+/// and `player/preview.rs`'s own module doc for the watch-state promise this keeps).
+#[test]
+fn a_held_left_right_scrub_commits_a_preview_seek_on_key_up() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let _dur = DurationFixture::new();
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+
+    trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Down, 0);
+    trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Repeat, 0);
+    let target = screen.trailer_ctl.preview_ns_for_test();
+    let effects = trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Up, 0);
+
+    assert_eq!(seek_reqs(&effects), vec![target], "the hold's own preview position, verbatim");
+    assert!(transport_reqs(&effects).is_empty(), "a seek is not a pause/resume");
+    assert!(!screen.trailer_ctl.scrubbing(), "committing ends the gesture");
+    clear();
+}
+
+/// A direction key the mode keeps only REVEALS: it asks for no transport at all, which is the
+/// whole of the "no seek on a preview session" rule at this layer.
+#[test]
+fn a_revealing_key_asks_for_no_transport() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    let effects = trailer_act(&mut screen, trailer::TrailerKey::Reveal);
+    assert!(transport_reqs(&effects).is_empty());
+    assert!(screen.trailer_ctl.revealed());
+    clear();
+}
+
+/// The mode's own collapse key goes through `collapse_full_trailer` — the one collapse body BACK
+/// and DOWN already share — and takes the transport down with it. Nothing is resumed here because
+/// nothing is paused: `preview::paused()` is false with no live session, which is exactly the
+/// state a host test is in.
+#[test]
+fn the_collapse_key_leaves_the_mode_and_dismisses_the_transport() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    screen.trailer_ctl.reveal();
+    let effects = trailer_act(&mut screen, trailer::TrailerKey::Collapse);
+    assert!(!screen.preview_promoted, "the mode must be over");
+    assert!(!screen.trailer_ctl.revealed(), "the controls go with it");
+    assert!(transport_reqs(&effects).is_empty(), "nothing was paused to resume");
+    clear();
+}
+
+/// The collapse's OTHER branch: `preview::paused()` true means the transport was left paused when
+/// the mode closed, so `collapse_full_trailer` asks for a resume on the way out. The empty case
+/// above (nothing paused, nothing to resume) is the only one the pure `trailer_act` path can reach
+/// on its own; `preview::paused()` reads the live singleton and `player::TX`, so this one drives
+/// both — the same `force_playing_for_test`/`reset_for_test` seam as the input-arm test above, plus
+/// `TX.commit_paused`/`TX.reset`, the same production seam `player::mod`'s own tests use.
+#[test]
+fn the_collapse_key_resumes_the_transport_when_it_was_left_paused() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    screen.trailer_ctl.reveal();
+    crate::player::preview::force_playing_for_test();
+    crate::player::TX.commit_paused(true);
+    assert!(crate::player::preview::paused(), "the fixture must actually be paused");
+
+    let effects = trailer_act(&mut screen, trailer::TrailerKey::Collapse);
+
+    assert!(!screen.preview_promoted, "the mode must be over");
+    assert!(!screen.trailer_ctl.revealed(), "the controls go with it");
+    assert_eq!(
+        transport_reqs(&effects),
+        vec![Some(true)],
+        "leaving the mode while paused must ask to resume"
+    );
+
+    crate::player::TX.reset();
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
 /// BACK's second stage, `collapse_background_preview`: with no live trailer picture up (the
 /// default host-test state — driving the live `player::preview` singleton is deliberately avoided
 /// here, same as `preview_completed_naturally`'s extraction reasons above), BACK must not be
@@ -1421,6 +1869,66 @@ fn preview_already_played_is_a_plain_key_match() {
     assert!(!super::preview_already_played(None, "rk1"));
     assert!(!super::preview_already_played(Some("rk2"), "rk1"));
     assert!(super::preview_already_played(Some("rk1"), "rk1"));
+}
+
+/// The preview logo's own scroll fade: untouched at `t=0` (a normal hero has no preview to pin
+/// into a corner, and the caller's own `hero_alpha` already governs it), full at the top even
+/// while shrunk (`t=1`, `scroll_pos=0`), eased down as `scroll_pos` climbs toward `hero_extent`
+/// (where the below-hero flow starts), pinned at 0 once past it, and — because it is a pure
+/// function of the CURRENT `scroll_pos` with no memory — back to full the moment scroll returns
+/// to 0, exactly the "come back when scrolled back up" the owner asked for.
+#[test]
+fn preview_logo_scroll_alpha_only_fades_the_shrunk_logo_past_the_hero() {
+    let extent = 800.0_f32;
+
+    // t=0: a normal hero position is untouched by this factor at any scroll.
+    for scroll in [0.0, 400.0, 800.0, 2000.0] {
+        assert_eq!(
+            super::preview_logo_scroll_alpha(scroll, extent, 0.0),
+            1.0,
+            "t=0 (no preview) must not be touched by this fade at scroll={scroll}"
+        );
+    }
+
+    // t=1: full at the very top, and monotonically non-increasing as scroll rises.
+    assert_eq!(super::preview_logo_scroll_alpha(0.0, extent, 1.0), 1.0);
+    let mut prev = 1.0;
+    let mut s = 0.0;
+    while s <= extent * 1.5 {
+        let a = super::preview_logo_scroll_alpha(s, extent, 1.0);
+        assert!((0.0..=1.0).contains(&a), "scroll={s}: alpha {a} outside 0..=1");
+        assert!(a <= prev + 1e-6, "scroll={s}: alpha rose from {prev} to {a}");
+        prev = a;
+        s += extent / 16.0;
+    }
+    assert_eq!(
+        super::preview_logo_scroll_alpha(extent, extent, 1.0),
+        0.0,
+        "fully hidden once scrolled exactly to the below-hero flow's own start"
+    );
+    assert_eq!(
+        super::preview_logo_scroll_alpha(extent * 2.0, extent, 1.0),
+        0.0,
+        "clamped, not negative, once scrolled well past it"
+    );
+
+    // Scrolling back up restores it — a pure function of the current position, no hysteresis.
+    assert_eq!(
+        super::preview_logo_scroll_alpha(extent, extent, 1.0),
+        0.0
+    );
+    assert_eq!(
+        super::preview_logo_scroll_alpha(0.0, extent, 1.0),
+        1.0,
+        "back to full the instant scroll returns to the top"
+    );
+
+    // Partway through `t` (the spring mid-travel) blends the two: half-shrunk halves the fade.
+    assert_eq!(
+        super::preview_logo_scroll_alpha(extent, extent, 0.5),
+        0.5,
+        "at t=0.5 the fully-past-hero case should only be half faded"
+    );
 }
 
 /// Closes the outside-voice-found gap: `preview_played_for`/`preview_started_for` must reset on
@@ -1956,19 +2464,28 @@ fn cached_section_tops_match_the_stacking_walk() {
         cast_first,
         "asking a later section first must not change earlier tops"
     );
+    // The walk asks for each gap the same way the flow does, because there are three of them and
+    // which one applies is a property of the section ABOVE: a shelf (4 cast, 3 related) already
+    // carries its own label band, so what follows it is `UNDER_LABEL_AIR` and not a second full
+    // region gap stacked on top of it. Hard-coding `SECTION_GAP` here is what made this test read
+    // the layout as 42px out when the shelves stopped double-spacing.
+    let gap = |above: i32, below: i32| DetailScreen::section_gap(above, Some(below));
+    assert_eq!(gap(4, 3), crate::ui::consts::UNDER_LABEL_AIR, "a shelf brings its own band");
+    assert_eq!(gap(2, 4), super::SECTION_GAP, "a bare list does not");
+
     assert_eq!(seasons, screen.content_top(&measure, test_store().view()));
     assert_eq!(episodes, seasons + season::ROW_H + super::TAB_EP_GAP);
     assert_eq!(
         cast_first,
-        episodes + screen.block_h(2, detail, &measure) + super::SECTION_GAP
+        episodes + screen.block_h(2, detail, &measure) + gap(2, 4)
     );
     assert_eq!(
         related,
-        cast_first + screen.block_h(4, detail, &measure) + super::SECTION_GAP
+        cast_first + screen.block_h(4, detail, &measure) + gap(4, 3)
     );
     assert_eq!(
         about,
-        related + screen.block_h(3, detail, &measure) + super::SECTION_GAP
+        related + screen.block_h(3, detail, &measure) + gap(3, 5)
     );
     clear();
 }
@@ -2133,8 +2650,12 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
         &[0, 1, 2, 4, 6, 3, 5],
         "extras sits after Cast and before Related"
     );
-    let hide = super::compact_title_hide_pos(&sections, n, true).unwrap();
-    assert_eq!(sections[hide], 4, "a show still hides the compact title at Cast");
+    // The pinned title is no longer anchored to a NAMED section: it leaves as soon as the first
+    // block below the hero starts to travel, whichever section that is.
+    let first_top = screen.section_top_settled(sections[1], loaded, &crate::ui::fixture::FixtureMeasure);
+    let hide_at = first_top - crate::ui::detail_layout::TOP_MARGIN;
+    assert_eq!(super::compact_title_alpha(hide_at, first_top, 0.0), 1.0);
+    assert_eq!(super::compact_title_alpha(hide_at + 400.0, first_top, 0.0), 0.0);
 
     let mut spot = crate::metadata::Spot::default();
     spot.section = 6;
@@ -2177,8 +2698,12 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     };
     let (sections, n) = screen.sections(Some(&movie));
     assert_eq!(&sections[..n], &[0, 4, 6, 3, 5]);
-    let hide = super::compact_title_hide_pos(&sections, n, false).unwrap();
-    assert_eq!(sections[hide], 3, "a movie still hides the compact title at Related");
+    // Same rule on a movie, whose first below-hero section is Cast rather than the season strip:
+    // the title is out by the time that block has moved a fraction of its own height.
+    let first_top = screen.section_top_settled(sections[1], &movie, &crate::ui::fixture::FixtureMeasure);
+    let hide_at = first_top - crate::ui::detail_layout::TOP_MARGIN;
+    assert!(super::compact_title_alpha(hide_at - 1.0, first_top, 0.0) > 0.99);
+    assert!(super::compact_title_alpha(hide_at + 400.0, first_top, 0.0) < 0.01);
     clear();
 }
 

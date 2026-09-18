@@ -725,6 +725,26 @@ pub(crate) enum ContentReq {
     },
     /// Stop a hero preview and stay on the page.
     PreviewStop,
+    /// **Pause or resume the live hero preview** — full-trailer mode's OK/PLAY/PAUSE. `Some(true)`
+    /// is the remote's PLAY key, `Some(false)` its PAUSE, `None` the PLAYPAUSE toggle, exactly as
+    /// [`PlayerReq::Transport`] carries them.
+    ///
+    /// A request rather than something the page performs, for [`PlayerReq::Transport`]'s reason:
+    /// pausing needs the `MainThread` token and the playback session's `&mut`, neither of which a
+    /// screen may name (§2.1). It carries no position: this is the toggle only, and its `SeekTo`
+    /// twin is [`ContentReq::PreviewSeek`], below.
+    PreviewTransport(Option<bool>),
+    /// **A user-driven LEFT/RIGHT seek inside a playing trailer** — the target position, in ns.
+    ///
+    /// Deliberately NOT `PlayerReq::SeekTo`/`CommitSeek`: those reach `player::request_seek`,
+    /// which writes `route::note_user_seek_intent` and
+    /// `report::note_seek_for(playback_trace_generation())` — a preview has no trace generation,
+    /// and `player::preview`'s watch-state promise (no PlayQueue, no timeline, no scrobble) covers
+    /// a seek exactly like every other write. This reaches `player::preview::seek` instead, which
+    /// carries its own budget/breaker accounting (`player::preview`'s module doc) — the same
+    /// `MainThread`/`&mut PlaybackSession` reason [`ContentReq::PreviewTransport`] is a request at
+    /// all.
+    PreviewSeek(i64),
     ItemMenu,
     /// **Present one of the Detail page's own panels** on the container tree (spec §6.2's
     /// "page-owned panels"). The page names WHICH and supplies whatever the panel needs to place

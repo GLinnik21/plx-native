@@ -12,9 +12,14 @@ use crate::ui::{theme, Painter, Rect};
 pub(crate) const CAST_ELEM_RANGE_START: u32 = 1152;
 pub(crate) const CAST_ELEM_RANGE_END: u32 = 1664;
 pub(crate) const CAST_GROUP: GroupId = GroupId(4);
-pub(crate) const LABEL_H: f32 = 60.0;
+/// Heading cap top to card top — the SHARED shelf pitch, stated as the sum rather than as the 60
+/// it has always been, so the three detail shelves move together (see [`super::related::LABEL_H`]).
+pub(crate) const LABEL_H: f32 = crate::ui::consts::TITLE_DY + crate::ui::consts::CARD_DY;
 const SLOT: f32 = 230.0;
-const UNDER_H: f32 = 92.0 + 190.0 * (RowStyle::CAST.focus_scale - 1.0) * 0.5;
+/// How far a FOCUSED headshot grows past the row box. It is not part of the label band — it is the
+/// focus pop of a 190-tall circle, half of which falls below the row — so it rides the same
+/// expansion the band does rather than being reserved on every frame.
+pub(crate) const FOCUS_POP: f32 = RowStyle::CAST.h * (RowStyle::CAST.focus_scale - 1.0) * 0.5;
 
 pub(crate) fn elem(index: usize) -> Option<u32> {
     (index < (CAST_ELEM_RANGE_END - CAST_ELEM_RANGE_START) as usize)
@@ -72,8 +77,13 @@ pub(crate) fn rect(row: &CardRow, index: usize, top: f32, at_drawn: bool) -> Rec
     }
 }
 
+/// The cast row's under-band is FIXED, and it is the one detail shelf that may not take the shared
+/// collapse: it draws a name and a role under EVERY headshot, focused or not, so the room is
+/// occupied on every frame. Related and Extras draw only the focused tile's label, which is what
+/// lets them give it back ([`super::related::block_h`]). Measured on the panel first: collapsed,
+/// the cast names printed straight through the Extras heading.
 pub(crate) fn block_h() -> f32 {
-    LABEL_H + RowStyle::CAST.h + UNDER_H
+    LABEL_H + RowStyle::CAST.h + card_row::UNDER_LABEL_H + FOCUS_POP
 }
 
 pub(crate) fn draw(
@@ -216,9 +226,15 @@ mod tests {
         assert!(pop_drop(1.05) < pop_drop(RowStyle::CAST.focus_scale));
     }
 
+    /// Cast is the one detail shelf whose band may NOT collapse, so its block reserves the label
+    /// room on every frame — plus the focus pop, which falls below the row box and is the part a
+    /// fixed `UNDER_H` used to swallow. Measured on the panel first: with the band collapsed, the
+    /// always-drawn names printed through the next section's heading.
     #[test]
-    fn cast_under_h_covers_the_worst_case_label_drop() {
-        assert!(UNDER_H >= 92.0 + pop_drop(RowStyle::CAST.focus_scale));
+    fn the_cast_block_covers_its_always_drawn_labels_on_every_frame() {
+        let under = block_h() - LABEL_H - RowStyle::CAST.h;
+        assert!(under >= card_row::UNDER_LABEL_H + pop_drop(RowStyle::CAST.focus_scale));
+        assert!(under > card_row::LABEL_BAND_COLLAPSED);
     }
 
     #[test]

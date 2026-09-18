@@ -13,6 +13,7 @@ mod hero;
 mod related;
 mod season;
 mod section;
+mod trailer;
 #[cfg(test)]
 mod tests;
 
@@ -54,7 +55,25 @@ const FIRST_ITEM_ELEM: u32 = 2048;
 
 const SECTION_GAP: f32 = theme::space::XL;
 const TAB_EP_GAP: f32 = theme::space::MD;
+/// How present the pinned compact title is: the hero's own fade brings it IN, and the first block
+/// below the hero taking its first stretch of travel takes it out again.
+///
+/// `first_top` is the SETTLED top of that block, so `first_top - TOP_MARGIN` is the scroll at which
+/// it has come to rest under the title — every pixel past that is the block moving up THROUGH the
+/// title's band, which is the moment the owner asked for it to be gone. Pure, and separate from the
+/// draw, because the direction of this ramp is the whole rule and both wrong directions shipped to
+/// the panel once each.
+fn compact_title_alpha(scroll: f32, first_top: f32, hero_visible: f32) -> f32 {
+    let hide_at = (first_top - crate::ui::detail_layout::TOP_MARGIN).max(0.0);
+    let travelled = ((scroll - hide_at) / COMPACT_TITLE_FADE).clamp(0.0, 1.0);
+    ((1.0 - hero_visible) * (1.0 - travelled)).clamp(0.0, 1.0)
+}
+
 const HERO_FADE: f32 = 400.0;
+/// Over how much scroll the pinned compact title leaves once the first below-hero block starts to
+/// travel. Half the hero's own fade: the title is chrome the page has already handed over, so it
+/// should be gone by the time the block above it is properly on its way.
+const COMPACT_TITLE_FADE: f32 = 200.0;
 const EP_SCALE_MAX: usize = 40;
 const K_SCROLL: f32 = crate::ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
@@ -108,12 +127,12 @@ pub(crate) struct DetailScreen {
     preview_synopsis: f32,
     preview_chrome: f32,
     /// The hero scrim/wedge strength — chases `view.field` (1.0 idle, `PREVIEW_FIELD` once a
-    /// picture is up) but eases toward the lower `PROMOTED_FIELD` once full-trailer mode owns the
-    /// screen, since the Play/Resume pill left standing there already protects its own legibility.
+    /// picture is up) and eases to 0.0 once full-trailer mode owns the screen, where the page has
+    /// no ink left up there to protect and the transport brings its own scrim at the bottom.
     preview_field: f32,
     /// The bottom-anchored base scrim's own alpha multiplier — 1.0 normal (leaves
     /// `detail_layout::base_scrim_a`'s own scroll-driven value untouched), eased to 0.0 in
-    /// full-trailer mode since only the self-protecting Play/Resume pill is left to guard by then.
+    /// full-trailer mode for the same reason as the wedge above.
     /// A separate scalar from [`preview_field`](Self::preview_field): that one drives the corner
     /// wedge, this one the bottom gradient — distinct layers per `draw_backdrop`.
     preview_base_scrim: f32,
@@ -136,6 +155,10 @@ pub(crate) struct DetailScreen {
     /// Last tick's `view.picture`, so `preview_tick` can detect the true→false edge that means a
     /// trailer just stopped — the only way to tell "it finished" from "nothing is playing yet".
     preview_had_picture: bool,
+    /// Full-trailer mode's transport (auto-hide timer, its fade, and the UP hint's fade) and the
+    /// UP hint that leads to it — [`trailer`]. Presentation only, like the `preview_*` scalars
+    /// above, so it is not hashed into `SHAPE`.
+    trailer_ctl: trailer::Transport,
     /// Server reconciliation owed by this item, independent of cancellable focus restoration.
     /// Navigation memory cannot rewind it; only a new refresh or its terminal request changes it.
     refresh: DetailRefreshPhase,
@@ -328,6 +351,7 @@ impl DetailScreen {
             preview_played_for: None,
             preview_started_for: None,
             preview_had_picture: false,
+            trailer_ctl: trailer::Transport::IDLE,
             refresh: DetailRefreshPhase::None,
             refresh_gen: 0,
             restore_intent: None,
@@ -621,6 +645,7 @@ impl DetailScreen {
         crate::ui::detail_layout::hero_chain(
             synopsis_h,
             d.is_some_and(|detail| !detail.ratings.is_empty()),
+            measure,
         )
     }
 
@@ -636,6 +661,11 @@ impl DetailScreen {
         c
     }
 
+    /// The SETTLED height of a section — every shelf's label band COLLAPSED, which is the flow as
+    /// it stands when focus is anywhere else. The live expansion is deliberately not in here:
+    /// it is a spring, and folding it into [`LayoutStamp`] would rebuild the whole flow — episode
+    /// text measurement included — on every frame of every focus move. [`DetailScreen::band_open`]
+    /// is what the cached number is lifted by at read time.
     fn section_block_h(
         section: i32,
         d: &Detail,
@@ -644,18 +674,53 @@ impl DetailScreen {
         match section {
             1 => season::ROW_H,
             2 => episodes::block_h(d, measure),
-            3 => related::block_h(),
+            3 => related::block_h(0.0),
             4 => cast::block_h(),
-            6 => extras::block_h(),
+            6 => extras::block_h(0.0),
             _ => 0.0,
         }
     }
 
+    /// How much room a shelf section is holding open RIGHT NOW above its settled, collapsed block —
+    /// the shared `card_row` collapse driven by that shelf's own live spring, so Detail gives its
+    /// inter-section room back exactly as Home, the Library, Search and the person page do. Before
+    /// this, each section reserved a fixed band whether or not it drew a label, which is what the
+    /// owner saw as the gap between Extras and Related refusing to close.
+    fn band_open(&self, section: i32) -> f32 {
+        // Cast is deliberately absent: it prints a name under every headshot, so its band is
+        // occupied whether or not it holds focus (`cast::block_h`).
+        let row = match section {
+            3 => &self.related,
+            6 => &self.extras,
+            _ => return 0.0,
+        };
+        card_row::BAND_OPEN * row.band_expand().clamp(0.0, 1.0)
+    }
+
+    /// Sum of [`DetailScreen::band_open`] over every section that flows ABOVE `section` — the whole
+    /// document when it is `None`. This is the one place the live flow differs from the cached one.
+    fn band_lift(&self, d: &Detail, section: Option<i32>) -> f32 {
+        let (sections, n) = self.sections(Some(d));
+        let mut lift = 0.0;
+        for &sec in &sections[1..n] {
+            if Some(sec) == section {
+                break;
+            }
+            lift += self.band_open(sec);
+        }
+        lift
+    }
+
+    /// A shelf carries its own label band, so what follows it is the SHARED shelf pitch's air —
+    /// `consts::UNDER_LABEL_AIR`, exactly what Home and the Library put between two rows — and not
+    /// this page's `SECTION_GAP` on top of it. Stacking the two is what made every gap below the
+    /// hero read as a hole: 18px of collapsed band plus 64 of region gap, 42px looser than the same
+    /// two objects anywhere else in the app.
     fn section_gap(section: i32, next: Option<i32>) -> f32 {
-        if section == 1 && next == Some(2) {
-            TAB_EP_GAP
-        } else {
-            SECTION_GAP
+        match section {
+            1 if next == Some(2) => TAB_EP_GAP,
+            3 | 4 | 6 => crate::ui::consts::UNDER_LABEL_AIR,
+            _ => SECTION_GAP,
         }
     }
 
@@ -734,7 +799,22 @@ impl DetailScreen {
         (out, n)
     }
 
+    /// Where a section sits THIS FRAME — the settled flow plus whatever the shelves above it are
+    /// still holding open.
     fn section_top(&self, section: i32, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        self.section_top_settled(section, d, measure) + self.band_lift(d, Some(section))
+    }
+
+    /// Where a section comes to REST, with every band collapsed behind it. A scroll target must be
+    /// measured against this and never against the live column: the band and the scroll are two
+    /// springs at one rate, so a target taken from the live flow moves every frame while the column
+    /// chases it and the row arrives and then drifts (`card_row::settled_top` is the same rule).
+    fn section_top_settled(
+        &self,
+        section: i32,
+        d: &Detail,
+        measure: &dyn crate::ui::machine::Measure,
+    ) -> f32 {
         let c = self.ensure_layout(d, measure);
         let si = section as usize;
         if (1..section::SLOTS).contains(&si) && c.seen & (1 << si) != 0 {
@@ -743,13 +823,29 @@ impl DetailScreen {
         c.end
     }
 
+    /// [`DetailScreen::section_top`] or [`DetailScreen::section_top_settled`], whichever matches the
+    /// scroll basis the caller is measuring against — mixing the two is how a rect ends up a band
+    /// out of place on exactly the frames a shelf is opening.
+    fn section_top_at(
+        &self,
+        section: i32,
+        d: &Detail,
+        measure: &dyn crate::ui::machine::Measure,
+        at: At,
+    ) -> f32 {
+        match at {
+            At::Drawn => self.section_top(section, d, measure),
+            At::SpringTarget => self.section_top_settled(section, d, measure),
+        }
+    }
+
     fn block_h(&self, section: i32, d: &Detail, measure: &dyn crate::ui::machine::Measure) -> f32 {
         let c = self.ensure_layout(d, measure);
         let si = section as usize;
         if (1..section::SLOTS).contains(&si) && c.seen & (1 << si) != 0 {
-            return c.block[si];
+            return c.block[si] + self.band_open(section);
         }
-        Self::section_block_h(section, d, measure)
+        Self::section_block_h(section, d, measure) + self.band_open(section)
     }
 
     fn locate(&self, elem: u32, meta: crate::metadata::MetadataView<'_>) -> Option<Located> {
@@ -909,7 +1005,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
         let Some(d) = self.detail(meta) else { return };
         let (sections, n) = self.sections(Some(d));
         for &section in &sections[1..n] {
-            let top = self.section_top(section, d, measure) - self.scroll_target;
+            let top = self.section_top_settled(section, d, measure) - self.scroll_target;
             match section {
                 1 => out.push(GroupSpec {
                     id: season::SEASON_GROUP,
@@ -1115,7 +1211,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
             Located::Season(i) => {
                 let base = self.season_metrics.rect(
                     i,
-                    self.section_top(1, d?, measure) - vertical,
+                    self.section_top_at(1, d?, measure, at) - vertical,
                     self.tab_scroll.pos,
                 )?;
                 (
@@ -1126,7 +1222,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
             }
             Located::Episode(i, row) => {
                 let d = d?;
-                let top = self.section_top(2, d, measure) - vertical;
+                let top = self.section_top_at(2, d, measure, at) - vertical;
                 let base = match row {
                     episodes::Row::Still => episodes::still_rect(i, top, self.episode_scroll.pos),
                     episodes::Row::Text => {
@@ -1146,7 +1242,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                 (drawn, rest, Some(i as u32))
             }
             Located::Related(i) => {
-                let top = self.section_top(3, d?, measure) - vertical;
+                let top = self.section_top_at(3, d?, measure, at) - vertical;
                 (
                     related::rect(&self.related, i, top, at == At::Drawn),
                     related::rect(&self.related, i, top, false),
@@ -1154,7 +1250,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                 )
             }
             Located::Extras(i) => {
-                let top = self.section_top(6, d?, measure) - vertical;
+                let top = self.section_top_at(6, d?, measure, at) - vertical;
                 (
                     extras::rect(&self.extras, i, top, at == At::Drawn),
                     extras::rect(&self.extras, i, top, false),
@@ -1162,7 +1258,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                 )
             }
             Located::Cast(i) => {
-                let top = self.section_top(4, d?, measure) - vertical;
+                let top = self.section_top_at(4, d?, measure, at) - vertical;
                 (
                     cast::rect(&self.cast, i, top, at == At::Drawn),
                     cast::rect(&self.cast, i, top, false),
@@ -1171,7 +1267,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
             }
             Located::About(i) => {
                 let d = d?;
-                let top = self.section_top(5, d, measure) - vertical;
+                let top = self.section_top_at(5, d, measure, at) - vertical;
                 let base = if i == 0 {
                     self.about_rows.card_rect(d, top, measure)
                 } else {
@@ -1190,11 +1286,11 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
 
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
         let meta = H::metadata(cx);
-        // Full-trailer mode collapses the hero row to Play/Resume only, and this must be the
+        // Full-trailer mode narrows the hero row to its Play anchor, and this must be the
         // FIRST check in the function: the return_pending/restore_intent short-circuit below and
         // restore_focus() can each hand back a hero elem without knowing about full-trailer mode,
         // so gating only the dedicated hero branch further down let a restored or
-        // return-pending focus land on a control the row no longer draws.
+        // return-pending focus land on a control the row no longer offers.
         if self.full_trailer() {
             if let Some(Located::Hero(ctl)) = self.locate(want.elem, meta) {
                 if !hero::focusable(ctl, true) {
@@ -1239,7 +1335,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                 elem,
             };
         }
-        // Full-trailer mode collapses the row to Play/Resume only (`hero::visible_ctls`) — a
+        // Full-trailer mode narrows the row to its Play anchor (`hero::visible_ctls`) — a
         // control that was focused the instant UP promoted must not be reconciled back onto
         // itself here just because the ITEM's facts still offer it. `hero::focusable` is the same
         // predicate `visible_ctls` and `valid` gate on, so this cannot silently drift from either.
@@ -1302,7 +1398,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                 from_i,
             );
             let row = if d.is_some_and(|d| {
-                from.rect.cy() > self.section_top(2, d, measure) - self.scroll_target + self.block_h(2, d, measure)
+                from.rect.cy() > self.section_top_settled(2, d, measure) - self.scroll_target + self.block_h(2, d, measure)
             }) {
                 episodes::Row::Text
             } else {
@@ -1361,8 +1457,8 @@ impl DetailScreen {
     fn valid(&self, located: Located, meta: crate::metadata::MetadataView<'_>) -> bool {
         let d = self.detail(meta);
         match located {
-            // A control other than Play is never valid while full-trailer mode has collapsed the
-            // row to just it — `hero::focusable` is the same predicate `reconcile` and
+            // A control other than Play is never valid while full-trailer mode has narrowed the
+            // row to its anchor — `hero::focusable` is the same predicate `reconcile` and
             // `hero::visible_ctls` gate on.
             Located::Hero(c) => {
                 hero::focusable(c, self.full_trailer()) && hero::index_of(self.hero_set(meta), c).is_some()
@@ -1525,6 +1621,24 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                 }
             }
             ScreenEvent::Input(input) => {
+                // **Full-trailer mode answers the keys itself, before every arm below.** The page
+                // is not on screen in that state — its chrome is at zero and the trailer's own
+                // transport is what the viewer is looking at — so an OK that fell through to the
+                // engine's press machine would start the FEATURE from a control nobody can see.
+                // Every edge of a key the mode owns (`trailer::trailer_key` decides which) now
+                // reaches `trailer_act`, which itself decides which edges each variant answers:
+                // `Scrub` needs all three (`Down`/`Repeat` for the gesture, `Up` to commit), while
+                // every other variant still only acts on `Down` — the Up edge of a swallowed OK
+                // must not toggle the pause a second time, and a held direction must not arm a
+                // press.
+                if self.full_trailer() {
+                    if let InputKind::Key { key, sym, wcode, edge, .. } = input.kind {
+                        if let Some(act) = trailer::trailer_key(key, sym, wcode) {
+                            self.trailer_act(act, edge, input.at.ms, fx);
+                            return Handled::Yes;
+                        }
+                    }
+                }
                 if matches!(input.kind, InputKind::Key { key: Key::Up | Key::Down | Key::Left | Key::Right, edge: Edge::Down, .. }) {
                     self.restore_intent = None;
                     self.return_pending = false;
@@ -1598,9 +1712,12 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                 ) && crate::player::preview::view().picture
                     && cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| self.locate(k.elem, meta)).is_some_and(|located| matches!(located, Located::Hero(_)))
                 {
-                    // UP fades this page's chrome to zero. The page stays mounted. OK still
-                    // activates the focused control. There is no HUD.
+                    // UP fades ALL of this page's chrome to zero — the action row included —
+                    // and raises the trailer's own transport in its place (`trailer`). The page
+                    // stays mounted and the route never moves. The transport starts REVEALED: the
+                    // key that entered the mode is the key that asked to see it.
                     self.preview_promoted = true;
+                    self.trailer_ctl.reveal();
                     fx.invalidate(Provenance::Input);
                     return Handled::Yes;
                 }
@@ -1644,6 +1761,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                 self.season_settle = 0.0;
                 self.preview_dwell = 0.0;
                 self.preview_promoted = false;
+                self.trailer_ctl.dismiss();
                 self.preview_played_for = None;
                 self.preview_started_for = None;
                 self.content(fx, ContentReq::PreviewStop);
@@ -1748,6 +1866,13 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                 .filter(|k| k.entry == self.entry)
                 .and_then(|k| self.locate(k.elem, meta));
             let (sections, n) = self.sections(Some(d));
+            // Full-trailer mode takes the WHOLE page off screen, not just the hero: the viewer
+            // asked for the trailer and the transport drawn over it is the only thing that state
+            // shows. `preview_chrome` is already the one scalar the hero's own chrome fades
+            // through (`draw_hero`'s `chrome`), so every section below it rides the SAME fade
+            // rather than a second predicate — one mechanism, no section (Cast & Crew included)
+            // special-cased to hide on its own.
+            let below_hero = p.alpha(self.preview_chrome);
             for &section in &sections[1..n] {
                 let top = self.section_top(section, d, measure) - self.scroll.pos;
                 if top > crate::ui::consts::SCR_H || top + self.block_h(section, d, measure) < 0.0 {
@@ -1755,7 +1880,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                 }
                 match section {
                     1 => season::draw(
-                        p.translate(0.0, top),
+                        below_hero.translate(0.0, top),
                         &self.season_metrics,
                         self.tabs,
                         d.cur_season,
@@ -1768,7 +1893,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                     ),
                     2 => {
                         episodes::draw(
-                            p,
+                            below_hero,
                             d,
                             top,
                             self.episode_scroll.pos,
@@ -1788,11 +1913,11 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                             )
                             .phase(self.spin_ms as u32)
                             .tint(theme::TEXT_PRIMARY)
-                            .draw(&Env::inert(), p);
+                            .draw(&Env::inert(), below_hero);
                         }
                     }
                     6 => extras::draw(
-                        p,
+                        below_hero,
                         d,
                         &self.extras,
                         top,
@@ -1803,7 +1928,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                         f.measure,
                     ),
                     3 => related::draw(
-                        p,
+                        below_hero,
                         d,
                         &self.related,
                         top,
@@ -1814,7 +1939,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                         f.measure,
                     ),
                     4 => cast::draw(
-                        p,
+                        below_hero,
                         d,
                         &self.cast,
                         top,
@@ -1825,7 +1950,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                         f.measure,
                     ),
                     5 => self.about_rows.draw(
-                        p,
+                        below_hero,
                         d,
                         top,
                         f.focus.current.map(|k| k.elem),
@@ -1845,6 +1970,20 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
             .tint(theme::TEXT_SECONDARY)
             .draw(&Env::inert(), p);
         }
+
+        // Full-trailer mode's transport, last and unscrolled: it is the page's topmost layer in
+        // that state and the only one of its surfaces that is NOT part of the hero's scrolled
+        // flow. Its own alpha draws nothing while it is hidden, so this costs a branch the rest of
+        // the time.
+        self.trailer_ctl.draw(
+            p,
+            d.map(|d| d.title.as_str())
+                .or_else(|| self.selected().map(|m| m.title.as_str()))
+                .unwrap_or_default(),
+            self.preview_extra(meta).map(|e| e.title.as_str()).unwrap_or_default(),
+            crate::player::preview::paused(),
+            measure,
+        );
 
         self.record_stops(f);
         // **This page draws no panel at all any more.** All three of its own — *Also available*,
@@ -2005,7 +2144,6 @@ impl DetailScreen {
             .or_else(|| self.selected().map(|m| m.title.as_str()))
             .unwrap_or("Loading…");
         let chrome = p.alpha(self.preview_chrome);
-        let prose = p.alpha(self.preview_chrome * self.preview_prose);
         // NOT `self.preview_chrome * self.preview_synopsis`: synopsis_target already tracks
         // chrome_target exactly (both states — background autoplay, full-trailer — target the
         // same 1.0/0.0), so multiplying the two eased values together would fade the synopsis
@@ -2027,12 +2165,31 @@ impl DetailScreen {
             lerp(HERO_TEXT_W, crate::ui::detail_layout::PREVIEW_LOGO_MAX_W),
             lerp(hero_band, compact_band),
         );
+        // The pinned corner spot (`t` near 1) sits well inside the below-hero flow's own reach:
+        // `content_top(measure)` — the first section's top — is under a screen height away, so the
+        // caller's `hero_alpha`/`HERO_FADE` window (400px) was still fading the mark, semi-visible,
+        // while a section (Extras, depending on order) had already scrolled up underneath it. Ties
+        // the logo's OWN extra fade to the same "how far into the below-hero flow" fraction
+        // `draw_backdrop`'s `sf` already computes, so it is fully gone by the time the flow starts
+        // and back once scrolled to the top — and only while shrunk (`t`), so a normal hero (no
+        // preview) is untouched.
+        let hero_extent = (self.content_top(measure, meta) - crate::ui::detail_layout::TOP_MARGIN).max(1.0);
+        let logo_alpha = p.alpha(
+            self.preview_chrome * preview_logo_scroll_alpha(self.scroll.pos, hero_extent, t),
+        );
         HeroLogo::new(self.sid, &rk, title, LogoRung::lerp(LogoRung::Hero, LogoRung::Compact, t))
-            .draw(chrome, band, cx.measure);
+            .draw(logo_alpha, band, cx.measure);
 
         let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_view = crate::ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
         let chain = self.hero_chain(measure, meta);
+        // Two gates, and the difference is the whole behaviour. `prose` recedes the moment a
+        // picture is up: the identity line and the rating marks are how you decide whether to
+        // watch, and once the trailer itself is answering that question they are in the way.
+        // `chrome` only reaches 0 in full-trailer mode, and the rows below (facts, people) hold
+        // it — they are what the viewer reads WHILE the trailer plays, and the owner asked that
+        // nothing there vanish and come back under a playing preview.
+        let prose = p.alpha(self.preview_chrome * self.preview_prose);
         if let Some(d) = d {
             self.draw_identity_line(prose, d, chain.meta_y, cx.measure);
             self.draw_ratings(prose, d, chain.ratings_y, cx.measure);
@@ -2044,15 +2201,27 @@ impl DetailScreen {
             );
         }
         if let Some(d) = d {
-            hero::draw_facts(prose, d, chain.facts_y, cx.measure);
-            hero::draw_people(prose, d, chain.btn_y, measure);
+            hero::draw_facts(chrome, d, chain.facts_y, cx.measure);
+            hero::draw_people(chrome, d, chain.btn_y, measure);
         }
-        // Full-trailer mode collapses `visible_ctls` down to just Play/Resume (hero.rs's
-        // `focusable`/`visible_ctls` doc), which is meant to stay drawn at full strength the whole
-        // time — not fade out with the rest of the chrome via `preview_chrome`. Use the unscaled
-        // `p` (still carrying the outer hero-scroll alpha) rather than `chrome` in that state.
-        let buttons = if self.full_trailer() { p } else { chrome };
-        self.draw_buttons(buttons, cx, chain.btn_y, nav_page_alpha);
+        // Full-trailer mode takes the action row with the rest of the page: the viewer asked for
+        // the trailer and nothing else, and the transport drawn over the top
+        // (`trailer::Transport::draw`) is the only control that state has. The row still ANCHORS
+        // focus there — `hero::focusable` keeps Play legitimate, so the engine has somewhere to
+        // stand and the page does not scroll itself into the sections below — it simply fades out
+        // with `chrome`, like everything else the page owns.
+        self.draw_buttons(chrome, cx, chain.btn_y, nav_page_alpha);
+        // The hint that UP is there — since 2026-09-18 a third element on the HEADER line rather
+        // than page furniture under the action row: centred on the screen, vertically centred on
+        // the same row the preview-shrunk logo/title occupies (`PREVIEW_LOGO_Y`/`compact_band`),
+        // so it neither reserves space in the hero's own stack nor grows down over the video. Its
+        // own fade (`trailer::hint_shown`) already leaves on promotion; drawing it through `chrome`
+        // as well keeps it honest if the two ever disagree for a frame.
+        self.trailer_ctl.draw_hint(
+            chrome,
+            trailer::hint_cy(crate::ui::detail_layout::PREVIEW_LOGO_Y, compact_band),
+            measure,
+        );
     }
 
     fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn crate::ui::machine::Measure) {
@@ -2159,7 +2328,12 @@ impl DetailScreen {
             self.named_show(meta),
         );
         let current = cx.focus.current.map(|k| k.elem);
-        let (controls, n) = hero::visible_ctls(set, self.full_trailer());
+        // Deliberately `hero_ctls`, not `hero::visible_ctls`: the row's FOCUSABLE extent narrows
+        // to Play the instant `full_trailer()` flips (that gate lives in `valid`/`focusable` and
+        // is unchanged), but what's DRAWN must not narrow in the same frame — the caller already
+        // fades every button through `chrome`'s `preview_chrome` alpha (`draw_hero`), and cutting
+        // four of the five pills here a frame early defeats that fade before it can be seen.
+        let (controls, n) = hero::hero_ctls(set);
         let last = hero::hero_btn_rect_at(set, n.saturating_sub(1), y, widths);
         let row = [
             crate::ui::consts::MARGIN_X,
@@ -2234,15 +2408,21 @@ impl DetailScreen {
         if hero_visible >= 0.99 {
             return;
         }
+        // The title holds the band the hero left, and it goes as soon as the FIRST block below the
+        // hero starts to TRAVEL — the scroll at which that block has reached its resting top margin
+        // and everything beyond is it moving up past the title (owner directive, 2026-09-18).
+        //
+        // The direction is the whole rule and both wrong answers have been on the panel. Fading on
+        // the APPROACH to that scroll (`(hide_at - scroll) / ramp`) never shows the title at all:
+        // the hero has barely finished fading when the ramp is already through. Hiding at a named
+        // ANCHOR two sections further down showed it for the whole cast row — with the wordmark
+        // drawn straight through the headshots' names, since the flow is not clipped and must not
+        // be: content stopping dead at a line is not what the page does anywhere else.
         let (sections, n) = self.sections(Some(d));
-        let hide_at = compact_title_hide_pos(&sections, n, d.is_show)
-            .map(|position| {
-                (self.section_top(sections[position], d, measure) - crate::ui::detail_layout::TOP_MARGIN)
-                    .max(0.0)
-            })
+        let first_top = (n > 1)
+            .then(|| self.section_top_settled(sections[1], d, measure))
             .unwrap_or(f32::MAX);
-        let deep_visible = ((hide_at - self.scroll.pos) / 300.0).clamp(0.0, 1.0);
-        let alpha = (1.0 - hero_visible) * deep_visible;
+        let alpha = compact_title_alpha(self.scroll.pos, first_top, hero_visible);
         if alpha <= 0.01 {
             return;
         }
@@ -2265,8 +2445,17 @@ impl DetailScreen {
         let meta = H::metadata(f.cx);
         let mut elems = Vec::new();
         let set = self.hero_set(meta);
-        let (controls, n) = hero::hero_ctls(set);
-        elems.extend(controls[..n].iter().map(|c| (c.elem(), Activate::Press)));
+        // Full-trailer mode draws none of the row, Play included (`draw_buttons` fades it to
+        // alpha 0 with the rest of the chrome) — Play only stays `valid()` so the engine has a
+        // legitimate keyboard anchor to stand on. That legitimacy must not reach the pointer: a
+        // Stop is a hit-testable rect, so registering Play's here would let a magic-remote click
+        // land on a pill nobody can see and start the FEATURE from a screen showing only a
+        // trailer. Skip the whole hero group rather than filtering by `valid()`/`focusable`, so
+        // hover and click both go away together.
+        if !self.full_trailer() {
+            let (controls, n) = hero::hero_ctls(set);
+            elems.extend(controls[..n].iter().map(|c| (c.elem(), Activate::Press)));
+        }
         if let Some(d) = self.detail(meta) {
             elems.extend(
                 (0..d.seasons.len().min(64))
@@ -2336,24 +2525,17 @@ fn preview_already_played(played_for: Option<&str>, current_cache_rk: &str) -> b
     played_for == Some(current_cache_rk)
 }
 
-fn compact_title_hide_pos(sections: &[i32], n: usize, is_show: bool) -> Option<usize> {
-    // Named hide anchors (Cast, Related, About), not `id >= 3`. Extras is not an anchor, so
-    // inserting it does not move the hide point. A movie hides at the second anchor, a show at
-    // the first — the same rule the position walk used when those three were the only ids >= 3.
-    let wanted = usize::from(!is_show);
-    let mut seen = 0;
-    let mut first = None;
-    for (position, &section) in sections[..n].iter().enumerate() {
-        if position == 0 || !section::is_hide_anchor(section) {
-            continue;
-        }
-        first.get_or_insert(position);
-        if seen == wanted {
-            return Some(position);
-        }
-        seen += 1;
-    }
-    first
+/// The preview-shrunk logo's own extra scroll fade, multiplied onto `chrome` in `draw_hero`.
+/// `t` is `preview_logo.pos` (0 = full hero position, 1 = pinned in the top-left corner while a
+/// trailer plays) and `hero_extent` is the scroll distance the caller already uses to fully reveal
+/// the below-hero flow (`content_top(measure) - TOP_MARGIN`, the same quantity `draw_backdrop`'s
+/// own `sf` divides by). Pure and eased (a linear ramp, not a cut) so the mark fades smoothly as
+/// `scroll_pos` rises and reappears the same way on the way back up, and it changes nothing at
+/// `t=0`: a normal (non-preview) hero already has its own `hero_alpha` fade from the caller and
+/// this must not double it.
+fn preview_logo_scroll_alpha(scroll_pos: f32, hero_extent: f32, t: f32) -> f32 {
+    let past_hero = (scroll_pos / hero_extent.max(1.0)).clamp(0.0, 1.0);
+    1.0 - t * past_hero
 }
 
 fn play_resume_ns(from_start: bool, resume_ms: i64, duration_ms: i64) -> i64 {
@@ -2595,7 +2777,9 @@ impl DetailScreen {
         let Some(located) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.locate(key.elem, meta)) else { return };
         let Some(detail) = self.detail(meta) else { return };
         self.scroll_target = if located.section() == 0 { 0.0 } else {
-            (self.section_top(located.section(), detail, measure) - crate::ui::detail_layout::TOP_MARGIN).max(0.0)
+            (self.section_top_settled(located.section(), detail, measure)
+                - crate::ui::detail_layout::TOP_MARGIN)
+                .max(0.0)
         };
     }
 
@@ -2820,11 +3004,12 @@ impl DetailScreen {
         if moving || meta.season_loading() {
             fx.note(PresentEvent::Motion);
         }
-        self.preview_tick(dt, focused, fx, meta);
+        self.preview_tick(t.ms, dt, focused, fx, meta);
     }
 
     fn preview_tick<H: ContentLike>(
         &mut self,
+        now: u32,
         dt: f32,
         focused: Option<Located>,
         fx: &mut Effects<'_, H>,
@@ -2880,21 +3065,41 @@ impl DetailScreen {
         }
         let full_trailer = self.preview_promoted && view.picture;
         let chrome_target = if full_trailer { 0.0 } else { 1.0 };
-        // Synopsis stays through background autoplay and only fades once full-trailer mode
-        // collapses the rest of the chrome to just the Play/Resume pill.
+        // Synopsis stays through background autoplay and only fades once full-trailer mode takes
+        // the whole page off the screen.
         let synopsis_target = if full_trailer { 0.0 } else { 1.0 };
         // The scrim/wedge strength: `view.field` normally (1.0 idle, `PREVIEW_FIELD` once a
-        // picture is up, protecting the logo+synopsis), eased down to a low residual once only
-        // the self-protecting Play/Resume pill is left standing.
-        let field_target = if full_trailer {
-            crate::ui::landing_hero::PROMOTED_FIELD
-        } else {
-            view.field
-        };
-        // The bottom base scrim fades all the way to transparent in full-trailer mode — unlike the
-        // wedge above, nothing at the bottom needs protecting once only the self-protecting
-        // Play/Resume pill remains (`docs/trailer-ux-plan.md` §8.3).
+        // picture is up, protecting the logo+synopsis), and NOTHING in full-trailer mode — the
+        // page keeps no ink up there to protect, and the trailer's own transport brings the only
+        // scrim the state needs (`player_hud::draw_scrim`, at the bottom, under the playbar).
+        let field_target = if full_trailer { 0.0 } else { view.field };
+        // The bottom base scrim goes with it, for the same reason
+        // (`docs/trailer-ux-plan.md` §8.3).
         let base_scrim_target = if full_trailer { 0.0 } else { 1.0 };
+        // The scrub gesture's own per-frame stepping: the accelerating hold-ramp advance plus its
+        // lost-keyup safety net (`step_scrub_hold`), and the tap-commit debounce
+        // (`step_tap_commit`) that lets a rapid burst of taps coalesce into one seek. Either can
+        // hand back a commit target on any given tick, which reaches `player::preview::seek`
+        // through `ContentReq::PreviewSeek` — never `route::request_seek`'s user-intent
+        // bookkeeping, per the watch-state promise `player/preview.rs`'s module doc restates.
+        if let Some(target_ns) = self.trailer_ctl.step_scrub_hold(now, crate::player::duration_ns()) {
+            self.content(fx, ContentReq::PreviewSeek(target_ns));
+        }
+        if let Some(target_ns) = self.trailer_ctl.step_tap_commit(now) {
+            self.content(fx, ContentReq::PreviewSeek(target_ns));
+        }
+        // The transport's own timers and fades, and the UP hint's. `update` reports its motion the
+        // same way the `ease` block below does — a visible transport over a running trailer is a
+        // moving clock every frame, and a hidden one goes quiet.
+        if self.trailer_ctl.update(
+            now,
+            dt,
+            full_trailer,
+            crate::player::preview::paused(),
+            trailer::hint_shown(view.picture, self.preview_promoted, hero_active),
+        ) {
+            fx.note(PresentEvent::Motion);
+        }
         if ease(&mut self.preview_art, view.art, dt)
             | ease(&mut self.preview_prose, view.prose, dt)
             | ease(&mut self.preview_synopsis, synopsis_target, dt)
@@ -2913,6 +3118,10 @@ impl DetailScreen {
             .step(f32::from(view.picture), crate::ui::consts::K_SCALE, dt);
         if !view.picture {
             self.preview_promoted = false;
+            // A refused/failed seek (or the item swapping under a live gesture) can drop the
+            // picture out from under an in-flight scrub; leaving it armed would fire a stale
+            // `PreviewSeek` at whatever session starts next.
+            self.trailer_ctl.cancel_scrub();
         }
     }
 
@@ -2963,10 +3172,14 @@ impl DetailScreen {
         );
     }
 
-    /// Is full-trailer mode (UP-promoted, trailer picture up) collapsing the hero row down to
-    /// Play/Resume only right now? The one predicate every site that enumerates or resolves hero
-    /// focus must agree on — `groups`/`draw_buttons` (via [`hero::visible_ctls`]) for what is
-    /// DRAWN, `reconcile`/`valid` for what is FOCUSABLE. Computed fresh rather than cached: reading
+    /// Is full-trailer mode (UP-promoted, trailer picture up) running right now? The one
+    /// predicate every site that enumerates or resolves hero focus must agree on — `groups` (via
+    /// [`hero::visible_ctls`]) for the row's extent, `reconcile`/`valid` for what is FOCUSABLE,
+    /// `record_stops` for what is pointer-reachable, and the input arm for who owns the keys.
+    /// `draw_buttons` deliberately does NOT gate on this: it draws every hero control regardless
+    /// and lets the eased `preview_chrome` alpha (set from this same predicate in `preview_tick`)
+    /// fade the row, so a control losing focus does not also lose its paint on the same frame.
+    /// Computed fresh rather than cached: reading
     /// `crate::player::preview::view()` live means a frame where `preview_promoted` is still true
     /// but the machine has already dropped `picture` (EOS/failure) self-corrects immediately,
     /// rather than depending on `preview_tick` having already cleared the flag this same frame.
@@ -2974,16 +3187,89 @@ impl DetailScreen {
         self.preview_promoted && crate::player::preview::view().picture
     }
 
-    /// Un-promotes full-trailer mode if it was active — shared by the BACK and DOWN key arms so
-    /// the collapse itself has exactly one body. Returns whether it fired, so a caller can decide
-    /// whether to also consume the key.
+    /// Un-promotes full-trailer mode if it was active — shared by the BACK and DOWN key arms and
+    /// by the mode's own key ladder ([`Self::trailer_act`]), so the collapse itself has exactly one
+    /// body. Returns whether it fired, so a caller can decide whether to also consume the key.
     fn collapse_full_trailer<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) -> bool {
         if !self.preview_promoted {
             return false;
         }
         self.preview_promoted = false;
+        // The transport goes with the mode, and a trailer PAUSED from it is resumed on the way
+        // out: background autoplay has no control that could ever start it again, so leaving the
+        // pause behind would strand a frozen picture under the restored chrome.
+        self.trailer_ctl.dismiss();
+        if crate::player::preview::paused() {
+            self.content(fx, ContentReq::PreviewTransport(Some(true)));
+        }
         fx.invalidate(Provenance::Input);
         true
+    }
+
+    /// Perform one full-trailer key ([`trailer::trailer_key`]'s answer). The mapping is pure and
+    /// tested there; what is here is the effect each one has on this page.
+    ///
+    /// **`Scrub` is the one variant this acts on for every edge**, not just `Down`: `Down` hops
+    /// the fixed step, `Repeat` engages the hold ramp, and `Up` commits — the same three-edge
+    /// ladder `screens::player::input::Scrub` drives, ported onto `trailer_ctl` because the
+    /// `sibling` dependency gate (`ci/check-deps.sh`) forbids `screens::detail` from naming
+    /// `crate::screens::player` at all. A commit is routed through `ContentReq::PreviewSeek`,
+    /// which reaches `player::preview::seek` — never `PlayerReq::SeekTo`/`request_seek`, which
+    /// would write user-seek intent and a report trace generation a preview does not have (see
+    /// `ContentReq::PreviewSeek`'s own doc). Every other variant still only answers `Down`, exactly
+    /// as before `Scrub` existed.
+    fn trailer_act<H: ContentLike>(
+        &mut self,
+        act: trailer::TrailerKey,
+        edge: Edge,
+        now: u32,
+        fx: &mut Effects<'_, H>,
+    ) {
+        use trailer::TrailerKey;
+        if let TrailerKey::Scrub(fwd) = act {
+            let commit = match edge {
+                Edge::Down => {
+                    self.trailer_ctl.scrub_fresh(
+                        fwd,
+                        now,
+                        crate::player::duration_ns(),
+                        crate::player::playpos_ns(),
+                    );
+                    None
+                }
+                Edge::Repeat => {
+                    self.trailer_ctl.scrub_repeat(now);
+                    None
+                }
+                Edge::Up => self.trailer_ctl.scrub_release(now),
+            };
+            if let Some(target_ns) = commit {
+                self.content(fx, ContentReq::PreviewSeek(target_ns));
+            }
+            self.trailer_ctl.reveal();
+            fx.invalidate(Provenance::Input);
+            return;
+        }
+        if edge != Edge::Down {
+            return;
+        }
+        match act {
+            // Both collapse keys go through the one collapse body, exactly as the BACK/DOWN arms
+            // do outside the mode.
+            TrailerKey::Collapse => {
+                self.collapse_full_trailer(fx);
+                return;
+            }
+            TrailerKey::Toggle => self.content(fx, ContentReq::PreviewTransport(None)),
+            TrailerKey::Play => self.content(fx, ContentReq::PreviewTransport(Some(true))),
+            TrailerKey::Pause => self.content(fx, ContentReq::PreviewTransport(Some(false))),
+            TrailerKey::Reveal => {}
+            TrailerKey::Scrub(_) => unreachable!("handled above, on every edge"),
+        }
+        // Any key the mode kept puts the controls back on screen for a fresh linger — the player
+        // HUD's rule, and the reason LEFT/RIGHT are worth consuming at all.
+        self.trailer_ctl.reveal();
+        fx.invalidate(Provenance::Input);
     }
 
     /// BACK's second stage, after `collapse_full_trailer`: while a trailer is autoplaying in the
