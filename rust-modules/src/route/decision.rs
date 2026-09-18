@@ -5064,8 +5064,9 @@ pub(super) struct QueueInfo {
     pub(super) rows: Vec<crate::plex::QueueRow>,
 }
 
-/// The queued next episode. Main-thread only, and — like `metadata::playing()` — it hands out a
-/// `&'static` the Up Next control reads across a frame, so `apply_plan` (main thread) staying its
+/// The queued next episode. Main-thread only, and — like `metadata::playing()` (via
+/// `MetadataView`, which hands out a `&'a` borrow of the owner's state) — it hands out a
+/// reference the Up Next control reads across a frame, so `apply_plan` (main thread) staying its
 /// only writer is what keeps that reference sound. A caller that STARTS the next episode must
 /// clone first: `request_play` clears this before the new plan lands.
 pub(crate) fn up_next(ps: &PlaybackSession) -> Option<&UpNext> {

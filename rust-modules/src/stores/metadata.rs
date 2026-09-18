@@ -11,13 +11,14 @@
 //! ## 1. The READ surface — safe, pure, non-mutating; a screen may call these directly from
 //! `step`/`draw`/`Focusable`
 //!
-//! Off `crate::metadata` (unqualified names below are `crate::metadata::*`):
-//! - `current() -> Option<&'static Detail>` — the loaded item, if any.
-//! - `now_playing() -> Option<&'static NowPlaying>` — the HUD/Info-card descriptor of what is
+//! Off a `MetadataView` (`store.view()`, borrowing the owner as `&'a`) unless marked otherwise —
+//! unqualified free-function names below are `crate::metadata::*`:
+//! - `current() -> Option<&'a Detail>` — the loaded item, if any.
+//! - `now_playing() -> Option<&'a NowPlaying>` — the HUD/Info-card descriptor of what is
 //!   actually playing (may differ from `current()`: a show/season load leaves it untouched).
-//! - `playing() -> Option<&'static PlayingItem>` — the playing leaf's own streams/markers/chapters
+//! - `playing() -> Option<&'a PlayingItem>` — the playing leaf's own streams/markers/chapters
 //!   (`route.rs`'s track menu and skip/Up Next controls read this, not `current()`).
-//! - `playing_markers() -> &'static [Marker]`, `playing_chapters() -> &'static [Chapter]` — the
+//! - `playing_markers() -> &'a [Marker]`, `playing_chapters() -> &'a [Chapter]` — the
 //!   playing item's own lists, unqualified by anything else.
 //! - `cached_playing(sid: ServerId, rk: &str) -> Option<PlayingItem>` — an in-memory-only lookup
 //!   (checks `current()` alone; never touches the network). Its `fetch_playing_item` NEIGHBOUR
@@ -25,14 +26,17 @@
 //! - `detail_loading() -> bool`, `season_loading() -> bool` — status flags for a spinner/read-out.
 //! - `detail_request_status(sid, rk) -> Option<bool>` — the addressed detail request: `None` for
 //!   another target, `Some(true)` while pending, `Some(false)` after success or failure settles.
-//! - `active_marker() -> Option<Marker>`, `synthesized_tail_marker(has_next: bool) -> Option<Marker>`,
-//!   `tail_marker(pos_ms: i64, dur_ms: i64) -> Option<Marker>`, `marker_at(markers: &[Marker], pos_ms:
-//!   i64) -> Option<Marker>` — the skip-segment/Up-Next window logic; the first two also read
-//!   `player::is_playing`/`playpos_ns`/`duration_ns` (cross-module reads, still no mutation anywhere).
+//! - `active_marker(ps: &route::PlaybackSession) -> Option<Marker>`,
+//!   `synthesized_tail_marker(ps: &route::PlaybackSession, has_next: bool) -> Option<Marker>` — the
+//!   skip-segment/Up-Next window logic; both also read `player::is_playing`/`playpos_ns`/
+//!   `duration_ns` (cross-module reads, still no mutation anywhere). Two free-function neighbours,
+//!   `tail_marker(pos_ms: i64, dur_ms: i64) -> Option<Marker>` and `marker_at(markers: &[Marker],
+//!   pos_ms: i64) -> Option<Marker>`, take their state explicitly and stay plain `crate::metadata`
+//!   functions — no owner to borrow from.
 //! - `audio_ordinal(audio: &[Stream], i: usize) -> i32`, `sub_render_ordinal(subs: &[Stream], i:
-//!   usize) -> i32` — container-ordinal projections for the track picker.
+//!   usize) -> i32` — container-ordinal projections for the track picker; free functions, no state.
 //! - `resume_ns(resume_ms: i64, dur_ms: i64) -> i64`, `friendly_codec(codec: &str) -> String` —
-//!   pure formatting/policy, no state at all.
+//!   pure formatting/policy, no state at all; free functions.
 //!
 //! **Two names that LOOK like reads and are not, on purpose — read the exclusion, not just the
 //! list.** `fetch_playing_item(sid, rk) -> Option<PlayingItem>` performs a BLOCKING `plex::client`

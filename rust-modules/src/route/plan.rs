@@ -1395,11 +1395,11 @@ pub(super) const PREF_AUDIO_LANG: &str = "eng";
 ///     obey it, which would drop the whole smart-direct-play class (a TrueHD/DTS pick with an AC3
 ///     sibling) onto the server's video-downscaling encoder for one audio track.
 /// PURE: takes the playing item's audio tracks explicitly instead of reaching into
-/// `metadata::playing()`. That matters twice over. (a) `playing()` hands out a `&'static
-/// PlayingItem` whose `Vec`s `ui/track_menu.rs` and `ui/info_panel.rs` hold slices into during
-/// playback — a worker replacing the store would drop those out from under the draw path, so the
-/// resolve must never touch it. (b) Being pure makes the selection ladder host-testable, which it
-/// has never been; see the tests at the foot of this file.
+/// `metadata::playing()`. That matters twice over. (a) `playing()` (via `MetadataView`) hands out
+/// a `&'a PlayingItem` whose `Vec`s `ui/track_menu.rs` and `ui/info_panel.rs` hold slices into
+/// during playback — a worker replacing the store would drop those out from under the draw path,
+/// so the resolve must never touch it. (b) Being pure makes the selection ladder host-testable,
+/// which it has never been; see the tests at the foot of this file.
 pub(super) fn pick_dp_audio(
     tracks: &[crate::metadata::Stream],
     default_acodec: &str,

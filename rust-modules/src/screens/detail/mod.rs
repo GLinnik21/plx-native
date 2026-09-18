@@ -259,9 +259,10 @@ struct LayoutCache {
     end: f32,
 }
 
-/// Cheap identity of the values [`LayoutCache`] was measured from. `current()` hands out a
-/// `'static` borrow of one static slot, so pointer equality on `Detail` cannot see a replacement
-/// or an in-place `episodes =` from [`crate::metadata::pump_season`].
+/// Cheap identity of the values [`LayoutCache`] was measured from. `current()` (via
+/// `MetadataView`) hands out a `&'a` borrow of one field in the owner's `MetadataState`, so
+/// pointer equality on `Detail` cannot see a replacement or an in-place `episodes =` from
+/// [`crate::metadata::pump_season`].
 ///
 /// `content_hash` carries the actual episode/summary/hero-episode TEXT rather than a summed
 /// length: two different seasons with the same episode count and the same *aggregate*

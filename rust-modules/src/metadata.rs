@@ -1473,9 +1473,10 @@ fn clear(state: &mut MetadataState, adapter: &MetadataAdapter) {
 /// The server/profile switch: unlike `clear()`, this drops the COMPLETE owned state — the `now`
 /// caption and `playing` track store `clear()` deliberately spares (D3, for a Detail page torn
 /// down and reopened mid-playback) do not belong to the NEXT profile. Adapter rotation is done by
-/// the caller (`stores::metadata::MetadataStore::run`, mirroring `PersonStore`/`SearchStore`), so
-/// this only clears state; `supersede_detail` still runs here for the in-flight work on THIS
-/// (about-to-be-retired) adapter, exactly as `clear()` does.
+/// the caller (`stores::metadata::MetadataStore::run`, mirroring `PersonStore`/`SearchStore`),
+/// and it rotates BEFORE this runs, so `adapter` here is already the fresh one and nothing still
+/// targeting the retired `Arc` can land into this state. `supersede_detail` is still called, for
+/// symmetry with `clear()`, but rotation alone is what fences the old adapter's in-flight work.
 fn reset(state: &mut MetadataState, adapter: &MetadataAdapter) {
     supersede_detail(adapter);
     state.current = None;
@@ -1487,8 +1488,11 @@ fn reset(state: &mut MetadataState, adapter: &MetadataAdapter) {
 
 /// TEST ONLY — install `d` as the loaded item, bypassing the fetch and its mailbox. The screens'
 /// pure focus/label math reads `current()`, and the only real way to populate it is a PMS round
-/// trip, which the host suite has no server for. Compiled out of the shipped binary. CURRENT is a
-/// crate-wide global that this module's own tests also drive, so hold `crate::testlock::serial()`
+/// trip, which the host suite has no server for. Compiled out of the shipped binary. `state` is
+/// the owner's own `MetadataState`, not a global — the detail and season mailboxes are per-owner
+/// fields too, like the other five stores — but `assert_held` below enforces the same crate-wide
+/// lock the genuinely-still-global seams (route's play mailbox, the player's SHARED block) also
+/// take, by convention one lock rather than one per module. Hold `crate::testlock::serial()`
 /// across any test that calls this.
 #[cfg(test)]
 pub(crate) fn set_current_for_test(state: &mut MetadataState, d: Option<Detail>) {
@@ -1619,6 +1623,10 @@ pub(crate) fn trailer_now_playing(
 #[cfg(not(test))]
 fn dev_source() -> Option<&'static str> {
     if crate::app::bootstrap::stores::active() { return None; }
+    // Function-local, not process-wide mutable state: one dev-trigger stat per process, kept off
+    // the per-frame draw path the doc above forbids. Without `devtriggers`, `crate::dev::read`
+    // is a `None`-returning stub, so a release build pays one cheap `get_or_init` for a value
+    // that is always `None` — not worth a cfg to avoid.
     static SEEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     SEEN.get_or_init(|| crate::dev::read("shared")).as_deref()
 }
@@ -1966,8 +1974,8 @@ pub(crate) struct PlayingItem {
 /// (local-sample / URL-override play) clears the store.
 /// PURE: fetch the playing item's track lists. Safe on a worker — reads and writes no statics.
 /// The cache-hit shortcut is `cached_playing` (main thread) and the install is `install_playing`,
-/// because `playing()` hands out a `&'static` whose Vecs the track menu and info panel hold
-/// slices into during playback.
+/// because `playing()` (via `MetadataView`) hands out a `&'a` borrow whose Vecs the track menu
+/// and info panel hold slices into during playback.
 /// MAIN THREAD: the cache-hit half of the old `load_playing` — reuse the loaded detail's streams
 /// when it IS this item, so playing from a detail page costs no extra GET. Snapshotted into
 /// `ResolveEnv` and handed to the worker; splitting the fetch out lost this and quietly added a
@@ -2533,10 +2541,11 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
 // installs the result — the page mounts THIS frame on the catalog row's art/title/summary and
 // fills in a beat later. Same shape as the season mailbox below and route.rs's play resolve.
 //
-// The worker MUST NOT write CURRENT. `current()` hands out a `&'static Detail` that ~25 draw
-// sites read within a frame, so a background store would drop the old `Detail` under a live
-// reference — a use-after-free, not a lint. Keeping the main thread the sole writer is precisely
-// what makes that `&'static` sound, so the worker's only output is the mailbox.
+// The worker MUST NOT write CURRENT. `current()` (via `MetadataView`) hands out a `&'a Detail`,
+// borrowed from the owner, that ~25 draw sites read within a frame, so a background store would
+// drop the old `Detail` under a live reference — a use-after-free, not a lint. Keeping the main
+// thread the sole writer is precisely what makes that borrow sound, so the worker's only output
+// is the mailbox.
 type DetailKey = (crate::plex::ServerId, String);
 
 /// The addressed request's status: None means another item (or no request), true means

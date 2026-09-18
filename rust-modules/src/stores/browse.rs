@@ -482,15 +482,13 @@ mod contract_tests {
             &first.browse.borrow().adapter,
             &second.browse.borrow().adapter,
         ));
-        // Drain any Hubs/Metadata/Search/Person notice a PRIOR test left dirty: those four are
-        // still process-wide globals (`stores::mod.rs`'s `NOTICES`), not owned per `Stores`
-        // instance, so `take_notices()` below would otherwise fold someone else's leftover
-        // bump into this test's precise assertion — the same idiom the other contract tests in
-        // this module already use before their own exact-equality check. ONE call is enough:
-        // the four notices are shared process-wide, not per instance, so draining them through
-        // `first` already clears them for `second` too — neither store's OWN Browse/ViewState
-        // notice has anything pending yet (seeding writes `self.state` directly and never calls
-        // `bump()`, which is exactly why the assertion below expects generation 1, not 2+).
+        // Establish a clean baseline on `first` before the real op: notices are owned per
+        // `Stores` instance (one per `Bridge`), not shared, so this has no effect on `second` —
+        // it just guards against a notice this test's own seeding might one day bump (it
+        // currently doesn't: seeding writes `self.state` directly and never calls `bump()`,
+        // which is exactly why the assertion below expects generation 1, not 2+) — the same
+        // idiom the other contract tests in this module already use before their own
+        // exact-equality check.
         let _ = first.take_notices();
         first.browse_run(BrowseCmd::Reset);
         assert_eq!(first.take_notices(), [(StoreId::Browse, 1)]);
