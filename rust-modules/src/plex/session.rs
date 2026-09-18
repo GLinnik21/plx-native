@@ -1888,6 +1888,14 @@ fn peek_impl(now: std::time::Instant) -> std::sync::Arc<Session> {
         return session_of(&state);
     }
     let _io = io();
+    // Two callers can both miss and then take turns on `IO`: by the time this one finally gets
+    // the lock, the caller ahead of it may have already installed the answer. Re-check before
+    // paying for another read of storage — the whole reason this cache exists is that a read is a
+    // `recv(2)` round trip to the storage helper (~27 ms/frame), so serving the second miss from
+    // the first one's fill rather than redoing it is not an optimization, it is the point.
+    if let Some(state) = cached_at(now) {
+        return session_of(&state);
+    }
     session_of(&refresh_locked(now))
 }
 
@@ -2156,9 +2164,24 @@ impl DeferredLoad {
     /// a writer between capture and attachment is not overwritten by an obsolete snapshot.
     pub(crate) fn apply(self) -> Result<(), &'static str> {
         let _io = io();
-        let read = read_live_locked();
-        if read_identity(&read) != self.expected { return Err("session changed during capture"); }
-        if self.save { save_locked(&self.session); }
+        let read = std::sync::Arc::new(read_live_locked());
+        if read_identity(&read) != self.expected {
+            // Refused, exactly like `update_with_outcome`'s own refusal path: install the record
+            // this capture lost the race against, rather than leaving the cache empty for the
+            // next `peek()` to pay for the read this call already just took under `IO`.
+            install_locked(read);
+            return Err("session changed during capture");
+        }
+        if self.save {
+            // `save_locked` installs (or drops) the cache itself, from the write's own proven
+            // outcome — see its module doc.
+            save_locked(&self.session);
+        } else {
+            // No write happens on this path, but the read above IS the verified record: install
+            // it so the boot path's first `peek()` does not pay a third storage read for a fact
+            // this call already established under `IO`.
+            install_locked(read);
+        }
         publish_identities(&self.session);
         Ok(())
     }
@@ -2179,20 +2202,23 @@ pub(crate) fn load_capturing_entropy() -> (Session, Option<[u8; 16]>, DeferredLo
     (session, captured, deferred)
 }
 
+/// Whether a cached [`ReadState`] answers [`load_with_id`] with no `IO` at all: an established,
+/// non-empty `client_id` that is not sitting in a plaintext file — the two things `prepare_load`
+/// would otherwise decide to re-save over. Anything else must fall through to the ordinary
+/// read-modify-write, so a save is never built from a read that was not taken in the same `IO`
+/// critical section as the write it might cause — the no-lost-update invariant `IO`'s own doc
+/// states, which caching must not weaken.
+fn established(read: &ReadState) -> bool {
+    matches!(
+        read,
+        ReadState::Ready { session, plaintext: false } if !session.client_id.is_empty()
+    )
+}
+
 fn load_with_id(mint: impl FnOnce() -> String) -> Session {
     let now = std::time::Instant::now();
     if let Some(read) = cached_at(now) {
-        // A cache hit answers `load()` with no `IO` at all only when it is PROVABLY a no-op: an
-        // established, non-empty client_id that is not sitting in a plaintext file — the two
-        // things `prepare_load` would otherwise decide to re-save over. Anything else falls
-        // through to the ordinary read-modify-write below, so a save is never built from a read
-        // that was not taken in the same `IO` critical section as the write it might cause — the
-        // no-lost-update invariant `IO`'s own doc states, which caching must not weaken.
-        let established = matches!(
-            &*read,
-            ReadState::Ready { session, plaintext: false } if !session.client_id.is_empty()
-        );
-        if established {
+        if established(&read) {
             let (s, save) = prepare_load(&read, mint);
             debug_assert!(!save, "an established, protected record must never need a resave");
             publish_identities(&s);
@@ -2200,6 +2226,17 @@ fn load_with_id(mint: impl FnOnce() -> String) -> Session {
         }
     }
     let _io = io();
+    // The same race `peek_impl` guards against: another caller may have installed an established
+    // record while this one waited for `IO`, in which case re-reading storage here would be a
+    // second, needless read of a record already proved.
+    if let Some(read) = cached_at(now) {
+        if established(&read) {
+            let (s, save) = prepare_load(&read, mint);
+            debug_assert!(!save, "an established, protected record must never need a resave");
+            publish_identities(&s);
+            return s;
+        }
+    }
     let read = refresh_locked(now);
     let (s, save) = prepare_load(&read, mint);
     if save { save_locked(&s); }

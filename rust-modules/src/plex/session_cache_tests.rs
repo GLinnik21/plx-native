@@ -237,45 +237,167 @@ fn a_refused_write_installs_the_record_it_refused_over() {
     );
 }
 
-/// Measures the SPAWNED thread's own elapsed time inside `peek()`, rather than racing a timeout
-/// against the whole test — a `Barrier` guarantees the spawned thread only calls `peek()` once
-/// `update`'s closure below is definitely running (which is definitely after `update_with_outcome`
-/// took `IO`, since that happens before `edit` is ever called), so what gets measured is really
-/// "how long did a concurrent `peek()` take while a write held `IO`", not scheduling luck.
+/// Proves the claim deterministically rather than by racing a timeout against a sleep: the
+/// `update(...)` closure below runs only once `update_with_outcome` already holds `IO` (that
+/// happens before `edit` is ever called), so a `peek()` spawned from inside it and blocked
+/// waiting to report back over `tx` can only mean one thing — it needed `IO` too, and `IO` is
+/// held by this very thread until the closure returns. There is no way for that spawned `peek()`
+/// to finish while the closure is still waiting on `rx`, so `recv_timeout` either sees the
+/// cache-served answer almost immediately, or the closure times out and fails the test outright.
+/// It fails; it does not hang.
 #[test]
 fn peek_from_another_thread_does_not_take_io() {
     let _serial = crate::testlock::serial();
     let _t = TempSession::new("cache-peek-other-thread");
-    save(&signed_in());
+    save(&signed_in()); // primes the cache before the point under test
 
-    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let worker_barrier = barrier.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    let worker = std::thread::spawn(move || {
-        worker_barrier.wait();
-        let start = std::time::Instant::now();
-        let client_id = peek().client_id.clone();
-        let _ = tx.send((client_id, start.elapsed()));
-    });
+    let mut worker: Option<std::thread::JoinHandle<()>> = None;
 
     assert!(update(|s| {
-        barrier.wait();
-        // Held long enough that a `peek()` blocked on `IO` could not possibly finish inside it —
-        // on unmodified code that is exactly what happens, since `peek` always takes this same
-        // lock; a cached `peek()` never needs it and returns in microseconds.
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // Spawned here, so it starts strictly after this closure already holds `IO`.
+        worker = Some(std::thread::spawn(move || {
+            let client_id = peek().client_id.clone();
+            let _ = tx.send(client_id);
+        }));
+        match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(client_id) => {
+                assert_eq!(client_id, "cid-1", "peek() from the other thread must see the cache");
+                Some(s.clone())
+            }
+            Err(_) => panic!(
+                "peek() from another thread did not report back within 2s while this closure \
+                 held IO — on unmodified code that means it blocked on the same lock instead of \
+                 being served from the cache"
+            ),
+        }
+    }));
+
+    worker
+        .expect("the worker thread must have been spawned inside the closure")
+        .join()
+        .expect("the other thread must not panic");
+}
+
+/// Two callers can both find `CACHE` empty and then take turns on `IO`; the one that gets there
+/// second must not blindly re-read storage once it finally has the lock — the caller ahead of it
+/// may have already installed the answer. Modelled with the same `update(...)`-holds-`IO` trick
+/// as the test above: the worker's own miss check runs (and is confirmed a real miss) BEFORE this
+/// closure — which already holds `IO` — returns and installs the write's outcome, so the worker's
+/// later `io()` call is guaranteed to block until after that install lands. `READS_FOR_TEST` is
+/// thread-local (see its own doc), so it is reset and read on the worker's thread, the one that
+/// actually matters here.
+#[test]
+fn a_peek_that_waited_for_io_sees_the_fill_and_does_not_reread() {
+    let _serial = crate::testlock::serial();
+    let _t = TempSession::new("cache-double-check-no-reread");
+    save(&signed_in());
+    invalidate_for_test(); // back to Unloaded: the next peek() must be a genuine miss
+
+    let (checkpoint_tx, checkpoint_rx) = std::sync::mpsc::channel::<()>();
+    let (reads_tx, reads_rx) = std::sync::mpsc::channel::<u32>();
+    let mut worker: Option<std::thread::JoinHandle<()>> = None;
+
+    assert!(update(|s| {
+        // `update` already holds `IO` by the time this closure runs, so the worker's own `io()`
+        // call below is guaranteed to block until this closure returns and its write installs —
+        // it must NOT be joined in here, which would deadlock against that same lock.
+        worker = Some(std::thread::spawn(move || {
+            reset_reads_for_test();
+            let now = std::time::Instant::now();
+            assert!(
+                cached_at(now).is_none(),
+                "the cache must still read empty here — the behaviour under test is the SECOND \
+                 check, taken once IO is finally held, not this first one"
+            );
+            checkpoint_tx.send(()).unwrap();
+            let _ = peek_at(now);
+            let _ = reads_tx.send(reads_for_test());
+        }));
+        checkpoint_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the worker must observe the miss before this closure returns");
         Some(s.clone())
     }));
 
-    let (client_id, elapsed) = rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .expect("the other thread's peek() must complete");
-    worker.join().expect("the other thread must not panic");
-    assert_eq!(client_id, "cid-1");
+    worker
+        .expect("the worker thread must have been spawned inside the closure")
+        .join()
+        .expect("the worker must not panic");
+    assert_eq!(
+        reads_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap(),
+        0,
+        "a miss that only reached the front of the IO queue after another caller already filled \
+         CACHE must be served from that fill, not pay for a second, needless read of storage"
+    );
+}
+
+/// A no-save `DeferredLoad::apply()` still took a real, verified read of the authority under
+/// `IO` — an established, already-protected record needs no write, but the read itself is a fact
+/// the cache must not throw away. Constructs the `DeferredLoad` directly (its fields are
+/// module-private, visible here) rather than through the real boot path, to isolate exactly the
+/// no-save branch under test.
+#[test]
+fn apply_installs_the_verified_read_when_it_does_not_save() {
+    let _serial = crate::testlock::serial();
+    let _t = TempSession::new("cache-deferred-apply-installs");
+    save(&signed_in());
+
+    let read = read_live_locked();
+    let expected = read_identity(&read);
+    let deferred = DeferredLoad { session: signed_in(), expected, save: false };
+
+    invalidate_for_test(); // drop what `save` above installed, so `apply()` is what's under test
+    assert!(cache_is_empty_for_test(), "the fixture must start empty for this to prove anything");
+
+    deferred.apply().expect("the identity must still match: nothing wrote to the file meanwhile");
+
     assert!(
-        elapsed < std::time::Duration::from_millis(100),
-        "peek() from another thread took {elapsed:?} while a concurrent update held IO — it must \
-         be served from the cache, not block on the same lock the writer holds"
+        !cache_is_empty_for_test(),
+        "a no-save apply() must install the verified read it just took under IO — otherwise the \
+         boot path's first peek() pays a third storage read for a fact this call already proved"
+    );
+    reset_reads_for_test();
+    assert_eq!(peek().client_id, "cid-1");
+    assert_eq!(
+        reads_for_test(),
+        0,
+        "apply() already proved this record under IO; the next peek() must not re-read it"
+    );
+}
+
+/// The other half of the same rule, on `apply()`'s refusal path: a capture that lost the race
+/// (the file changed between capture and attachment) still took a real read under `IO` to notice
+/// that — install the record it refused over, the same rule `update_with_outcome`'s own refusal
+/// follows (see `a_refused_write_installs_the_record_it_refused_over` above).
+#[test]
+fn apply_installs_the_fresh_read_when_the_identity_check_fails() {
+    let _serial = crate::testlock::serial();
+    let _t = TempSession::new("cache-deferred-apply-mismatch-installs");
+    save(&signed_in());
+    let stale_expected = read_identity(&read_live_locked());
+
+    let mut changed = signed_in();
+    changed.client_id = "cid-2".into();
+    save(&changed);
+
+    invalidate_for_test(); // drop what the second save() installed, so apply() is what's under test
+
+    let deferred = DeferredLoad { session: signed_in(), expected: stale_expected, save: false };
+    let result = deferred.apply();
+    assert_eq!(result, Err("session changed during capture"));
+
+    assert!(
+        !cache_is_empty_for_test(),
+        "a refused apply() must still install the fresh read it just verified under IO, not \
+         leave the cache empty for the next peek() to pay for a read this call already took"
+    );
+    reset_reads_for_test();
+    assert_eq!(peek().client_id, "cid-2", "the fresh on-disk record must be what peek() now sees");
+    assert_eq!(
+        reads_for_test(),
+        0,
+        "apply()'s own read already proved this; peek() must not redo it"
     );
 }
 
