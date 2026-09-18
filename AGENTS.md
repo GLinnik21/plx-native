@@ -58,16 +58,23 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `CARGO_INCREMENTAL=0` cannot reach it — and a one-shot gate has nothing to reuse a
   multi-gigabyte cache for. It is not the only such invocation, which is the point: every direct
   `cargo` call in a lane escaped that rule, to the tune of 12.9 GB measured 2026-09-17, so
-  `tools/build-gc.sh` now installs `.claude/worktrees/.cargo/config.toml` with
-  `incremental = false` for all of them. Keep the prefix anyway — it states the intent where a
-  reader can see it, and an env var still outranks the config file.
+  `tools/build-gc.sh` now installs `.claude/worktrees/.cargo/config.toml` (`plx-build-gc-policy`)
+  with `incremental = false` for all of them, and since 2026-09-18 also `[profile.dev] debug =
+  "line-tables-only"` plus `debug = false` on every third-party package — a lane's own object
+  files, not the incremental cache, were the next largest thing in a lane's `target/` once the
+  rule above actually held. Keep the prefix anyway — it states the intent where a reader can see
+  it, and an env var still outranks the config file.
 - **`make disk` before and after a fleet.** Build trees are per-checkout and were never collected;
   twelve lanes reached 45 GB with 3.2 GiB free on 2026-09-03. `tools/build-gc.sh
-  --incremental|--lanes|--all` reclaims them and deletes nothing `make` cannot rebuild. Note what
-  the measurement says rather than what everyone assumes: the cargo **incremental cache** was 24 GB
-  of that, FFmpeg 2.6 GB. **Run `tools/build-gc.sh --orphans` after tearing a fleet down** — lane
-  target dirs live outside the repo (`$PLX_FLEET_DIR`) and outlive their worktree; 36 GB of them
-  had accumulated unseen.
+  --incremental|--lanes|--worktrees|--all` reclaims them — every mode there except `--worktrees`
+  deletes only rebuildable output; `--worktrees` removes finished lane checkouts, not just `make`
+  output. Note what the measurement says rather than what everyone assumes: the cargo
+  **incremental cache** was 24 GB of that, FFmpeg 2.6 GB. **Run `tools/build-gc.sh --orphans`
+  after tearing a fleet down** — lane target dirs live outside the repo (`$PLX_FLEET_DIR`) and
+  outlive their worktree; 36 GB of them had accumulated unseen. **`--worktrees`** goes further and
+  removes the finished LANES themselves — clean, unlocked, already on `main` — since
+  `git branch --merged` cannot see a squash-merged lane and 128 registered worktrees (measured
+  2026-09-18) is well past what anyone reads by hand.
 - Use the `which-tier` skill to choose between host checks, `ui-sim`, and real-device verification.
   Pixel output, LG text rasterization, video-plane composition, performance, and native playback
   generally need the TV before being called verified.
