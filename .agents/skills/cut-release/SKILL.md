@@ -257,11 +257,12 @@ considering the patch done. There is no tooling for this yet; do it by hand and 
 `docs/known-issues.md` if a fix's port needs anything nontrivial, so the next person doesn't
 re-derive it.
 
-**There is no flavour input here, and you do not want one.** `release.yml` pins `FLAVOR: stable` in
-the build job's `env`, which is the right place for it: CI is the one context where the Makefile's
-`FLAVOR ?= debug` default is always wrong, and a value nobody can forget to type beats one they
-can. So the `FLAVOR=stable` you spell on every *local* command is already spelled for you in the
-workflow — do not try to pass it as `-f`. If you ever need to confirm which id a run actually
+**There is no flavour input here, and you do not want one.** `release.yml`'s `build` job pins
+`flavor: stable` in the `with:` block it hands to the shared `build-package.yml` workflow, which is
+the right place for it: CI is the one context where the Makefile's `FLAVOR ?= debug` default is
+always wrong, and a value nobody can forget to type beats one they can. So the `FLAVOR=stable` you
+spell on every *local* command is already spelled for you in the workflow — do not try to pass it
+as `-f`. If you ever need to confirm which id a run actually
 packaged, read it off the artifact filename, which the workflow asserts, rather than from what the
 job was meant to do.
 

@@ -5,12 +5,15 @@ name: Release
 # package YAML can point at forever. The package YAML is submitted ONCE; every later version flows
 # through this workflow with no further PR to webosbrew/apps-repo.
 #
-# TWO TRAPS ENCODED BELOW, both of which fail silently rather than loudly:
-#  1. gen-manifest writes a BARE FILENAME into ipkUrl, resolved relative to the manifest URL. The
-#     .ipk and the manifest must therefore be assets of the SAME release.
+# TWO TRAPS THIS WORKFLOW GUARDS AGAINST, both of which fail silently rather than loudly:
+#  1. gen-manifest writes a BARE FILENAME into ipkUrl, resolved relative to the manifest URL. That
+#     step now lives in build-package.yml's "Generate the Homebrew Channel manifest" step (run from
+#     the `build` job below, which calls it) — but the constraint is still this workflow's to keep:
+#     the .ipk and the manifest must be assets of the SAME release, which is why `publish` uploads
+#     them together from one artifact.
 #  2. A draft or prerelease is excluded from `releases/latest`, so publishing one leaves users
 #     resolving the PREVIOUS release's manifest — an update that silently never arrives.
-#     Hence: no draft, no prerelease.
+#     Hence: no draft, no prerelease (enforced below, in `publish`).
 #
 # Separate from ci.yml because this is the only workflow that needs `contents: write`. Merging them
 # would put a write token on every pull-request run.
@@ -298,299 +301,33 @@ jobs:
 
   build:
     name: build + verify
-    runs-on: ubuntu-24.04-arm
     needs: [legal-gate, guard]
     # See legal-gate: explicit, or the tag-push path skips this silently.
     if: always() && needs.guard.result == 'success' && needs['legal-gate'].result == 'success'
-    outputs:
-      ipk: ${{ steps.name.outputs.ipk }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ needs.guard.outputs.tag }}
-
-      - name: Install pinned nightly Rust
-        # Pinned by DATE for releases. `-Z build-std` recompiles std from source and is the most
-        # drift-sensitive thing this build does; a release should be reproducible from its tag,
-        # which an unpinned `nightly` cannot be. Bump deliberately, alongside a device test run.
-        run: |
-          rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component rust-src
-          rustup run "$RUST_NIGHTLY" rustc --version
-        env:
-          RUST_NIGHTLY: ${{ vars.RUST_NIGHTLY || 'nightly-2026-07-02' }}
-
-      - id: ndk
-        uses: ./.github/actions/webos-ndk
-
-      - name: Build + package
-        # No src/config.local.h exists in a clean checkout, so src/app.h's __has_include falls back
-        # to the YOUR_PMS_HOST placeholder. That is what makes the CI-built binary the leak-free
-        # one by construction rather than by discipline — check-elf.sh asserts it below.
-        env:
-          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
-          RUST_NIGHTLY: ${{ vars.RUST_NIGHTLY || 'nightly-2026-07-02' }}
-          # Drops the `devtools` cargo feature — no on-screen counter in a public build.
-          RELEASE: "1"
-          # WHICH INSTALL. `FLAVOR ?= debug` in the Makefile — deliberately, so a developer's
-          # muscle-memory `make deploy` cannot overwrite the app users watch with — and CI is the
-          # one place that default is wrong. Without this the release job packages
-          # `com.beb.plxnative.debug`, `webosbrew-gen-manifest` writes that id INTO the manifest the
-          # Homebrew Channel resolves, and the sha256 cross-check below still passes because it
-          # compares the wrong artifact against its own manifest. It would finally die four jobs
-          # later on a missing `dist/ipk.sha256` (a flavoured package deliberately does not write
-          # that released asset name) — a loud failure naming a checksum rather than a flavour.
-          FLAVOR: stable
-          # DWARF, so the release can be symbolicated later. It must be set on EVERY invocation in
-          # this step and it must be the SAME invocation that cuts the .ipk: a debuginfo build and a
-          # plain one produce DIFFERENT BUILD IDs from identical sources (measured — see the
-          # Makefile's RUST_CFG comment), and the build id is the only thing that matches a
-          # separated .debug back to the binary a stranger's television crashed in. Two steps would
-          # hand us a .debug matching nothing that ever shipped.
-          SYMBOLS: "1"
-          # The PRODUCTION telemetry endpoints, and `vars` rather than `secrets` DELIBERATELY.
-          # They are write-only client identifiers: they permit sending TO a project and grant no
-          # read of anything in it, and `strings` finds both in every shipped binary, so treating
-          # them as secret is theatre. It would also be actively harmful here — GitHub masks a
-          # secret's value everywhere it appears in a log, and `ci/gen-release-audit.py` reads the
-          # endpoints back OUT of the packaged binary and prints them, which is the row that lets a
-          # stranger confirm where their television reports to. Masked, that row reads `***`.
-          # Only SENTRY_AUTH_TOKEN, in the upload step below, is a real secret: it can read and
-          # delete the project.
-          #
-          # These live ONLY here. A developer's machine gets the `_DEV` pair instead
-          # (`make telemetry-local`), and `telemetry::sender::ENVIRONMENT` is derived from WHICH
-          # pair a build was handed — so this block is also the whole reason a shipped binary
-          # reports as `production`, and the reason a locally built one cannot.
-          PLX_SENTRY_DSN: ${{ vars.PLX_SENTRY_DSN }}
-          PLX_POSTHOG_KEY: ${{ vars.PLX_POSTHOG_KEY }}
-          # Declared EMPTY rather than merely absent. The step below refuses a release that carries
-          # development credentials, and an assertion on a variable this file never names reads as
-          # dead code to the next person editing it — which is how a guard gets deleted. It also
-          # makes the check hold if a `set -u` is ever added to that script.
-          PLX_SENTRY_DSN_DEV: ""
-          PLX_POSTHOG_KEY_DEV: ""
-        run: |
-          make -j"$(nproc)"
-          make ipk symbols
-          # Prove the flags actually took, rather than trusting that they did: the Makefile records
-          # the configuration it built, and a stale/ignored RELEASE= is exactly the silent failure
-          # the parse-time stamp exists to prevent.
-          grep -q -- '--no-default-features' pkg/.build-config \
-            || { echo "::error::RELEASE=1 did not take — pkg/.build-config says [$(cat pkg/.build-config)]"; exit 1; }
-          # Same argument for SYMBOLS, and it needs its own check because the failure is silent in
-          # the other direction: `make symbols` REFUSES without the flag, but a stamp that lost it
-          # between the two invocations would relink and hand the upload a .debug for a binary
-          # nobody shipped.
-          grep -q '+symbols' pkg/.build-config \
-            || { echo "::error::SYMBOLS=1 did not take — pkg/.build-config says [$(cat pkg/.build-config)]"; exit 1; }
-          test -s pkg/plxnative.debug \
-            || { echo "::error::pkg/plxnative.debug is missing or empty"; exit 1; }
-          # The build id is what pairs the two. Assert it here rather than trusting the upload:
-          # `sentry-cli` will happily accept a .debug whose id matches nothing that shipped.
-          idof() { readelf -n "$1" | awk '/Build ID/{print $3}'; }
-          [ "$(idof pkg/plxnative)" = "$(idof pkg/plxnative.debug)" ] \
-            || { echo "::error::build id mismatch between the shipped binary and its .debug"; exit 1; }
-          echo "build-id $(idof pkg/plxnative)"
-          # **The telemetry configuration FAILS CLOSED here, and only here.** For a local build,
-          # "no endpoint -> telemetry compiled out" is the right default and the safe one. For an
-          # OFFICIAL RELEASE it is a configuration failure: a binary that silently cannot report is
-          # indistinguishable from a healthy one until months later, when the crash that should
-          # have arrived never did. This step used to warn and continue.
-          [ -n "$PLX_SENTRY_DSN" ] \
-            || { echo "::error::PLX_SENTRY_DSN is unset — refusing to ship a release that cannot report a crash. Set it as a repository VARIABLE (not a secret)."; exit 1; }
-          [ -n "$PLX_POSTHOG_KEY" ] \
-            || { echo "::error::PLX_POSTHOG_KEY is unset — refusing to ship a release that cannot report usage. Set it as a repository VARIABLE (not a secret)."; exit 1; }
-          # The DEVELOPMENT pair must be ABSENT. Supplying both is already a compile error —
-          # `telemetry::sender`'s const block refuses it, because the environment a build reports
-          # is derived from which pair it was given and two pairs have no answer — so this is the
-          # same assertion, made earlier and in words that name the workflow rather than the crate.
-          [ -z "$PLX_SENTRY_DSN_DEV$PLX_POSTHOG_KEY_DEV" ] \
-            || { echo "::error::development telemetry credentials are present in a release build"; exit 1; }
-          grep -q 'tel:' pkg/.build-config \
-            || { echo "::error::telemetry endpoints were set but did not reach the build"; exit 1; }
-          # And that the binary carries the PRODUCTION endpoint specifically, rather than merely
-          # "some endpoint". `option_env!` yields a `&'static str`, so a configured DSN is in
-          # `.rodata` verbatim; finding it there is what proves `telemetry::sender`'s const block
-          # took the production branch, and so that `ENVIRONMENT` is `production` and every event
-          # from this release lands in the right project. Substring, not whole-line: Rust string
-          # literals are not NUL-terminated and adjacent ones merge into one `strings` record.
-          strings pkg/plxnative | grep -qF "$PLX_SENTRY_DSN" \
-            || { echo "::error::the packaged binary does not carry the production Sentry DSN"; exit 1; }
-          strings pkg/plxnative | grep -qF "$PLX_POSTHOG_KEY" \
-            || { echo "::error::the packaged binary does not carry the production PostHog key"; exit 1; }
-          # Fingerprints, not values. These are publishable, but they are also usable to write junk
-          # into the project and burn a free-tier quota, and a workflow log is a far more casually
-          # read surface than the audit file — which does record them in full, deliberately, being
-          # the document that makes the package reproducible by somebody other than the maintainer.
-          echo "telemetry fingerprints (sha256, first 16):"
-          printf '  sentry  %s\n' "$(printf %s "$PLX_SENTRY_DSN"  | sha256sum | cut -c1-16)"
-          printf '  posthog %s\n' "$(printf %s "$PLX_POSTHOG_KEY" | sha256sum | cut -c1-16)"
-          # ...and carry the stamp to the publish job under a NON-HIDDEN name: upload-artifact
-          # silently drops dotfiles, so `pkg/.build-config` would never arrive and the audit would
-          # lose the row recording which configuration was built.
-          cp pkg/.build-config pkg/build-config.txt
-          # ...and the same for the flavour, on the artifact's own name. `check-package.py` cannot
-          # catch this one: it derives the packaged id from the stage and SKIPs every stable-only
-          # assertion when that id is not stable, so a wrong-flavour package exits 0 there.
-          ls pkg/com.beb.plxnative_*_arm.ipk >/dev/null 2>&1 \
-            || { echo "::error::packaged the wrong flavour — pkg/ holds $(ls pkg/*.ipk 2>&1)"; exit 1; }
-
-      - name: Upload debug files to Sentry
-        # **In the same job as the build, deliberately.** `pkg/plxnative.debug` is 75 MB and exists
-        # only here; carrying it between jobs as an artifact would cost an upload and a download to
-        # move a file whose only consumer is this step. It also keeps the pairing local: the binary
-        # and its .debug are asserted to share a build id twenty lines up, and nothing can come
-        # between that assertion and this upload.
-        #
-        # **Fails the release.** A build whose native crash addresses have no matching DIF is not a
-        # working crash-reporting build: ingest accepts it silently and the dashboard shows bare
-        # addresses. The binary/debug build-id assertion above catches a wrong pair; this step
-        # catches a missing token, unusable DIF and failed upload.
-        #
-        # `--include-sources` bundles every source the DWARF references, so Sentry can show source
-        # context around a frame. Checked before enabling it: 1961 files are referenced and NONE of
-        # them is gitignored — in particular `src/config.local.h`, which holds a live Plex token, is
-        # not referenced at all, and that token appears zero times in both the .debug and the
-        # stripped binary. The source is GPL-3.0-or-later; publication also requires the corresponding-source gate.
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: ${{ vars.SENTRY_ORG || 'gleb-linnik' }}
-          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT || 'plx-native' }}
-        run: |
-          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
-            echo "::error::SENTRY_AUTH_TOKEN is not set — refusing to ship unsymbolicatable crash reports."
-            exit 1
-          fi
-          # `debug-files check` first: it is the step that says whether Symbolicator can use this
-          # object at all, and its answer (`Arch: arm`, `Usable: yes`) is the one thing no vendor
-          # documentation states about armv7.
-          npx --yes @sentry/cli@3.7.0 debug-files check pkg/plxnative.debug
-          npx --yes @sentry/cli@3.7.0 debug-files upload \
-              --include-sources pkg/plxnative.debug pkg/plxnative
-
-      - name: ELF + packaging assertions
-        # REQUIRE_PACKAGE: this step runs AFTER `make ipk`, so "nothing staged" here means the build
-        # produced no package and must fail. The pre-build callers (`prepare`, `guard`) deliberately
-        # do not set it — they exist to grade the version files before anything is built.
-        env:
-          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
-          REQUIRE_PACKAGE: "1"
-        run: |
-          ./ci/check-elf.sh
-          python3 ci/check-package.py
-          # A gate row is appended only AFTER the gate passed — `run:` is `bash -e`, so a failure
-          # never reaches these lines. The audit therefore lists gates that really ran, which is
-          # the fact v0.2.1 could not produce: it was hand-published and every gate was skipped.
-          { echo "| \`ci/check-elf.sh\` — ELF identity, CP15 barriers, DT_NEEDED | pass |"
-            echo "| \`ci/check-package.py\` — versions, ar layout, descriptors, payload, notes | pass |"
-          } >> pkg/gates.md
-
-      - name: webosbrew tooling
-        run: |
-          set -euo pipefail
-          TAG=v20260731-e1bb0c0
-          declare -A SHA256=(
-            [fw-symbols]=639721a0c2248b13e5984930b53729cc201f022725954086aca35e2ccae515b5
-            [ipk-verify]=2868b4b2efc097939ab11117c9266d796f0326ee48c90f80070766814fb174d9
-            [gen-manifest]=46a023cdec6f5aa07316ef4a0548c30897b349c4843596c41c70a23f8d2792e9
-          )
-          for p in fw-symbols ipk-verify gen-manifest; do
-            file="webosbrew-toolbox-${p}_0.4.0-1_arm64.deb"
-            curl -fsSLo "$file" "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${TAG}/$file"
-            echo "${SHA256[$p]}  $file" | sha256sum -c -
-          done
-          sudo apt-get install -y ./webosbrew-toolbox-*.deb
-
-      - name: Compatibility check (gating)
-        # Captured to a FILE as well as to the summary, because `ci/gen-release-audit.py` embeds
-        # this verbatim in the audit's static-compatibility section. The release note carries one
-        # line summarising it; the matrix is fourteen rows and belongs in the audit, derived from
-        # the tool rather than retyped — `docs/release-notes/README.md` bans retyping it and this
-        # is what makes that possible.
-        run: |
-          webosbrew-ipk-verify --details --format markdown \
-            --fw-releases '>=4.0' pkg/*.ipk | tee pkg/ipk-verify.md | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - id: name
-        run: echo "ipk=$(ls pkg/*.ipk)" >> "$GITHUB_OUTPUT"
-
-      - name: Generate the Homebrew Channel manifest
-        # -r false: the app needs no root. Device-proven — it runs jailed as uid 6910 under LG's
-        # stock jail_native_devmode profile. See docs/distribution.md §3.5.
-        run: |
-          # icon160.png, NOT largeIcon.png: 130x130 is LG's launcher size, while the channel
-          # listing wants 160 (and 320 for the detail icon) — `tools/mkicons.py` cuts all four from
-          # one master for exactly this reason. The URL must return 200 or webosbrew's own
-          # `repogen.lintpkg` rejects the submission, which means the REPO MUST BE PUBLIC and the
-          # icon must be committed on the default branch before the first release.
-          webosbrew-gen-manifest \
-            -p "${{ steps.name.outputs.ipk }}" \
-            -i "https://raw.githubusercontent.com/${{ github.repository }}/main/pkg/icon160.png" \
-            -l "https://github.com/${{ github.repository }}" \
-            -r false \
-            -o pkg/com.beb.plxnative.manifest.json
-          cat pkg/com.beb.plxnative.manifest.json
-
-      - name: The manifest hash must match the artifact
-        # The sha256 is enforced ON THE DEVICE at install time and by nothing in CI, so a mismatch
-        # here is invisible until it breaks every user's install. Assert it while we still can.
-        run: |
-          set -euo pipefail
-          want=$(python3 -c "import json;print(json.load(open('pkg/com.beb.plxnative.manifest.json'))['ipkHash']['sha256'])")
-          have=$(sha256sum "${{ steps.name.outputs.ipk }}" | cut -d' ' -f1)
-          [ "$want" = "$have" ] || { echo "::error::manifest sha256 $want != artifact $have"; exit 1; }
-          echo "ipk sha256 $have" >> "$GITHUB_STEP_SUMMARY"
-          echo "| the Homebrew Channel manifest's sha256 matches the artifact | pass |" >> pkg/gates.md
-
-      - name: LGPL corresponding source for the bundled FFmpeg
-        # NOT optional and not paperwork. The package ships four FFmpeg shared libraries, so
-        # LGPL-2.1's source obligation is OURS rather than the television's, and
-        # THIRD-PARTY-NOTICES.md §1.1 states in writing that the exact tarball and the complete
-        # configure invocation accompany every release. A release without these contradicts the
-        # notice that ships inside it.
-        #
-        # The tarball is the pristine upstream one build-ffmpeg.sh already downloaded and verified
-        # against a pinned sha256 — no patches are applied, so this IS the corresponding source.
-        run: |
-          set -euo pipefail
-          tarball=$(ls vendor/ffmpeg-build/ffmpeg-*.tar.xz)
-          cp "$tarball" pkg/
-          cp ci/build-ffmpeg.sh pkg/
-          echo "LGPL source: $(basename "$tarball") + build-ffmpeg.sh" >> "$GITHUB_STEP_SUMMARY"
-          echo "| LGPL corresponding source attached ($(basename "$tarball") + build-ffmpeg.sh) | pass |" >> pkg/gates.md
-
-      - name: Versioned source asset and isolated reconstruction
-        env:
-          GPL_SCAN_SENTRY_DSN: ${{ vars.PLX_SENTRY_DSN }}
-          GPL_SCAN_POSTHOG_KEY: ${{ vars.PLX_POSTHOG_KEY }}
-          GPL_SCAN_SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-        run: |
-          set -euo pipefail
-          private_values="$RUNNER_TEMP/gpl-private-values.json"
-          python3 -c 'import json,os,sys; p=sys.argv[1]; open(p,"w").write(json.dumps([v for k,v in os.environ.items() if k.startswith("GPL_SCAN_") and v])); os.chmod(p,0o600)' "$private_values"
-          ipk=$(ls pkg/com.beb.plxnative_*_arm.ipk)
-          source="pkg/plxnative-source-$(python3 -c 'import json; print(json.load(open("pkg/appinfo.json"))["version"])').tar.gz"
-          python3 ci/prepare-source-release.py --inputs "$RUNNER_TEMP/gpl-source-inputs" \
-            --output "$source" --rust-toolchain nightly-2026-07-02 --binary "$ipk" --private-values "$private_values"
-          snapshot=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_snapshot_sha256"])' "$source.release.json")
-          python3 ci/verify-source-rebuild.py "$source" --expect-snapshot "$snapshot" \
-            --rust-toolchain nightly-2026-07-02 --work "$RUNNER_TEMP/gpl-source-rebuild" --private-values "$private_values"
-          cp "$RUNNER_TEMP/gpl-source-rebuild/result.json" pkg/source-rebuild.json
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: release-assets
-          path: |
-            pkg/*.ipk
-            pkg/*.manifest.json
-            pkg/ipk.sha256
-            pkg/ffmpeg-*.tar.xz
-            pkg/build-ffmpeg.sh
-            pkg/ipk-verify.md
-            pkg/gates.md
-            pkg/build-config.txt
-            pkg/plxnative-source-*.tar.gz*
-            pkg/source-rebuild.json
+    # The ARM build+verify pipeline itself lives in build-package.yml — shared with canary.yml so
+    # the two stop being hand-kept copies of one job. This job only carries the release-specific
+    # decisions: which ref, which flavour, which telemetry pair, which optional steps.
+    uses: ./.github/workflows/build-package.yml
+    with:
+      ref: ${{ needs.guard.outputs.tag }}
+      # WHICH INSTALL. `FLAVOR ?= debug` in the Makefile — deliberately, so a developer's
+      # muscle-memory `make deploy` cannot overwrite the app users watch with — and CI is the one
+      # place that default is wrong. Without this the release job packages `com.beb.plxnative.debug`,
+      # `webosbrew-gen-manifest` writes that id INTO the manifest the Homebrew Channel resolves, and
+      # the sha256 cross-check still passes because it compares the wrong artifact against its own
+      # manifest. It would finally die four jobs later on a missing `dist/ipk.sha256` (a flavoured
+      # package deliberately does not write that released asset name) — a loud failure naming a
+      # checksum rather than a flavour.
+      flavor: stable
+      # The PRODUCTION telemetry endpoints, compiled in from `vars` rather than `secrets`
+      # DELIBERATELY — see build-package.yml's own comment on the point. Only SENTRY_AUTH_TOKEN,
+      # passed as a secret below, can read or delete the project.
+      telemetry: production
+      artifact: release-assets
+      homebrew-manifest: true
+      source-asset: true
+    secrets:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   publish:
     name: publish release
