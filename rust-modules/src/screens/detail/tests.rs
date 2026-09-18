@@ -726,12 +726,20 @@ fn opening_a_catalog_row_mounts_on_it_without_blocking_on_the_fetch() {
     let row = crate::pms::movie(&pms_state, 1).expect("seeded catalog row");
     let (sid, rk) = (row.sid, row.rk.clone());
     let hubs_snap = crate::pms::hubs_snapshot(&pms_state);
-    let screen = DetailScreen::new(EntryId(7), sid, rk.clone(), hubs_snap.view());
+    let mut screen = DetailScreen::new(EntryId(7), sid, rk.clone(), hubs_snap.view());
     assert_eq!((screen.sid, screen.rk.as_str()), (sid, rk.as_str()));
     assert!(
         test_store().view().current().is_none(),
         "construction must not run the fetch to completion inline"
     );
+    // The fetch itself starts on the mounted page's first Enter (T2: the request is admitted in
+    // the same step that publishes it), not on construction — a real Bridge delivers Mount then
+    // Enter right after the Push this test simulates by driving both directly.
+    step(&mut screen, &ScreenEvent::Mount, None);
+    let (_, entered) = step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
+        focus: crate::ui::screen::FocusTarget::ContainerGroup(crate::ui::machine::GroupId(0)),
+    }), None);
+    apply_metadata_effects(&entered);
     assert!(
         crate::metadata::detail_loading(test_store().adapter_ref()),
         "the asynchronous request is in flight"
