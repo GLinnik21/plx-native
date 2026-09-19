@@ -289,6 +289,9 @@ pub(crate) trait DimSink {
     fn video_plane(&self) -> bool;
     /// `popover::host::page_epoch`.
     fn page_epoch(&self) -> u32;
+    /// Did THIS frame capture the host page (`gfx::snapshot_captured_this_frame`)? Its GPU work
+    /// is waited out before the next present, so a reduction queued now costs no presented frame.
+    fn captured(&self) -> bool;
     /// `gfx::field_kick`: queue the reduction of the page as it stands NOW — before any dim is on
     /// it — or `None` when it has no honest answer this frame.
     fn kick(&mut self) -> Option<crate::gfx::FieldTicket>;
@@ -310,6 +313,9 @@ impl DimSink for GlDims {
     }
     fn page_epoch(&self) -> u32 {
         crate::ui::popover::host::page_epoch()
+    }
+    fn captured(&self) -> bool {
+        crate::gfx::snapshot_captured_this_frame()
     }
     fn kick(&mut self) -> Option<crate::gfx::FieldTicket> {
         // A host test links GL but never creates a context — `underlay::upload`'s reason. A test
@@ -728,12 +734,14 @@ impl<H: Host> ModalStack<H> {
     ) {
         let dims = self.scrims(nav_page_alpha);
         let source = self.underlay_source();
-        // The page is read on the first frame a dim is SEEN, not on the frame its surface is
-        // presented. At appear 0 nothing is painted through the field, and the open frame is the
-        // one frame that already renders the whole host into its snapshot: the reduction queued
-        // there was 1.5 M GPU cycles on the frame that could least afford them (television,
-        // 2026-09-19). The snapshot is still there a frame later, so is the read's source.
-        if !dims.is_empty() || source != Some(UnderlaySource::Page) {
+        // The page is read on the frame that CAPTURED it, or else the first frame a dim is seen.
+        // The capture frame renders the whole host into its snapshot and is the heaviest GPU frame
+        // a modal has — but nothing presents after it until that work has left the GPU
+        // (`gfx::snapshot_frame_begin`), so the reduction queued alongside it is waited out with it
+        // and costs no presented frame. Queued a frame later instead, on the first ramp frame, it
+        // was the backlog the frame after that paid: 20–24 ms (television, 2026-09-19). A held
+        // surface on a frame that captured nothing still queues nothing.
+        if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() {
             self.underlay.sync(source, sink);
         }
         for (_, a, lift) in dims {

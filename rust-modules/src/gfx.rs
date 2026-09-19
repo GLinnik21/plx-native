@@ -1836,6 +1836,12 @@ pub(crate) fn snapshot_frame_begin() {
     SNAPSHOT_PENDING.store(defer, Ordering::Relaxed);
 }
 
+/// Has this frame captured the page so far? Its GPU work will be waited out before the next
+/// present, which makes this the frame to queue anything else that reads the capture.
+pub(crate) fn snapshot_captured_this_frame() -> bool {
+    SNAPSHOT_THIS_FRAME.load(Ordering::Relaxed)
+}
+
 /// Is this iteration waiting for a page capture to leave the GPU? See [`SNAPSHOT_THIS_FRAME`].
 pub(crate) fn snapshot_pending() -> bool {
     SNAPSHOT_PENDING.load(Ordering::Relaxed)

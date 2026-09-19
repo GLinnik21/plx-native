@@ -201,6 +201,8 @@ struct FakeFb {
     reduced: f32,
     /// Is a read in flight (`DimSink::in_flight`)?
     in_flight: bool,
+    /// Did this frame capture the host (`DimSink::captured`)?
+    captured: bool,
 }
 
 impl FakeFb {
@@ -215,6 +217,7 @@ impl FakeFb {
             runs: 0,
             reduced: 0.0,
             in_flight: false,
+            captured: false,
         }
     }
     /// The previous frame is swapped and the page is drawn again (live, or served from the
@@ -232,6 +235,9 @@ impl super::modal::DimSink for FakeFb {
     }
     fn page_epoch(&self) -> u32 {
         self.epoch
+    }
+    fn captured(&self) -> bool {
+        self.captured
     }
     fn kick(&mut self) -> Option<crate::gfx::FieldTicket> {
         if self.refuse {
@@ -344,6 +350,34 @@ fn the_page_read_lands_a_frame_after_it_is_queued_and_holds_the_ground_until_the
     dims_frame(&mut d, &rig, &mut fb);
     assert!(d.nav.modals.underlay.field().is_latched());
     assert!(!fb.in_flight, "landed: the ground may be taken and the loop may rest");
+}
+
+/// **The page is read on the frame that captured it, before any dim is seen.** That frame's GPU
+/// work is waited out before anything else presents (`gfx::snapshot_frame_begin`), so the
+/// reduction queued there costs no presented frame — queued a frame later, it was the GPU backlog
+/// the frame after THAT paid (20–24 ms, television, 2026-09-19). Without a capture on the frame, a
+/// held surface still queues nothing: there is no fence to hide the reduction behind.
+#[test]
+fn the_page_is_read_on_the_capture_frame_and_not_on_a_held_frame_without_one() {
+    let (mut d, mut rig, _) = booted();
+    let a = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    modal_mut(&mut d, a).scrim_alpha = 0.5;
+    d.nav.modals.surface_mut(a).unwrap().motion = super::modal::PopoverMotion::at(0.0);
+    let mut fb = FakeFb::new(0.5);
+
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!(fb.events.is_empty(), "held, no capture this frame: nothing queued, nothing dimmed");
+
+    fb.frame(0.5);
+    fb.captured = true;
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["kick"], "the capture frame queues the read, and dims nothing");
+
+    fb.frame(0.5);
+    fb.captured = false;
+    d.nav.modals.surface_mut(a).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["collect", "dim"], "the first dim stands on the landed field");
 }
 
 /// **A read whose targets were reused is asked for again, not adopted.** The chain's targets are

@@ -221,10 +221,8 @@ impl RouteGround {
     }
 
     pub(crate) fn draw_host(&mut self, p: Painter) {
-        // Read on the first frame the ground is SEEN — `ModalStack::draw_scrims_on`'s rule, for
-        // its reason: the open frame is the one that renders the host into its snapshot, and at
-        // opacity 0 nothing is drawn through the field.
-        if p.opacity() > 0.0 {
+        // `ModalStack::draw_scrims_on`'s rule, for its reason — see [`ground_reads_host`].
+        if ground_reads_host(p.opacity(), crate::gfx::snapshot_captured_this_frame()) {
             self.latch_host();
         }
         self.field.draw(p, Rect::FULL, Role::Ground, 1.0);
@@ -895,8 +893,27 @@ impl RouteLayout {
     }
 }
 
+/// **When a route ground reads its host**: on the frame that captured the host (nothing presents
+/// after it until its GPU work is done, `gfx::snapshot_frame_begin`, so the reduction queued with
+/// it costs no presented frame), or else on the first frame the ground is seen. A held, invisible
+/// frame that captured nothing reads nothing — nothing is drawn through the field at opacity 0.
+fn ground_reads_host(opacity: f32, captured: bool) -> bool {
+    opacity > 0.0 || captured
+}
+
 #[cfg(test)]
 mod tests {
+    /// `ModalStack::draw_scrims_on`'s rule, for a route ground: the host is read on the frame that
+    /// captured it (whose GPU work is waited out before anything presents) or once the ground is
+    /// seen — never on a held, invisible frame that captured nothing.
+    #[test]
+    fn a_route_ground_reads_its_host_on_the_capture_frame_or_once_seen() {
+        use super::ground_reads_host;
+        assert!(ground_reads_host(0.0, true), "the capture frame");
+        assert!(ground_reads_host(0.4, false), "seen");
+        assert!(!ground_reads_host(0.0, false), "held and nothing captured");
+    }
+
     #[test]
     fn a_pre_home_ground_is_latched_from_its_explicit_seed_before_drawing() {
         let rgb = [super::theme::SURFACE_APP[0], super::theme::SURFACE_APP[1], super::theme::SURFACE_APP[2]];
