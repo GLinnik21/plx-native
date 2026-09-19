@@ -7,6 +7,7 @@ import io
 import json
 import posixpath
 import re
+import subprocess
 import tarfile
 import zipfile
 import zlib
@@ -72,6 +73,37 @@ def allowed(name):
                 name in {'pkg/dev/icon.png', 'pkg/dev/largeIcon.png'})
     return (name.startswith('vendor/nanosvg/') or name == 'vendor/sentry-native/webos-arm32.patch'
             or name.startswith('.github/'))
+
+
+def tracked_sources(root, private_values=()):
+    """Yield (name, data, mode, transformation) for every file the source bundle carries.
+
+    THE one selection: tracked files that pass allowed(), with release records redacted exactly as
+    archived. make-source-bundle.py builds from it and test_source_bundle.py scans it, so the
+    pre-build credential check sees the same bytes the release step will.
+    """
+    listing = subprocess.check_output(['git', '-C', str(root), 'ls-files', '-s', '-z'])
+    for item in listing.decode().split('\0'):
+        if not item:
+            continue
+        metadata, name = item.split('\t', 1)
+        if metadata.split()[0] == '160000':
+            fail('submodule needs explicit source support: ' + name)
+        # Deliberate allowlist: untracked files and gitignored inputs never enter here.
+        if not allowed(name):
+            continue
+        data, filemode = read_regular(root, name)
+        transformation = None
+        if name.startswith(('docs/release-audits/', 'docs/release-notes/')):
+            original = data
+            data = re.sub(rb'(?mi)^.*\| telemetry endpoints \|.*$',
+                b'| telemetry endpoints | Redacted in the source reconstruction copy; original release record unchanged |', data)
+            for value in sorted(private_values, key=len, reverse=True):
+                if value: data = data.replace(value, b'<redacted-private-value>')
+            if data != original:
+                transformation = {'original_sha256': digest(original),
+                    'operation': 'Redact confidential literals in copied release record; repository original unchanged'}
+        yield name, data, filemode, transformation
 
 
 def read_regular(root, name):
