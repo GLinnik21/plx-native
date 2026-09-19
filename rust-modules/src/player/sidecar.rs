@@ -240,6 +240,7 @@ fn cue_at(cues: &[Cue], now_ns: i64) -> Option<&Cue> {
 /// hours optional); an ASS/SSA script is read from its `Dialogue:` events. PMS is ASKED for UTF-8
 /// SubRip, but whichever form it actually sent is what gets parsed.
 pub(crate) fn parse(bytes: &[u8]) -> Vec<Cue> {
+    if bytes.len() > crate::plex::SIDECAR_MAX_BYTES { return Vec::new(); }
     let text = String::from_utf8_lossy(bytes);
     let text = text.trim_start_matches('\u{feff}');
     let mut cues = if text.contains("[Events]") && text.contains("Dialogue:") {
@@ -248,6 +249,11 @@ pub(crate) fn parse(bytes: &[u8]) -> Vec<Cue> {
         parse_srt(text)
     };
     cues.retain(|c| c.end_ns > c.start_ns && !c.text.is_empty());
+    for cue in &mut cues {
+        if let Some((end, _)) = cue.text.char_indices().nth(4096) {
+            cue.text.truncate(end);
+        }
+    }
     cues.sort_by_key(|c| c.start_ns);
     cues.truncate(MAX_CUES);
     cues
@@ -377,6 +383,20 @@ mod tests {
         assert_eq!(active(2_000_000_000, false).as_deref(), Some("new"));
         reset();
         assert!(!parallel, "an abandoned fetch must finish before another worker is started");
+    }
+
+    #[test]
+    fn sidecar_download_refuses_an_oversized_body() {
+        let mut body = b"00:00:01 --> 00:00:03\n".to_vec();
+        body.resize(4 * 1024 * 1024 + 1, b'x');
+        assert!(parse(&body).is_empty(), "oversized sidecars must not allocate a parsed copy");
+    }
+
+    #[test]
+    fn sidecar_cue_text_is_bounded_before_reaching_the_ui() {
+        let body = format!("00:00:01 --> 00:00:03\n{}", "é".repeat(8192));
+        let cues = parse(body.as_bytes());
+        assert!(cues[0].text.chars().count() <= 4096);
     }
 
     const S: i64 = 1_000_000_000;

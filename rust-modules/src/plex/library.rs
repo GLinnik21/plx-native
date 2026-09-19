@@ -245,7 +245,7 @@ impl Client {
             key.to_string(),
         ]
         .iter()
-        .find_map(|path| self.get_bytes(path).filter(|b| !b.is_empty()))
+        .find_map(|path| self.get_sidecar_bytes(path).filter(|b| !b.is_empty()))
     }
 
     pub fn select_streams(&self, sel: &StreamSelection) -> i32 {
