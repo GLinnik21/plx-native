@@ -469,6 +469,7 @@ pub(crate) fn commit_track(
                 None => crate::player::sidecar::deselect(),
             }
         }
+        TrackCommit::SubtitleTone(tone) => crate::player::set_subtitle_tone(tone),
     }
 }
 

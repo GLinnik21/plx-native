@@ -96,19 +96,33 @@ pub(crate) fn draw_subtitles(hud_up: bool, transcoding: bool) {
     // sit near the bottom normally; lift above the scrubber/tabs while the HUD is up
     let baseline = if hud_up { SUB_CEIL_Y } else { SUB_BASE_Y };
     let block_top = baseline - n * lh;
-    let white = [1.0f32, 1.0, 1.0, 1.0]; // subtitles stay pure white for legibility (carve-out)
+    let ink = subtitle_ink(); // white unless the viewer picked a dimmer tone (track menu)
     let outline = theme::scrim_black(0.85);
     let p = Painter::root();
     for (i, ln) in lines.iter().enumerate() {
         let top = block_top + i as f32 * lh;
         if let Ok(cs) = CString::new(ln.as_str()) {
-            // dark outline (4 offsets) then bright white bold text — legible over any scene
+            // dark outline (4 offsets) then the bold caption in its tone — legible over any scene
             for (dx, dy) in [(-2.0f32, 0.0f32), (2.0, 0.0), (0.0, -2.0), (0.0, 2.0)] {
                 p.text(cs.as_ptr(), cx + dx, top + 4.0 + dy, sz, outline, 1, 1);
             }
-            p.text(cs.as_ptr(), cx, top + 4.0, sz, white, 1, 1);
+            p.text(cs.as_ptr(), cx, top + 4.0, sz, ink, 1, 1);
         }
     }
+}
+
+/// The ink both subtitle draws use this frame: the viewer's tone ([`crate::player::subtitle_tone`])
+/// resolved on [`theme::SUBTITLE_INKS`]. A rung the table does not have is white, never a
+/// neighbour.
+fn subtitle_ink() -> [f32; 4] {
+    subtitle_ink_for(crate::player::subtitle_tone())
+}
+
+fn subtitle_ink_for(tone: crate::plex::session::SubtitleTone) -> [f32; 4] {
+    theme::SUBTITLE_INKS
+        .get(tone.index() as usize)
+        .copied()
+        .unwrap_or(theme::SUBTITLE_INKS[0])
 }
 
 /// Subtitle baseline: where the caption block sits with the transport DOWN, and the ceiling it
@@ -222,11 +236,13 @@ pub(crate) fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool) {
                 cache.sel = sel;
             }
             let lift = hud_lift(set.iter().map(|(_, r)| *r), hud_up);
-            let white = [1.0f32, 1.0, 1.0, 1.0];
+            // the tone TINTS a bitmap: the image shader multiplies by it, so a PGS cue keeps its
+            // authored colours and outline and only gives up light (white is the identity)
+            let tint = subtitle_ink();
             let p = Painter::root();
             for (tex, r) in set.iter() {
                 let dy = if overhangs(*r) { lift } else { 0.0 };
-                p.tex(*tex, Rect::new(r.x, r.y - dy, r.w, r.h), 0.0, white);
+                p.tex(*tex, Rect::new(r.x, r.y - dy, r.w, r.h), 0.0, tint);
             }
         }
     }
@@ -2008,6 +2024,28 @@ mod tests {
             r.w,
             r.h
         );
+    }
+
+    /// **Every tone has an ink, the first is the white every earlier build drew, and each rung
+    /// under it is strictly darker** — the ladder's whole promise is "down is dimmer", and the
+    /// table is indexed by position, so a rung added to `SubtitleTone::LADDER` without an ink
+    /// here would silently draw white. Opaque and achromatic throughout: a tone gives up light,
+    /// never coverage (the outline depends on it) and never hue (it tints image subtitles).
+    #[test]
+    fn the_subtitle_tones_are_a_strictly_darkening_opaque_grey_ladder_from_white() {
+        use crate::plex::session::SubtitleTone;
+        assert_eq!(theme::SUBTITLE_INKS.len(), SubtitleTone::LADDER.len());
+        assert_eq!(subtitle_ink_for(SubtitleTone::White), [1.0, 1.0, 1.0, 1.0]);
+        let mut prev = f32::MAX;
+        for tone in SubtitleTone::LADDER {
+            let ink = subtitle_ink_for(tone);
+            assert!(ink[0] == ink[1] && ink[1] == ink[2], "{tone:?} has a hue");
+            assert_eq!(ink[3], 1.0, "{tone:?} is not opaque");
+            assert!(ink[0] < prev, "{tone:?} is not darker than the rung above it");
+            prev = ink[0];
+        }
+        // the darkest rung still has to be READ over the 0.85 black outline it is drawn on
+        assert!(prev > 0.25, "the darkest tone has sunk into its own outline");
     }
 
     /// A 1080p-authored PGS rect must land EXACTLY where it always did — the scale is identity,

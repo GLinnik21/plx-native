@@ -4,8 +4,15 @@
 //! D-pad/OK/BACK here while the menu is open; LEFT/RIGHT switch between the Audio and Subtitles
 //! panels. The selection commit (native audio switch / server transcode / burn) is unchanged
 //! from the previous procedural version — only the presentation moved onto the table.
+//!
+//! The Subtitles panel carries a second section under the tracks: **Color**, the tone the
+//! client-rendered caption is drawn in (`plex::session::SubtitleTone` — white, then a ladder of
+//! grays for a picture whose white is too bright, which is what HDR does to it). Same idiom as
+//! the tracks above it — [`Row::checked`], "the active one of several" — and the same flat
+//! `TableView::sel` over both sections, so [`TrackMenuState::tone_base`] is where one ends.
 #![allow(dead_code)]
 use crate::metadata;
+use crate::plex::session::SubtitleTone;
 use crate::ui::consts::SCR_H;
 use crate::ui::frame::Budget;
 use crate::ui::geom::IndexElem;
@@ -27,6 +34,11 @@ pub(crate) struct TrackMenuState {
     tab: c_int, // 0=Audio, 1=Subtitles
     active_audio: c_int, // index into the playing item's audio list
     active_sub: c_int, // -1 = Off, else index into the playing item's subs list
+    /// The flat row index of the FIRST tone row, captured when the Subtitles table was built — so
+    /// [`Self::on_ok`] splits tracks from tones by what was DRAWN, not by re-asking
+    /// `visible_subs` (whose answer moves when a playback starts transcoding). `None` on the
+    /// Audio tab, which has no such section.
+    tone_base: Option<c_int>,
     table: TableView, // main-thread only
 }
 
@@ -45,6 +57,9 @@ pub(crate) enum TrackCommit {
     /// (`render_ordinal` is -1), so the loop hands it to `player::sidecar` beside the unchanged
     /// route commit. `None` — Off, or an embedded track — deselects any sidecar.
     Subtitle { render_ordinal: c_int, stream_id: i64, sidecar_key: Option<String> },
+    /// The caption's tone. Not a track at all, but it is picked in this panel and it is the
+    /// loop that performs it (`player::set_subtitle_tone` writes the session), like the two above.
+    SubtitleTone(crate::plex::session::SubtitleTone),
 }
 
 impl TrackMenuState {
@@ -55,6 +70,7 @@ impl TrackMenuState {
             tab,
             active_audio: 0,
             active_sub: -1,
+            tone_base: None,
             table: TableView::new(),
         };
         s.sync_item(ps, meta);
@@ -106,12 +122,13 @@ impl TrackMenuState {
             .unwrap_or(0)
     }
 
-    /// selectable rows in a tab — Subtitles has a leading "Off" row
+    /// selectable rows in a tab — Subtitles has a leading "Off" row and the tone ladder after
+    /// its tracks
     fn n_rows(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) -> c_int {
         if tab == 0 {
             n_audio(meta)
         } else {
-            visible_subs(ps, meta).len() as c_int + 1
+            visible_subs(ps, meta).len() as c_int + 1 + SubtitleTone::LADDER.len() as c_int
         }
     }
     /// the table row that should be focused when entering `tab` (its active selection)
@@ -210,6 +227,10 @@ impl TrackMenuState {
                 }
             }
             None
+        } else if let Some(tone) = tone_at(self.tone_base, sel) {
+            // a row of the Color section: no track changes, so no `TrackCommit::Subtitle` — that
+            // one always republishes, and re-committing the track would re-burn a transcode
+            Some(TrackCommit::SubtitleTone(tone))
         } else {
             // row 0 = Off = -1; else map the visible row back to its subs-list index
             let vis = visible_subs(ps, meta);
@@ -332,14 +353,29 @@ impl TrackMenuState {
         sec
     }
 
+    /// The Color section: one checked row per rung of the tone ladder, lightest first.
+    fn build_tones(&self) -> Section {
+        let active = crate::player::subtitle_tone();
+        let mut sec = Section::new("Color");
+        for tone in SubtitleTone::LADDER {
+            sec = sec.row(Row::new(tone.label()).checked(tone == active));
+        }
+        sec
+    }
+
     fn rebuild(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int, slide: bool) {
-        let sec = if tab == 0 {
-            self.build_audio(meta)
-        } else {
-            self.build_subs(ps, meta)
-        };
         let sel = self.sel_for_tab(ps, meta, tab);
-        self.table.set_sections(vec![sec], sel, slide);
+        if tab == 0 {
+            self.tone_base = None;
+            self.table.set_sections(vec![self.build_audio(meta)], sel, slide);
+        } else {
+            // TWO sections, and `TableView::sel` is one flat index over both (`more_menu`'s
+            // contract): the tones start where the track rows end.
+            let subs = self.build_subs(ps, meta);
+            let tones = self.build_tones();
+            self.table.set_sections(vec![subs, tones], sel, slide);
+            self.tone_base = Some(self.table.n_rows() - SubtitleTone::LADDER.len() as c_int);
+        }
     }
 
     /// The panel geometry — shared by `update` and `draw` so scrolling math matches.
@@ -525,6 +561,13 @@ fn visible_subs(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView
         .unwrap_or_default()
 }
 
+/// Which tone a flat Subtitles-panel row is, or `None` for a track row (and for anything past
+/// the ladder — `sel` survives a rebuild, so a stale index is no rung rather than a neighbour).
+fn tone_at(tone_base: Option<c_int>, sel: c_int) -> Option<SubtitleTone> {
+    let i = usize::try_from(sel.checked_sub(tone_base?)?).ok()?;
+    SubtitleTone::LADDER.get(i).copied()
+}
+
 // ---- section building ----
 use crate::metadata::friendly_codec; // the ONE codec→display-name map (shared with the Info card)
 
@@ -702,6 +745,88 @@ mod tests {
         );
     }
 
+    /// **A Subtitles-panel row is a track or a tone, never both, and the split is where the table
+    /// was built** — with `Off` + two tracks the ladder starts at row 3. The failure this pins is
+    /// the quiet one: without the split every row past the tracks falls through to the
+    /// `vis.get(..)` miss, which means OFF — so picking a tone would switch the subtitles off.
+    #[test]
+    fn a_row_past_the_tracks_is_a_tone_and_a_track_row_never_is() {
+        let base = Some(3);
+        for track_row in 0..3 {
+            assert_eq!(tone_at(base, track_row), None, "row {track_row} is a track");
+        }
+        for (i, tone) in SubtitleTone::LADDER.iter().enumerate() {
+            assert_eq!(tone_at(base, 3 + i as c_int), Some(*tone));
+        }
+        let past = 3 + SubtitleTone::LADDER.len() as c_int;
+        assert_eq!(tone_at(base, past), None, "past the ladder is no rung, not the last one");
+        assert_eq!(tone_at(base, -1), None);
+        // the Audio tab has no Color section, so nothing there is ever a tone
+        for sel in [-1, 0, 3, c_int::MAX] {
+            assert_eq!(tone_at(None, sel), None);
+        }
+    }
+
+    /// Sidecars are subtitle rows, so the Color section starts after them just as it starts after
+    /// embedded tracks. Exercise the menu's actual flat-row dispatch: row 2 is the EXTERNAL
+    /// sidecar and row 3 is the first tone when the list is Off + embedded + sidecar.
+    #[test]
+    fn sidecar_and_tone_rows_map_to_their_own_commits_in_one_menu() {
+        let ps = crate::route::PlaybackSession::IDLE;
+        let mut store = crate::stores::metadata::MetadataStore::default();
+        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
+            crate::metadata::PlayingItem {
+                sid: crate::plex::ServerId::from_raw(0),
+                rk: "rk".into(),
+                show_rk: String::new(),
+                audio: Vec::new(),
+                subs: vec![
+                    crate::metadata::Stream {
+                        id: 41,
+                        index: 0,
+                        lang: "English".into(),
+                        codec: "srt".into(),
+                        ..Default::default()
+                    },
+                    crate::metadata::Stream {
+                        id: 42,
+                        index: 1,
+                        lang: "French".into(),
+                        codec: "srt".into(),
+                        external: true,
+                        key: "/library/streams/42.srt".into(),
+                        ..Default::default()
+                    },
+                ],
+                video_fps: 0.0,
+                width: 0,
+                height: 0,
+                bitrate: 0,
+                dovi: Default::default(),
+                markers: Vec::new(),
+                chapters: Vec::new(),
+                blur: None,
+            },
+        ))));
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1);
+
+        menu.focus_row(2);
+        assert_eq!(
+            menu.on_ok(&ps, store.view()),
+            Some(TrackCommit::Subtitle {
+                render_ordinal: -1,
+                stream_id: 42,
+                sidecar_key: Some("/library/streams/42.srt".into()),
+            })
+        );
+
+        menu.focus_row(3);
+        assert_eq!(
+            menu.on_ok(&ps, store.view()),
+            Some(TrackCommit::SubtitleTone(SubtitleTone::LADDER[0]))
+        );
+    }
+
     /// **Position is the join, so an unnamed track must occupy a slot rather than be skipped.**
     /// `TrackNames` is dense by contract; this pins the reader's half of it — the N-th entry, an
     /// out-of-range index and the `-1` that `sub_render_ordinal` answers for an external sidecar
@@ -773,6 +898,7 @@ mod focus_tests {
             tab: 0,
             active_audio: 0,
             active_sub: -1,
+            tone_base: None,
             table,
         }
     }

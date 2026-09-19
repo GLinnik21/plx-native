@@ -575,7 +575,7 @@ fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
         thumb: String::new(), detail_rk: "old-rk".into(),
     }))));
     assert!(bridge.metadata_run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(crate::metadata::PlayingItem {
-        sid, rk: "old-rk".into(), audio: Vec::new(), subs: Vec::new(), video_fps: 0.0,
+        sid, rk: "old-rk".into(), show_rk: String::new(), audio: Vec::new(), subs: Vec::new(), video_fps: 0.0,
         width: 0, height: 0, bitrate: 0, dovi: Default::default(), markers: Vec::new(), chapters: Vec::new(), blur: None,
     }))));
     bridge.metadata_run(crate::stores::metadata::MetadataCmd::AltInstall {

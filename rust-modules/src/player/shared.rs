@@ -1401,6 +1401,17 @@ impl Shared {
         ((packed >> 32) as u32 as i32, packed as u32 as i32)
     }
 
+    /// [`Self::reset_session`] for a RELOAD of the same item — everything a fresh Load must not
+    /// inherit is cleared, and the one fact that belongs to the FILE rather than to the session
+    /// survives: its duration. The demuxer re-publishes it when it reopens, a few hundred ms
+    /// later, and until then a zero here is a playbar drawn at position ÷ 0 (`engine::teardown`
+    /// has the account).
+    pub(crate) fn reset_session_for_reload(&self) {
+        let duration_ns = self.duration_ns.load(Ordering::Relaxed);
+        self.reset_session();
+        self.duration_ns.store(duration_ns, Ordering::Relaxed);
+    }
+
     /// **NB: this does NOT clear the ABR seed OR Original failure** — see
     /// [`Shared::clear_abr_seed`] and [`Shared::clear_abr_failure`]. Everything else here describes
     /// one engine's session and must not outlive it.
