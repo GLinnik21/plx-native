@@ -117,7 +117,7 @@ impl Client {
     /// OpenAPI spec, so it is backed by the one read
     /// the spec DOES document carrying these settings, `/library/metadata/{id}/tree`, whose
     /// container holds a `Setting[]` — asked only after a successful response without preferences.
-    /// Both requests share a 250 ms budget: optional settings must not consume the ordinary
+    /// Both requests share a 1500 ms budget: optional settings must not consume the ordinary
     /// bulk-read timeout on the play path. HTTP, transport and parse errors fall back immediately.
     pub fn show_language_prefs(&self, show_rk: &str) -> Option<crate::plex::ShowLangPrefs> {
         if show_rk.is_empty() || !show_rk.bytes().all(|b| b.is_ascii_digit()) {
@@ -126,7 +126,7 @@ impl Client {
         let path = QueryBuilder::new(format!("/library/metadata/{show_rk}"))
             .int("includePreferences", 1)
             .build();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
         let read = |path: &str| match self.get_json_with_headers_until(path, &[], deadline) {
             super::client::JsonDeadlineOutcome::Response { parsed, .. } => parsed,
             _ => None,
@@ -318,13 +318,13 @@ mod tests {
         for (status, body, delay) in [
             ("404 Not Found", "{}", 0),
             ("200 OK", "not json", 0),
-            ("200 OK", r#"{"MediaContainer":{}}"#, 800),
+            ("200 OK", r#"{"MediaContainer":{}}"#, 2200),
         ] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             listener.set_nonblocking(true).unwrap();
             let server = std::thread::spawn(move || {
-                let end = Instant::now() + Duration::from_millis(1100);
+                let end = Instant::now() + Duration::from_millis(2500);
                 let mut requests = 0;
                 while Instant::now() < end {
                     let Ok((mut socket, _)) = listener.accept() else {
@@ -350,7 +350,7 @@ mod tests {
             assert_eq!(client.show_language_prefs("42"), None);
             let elapsed = start.elapsed();
             let requests = server.join().unwrap();
-            assert!(elapsed < Duration::from_millis(600), "optional GET delayed play: {elapsed:?}");
+            assert!(elapsed < Duration::from_millis(1500 + 300), "optional GET delayed play: {elapsed:?}");
             assert_eq!(requests, 1, "failed preference GET must not fetch the show tree");
         }
     }

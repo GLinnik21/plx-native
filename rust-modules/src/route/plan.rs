@@ -896,7 +896,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         .map(|p| p.audio.as_slice())
         .unwrap_or(&[]);
     // The SHOW's own language settings (its Advanced dialog), for an episode: one small read
-    // per play (at most two GETs sharing a 250 ms budget). See the preference pickers.
+    // per play (at most two GETs sharing a 1500 ms budget). See the preference pickers.
     let show_prefs = plan
         .playing
         .as_ref()
