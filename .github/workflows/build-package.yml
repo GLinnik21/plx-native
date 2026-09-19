@@ -457,9 +457,11 @@ jobs:
           # (the Makefile's IPK_VERSION); a nightly's reported version adds `-nightly-<date>` on
           # top, dated by the `+nightly:<date>` field of pkg/.build-config — the Makefile's record
           # of the date it built with, the same stamp ci/check-package.py grades the binary
-          # against. Stable has no such field and keeps plxnative-source-X.Y.Z.
+          # against. Stable has no such field and keeps plxnative-source-X.Y.Z. Read through
+          # `ci/check-package.py --print-nightly-date` rather than a second copy of its regex here
+          # — see that flag's own comment for why a `sed` twin of it is the thing to avoid.
           version=${ipk##*/"${appid}"_}; version=${version%_arm.ipk}
-          nightly_date=$(sed -n 's/.*+nightly:\([0-9]\{8\}\).*/\1/p' pkg/.build-config)
+          nightly_date=$(python3 ci/check-package.py --print-nightly-date pkg/.build-config)
           label="$version${nightly_date:+-nightly-$nightly_date}"
           [[ "$label" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-nightly-[0-9]{8})?$ ]] \
             || { echo "::error::cannot name the source bundle: got version label '$label' from $ipk"; exit 1; }
