@@ -547,6 +547,15 @@ pub(crate) struct PersonScreen {
     /// One-shot return hydration. While set, a known engine card key may remain unpublished until
     /// that card's own source answers; the engine remains the sole owner of the key itself.
     return_pending: bool,
+    /// This page has already asked the Person store to close the slot it owned. §3.4's
+    /// `pop_sequence` delivers `WillLeave(ForGood)` AND `Unmount` to the same body, and both land
+    /// in the teardown arm below; an un-latched `self.person(cx).is_some()` guard there reads a
+    /// slot this page has already disclaimed by the time the second event arrives, because the
+    /// first `Close` crosses `AppFx::Store` and is still queued rather than applied — and so
+    /// emits a SECOND non-idempotent `Close`. Not hashed: it is teardown bookkeeping for one
+    /// event pair, never a property of the page's logical shape. Mirrors
+    /// `screens/detail/mod.rs`'s `teardown_cleared` exactly (#119, #126).
+    teardown_closed: bool,
 
     // ---- render cache: animation (never hashed; a spring position is not logical state) ----
     shelves: [CardRow; NSHELF],
@@ -631,6 +640,7 @@ impl PersonScreen {
             card_keys: Vec::new(),
             next_card_elem: FIRST_CARD_ELEM,
             return_pending: false,
+            teardown_closed: false,
             shelves: [CardRow::new(); NSHELF],
             scroll: ScrollColumn::new(HEADER_TOP, TOP_MARGIN),
             amb: PageGround::new(),
@@ -1763,7 +1773,10 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
                 Handled::Yes
             }
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
-                if self.person(cx).is_some() {
+                // `&& !self.teardown_closed`: see the field. One teardown, one `Close`, even
+                // though §3.4 delivers this arm twice and the queued command has not run yet.
+                if self.person(cx).is_some() && !self.teardown_closed {
+                    self.teardown_closed = true;
                     fx.push(crate::ui::machine::Fx::App(AppFx::Store(
                         crate::stores::StoreId::Person,
                         crate::stores::StoreCmd::Person(PersonCmd::Close),
@@ -2108,6 +2121,66 @@ mod tests {
                 crate::stores::StoreCmd::Person(PersonCmd::Close)))));
         assert!(store.view().current().is_some(),
             "the screen emits; only the addressed Bridge is allowed to apply the command");
+    }
+
+    /// §3.4's `pop_sequence` delivers `WillLeave(ForGood)` AND `Unmount` to the same body before
+    /// either event's queued effects have run (`AppFx::Store` is deferred to the addressed
+    /// Bridge). Mirrors the `#119`/`teardown_cleared` regression in `screens/detail/mod.rs`: an
+    /// un-latched `self.person(cx).is_some()` guard reads the store as still populated on the
+    /// second event and emits a SECOND non-idempotent `Close` (#126).
+    #[test]
+    fn teardown_closes_the_person_store_exactly_once() {
+        let mut screen = PersonScreen::new(
+            EntryId(0), ServerId::from_raw(2), "161".into(), "person-guid".into(),
+            "Person Name".into(), "thumb".into());
+        let measure = FixtureMeasure;
+        let mut store = crate::stores::person::PersonStore::default();
+        store.run(PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
+            guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
+        let mut present = crate::ui::present::Present::new();
+        let mut out = Vec::new();
+        let context = cx(&measure, store.view());
+        {
+            let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Instance(
+                crate::ui::machine::InstanceId(0)), &mut present);
+            Machine::<PersonHost>::step(
+                &mut screen, &ScreenEvent::WillLeave(Leave::ForGood), &context, &mut fx);
+            // The queued Close has not been applied to `store` yet — it is still populated when
+            // Unmount arrives, exactly as `pop_sequence` delivers it.
+            Machine::<PersonHost>::step(
+                &mut screen, &ScreenEvent::Unmount, &context, &mut fx);
+        }
+        let closes = out.iter().filter(|s| matches!(&s.fx,
+            crate::ui::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
+                crate::stores::StoreCmd::Person(PersonCmd::Close))))).count();
+        assert_eq!(closes, 1,
+            "WillLeave(ForGood) then Unmount must close the Person store exactly once, not twice");
+    }
+
+    /// A bare `Unmount` (no preceding `WillLeave`) must also close the store exactly once — the
+    /// latch must not suppress the only teardown event when there is no pair.
+    #[test]
+    fn unmount_alone_closes_the_person_store_once() {
+        let mut screen = PersonScreen::new(
+            EntryId(0), ServerId::from_raw(2), "161".into(), "person-guid".into(),
+            "Person Name".into(), "thumb".into());
+        let measure = FixtureMeasure;
+        let mut store = crate::stores::person::PersonStore::default();
+        store.run(PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
+            guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
+        let mut present = crate::ui::present::Present::new();
+        let mut out = Vec::new();
+        let context = cx(&measure, store.view());
+        {
+            let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Instance(
+                crate::ui::machine::InstanceId(0)), &mut present);
+            Machine::<PersonHost>::step(
+                &mut screen, &ScreenEvent::Unmount, &context, &mut fx);
+        }
+        let closes = out.iter().filter(|s| matches!(&s.fx,
+            crate::ui::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
+                crate::stores::StoreCmd::Person(PersonCmd::Close))))).count();
+        assert_eq!(closes, 1, "a bare Unmount must close the Person store exactly once");
     }
 
     /// **The mount-on-entry-pill rule's PENDING half** (module doc, point 2 of `ui/person.rs`'s
