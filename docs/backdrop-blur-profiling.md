@@ -1012,3 +1012,81 @@ banding measured above, so that trade is not available. The next levers are stru
 per-shader: extend the hero's one-pass ground (`fs_hero`) across the fold so the wash and the hero
 scrim are one pass, and opaque card interiors that let the tiler skip the wash beneath them.
 `ui::idle`'s settle frame no longer has a renderer term to settle and could be retired separately.
+
+## 2026-09-19: transition hitches — `modal-100` and `push-100`, attributed
+
+Both benches fail their 20 ms `bench_worst_ms` on base 727e4851. This section records where the
+worst frames go, the two fixes that landed, and what is still over budget. Every number is from
+the television, with the panel off and the sound muted. The "after" runs are 16-cycle (`modal`)
+and 15-cycle (`push`) versions of the same benches, so their RSS lines cover only six cycles
+after cycle 10 and cannot stand in for the 100-cycle RSS verdict.
+
+**Instrument.** `diag::spans` (new) adds `spans=name:ms,…` to every `FRAMEDROP` line. The
+dispatcher marks `prep`, `page`, `chrome`, `scrims` and `surf`. The framebuffer-0 `clear` carries
+the driver's GPU throttle wait. Popover capture is `cap`. The underlay chain's full-screen copy
+is `fieldcopy`, and its 480-byte `glReadPixels` is `fieldread`. A repeated name is summed and
+suffixed `xN`.
+
+| bench (worst_ms per cycle) | p50 | p95 | max | RSS last − cycle 10 |
+|---|---|---|---|---|
+| modal-100, base (100 cycles) | 63.9 | 84.3 | 131.2 | +17060 kB |
+| modal, Home fix + read one frame late (16 cycles) | 42.6 | 73.7 | 73.7 | +5580 kB |
+| modal, Home fix + read two frames late (16 cycles) | 52.1 | 99.3 | 99.3 | +5604 kB |
+| push-100, base (100 cycles) | 33.4 | 52.4 | 109.7 | +648 kB |
+| push, after (15 cycles) | 33.5 | 101.5 | 101.5 | −1924 kB |
+
+**What the modal open frame cost on base.** The open frame took 60–69 ms. Of that, 26–37 ms was
+`fieldread`: `ModalUnderlay` read the underlay field back on the same frame that queued the
+chain, so the read waited for the whole frame to draw. `clear` took 12–13 ms and `page` (the
+host capture) 14 ms. On Settings, `surf` took 50.9 ms, most of it `RouteGround`'s own synchronous
+latch.
+
+**Fix 1: a settled Home no longer presents forever.** The hero auto-advance reported
+`PresentEvent::Motion` on every tick while it counted down. As a result, a settled Home kept
+presenting full frames indefinitely. Each of those frames cost about 24 ms of GPU, and the next
+transition paid for the backlog. The countdown is a timer. It is ticked on every loop
+iteration, and the flip itself wakes the gate. Regression test:
+`a_settled_hero_counting_down_lets_the_gate_close_and_still_flips`, observed red with "asked
+for 500 presents".
+
+**Fix 2: the field read is split from the reduction.** `gfx::field_kick` queues the chain, using
+the host's `Held::Page` snapshot as its source when there is one, which also saves the
+full-screen copy. `gfx::field_collect` reads the ticket later. Until the read lands, the modal
+keeps the loop turning and holds off the host's `Held::Ground` stage. Waiting one drawn frame was
+not enough to make the read free: the collect still spent 11–25 ms in `fieldread`, because the
+GPU runs more than a frame behind. At two frames the read costs 0.1–0.4 ms, but the collect
+frame's total grew from 42–45 ms to 50–57 ms, almost none of it inside a span. The GPU is
+saturated through the whole ramp, so the extra frame only adds to the backlog, and the wait
+moves to the first unspanned framebuffer-0 draw. Both runs were back to back, and Home's frames
+between cycles cost the same in each (median 25.0 and 25.2 ms), so the difference is not the
+set. The bench grades the worst frame, so `FIELD_READ_LAG_SWAPS` stays at one.
+
+**What is still over 20 ms, by cause.**
+
+- **Home's steady GPU cost.** With the modal bench running, Home draws two page passes per frame
+  (`pagex2`), and the throttle `clear` waits 17–20 ms. Every modal cycle starts on that backlog.
+  This is the ambient lane's territory (the Home ground and its blur source pass), not a
+  transition mechanism.
+- **Settings' first visible frame.** Settings' `RouteGround` is not drawn while its opacity is 0,
+  so its first latch happens on a visible frame and falls back to the synchronous read
+  (`fieldcopy:2–9`, `fieldread:20–30`, inside `surf:47`). Deferring that read means drawing a
+  frame or two without the sampled ground at low alpha, which is a visual change. It has not been
+  made.
+- **Push (`detail` and `library`).** These show no one-off hitch. Frames are sustained at 22–25
+  ms: `clear` 11–18 ms plus `page` 21 ms on Detail, and two page passes on Library throughout
+  the push spring. Only fill-rate work on those pages can fix that. The Detail first-cycle
+  outlier (101.5 ms) is the cold artwork load.
+
+**Ambient scenes on the "two frames late" build.** That build differs from the landed one only in the read lag. No base run was taken on the same day. The
+reference is the latest figures in this document.
+
+| scene | result |
+|---|---|
+| home-hero | PASS, median 60 fps |
+| home-fold | PASS, median 54 fps |
+| home-grid | FAIL on loop floor: robust_min 49 against 50; fps median 34 against floor 20 |
+| detail-transition | PASS, median 50 fps |
+| settings-root | PASS, 60 fps |
+| modal-ramp | PASS, worst robust_max 58.7 ms against 75 |
+| item-menu | PASS, loop 60 |
+| home-acct-glass | PASS, median 56 fps (60 in the 2026-09-04 table) |

@@ -164,6 +164,20 @@ pub(crate) struct UnderlayField {
     /// rather than recomputed per draw: a panel asks every frame, the field changes only at a latch.
     luma: [u8; TEX_W * TEX_H],
     latched: bool,
+    /// A page reduction queued by [`latch_from_frame_deferred`](Self::latch_from_frame_deferred)
+    /// and not yet read back.
+    pending: Option<gfx::FieldTicket>,
+}
+
+/// What [`UnderlayField::latch_from_frame_deferred`] answers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FrameLatch {
+    /// The field holds a picture (this call's, or an earlier one's).
+    Latched,
+    /// The read is in flight; ask again next frame.
+    Pending,
+    /// No honest answer this frame (`gfx::field_kick`'s refusals): the caller's fallback.
+    Refused,
 }
 
 /// **What [`UnderlayField::draw_panel`] resolves to, as a VALUE** — [`Draw`]'s counterpart for a
@@ -193,6 +207,7 @@ impl UnderlayField {
             tex: 0,
             luma: [0; TEX_W * TEX_H],
             latched: false,
+            pending: None,
         }
     }
 
@@ -213,6 +228,59 @@ impl UnderlayField {
         };
         self.adopt(cells_from_frame(&raw, grade));
         true
+    }
+
+    /// [`latch_from_frame`](Self::latch_from_frame) for an owner that may be told "next frame".
+    ///
+    /// `can_wait` is the owner's word that nothing it draws from this field is visible THIS frame
+    /// (Settings' ground, on the frame the modal is presented, at appear 0). Then the page is
+    /// reduced now and read back on a later call ([`FrameLatch::Pending`] until it lands), and the
+    /// `glReadPixels` that stalled the whole frame on the GPU — 26–37 ms on the television,
+    /// 2026-09-19 — reads finished work instead. When it cannot wait this is exactly
+    /// `latch_from_frame`, the stall included, because a visible ground has no honest picture to
+    /// show without its read; a read already in flight is then finished synchronously.
+    ///
+    /// `src` is `gfx::field_kick`'s: a texture that already holds the page, or `None` for the
+    /// framebuffer as it stands.
+    pub(crate) fn latch_from_frame_deferred(
+        &mut self,
+        grade: Grade,
+        can_wait: bool,
+        src: Option<u32>,
+    ) -> FrameLatch {
+        if self.latched {
+            return FrameLatch::Latched;
+        }
+        if let Some(t) = self.pending.take() {
+            match gfx::field_collect(t) {
+                gfx::FieldRead::Ready(raw) => {
+                    self.adopt(cells_from_frame(&raw, grade));
+                    return FrameLatch::Latched;
+                }
+                gfx::FieldRead::Pending if can_wait => {
+                    self.pending = Some(t);
+                    crate::ui::idle::wake();
+                    return FrameLatch::Pending;
+                }
+                gfx::FieldRead::Pending | gfx::FieldRead::Lost => {}
+            }
+        }
+        if !can_wait {
+            return if self.latch_from_frame(grade) {
+                FrameLatch::Latched
+            } else {
+                FrameLatch::Refused
+            };
+        }
+        match gfx::field_kick(src) {
+            Some(t) => {
+                self.pending = Some(t);
+                // A frame for the read to land in, whether or not anything else moves.
+                crate::ui::idle::wake();
+                FrameLatch::Pending
+            }
+            None => FrameLatch::Refused,
+        }
     }
 
     /// **Latch from a four-corner envelope instead of the framebuffer** — the CPU source, for the
@@ -249,6 +317,7 @@ impl UnderlayField {
     pub(crate) fn reset(&mut self) {
         self.cells = [[0.0; 3]; N];
         self.latched = false;
+        self.pending = None;
     }
 
     pub(crate) fn is_latched(&self) -> bool {

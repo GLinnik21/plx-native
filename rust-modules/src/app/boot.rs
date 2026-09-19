@@ -987,6 +987,9 @@ pub(crate) unsafe fn construct(
         .filter(|v: &f64| *v > 0.0)
         .unwrap_or(22.0);
     let instr = crate::diag::heartbeat::Instruments::new(framedrop_on, framedrop_thresh);
+    if framedrop_on {
+        crate::diag::spans::arm();
+    }
 
     let last_input = initial.as_ref().map_or_else(clock::now, |initial| initial.clock_start);
     let t0 = last_input;

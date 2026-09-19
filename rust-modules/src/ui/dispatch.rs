@@ -1149,7 +1149,7 @@ where
     ) -> FrameReport {
         let tick = self.last_tick;
         if !self.prepared {
-            self.prepare_pass(rig, tick);
+            crate::diag::spans::span("prep", || self.prepare_pass(rig, tick));
         }
         let mut report = FrameReport::default();
         self.draw_with(rig, tick, &mut report, pages, Some(glass));
@@ -1197,7 +1197,7 @@ where
                     page_cx.focus = input.engine.read(page_cx.owner);
                     let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), navigation);
                     f.page_alpha *= nav.tabs.stack.transition.page_alpha();
-                    inst.screen.draw(&mut f);
+                    crate::diag::spans::span("page", || inst.screen.draw(&mut f));
                     report.drawn.push(inst.id);
                     stops.extend(f.into_stops());
                     set.pages += 1;
@@ -1208,7 +1208,7 @@ where
                         chrome_parts.owner = InputOwner::Entry(e.id);
                         chrome_parts.focus = input.engine.read(chrome_parts.owner);
                         drop(page_cx);
-                        rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut());
+                        crate::diag::spans::span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut()));
                     }
                 }
             }
@@ -1239,7 +1239,7 @@ where
             {
                 let _scope = rig.surface_scope();
                 let read = scrim_lift_read(rig, glass.as_deref());
-                nav.modals.draw_scrims(navigation.page_alpha, read);
+                crate::diag::spans::span("scrims", || nav.modals.draw_scrims(navigation.page_alpha, read));
             }
         }
         if host_render == HostRender::Cached {
@@ -1266,7 +1266,7 @@ where
                 let mut f = DrawFrame::with_navigation(&surface_cx, Painter::root(), navigation);
                 f.page_alpha = s.motion.appear;
                 f.underlay = Some(field);
-                inst.screen.draw(&mut f);
+                crate::diag::spans::span("surf", || inst.screen.draw(&mut f));
                 report.drawn.push(inst.id);
                 stops.extend(f.into_stops());
                 // (b) is a count of THIS SURFACE's own backing renders, asked of the surface —

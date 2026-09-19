@@ -382,10 +382,10 @@ fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
     if page_frozen() {
         return;
     }
-    unsafe {
+    crate::diag::spans::span("clear", || unsafe {
         glClearColor(r, g, b, a);
         glClear(GL_COLOR_BUFFER_BIT);
-    }
+    });
 }
 
 /// Block until the GPU has finished all queued commands. Used ONLY as a completion boundary and
@@ -1952,6 +1952,12 @@ impl FrameCache {
         self.valid = false;
     }
 
+    /// The captured texture, while it holds a capture: the drawable's viewport as
+    /// `glCopyTexSubImage2D` left it (bottom-up, full size).
+    pub(crate) fn tex(&self) -> Option<c_uint> {
+        (self.valid && self.tex != 0).then_some(self.tex)
+    }
+
     /// Copy the authored viewport from framebuffer 0. Call after the host page and before the
     /// modal scrim: the cache is the stationary page, while the scrim is part of the live modal.
     pub(crate) fn capture(&mut self) -> bool {
@@ -1974,7 +1980,7 @@ impl FrameCache {
                 self.checked = false;
             }
             glBindTexture(GL_TEXTURE_2D, self.tex);
-            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vx, vy, vw, vh);
+            crate::diag::spans::span("cap", || glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vx, vy, vw, vh));
             if !self.checked {
                 self.checked = true;
                 let e = glGetError();
@@ -4876,6 +4882,94 @@ fn field_lazy_init() -> bool {
 /// row-major from the TOP-LEFT. `None` means "no honest answer this frame" and is not a failure —
 /// `ui::underlay` has a CPU source (`latch_from_corners`) for every case below.
 ///
+/// This is [`field_kick`] and an immediate read of what it produced, i.e. a `glReadPixels` on the
+/// frame that queued the work, which STALLS until the GPU has drawn everything submitted so far —
+/// measured on the television (2026-09-19): 26–37 ms, the single largest cost of a modal's open
+/// frame. A caller that can wait a frame for its answer takes [`field_kick`] and [`field_collect`]
+/// instead, and `containers::modal::ModalUnderlay` does.
+///
+/// The refusals are [`field_kick`]'s.
+pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
+    field_kick(None)?;
+    // SAFETY: main render thread; `field_kick` just built the chain this reads.
+    unsafe { field_readback((*std::ptr::addr_of!(FIELDST)).as_ref()?) }
+}
+
+/// A reduction [`field_kick`] queued, to be read by [`field_collect`] once the GPU has had a frame
+/// to finish it. `run` names the chain run (a later kick reuses the same targets, so an older
+/// ticket is simply lost), `swaps` the drawn-frame count it was queued in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct FieldTicket {
+    run: u32,
+    swaps: u32,
+}
+
+impl FieldTicket {
+    /// A ticket for a fake `DimSink` — a host test has no chain to queue on.
+    #[cfg(test)]
+    pub(crate) fn for_test(run: u32, swaps: u32) -> Self {
+        Self { run, swaps }
+    }
+}
+
+/// What [`field_collect`] answers for a ticket.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum FieldRead {
+    /// The field the kick reduced.
+    Ready([[f32; 3]; FIELD_CELLS]),
+    /// Queued on this very frame: reading it now is the stall the ticket exists to avoid.
+    Pending,
+    /// The targets have been reused by a later run (or the chain is gone): kick again.
+    Lost,
+}
+
+/// Chain runs so far — a ticket's `run`. Main render thread only, like the chain itself.
+static mut FIELD_RUNS: u32 = 0;
+/// Drawn frames so far, advanced by [`field_frame_end`] beside the swap.
+static FIELD_SWAPS: AtomicU32 = AtomicU32::new(0);
+
+/// Drawn frames that must end between a kick and its read. ONE, measured against two on the
+/// television (2026-09-19, `docs/backdrop-blur-profiling.md`): one frame later the read still
+/// waits 11–25 ms (`fieldread`) because the GPU runs more than a frame behind, and at two it
+/// costs 0.3 ms — but the frame that collects it then pays a LARGER unspanned throttle wait
+/// (50–57 ms against 42–45), because the ramp is GPU-bound and the extra frame only adds to the
+/// backlog. The worst frame is what the bench grades, so one it is; the same-frame read (26–37
+/// ms on top of the open frame's capture) is what this split exists to avoid.
+const FIELD_READ_LAG_SWAPS: u32 = 1;
+
+/// Close a DRAWN frame for the field's tickets — `app::run` calls it beside `blur_frame_end`,
+/// inside the idle gate, because a frame the gate skipped queued nothing on the GPU and gives a
+/// pending read no more time to finish.
+pub(crate) fn field_frame_end() {
+    FIELD_SWAPS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Where a ticket stands — [`field_collect`]'s decision before it touches GL.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TicketState {
+    Due,
+    Pending,
+    Lost,
+}
+
+/// [`field_collect`]'s decision, as a pure function of the ticket and the two counters.
+pub(crate) fn field_ticket_state(t: FieldTicket, runs: u32, swaps: u32) -> TicketState {
+    if t.run != runs {
+        TicketState::Lost
+    } else if swaps.wrapping_sub(t.swaps) < FIELD_READ_LAG_SWAPS {
+        TicketState::Pending
+    } else {
+        TicketState::Due
+    }
+}
+
+/// **Queue the reduction of the undimmed page to the 15x8 field, and read nothing yet.**
+///
+/// `src` is a texture that already holds the drawable's viewport exactly as a
+/// `glCopyTexSubImage2D` of it would (bottom-up, full size) — `popover::host`'s page snapshot,
+/// which is taken at the same instant this is asked and makes the chain's own full-screen copy a
+/// second copy of the same pixels. `None` copies the framebuffer as it stands.
+///
 /// The refusals, and why each one is not a guess:
 ///
 /// * **Inside a blur source pass** ([`BLUR_IN_PASS`]) the bound framebuffer is a quarter-resolution
@@ -4897,7 +4991,7 @@ fn field_lazy_init() -> bool {
 /// GL state is restored the way [`cap_cycle`] restores it: framebuffer and viewport back to the
 /// drawable, blend back on. Programs bind themselves lazily through [`use_prog`], texture unit 0
 /// never moves, and vertex state is untouched.
-pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
+pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
     unsafe {
         if BLUR_IN_PASS || PAGE_FROZEN || masked(Class::Field) {
             return None;
@@ -4911,14 +5005,21 @@ pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
         let c = (*std::ptr::addr_of!(FIELDST)).as_ref()?;
         let (gx, gy, gw, gh) = c.view;
 
-        glBindTexture(GL_TEXTURE_2D, c.grab);
-        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, gx, gy, gw, gh);
+        let mut prev = match src {
+            Some(tex) if tex != 0 => tex,
+            _ => {
+                glBindTexture(GL_TEXTURE_2D, c.grab);
+                crate::diag::spans::span("fieldcopy", || {
+                    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, gx, gy, gw, gh)
+                });
+                c.grab
+            }
+        };
 
         // Blend OFF: every target is a fresh copy, and `glClear` before each pass spares Midgard
         // the tile preserve-load of the stale contents (a full-screen quad does not relieve that
         // obligation — `cap_cycle` carries the same note).
         glDisable(GL_BLEND);
-        let mut src = c.grab;
         for &(_, fbo, w, h) in &c.levels {
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
             glViewport(0, 0, w, h);
@@ -4930,7 +5031,7 @@ pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
             note_px(Class::Field, (w as f64) * (h as f64));
             draw_tex_core(
                 Class::Blur,
-                src,
+                prev,
                 0.0,
                 0.0,
                 SCR_W,
@@ -4945,11 +5046,47 @@ pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
                 0.0,
                 NO_RIM.as_ptr(),
             );
-            src = fbo_tex_of(c, fbo);
+            prev = fbo_tex_of(c, fbo);
         }
 
-        let mut buf = [0u8; FIELD_CELLS * 4];
-        glPixelStorei(GL_PACK_ALIGNMENT, 1); // 15 RGBA texels is 60 bytes — 4-aligned anyway
+        // Restore the world exactly — see `cap_cycle`'s step D for what "exactly" has to mean.
+        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+        glViewport(gx, gy, gw, gh);
+        glEnable(GL_BLEND);
+
+        FIELD_RUNS = FIELD_RUNS.wrapping_add(1);
+        Some(FieldTicket {
+            run: FIELD_RUNS,
+            swaps: FIELD_SWAPS.load(Ordering::Relaxed),
+        })
+    }
+}
+
+/// **The field a [`field_kick`] queued, once a frame has ended since** — [`FieldRead::Pending`]
+/// before that, [`FieldRead::Lost`] if a later run has reused the targets. Reads an FBO, never
+/// framebuffer 0, so it is legal on a video-plane frame and inside a blur source pass alike.
+pub(crate) fn field_collect(t: FieldTicket) -> FieldRead {
+    // SAFETY: main render thread, like every other access to the chain.
+    unsafe {
+        let Some(c) = (*std::ptr::addr_of!(FIELDST)).as_ref() else {
+            return FieldRead::Lost;
+        };
+        match field_ticket_state(t, FIELD_RUNS, FIELD_SWAPS.load(Ordering::Relaxed)) {
+            TicketState::Due => field_readback(c).map_or(FieldRead::Lost, FieldRead::Ready),
+            TicketState::Pending => FieldRead::Pending,
+            TicketState::Lost => FieldRead::Lost,
+        }
+    }
+}
+
+/// Read the chain's last level — the 15x8 a run left there — and put the framebuffer back.
+unsafe fn field_readback(c: &FieldChain) -> Option<[[f32; 3]; FIELD_CELLS]> {
+    let &(_, fbo, _, _) = c.levels.last()?;
+    let (gx, gy, gw, gh) = c.view;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    let mut buf = [0u8; FIELD_CELLS * 4];
+    glPixelStorei(GL_PACK_ALIGNMENT, 1); // 15 RGBA texels is 60 bytes — 4-aligned anyway
+    crate::diag::spans::span("fieldread", || {
         glReadPixels(
             0,
             0,
@@ -4958,34 +5095,32 @@ pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
             GL_RGBA,
             GL_UNSIGNED_BYTE,
             buf.as_mut_ptr() as *mut c_void,
-        );
+        )
+    });
+    glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+    glViewport(gx, gy, gw, gh);
 
-        // Restore the world exactly — see `cap_cycle`'s step D for what "exactly" has to mean.
-        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
-        glViewport(gx, gy, gw, gh);
-        glEnable(GL_BLEND);
-
-        // ORIENTATION, DERIVED rather than asserted. `glCopyTexSubImage2D` leaves `grab` bottom-up
-        // and every full-quad pass flips row order once (`vs_img` emits `-ndc.y` with `v_cuv =
-        // a_pos`), so an ODD pass count puts `glReadPixels`' first row at the TOP of the screen.
-        // The television runs seven; a supersampled simulator runs eight. The blur chain records
-        // what a hard-coded parity cost when a pass count changed — this one counts its own.
-        let top_down = c.levels.len() % 2 == 1;
-        Some(std::array::from_fn(|i| {
-            let (row, col) = (i / FIELD_W as usize, i % FIELD_W as usize);
-            let row = if top_down {
-                row
-            } else {
-                FIELD_H as usize - 1 - row
-            };
-            let p = (row * FIELD_W as usize + col) * 4;
-            [
-                buf[p] as f32 / 255.0,
-                buf[p + 1] as f32 / 255.0,
-                buf[p + 2] as f32 / 255.0,
-            ]
-        }))
-    }
+    // ORIENTATION, DERIVED rather than asserted. `glCopyTexSubImage2D` leaves `grab` (and the page
+    // snapshot, which is the same copy) bottom-up and every full-quad pass flips row order once
+    // (`vs_img` emits `-ndc.y` with `v_cuv = a_pos`), so an ODD pass count puts `glReadPixels`'
+    // first row at the TOP of the screen. The television runs seven; a supersampled simulator runs
+    // eight. The blur chain records what a hard-coded parity cost when a pass count changed — this
+    // one counts its own.
+    let top_down = c.levels.len() % 2 == 1;
+    Some(std::array::from_fn(|i| {
+        let (row, col) = (i / FIELD_W as usize, i % FIELD_W as usize);
+        let row = if top_down {
+            row
+        } else {
+            FIELD_H as usize - 1 - row
+        };
+        let p = (row * FIELD_W as usize + col) * 4;
+        [
+            buf[p] as f32 / 255.0,
+            buf[p + 1] as f32 / 255.0,
+            buf[p + 2] as f32 / 255.0,
+        ]
+    }))
 }
 
 /// The texture attached to `fbo` — the next pass's source. The chain stores the pair together, so
@@ -5080,6 +5215,21 @@ mod tests {
         assert_eq!(field_passes(1440), None, "a 0.75x window cannot be halved onto 15 columns");
         assert_eq!(field_passes(14), None);
         assert_eq!(field_passes(15), Some(0));
+    }
+
+    /// **A field read is due one drawn frame after its kick, and never from a reused chain.** The
+    /// lag is what keeps `glReadPixels` off the frame that queued the reduction (26–37 ms of a
+    /// modal's open frame on the television when it was not); the run check is what keeps one
+    /// reader from adopting another's page.
+    #[test]
+    fn a_field_ticket_is_due_a_frame_later_and_lost_to_a_later_run() {
+        let t = FieldTicket { run: 4, swaps: 10 };
+        assert_eq!(field_ticket_state(t, 4, 10), TicketState::Pending, "same frame: would stall");
+        assert_eq!(field_ticket_state(t, 4, 11), TicketState::Due);
+        assert_eq!(field_ticket_state(t, 4, 40), TicketState::Due, "late is still the same page");
+        assert_eq!(field_ticket_state(t, 5, 11), TicketState::Lost, "another run reused the targets");
+        let wrapped = FieldTicket { run: 1, swaps: u32::MAX };
+        assert_eq!(field_ticket_state(wrapped, 1, 0), TicketState::Due, "the swap count wraps");
     }
 
     #[test]

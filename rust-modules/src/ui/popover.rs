@@ -722,6 +722,32 @@ pub(crate) mod host {
         PAGE_EPOCH.load(Relaxed)
     }
 
+    /// **The page snapshot's texture, while the snapshot IS the undimmed page** (`Held::Page`) —
+    /// `None` in every other stage, the ground stage above all, whose quad has the scrim baked in.
+    ///
+    /// `containers::modal::ModalUnderlay` reduces its field from it: the field is asked for at the
+    /// instant this snapshot is taken ([`page_epoch`]'s doc), so a second full-screen copy of the
+    /// framebuffer for the field's own chain would be a copy of the same pixels.
+    pub(crate) fn page_tex() -> Option<std::ffi::c_uint> {
+        if held() != Held::Page {
+            return None;
+        }
+        unsafe { (*std::ptr::addr_of!(CACHE)).tex() }
+    }
+
+    /// Hold off the GROUND stage for this frame. Set by `containers::modal::ModalUnderlay` while its
+    /// field is still being read off the GPU: the ground quad bakes the dim in, so a ground taken
+    /// now would keep the dim of the field BEFORE the read lands for as long as the panel stays
+    /// up. Re-armed every frame by the underlay and cleared by [`begin_frame`], so it cannot outlive
+    /// the stack that set it.
+    static GROUND_DEFERRED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    /// See [`GROUND_DEFERRED`].
+    pub(crate) fn defer_ground(defer: bool) {
+        GROUND_DEFERRED.store(defer, Relaxed);
+    }
+
     /// How many open popovers want a frozen host.
     fn users() -> u32 {
         HOST_USERS.load(Relaxed)
@@ -804,6 +830,7 @@ pub(crate) mod host {
         let page_dirty = crate::ui::idle::take_page_damage();
         CAPTURE_OWED.store(false, Relaxed);
         GROUND_DRAWN.store(false, Relaxed);
+        GROUND_DEFERRED.store(false, Relaxed);
         if users() == 0 {
             invalidate();
             return;
@@ -954,7 +981,11 @@ pub(crate) mod host {
             crate::gfx::set_page_frozen(false);
             return;
         }
-        if settled && held() == Held::Page && !crate::gfx::blur_source_pass() {
+        if settled
+            && held() == Held::Page
+            && !crate::gfx::blur_source_pass()
+            && !GROUND_DEFERRED.load(Relaxed)
+        {
             if unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture() } {
                 unsafe { HELD = Held::Ground };
             }

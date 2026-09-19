@@ -81,7 +81,7 @@ use crate::ui::consts::SAFE;
 use crate::ui::icons::{self, Icon};
 use crate::ui::machine::Measure;
 use crate::ui::text_view::TextView;
-use crate::ui::underlay::{Grade, Role, UnderlayField};
+use crate::ui::underlay::{FrameLatch, Grade, Role, UnderlayField};
 use crate::ui::widgets::ControlPalette;
 use crate::ui::{theme, Painter, Rect, Spring};
 
@@ -203,14 +203,25 @@ impl RouteGround {
     /// GL: a host test binary links `OpenGL.framework` but never creates a context, so any draw that
     /// is not gated behind a `PROG == 0`/`tex == 0` check (`field.draw`'s `Role::Ground` arm is not,
     /// once latched, is not either — see [`UnderlayField::draw`]) is an immediate SIGSEGV.
-    fn latch_host(&mut self) {
-        if !self.field.latch_from_frame(Grade::Ground) {
+    ///
+    /// `visible` is whether the ground this frame is drawn at a nonzero opacity. When it is not —
+    /// Settings, on the frame it is presented, at appear 0 — the read is DEFERRED a frame
+    /// ([`UnderlayField::latch_from_frame_deferred`]) and nothing differs on the panel; that read
+    /// was the 50 ms `surf` span of the Settings open frame on the television (2026-09-19). A
+    /// pending read is not a refusal: the corner fallback is for a frame with no honest source,
+    /// and it latches for the life of the ground.
+    fn latch_host(&mut self, visible: bool) {
+        // The host snapshot is the undimmed page when there is one (Settings caches its host), and
+        // it saves the chain its own full-screen copy; a route with no snapshot reads the frame.
+        let src = crate::ui::popover::host::page_tex();
+        if self.field.latch_from_frame_deferred(Grade::Ground, !visible, src) == FrameLatch::Refused
+        {
             self.field.latch_from_corners(Self::fallback_corners(), Grade::Ground);
         }
     }
 
     pub(crate) fn draw_host(&mut self, p: Painter) {
-        self.latch_host();
+        self.latch_host(p.opacity() > 0.0);
         self.field.draw(p, Rect::FULL, Role::Ground, 1.0);
     }
 
@@ -1391,23 +1402,27 @@ mod tests {
     /// for why a host test cannot call through to `field.draw`.
     #[test]
     fn a_route_ground_whose_frame_latch_fails_falls_back_to_corners() {
-        let was = crate::gfx::set_video_plane_frame(true);
-        let mut ground = RouteGround::new();
-        ground.latch_host();
-        crate::gfx::set_video_plane_frame(was);
+        // Visible (read now) and invisible (read deferred a frame) alike: a refusal is not a
+        // pending read, and a deferral must not turn one into a frame of no atmosphere.
+        for visible in [true, false] {
+            let was = crate::gfx::set_video_plane_frame(true);
+            let mut ground = RouteGround::new();
+            ground.latch_host(visible);
+            crate::gfx::set_video_plane_frame(was);
 
-        assert!(
-            ground.is_latched(),
-            "a refused live frame must still leave the ground with an atmosphere"
-        );
-        let mut want = UnderlayField::new();
-        want.latch_from_corners(RouteGround::fallback_corners(), Grade::Ground);
-        assert_eq!(
-            ground.palette(),
-            ControlPalette::ambient(want.key()),
-            "the fallback must be the SAME corners, graded the SAME way draw_host would grade a \
-             live sample"
-        );
+            assert!(
+                ground.is_latched(),
+                "a refused live frame must still leave the ground with an atmosphere (visible={visible})"
+            );
+            let mut want = UnderlayField::new();
+            want.latch_from_corners(RouteGround::fallback_corners(), Grade::Ground);
+            assert_eq!(
+                ground.palette(),
+                ControlPalette::ambient(want.key()),
+                "the fallback must be the SAME corners, graded the SAME way draw_host would grade a \
+                 live sample"
+            );
+        }
     }
 
     /// **THE POINT OF STAGE B, seen through `RouteGround` itself**: `sample()` is spatially

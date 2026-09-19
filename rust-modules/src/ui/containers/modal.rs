@@ -252,15 +252,20 @@ pub(crate) fn latch_step(
 
 /// **Where a frame's dims meet the renderer** — the one seam between [`ModalStack::draw_scrims`]'
 /// ordering and GL, so that ordering is host-testable. Production is [`GlDims`]; a test hands in a
-/// fake framebuffer and watches whether the latch ever reads a dim.
+/// fake framebuffer and watches whether the latch ever reads a dim, and when it reads it.
 pub(crate) trait DimSink {
     /// Is this a video-plane frame (`gfx::video_plane_frame`)?
     fn video_plane(&self) -> bool;
     /// `popover::host::page_epoch`.
     fn page_epoch(&self) -> u32;
-    /// `gfx::sample_underlay_field`: the framebuffer as it stands, or `None` when it has no honest
-    /// answer this frame.
-    fn sample(&mut self) -> Option<[[f32; 3]; crate::gfx::FIELD_CELLS]>;
+    /// `gfx::field_kick`: queue the reduction of the page as it stands NOW — before any dim is on
+    /// it — or `None` when it has no honest answer this frame.
+    fn kick(&mut self) -> Option<crate::gfx::FieldTicket>;
+    /// `gfx::field_collect`: the reduction `kick` queued, once the GPU has had a frame for it.
+    fn collect(&mut self, t: crate::gfx::FieldTicket) -> crate::gfx::FieldRead;
+    /// A read is (or is no longer) in flight: keep the loop turning for it, and keep the host's
+    /// ground stage — whose quad bakes the dim in — from being taken before it lands.
+    fn in_flight(&mut self, pending: bool);
     /// Paint one surface's dim through `field` at `alpha`.
     fn dim(&mut self, field: &crate::ui::underlay::UnderlayField, alpha: f32);
 }
@@ -275,16 +280,31 @@ impl DimSink for GlDims {
     fn page_epoch(&self) -> u32 {
         crate::ui::popover::host::page_epoch()
     }
-    fn sample(&mut self) -> Option<[[f32; 3]; crate::gfx::FIELD_CELLS]> {
+    fn kick(&mut self) -> Option<crate::gfx::FieldTicket> {
         // A host test links GL but never creates a context — `underlay::upload`'s reason. A test
         // that wants a sample drives the seam with its own `DimSink`.
         #[cfg(not(test))]
         {
-            crate::gfx::sample_underlay_field()
+            // Reduce the host snapshot itself when it is the undimmed page — it was taken at this
+            // same instant, so the chain's own full-screen copy would duplicate it.
+            crate::gfx::field_kick(crate::ui::popover::host::page_tex())
         }
         #[cfg(test)]
         {
             None
+        }
+    }
+    fn collect(&mut self, t: crate::gfx::FieldTicket) -> crate::gfx::FieldRead {
+        // No context-free guard needed: with no chain built (a host test never builds one) this
+        // answers `Lost` before touching GL.
+        crate::gfx::field_collect(t)
+    }
+    fn in_flight(&mut self, pending: bool) {
+        crate::ui::popover::host::defer_ground(pending);
+        if pending {
+            // A frame for the read to land in, without claiming the page changed — which would
+            // re-capture the host and restart the read it is waiting on.
+            crate::ui::idle::wake();
         }
     }
     fn dim(&mut self, field: &crate::ui::underlay::UnderlayField, alpha: f32) {
@@ -322,6 +342,8 @@ impl DimSink for GlDims {
 pub struct ModalUnderlay {
     field: crate::ui::underlay::UnderlayField,
     held: Latched,
+    /// A page read queued and not yet landed: the epoch it reads, and its ticket.
+    pending: Option<(u32, crate::gfx::FieldTicket)>,
 }
 
 impl ModalUnderlay {
@@ -329,6 +351,7 @@ impl ModalUnderlay {
         Self {
             field: crate::ui::underlay::UnderlayField::new(),
             held: Latched::Nothing,
+            pending: None,
         }
     }
 
@@ -341,18 +364,48 @@ impl ModalUnderlay {
     }
 
     /// Bring the field up to date for `source` — the head of every frame's dims.
+    ///
+    /// **A page read lands one drawn frame after it is asked for** (`gfx::FIELD_READ_LAG_SWAPS`).
+    /// The reduction is queued on the frame the host snapshot is taken ([`DimSink::kick`], before
+    /// any dim, which is the property this whole type rests on) and read back on the next
+    /// ([`DimSink::collect`]). Read on the frame that queued it, the 480-byte `glReadPixels`
+    /// waited for the GPU to draw everything submitted so far — 26–37 ms of every modal's open
+    /// frame on the television (2026-09-19), the largest single cost in it. A frame later it
+    /// still waits 11–25 ms (the GPU runs more than a frame behind); two frames later it is free,
+    /// but the collecting frame then measured WORSE overall — see the constant's doc.
+    ///
+    /// Meanwhile the field keeps what it had: the previous snapshot's light when the page under a
+    /// standing stack changed (the same page, re-captured, on every dismissal), and — while a
+    /// stack first opens — nothing, so those frames' dim is the flat ink rather than
+    /// `field * TINT`, a difference of `alpha * 0.35 * field` per channel. On the kick frame the
+    /// dim alpha is 0 for the account menu, the item menu and Settings, and 0.035 for the About
+    /// panel (simulator, 2026-09-19): under two 8-bit codes on the brightest cell of the measured
+    /// Home (field 0.61), for one frame.
     pub(crate) fn sync(&mut self, source: Option<UnderlaySource>, sink: &mut dyn DimSink) {
+        if let Some((epoch, ticket)) = self.pending {
+            match sink.collect(ticket) {
+                crate::gfx::FieldRead::Ready(raw) => {
+                    self.field
+                        .latch_sampled(&raw, crate::ui::underlay::Grade::Dim);
+                    self.held = Latched::Page(epoch);
+                    self.pending = None;
+                }
+                crate::gfx::FieldRead::Pending => {}
+                // The targets were reused (another reader ran the chain): ask again below.
+                crate::gfx::FieldRead::Lost => self.pending = None,
+            }
+        }
         let epoch = sink.page_epoch();
         match latch_step(source, self.held, epoch, sink.video_plane()) {
             LatchStep::Keep => {}
             LatchStep::SamplePage => {
-                if let Some(raw) = sink.sample() {
-                    self.field
-                        .latch_sampled(&raw, crate::ui::underlay::Grade::Dim);
-                    self.held = Latched::Page(epoch);
+                if self.pending.is_none_or(|(e, _)| e != epoch) {
+                    // A refusal keeps the field it had, and the read stays owed.
+                    self.pending = sink.kick().map(|t| (epoch, t));
                 }
             }
             LatchStep::Corners(c) => {
+                self.pending = None;
                 self.field.reset();
                 self.field
                     .latch_from_corners(c, crate::ui::underlay::Grade::Dim);
@@ -360,11 +413,13 @@ impl ModalUnderlay {
             }
             LatchStep::Reset => self.reset(),
         }
+        sink.in_flight(self.pending.is_some());
     }
 
     pub(crate) fn reset(&mut self) {
         self.field.reset();
         self.held = Latched::Nothing;
+        self.pending = None;
     }
 }
 

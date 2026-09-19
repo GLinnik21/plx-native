@@ -184,22 +184,43 @@ fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
 // ── The inherited dim: one field per stack, latched from a page no dim has touched ────────────
 
 /// A framebuffer that remembers what was painted on it: one grey level, darkened by every dim
-/// exactly as `scrim_black(a)` over it would. `sample` reads it back as a flat grid, so a field
-/// latched from it says, in its `key`, which picture it saw.
+/// exactly as `scrim_black(a)` over it would. `kick` queues it as a flat grid that `collect` hands
+/// back once a frame has ended — `gfx::field_kick`/`field_collect`'s contract — so a field latched
+/// from it says, in its `key`, which picture it saw, and the events say WHEN it was read.
 struct FakeFb {
     level: f32,
     epoch: u32,
     refuse: bool,
     video_plane: bool,
     events: Vec<&'static str>,
+    /// Drawn frames so far (`gfx::field_frame_end`).
+    swaps: u32,
+    /// Chain runs so far; a later kick reuses the one set of targets.
+    runs: u32,
+    /// What the last run reduced.
+    reduced: f32,
+    /// Is a read in flight (`DimSink::in_flight`)?
+    in_flight: bool,
 }
 
 impl FakeFb {
     fn new(level: f32) -> Self {
-        Self { level, epoch: 0, refuse: false, video_plane: false, events: Vec::new() }
+        Self {
+            level,
+            epoch: 0,
+            refuse: false,
+            video_plane: false,
+            events: Vec::new(),
+            swaps: 0,
+            runs: 0,
+            reduced: 0.0,
+            in_flight: false,
+        }
     }
-    /// The page is drawn again (live, or served from the snapshot) at the start of a frame.
+    /// The previous frame is swapped and the page is drawn again (live, or served from the
+    /// snapshot) at the start of the next.
     fn frame(&mut self, level: f32) {
+        self.swaps += 1;
         self.level = level;
         self.events.clear();
     }
@@ -212,12 +233,28 @@ impl super::modal::DimSink for FakeFb {
     fn page_epoch(&self) -> u32 {
         self.epoch
     }
-    fn sample(&mut self) -> Option<[[f32; 3]; crate::gfx::FIELD_CELLS]> {
+    fn kick(&mut self) -> Option<crate::gfx::FieldTicket> {
         if self.refuse {
             return None;
         }
-        self.events.push("sample");
-        Some([[self.level; 3]; crate::gfx::FIELD_CELLS])
+        self.events.push("kick");
+        self.runs += 1;
+        self.reduced = self.level;
+        Some(crate::gfx::FieldTicket::for_test(self.runs, self.swaps))
+    }
+    fn collect(&mut self, t: crate::gfx::FieldTicket) -> crate::gfx::FieldRead {
+        use crate::gfx::{field_ticket_state, FieldRead, TicketState};
+        match field_ticket_state(t, self.runs, self.swaps) {
+            TicketState::Due => {
+                self.events.push("collect");
+                FieldRead::Ready([[self.reduced; 3]; crate::gfx::FIELD_CELLS])
+            }
+            TicketState::Pending => FieldRead::Pending,
+            TicketState::Lost => FieldRead::Lost,
+        }
+    }
+    fn in_flight(&mut self, pending: bool) {
+        self.in_flight = pending;
     }
     fn dim(&mut self, _field: &crate::ui::underlay::UnderlayField, alpha: f32) {
         self.events.push("dim");
@@ -239,35 +276,97 @@ fn key_level(d: &Dispatcher<FixtureHost>) -> f32 {
     d.nav.modals.underlay.field().key()[0]
 }
 
+/// Draw one frame's dims through `fb`.
+fn dims_frame(d: &mut Dispatcher<FixtureHost>, rig: &FixtureRig, fb: &mut FakeFb) {
+    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(rig, None);
+    d.nav.modals.draw_scrims_on(1.0, read, fb);
+}
+
 /// **The field is latched from the page BEFORE any dim is on it — and so it can never inherit its
 /// own dim** (the one property the whole mechanism rests on: a dim keyed to a dimmed picture of
 /// itself darkens a little more every time it is re-read).
 ///
 /// Two sheets at 0.5 over a page of grey 0.5. The field must read 0.5, not 0.25 or 0.125, and the
-/// read must come before both dims in the frame's paint order. The next frame at the same host
-/// epoch must not read again at all, even though the framebuffer it would see now carries two dims.
+/// reduction must be QUEUED before both dims in the frame's paint order. The next frame at the same
+/// host epoch must not read again at all, even though the framebuffer it would see now carries two
+/// dims.
 ///
 /// Observed RED with `underlay.sync` moved after the dim loop in `draw_scrims_on`: the events were
-/// `["dim", "dim", "sample"]`.
+/// `["dim", "dim", "sample"]` (the read was one synchronous `sample` then).
 #[test]
 fn the_dims_field_is_latched_from_the_undimmed_page_before_the_first_dim() {
     let (mut d, mut rig, _) = booted();
     let _ = two_dimming_sheets(&mut d, &mut rig);
-    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
     let mut fb = FakeFb::new(0.5);
 
-    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
-    assert_eq!(fb.events, ["sample", "dim", "dim"], "the read precedes every dim of the frame");
-    assert!((key_level(&d) - 0.5).abs() < 2e-3, "latched from the UNDIMMED page, got {}", key_level(&d));
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["kick", "dim", "dim"], "the reduction is queued before every dim");
     assert!((fb.level - 0.125).abs() < 1e-6, "and both dims still landed, bottom to top");
+
+    // The next frame reads what was queued — the undimmed page, whatever is on the framebuffer now.
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["collect", "dim", "dim"], "the read lands before this frame's dims");
+    assert!((key_level(&d) - 0.5).abs() < 2e-3, "latched from the UNDIMMED page, got {}", key_level(&d));
 
     // Same host snapshot: the page has not been re-captured, so the field is not re-read — even
     // though what is on the framebuffer between frames is the dimmed picture.
     fb.frame(0.5);
-    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
-    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
+    dims_frame(&mut d, &rig, &mut fb);
     assert_eq!(fb.events, ["dim", "dim"], "no re-read while the host snapshot stands");
     assert!((key_level(&d) - 0.5).abs() < 2e-3);
+}
+
+/// **The page read never stalls the frame that asked for it.** A `glReadPixels` of work queued on
+/// the same frame waits for the GPU to draw everything submitted so far: measured on the
+/// television (2026-09-19, `FRAMEDROP … spans=…fieldread:25.7`), 26–37 ms of every modal's
+/// 60–69 ms open frame, when the read ran inside `draw_scrims` on the frame the host was captured.
+/// So the read is due only once a drawn frame has ended since the kick — and until it lands, the
+/// loop is kept turning for it (a settled stack may otherwise stop presenting, and the read would
+/// wait for the keepalive) and the host's ground stage, which bakes the dim in, is held off.
+#[test]
+fn the_page_read_lands_a_frame_after_it_is_queued_and_holds_the_ground_until_then() {
+    let (mut d, mut rig, _) = booted();
+    let _ = two_dimming_sheets(&mut d, &mut rig);
+    let mut fb = FakeFb::new(0.5);
+
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!(!fb.events.contains(&"collect"), "no read on the frame the reduction was queued");
+    assert!(!d.nav.modals.underlay.field().is_latched(), "the open frame's dim is the flat ink");
+    assert!(fb.in_flight, "a read in flight keeps the loop turning and holds the ground");
+
+    // A second draw of the SAME frame (a blur source pass re-renders the page) still may not read.
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!(!fb.events.contains(&"collect"));
+    assert_eq!(fb.events.iter().filter(|e| **e == "kick").count(), 1, "and does not queue twice");
+
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!(d.nav.modals.underlay.field().is_latched());
+    assert!(!fb.in_flight, "landed: the ground may be taken and the loop may rest");
+}
+
+/// **A read whose targets were reused is asked for again, not adopted.** The chain's targets are
+/// shared with every other reader (`RouteGround`'s ground latches off the same chain), so a run in
+/// between leaves another page's field in them.
+#[test]
+fn a_lost_page_read_is_queued_again_rather_than_adopted() {
+    let (mut d, mut rig, _) = booted();
+    let _ = two_dimming_sheets(&mut d, &mut rig);
+    let mut fb = FakeFb::new(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+
+    // Someone else ran the chain before the read was due.
+    fb.runs += 1;
+    fb.reduced = 0.9;
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["kick", "dim", "dim"], "lost: re-queued from this frame's page");
+    assert!(!d.nav.modals.underlay.field().is_latched(), "the other reader's field is never adopted");
+
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!((key_level(&d) - 0.5).abs() < 2e-3, "got {}", key_level(&d));
 }
 
 /// **A re-captured host re-latches; a refused read keeps what it had; the last dismissal resets.**
@@ -276,16 +375,22 @@ fn a_recaptured_host_relatches_and_the_last_dismissal_resets_the_field() {
     let (mut d, mut rig, _) = booted();
     let (a, b) = two_dimming_sheets(&mut d, &mut rig);
     let mut fb = FakeFb::new(0.5);
-    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
-    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
+    dims_frame(&mut d, &rig, &mut fb);
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
     assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Page(0));
 
-    // The page under the stack changed and `popover::host` re-took its snapshot.
+    // The page under the stack changed and `popover::host` re-took its snapshot: the field keeps
+    // the old page's light for the one frame the new read is in flight…
     fb.frame(0.8);
     fb.epoch = 1;
-    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
-    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
-    assert_eq!(fb.events, ["sample", "dim", "dim"], "a new host snapshot is read again, first");
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["kick", "dim", "dim"], "a new host snapshot is read again, first");
+    assert!((key_level(&d) - 0.5).abs() < 2e-3, "the old light stands while the read is in flight");
+    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Page(0));
+    // …and follows it once the read lands.
+    fb.frame(0.8);
+    dims_frame(&mut d, &rig, &mut fb);
     assert!((key_level(&d) - 0.8).abs() < 2e-3, "…and the field follows it, got {}", key_level(&d));
     assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Page(1));
 
@@ -294,11 +399,11 @@ fn a_recaptured_host_relatches_and_the_last_dismissal_resets_the_field() {
     fb.frame(0.3);
     fb.epoch = 2;
     fb.refuse = true;
-    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
-    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
+    dims_frame(&mut d, &rig, &mut fb);
     assert!(d.nav.modals.underlay.field().is_latched(), "a refusal keeps the field");
     assert!((key_level(&d) - 0.8).abs() < 2e-3);
     assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Page(1), "still owed");
+    assert!(!fb.in_flight, "a refusal queued nothing to wait for");
 
     // Both sheets leave: once the stack is empty the field is re-armed for whatever comes next.
     // (`hide` rather than a dismissal stepped through `Dispatcher::frame`: a frame DRAWS, and a

@@ -493,6 +493,8 @@ unsafe fn present_and_swap(
         // first snapshot is taken at. Once that union is known, several surfaces share one
         // capture; a first discovery frame may still need a second non-contained grab.
         crate::gfx::blur_frame_end();
+        // …and a queued underlay-field reduction has had one more drawn frame to finish in.
+        crate::gfx::field_frame_end();
         crate::ui::idle::note_present(fr.now);
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         if let Some(budget) = wslg_frame_budget {
@@ -2591,9 +2593,12 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 cards,
                 cards_off,
             });
+            // Taken on every presented frame for the counters' reason above: a span belongs to
+            // the frame it ran in, never to the next slow one.
+            let spans = crate::diag::spans::take();
             if let Some(line) = app.instr.frame_drop_line(&|| {
                 format!(
-                    "route={rn} load={} snapt={:.2}",
+                    "route={rn} load={} snapt={:.2} {spans}",
                     crate::ui::glassload::step_index(),
                     app.bridge.home_snap_target(&app.pages)
                 )

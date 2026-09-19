@@ -693,13 +693,19 @@ impl HomeScreen {
             // `motion::Ramp`'s absolute-`Tick.ms` math computes the same real quantity through a
             // different float operation sequence that measurably diverges the hash (verified:
             // `tests/focusfp.sh --replay` on flow 1 disagreed from frame 7 on, once the arithmetic
-            // changed). What WAS a real bug — this countdown never reported `Motion`, so a hero
-            // left mid-count-down on an otherwise-settled screen could silently freeze under
-            // `ui::idle`'s present gate, exactly the regression class this whole conversion
-            // exists to catch — is fixed by the explicit `note` just below, with no change to the
-            // number itself.
+            // changed).
+            //
+            // It reports NO `Motion`, deliberately. Nothing draws `hero_auto`: it is a TIMER, not
+            // an animator (the `Timer` class of `docs/retui-invalidation-design.md`, not its
+            // `Ramp`), and the dispatcher delivers `Tick` to the page every loop iteration whether or not the
+            // frame presents (`ui::idle`, "What this module does NOT do"), so the countdown runs
+            // on a closed gate and the flip it ends in is what wakes it — `outgoing` is set, and
+            // `moving` below reports the slide. Noting `Motion` on every countdown tick made a
+            // still billboard present at the full frame rate forever: every modal dismiss and
+            // every page pop came back to a Home that never went idle (~24 ms of GPU a frame on
+            // the TV), and the next transition's first frame paid that queue in its `glClear`.
+            // `a_settled_hero_counting_down_lets_the_gate_close_and_still_flips` holds both halves.
             self.hero_auto = self.hero_auto - dt;
-            fx.present().note(PresentEvent::Motion);
             if self.hero_auto <= 0.0 {
                 self.hero_flip_cd = 0.0;
                 self.flip(view, 1);

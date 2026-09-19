@@ -411,6 +411,12 @@ impl Painter {
             ..self
         }
     }
+    /// The opacity carried on the cascade — for a caller whose WORK depends on whether anything it
+    /// draws can be seen this frame (`RouteGround::draw_host` defers its page read to a frame
+    /// on which the ground is invisible).
+    pub fn opacity(self) -> f32 {
+        self.a
+    }
     pub fn translate(self, dx: f32, dy: f32) -> Self {
         Self {
             dx: self.dx + dx,
