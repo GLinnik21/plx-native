@@ -17,7 +17,13 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 /// exercised by host tests before a font loads, where `TtfMeasure`'s boot-order assertion would be
 /// a false alarm. This wraps the same free functions without that assertion. Application
 /// vocabulary and profile data are always supplied explicitly by their owner.
-struct LegacyMeasure;
+///
+/// `pub(crate)`, not private: `ui::mod`'s recording `Painter` (the text-prewarm layout pass run
+/// ahead of a page push, spec's warming turn) is the same shape of leaf — `Painter` is `Copy` and
+/// threaded through hundreds of draw calls with no room to grow a capability field — and reaches
+/// for this rather than a second, parallel `impl Measure for` that would only teach the
+/// `textmeasure` gate to look somewhere new for the exact call it already forbids.
+pub(crate) struct LegacyMeasure;
 
 impl crate::ui::machine::Measure for LegacyMeasure {
     fn width(&self, s: &CStr, sz: c_int, bold: bool) -> f32 {

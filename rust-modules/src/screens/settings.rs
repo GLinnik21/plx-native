@@ -216,6 +216,8 @@ impl RouteSurface {
                             id: inst_id,
                             screen,
                             inflight: Vec::new(),
+                            staged: false,
+                            staged_effects: Vec::new(),
                         });
                     }
                     self.forward(out, cx, fx);

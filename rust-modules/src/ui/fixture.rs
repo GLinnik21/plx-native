@@ -474,6 +474,17 @@ impl Screen<FixtureHost> for FixtureScreen {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         self.draw_at = draw_order();
         composed_draw(self, f);
+        if matches!(self.arg, FixtureArg::Page(_)) {
+            f.painter.text(
+                c"pending page text".as_ptr(),
+                100.0,
+                100.0,
+                24,
+                [1.0; 4],
+                0,
+                0,
+            );
+        }
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
@@ -574,6 +585,8 @@ impl FixtureModal {
                                 draw_at: 0,
                             }),
                             inflight: Vec::new(),
+                            staged: false,
+                            staged_effects: Vec::new(),
                         });
                     }
                 }

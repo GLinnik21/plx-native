@@ -1242,6 +1242,35 @@ where
                 crate::diag::spans::span("scrims", || nav.modals.draw_scrims(navigation.page_alpha, read));
             }
         }
+        // A PageDip keeps the committed top as the visible/input page throughout its OUT half.
+        // Its pending destination is nevertheless a real staged screen, so run that same screen
+        // tree through a painter which records text and submits no visual primitive. Re-recording
+        // each frame is intentional: cache hits disappear from the queue, while work which missed
+        // this frame's deadline is rediscovered next frame without stale cross-navigation state.
+        if nav.tabs.stack.transition.prewarms_text() {
+            crate::text::clear_prewarm();
+            if let Some(entry) = nav.tabs.stack.pending_target_mut() {
+                if let Some(inst) = entry.inst.as_mut() {
+                    let Split { views, measure, .. } = rig.split();
+                    let mut warm_cx = parts.cx::<H>(views, measure);
+                    warm_cx.owner = InputOwner::Entry(entry.id);
+                    warm_cx.focus = input.engine.read(warm_cx.owner);
+                    let mut f = DrawFrame::with_navigation(
+                        &warm_cx,
+                        Painter::recording(),
+                        navigation,
+                    );
+                    f.page_alpha = 0.0;
+                    inst.screen.draw(&mut f);
+                }
+            }
+            crate::text::drain_prewarm(
+                super::containers::transition::TEXT_PREWARM_BUDGET_US,
+                || rig.now_us(),
+            );
+        } else {
+            crate::text::clear_prewarm();
+        }
         if host_render == HostRender::Cached {
             set.frame_cache_bytes = super::frame::FRAME_CACHE_BYTES;
         }
@@ -1926,6 +1955,9 @@ where
                 _ => unreachable!("only structural ops are parked"),
             }
         }
+        if let Some(eid) = self.nav.stage_page_target() {
+            self.stage_mount(rig, parts, eid);
+        }
         life.extend(self.nav.commit());
         for step in life {
             match step {
@@ -1966,7 +1998,25 @@ where
         post: &mut Vec<Stamped<H>>,
         report: &mut FrameReport,
     ) {
-        if self.nav.entry(eid).map_or(true, |e| e.inst.is_some()) {
+        if self.nav.entry(eid).is_none() {
+            return;
+        }
+        if self.nav.entry(eid).and_then(|e| e.inst.as_ref()).is_some() {
+            let Some((id, name, out)) = self.nav.entry_mut(eid).and_then(|entry| {
+                let inst = entry.inst.as_mut()?;
+                if !inst.staged {
+                    return None;
+                }
+                inst.staged = false;
+                Some((inst.id, inst.screen.name(), std::mem::take(&mut inst.staged_effects)))
+            }) else { return };
+            post.push(Stamped {
+                from: MachineId::Nav,
+                fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::Mount)),
+            });
+            post.extend(out);
+            report.mounted.push((id, name));
+            self.cold.mounted(id.0, name, parts.tick.ms);
             return;
         }
         let id = self.nav.ids.instance();
@@ -1994,6 +2044,8 @@ where
                 id,
                 screen,
                 inflight: Vec::new(),
+                staged: false,
+                staged_effects: Vec::new(),
             });
             entry.evicted = false;
         }
@@ -2004,6 +2056,42 @@ where
         post.extend(out);
         report.mounted.push((id, name));
         self.cold.mounted(id.0, name, parts.tick.ms);
+    }
+
+    /// Construct a pending destination without publishing it as mounted. The screen is reused at
+    /// the floor; effects emitted by its constructor and the `Mount` lifecycle remain buffered, so
+    /// the outgoing page is still the sole live/input owner during the dip-out.
+    fn stage_mount(
+        &mut self,
+        rig: &mut dyn Rig<H>,
+        parts: &CxParts<H::Elem>,
+        eid: EntryId,
+    ) {
+        if self.nav.entry(eid).map_or(true, |e| e.inst.is_some()) {
+            return;
+        }
+        let id = self.nav.ids.instance();
+        let mut out: Vec<Stamped<H>> = Vec::new();
+        let screen = {
+            let Dispatcher { nav, present, input, .. } = self;
+            let entry = nav.entry(eid).expect("staged above");
+            let Split { mounter, views, measure } = rig.split();
+            let mut p = parts.clone();
+            p.owner = InputOwner::Entry(eid);
+            p.focus = input.engine.read(p.owner);
+            let cx = p.cx::<H>(views, measure);
+            let mut fx = Effects::new(&mut out, MachineId::Instance(id), present);
+            mounter.mount(id, &entry.arg, &entry.ret, &cx, &mut fx)
+        };
+        if let Some(entry) = self.nav.entry_mut(eid) {
+            entry.inst = Some(Instance {
+                id,
+                screen,
+                inflight: Vec::new(),
+                staged: true,
+                staged_effects: out,
+            });
+        }
     }
 
     /// Register a request as in flight for an instance (the app's registry calls this when it
@@ -2034,6 +2122,8 @@ where
                 id,
                 screen: inst.screen,
                 inflight: Vec::new(),
+                staged: false,
+                staged_effects: Vec::new(),
             });
         }
         post.push(Stamped {

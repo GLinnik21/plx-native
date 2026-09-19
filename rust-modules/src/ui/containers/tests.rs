@@ -1162,6 +1162,32 @@ fn a_page_dip_commits_at_its_floor_and_a_back_inside_the_window_withdraws_it() {
     assert_eq!(d.nav.tabs.stack.page_alpha(), 1.0);
 }
 
+/// A pending destination is laid out through the text recorder while the old page is still the
+/// visible top. The host has no GL context, so `text`'s test backend records residency at the same
+/// cache boundary the device backend rasterises and uploads through.
+#[test]
+fn a_page_pushed_behind_a_dip_has_its_text_resident_before_it_is_seen() {
+    let _g = crate::testlock::serial();
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(PageDip::new()));
+    let mut rig = FixtureRig::new();
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    for i in 0..30u32 {
+        d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap);
+    }
+    assert_eq!(d.top_screen().unwrap().name(), "home");
+
+    crate::text::reset_prewarm_for_test();
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(42)));
+    d.frame(&mut rig, tick(600), vec![], vec![], &mut NoTap);
+    d.frame(&mut rig, tick(616), vec![], vec![], &mut NoTap);
+
+    assert_eq!(d.top_screen().unwrap().name(), "home", "the outgoing page remains visible");
+    assert!(
+        crate::text::prewarm_resident_for_test(b"pending page text", 24, 0),
+        "the incoming page's text was warmed before the dip floor"
+    );
+}
+
 /// **`has_pending_navigation` is a question about the PAGE stack**, and [`Navigation::moves_page`]
 /// is the one classifier that answers it — the same one [`Navigation::request`] routes by, so the
 /// guard and the commit cannot disagree about what a parked op is.

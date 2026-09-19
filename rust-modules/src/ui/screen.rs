@@ -830,6 +830,9 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     /// folded in here (`Painter::to_screen`) and the stop is clipped to the cascade's clip
     /// intersected with `s.clip` (also in painter space).
     pub fn stop(&mut self, p: Painter, mut s: Stop<H::Elem>) {
+        if p.is_recording() {
+            return;
+        }
         let (rect, _, cascade_clip) = p.to_screen(s.rect);
         let (_, rest, _) = p.to_screen(s.rest_rect);
         let own = Rect::new(s.clip.x + p.dx(), s.clip.y + p.dy(), s.clip.w, s.clip.h);
@@ -844,6 +847,9 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     /// replacement for the bare `Painter::clip`/`clip_clear` pair (spec §7.6). Draw the clipped
     /// content through the painter the scope hands back.
     pub fn clip(&mut self, p: Painter, r: Rect) -> ClipScope {
+        if p.is_recording() {
+            return ClipScope::inert();
+        }
         let inner = p.clipped(r);
         ClipScope::open(inner.clip_rect())
     }
@@ -861,6 +867,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
 /// bookkeeping on the host test binary (no GL is linked): what is graded is the stack.
 pub struct ClipScope {
     prev: Option<Rect>,
+    active: bool,
 }
 
 thread_local! {
@@ -872,7 +879,11 @@ impl ClipScope {
     fn open(screen: Rect) -> Self {
         let prev = CLIP_STACK.with(|c| c.replace(Some(screen)));
         apply_scissor(Some(screen));
-        Self { prev }
+        Self { prev, active: true }
+    }
+
+    fn inert() -> Self {
+        Self { prev: None, active: false }
     }
 
     /// The scissor in force (the innermost open scope), for tests and instruments.
@@ -883,6 +894,9 @@ impl ClipScope {
 
 impl Drop for ClipScope {
     fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
         CLIP_STACK.with(|c| c.set(self.prev));
         apply_scissor(self.prev);
     }

@@ -1,8 +1,11 @@
 //! `NavStack` (restructure spec §6.2): a stack of `Entry`s under one `Transition`. `request` captures
 //! the top's `ReturnState` NOW and parks the op; the op APPLIES at the transition's commit point
 //! (`Immediate`: the same commit; `PageDip`: the floor), producing the §3.4 lifecycle sequence as
-//! DATA — a list of [`Life`] steps the dispatcher executes (mount through the one `Mounter`,
-//! deliver the events in the post-commit drain, retire the bodies). The container decides WHAT
+//! DATA — a list of [`Life`] steps the dispatcher executes (construct through the one `Mounter`,
+//! publish `Mount` and its effects in the post-commit drain, retire the bodies). A `PageDip` may
+//! construct its pending destination during the OUT half so a recording painter can warm text;
+//! the body remains staged, outside the live stack, and its lifecycle/effects still begin only at
+//! the floor. The container decides WHAT
 //! happens to WHOM and in WHICH ORDER; it never calls a screen.
 //!
 //! Identity: an `EntryId` is minted when the entry is created and survives body eviction; an
@@ -11,7 +14,7 @@
 //! the entry stays, and a Pop that reaches it remounts from its `ReturnState` — which is what
 //! `an_evicted_entry_keeps_its_focus_identity_on_remount` grades.
 
-use super::super::machine::{EntryId, GroupId, Host, InstanceId, Leave, NavOp, RequestId};
+use super::super::machine::{EntryId, GroupId, Host, InstanceId, Leave, NavOp, RequestId, Stamped};
 use super::super::screen::{Enter, FocusTarget, ReturnState, Screen, ScreenArg, ScreenEvent};
 use super::transition::{CommitPoint, Transition};
 use super::{Life, Minter};
@@ -24,6 +27,10 @@ pub struct Instance<H: Host> {
     pub id: InstanceId,
     pub screen: Box<dyn Screen<H>>,
     pub inflight: Vec<RequestId>,
+    /// Constructed behind a dip but not in the live stack yet. Its mount effects and `Mount`
+    /// lifecycle are released only when the navigation commits at the floor.
+    pub(crate) staged: bool,
+    pub(crate) staged_effects: Vec<Stamped<H>>,
 }
 
 /// An entry (§6.2): identity, argument, return state, and the body while it has one.
@@ -40,6 +47,9 @@ struct Pending<H: Host> {
     op: NavOp<H::Arg>,
     /// The top at request time — `cancel(from)` withdraws only if the top has not moved.
     from: Option<EntryId>,
+    /// A destination which did not already exist in the stack, constructed early solely so its
+    /// text can be recorded. It becomes an ordinary entry at the transition floor.
+    staged: Option<Entry<H>>,
 }
 
 pub struct NavStack<H: Host> {
@@ -84,6 +94,7 @@ impl<H: Host> NavStack<H> {
         self.entries
             .iter()
             .chain(self.retired.iter())
+            .chain(self.pending.iter().filter_map(|p| p.staged.as_ref()))
             .find(|e| e.id == id)
     }
 
@@ -91,6 +102,7 @@ impl<H: Host> NavStack<H> {
         self.entries
             .iter_mut()
             .chain(self.retired.iter_mut())
+            .chain(self.pending.iter_mut().filter_map(|p| p.staged.as_mut()))
             .find(|e| e.id == id)
     }
 
@@ -139,7 +151,7 @@ impl<H: Host> NavStack<H> {
         if let Some(top) = self.top_mut() {
             top.ret = ret;
         }
-        self.pending = Some(Pending { op, from });
+        self.pending = Some(Pending { op, from, staged: None });
         self.transition.request(continuous);
         if self.transition.commit_point() == CommitPoint::Immediate {
             self.due = true;
@@ -227,6 +239,57 @@ impl<H: Host> NavStack<H> {
         }
     }
 
+    /// Ensure a new pending destination has an entry identity before the floor. Existing pop and
+    /// pop-to destinations already have one. A bodyless existing entry is deliberately skipped:
+    /// remounting it ahead of `Uncover` would expose it to live deliveries before commit.
+    pub fn stage_pending_target(&mut self, ids: &mut Minter) -> Option<EntryId> {
+        if !self.transition.prewarms_text() {
+            return None;
+        }
+        if let Some(id) = self.pending.as_ref().and_then(|p| p.staged.as_ref()).map(|e| e.id) {
+            return Some(id);
+        }
+        let existing = match self.pending.as_ref().map(|p| &p.op)? {
+            NavOp::Pop => self.under_top().map(|e| e.id),
+            NavOp::PopTo(id) | NavOp::Dismiss(id) => Some(*id),
+            NavOp::SelectTab(arg) => self.root().filter(|e| e.arg.same_instance(arg)).map(|e| e.id),
+            NavOp::Push(_) | NavOp::Root(_) | NavOp::Replace(_) => None,
+            NavOp::Present(_) | NavOp::Cancel => return None,
+        };
+        if let Some(id) = existing {
+            return self.entry(id).and_then(|e| e.inst.as_ref()).map(|_| id);
+        }
+        let arg = match self.pending.as_ref().map(|p| &p.op)? {
+            NavOp::Push(arg) | NavOp::Root(arg) | NavOp::Replace(arg) | NavOp::SelectTab(arg) => arg.clone(),
+            _ => return None,
+        };
+        let id = ids.entry();
+        let staged = Entry {
+            id,
+            arg,
+            ret: ReturnState::default(),
+            inst: None,
+            evicted: false,
+        };
+        self.pending.as_mut().expect("read above").staged = Some(staged);
+        Some(id)
+    }
+
+    /// The prepared destination screen, while the committed top remains the outgoing page.
+    pub fn pending_target_mut(&mut self) -> Option<&mut Entry<H>> {
+        if self.pending.as_ref()?.staged.is_some() {
+            return self.pending.as_mut()?.staged.as_mut();
+        }
+        let id = match &self.pending.as_ref()?.op {
+            NavOp::Pop => self.entries.iter().rev().nth(1).map(|e| e.id),
+            NavOp::PopTo(id) | NavOp::Dismiss(id) => Some(*id),
+            NavOp::SelectTab(arg) => self.entries.first()
+                .filter(|e| e.arg.same_instance(arg)).map(|e| e.id),
+            _ => None,
+        }?;
+        self.entries.iter_mut().find(|e| e.id == id)
+    }
+
     /// At NAV COMMIT: apply the pending op if it is due, producing the lifecycle steps.
     pub fn commit(&mut self, ids: &mut Minter) -> Vec<Life<H>> {
         if !self.due {
@@ -236,7 +299,7 @@ impl<H: Host> NavStack<H> {
         let Some(p) = self.pending.take() else {
             return Vec::new();
         };
-        self.apply(p.op, ids)
+        self.apply(p.op, ids, p.staged)
     }
 
     fn mint(&mut self, ids: &mut Minter, arg: H::Arg) -> EntryId {
@@ -282,12 +345,28 @@ impl<H: Host> NavStack<H> {
         }
     }
 
-    fn apply(&mut self, op: NavOp<H::Arg>, ids: &mut Minter) -> Vec<Life<H>> {
+    fn adopt_or_mint(
+        &mut self,
+        ids: &mut Minter,
+        arg: H::Arg,
+        staged: &mut Option<Entry<H>>,
+    ) -> EntryId {
+        if staged.as_ref().is_some_and(|e| e.arg.same_instance(&arg)) {
+            let entry = staged.take().expect("checked");
+            let id = entry.id;
+            self.entries.push(entry);
+            id
+        } else {
+            self.mint(ids, arg)
+        }
+    }
+
+    fn apply(&mut self, op: NavOp<H::Arg>, ids: &mut Minter, mut staged: Option<Entry<H>>) -> Vec<Life<H>> {
         let mut out = Vec::new();
         match op {
             NavOp::Push(arg) => {
                 let old = self.top().map(|e| e.id);
-                let new = self.mint(ids, arg);
+                let new = self.adopt_or_mint(ids, arg, &mut staged);
                 self.evict(&mut out);
                 if let Some(o) = old {
                     out.push(Life::Ev(o, ScreenEvent::WillLeave(Leave::Deeper)));
@@ -370,7 +449,7 @@ impl<H: Host> NavStack<H> {
                         out.push(Life::Unmount(id));
                         self.retire(id);
                     }
-                    let new = self.mint(ids, arg);
+                    let new = self.adopt_or_mint(ids, arg, &mut staged);
                     out.push(Life::Mount(new));
                     out.push(Life::Ev(new, ScreenEvent::Enter(Self::fresh(GroupId(0)))));
                 }
@@ -396,7 +475,7 @@ impl<H: Host> NavStack<H> {
                 match root {
                     None => {
                         // the first root: the stack was empty
-                        let new = self.mint(ids, arg);
+                        let new = self.adopt_or_mint(ids, arg, &mut staged);
                         out.push(Life::Mount(new));
                         out.push(Life::Ev(new, ScreenEvent::Enter(Self::fresh(GroupId(0)))));
                     }
@@ -411,7 +490,7 @@ impl<H: Host> NavStack<H> {
                     }
                     Some(r) => {
                         out.push(Life::Ev(r, ScreenEvent::WillLeave(Leave::Deeper)));
-                        let new = self.mint(ids, arg);
+                        let new = self.adopt_or_mint(ids, arg, &mut staged);
                         out.push(Life::Mount(new));
                         out.push(Life::Ev(new, ScreenEvent::Enter(Self::fresh(GroupId(0)))));
                         out.push(Life::Ev(r, ScreenEvent::Cover));
@@ -425,7 +504,7 @@ impl<H: Host> NavStack<H> {
                     out.push(Life::Unmount(o));
                     self.retire(o);
                 }
-                let new = self.mint(ids, arg);
+                let new = self.adopt_or_mint(ids, arg, &mut staged);
                 out.push(Life::Mount(new));
                 out.push(Life::Ev(new, ScreenEvent::Enter(Self::fresh(GroupId(0)))));
             }

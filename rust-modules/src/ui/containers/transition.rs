@@ -50,6 +50,11 @@ pub trait Transition {
     fn draws_below(&self) -> bool {
         false
     }
+    /// The destination may be mounted and painted through the text recorder while the outgoing
+    /// page remains visible. Only the outgoing half of a page dip opts in.
+    fn prewarms_text(&self) -> bool {
+        false
+    }
 }
 
 /// A cut.
@@ -83,6 +88,8 @@ impl Transition for Immediate {
 pub const DIP_OUT_MS: f32 = 70.0;
 /// Incoming ramp (ms) — longer than out: leave fast, arrive gently.
 pub const DIP_IN_MS: f32 = 140.0;
+/// Maximum rasterise+upload time borrowed from one cheap dip-out frame.
+pub const TEXT_PREWARM_BUDGET_US: u64 = 6_000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DipPhase {
@@ -203,6 +210,10 @@ impl Transition for PageDip {
 
     fn in_flight(&self) -> bool {
         self.phase != DipPhase::Idle
+    }
+
+    fn prewarms_text(&self) -> bool {
+        self.phase == DipPhase::Out
     }
 }
 
