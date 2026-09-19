@@ -3620,17 +3620,19 @@ pub(crate) fn blur_source_pass() -> bool {
 
 /// **Sample what is actually on the panel under `r`, at a low rate.**
 ///
-/// Five small `glReadPixels` boxes along the rect's centre line, at most every
-/// [`GROUND_SAMPLE_MS`]. It exists because a material whose density follows its ground needs to know
+/// Five small boxes along the rect's centre line, at most every [`GROUND_SAMPLE_EVERY`] calls,
+/// through the asynchronous [`GroundProbe`]. It exists because a material whose density follows its ground needs to know
 /// the ground, and every cheaper source is the wrong colour: Plex's `UltraBlurColors` are a derived
 /// muted palette for an ambient wash — measured against the Luca hero, they give (0.30, 0.23, 0.18)
 /// where the top of the panel is actually (0.00, 0.68, 0.91) — and the wash's own corners lean only
 /// 26% toward the art. The pixels are the only honest answer.
 ///
-/// A readback stalls a tiler, so the rate is the whole design: a hero holds for 8 seconds and a
-/// scrim density has no business changing faster than the picture does, so twice a second costs one
-/// flush and buys an exact answer. Returns `None` until the first sample lands and inside a source
-/// pass, where framebuffer 0 is not bound and the answer would be the FBO's own contents.
+/// A hero holds for 8 seconds and a scrim density has no business changing faster than the picture
+/// does, so twice a second is the rate. Each reading is a GPU-side copy queued on one call and read
+/// back between frames once the GPU has passed it ([`ProbeCadence`]), so it never waits on the
+/// frame — it used to be a synchronous `glReadPixels` that drained the GPU mid-page. Returns `None`
+/// until the first reading lands, and the last one inside a source pass, where framebuffer 0 is not
+/// bound and the answer would be the FBO's own contents.
 ///
 /// Counted in CALLS rather than milliseconds: this is called once per drawn bar, so the count is
 /// the frame rate and needs no clock. 30 is about twice a second at 60.
@@ -3647,8 +3649,7 @@ const GROUND_TAPS: usize = 5;
 /// actually sit on is the checker's mid-grey. A box at the blur's support answers for the region the
 /// blur will produce — the same answer on a smooth ground, and the honest one on a busy one.
 ///
-/// 25px, odd so a tap has a middle. One `glReadPixels` per tap either way, 3125 pixels in total,
-/// which is nothing beside the flush the readback already costs.
+/// 25px, odd so a tap has a middle. One copy per tap either way, 3125 pixels in total.
 const GROUND_TAP_PX: c_int = 25;
 static mut GROUND_RGB: Option<[f32; 3]> = None;
 /// **The SPREAD across the taps, in CIE L\*, beside the mean.**
@@ -3662,11 +3663,12 @@ static mut GROUND_SPAN: f32 = 0.0;
 pub(crate) fn ground_span() -> f32 {
     unsafe { *std::ptr::addr_of!(GROUND_SPAN) }
 }
-static mut GROUND_AT: u32 = 0;
+/// The bar's probe: its cadence, its target, and the reading in flight.
+static mut GROUND_PROBE: GroundProbe<GROUND_TAPS> = GroundProbe::new(GROUND_SAMPLE_EVERY, GROUND_TAP_PX);
 
 /// **ONE latch and ONE rate counter, for the whole process — so this has exactly one caller.**
 ///
-/// `GROUND_RGB` is a single `Option`, and `GROUND_AT` a single counter that admits a real readback
+/// `GROUND_RGB` is a single `Option`, and `GROUND_PROBE` a single cadence that admits a real reading
 /// once every [`GROUND_SAMPLE_EVERY`] calls. A second caller passing a different `r` therefore does
 /// two things, both silent AS THE CODE STANDS: it halves the rate each caller actually gets, and
 /// every call it does take clobbers the other's answer with pixels from somewhere else on the
@@ -3676,7 +3678,8 @@ static mut GROUND_AT: u32 = 0;
 /// against it.** It is not "a second `glReadPixels` flush per frame" — this is rate-limited by
 /// CALL COUNT, so two callers each keeping their own counter would each read once every
 /// [`GROUND_SAMPLE_EVERY`] of their own calls: one extra flush roughly twice a second, and only
-/// while the second surface is on screen. Two `Option`s and two `u32`s. The reason to prefer one
+/// while the second surface is on screen (a queued copy now, not a flush). Two `Option`s and two
+/// probes. The reason to prefer one
 /// solve is therefore the MATERIAL's — one band, one density — and not the readback's price; do not
 /// re-derive the argument from a cost that is thirty times smaller than it reads here.
 ///
@@ -3692,9 +3695,10 @@ static mut GROUND_AT: u32 = 0;
 /// one surface in this app that is in that position.
 /// **May a ground sampler take a FRESH reading on this draw?** Not while the page is frozen.
 ///
-/// Both samplers ([`sample_ground`], [`sample_control_ground`]) answer from a `glReadPixels`, and a
-/// read of the framebuffer is SYNCHRONOUS: it returns only once the GPU has drawn everything
-/// submitted before it, the previous frame's work included. A frozen page is one served from the
+/// Both samplers ([`sample_ground`], [`sample_control_ground`]) answered from a synchronous
+/// `glReadPixels` when this refusal was written, which returns only once the GPU has drawn
+/// everything submitted before it; they queue a [`GroundProbe`] copy now, which is cheap but still
+/// a mid-frame copy of framebuffer 0 and still pointless here. A frozen page is one served from the
 /// host snapshot under a modal — its draw produces no pixels, so the ground under its bar and its
 /// Hero row is by construction the one the last live reading already took, and a fresh read can
 /// only return that same answer. What it did cost was the stall: every thirtieth frame of a modal
@@ -3706,12 +3710,223 @@ fn may_read_ground() -> bool {
     !page_frozen()
 }
 
+/// What a ground probe does on one sampler call — [`ProbeCadence::step`]'s answer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ProbeStep {
+    /// Answer from the last reading.
+    Keep,
+    /// Queue a copy of the tap boxes into the probe's own target, and read nothing.
+    Kick,
+    /// The queued copy has been passed by the GPU: read the probe's target and latch the answer.
+    Collect,
+}
+
+/// **When a ground sampler reads, as a pure function** — the half of [`GroundProbe`] a host test
+/// can reach.
+///
+/// Both samplers used to answer a due call with `glReadPixels` on the frame being drawn. A read of
+/// the framebuffer is synchronous: it returns only once the GPU has drawn everything submitted
+/// before it, the previous frame included. On the Detail page that was one frame in every thirty
+/// at 27–29 ms (`clear` ~11 + ~15 ms of drain inside `page`), the steady-state frame that failed
+/// every Detail cycle of `fps:push-100` (television, 2026-09-19).
+///
+/// So a due call only QUEUES: the tap boxes are copied GPU-side into a small target and a fence is
+/// inserted after the copy ([`ProbeStep::Kick`]). A later call reads that target once at least one
+/// drawn frame has ended since (the swap is what flushes the copy) and the fence has signalled
+/// ([`ProbeStep::Collect`]) — a read of finished work, which does not wait. The answer lands one or
+/// two frames later than it used to; the cadence it keeps is the same.
+///
+/// `at` counts CALLS, like the counters it replaced (one call per drawn surface, so the count is
+/// the frame rate and needs no clock). `dirty` forces the next call to queue a reading whatever the
+/// count says, and is cleared only when one is collected.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct ProbeCadence {
+    every: u32,
+    at: u32,
+    dirty: bool,
+    /// The drawn-frame count a queued reading was kicked in, while one is in flight.
+    pending: Option<u32>,
+}
+
+impl ProbeCadence {
+    pub(crate) const fn new(every: u32) -> Self {
+        Self {
+            every,
+            at: 0,
+            dirty: true,
+            pending: None,
+        }
+    }
+
+    /// One sampler call. `have`: a reading is latched. `drawn`: drawn frames so far
+    /// ([`drawn_frames`]). `finished`: the GPU has passed the queued copy (its fence signalled, or
+    /// there is no fence to ask).
+    pub(crate) fn step(&mut self, have: bool, drawn: u32, finished: bool) -> ProbeStep {
+        if let Some(kicked) = self.pending {
+            if drawn.wrapping_sub(kicked) >= 1 && finished {
+                self.pending = None;
+                self.dirty = false;
+                self.at = 0; // the cadence counts from the reading, not from its kick
+                return ProbeStep::Collect;
+            }
+            return ProbeStep::Keep;
+        }
+        self.at = self.at.wrapping_add(1);
+        if self.dirty || !have || self.at % self.every == 0 {
+            self.pending = Some(drawn);
+            ProbeStep::Kick
+        } else {
+            ProbeStep::Keep
+        }
+    }
+
+    /// The pixels under the probe changed meaning (a new item behind the Hero row): drop any
+    /// reading in flight and queue a fresh one on the next call.
+    pub(crate) fn invalidate(&mut self) {
+        self.at = 0;
+        self.dirty = true;
+        self.pending = None;
+    }
+
+    /// A kick that could not be queued (no target): nothing is in flight after all.
+    fn abandon(&mut self) {
+        self.pending = None;
+    }
+}
+
+/// **A ground sampler's asynchronous read-back**: `N` boxes of `px` square, copied side by side
+/// into one `N*px x px` target, fenced, and read once finished. See [`ProbeCadence`] for why.
+///
+/// The target is built lazily on the first kick and never resized. An incomplete FBO latches `off`
+/// and the sampler answers from its last reading (`None` if it never had one) from then on — the
+/// same refusal every other chain in this module makes.
+pub(crate) struct GroundProbe<const N: usize> {
+    cadence: ProbeCadence,
+    px: c_int,
+    /// `(texture, framebuffer)`, once built.
+    target: Option<(c_uint, c_uint)>,
+    off: bool,
+    fence: Option<crate::egl::fence::Fence>,
+    /// The queued copy, read back at a frame boundary ([`ground_probes_frame_end`]) and waiting
+    /// for the sampler's next call to reduce it.
+    ready: Option<Vec<u8>>,
+}
+
+impl<const N: usize> GroundProbe<N> {
+    pub(crate) const fn new(every: u32, px: c_int) -> Self {
+        Self {
+            cadence: ProbeCadence::new(every),
+            px,
+            target: None,
+            off: false,
+            fence: None,
+            ready: None,
+        }
+    }
+
+    /// Drop any reading in flight or read back, and queue a fresh one on the next call.
+    fn invalidate(&mut self) {
+        self.cadence.invalidate();
+        self.ready = None;
+    }
+
+    /// **The read-back, at a frame BOUNDARY.** Called right after the swap, before the next frame
+    /// draws anything: reading the probe's target here binds another framebuffer while the
+    /// frame's own has nothing pending, so it neither splits a render pass nor waits on one. The
+    /// first measurement read at the sampler's next call instead, mid-page, and that frame still
+    /// ran ~12 ms over its neighbours with a 0.2 ms read (television, 2026-09-19). Only once the
+    /// copy's fence has signalled; with no fences (the simulator) the swap alone is the rule.
+    unsafe fn read_if_finished(&mut self) {
+        if self.cadence.pending.is_none() || self.ready.is_some() {
+            return;
+        }
+        let Some((_, fbo)) = self.target else { return };
+        if !self.fence.as_ref().is_none_or(|f| f.signaled()) {
+            return;
+        }
+        let (w, h) = (self.px * N as c_int, self.px);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        crate::diag::spans::span("gndread", || {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf.as_mut_ptr() as *mut c_void);
+            glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+        });
+        self.fence = None;
+        self.ready = Some(buf);
+    }
+
+    /// One sampler call. `origins` are the boxes' lower-left corners in framebuffer pixels, already
+    /// clamped — used only on a kick. Returns the collected `N*px x px` RGBA row-major buffer on a
+    /// collect, `None` otherwise.
+    unsafe fn step(&mut self, have: bool, origins: &[(c_int, c_int); N], who: &str) -> Option<Vec<u8>> {
+        if self.off {
+            return None;
+        }
+        match self.cadence.step(have, drawn_frames(), self.ready.is_some()) {
+            ProbeStep::Keep => None,
+            ProbeStep::Kick => {
+                if self.target.is_none() {
+                    // `fbo_target` binds `default_fb()` back, which is the page's current target
+                    // (the frame, or a host snapshot being rendered into) — where this was called.
+                    self.target = fbo_target(self.px * N as c_int, self.px, who);
+                    if self.target.is_none() {
+                        self.off = true;
+                        self.cadence.abandon();
+                        return None;
+                    }
+                }
+                let (tex, _) = self.target?;
+                let px = self.px;
+                crate::diag::spans::span("gndkick", || {
+                    glBindTexture(GL_TEXTURE_2D, tex);
+                    for (i, &(x, y)) in origins.iter().enumerate() {
+                        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, i as c_int * px, 0, x, y, px, px);
+                    }
+                });
+                // After the copies, so it signals once they are done. Replacing an older fence
+                // destroys it; nothing is waiting on it.
+                self.fence = crate::egl::fence::Fence::insert();
+                None
+            }
+            ProbeStep::Collect => self.ready.take(),
+        }
+    }
+}
+
+/// Read back every ground probe whose copy the GPU has passed — `app::run` calls it right after
+/// the swap, beside [`field_frame_end`]. See [`GroundProbe::read_if_finished`].
+pub(crate) fn ground_probes_frame_end() {
+    // SAFETY: main render thread, like every other access to the probes.
+    unsafe {
+        (*std::ptr::addr_of_mut!(GROUND_PROBE)).read_if_finished();
+        (*std::ptr::addr_of_mut!(CONTROL_PROBE)).read_if_finished();
+    }
+}
+
+/// Box `i`'s pixels in a [`GroundProbe`]'s collected buffer: `px` rows of `px` RGBA texels, taken
+/// from the `n*px`-wide atlas row by row. Order within a box is irrelevant to every consumer (each
+/// one averages).
+fn probe_tap(buf: &[u8], i: usize, px: c_int, n: usize) -> impl Iterator<Item = &[u8]> {
+    let (px, w) = (px as usize, px as usize * n);
+    (0..px).flat_map(move |row| {
+        let at = (row * w + i * px) * 4;
+        buf[at..at + px * 4].chunks_exact(4)
+    })
+}
+
+/// Drawn frames so far — the frame count [`field_frame_end`] advances beside the swap, shared by
+/// every fenced read-back in this module.
+#[inline]
+fn drawn_frames() -> u32 {
+    FIELD_SWAPS.load(Ordering::Relaxed)
+}
+
 pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
         // A caller can refuse a FRESH reading while still wanting the last one — the route
         // cross-fade's case. `ui::nav` dips the whole page toward `SURFACE_APP` while the chrome
         // holds still, so for the length of a transition the pixels under this bar are not the
-        // page's colour at all, and a readback landing there latches a ground the screen is not on
+        // page's colour at all, and a reading queued there latches a ground the screen is not on
         // for the next thirty drawn frames.
         if !may_read {
             return *std::ptr::addr_of!(GROUND_RGB);
@@ -3719,16 +3934,22 @@ pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
         if BLUR_IN_PASS || !may_read_ground() {
             return *std::ptr::addr_of!(GROUND_RGB);
         }
-        let n = (*std::ptr::addr_of!(GROUND_AT)).wrapping_add(1);
-        GROUND_AT = n;
-        if (*std::ptr::addr_of!(GROUND_RGB)).is_some() && n % GROUND_SAMPLE_EVERY != 0 {
-            return *std::ptr::addr_of!(GROUND_RGB);
-        }
+        let have = (*std::ptr::addr_of!(GROUND_RGB)).is_some();
         let (gx, gy, gw, gh) = crate::surface::viewport();
         let (sx, sy) = (gw as f32 / SCR_W, gh as f32 / SCR_H);
         let cy = gy + gh - 1 - ((r[1] + r[3] * 0.5) * sy) as c_int; // GL origin is bottom-left
-        let n = GROUND_TAP_PX as usize;
-        let mut buf = vec![0u8; n * n * 4];
+        let origins: [(c_int, c_int); GROUND_TAPS] = std::array::from_fn(|i| {
+            let f = (i as f32 + 0.5) / GROUND_TAPS as f32;
+            let x = gx + ((r[0] + r[2] * f) * sx) as c_int;
+            (
+                (x - GROUND_TAP_PX / 2).clamp(0, gx + gw - GROUND_TAP_PX),
+                (cy - GROUND_TAP_PX / 2).clamp(0, gy + gh - GROUND_TAP_PX),
+            )
+        });
+        let probe = &mut *std::ptr::addr_of_mut!(GROUND_PROBE);
+        let Some(buf) = probe.step(have, &origins, "ground") else {
+            return *std::ptr::addr_of!(GROUND_RGB);
+        };
         let mut taps = [[0.0f32; 3]; GROUND_TAPS];
         let mut taps_l = [0.0f32; GROUND_TAPS];
         let lin = |v: f32| {
@@ -3738,20 +3959,10 @@ pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
                 ((v + 0.055) / 1.055).powf(2.4)
             }
         };
+        let n = GROUND_TAP_PX as usize;
         for i in 0..GROUND_TAPS {
-            let f = (i as f32 + 0.5) / GROUND_TAPS as f32;
-            let x = gx + ((r[0] + r[2] * f) * sx) as c_int;
-            glReadPixels(
-                (x - GROUND_TAP_PX / 2).clamp(0, gx + gw - GROUND_TAP_PX),
-                (cy - GROUND_TAP_PX / 2).clamp(0, gy + gh - GROUND_TAP_PX),
-                GROUND_TAP_PX,
-                GROUND_TAP_PX,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                buf.as_mut_ptr() as *mut c_void,
-            );
             let mut acc = [0.0f32; 3];
-            for p in buf.chunks_exact(4) {
+            for p in probe_tap(&buf, i, GROUND_TAP_PX, GROUND_TAPS) {
                 for c in 0..3 {
                     acc[c] += p[c] as f32 / 255.0;
                 }
@@ -3808,15 +4019,16 @@ const CONTROL_GROUND_SAMPLE_EVERY: u32 = 30;
 const CONTROL_GROUND_TAPS: usize = 5;
 const CONTROL_GROUND_TAP_PX: c_int = 49;
 static mut CONTROL_GROUND_RGB: Option<[f32; 3]> = None;
-static mut CONTROL_GROUND_AT: u32 = 0;
-static mut CONTROL_GROUND_DIRTY: bool = true;
+/// The Hero row's probe — its own cadence and its own target, never the bar's.
+static mut CONTROL_PROBE: GroundProbe<CONTROL_GROUND_TAPS> =
+    GroundProbe::new(CONTROL_GROUND_SAMPLE_EVERY, CONTROL_GROUND_TAP_PX);
 
 /// Mark a Hero's sampled ground stale when the item behind the row changes. The last honest answer
-/// remains available during the carousel/route transition; the first settled draw replaces it.
+/// remains available during the carousel/route transition; the first settled draw queues a fresh
+/// reading, and a reading still in flight for the old item is dropped rather than latched.
 pub(crate) fn control_ground_invalidate() {
     unsafe {
-        CONTROL_GROUND_AT = 0;
-        CONTROL_GROUND_DIRTY = true;
+        (*std::ptr::addr_of_mut!(CONTROL_PROBE)).invalidate();
     }
 }
 
@@ -3864,49 +4076,64 @@ fn diffuse_ground_mean(samples: impl IntoIterator<Item = [f32; 3]>) -> [f32; 3] 
     [enc(acc[0] / k), enc(acc[1] / k), enc(acc[2] / k)]
 }
 
+/// [`lin`] of every 8-bit channel value, `lin(v as f32 / 255.0)` exactly — the same function on the
+/// same input, so a mean taken through it is bit-identical to one taken through [`lin`].
+///
+/// A collected Hero-row probe is 5 x 49 x 49 texels, 36,015 channel values, and every one of them
+/// went through a `powf` on the render thread: ~12 ms of CPU on the frame that latched the reading
+/// (television, 2026-09-19 — the probe's read-back itself was 0.2 ms by then). There are only 256
+/// distinct inputs.
+fn lin_u8(v: u8) -> f32 {
+    static LUT: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| std::array::from_fn(|i| lin(i as f32 / 255.0)))[v as usize]
+}
+
+/// [`diffuse_ground_mean`] over RGBA8 texels, through [`lin_u8`]: the same sum in the same order,
+/// so the same answer to the bit.
+fn diffuse_ground_mean_u8<'a>(texels: impl IntoIterator<Item = &'a [u8]>) -> [f32; 3] {
+    let mut acc = [0.0f32; 3];
+    let mut n = 0usize;
+    for p in texels {
+        for c in 0..3 {
+            acc[c] += lin_u8(p[c]);
+        }
+        n += 1;
+    }
+    if n == 0 {
+        return [0.0; 3];
+    }
+    let k = n as f32;
+    [enc(acc[0] / k), enc(acc[1] / k), enc(acc[2] / k)]
+}
+
 /// Sample the pixels already rendered beneath one Hero action row.
 pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
         if !may_read || BLUR_IN_PASS || !may_read_ground() {
             return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
         }
-        let at = (*std::ptr::addr_of!(CONTROL_GROUND_AT)).wrapping_add(1);
-        CONTROL_GROUND_AT = at;
-        if !*std::ptr::addr_of!(CONTROL_GROUND_DIRTY)
-            && (*std::ptr::addr_of!(CONTROL_GROUND_RGB)).is_some()
-            && at % CONTROL_GROUND_SAMPLE_EVERY != 0
-        {
-            return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
-        }
-
+        let have = (*std::ptr::addr_of!(CONTROL_GROUND_RGB)).is_some();
         let (gx, gy, gw, gh) = crate::surface::viewport();
         let (sx, sy) = (gw as f32 / SCR_W, gh as f32 / SCR_H);
         let cy = gy + gh - 1 - ((r[1] + r[3] * 0.5) * sy) as c_int;
-        let n = CONTROL_GROUND_TAP_PX as usize;
-        let mut buf = vec![0u8; n * n * 4];
-        let mut taps = [[0.0f32; 3]; CONTROL_GROUND_TAPS];
-        for (i, tap) in taps.iter_mut().enumerate() {
+        let origins: [(c_int, c_int); CONTROL_GROUND_TAPS] = std::array::from_fn(|i| {
             let f = (i as f32 + 0.5) / CONTROL_GROUND_TAPS as f32;
             let x = gx + ((r[0] + r[2] * f) * sx) as c_int;
-            glReadPixels(
+            (
                 (x - CONTROL_GROUND_TAP_PX / 2).clamp(gx, gx + gw - CONTROL_GROUND_TAP_PX),
                 (cy - CONTROL_GROUND_TAP_PX / 2).clamp(gy, gy + gh - CONTROL_GROUND_TAP_PX),
-                CONTROL_GROUND_TAP_PX,
-                CONTROL_GROUND_TAP_PX,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                buf.as_mut_ptr() as *mut c_void,
-            );
-            *tap = diffuse_ground_mean(buf.chunks_exact(4).map(|p| {
-                [
-                    p[0] as f32 / 255.0,
-                    p[1] as f32 / 255.0,
-                    p[2] as f32 / 255.0,
-                ]
-            }));
-        }
+            )
+        });
+        let probe = &mut *std::ptr::addr_of_mut!(CONTROL_PROBE);
+        let Some(buf) = probe.step(have, &origins, "control ground") else {
+            return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
+        };
+        let taps: [[f32; 3]; CONTROL_GROUND_TAPS] = crate::diag::spans::span("gndmean", || {
+            std::array::from_fn(|i| {
+                diffuse_ground_mean_u8(probe_tap(&buf, i, CONTROL_GROUND_TAP_PX, CONTROL_GROUND_TAPS))
+            })
+        });
         CONTROL_GROUND_RGB = Some(diffuse_ground_mean(taps));
-        CONTROL_GROUND_DIRTY = false;
         *std::ptr::addr_of!(CONTROL_GROUND_RGB)
     }
 }
@@ -5658,23 +5885,102 @@ mod tests {
     fn a_frozen_page_answers_its_ground_from_the_last_reading() {
         let _g = crate::testlock::serial();
         let last = Some([0.25f32, 0.5, 0.75]);
-        unsafe {
+        let (g0, c0) = unsafe {
             GROUND_RGB = last;
             CONTROL_GROUND_RGB = last;
-            GROUND_AT = 0;
-            CONTROL_GROUND_AT = 0;
-        }
+            (
+                (*std::ptr::addr_of!(GROUND_PROBE)).cadence,
+                (*std::ptr::addr_of!(CONTROL_PROBE)).cadence,
+            )
+        };
         let was = set_page_frozen(true);
         for _ in 0..(3 * GROUND_SAMPLE_EVERY.max(CONTROL_GROUND_SAMPLE_EVERY)) {
             assert_eq!(sample_ground([0.0, 0.0, 100.0, 40.0], true), last);
             assert_eq!(sample_control_ground([0.0, 0.0, 100.0, 40.0], true), last);
         }
         set_page_frozen(was);
-        let (at, cat) = unsafe { (GROUND_AT, CONTROL_GROUND_AT) };
-        assert_eq!((at, cat), (0, 0), "no reading was even counted toward while frozen");
+        let (g1, c1) = unsafe {
+            (
+                (*std::ptr::addr_of!(GROUND_PROBE)).cadence,
+                (*std::ptr::addr_of!(CONTROL_PROBE)).cadence,
+            )
+        };
+        assert_eq!((g1, c1), (g0, c0), "no reading was even counted toward while frozen");
         unsafe {
             GROUND_RGB = None;
             CONTROL_GROUND_RGB = None;
+        }
+    }
+
+    /// **A due ground reading never reads the frame it is due on.** The kick only queues a copy;
+    /// the answer is collected on a later call, once a drawn frame has ended since AND the GPU has
+    /// passed the copy — never before either. Then the cadence resumes counting. Observed RED
+    /// against the synchronous shape (a due call answered `Collect` on the frame itself: the
+    /// `glReadPixels` drain behind every thirtieth Detail frame of `fps:push-100`).
+    #[test]
+    fn a_due_ground_reading_is_queued_and_collected_only_once_the_gpu_has_passed_it() {
+        let mut c = ProbeCadence::new(30);
+        assert_eq!(c.step(false, 100, true), ProbeStep::Kick, "nothing latched: queue one");
+        assert_eq!(c.step(false, 100, true), ProbeStep::Keep, "same frame: the copy is not even flushed");
+        assert_eq!(c.step(false, 101, false), ProbeStep::Keep, "a frame later, but the GPU is behind");
+        assert_eq!(c.step(false, 102, true), ProbeStep::Collect);
+        // latched now: the next reading is due on the thirtieth call after the collect
+        let mut steps = Vec::new();
+        for i in 0..30 {
+            steps.push(c.step(true, 103 + i, true));
+        }
+        assert!(steps[..29].iter().all(|s| *s == ProbeStep::Keep), "{steps:?}");
+        assert_eq!(steps[29], ProbeStep::Kick);
+        assert_eq!(c.step(true, 132, true), ProbeStep::Keep, "kicked this frame");
+        assert_eq!(c.step(true, 133, true), ProbeStep::Collect);
+    }
+
+    /// An invalidation drops a reading still in flight for the OLD item — collecting it would
+    /// latch the previous hero's ground — and queues a fresh one on the very next call.
+    #[test]
+    fn an_invalidated_probe_drops_its_reading_in_flight_and_queues_a_fresh_one() {
+        let mut c = ProbeCadence::new(30);
+        assert_eq!(c.step(true, 1, true), ProbeStep::Kick, "a fresh probe is dirty");
+        c.invalidate();
+        assert_eq!(c.step(true, 5, true), ProbeStep::Kick, "not the old kick's collect");
+        assert_eq!(c.step(true, 6, true), ProbeStep::Collect);
+        assert_eq!(c.step(true, 7, true), ProbeStep::Keep, "clean again once collected");
+    }
+
+    /// The table-driven mean is the `powf` mean to the bit, on every 8-bit value and on a real
+    /// probe-sized box of mixed texels.
+    #[test]
+    fn the_u8_ground_mean_is_the_powf_mean_to_the_bit() {
+        for v in 0..=255u8 {
+            assert_eq!(lin_u8(v).to_bits(), lin(v as f32 / 255.0).to_bits(), "value {v}");
+        }
+        let mut x = 0x2545_f491u32;
+        let texels: Vec<[u8; 4]> = (0..49 * 49)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                let b = x.to_le_bytes();
+                [b[0], b[1], b[2], 255]
+            })
+            .collect();
+        let fast = diffuse_ground_mean_u8(texels.iter().map(|t| &t[..]));
+        let slow = diffuse_ground_mean(
+            texels.iter().map(|t| [t[0] as f32 / 255.0, t[1] as f32 / 255.0, t[2] as f32 / 255.0]),
+        );
+        assert_eq!(fast.map(f32::to_bits), slow.map(f32::to_bits));
+    }
+
+    /// Box `i` of a collected atlas is exactly its own `px x px` texels, row by row.
+    #[test]
+    fn a_probe_tap_is_its_own_box_of_the_atlas() {
+        let (px, n) = (3usize, 4usize);
+        let w = px * n;
+        let buf: Vec<u8> = (0..w * px).flat_map(|t| [(t % w / px) as u8, 0, 0, 255]).collect();
+        for i in 0..n {
+            let texels: Vec<&[u8]> = probe_tap(&buf, i, px as c_int, n).collect();
+            assert_eq!(texels.len(), px * px);
+            assert!(texels.iter().all(|p| p[0] == i as u8), "box {i}: {texels:?}");
         }
     }
 

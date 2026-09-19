@@ -4974,7 +4974,7 @@ enum BarMaterial {
 /// **How fast the drawn weight follows the solve, and why the two rates are not the same number.**
 ///
 /// [`track_alpha_for`] is exact and it is also a STEP. The ground can only be read twice a second
-/// (a readback stalls a tiler — [`crate::gfx::sample_ground`] holds that reasoning) and the answer
+/// (a hero holds for seconds — [`crate::gfx::sample_ground`] holds that reasoning) and the answer
 /// is one of 25 rungs, so applied straight to the draw the bar's weight changes in visible jumps as
 /// artwork moves under it. Reported from the panel as the bar "glitching", which is the right word
 /// for it: a material that steps does not read as responding to the picture, it reads as broken.
@@ -5982,7 +5982,7 @@ impl StripRender {
         // itself holds still, so those pixels are the app ground fading, not the screen's colour.
         let settled = crate::ui::nav::page_alpha() >= 0.999;
         // **Decided BEFORE the ground is sampled, because it decides whether to sample at all.**
-        // `sample_ground` is five `glReadPixels` boxes, and a readback stalls a tiler — so a track
+        // `sample_ground` queues five framebuffer copies and reads them back later — so a track
         // that is about to draw FLAT (a popover is up, `flattabs` is armed, or the strip is wider
         // than `GLASS_TRACK_MAX`) must not pay for a number only the glass path consumes. It did,
         // on every screen wearing the bar, for as long as the app was open.

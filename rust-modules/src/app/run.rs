@@ -495,6 +495,8 @@ unsafe fn present_and_swap(
         crate::gfx::blur_frame_end();
         // …and a queued underlay-field reduction has had one more drawn frame to finish in.
         crate::gfx::field_frame_end();
+        // …and a ground probe's queued copy is read back here, between frames, if it is done.
+        crate::gfx::ground_probes_frame_end();
         crate::ui::idle::note_present(fr.now);
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         if let Some(budget) = wslg_frame_budget {
