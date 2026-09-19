@@ -1492,3 +1492,87 @@ per-band storage are deliberate costs for structural correctness; the prefix-cop
 stacked glass also needs a device comparison before any performance claim. Host-only tests cover
 the layer walk, geometry, validity, union scheduling, upload identity and frozen-host bookkeeping.
 No television was contacted and no new GPU measurements or visual verification are claimed here.
+
+## 2026-09-19: two declaration-traversal costs, `modal-100`/`push-100` still regressed after the fix
+
+TV A/B (`integ/stress@e8c016dc` vs `perf/stress-r3@394ff9ea`, same session, interleaved,
+md5-verified deploys) showed `fps:modal-100` cycles-over-20ms at A 16/15 vs B 31/34, and
+`fps:push-100` at A 43 vs B 57, with B's slow frames shifting toward `route=detail`. Two real
+costs in the general mechanism above, both now fixed; a third, smaller one remains open.
+
+**Cause 1 — `text_value` recorded one `u64` per BYTE.** Every discovered frame's exact-draw-
+description walk re-records every live text primitive regardless of whether it changed (rule #5:
+every changed visible source refreshes each present, so validity is compared every frame). The
+byte-per-word encoding meant a Settings row list or a Detail synopsis + cast bios paid an 8x
+`Vec<u64>` inflation on allocation, push and later `Paint::eq` comparison. Fixed by packing 8
+bytes per `u64` word (`text_value`, `backdrop.rs`): same exact-identity semantics (`values ==
+values` still means byte-for-byte equal, no hash, no collision risk, no truncation), 6.69x fewer
+words and ~1.64x less construction time in a standalone `rustc -O` micro-benchmark. Regression
+test: `text_value_packs_bytes_instead_of_one_word_per_byte`.
+
+**Cause 2 — the surfaces loop declared into a band nothing ever reads.** `dispatch.rs::draw_with`
+draws `nav.modals.surfaces` (Settings/AccountMenu/ItemMenu/About's own content) unconditionally in
+both the no-GL discovery pass and the real draw pass — unlike the page/chrome/dim/scrims block,
+which the existing `host_render != Replaced` gate already skips correctly. But no glass entry is
+ever created at or above `Z::surface(0)`: every `Glass::DYNAMIC_BACKDROP.backdrop(...)` call site
+sits inside the CHROME layer scope (grep-verified against the whole crate), and popovers stood off
+the blur chain entirely on 2026-09-19 (`docs/backdrop-blur-profiling.md`, above) — they use the
+frozen-host snapshot in `popover.rs`, which feeds its own synthetic `Paint` straight into
+`Sources::begin`, never through `paint()`. So every primitive a surface declared was allocated,
+recorded, sorted and scanned for nothing: no current or (by this architecture) foreseeable
+consumer ever reads a `Paint` above that boundary. Fixed with two layered checks: `paint()` is the
+authoritative gate (returns before allocating the `Paint`/pushing to `sources.paints` once
+`w.current >= Z::surface(0)`), and `Painter::declare` has a fast pre-check (`recording_excluded`)
+so the caller skips building the primitive's `Vec<u64>` — and, for text, the `text_value` packing
+above — in the first place, rather than building it only to have `paint` discard it. A
+`debug_assert` at the `declare` short-circuit trips immediately if a future glass command is ever
+declared up there, rather than silently starving it of data. Regression tests:
+`content_at_or_above_the_surfaces_band_is_never_recorded` (red without the fix: recorded 3 paints
+instead of 1) and `a_glass_command_above_the_surfaces_band_trips_the_debug_assert`.
+
+Both fixes are inside the general mechanism: no special case for a screen, no ceiling change, no
+exemption from the "every changed source refreshes each present" rule, and the ambient wash still
+dithers every frame. All 27 `backdrop::` tests and the full `cargo test --lib` (3777 passed, 1
+ignored, 0 failed) stay green; `cargo +nightly check --lib --no-default-features` stays clean.
+
+**Re-measured on the TV** (same session, `com.beb.plxnative.debug`, panel off, muted, md5-verified
+deploys), `fps:modal-100`:
+
+| build | run | cycles>20ms | p50 | p95 | max | rss growth |
+|---|---|---|---|---|---|---|
+| A `e8c016dc` | 1 | 13 | 18.2 | 21.5 | 73.7 | +76 kB |
+| A `e8c016dc` | 2 | 15 | 18.0 | 22.8 | 65.0 | +116 kB |
+| B, `text_value` fix only | 1 | 36 | 19.5 | 28.4 | 71.4 | -8 kB |
+| B, both fixes | 1 | 31 | 19.3 | 21.8 | 75.5 | 0 kB |
+
+The surfaces-band fix alone brought `about` and `item-menu` to parity with or better than A (A:
+1/3 over20 vs B-both: 3/2), and `p95` is now inside A's own run-to-run spread (21.5–22.8). It did
+not close the gap on `settings`/`account-menu` (A: 6/3 over20 vs B-both: 16/10): B's per-cycle
+worst frame for those two targets sits a fairly constant ~1-1.5 ms above A's (comparing the two
+runs' worst-frame distributions directly, not just the over20 count), which is small enough to be
+a genuine third cost rather than the doubled-walk shape of causes 1-2. `push-100` was not
+re-measured after these fixes (time budget); the `route=detail` shift the original A/B lane
+reported is still unexplained.
+
+**Open hypothesis for the residual `settings`/`account-menu` gap.** Both targets freeze their host
+(`Style::Sheet`/`Opaque`, `HostUpdate::Frozen`, `surface_policy` → `HostRender::Cached`, not
+`Replaced`), so `dispatch.rs::draw_with`'s page/chrome block still runs every frame — it is only
+`Replaced` that the existing gate skips. `gfx.rs`'s `may_read_ground` doc (`page_frozen`) states
+plainly that a frozen page's "draw produces no pixels": the low-level GL calls are suppressed, but
+the full Home widget tree (layout, string formatting, every `Painter::declare` call) still walks,
+both during the no-GL discovery pass (to record, same as causes 1-2) and during the real draw pass
+(to reach the point where the suppressed GL call would have been). Whether this walk is new cost
+introduced by this mechanism, or an existing cost the r3 special case (`8014abc5`) happened to
+avoid by blocking the chrome glass source pass while a modal is up, is not yet established — that
+special case was never TV-measured, so there is no baseline to compare against directly. The next
+worker should: (1) confirm with a host micro-benchmark or `spans=` breakdown whether `page`/
+`chrome` span time under a frozen host in B is larger per-frame than under A's mechanism, not just
+present in both; (2) if so, look at whether `paint()`'s `Z::surface(0)` exclusion in this change
+generalizes to "recording content covered by a frozen-host boundary is also dead," the same way it
+did for the surfaces band — `held_ceiling()`'s synthetic `Layer` already carries the frozen
+boundary `z`, so the same shape of fix (skip recording, not skip drawing) may apply there too,
+but it needs the same care this change gave the surfaces band: prove no live glass ever reads
+content below a frozen boundary before excluding it, the same way `Z::surface(0)` was proven safe
+here by grepping every `DYNAMIC_BACKDROP.backdrop()` call site.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>

@@ -392,6 +392,17 @@ impl Painter {
     fn declare(self, r: Rect, tag: u64, values: impl FnOnce(&mut Vec<u64>)) -> bool {
         if self.text_recorder { return true; }
         if !frame::backdrop::discovering() { return false; }
+        if frame::backdrop::recording_excluded() {
+            // `paint` would discard this unconditionally (see its comment); skip building
+            // `values` at all rather than build it only to throw it away.
+            debug_assert_ne!(
+                tag,
+                frame::backdrop::GLASS_COMMAND,
+                "a glass command was declared at/above the surfaces band, where recording is \
+                 skipped; this glass would never resolve"
+            );
+            return true;
+        }
         use frame::backdrop::Value;
         let mut data=vec![tag];
         [self.a,self.rgb].record(&mut data);

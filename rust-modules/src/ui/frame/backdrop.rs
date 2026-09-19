@@ -221,7 +221,21 @@ pub(crate) fn text_value(s: *const std::ffi::c_char, values: &mut Vec<u64>) {
     // The same live C string the text renderer consumes; no pointer address enters identity.
     let bytes = unsafe { std::ffi::CStr::from_ptr(s) }.to_bytes();
     values.push(bytes.len() as u64);
-    values.extend(bytes.iter().map(|b| *b as u64));
+    // Eight bytes per recorded word, not one word per byte. The exact-draw-description walk
+    // (this function's one job) runs on every discovered frame regardless of whether anything
+    // changed — every live glass's validity depends on comparing it — so a byte-per-word
+    // encoding turned every text primitive's Vec<u64> allocation, and later comparison, into one
+    // word per CHARACTER: an 8x inflation on the two heaviest-text screens in the app (a
+    // Settings row list, a Detail synopsis + cast bios), which is exactly where the modal-100 and
+    // push-100 stress benches regressed after this mechanism replaced the special-cased fix (see
+    // the dated addendum in docs/backdrop-blur-profiling.md). This is exact identity, not a
+    // hash: two byte strings pack to the same words iff they are equal, with no collision risk
+    // and no truncation, so `Paint::eq`'s `values == values` still means what it always meant.
+    for chunk in bytes.chunks(8) {
+        let mut word = [0u8; 8];
+        word[..chunk.len()].copy_from_slice(chunk);
+        values.push(u64::from_le_bytes(word));
+    }
 }
 pub(crate) fn clip(rect: Option<Rect>) {
     WALK.with(|w| {
@@ -245,6 +259,22 @@ pub(crate) fn paint(rect: Rect, values: Vec<u64>) {
         let Some(w) = w.as_ref().filter(|w| w.discovery) else {
             return;
         };
+        // No glass entry is ever created at or above the surfaces band: every
+        // `Glass::DYNAMIC_BACKDROP.backdrop(...)` call site sits inside the CHROME layer scope
+        // (grep-verified against the whole crate), and popovers stood off the blur chain
+        // entirely on 2026-09-19 — they use the frozen-host snapshot in `popover.rs`, which
+        // feeds its own synthetic `Paint` straight into `Sources::begin`, never through this
+        // function. So nothing downstream ever reads a `Paint` recorded above that boundary, yet
+        // the surfaces loop in `dispatch.rs::draw_with` (Settings/AccountMenu/ItemMenu/About's
+        // own content) runs unconditionally on both the no-GL discovery pass and the real draw
+        // pass — recording its entire primitive stream every discovered frame, whether or not
+        // anything changed, was pure waste, and the heaviest-text screens paid for it most (see
+        // the dated addendum in docs/backdrop-blur-profiling.md). This is the authoritative gate;
+        // `Painter::declare`'s `recording_excluded` check exists only to skip building `values`
+        // in the first place for this same content.
+        if w.current >= Z::surface(0) {
+            return;
+        }
         let Some(rect) = w.clip.map_or(Some(rect), |c| intersection(c, rect)) else {
             return;
         };
@@ -261,6 +291,17 @@ pub(crate) fn paint(rect: Rect, values: Vec<u64>) {
             source: Vec::new(),
         }));
     });
+}
+/// Fast pre-check for [`crate::ui::Painter::declare`]: true once the current walk position has
+/// reached the surfaces band, where [`paint`] discards everything anyway. Checking here lets a
+/// caller skip building the primitive's `Vec<u64>` (and, for text, the byte-packing in
+/// [`text_value`]) instead of building it only to have `paint` throw it away.
+pub(crate) fn recording_excluded() -> bool {
+    WALK.with(|w| {
+        w.borrow()
+            .as_ref()
+            .is_some_and(|w| w.discovery && w.current >= Z::surface(0))
+    })
 }
 
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
@@ -1072,6 +1113,60 @@ mod tests {
     }
 
     #[test]
+    fn content_at_or_above_the_surfaces_band_is_never_recorded() {
+        // The `nav.modals.surfaces` draw loop (Settings/AccountMenu/ItemMenu/About's own content,
+        // `dispatch.rs::draw_with`) is not gated by `host_render`/`PagePlan`, so it walks fully on
+        // every discovered frame — but no glass entry ever lives at or above `Z::surface(0)`, so
+        // recording what it declares was pure cost for data nothing reads. This is the modal-100 /
+        // push-100 stress-bench regression's second cause (see docs/backdrop-blur-profiling.md).
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        {
+            let _walk = discover(sources.clone());
+            let p = crate::ui::Painter::root();
+            p.rect(rect(0.0), 0.0, [0.0; 4], [0.0; 4], 0.0);
+            assert_eq!(sources.borrow().paints.len(), 1, "below the surfaces band records");
+            {
+                let _layer = layer(Z::surface(0), false);
+                p.rect(rect(0.0), 0.0, [1.0; 4], [0.0; 4], 0.0);
+                p.rect(rect(0.0), 0.0, [2.0; 4], [0.0; 4], 0.0);
+            }
+            assert_eq!(
+                sources.borrow().paints.len(),
+                1,
+                "content declared at/above the surfaces band must not be recorded"
+            );
+            {
+                let _layer = layer(Z::PAGE, false);
+                p.rect(rect(0.0), 0.0, [3.0; 4], [0.0; 4], 0.0);
+            }
+            assert_eq!(sources.borrow().paints.len(), 2, "layer unwinds back below the band");
+        }
+    }
+
+    #[test]
+    fn a_glass_command_above_the_surfaces_band_trips_the_debug_assert() {
+        // `Painter::declare`'s fast pre-check must never silently eat a glass command: if one is
+        // ever declared inside a surface (none is today — grep-verified), the debug build has to
+        // say so immediately rather than let that glass quietly never resolve.
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        {
+            let _walk = discover(sources.clone());
+            let p = crate::ui::Painter::root();
+            let _layer = layer(Z::surface(0), false);
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                declare_glass(p, rect(0.0));
+            }));
+            if cfg!(debug_assertions) {
+                assert!(caught.is_err(), "a glass command above the band must assert");
+            }
+        }
+    }
+
+    #[test]
     fn a_failed_capture_cannot_retry_after_its_own_band_has_started_drawing() {
         let _guard = crate::testlock::serial();
         let sources = Rc::new(RefCell::new(Sources::default()));
@@ -1273,6 +1368,41 @@ mod tests {
             sources.entries[&Z::CHROME].valid,
             "the union's empty gap is not a sampler"
         );
+    }
+
+    #[test]
+    fn text_value_packs_bytes_instead_of_one_word_per_byte() {
+        let _guard = crate::testlock::serial();
+        // Long enough that a byte-per-word encoding would visibly balloon: this is exactly the
+        // shape a Settings row title or a Detail synopsis produces every discovered frame.
+        let s = std::ffi::CString::new(
+            "a string long enough to prove packing happened, not truncation or hashing",
+        )
+        .unwrap();
+        let byte_len = s.as_bytes().len();
+        let mut values = Vec::new();
+        text_value(s.as_ptr(), &mut values);
+        // One length-prefix word plus one packed word per (up to) 8 bytes — never one word per
+        // byte, which is what made every text primitive's recorded Vec<u64> as long as the
+        // string itself, reallocated and re-hashed/-compared on every single discovery walk.
+        assert_eq!(
+            values.len(),
+            1 + (byte_len + 7) / 8,
+            "text_value must pack 8 bytes per recorded word, not one byte per word"
+        );
+        // Exact identity, not a hash: the same string encodes identically every time, and a
+        // different string (even one differing only after the first packed word) encodes
+        // differently — the walk's whole basis for "changed vs unchanged" depends on this.
+        let mut again = Vec::new();
+        text_value(s.as_ptr(), &mut again);
+        assert_eq!(values, again);
+        let other = std::ffi::CString::new(
+            "a string long enough to prove packing happened, NOT truncation or hashing",
+        )
+        .unwrap();
+        let mut other_values = Vec::new();
+        text_value(other.as_ptr(), &mut other_values);
+        assert_ne!(values, other_values);
     }
 
     #[test]
