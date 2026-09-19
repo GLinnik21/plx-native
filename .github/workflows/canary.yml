@@ -1,5 +1,10 @@
 name: Public storage canary
 
+# nightly.yml (a scheduled, always-built prerelease from main) now covers what this workflow was
+# proving — the shared build-package.yml pipeline publishing a public prerelease end to end — with
+# a real flavour and a retention policy this one never had. This workflow is slated for removal;
+# it is not removed yet only so an in-flight use of it is not cut out from under anyone.
+#
 # Separate from release.yml by design: this publishes a test-only debug-id prerelease and never
 # changes releases/latest, the stable package manifest, or webosbrew.
 on:

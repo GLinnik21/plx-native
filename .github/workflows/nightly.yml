@@ -1,0 +1,288 @@
+name: Nightly
+
+# One nightly prerelease per UTC day, cut from `main` — a third install beside stable and debug
+# (`ci/flavor.py`'s `nightly` flavour), always dated (`X.Y.Z-nightly-YYYYMMDD`), always immutable
+# (same-day rebuilds are refused by `ci/nightly.py plan`; delete the release+tag first to force
+# one), always a prerelease with `--latest=false` so `releases/latest` — the URL the webosbrew
+# package YAML resolves — never moves off a real, tested release.
+#
+# `plan` decides the day's version and whether there is anything to build; `build` reuses the same
+# ARM build+verify pipeline release.yml and canary.yml already share (`build-package.yml`); `publish`
+# is the only job that can write to the repo's releases; `pages` refreshes the site's "latest
+# nightly" pointer the same day a nightly ships rather than waiting for an unrelated site/docs push;
+# `prune` deletes nightly releases (and their tags) past their 30-day retention, always keeping the
+# newest one even if the schedule went quiet for longer than that.
+#
+# This supersedes `canary.yml`'s "prove the public-storage pipeline" job in spirit (see that
+# workflow's own header) but does not replace its `dry_run` semantics one for one: `dry_run` here
+# additionally skips `pages` and `prune`, neither of which canary has.
+#
+# A THIRD way to run dry, alongside `dry_run: true`: a `pull_request` that touches this workflow
+# or the machinery it depends on (see the `paths:` filter below) builds and gates the PR's own head
+# commit, exactly like `dry_run: true` — plan + build only, never publish/pages/prune. It exists
+# because `workflow_dispatch` cannot target a workflow file that only exists on a branch: GitHub
+# will not let you dispatch `nightly.yml` from a PR branch until that file is on `main`, so a PR
+# is the only way to prove a change to this file (or to the plumbing it calls into) before it lands.
+# `plan` computes ONE `dry` value (true for `pull_request` OR `inputs.dry_run`) and every
+# downstream job gates on that single output, rather than each job re-deriving "is this a real
+# run" from the event name.
+#
+# FORK PULL REQUESTS ARE SKIPPED ENTIRELY (see `plan`'s own `if:`). `build`, even in dry mode,
+# still runs through build-package.yml's "Upload debug files to Sentry" step, which needs
+# `secrets.SENTRY_AUTH_TOKEN` — and GitHub does not expose repository secrets to a workflow run
+# triggered by a fork's pull request. Running anyway would not "run drier", it would fail on a
+# missing secret and read as this pipeline being broken rather than as the sandboxing that it is.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: >
+          Build and gate everything but skip publish, the site's latest.json refresh, and
+          pruning — proves the pipeline (including the shared build-package.yml) with nothing
+          observable outside the run itself, the same idea as canary.yml's own dry_run.
+        required: false
+        type: boolean
+        default: false
+  pull_request:
+    # Only a change that could plausibly break tomorrow's 03:00 UTC run earns a build here — not
+    # every PR. Widen this list if another file the nightly path depends on gains one.
+    paths:
+      - .github/workflows/nightly.yml
+      - .github/workflows/build-package.yml
+      - ci/nightly.py
+      - ci/flavor.py
+      - ci/version_rule.py
+      - ci/check-package.py
+      - Makefile
+      - rust-modules/build.rs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: plan today's nightly
+    runs-on: ubuntu-latest
+    # FORK PULL REQUESTS ARE SKIPPED ENTIRELY — see the workflow header. A same-repo PR (including
+    # one from a branch of this repo) has the secret and proceeds like any other event.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    outputs:
+      dry: ${{ steps.dry.outputs.dry }}
+      sha: ${{ steps.sha.outputs.sha }}
+      date: ${{ steps.date.outputs.date }}
+      version: ${{ steps.plan.outputs.version }}
+      label: ${{ steps.plan.outputs.label }}
+      tag: ${{ steps.plan.outputs.tag }}
+      prev_tag: ${{ steps.plan.outputs.prev_tag }}
+      skip: ${{ steps.plan.outputs.skip }}
+      reason: ${{ steps.plan.outputs.reason }}
+    steps:
+      # SCHEDULE builds `main`, explicitly rather than trusting GITHUB_SHA to mean that — a
+      # scheduled run's default ref already is the default branch, but naming it here is the
+      # difference between "happens to be main today" and "is main by construction". A DISPATCH
+      # checks out whatever ref triggered it (github.sha), which is what lets a branch prove this
+      # whole pipeline with `dry_run: true` before the change ever reaches main. A PULL_REQUEST
+      # checks out the PR's own HEAD commit (not the ephemeral merge ref GitHub also offers) —
+      # the point of the dry build is to grade the commit the PR is actually proposing.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: >-
+            ${{ github.event_name == 'schedule' && 'main'
+                || github.event_name == 'pull_request' && github.event.pull_request.head.sha
+                || github.sha }}
+          # `ci/nightly.py plan` needs the full tag history (`git for-each-ref refs/tags/nightly/v*`
+          # and `git diff prev_tag..head`), which a shallow clone cannot give it.
+          fetch-depth: 0
+      - id: date
+        run: echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+      - id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: dry
+        # ONE value, computed once, that every downstream job gates on — rather than each job
+        # separately re-deriving "is this a real run" from the event name and the dispatch input.
+        # `pull_request` is always dry; `workflow_dispatch` is dry iff `dry_run: true`; `schedule`
+        # is never dry. `inputs.dry_run` is empty (falsy) on both `schedule` and `pull_request`, so
+        # the `= true` string comparison is what keeps an unset input from matching by accident.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "dry=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry=false" >> "$GITHUB_OUTPUT"
+          fi
+      - id: plan
+        # Prints version=/label=/tag=/prev_tag=/skip=/reason= — exactly the $GITHUB_OUTPUT shape,
+        # so it is appended directly rather than parsed apart here. `--dry` (dry runs only) tells
+        # `ci/nightly.py plan` to never skip on "nothing changed" and never refuse an existing
+        # same-day tag — this run will not publish either way, so neither check is this run's
+        # problem (see `plan_decision`'s own docstring in ci/nightly.py).
+        env:
+          DRY: ${{ steps.dry.outputs.dry }}
+        run: |
+          set -euo pipefail
+          args=(--date "${{ steps.date.outputs.date }}" --head "${{ steps.sha.outputs.sha }}")
+          [ "$DRY" = "true" ] && args+=(--dry)
+          python3 ci/nightly.py plan "${args[@]}" >> "$GITHUB_OUTPUT"
+      - run: |
+          {
+            echo "### Nightly plan"
+            echo "- dry: ${{ steps.dry.outputs.dry }}"
+            echo "- date: ${{ steps.date.outputs.date }}"
+            echo "- sha: ${{ steps.sha.outputs.sha }}"
+            echo "- label: ${{ steps.plan.outputs.label }}"
+            echo "- prev_tag: ${{ steps.plan.outputs.prev_tag || '(none)' }}"
+            echo "- skip: ${{ steps.plan.outputs.skip }} (${{ steps.plan.outputs.reason }})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ARM build + gates
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    # The ARM build+verify pipeline itself lives in build-package.yml — shared with release.yml
+    # and canary.yml so a gate added there covers all three callers rather than two of three.
+    uses: ./.github/workflows/build-package.yml
+    with:
+      ref: ${{ needs.plan.outputs.sha }}
+      flavor: nightly
+      nightly-date: ${{ needs.plan.outputs.date }}
+      # The DEVELOPMENT telemetry pair, same as canary — a nightly is unreleased and untested on a
+      # television, so its crash reports and usage events belong in the project's development
+      # project (`plx-native-dev`), not mixed into what a real release reports. build-package.yml's
+      # own build step asserts this pair specifically for `telemetry: development`.
+      telemetry: development
+      artifact: nightly-assets
+      # The package REDISTRIBUTES FFmpeg, so the LGPL corresponding-source obligation applies here
+      # exactly as it does to a stable release — this is the fail-closed default anyway, but named
+      # explicitly because canary's opt-out (a known, separately tracked gap) must not read as
+      # precedent for a caller that actually publishes to the public.
+      source-asset: true
+      fwcompat: true
+      # Release deliberately builds uncached for reproducibility; nightly runs once a day rather
+      # than on every push, so the cache's turnaround benefit is smaller and not worth the same
+      # trade here either.
+      caches: false
+      # Homebrew Channel manifests are keyed to the STABLE app id (build-package.yml refuses this
+      # combination outright for any non-stable flavour) — a nightly is never listed there.
+      homebrew-manifest: false
+    secrets:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+  publish:
+    name: publish nightly prerelease
+    runs-on: ubuntu-latest
+    needs: [plan, build]
+    if: ${{ needs.plan.outputs.dry != 'true' && needs.plan.outputs.skip != 'true' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+      - name: Refuse to overwrite an immutable nightly
+        # `ci/nightly.py plan` already checked the LOCAL tag list at plan time; this re-checks
+        # against the remote right before publishing, the same belt-and-suspenders shape
+        # canary.yml's own "Refuse to overwrite" step uses, for the same reason: plan and publish
+        # run minutes apart and a concurrent run (or a hand-pushed tag) could land in between.
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null \
+            || { echo "::error::$TAG already exists — nightly rebuilds of the same day are refused by design."; exit 1; }
+          ! gh release view "$TAG" >/dev/null 2>&1 \
+            || { echo "::error::release $TAG already exists."; exit 1; }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nightly-assets
+          path: raw
+      - name: Stage nightly assets
+        env:
+          LABEL: ${{ needs.plan.outputs.label }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ipk="plxnative-v${LABEL}.ipk"
+          cp raw/com.beb.plxnative.nightly_*_arm.ipk "dist/$ipk"
+          ( cd dist && sha256sum "$ipk" > nightly.sha256 )
+          # The LGPL corresponding source for the bundled FFmpeg — required here for the same
+          # reason as a stable release: this package redistributes FFmpeg, so it owes the source
+          # regardless of which install it is.
+          cp raw/ffmpeg-*.tar.xz dist/
+          cp raw/build-ffmpeg.sh dist/
+          cp raw/plxnative-source-*.tar.gz* dist/
+          echo "ipk=$ipk" >> "$GITHUB_OUTPUT"
+        id: stage
+      - name: Render release notes
+        env:
+          LABEL: ${{ needs.plan.outputs.label }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          PREV_TAG: ${{ needs.plan.outputs.prev_tag }}
+          IPK: ${{ steps.stage.outputs.ipk }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sha256=$(cut -d' ' -f1 dist/nightly.sha256)
+          python3 ci/nightly.py notes --label "$LABEL" --sha "$SHA" --prev-tag "$PREV_TAG" \
+            --ipk "$IPK" --sha256 "$sha256" --repo "$REPO" > "$RUNNER_TEMP/notes.md"
+      - name: Create and verify the nightly prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          LABEL: ${{ needs.plan.outputs.label }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          IPK: ${{ steps.stage.outputs.ipk }}
+        run: |
+          set -euo pipefail
+          sha256sum -c dist/nightly.sha256
+          gh release create "$TAG" \
+            "dist/$IPK" dist/nightly.sha256 dist/ffmpeg-*.tar.xz dist/build-ffmpeg.sh dist/plxnative-source-*.tar.gz* \
+            --target "$SHA" \
+            --title "PlxNative $LABEL" \
+            --prerelease \
+            --latest=false \
+            --notes-file "$RUNNER_TEMP/notes.md"
+          # Re-derive every published claim from the live release, the same shape canary.yml
+          # already verifies with: prerelease, target sha, uploader, and the downloaded bytes
+          # hashing to what was staged.
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .prerelease)" = true
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .target_commitish)" = "$SHA"
+          test "$(git ls-remote --tags origin "refs/tags/$TAG" | awk '{print $1}')" = "$SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[0].uploader.login')" = 'github-actions[bot]'
+          mkdir -p verify
+          gh release download "$TAG" --pattern "$IPK" --dir verify
+          test "$(sha256sum "verify/$IPK" | cut -d' ' -f1)" = "$(cut -d' ' -f1 dist/nightly.sha256)"
+
+  pages:
+    name: refresh site latest-nightly pointer
+    needs: [plan, publish]
+    if: ${{ needs.plan.outputs.dry != 'true' && needs.plan.outputs.skip != 'true' }}
+    # pages.yml's own top-level `permissions:` covers its push/workflow_dispatch triggers; a
+    # reusable-workflow call needs the CALLER job to grant what the called job actually uses.
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+
+  prune:
+    name: prune nightly releases older than 30 days
+    runs-on: ubuntu-latest
+    needs: [plan, publish]
+    if: ${{ needs.plan.outputs.dry != 'true' && needs.plan.outputs.skip != 'true' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ci/nightly.py prune --repo "${{ github.repository }}" --days 30

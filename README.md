@@ -92,6 +92,19 @@ remove that requirement. The guide explains [how to renew the session](docs/inst
 For manual `.ipk` downloads, [verify the release checksum](docs/install-and-verify.md#verifying-the-package)
 before installing. Homebrew Channel verifies catalogue downloads for you.
 
+## Nightly builds
+
+Every day `main` moves, CI cuts a nightly `.ipk` from wherever it stands and publishes it as a
+[prerelease](https://github.com/GLinnik21/plx-native/releases?q=nightly). It installs beside the
+regular app as **"PlxNative Nightly"** — its own tile, its own sign-in — so trying it never touches
+the release you already trust. The newest one is always linked from
+[plxnative.com/nightly/latest.json](https://plxnative.com/nightly/latest.json).
+
+**It is not tested on a television.** It passes the same automated build and packaging checks a
+release does, but nobody has watched it play. It is not in the Homebrew Channel and does not
+update itself — reinstall by hand whenever you want the next one — and each nightly is deleted
+30 days after it is published, so link to a specific `.ipk` at your own risk.
+
 ## Privacy
 
 **Your library data never reaches me.** The app talks to your Plex server, to `plex.tv` to sign in,

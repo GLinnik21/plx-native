@@ -1201,6 +1201,11 @@ check: lint
 	@# it would be too late to learn otherwise. It also cross-checks the three copies of the app id
 	@# (here, ci/flavor.py, rust-modules/src/paths.rs), which no compiler can.
 	python3 ci/flavor.py --selftest
+	@# The nightly workflow's pure logic (version/label/tag arithmetic, the skip decision, the
+	@# release-note template, and the latest.json/prune field mapping) — no git repository, no
+	@# network, so a broken `ci/nightly.py` is caught here rather than at 03:00 UTC in the
+	@# scheduled run nobody is watching.
+	python3 ci/nightly.py --selftest
 	python3 tools/test_tv_capture_bench.py
 	@# ...and the stamp decoder `ci/check-package.py` grades every "is this a RELEASE build?"
 	@# assertion through. It is pure string arithmetic over values only THIS file produces, and it

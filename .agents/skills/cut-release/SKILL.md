@@ -366,4 +366,10 @@ advisory reaches people the old page never will. The same applies to an audit: i
 artifact, gains a dated erratum if it is wrong about itself, and gains nothing else.
 
 If a release is wrong enough to withdraw, say so in the note and publish a fixed one. Never delete
-a tag that has been public; the hash in someone's notes has to keep meaning something.
+a **stable** tag that has been public; the hash in someone's notes has to keep meaning something.
+
+This does not extend to nightly. `ci/nightly.py prune` deletes `nightly/v*` releases and their
+tags 30 days after publishing them, on purpose and by design — every nightly's own body says so
+("nightly builds are deleted after 30 days"), so nobody reading one is told a hash that later stops
+meaning anything without warning. The rule above is about a claim nobody was told was temporary;
+a nightly's claim always was.
