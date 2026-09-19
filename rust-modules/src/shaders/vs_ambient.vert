@@ -2,7 +2,7 @@
 // as vs_src.vert, drawn over `gfx::field_mesh` (FIELD_N² cells) rather than one quad, and the WHOLE
 // bilinear field `mix(mix(tl, tr, u), mix(bl, br, u), v)` evaluated here, per vertex.
 //
-// History, all measured on the television with `plxnative-hwcnt`: the field was first three mixes
+// History, all measured on the television with the HWCNT vinstr profiler: the field was first three mixes
 // per fragment (3.2M GPU cycles a frame for the hero's corner scrim alone, 2026-09-02); then the two
 // horizontal mixes moved here as exact varyings over one quad, leaving one mix and three varyings
 // per fragment. On the mesh a triangle's linear interpolation is within half an 8-bit code of the
