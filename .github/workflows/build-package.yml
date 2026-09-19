@@ -435,7 +435,19 @@ jobs:
           # vendoring died with exit 101. Fetch the whole lock here, pinned by its checksums; the
           # collection script itself stays download-free.
           cargo +nightly-2026-07-02 fetch --locked --manifest-path rust-modules/Cargo.toml
-          source="pkg/plxnative-source-$(python3 -c 'import json; print(json.load(open("pkg/appinfo.json"))["version"])').tar.gz"
+          # Named after the version the PACKAGE reports, read off what this build produced — never
+          # the tracked pkg/appinfo.json template, which a nightly does not ship (a nightly named
+          # its bundle 0.6.0 that way). The package version is the one in the ipk's own filename
+          # (the Makefile's IPK_VERSION); a nightly's reported version adds `-nightly-<date>` on
+          # top, dated by the `+nightly:<date>` field of pkg/.build-config — the Makefile's record
+          # of the date it built with, the same stamp ci/check-package.py grades the binary
+          # against. Stable has no such field and keeps plxnative-source-X.Y.Z.
+          version=${ipk##*/"${appid}"_}; version=${version%_arm.ipk}
+          nightly_date=$(sed -n 's/.*+nightly:\([0-9]\{8\}\).*/\1/p' pkg/.build-config)
+          label="$version${nightly_date:+-nightly-$nightly_date}"
+          [[ "$label" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-nightly-[0-9]{8})?$ ]] \
+            || { echo "::error::cannot name the source bundle: got version label '$label' from $ipk"; exit 1; }
+          source="pkg/plxnative-source-$label.tar.gz"
           python3 ci/prepare-source-release.py --inputs "$RUNNER_TEMP/gpl-source-inputs" \
             --output "$source" --rust-toolchain nightly-2026-07-02 --binary "$ipk" --private-values "$private_values"
           snapshot=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_snapshot_sha256"])' "$source.release.json")
