@@ -1227,8 +1227,8 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
     fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {
         crate::ui::widgets::Glass::CACHED.prepare(&mut self.glass, false);
     }
-    /// The modal dim, asked for rather than drawn — the design's `scrimStill`, at
-    /// [`SCRIM_A`]. Nothing is lifted: this sheet replaces the middle of the frame and holds no
+    /// The modal dim, asked for rather than drawn — the design's `scrimStill`, at the PANEL role
+    /// ([`theme::underlay::DIM_PANEL`]). Nothing is lifted: this sheet replaces the middle of the frame and holds no
     /// control, so there is no element under it the dim must spare.
     ///
     /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): a
@@ -1239,7 +1239,7 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
     /// the in-`draw` version could reach.
     fn scrim(&self) -> crate::ui::screen::Scrim {
-        crate::ui::screen::Scrim::dim(SCRIM_A)
+        crate::ui::screen::Scrim::dim(theme::underlay::DIM_PANEL)
     }
     fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
         // **The item is the one that LANDED, not the page's.** The panel is presented over exactly
@@ -1279,9 +1279,6 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
 fn rule(p: Painter, x: f32, y: f32, w: f32) {
     widgets::hairline(p, x, y, w);
 }
-
-/// The modal dim, from the design's `scrimStill: 0.46`.
-const SCRIM_A: f32 = theme::alert::SCRIM_A;
 
 /// How far the sheet rises as it appears, in px — `Popover::RISE`, the one number the whole panel
 /// family shares so that two surfaces leaving together read as one movement. The container owns the

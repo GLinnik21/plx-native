@@ -353,11 +353,9 @@ impl TrackMenuState {
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
-        // modal scrim (dims the video plane showing through) + the appear fade/rise — the container
-        // now drives the phase and the appear spring; this reproduces exactly what
-        // `Popover::scrim(0.58)` and `Popover::content_painter(20.0)` used to draw.
-        let dim = theme::scrim_black(0.58 * appear);
-        Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
+        // The appear fade/rise — the container drives the phase and the appear spring. The dim
+        // over the video plane is the container's too (`PlayerOverlayScreen::scrim`,
+        // `theme::underlay::DIM_PLAYER`), painted at the end of the player's page pass.
         let p = Painter::root()
             .alpha(appear)
             .translate(0.0, Popover::RISE * (1.0 - appear));
