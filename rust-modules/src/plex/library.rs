@@ -109,6 +109,38 @@ impl Client {
         self.get_json(&format!("/library/sections/{section_key}/{directory}"))
     }
 
+    /// A SHOW's language settings (its Advanced dialog in Plex Web: `audioLanguage`,
+    /// `subtitleLanguage`, `subtitleMode`) — see [`crate::plex::ShowLangPrefs`]. None when they
+    /// cannot be read.
+    ///
+    /// Try `includePreferences=1` first. This compatibility parameter is NOT in the vendored
+    /// OpenAPI spec, so it is backed by the one read
+    /// the spec DOES document carrying these settings, `/library/metadata/{id}/tree`, whose
+    /// container holds a `Setting[]` — asked only after a successful response without preferences.
+    /// Both requests share a 250 ms budget: optional settings must not consume the ordinary
+    /// bulk-read timeout on the play path. HTTP, transport and parse errors fall back immediately.
+    pub fn show_language_prefs(&self, show_rk: &str) -> Option<crate::plex::ShowLangPrefs> {
+        if show_rk.is_empty() || !show_rk.bytes().all(|b| b.is_ascii_digit()) {
+            return None; // a key is server data: only ever a plain ratingKey
+        }
+        let path = QueryBuilder::new(format!("/library/metadata/{show_rk}"))
+            .int("includePreferences", 1)
+            .build();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        let read = |path: &str| match self.get_json_with_headers_until(path, &[], deadline) {
+            super::client::JsonDeadlineOutcome::Response { parsed, .. } => parsed,
+            _ => None,
+        };
+        let metadata = read(&path)?;
+        if let Some(found) = metadata.metadata.into_iter().next()
+            .and_then(|m| crate::plex::ShowLangPrefs::from_settings(&m.preferences.setting))
+        {
+            return Some(found);
+        }
+        let tree = read(&format!("/library/metadata/{show_rk}/tree"))?;
+        crate::plex::ShowLangPrefs::from_settings(&tree.setting)
+    }
+
     /// GET /library/metadata/{rating_key} → the single item (`.metadata[0]`), or None.
     /// `includeChapters=1` / `includeMarkers=1` — PMS omits BOTH the `Chapter[]` and `Marker[]`
     /// arrays from the default response. Markers drive the in-player Skip Intro / Skip Credits
@@ -119,32 +151,6 @@ impl Client {
     /// only show-level answer to "what's next": the client otherwise holds ONE season's episodes at a
     /// time, so anything it computed itself would change with the selected season tab. Verified live
     /// 2026-07-30 on rk 437 → S2E2 at 635510/3130720 while season 1 was the loaded tab.
-    /// A SHOW's language settings (its Advanced dialog in Plex Web: `audioLanguage`,
-    /// `subtitleLanguage`, `subtitleMode`) — see [`crate::plex::ShowLangPrefs`]. None when they
-    /// cannot be read.
-    ///
-    /// Asked with `includePreferences=1` first — what Plex's own clients use for that dialog, and
-    /// cheap. That parameter is NOT in the vendored OpenAPI spec, so it is backed by the one read
-    /// the spec DOES document carrying these settings, `/library/metadata/{id}/tree`, whose
-    /// container holds a `Setting[]` — asked only when the first answer carries none of the three.
-    pub fn show_language_prefs(&self, show_rk: &str) -> Option<crate::plex::ShowLangPrefs> {
-        if show_rk.is_empty() || !show_rk.bytes().all(|b| b.is_ascii_digit()) {
-            return None; // a key is server data: only ever a plain ratingKey
-        }
-        let path = QueryBuilder::new(format!("/library/metadata/{show_rk}"))
-            .int("includePreferences", 1)
-            .build();
-        if let Some(found) = self
-            .get_json(&path)
-            .and_then(|mc| mc.metadata.into_iter().next())
-            .and_then(|m| crate::plex::ShowLangPrefs::from_settings(&m.preferences.setting))
-        {
-            return Some(found);
-        }
-        let tree = self.get_json(&format!("/library/metadata/{show_rk}/tree"))?;
-        crate::plex::ShowLangPrefs::from_settings(&tree.setting)
-    }
-
     pub fn metadata(&self, rating_key: &str) -> Option<Metadata> {
         let path = QueryBuilder::new(format!("/library/metadata/{rating_key}"))
             .int("includeChapters", 1)
@@ -291,6 +297,63 @@ fn guid_type(guid: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_preferences_do_not_retry_a_transport_failure() {
+        let client = Client::new(
+            crate::plex::ServerId::UNSET, "fixture",
+            crate::plex::Origin::http("127.0.0.1", 9), "", "cid",
+        );
+        client.disable_data_io();
+        assert_eq!(client.show_language_prefs("42"), None);
+        assert_eq!(client.denied_data_requests(), 1, "a failed optional read must not retry");
+    }
+
+    // A failed optional preference read must not spend another ordinary PMS timeout.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn show_preferences_fail_fast_without_retrying_errors() {
+        use std::io::{Read, Write};
+        use std::time::{Duration, Instant};
+        for (status, body, delay) in [
+            ("404 Not Found", "{}", 0),
+            ("200 OK", "not json", 0),
+            ("200 OK", r#"{"MediaContainer":{}}"#, 800),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            listener.set_nonblocking(true).unwrap();
+            let server = std::thread::spawn(move || {
+                let end = Instant::now() + Duration::from_millis(1100);
+                let mut requests = 0;
+                while Instant::now() < end {
+                    let Ok((mut socket, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    socket.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+                    let mut request = [0; 4096];
+                    let n = socket.read(&mut request).unwrap();
+                    let request = String::from_utf8_lossy(&request[..n]);
+                    assert!(request.contains("Accept: application/json"));
+                    requests += 1;
+                    if requests == 1 { std::thread::sleep(Duration::from_millis(delay)); }
+                    let _ = write!(socket, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                }
+                requests
+            });
+            let client = Client::new(
+                crate::plex::ServerId::UNSET, "fixture",
+                crate::plex::Origin::http("127.0.0.1", port as i32), "", "cid",
+            );
+            let start = Instant::now();
+            assert_eq!(client.show_language_prefs("42"), None);
+            let elapsed = start.elapsed();
+            let requests = server.join().unwrap();
+            assert!(elapsed < Duration::from_millis(600), "optional GET delayed play: {elapsed:?}");
+            assert_eq!(requests, 1, "failed preference GET must not fetch the show tree");
+        }
+    }
 
     /// The numbers are PMS's, and the mapping is the only thing standing between "Also available"
     /// showing a quality badge and showing none — `type` is what makes `/library/all?guid=…` return

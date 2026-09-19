@@ -539,7 +539,7 @@ impl Client {
         }
     }
 
-    /// The deadline-bearing twin used only by an in-flight ABR candidate registration. Parsing
+    /// The deadline-bearing twin for ABR registration and optional show preferences. Parsing
     /// and endpoint-safe diagnostics are identical to the ordinary path; only transport policy
     /// differs.
     pub(super) fn get_json_with_headers_until(
