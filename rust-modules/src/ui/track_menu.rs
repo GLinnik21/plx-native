@@ -223,7 +223,8 @@ impl TrackMenuState {
             let changed = self.active_sub != new_sub;
             self.active_sub = new_sub;
             // the client renderer takes the EMBEDDED-subtitle ordinal (what the demuxer
-            // enumerates); an external pick (transcode-only row) renders nothing — it's burned
+            // enumerates); an external pick has no demux ordinal — it is drawn by the sidecar
+            // renderer on direct play, or burned
             let ridx = tracks(meta)
                 .filter(|_| new_sub >= 0)
                 .map(|t| metadata::sub_render_ordinal(&t.subs, new_sub as usize))

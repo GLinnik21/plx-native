@@ -346,7 +346,7 @@ fn the_selected_subtitle_resolves_to_the_renderers_embedded_ordinal() {
 
 #[test]
 fn an_external_selected_subtitle_is_left_off() {
-    // A sidecar can only be shown by a server burn; forcing a transcode to obey a stored
+    // A sidecar has no demux ordinal; forcing a transcode to obey a stored
     // flag is not a trade the user asked for, so the direct-play path leaves subs off.
     let subs = [
         server_selected(sub(10, 3, "eng", true)),

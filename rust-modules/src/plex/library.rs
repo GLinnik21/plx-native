@@ -222,11 +222,6 @@ impl Client {
         ))
     }
 
-    /// PUT /library/parts/{id} — select the part's audio/subtitle streams SERVER-side (the
-    /// transcoder encodes the SELECTED audio and burns the SELECTED subtitle; a query-param
-    /// on the stream URL does NOT change them, only this PUT does). `subtitleStreamID` is
-    /// always sent — 0 keeps subs OFF (suppresses a default-selected burn); `audioStreamID`
-    /// only when the user switched. Returns the HTTP status (route logs it).
     /// Fetch a SIDECAR subtitle (`Stream.key`, i.e. `/library/streams/{id}`) for the client
     /// renderer. The endpoint takes `encoding` and `format` (docs/plex-openapi.json), so the first
     /// ask is for UTF-8 SubRip whatever the file on disk is — that is what turns a Windows-1250
@@ -248,6 +243,11 @@ impl Client {
         .find_map(|path| self.get_sidecar_bytes(path).filter(|b| !b.is_empty()))
     }
 
+    /// PUT /library/parts/{id} — select the part's audio/subtitle streams SERVER-side (the
+    /// transcoder encodes the SELECTED audio and burns the SELECTED subtitle; a query-param
+    /// on the stream URL does NOT change them, only this PUT does). `subtitleStreamID` is
+    /// always sent — 0 keeps subs OFF (suppresses a default-selected burn); `audioStreamID`
+    /// only when the user switched. Returns the HTTP status (route logs it).
     pub fn select_streams(&self, sel: &StreamSelection) -> i32 {
         let q = QueryBuilder::new(format!("/library/parts/{}", sel.part_id))
             .int("allParts", 1)
