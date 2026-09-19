@@ -2078,20 +2078,37 @@ pub(crate) fn player_overlay_kind(
 /// Is ANY player panel up (including one still fading out)? The successor of
 /// `matches!(route, Route::Player { overlay }) if overlay != Overlay::None`.
 ///
-/// **Test-only since restructure phase 12** (PX-PLAYER), and the reason is the point rather than
-/// a tidy-up: its last production caller was `key_player_failed`'s BACK arm, which asked this in
-/// order to close a panel before leaving a failed playback. A panel is a SURFACE and answers its
-/// own BACK before the page under it is offered the key at all, so the question no longer has a
-/// caller that can act on the answer — but it is still exactly what a test asserting the
-/// container's own bookkeeping wants to ask. `dismiss_player_overlays` below is the ritual half
-/// and is very much alive.
-#[cfg(test)]
+/// **Test-only from restructure phase 12 until issue #163** (PX-PLAYER): its last production
+/// caller through that stretch was `key_player_failed`'s BACK arm, which asked this in order to
+/// close a panel before leaving a failed playback. A panel is a SURFACE and answers its own BACK
+/// before the page under it is offered the key at all, so that caller stopped needing the
+/// answer — but a second one has since arrived, [`player_diagnostics_visible`] below, because a
+/// fading-out panel still paints its own opaque ground and must count exactly the way a fully
+/// open one does. `dismiss_player_overlays` below is the ritual half and has been alive the
+/// whole time.
 pub(crate) fn player_overlay_up(d: &Dispatcher<AppHost>) -> bool {
     d.nav
         .modals
         .surfaces
         .iter()
         .any(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_)))
+}
+
+/// Should the player's diagnostics ("Stats for nerds") panel draw this frame?
+///
+/// No, while any of the player's own four overlay panels (`OverlayKind::Tracks`/`Info`/
+/// `Chapters`/`More`) is up. `app/diagnostics.rs`'s panel is sized to its content rather than to
+/// the screen, but during playback that content routinely spans ~90% of the screen's width from
+/// the left safe margin — wide enough to reach every one of those panels' bottom-right-anchored
+/// rects — and on the player route it has always painted genuinely last, i.e. on TOP of them.
+/// `More` is the sharpest case: it carries the very "Stats for nerds" toggle this panel answers
+/// to, so drawing over it hid the control that turns the panel off (issue #163). The non-player
+/// routes never had this problem because `app/run.rs`'s other `diagnostics.draw()` call already
+/// sits UNDER that route's own popovers (the account/item menu carries the same toggle there) —
+/// this is the player route catching up to a rule the rest of the app already keeps, now that one
+/// of its own panels carries a control too.
+pub(crate) fn player_diagnostics_visible(d: &Dispatcher<AppHost>) -> bool {
+    !player_overlay_up(d)
 }
 
 /// Dismiss every player panel — the exit ritual's half of `close_player_overlays`.
