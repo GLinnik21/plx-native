@@ -28,8 +28,8 @@
 //!
 //! [`select`]/[`deselect`]/[`active`] are main-thread calls; the fetch runs on a `task` worker and
 //! lands under the one mutex, fenced by a generation so an answer for a pick the viewer has
-//! already moved off is dropped rather than installed.
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+//! already moved off is dropped rather than installed. One worker drains a single latest-pick
+//! slot, so repeated picks cannot accumulate threads or downloads.
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -61,6 +61,9 @@ impl Failure {
 struct State {
     /// The Plex stream id the viewer wants drawn; 0 = no sidecar selected.
     want: i64,
+    generation: u64,
+    pending: Option<(u64, crate::plex::ServerId, i64, String)>,
+    running: bool,
     /// The parsed file, keyed by its stream id. Kept across Off→On so re-picking is instant.
     loaded: Option<(i64, Vec<Cue>)>,
     failed: Option<(i64, Failure, Instant)>,
@@ -68,10 +71,12 @@ struct State {
 
 static STATE: Mutex<State> = Mutex::new(State {
     want: 0,
+    generation: 0,
+    pending: None,
+    running: false,
     loaded: None,
     failed: None,
 });
-static GEN: AtomicU64 = AtomicU64::new(0);
 
 /// How long a [`Failure`] stays on screen.
 const FAILURE_SHOWN: Duration = Duration::from_secs(6);
@@ -91,23 +96,44 @@ pub(crate) fn selected_stream_id() -> i64 {
 /// Select the sidecar `stream_id`, fetching `key` from `server` unless that file is already
 /// loaded. MAIN THREAD.
 pub(crate) fn select(server: crate::plex::ServerId, stream_id: i64, key: String) {
+    select_with_fetch(server, stream_id, key, |server, key| {
+        crate::plex::client_for(server).and_then(|c| c.sidecar_subtitle(key))
+    });
+}
+
+fn select_with_fetch(
+    server: crate::plex::ServerId, stream_id: i64, key: String,
+    fetch: impl Fn(crate::plex::ServerId, &str) -> Option<Vec<u8>> + Send + 'static,
+) {
     if stream_id <= 0 || key.is_empty() {
         deselect();
         return;
     }
-    let gen = GEN.fetch_add(1, Relaxed) + 1;
     {
         let mut st = state();
+        st.generation = st.generation.wrapping_add(1);
         st.want = stream_id;
         st.failed = None;
+        st.pending = None;
         if matches!(&st.loaded, Some((id, _)) if *id == stream_id) {
-            return; // already parsed — Off→On costs nothing
+            return;
         }
         st.loaded = None;
+        st.pending = Some((st.generation, server, stream_id, key));
+        if st.running { return; }
+        st.running = true;
     }
-    super::log(&format!("sidecar: fetching stream {stream_id}"));
-    let spawned = crate::task::spawn_small("sidecar", move || {
-        let body = crate::plex::client_for(server).and_then(|c| c.sidecar_subtitle(&key));
+    let spawned = crate::task::spawn_small("sidecar", move || loop {
+        let (gen, server, stream_id, key) = {
+            let mut st = state();
+            let Some(request) = st.pending.take() else {
+                st.running = false;
+                return;
+            };
+            request
+        };
+        super::log(&format!("sidecar: fetching stream {stream_id}"));
+        let body = fetch(server, &key);
         let outcome = match body {
             None => Err(Failure::Fetch),
             Some(bytes) => {
@@ -120,10 +146,10 @@ pub(crate) fn select(server: crate::plex::ServerId, stream_id: i64, key: String)
                 }
             }
         };
-        if GEN.load(Relaxed) != gen {
-            return; // the viewer moved on while this was in flight
-        }
         let mut st = state();
+        if st.generation != gen {
+            continue; // check and publication share the selection/reset lock
+        }
         match outcome {
             Ok(cues) => {
                 super::log(&format!("sidecar: stream {stream_id} ready, {} cues", cues.len()));
@@ -136,23 +162,28 @@ pub(crate) fn select(server: crate::plex::ServerId, stream_id: i64, key: String)
         }
     });
     if !spawned {
-        state().failed = Some((stream_id, Failure::Fetch, Instant::now()));
+        let mut st = state();
+        st.running = false;
+        st.pending = None;
+        st.failed = Some((stream_id, Failure::Fetch, Instant::now()));
     }
 }
 
 /// Stop drawing a sidecar (Off, or an embedded track was picked). The parsed file is KEPT, so
 /// turning the same one back on is instant. MAIN THREAD.
 pub(crate) fn deselect() {
-    GEN.fetch_add(1, Relaxed);
     let mut st = state();
+    st.generation = st.generation.wrapping_add(1);
+    st.pending = None;
     st.want = 0;
     st.failed = None;
 }
 
 /// A new item is starting: nothing of the previous one's may survive. MAIN THREAD.
 pub(crate) fn reset() {
-    GEN.fetch_add(1, Relaxed);
     let mut st = state();
+    st.generation = st.generation.wrapping_add(1);
+    st.pending = None;
     st.want = 0;
     st.loaded = None;
     st.failed = None;
@@ -313,6 +344,40 @@ fn parse_ass(text: &str) -> Vec<Cue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    #[test]
+    fn sidecar_picks_share_one_worker_and_drop_abandoned_answers() {
+        let _guard = crate::testlock::serial();
+        reset();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Arc::new(Mutex::new(release_rx));
+        let fetch = {
+            let calls = calls.clone();
+            move |_: crate::plex::ServerId, key: &str| {
+                let n = calls.fetch_add(1, Relaxed);
+                started_tx.send(()).unwrap();
+                if n == 0 { release_rx.lock().unwrap().recv().unwrap(); }
+                Some(format!("00:00:01 --> 00:00:03\n{key}\n").into_bytes())
+            }
+        };
+        let sid = crate::plex::ServerId::from_raw(0);
+        select_with_fetch(sid, 1, "old".into(), fetch.clone());
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        reset();
+        select_with_fetch(sid, 1, "new".into(), fetch);
+        let parallel = started_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+        release_tx.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while active(2_000_000_000, false).as_deref() != Some("new") && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(active(2_000_000_000, false).as_deref(), Some("new"));
+        reset();
+        assert!(!parallel, "an abandoned fetch must finish before another worker is started");
+    }
 
     const S: i64 = 1_000_000_000;
 
