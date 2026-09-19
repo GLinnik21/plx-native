@@ -84,7 +84,9 @@ pub struct PopoverMotion {
     /// heaviest GPU frame a modal has — and a dim or a panel ramped onto it as well pushed it past a
     /// vsync on every open: 13.6 M GPU cycles against Home's 9.2 M, and the frame after it waited
     /// 22–37 ms for a buffer (television, 2026-09-19). Held, the open frame costs a page render
-    /// and nothing the panel owns; the ramp is the same curve one frame later.
+    /// (and the field reduction queued with it) and nothing the panel owns; the hold then lasts
+    /// until that capture has left the GPU ([`PopoverMotion::tick_gated`]), and the ramp is the
+    /// same curve from there.
     hold: bool,
     /// This frame's tick was the held one. Not `settled` until a real step has run, so a surface
     /// dismissed on its held frame still passes through `Closing` for a frame — the phase every
