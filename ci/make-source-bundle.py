@@ -3,14 +3,13 @@
 import argparse
 import json
 import os
-import re
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
 from source_bundle import (SCHEMA, allowed, canonical, digest, fail, read_regular,
-                           safe_name, snapshot, validate, write_archive)
+                           safe_name, snapshot, tracked_sources, validate, write_archive)
 
 
 def git(root, *args):
@@ -36,26 +35,10 @@ def main():
     for name in git(root, 'ls-files', '--others', '--exclude-standard', '-z').decode().split('\0'):
         if name and allowed(name):
             fail('untracked source must be committed before bundling: ' + name)
-    for item in git(root, 'ls-files', '-s', '-z').decode().split('\0'):
-        if not item:
-            continue
-        metadata, name = item.split('\t', 1)
-        mode = metadata.split()[0]
-        if mode == '160000':
-            fail('submodule needs explicit source support: ' + name)
-        # Deliberate allowlist: untracked files and gitignored inputs never enter here.
-        if allowed(name):
-            data, filemode = read_regular(root, name)
-            if name.startswith(('docs/release-audits/', 'docs/release-notes/')):
-                original = data
-                data = re.sub(rb'(?mi)^.*\| telemetry endpoints \|.*$',
-                    b'| telemetry endpoints | Redacted in the source reconstruction copy; original release record unchanged |', data)
-                for value in sorted(private_values, key=len, reverse=True):
-                    if value: data = data.replace(value, b'<redacted-private-value>')
-                if data != original:
-                    transformations[name] = {'original_sha256': digest(original),
-                        'operation': 'Redact confidential literals in copied release record; repository original unchanged'}
-            contents[name] = data, filemode
+    for name, data, filemode, transformation in tracked_sources(root, private_values):
+        if transformation:
+            transformations[name] = transformation
+        contents[name] = data, filemode
     deps = []
     for dep in spec['dependencies']:
         dep = dict(dep)

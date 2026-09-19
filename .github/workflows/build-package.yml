@@ -407,9 +407,16 @@ jobs:
       - name: Versioned source asset and isolated reconstruction
         if: inputs.source-asset
         env:
+          # Both telemetry pairs, whichever one `inputs.telemetry` compiled in: the scan proves the
+          # source tarball carries no private value, and a development build holds the `_DEV` pair.
           GPL_SCAN_SENTRY_DSN: ${{ vars.PLX_SENTRY_DSN }}
           GPL_SCAN_POSTHOG_KEY: ${{ vars.PLX_POSTHOG_KEY }}
+          GPL_SCAN_SENTRY_DSN_DEV: ${{ vars.PLX_SENTRY_DSN_DEV }}
+          GPL_SCAN_POSTHOG_KEY_DEV: ${{ vars.PLX_POSTHOG_KEY_DEV }}
           GPL_SCAN_SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          # The NDK the release was built with: prepare-source-release.py records its compiler hash
+          # and verify-source-rebuild.py rebuilds with it. Both refuse to run without it.
+          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
           FLAVOR: ${{ inputs.flavor }}
           RELEASE: "1"
         run: |
@@ -422,7 +429,25 @@ jobs:
           # non-stable caller that opts in.
           appid=$(make -s print-appid FLAVOR="$FLAVOR")
           ipk=$(ls "pkg/${appid}"_*_arm.ipk)
-          source="pkg/plxnative-source-$(python3 -c 'import json; print(json.load(open("pkg/appinfo.json"))["version"])').tar.gz"
+          # `cargo vendor --offline` inside the collection takes EVERY package in Cargo.lock (all
+          # targets, dev-dependencies too), but the ARM release build above downloaded only its own
+          # graph — since #104 added the `rcgen` dev-dependency, asn1-rs and friends were missing and
+          # vendoring died with exit 101. Fetch the whole lock here, pinned by its checksums; the
+          # collection script itself stays download-free.
+          cargo +nightly-2026-07-02 fetch --locked --manifest-path rust-modules/Cargo.toml
+          # Named after the version the PACKAGE reports, read off what this build produced — never
+          # the tracked pkg/appinfo.json template, which a nightly does not ship (a nightly named
+          # its bundle 0.6.0 that way). The package version is the one in the ipk's own filename
+          # (the Makefile's IPK_VERSION); a nightly's reported version adds `-nightly-<date>` on
+          # top, dated by the `+nightly:<date>` field of pkg/.build-config — the Makefile's record
+          # of the date it built with, the same stamp ci/check-package.py grades the binary
+          # against. Stable has no such field and keeps plxnative-source-X.Y.Z.
+          version=${ipk##*/"${appid}"_}; version=${version%_arm.ipk}
+          nightly_date=$(sed -n 's/.*+nightly:\([0-9]\{8\}\).*/\1/p' pkg/.build-config)
+          label="$version${nightly_date:+-nightly-$nightly_date}"
+          [[ "$label" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-nightly-[0-9]{8})?$ ]] \
+            || { echo "::error::cannot name the source bundle: got version label '$label' from $ipk"; exit 1; }
+          source="pkg/plxnative-source-$label.tar.gz"
           python3 ci/prepare-source-release.py --inputs "$RUNNER_TEMP/gpl-source-inputs" \
             --output "$source" --rust-toolchain nightly-2026-07-02 --binary "$ipk" --private-values "$private_values"
           snapshot=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_snapshot_sha256"])' "$source.release.json")
