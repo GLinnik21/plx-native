@@ -709,7 +709,7 @@ pub(crate) struct Plan {
     pub(super) auto_original: Option<AutoOriginalCandidate>,
     /// demuxer stream ordinal to feed (direct-play, non-default track). None = leave as-is.
     pub feed_audio_ordinal: Option<i32>,
-    /// the subtitle stream the server already had selected for this part (0 = none/off), so the
+    /// the subtitle selected for this part or by the show preference (0 = none/off), so the
     /// menu checkmark and the timeline report agree with what is on screen — and a later
     /// transcode of this item burns the subtitle the user was already watching.
     pub sub_sid: i64,
@@ -895,16 +895,66 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         .as_ref()
         .map(|p| p.audio.as_slice())
         .unwrap_or(&[]);
+    // The SHOW's own language settings (its Advanced dialog), for an episode: one small read
+    // per play (at most two GETs sharing a 1500 ms budget). See the preference pickers.
+    let show_prefs = plan
+        .playing
+        .as_ref()
+        .filter(|p| !p.show_rk.is_empty())
+        .and_then(|p| client.show_language_prefs(&p.show_rk))
+        .unwrap_or_default();
     let audio_sel = if rk.is_empty() {
         None
     } else {
-        pick_dp_audio(tracks, acodec)
+        pick_dp_audio_pref(tracks, acodec, show_prefs.audio.as_deref())
     };
+    if let Some(lang) = show_prefs.audio.as_deref() {
+        let hit = audio_sel
+            .as_ref()
+            .and_then(|(i, _, _)| usize::try_from(*i).ok())
+            .and_then(|i| tracks.get(i))
+            .is_some_and(|s| lang_matches(lang, &s.lang_code));
+        crate::player::log(&format!(
+            "route: show prefers audio {lang} — {}",
+            if hit {
+                "playing that track"
+            } else if tracks.iter().any(|s| lang_matches(lang, &s.lang_code)) {
+                "a track in it exists but is not direct-playable; using the usual order"
+            } else {
+                "no track in it; using the usual order"
+            }
+        ));
+    }
+    // the language of the audio that will play — what "shown with foreign audio" is judged by
+    let audio_lang: String = audio_sel
+        .as_ref()
+        .and_then(|(i, _, _)| usize::try_from(*i).ok())
+        .and_then(|i| tracks.get(i))
+        .or_else(|| tracks.iter().find(|s| s.default))
+        .or_else(|| tracks.first())
+        .map(|s| s.lang_code.clone())
+        .unwrap_or_default();
+    // ONE subtitle decision for the three places below (MDE handshake, the Original candidate,
+    // the direct-play plan), so they cannot disagree about what will be on screen.
+    let sub_pick = plan
+        .playing
+        .as_ref()
+        .and_then(|p| pick_dp_subtitle_pref(&p.subs, &show_prefs, &audio_lang));
+    if sub_pick.is_some()
+        && show_prefs.subtitle.is_some()
+        && !plan.playing.as_ref().is_some_and(|p| p.subs.iter().any(|s| s.selected))
+    {
+        crate::player::log(&format!(
+            "route: show subtitles {} (mode {}) — turning on an embedded track",
+            show_prefs.subtitle.as_deref().unwrap_or(""),
+            show_prefs.subtitle_mode
+        ));
+    }
     let audio_id = audio_sel.as_ref().map(|(_, _, id)| *id).unwrap_or(0);
     let subtitle_id = plan
         .playing
         .as_ref()
-        .map(|p| mde_subtitle_stream_id(&p.subs))
+        .map(|p| mde_subtitle_id_of(&p.subs, sub_pick))
         .unwrap_or(0);
     // What the CONNECTION to this server allows, beside what the pipeline can decode: a Plex
     // relay is a ~2 Mbit/s tunnel, so neither of the two flavors that ship the file's own bytes
@@ -938,7 +988,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // track Original will client-render, or 0 so a sidecar / unadvertised codec does not
         // force a burn. MDE and the remux probe always name that sibling (a copy cannot carry
         // TrueHD/DTS). The play-path PUT and start.mkv use `encode_audio_id`: remux still names
-        // the sibling; a re-encode names a real selected pick or pref-lang English so 720p
+        // the sibling; a re-encode names a real pick, then the show language (English if unset), so 720p
         // does not copy a foreign AC3 sibling.
         server_decision(client, rk, &session, audio_id, subtitle_id)
     };
@@ -1002,14 +1052,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         } else {
             None
         };
-        let subtitle_ordinal = direct
-            .then(|| {
-                plan.playing
-                    .as_ref()
-                    .and_then(|p| pick_dp_subtitle(&p.subs))
-                    .map(|(_, ord)| ord)
-            })
-            .flatten();
+        let subtitle_ordinal = direct.then(|| sub_pick.map(|(_, ord)| ord)).flatten();
         plan.auto_original = Some(AutoOriginalCandidate {
             url: client.direct_play_url(part, &session).to_url(),
             probe_part: part.to_owned(),
@@ -1081,7 +1124,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                         // GET parameters do not install PMS's part selection. Use the same
                         // remux policy as playback, before either the decision or media GET.
                         // A client-rendered subtitle is not a burn; only env.sub_sid requests one.
-                        let probe_audio = encode_audio_id(true, audio_id, env.audio_sid, tracks);
+                        let probe_audio = encode_audio_id(true, audio_id, env.audio_sid, tracks, show_prefs.audio.as_deref());
                         put_selection(env.sid, plan.part_id, probe_audio, env.sub_sid);
                         measure_remote_remux(
                             client,
@@ -1218,13 +1261,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             );
         }
         // honour a subtitle the server already has selected for this part (chosen on another
-        // client, or by this app in an earlier session) — free here, since the direct-play path
-        // renders subtitles itself. apply_plan installs it on the main thread.
-        let sub_sel = plan
-            .playing
-            .as_ref()
-            .and_then(|p| pick_dp_subtitle(&p.subs));
-        if let Some((ssid, ord)) = sub_sel {
+        // client, or by this app in an earlier session), else the SHOW's subtitle settings —
+        // free here, since the direct-play path renders subtitles itself. apply_plan installs it
+        // on the main thread.
+        if let Some((ssid, ord)) = sub_pick {
             plan.sub_sid = ssid;
             plan.sub_render_ordinal = Some(ord);
         }
@@ -1263,9 +1303,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // Remux copies, so this PUT names the smart-DP sibling. A re-encode transcodes a real
     // selected source track (English DTS → AC3) and must not PUT that sibling or a 720p start
     // replaces the pick with a foreign AC3 copy. A selected flag that only echoes default is
-    // not a pick; `encode_audio_id` then keeps an English sibling or, if the sibling is a
-    // foreign dub, the first English track (unselected DTS included).
-    let encode_audio = encode_audio_id(remux, audio_id, env.audio_sid, tracks);
+    // not a pick; `encode_audio_id` then keeps a sibling in the show language (English if
+    // unset), or the first track in that language (unselected DTS included).
+    let encode_audio = encode_audio_id(remux, audio_id, env.audio_sid, tracks, show_prefs.audio.as_deref());
     if remux {
         let achosen = audio_sel
             .as_ref()
@@ -1306,7 +1346,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // 4K/60 Mbps bound the moment the user touched the scrubber.
     // Remux: the smart-DP sibling MDE and the remux probe already named — `env.audio_sid` is
     // the part default (TrueHD) at resolve start; putting that undoes smart-DP. Re-encode:
-    // `encode_audio_id` (a real selected pick, else English, else that sibling). Subtitle stays
+    // `encode_audio_id` (a real pick, else show language/English, else that sibling). Subtitle stays
     // `env.sub_sid`: a positive id here is a burn, and Original client-renders instead.
     put_selection(env.sid, plan.part_id, encode_audio, env.sub_sid);
     if remux_probed && adaptive {
@@ -1400,7 +1440,104 @@ pub(super) const PREF_AUDIO_LANG: &str = "eng";
 /// during playback — a worker replacing the store would drop those out from under the draw path,
 /// so the resolve must never touch it. (b) Being pure makes the selection ladder host-testable,
 /// which it has never been; see the tests at the foot of this file.
+#[cfg(test)]
 pub(super) fn pick_dp_audio(
+    tracks: &[crate::metadata::Stream],
+    default_acodec: &str,
+) -> Option<(i32, String, i64)> {
+    pick_dp_audio_pref(tracks, default_acodec, None)
+}
+
+/// [`pick_dp_audio`] with the SHOW's preferred audio language (`audioLanguage`, e.g. `"hu-HU"`).
+/// A direct-playable track in that language is chosen right after rung 1 — before the built-in
+/// English preference, which exists only for items nobody configured, and before the file's
+/// default flag. Rung 1 still outranks it: a DIFFERENT track picked on another client for this
+/// very episode is a more specific choice than a show-wide default. A preferred track that cannot
+/// direct-play does not force a transcode, for rung 1's reason.
+///
+/// The ladder did not see the setting at all: it lives on the SHOW, an episode's part carries
+/// nothing of it, and when the preferred dub is the file's default flag rung 1 cannot tell it
+/// from no choice — so rung 2's English won (reported: a series set to Hungarian opening in
+/// English).
+pub(super) fn pick_dp_audio_pref(
+    tracks: &[crate::metadata::Stream],
+    default_acodec: &str,
+    pref_lang: Option<&str>,
+) -> Option<(i32, String, i64)> {
+    let dp = crate::plex::is_dp_audio;
+    if let Some(lang) = pref_lang {
+        let real_pick = tracks
+            .iter()
+            .any(|s| s.selected && !s.default && dp(&s.codec.to_lowercase()));
+        if !real_pick {
+            if let Some(i) = tracks
+                .iter()
+                .position(|s| dp(&s.codec.to_lowercase()) && lang_matches(lang, &s.lang_code))
+            {
+                return Some((i as i32, tracks[i].codec.to_lowercase(), tracks[i].id));
+            }
+        }
+    }
+    pick_dp_audio_ladder(tracks, default_acodec)
+}
+
+/// Does a stream's ISO-639-2 `languageCode` (`"hun"`, `"ger"`/`"deu"`) name the language of a
+/// Plex language preference (`"hu-HU"`, `"de-DE"`, `"pt-BR"`)? Only the primary subtag counts —
+/// a stream says "Portuguese", never "Brazilian". Both the bibliographic and the terminology
+/// three-letter spellings are accepted, because files carry either. The table covers every
+/// language the setting offers (its `enumValues` in `docs/plex-openapi.json`).
+pub(super) fn lang_matches(pref: &str, code: &str) -> bool {
+    let primary = pref.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+    let code = code.to_ascii_lowercase();
+    if primary.is_empty() || code.is_empty() {
+        return false;
+    }
+    if code == primary {
+        return true;
+    }
+    let three: &[&str] = match primary.as_str() {
+        "ar" => &["ara"],
+        "bg" => &["bul"],
+        "ca" => &["cat"],
+        "zh" => &["chi", "zho"],
+        "hr" => &["hrv", "scr"],
+        "cs" => &["cze", "ces"],
+        "da" => &["dan"],
+        "nl" => &["dut", "nld"],
+        "en" => &["eng"],
+        "et" => &["est"],
+        "fi" => &["fin"],
+        "fr" => &["fre", "fra"],
+        "de" => &["ger", "deu"],
+        "el" => &["gre", "ell"],
+        "he" => &["heb"],
+        "hi" => &["hin"],
+        "hu" => &["hun"],
+        "id" => &["ind"],
+        "it" => &["ita"],
+        "ja" => &["jpn"],
+        "ko" => &["kor"],
+        "lv" => &["lav"],
+        "lt" => &["lit"],
+        "nb" | "no" => &["nob", "nor"],
+        "fa" => &["per", "fas"],
+        "pl" => &["pol"],
+        "pt" => &["por"],
+        "ro" => &["rum", "ron"],
+        "ru" => &["rus"],
+        "sk" => &["slo", "slk"],
+        "es" => &["spa"],
+        "sv" => &["swe"],
+        "th" => &["tha"],
+        "tr" => &["tur"],
+        "uk" => &["ukr"],
+        "vi" => &["vie"],
+        _ => &[],
+    };
+    three.contains(&code.as_str())
+}
+
+fn pick_dp_audio_ladder(
     tracks: &[crate::metadata::Stream],
     default_acodec: &str,
 ) -> Option<(i32, String, i64)> {
@@ -1457,11 +1594,11 @@ pub(super) fn pick_dp_audio(
 /// (The Morning Show: the Russian default reads `selected`); that falls through rather than
 /// beating English.
 ///
-/// After that pick, a sibling already in [`PREF_AUDIO_LANG`] stays — taking "first English, any
-/// codec" would PUT English TrueHD on 720p when an English AC3 sibling exists, undoing smart-DP.
-/// Only when the sibling is a foreign dub does the first English track win, so an unselected
-/// English DTS is encoded instead of a Russian AC3 copy. Never `0` (an omitted PUT encodes the
-/// part default).
+/// After that pick, prefer the show language, or [`PREF_AUDIO_LANG`] when unset. Keep a
+/// sibling already in that language before considering other codecs in it, so lowering video
+/// quality preserves a preferred dub and does not needlessly encode a lossless sibling.
+/// Otherwise take the first track in that language. An absent show language falls through
+/// to the ordinary English/DP order (an omitted PUT encodes the part default).
 /// `env_audio_sid` is the session/retry pick and wins on re-encode when set, including a remux
 /// leftover sibling (mid-play quality drop keeps what is already playing). A cold play zeros
 /// it (`request_play`).
@@ -1470,6 +1607,7 @@ fn encode_audio_id(
     dp_audio_id: i64,
     env_audio_sid: i64,
     tracks: &[crate::metadata::Stream],
+    show_audio_pref: Option<&str>,
 ) -> i64 {
     if remux {
         return dp_audio_id;
@@ -1485,18 +1623,18 @@ fn encode_audio_id(
     {
         return id;
     }
-    let sibling_is_pref = tracks
-        .iter()
-        .any(|s| s.id == dp_audio_id && s.lang_code == PREF_AUDIO_LANG);
-    if sibling_is_pref {
-        return dp_audio_id;
+    for pref in show_audio_pref.into_iter().chain(std::iter::once(PREF_AUDIO_LANG)) {
+        if tracks.iter().any(|s| s.id == dp_audio_id && lang_matches(pref, &s.lang_code)) {
+            return dp_audio_id;
+        }
+        if let Some(id) = tracks.iter()
+            .find(|s| s.id > 0 && lang_matches(pref, &s.lang_code))
+            .map(|s| s.id)
+        {
+            return id;
+        }
     }
-    tracks
-        .iter()
-        .find(|s| s.lang_code == PREF_AUDIO_LANG)
-        .map(|s| s.id)
-        .filter(|&id| id > 0)
-        .unwrap_or(dp_audio_id)
+    dp_audio_id
 }
 
 
@@ -1552,8 +1690,15 @@ pub(super) fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64,
 /// codec is in [`crate::plex::DP_SUBTITLE_CODECS`]: a sidecar, or a selected embedded track
 /// we render but do not advertise (`vplayer`, …), is sent as `0` so MDE evaluates subs off
 /// instead of answering transcode (which then forbids a codec-copy remux).
+#[cfg(test)]
 fn mde_subtitle_stream_id(subs: &[crate::metadata::Stream]) -> i64 {
-    pick_dp_subtitle(subs)
+    mde_subtitle_id_of(subs, pick_dp_subtitle(subs))
+}
+
+/// [`mde_subtitle_stream_id`] for a subtitle already decided — the resolve decides ONCE
+/// (`pick_dp_subtitle_pref`) and names the result here.
+fn mde_subtitle_id_of(subs: &[crate::metadata::Stream], pick: Option<(i64, i32)>) -> i64 {
+    pick
         .and_then(|(id, _)| {
             subs.iter()
                 .find(|s| s.id == id)
@@ -1563,6 +1708,56 @@ fn mde_subtitle_stream_id(subs: &[crate::metadata::Stream]) -> i64 {
         .unwrap_or(0)
 }
 
+
+/// [`pick_dp_subtitle`] plus the SHOW's subtitle settings (`subtitleLanguage` + `subtitleMode`),
+/// returning (stream id, embedded ordinal) of the subtitle a DIRECT PLAY starts with.
+///
+/// The server's own per-part selection still wins, and ANY selected subtitle — a sidecar
+/// included — means someone chose, so the show's default stays out of it. Otherwise, with a
+/// preferred subtitle language set:
+///   - mode 2, **always enabled**: a subtitle in that language is turned on;
+///   - mode 1, **shown with foreign audio**: turned on only when the audio that will play is NOT
+///     in that language (`audio_lang`);
+///   - mode 0 (manual) and -1 (account default — on plex.tv, which this client does not read):
+///     nothing, as before.
+/// Among EMBEDDED tracks in the language (a sidecar is not client-renderable on direct play): a
+/// full track that is not SDH first, then any full track, then a forced one. Direct play only — a
+/// transcode keeps subtitles off, as it always has (turning one on there means a burn).
+pub(super) fn pick_dp_subtitle_pref(
+    subs: &[crate::metadata::Stream],
+    prefs: &crate::plex::ShowLangPrefs,
+    audio_lang: &str,
+) -> Option<(i64, i32)> {
+    if let Some(pick) = pick_dp_subtitle(subs) {
+        return Some(pick);
+    }
+    if subs.iter().any(|s| s.selected) {
+        return None;
+    }
+    let lang = prefs.subtitle.as_deref()?;
+    let want = match prefs.subtitle_mode {
+        2 => true,
+        1 => !audio_lang.is_empty() && !lang_matches(lang, audio_lang),
+        _ => false,
+    };
+    if !want {
+        return None;
+    }
+    let embedded = |i: usize| {
+        let ord = crate::metadata::sub_render_ordinal(subs, i);
+        (ord >= 0 && subs[i].id > 0).then_some((subs[i].id, ord))
+    };
+    let tiers: [&dyn Fn(&crate::metadata::Stream) -> bool; 3] = [
+        &|s| !s.forced && !s.sdh,
+        &|s| !s.forced,
+        &|_| true,
+    ];
+    tiers.iter().find_map(|tier| {
+        (0..subs.len())
+            .filter(|&i| !subs[i].external && lang_matches(lang, &subs[i].lang_code) && tier(&subs[i]))
+            .find_map(embedded)
+    })
+}
 
 /// PURE: the local direct-play VIDEO test — the codec, the source's stated frame size and its
 /// Dolby Vision layering must ALL clear what this device and this pipeline can actually show.

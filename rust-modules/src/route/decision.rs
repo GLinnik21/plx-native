@@ -5871,7 +5871,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
             cur_rk: rk.to_string(),
             cur_sid: plan.sid,
             cur_audio_sid: plan.audio_sid,
-            // the server-selected subtitle (0 = none), so the menu checkmark, the timeline report
+            // the part/show-selected subtitle (0 = none), so the menu checkmark, the timeline report
             // and any later transcode of this item all agree with what the renderer is told below
             cur_sub_sid: plan.sub_sid,
             cur_part_id: plan.part_id,
@@ -5912,7 +5912,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
     if let Some(ord) = plan.feed_audio_ordinal {
         crate::player::set_audio_track(ord);
     }
-    // `request_play` turned subtitles off for the new item; turn the server's selection back on
+    // `request_play` turned subtitles off; apply the resolved part/show selection
     // AFTER that reset (this lands a frame or more later, on the main thread, before the engine
     // starts — so the demuxer's per-block `desired_sub_idx` gate sees it from the first cue).
     if let Some(ord) = plan.sub_render_ordinal {

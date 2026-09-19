@@ -15,6 +15,10 @@ pub struct Envelope {
 /// list (`Directory`), an items/detail list (`Metadata`), or a hub list (`Hub`).
 #[derive(Deserialize, Default)]
 pub struct MediaContainer {
+    /// The item's own SETTINGS, on `/library/metadata/{id}/tree` (`docs/plex-openapi.json`'s
+    /// `show` example): `episodeSort`, `audioLanguage`, `subtitleLanguage`, … — see [`Setting`].
+    #[serde(rename = "Setting", default)]
+    pub setting: Vec<Setting>,
     #[serde(rename = "Directory", default)]
     pub directory: Vec<LibrarySection>,
     #[serde(rename = "Metadata", default)]
@@ -192,9 +196,60 @@ pub struct Hub {
     pub size: i64,
 }
 
+/// One of an item's per-item settings — the show page's "Advanced" dialog in Plex Web. Only the
+/// id and the CURRENT value are read; `value` is empty for "Library/Account default".
+#[derive(Deserialize, Default, Clone, Debug)]
+pub struct Setting {
+    #[serde(default, deserialize_with = "de_str")]
+    pub id: String,
+    #[serde(default, deserialize_with = "de_str")]
+    pub value: String,
+}
+
+/// A SHOW's language settings — its Advanced dialog in Plex Web. `None` / `-1` mean "Account
+/// default", which this client cannot read (it lives on plex.tv) and so treats as unset.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShowLangPrefs {
+    /// `audioLanguage`, e.g. `"hu-HU"`
+    pub audio: Option<String>,
+    /// `subtitleLanguage`, e.g. `"hu-HU"`
+    pub subtitle: Option<String>,
+    /// `subtitleMode`: -1 account default · 0 manually selected · 1 shown with foreign audio ·
+    /// 2 always enabled
+    pub subtitle_mode: i32,
+}
+
+impl ShowLangPrefs {
+    /// Read the three settings out of a `Setting[]`, or None when it carries none of them (so the
+    /// caller can ask the other endpoint).
+    pub fn from_settings(settings: &[Setting]) -> Option<ShowLangPrefs> {
+        let get = |id: &str| settings.iter().find(|s| s.id == id).map(|s| s.value.trim());
+        let (a, s, m) = (get("audioLanguage"), get("subtitleLanguage"), get("subtitleMode"));
+        if a.is_none() && s.is_none() && m.is_none() {
+            return None;
+        }
+        let lang = |v: Option<&str>| v.filter(|v| !v.is_empty()).map(str::to_string);
+        Some(ShowLangPrefs {
+            audio: lang(a),
+            subtitle: lang(s),
+            subtitle_mode: m.and_then(|m| m.parse().ok()).unwrap_or(-1),
+        })
+    }
+}
+
+/// `Metadata.Preferences`, present when a metadata read asks `includePreferences=1`.
+#[derive(Deserialize, Default)]
+pub struct Preferences {
+    #[serde(rename = "Setting", default)]
+    pub setting: Vec<Setting>,
+}
+
 /// The movie/show/season/episode item. Missing fields default (Plex omits optionals).
 #[derive(Deserialize, Default)]
 pub struct Metadata {
+    /// Only on a read that asked `includePreferences=1` — see [`Preferences`].
+    #[serde(rename = "Preferences", default)]
+    pub preferences: Preferences,
     #[serde(rename = "type", default)]
     pub kind: String, // movie|show|season|episode|clip
     #[serde(rename = "ratingKey", default)]
