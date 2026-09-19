@@ -106,10 +106,11 @@ add `FLAVOR=stable` is backwards; the developer install is the one you get by ty
 
 This is §2 seen from the other side: a dev-featured binary under the shipped id carries the whole
 `/tmp` trigger surface, the world-writable `plxnative-remote` FIFO and the `:8910` capture
-listener (8910 is the *stable* install's port; a flavoured one defaults to 8911, which is exactly
-why the shipped id carrying a listener **at all** is the thing being ruled out here). Before the
-split that could only happen by publishing by hand, which is how v0.2.1's defects got out; now it
-is one forgotten `RELEASE=1` on a machine that also has a television, so it gets a mechanism.
+listener (8910 is the *stable* install's port; debug defaults to 8911 and nightly to 8912, which
+is exactly why the shipped id carrying a listener **at all** is the thing being ruled out here).
+Before the split that could only happen by publishing by hand, which is how v0.2.1's defects got
+out; now it is one forgotten `RELEASE=1` on a machine that also has a television, so it gets a
+mechanism.
 
 **`ci/check-package.py` grades the same rule on the packaged BYTES, and it now does so
 unconditionally** — the check sits outside the `pkg/.build-config` branch, gated on nothing but
