@@ -803,11 +803,13 @@ mod library_publication_tests {
         crate::metadata::land_detail_for_test(state, adapter, sid, rk, gen, detail)
     }
 
+    /// Complete every detail fetch the rig admitted and install the landings. Deterministic: under
+    /// `cfg(test)` those fetches are held rather than threaded (see
+    /// `MetadataAdapter::run_held_detail_fetches_for_test`); this helper used to spin a hundred
+    /// `yield_now`s hoping a real worker had finished, which a loaded CI runner did not honour.
     fn drain_detail_workers(rig: &mut bridge::Bridge) {
-        for _ in 0..100 {
-            rig.metadata_mut().pump_detail();
-            std::thread::yield_now();
-        }
+        rig.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+        rig.metadata_mut().pump_detail();
     }
 
     struct SettleDetailBeforeRestoredEnter {
@@ -935,6 +937,109 @@ mod library_publication_tests {
         assert!(detail_refresh_matches(&origin, &target));
         assert!(!detail_refresh_matches(&later, &target),
             "landing after navigation must still address the Detail that emitted the write");
+    }
+
+    /// Regression for the double-fetch bug: `registry::mount` unconditionally queues
+    /// `RequestDetail` for a fresh Detail page, and `DetailScreen`'s own `Enter(Fresh)` handler
+    /// used to queue a SECOND one because it read `detail_request_status`/`self.detail(meta)`
+    /// before the mount's own request had been admitted — so every ordinary Detail open spent
+    /// two of the four in-flight admission slots on one page, and a slow server could refuse a
+    /// covered page's own refresh at the limit.
+    #[test]
+    fn opening_a_detail_page_issues_exactly_one_detail_fetch() {
+        let _guard = crate::testlock::serial();
+        let sid = crate::plex::ServerId::UNSET;
+        let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
+        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+
+        let before = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        bridge::show_page(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let after = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+
+        // Each `RequestDetail` admission bumps the generation exactly once (`begin_detail_request`),
+        // whether or not it is later superseded — so the generation delta is a direct count of how
+        // many detail fetches this one open issued, even though a superseded one is consumed
+        // synchronously under `cfg(test)` and never shows up as still "parked" in `held_detail`.
+        assert_eq!(after - before, 1,
+            "opening a fresh Detail page must issue exactly one detail fetch, not one per mount \
+             plus one per Enter");
+
+        drain_detail_workers(&mut rig);
+        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+    }
+
+    /// Regression for the fix the double-fetch fix introduced: `DetailScreen`'s own teardown
+    /// (`WillLeave(Leave::ForGood)`/`Unmount`) only clears the store's `current()` — and supersedes
+    /// whatever fetch is still in flight — when `self.detail(meta)` ALREADY sees loaded content for
+    /// this identity at that instant (detail/mod.rs's `WillLeave`/`Unmount` arm). A Back pressed
+    /// before the page's own fetch has landed sees nothing loaded yet, skips that clear, and leaves
+    /// the in-flight fetch unsupervised — so it lands into `current()` after the page is gone, with
+    /// nobody left to supersede it. The pre-fix `Enter(Fresh)` condition
+    /// (`self.detail(meta).is_none()`) read that orphaned landing as "already loaded" and skipped
+    /// the refetch outright, so reopening the SAME item showed whatever the orphaned fetch happened
+    /// to land — stale watched state, stale progress — instead of a fresh fetch. A fresh open must
+    /// always refetch, exactly once, no matter what the store still remembers about this item; only
+    /// a fetch already in flight for it suppresses that.
+    #[test]
+    fn reopening_the_same_detail_after_back_refetches_once() {
+        let _guard = crate::testlock::serial();
+        let sid = crate::plex::ServerId::UNSET;
+        let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
+        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+
+        // Home never touches the metadata store's detail slot, so it is the underlying page A's
+        // orphaned landing survives Back under — a second Detail underneath would overwrite
+        // `current()` with its own landing and mask the bug this test is for.
+        bridge::show_page(&mut pages, AppArg::Home);
+        frame(&mut pages, &mut rig, &mut frame_no);
+
+        let before_open = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        bridge::nav_push(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == a), "Detail A mounted");
+        let gen_a = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        assert_eq!(gen_a - before_open, 1, "the fresh open issues exactly one fetch");
+
+        // Back BEFORE A's own fetch has landed: `self.detail(meta)` sees nothing loaded yet, so
+        // teardown's conditional `Clear` (detail/mod.rs's `WillLeave`/`Unmount` arm) does not fire,
+        // and the still in-flight fetch is not superseded.
+        let ret = pages.return_state();
+        bridge::nav_pop_with_return(&mut pages, ret);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == AppArg::Home),
+            "Back lands on Home");
+        assert!(rig.metadata_mut().view().current().is_none(),
+            "nothing had loaded for A yet, so teardown had nothing to clear");
+
+        // The orphaned fetch lands now, with nobody left to supersede it.
+        assert!(land_detail_for_test(&mut rig, sid, "detail-a", gen_a, Some(crate::metadata::Detail {
+            sid,
+            rk: "detail-a".into(),
+            title: "Detail A".into(),
+            watched: true,
+            ..Default::default()
+        })), "the orphaned fetch's landing is not superseded");
+        assert_eq!(rig.metadata_mut().view().current().map(|d| d.rk.as_str()), Some("detail-a"),
+            "the orphaned landing repopulates current() after the page that asked for it is gone");
+
+        let before_reopen = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        bridge::nav_push(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let after_reopen = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+
+        assert_eq!(after_reopen - before_reopen, 1,
+            "reopening the same Detail page after Back must refetch exactly once, not reuse the \
+             store's orphaned leftover for this item");
+
+        drain_detail_workers(&mut rig);
+        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
     }
 
     #[test]

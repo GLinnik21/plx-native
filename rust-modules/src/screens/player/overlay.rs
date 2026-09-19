@@ -182,6 +182,14 @@ pub(crate) struct PlayerOverlayScreen {
     /// hardware's ~50 ms `Edge::Repeat` instead, so the surface applies the cadence itself
     /// ([`PANEL_REPEAT_MS`]).
     repeat: RepeatGate,
+    /// The playing item's UltraBlur corners, read once at open — what this panel's dim inherits
+    /// ([`Scrim::over_video`](crate::ui::screen::Scrim::over_video)): the page under it is the
+    /// hardware video plane, which GL cannot sample.
+    corners: Option<[[f32; 3]; 4]>,
+    /// The panel draws nothing this frame (a FAILED playback hides the content panels with the
+    /// transport), so it must ask for no dim either. Resolved in `prepare`, which runs before the
+    /// page pass the container paints dims in; `draw` is too late for that.
+    suppressed: bool,
 }
 
 impl PlayerOverlayScreen {
@@ -211,6 +219,8 @@ impl PlayerOverlayScreen {
             kind,
             panel,
             repeat: RepeatGate::IDLE,
+            corners: meta.playing().and_then(|p| p.blur),
+            suppressed: false,
         }
     }
 
@@ -616,7 +626,27 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
+    fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, H>) {
+        self.suppressed = crate::ui::player_hud::transport_hidden(H::session(cx))
+            && !self.kind.survives_failure();
+    }
+    /// **The panel's dim, through the container like every other surface's.** It used to be
+    /// hand-drawn at the top of each panel's `draw`; the container paints it now, at the end of the
+    /// player's page pass — the same z-order (over the transport and subtitles, under the panel) —
+    /// through the stack's one field, latched from the playing item's UltraBlur corners because
+    /// the page under it is the video plane. The Info card and the Chapters strip deliberately ask
+    /// for none: they sit in the transport's own band and dim nothing.
+    fn scrim(&self) -> crate::ui::screen::Scrim {
+        use crate::ui::theme::underlay::{DIM_PLAYER, DIM_SHEET};
+        if self.suppressed {
+            return crate::ui::screen::Scrim::NONE;
+        }
+        match self.panel {
+            Panel::Tracks(_) => crate::ui::screen::Scrim::over_video(DIM_PLAYER, self.corners),
+            Panel::More(_) => crate::ui::screen::Scrim::over_video(DIM_SHEET, self.corners),
+            Panel::Info(_) | Panel::Chapters(_) => crate::ui::screen::Scrim::NONE,
+        }
+    }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let ps = H::session(f.cx);
         // Stale content panels are gone with the transport when a playback has FAILED; the `…`

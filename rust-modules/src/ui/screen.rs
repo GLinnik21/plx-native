@@ -126,11 +126,18 @@ fn no_lift(_: ScrimLiftRead<'_>) {}
 ///
 /// It is a REQUEST rather than a drawing, and that is the whole of why this type exists. The dim
 /// sits between the page and the surface's own glass, so it is part of what that glass looks
-/// through — which means it has to be on the framebuffer *before* the host snapshot is taken, i.e.
-/// inside the page pass, several call frames away from the surface that owns it. The surface
-/// therefore states its weight here and the container
+/// through — which means it has to be on the framebuffer *before* the surface's glass grabs its
+/// backdrop, i.e. inside the page pass, several call frames away from the surface that owns it.
+/// The surface therefore states its weight here and the container
 /// ([`ModalStack::draw_scrims`](crate::ui::containers::modal::ModalStack::draw_scrims)) draws it,
 /// in one place, for every surface, in phase order.
+///
+/// **The weight is a ROLE, and the ink is the page's own light.** `alpha` is one of the
+/// `theme::underlay::DIM_*` rows — no surface states a number of its own — and the container paints
+/// it through the stack's one `UnderlayField` (`containers::modal::ModalUnderlay`) as
+/// `Role::Dim { weight: theme::underlay::TINT }`, latched from the undimmed host page (or, over the
+/// video plane, from [`UnderlaySource::Corners`]). So the dim keeps the page's colour where the
+/// page has it; at `TINT == 0` it is the flat `theme::scrim_black` rect to the bit.
 ///
 /// A surface that wants no dim overrides nothing: [`Screen::scrim`] defaults to [`Scrim::NONE`].
 #[derive(Clone, Copy)]
@@ -154,6 +161,26 @@ pub struct Scrim {
     ///
     /// [`ModalStack::draw_scrims`]: crate::ui::containers::modal::ModalStack::draw_scrims
     pub(crate) lift: ScrimLift,
+    /// Where the dim's inherited light comes from — see [`UnderlaySource`]. Every constructor
+    /// but [`Scrim::over_video`] answers [`UnderlaySource::Page`].
+    pub(crate) source: UnderlaySource,
+}
+
+/// **What a surface's dim inherits.** A dim here is not a black sheet: the container paints it
+/// through ONE `ui::underlay::UnderlayField` per stack (`containers::modal::ModalUnderlay`), and
+/// this says where that field is latched from.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum UnderlaySource {
+    /// The host page itself, read off the framebuffer before any dim is on it — every surface
+    /// presented over a page.
+    Page,
+    /// A four-corner envelope (tl, tr, br, bl — `plex::UltraBlurColors::corners`' ring): a surface
+    /// over the hardware video plane, which GL cannot read back, inherits the playing item's own
+    /// UltraBlur colours instead.
+    Corners([[f32; 3]; 4]),
+    /// Nothing honest to inherit (a video-plane surface whose item carries no envelope): the flat
+    /// `theme::scrim_black` ink.
+    Flat,
 }
 
 impl Scrim {
@@ -161,19 +188,39 @@ impl Scrim {
     pub const NONE: Scrim = Scrim {
         alpha: 0.0,
         lift: no_lift,
+        source: UnderlaySource::Page,
     };
 
-    /// A dim of `alpha` with nothing lifted out of it.
+    /// A dim of `alpha` with nothing lifted out of it. `alpha` is a `theme::underlay::DIM_*`
+    /// role, never a literal (`containers::tests::no_surface_states_its_own_dim_weight`).
     pub const fn dim(alpha: f32) -> Scrim {
         Scrim {
             alpha,
             lift: no_lift,
+            source: UnderlaySource::Page,
         }
     }
 
     /// A dim of `alpha` with `lift` re-drawn above it.
     pub(crate) const fn lifting(alpha: f32, lift: ScrimLift) -> Scrim {
-        Scrim { alpha, lift }
+        Scrim {
+            alpha,
+            lift,
+            source: UnderlaySource::Page,
+        }
+    }
+
+    /// A dim of `alpha` over the VIDEO PLANE, inheriting the playing item's `corners` (or the flat
+    /// ink when it has none) — the player's panels, whose page is a hole GL cannot sample.
+    pub(crate) const fn over_video(alpha: f32, corners: Option<[[f32; 3]; 4]>) -> Scrim {
+        Scrim {
+            alpha,
+            lift: no_lift,
+            source: match corners {
+                Some(c) => UnderlaySource::Corners(c),
+                None => UnderlaySource::Flat,
+            },
+        }
     }
 }
 

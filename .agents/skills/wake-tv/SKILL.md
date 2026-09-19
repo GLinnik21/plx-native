@@ -55,7 +55,7 @@ no `wakeonlan` binary on a stock Mac) and working SSH auth to the TV.
   "remote port forwarding failed". Kill the stale per-connection dropbear on the
   TV (`netstat -tlnp | grep <port>` → kill that pid), then reconnect.
 - **Standby closes the app**, so the capture stream port (`:8910` for the stable install,
-  `:8911` for a flavoured one — `make -s print-appport FLAVOR=…`), the remote FIFO,
+  `:8911` for debug, `:8912` for nightly — `make -s print-appport FLAVOR=…`), the remote FIFO,
   and any luna-send `-i` launch subscription are gone — relaunch the app after waking.
   **UNVERIFIED — does a standby cycle wipe `/tmp`?** Nothing in this repository observes it
   either way, and it matters more since the runtime root moved: a flavoured install keeps its

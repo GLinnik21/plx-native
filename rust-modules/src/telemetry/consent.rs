@@ -372,7 +372,7 @@ pub(crate) fn allows_usage() -> bool {
 }
 
 /// May an ERROR report be sent? The crash channel's twin of [`allows_usage`], failing closed for
-/// the same reason. It gates both `crashreport::report_pending` (the only thing that opens the
+/// the same reason. It gates both `crashreport::recover_pending` (the only thing that opens the
 /// crash log at all) and the sparse in-memory playback-error trace. Consent gates collection, not
 /// just the send: a television whose owner said no is neither scanned for faults nor traced.
 pub(crate) fn allows_errors() -> bool {

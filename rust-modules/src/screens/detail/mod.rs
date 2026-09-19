@@ -38,7 +38,7 @@ use crate::ui::machine::{
 };
 use crate::ui::present::{PresentEvent, Provenance};
 use crate::ui::screen::{
-    Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, FocusSource, Focusable,
+    Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusSource, Focusable,
     GroupKind, GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat,
     Step, Stop,
 };
@@ -198,6 +198,12 @@ pub(crate) struct DetailScreen {
     disc_unfurl: [Spring; 3],
     season_metrics: season::Metrics,
     about_rows: about::Rows,
+    /// The page's own keyed ground. Deliberately a bare [`AmbientWash`] and not the shared
+    /// `PageGround`, which is the browsing screens' policy: that type draws itself whenever it is
+    /// not flat and dithers unconditionally, and both are wrong here. This wash must not be laid
+    /// over a live video plane at all ([`keyed_ground_over_plane`]), which is a per-frame answer
+    /// `PageGround` does not offer and should not. (Its dither is not a question: every wash
+    /// dithers, the photograph sliding over it included — `gfx::draw_ambient`.)
     ground: AmbientWash,
     /// The catalog row for this item, captured ONCE at [`new`](Self::new) — the same
     /// construction-time-only snapshot [`ground`](Self::ground)'s blur envelope takes. This is a
@@ -1521,7 +1527,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                 self.tick(*t, cx, fx);
                 Handled::Yes
             }
-            ScreenEvent::Enter(_) => {
+            ScreenEvent::Enter(kind) => {
                 let refresh = self.refresh;
                 let request_status = meta.detail_request_status(self.sid, &self.rk);
                 // Deferred is newer than every request that could already occupy this address:
@@ -1530,11 +1536,18 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                 // its live reconciliation, but another Detail may have superseded that shared
                 // request while this page was covered; that is the None case. Some(false) is a
                 // completed reconciliation to consume, not a request to repeat.
-                // Ordinary enters still reuse an in-flight request instead of duplicating it.
+                // A fresh open (a new push, not a restore-on-uncover) always refetches so Back
+                // then reopening the same item picks up whatever changed while it was away —
+                // watched state, progress — instead of showing the stale store entry the item's
+                // identity still matches. The only thing that suppresses it is a fetch for this
+                // item already in flight. Restored enters (and every other case) keep reusing the
+                // cached detail instead of duplicating a request.
+                let fresh_open = matches!(kind, Enter::Fresh { .. });
                 let request = refresh == DetailRefreshPhase::Deferred
                     || refresh == DetailRefreshPhase::Requested && request_status.is_none()
-                    || refresh == DetailRefreshPhase::None && self.detail(meta).is_none()
-                        && request_status != Some(true);
+                    || refresh == DetailRefreshPhase::None
+                        && request_status != Some(true)
+                        && (fresh_open || self.detail(meta).is_none());
                 if request && refresh == DetailRefreshPhase::None {
                     fx.push(Fx::App(AppFx::Store(
                         StoreId::Metadata,
@@ -2090,11 +2103,7 @@ impl DetailScreen {
             .ground
             .is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
         if keyed_ground_over_plane(preview.picture, texture, art_alpha, ground_flat) {
-            self.ground.draw_with(
-                p,
-                Rect::FULL,
-                crate::gfx::page_wash_dither(self.scroll.vel.abs() < 15.0),
-            );
+            self.ground.draw(p, Rect::FULL);
         }
         if texture != 0 {
             p.tex(

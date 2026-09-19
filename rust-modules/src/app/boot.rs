@@ -843,7 +843,7 @@ pub(crate) unsafe fn construct(
         crate::player::seed_dev_track_names();
     }
     if let Some(initial) = &initial {
-        crate::ui::idle::set_enabled(!initial.triggers.iter().any(|t| t == "plxnative-noidle"));
+        crate::ui::idle::set_enabled(!crate::dev::listed(&initial.triggers, "noidle"));
     } else { crate::dev::scenarios::arm_noidle(); }
     // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
     // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
@@ -949,6 +949,31 @@ pub(crate) unsafe fn construct(
     let nav_osc = nav_osc_rk.is_some();
     let nav_osc_rk = nav_osc_rk.unwrap_or_default();
     let nav_osc_last = 0u32;
+
+    // dev: /tmp/plxnative-pushbench[=<n>[,<ratingKey>]] — the counted, deterministic stress
+    // benchmark twin of `navosc` (spec: `docs/agent-reference.md`'s fps-scene section). Its
+    // Detail leg reuses `navosc`'s own ratingKey when the bench's own trigger carries none, so
+    // `plxnative-navosc=<rk>` alone is enough to point both oscillators at the same item.
+    let push_bench = (!controlled)
+        .then(crate::dev::scenarios::pushbench_value)
+        .flatten()
+        .map(|(n, rk)| {
+            let rk = if rk.is_empty() { nav_osc_rk.clone() } else { rk };
+            crate::dev::scenarios::bench::PushBench::new(n, rk)
+        });
+    // dev: /tmp/plxnative-modalbench[=<n>[,<ratingKey>]] — the modal-ramp twin of the above, same
+    // n,rk shape. Its item-menu leg reuses `navosc`'s ratingKey ONLY when the bench's own trigger
+    // carries none, exactly like the push leg above — see `modalbench_value`'s doc for why a
+    // scene that wants the item menu but not navosc's own competing bounce sets its own rk here
+    // instead. See `ModalBench::new`'s doc for the two modal Styles it deliberately leaves out of
+    // the rotation.
+    let modal_bench = (!controlled)
+        .then(crate::dev::scenarios::modalbench_value)
+        .flatten()
+        .map(|(n, rk)| {
+            let rk = if rk.is_empty() { nav_osc_rk.clone() } else { rk };
+            crate::dev::scenarios::bench::ModalBench::new(n, rk)
+        });
 
     // dev: /tmp/plxnative-framedrop — the FRAME-DROP DETECTOR. When present, each frame is timed with
     // the high-res perf counter (pump / draw / swap, NO glFinish so it doesn't perturb the pipeline),
@@ -1211,6 +1236,8 @@ pub(crate) unsafe fn construct(
             onboard_osc_last,
             onboard_osc_right,
             nav_osc_last,
+            push_bench,
+            modal_bench,
             marker_tried,
             press_tried,
             press_release_at,

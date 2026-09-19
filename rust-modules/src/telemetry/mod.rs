@@ -71,10 +71,9 @@ pub(crate) fn activate_initial(c: Consent) -> native::Guard {
     // send. The flush is spawned later, after `net::global_init`, which is a separate ordering
     // constraint that has already been got wrong once: a boot flush ahead of it logged
     // `holding 5 records` directly above `net: bound libcurl`.
-    // Queue a completed out-of-process event first. The local C/panic log may describe the same
-    // crash; report_pending consumes the native keys so one process death remains one Sentry event.
-    let native_crashes = native::import_pending();
-    crashreport::report_pending(&native_crashes);
+    // The native daemon's envelopes and the local C/panic log are recovered together: the two may
+    // describe the same death, and pairing them keeps it one Sentry event — the more useful one.
+    crashreport::recover_pending();
     // The SDK capture backend starts only after consent is published and old fallback records are
     // safely queued. Its guard lives for the whole app and restores the C tracer on clean exit.
     native::sync(&c)

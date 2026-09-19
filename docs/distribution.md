@@ -1200,7 +1200,13 @@ build you did not make.
 
 ## 8. Release CI (built 2026-08-01)
 
-`.github/workflows/{ci,release}.yml` + `.github/actions/webos-ndk` + `ci/`.
+`.github/workflows/{ci,release,nightly,build-package}.yml` + `.github/actions/webos-ndk` + `ci/`.
+The ARM build+verify pipeline itself lives once, in `build-package.yml`, as a reusable
+(`workflow_call`) workflow — `release.yml`'s `build` job and `nightly.yml`'s `build` job are both
+thin callers into it, selecting a flavour, a telemetry pair, and which optional steps (the
+Homebrew manifest, the LGPL source asset, caches, the firmware-database gate) apply. (A third
+caller, `canary.yml`, existed the same way before nightly replaced it; its public prereleases
+remain on GitHub as history.)
 
 **The runner is forced.** `webosbrew/native-toolchain` publishes exactly three host builds for
 `webos-d7ed7ee.6` — `darwin-arm64`, `darwin-x86_64`, `linux-aarch64` — and **no linux-x86_64**.
@@ -1261,9 +1267,10 @@ Three traps this cost, all found by measurement rather than reasoning, all silen
    comparison and cannot be defeated by either.
 3. **`make RELEASE=1 && make deploy` deploys a DEV binary** — the second invocation has no
    `RELEASE`, so it rebuilds and ships that. The flag must be on *every* invocation that produces
-   or ships the binary (`make RELEASE=1 deploy`). `deploy` and `ipk` now echo which configuration
-   they are shipping, and `release.yml` asserts `pkg/.build-config` really says
-   `--no-default-features` rather than trusting that the flag took.
+   or ships the binary (`make RELEASE=1 deploy`). `deploy` and `ipk` now echo which
+   configuration they are shipping, and `build-package.yml` (called from `release.yml`'s
+   `build` job) asserts `pkg/.build-config` really says `--no-default-features` rather than
+   trusting that the flag took.
 
 Verified on the device, not just by binary size: the release build deployed to the TV
 (md5-matched) renders the who's-watching screen with no counter; the dev build renders `62`.

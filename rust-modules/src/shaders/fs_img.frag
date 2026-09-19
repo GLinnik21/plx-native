@@ -23,6 +23,12 @@ uniform vec4 u_rimcol;
 uniform highp vec2 u_ch;
 uniform float u_shinv;
 uniform vec4 u_shcol;
+// Half-extent of the card's INTERIOR BOX (`gfx::card_inner`): every point strictly inside it has
+// d < -2, so the box test below is an exact, cheaper spelling of the SDF early-out for the bulk of
+// the card. The SDF is a highp length + three max/min on every fragment; the box is one abs and one
+// compare. Measured 2026-09-19 (docs/backdrop-blur-profiling.md): cards were the largest draw
+// class on Home's fold and grid, at ~3 cycles a fragment against ~1 for the flat path.
+uniform highp vec2 u_inner;
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){ highp vec2 q=abs(p)-b+vec2(r);
   return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }
 void main(){
@@ -30,6 +36,7 @@ void main(){
   vec3 tex = c.rgb*u_tint.rgb;
   float ta = c.a*u_tint.a;
   if (u_iradius < 0.5) { gl_FragColor = vec4(tex, ta); return; }
+  if (all(lessThan(abs(v_p), u_inner))) { gl_FragColor = vec4(tex, ta); return; }
   float d = sdBox(v_p, u_ch, u_iradius);
   if (d < -2.0) { gl_FragColor = vec4(tex, ta); return; }
   float m = 1.0 - smoothstep(-1.0, 1.0, d);

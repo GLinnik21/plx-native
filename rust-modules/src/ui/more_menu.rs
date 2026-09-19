@@ -187,10 +187,9 @@ impl MoreMenuState {
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
-        // rises INTO place from below, toward the disc that opened it — reproduces exactly what
-        // `Popover::painter(0.5, 16.0)` used to draw (scrim + content painter).
-        let dim = theme::scrim_black(0.5 * appear);
-        crate::ui::Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
+        // rises INTO place from below, toward the disc that opened it. The dim under it is the
+        // container's (`PlayerOverlayScreen::scrim`, `theme::underlay::DIM_SHEET`), painted at the
+        // end of the player's page pass — not here.
         let p = crate::ui::Painter::root()
             .alpha(appear)
             .translate(0.0, 16.0 * (1.0 - appear));

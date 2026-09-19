@@ -152,10 +152,6 @@ const BTN_GAP: f32 = theme::space::MD;
 /// `MARGIN_X` horizontally by 32px.
 const EDGE: f32 = theme::space::XL;
 const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
-/// Scrim peak alpha — the Library toolbar chip menu's design, deliberately, because this
-/// is the same object one page over: a chip-shaped control on a live page opening a list over it.
-/// The page recedes; it is not blanked, and the hero behind stays readable.
-const SCRIM_A: f32 = 0.45;
 /// How far the panel rises into place, matching those same chip menus. The container's appear
 /// spring drives it now (`DrawFrame::page_alpha` IS `Surface::motion.appear`), so the translate is
 /// applied here rather than by `Popover::painter`; at rest it contributes nothing, which is what
@@ -621,7 +617,9 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> S
     /// appear spring and by `nav::page_alpha` — the second of which the in-`draw` version could
     /// not reach, `DrawFrame::page_alpha` being the surface's own spring alone.
     fn scrim(&self) -> Scrim {
-        Scrim::dim(SCRIM_A)
+        // The PANEL role (`theme::underlay::DIM_PANEL`): a picker in the middle of the frame. The
+        // page recedes; it is not blanked, and the hero behind stays readable.
+        Scrim::dim(theme::underlay::DIM_PANEL)
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let appear = f.page_alpha;

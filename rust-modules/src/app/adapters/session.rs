@@ -828,7 +828,7 @@ mod tests {
             "nothing is outstanding before a durable commit");
 
         let disk = crate::plex::session::peek();
-        let mut init = SessionInit::captured(disk.clone());
+        let mut init = SessionInit::captured((*disk).clone());
         init.epoch = 1;
         init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Ready },
             expected: Identity::of(&disk), lifecycle: None, last_arrival: Some(0),
@@ -839,7 +839,7 @@ mod tests {
             admitted_revision: None, purpose: None, fresh: false });
         let owner = SessionMachine::from_init(init);
 
-        let mut next = disk.clone();
+        let mut next = (*disk).clone();
         next.account_token = "synthetic-new-token".into();
         let plan = CommitPlan { expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
@@ -897,7 +897,7 @@ mod tests {
             "nothing is outstanding before any commit");
 
         let disk = crate::plex::session::peek();
-        let mut init = SessionInit::captured(disk.clone());
+        let mut init = SessionInit::captured((*disk).clone());
         init.epoch = 1;
         init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Ready },
             expected: Identity::of(&disk), lifecycle: None, last_arrival: Some(0),
@@ -908,7 +908,7 @@ mod tests {
             admitted_revision: None, purpose: None, fresh: false });
         let owner = SessionMachine::from_init(init);
 
-        let mut next = disk.clone();
+        let mut next = (*disk).clone();
         next.account_token = "synthetic-new-token".into();
         let plan = CommitPlan { expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
@@ -1115,7 +1115,7 @@ mod tests {
         );
 
         let disk = crate::plex::session::peek();
-        let mut init = SessionInit::captured(disk.clone());
+        let mut init = SessionInit::captured((*disk).clone());
         init.epoch = 1;
         init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Ready },
             expected: Identity::of(&disk), lifecycle: None, last_arrival: Some(0),
@@ -1126,7 +1126,7 @@ mod tests {
             admitted_revision: None, purpose: None, fresh: false });
         let owner = SessionMachine::from_init(init);
 
-        let mut next = disk.clone();
+        let mut next = (*disk).clone();
         next.account_token = "synthetic-uncertain-token".into();
         let plan = CommitPlan { expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
@@ -1256,7 +1256,7 @@ mod tests {
         assert!(adapter.take_live_completion().is_none());
 
         let disk = crate::plex::session::peek();
-        let mut init = SessionInit::captured(disk.clone());
+        let mut init = SessionInit::captured((*disk).clone());
         init.epoch = 1;
         init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Login },
             expected: Identity::of(&disk), lifecycle: None, last_arrival: Some(0),
@@ -1267,7 +1267,7 @@ mod tests {
             admitted_revision: None, purpose: Some(PersistencePurpose::Final), fresh: true });
         let owner = SessionMachine::from_init(init);
 
-        let mut next = disk.clone();
+        let mut next = (*disk).clone();
         next.client_id = "cid-fresh".into();
         next.account_token = "acct".into();
         let plan = CommitPlan { expected_disk: Identity::of(&disk),
@@ -1327,7 +1327,7 @@ mod tests {
 
             let disk = crate::plex::session::peek();
             let expected = Identity::of(&disk);
-            let mut init = SessionInit::captured(disk.clone());
+            let mut init = SessionInit::captured((*disk).clone());
             init.epoch = 1;
             init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Ready },
                 expected: expected.clone(), lifecycle: None, last_arrival: Some(0),
@@ -1343,7 +1343,7 @@ mod tests {
                 account_token: "synthetic-external-change".into(), ..d.clone() })),
                 "setup: the seeded session must be updatable");
 
-            let mut next = disk.clone();
+            let mut next = (*disk).clone();
             next.account_token = "synthetic-new-token".into();
             let plan = CommitPlan { expected_disk: expected,
                 credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),

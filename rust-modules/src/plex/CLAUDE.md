@@ -237,9 +237,34 @@ a dead source is **absent** from Home and states itself in its own library secti
   (sign-in, profile switch). Reach for `update` for anything that touches one field — the roster,
   the search terms — because the others are workers and the two failures are both silent: a lost
   update resumes the next boot as the wrong profile, and a torn `O_TRUNC` write is an unparseable
-  file, which is a QR code on the next boot rather than a stale roster. The lock is held across the
-  write's `sync_all`, so **nothing per-frame may read this file**; snapshot it (as
-  `search::recents` does, keyed on `session::current_gen`).
+  file, which is a QR code on the next boot rather than a stale roster. The lock (`IO`) is held
+  across the write's `sync_all`, so **nothing per-frame may take it directly** — but a per-frame
+  reader may now call `session::peek()`, because `peek()` is backed by a live in-memory read
+  cache, not a per-call file transaction.
+- **`session::peek()` is a write-through cache over the persisted session, not a fresh read.** A
+  hit is one uncontended `Mutex` lock and an `Arc<Session>` clone — no `IO`, no helper round trip —
+  which is what makes it safe to call every frame (`player::preview::enabled` does). The invariants
+  that keep it correct, all in `session.rs`'s module doc and worth knowing before touching either
+  the cache or a write path:
+  - The cache holds a value only when the module has proof the record equals it: a completed read
+    under `IO`, or a `Durable` write under `IO`. Anything else drops it.
+  - Only `session.rs` writes the session domain of the record; every `persistence::commit_*`/
+    `write_session`/`commit_cleared` caller in that file ends by calling exactly one of
+    `install_locked(...)` or `drop_cache_locked()` — never neither, never both.
+  - Readers never take `IO` on a cache hit. A miss takes `IO`, reads, installs, releases; `CACHE`
+    is never held across an `IO` call in either direction.
+  - Writers never read the cache to decide what to write — they always re-read the authority under
+    `IO` first (the fence/OCC check), then install their own proven outcome. A miss can therefore
+    never overwrite a newer concurrent write.
+  - A `Locked`/`Blocked` read (keymanager unavailable, a helper hiccup) is cached only
+    transiently, for `LOCKED_RETRY` (about a second) — never latched forever the way a naive
+    per-field cache once was (the bug PR #120's stopgap shipped and this cache replaced).
+  - Sign-out (`clear()`) drops the cached `Arc` immediately; the tokens it held must not remain
+    reachable in memory after a sign-out just because nothing had overwritten the cache yet.
+  - `plex::session::async_persistence`'s Stage B coordinator is unwired and keeps its own,
+    separate `CACHE` today; when it is wired up, it must install into/drop the cache above
+    (`install_locked`/`drop_cache_locked`, under `IO`) instead of maintaining a second copy of the
+    session.
 - **Track selection is server-side, via `PUT /library/parts/{id}`** (set the chosen audio/subtitle
   stream + subtitle burn), **not** query params on the stream URL. The server re-selects for the next
   decision; the client re-requests the part. See `[[audio-subtitle-track-switching]]`.

@@ -186,6 +186,20 @@ pub trait Measure {
             .map(|c| self.width(&c, sz, bold))
             .unwrap_or(0.0)
     }
+
+    /// **Are these answers the process's live font, and nothing else?** `true` only for the
+    /// device/simulator font (`TtfMeasure`, the widgets' `LegacyMeasure`) and for
+    /// `ui::rec::Measurements::Live` over one of them. Such a capability may share a result
+    /// memoised from the SAME font across frames and views (`TextView`'s wrap memo) — a wrap
+    /// through it cannot differ from one through the free functions.
+    ///
+    /// Every other capability answers `false`: a recording must SEE each query to write it into
+    /// its table, and a replay or fixture answers from a table that a live-font memo would mask.
+    /// Measured 2026-09-19: with no such sharing, the Detail page re-wrapped every paragraph
+    /// through TrueType on every frame — the page was CPU-bound at 50 fps with nothing drawn.
+    fn live_font(&self) -> bool {
+        false
+    }
 }
 
 /// What a machine may read about the press machine (§7.4): the renderer's two numbers.

@@ -1,4 +1,4 @@
-"""Exercise actual service archive metadata for both install identities, without an NDK."""
+"""Exercise actual service archive metadata for every install identity, without an NDK."""
 import io
 import json
 from pathlib import Path
@@ -15,11 +15,11 @@ class StorageServicePackage(unittest.TestCase):
         appdir.mkdir(parents=True)
         (appdir / "appinfo.json").write_text(json.dumps({**app, "requiredPermissions": mkipk.STORAGE_PERMISSIONS}))
 
-    def test_built_helper_packages_for_both_flavors_when_available(self):
+    def test_built_helper_packages_for_every_flavor_when_available(self):
         repo = Path(__file__).resolve().parent.parent
         if not (repo / "pkg/plxnative-storage").is_file():
             self.skipTest("cross-built helper not available")
-        for flav in ("stable", "debug"):
+        for flav in mkipk.flavor.FLAVORS:
             with self.subTest(flavor=flav), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 app = mkipk.flavor.appinfo_for(flav)
@@ -31,8 +31,8 @@ class StorageServicePackage(unittest.TestCase):
                 mkipk.write_targz(root / "data.tar.gz", data, "")
                 self.assertEqual(mkipk.storage_archive_errors((root / "data.tar.gz").read_bytes(), app["id"]), [])
 
-    def test_both_flavors_have_private_native_service_and_no_writable_state(self):
-        for app_id in ("com.beb.plxnative", "com.beb.plxnative.debug"):
+    def test_every_flavor_has_private_native_service_and_no_writable_state(self):
+        for app_id in ("com.beb.plxnative", "com.beb.plxnative.debug", "com.beb.plxnative.nightly"):
             with self.subTest(app_id=app_id), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 (root / "pkg").mkdir()

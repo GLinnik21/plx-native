@@ -370,6 +370,7 @@ pub(super) fn fourk_item_with_subs(
         dovi: crate::metadata::Dovi::NONE,
         markers: Vec::new(),
         chapters: Vec::new(),
+        blur: None,
     }
 }
 

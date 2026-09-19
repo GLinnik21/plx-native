@@ -18,7 +18,9 @@
 //!   PLXNATIVE_SHOT=<path>          where to write (default: `shot.png` in the instance root)
 //!   PLXNATIVE_SHOT_FRAME=<n>       ALSO capture automatically at presented frame n (default: no
 //!                                  automatic capture — only the `shot` token fires one)
-//!   PLXNATIVE_SHOT_EXIT=1          exit(0) after an automatic capture — the headless one-shot mode
+//!   PLXNATIVE_SHOT_EXIT=1          end the run after an automatic capture — the headless one-shot
+//!                                  mode (an orderly stop through the app's own shutdown, never an
+//!                                  `exit()` from inside the frame: see [`maybe_capture`])
 //!   PLXNATIVE_SHOT_ALPHA=1         write RGBA (premultiplied, as the framebuffer holds it)
 //!
 //! The `shot` token on the remote FIFO captures on demand instead, which is what an interactive
@@ -115,16 +117,27 @@ fn numbered(base: &std::path::Path) -> std::path::PathBuf {
 /// **Must be called before `SDL_GL_SwapWindow`.** After the swap the back buffer's contents are
 /// undefined by specification, and on a real driver they are whatever the compositor left there —
 /// a screenshot taken after would be intermittently blank, which is worse than never working.
-pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) {
+///
+/// Returns `true` when this was the headless one-shot (`PLXNATIVE_SHOT_EXIT`) and the caller must
+/// now stop the run loop. It used to call `std::process::exit(0)` right here, and that crashed the
+/// Linux simulator in CI on some runners most launches: libc's `exit` runs the process's `atexit`
+/// handlers, among them OpenSSL 3's `OPENSSL_cleanup`, which frees libcrypto's global tables while
+/// the sign-in worker (`auth::mint_pin` -> libcurl) is still mid-handshake on another thread,
+/// loading the CA bundle — SIGSEGV inside libcrypto, captured by `tools/sim-smoke.py --core-dir`.
+/// Ending the run here lets the app's own shutdown run, and the simulator's `main` then leaves
+/// without `atexit` teardown (`src/bin/sim.rs`).
+#[must_use = "a headless one-shot capture asks the caller to end the run"]
+pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool {
     let n = FRAMES.fetch_add(1, Ordering::Relaxed);
     let on_demand = ON_DEMAND.swap(false, Ordering::Relaxed);
     let cfg = cfg();
     if !on_demand && cfg.frame != Some(n) {
-        return;
+        return false;
     }
+    let ends_run = ends_run(cfg.exit, on_demand);
     if vw <= 0 || vh <= 0 {
         crate::log("shot: viewport is empty — nothing to capture");
-        return;
+        return ends_run;
     }
 
     // The viewport rect, not the whole window: `surface::probe` letterboxes the logical canvas
@@ -193,9 +206,24 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) {
         Err(e) => crate::log(&format!("shot: could not write {}: {e}", out.display())),
     }
 
-    if cfg.exit && !on_demand {
-        // Flush by leaving `log` alone (it appends unbuffered) and go. A clean exit here is the
-        // whole point of the headless mode: the caller wants a file, not a window.
-        std::process::exit(0);
+    ends_run
+}
+
+/// Whether a capture ends the run: only the automatic one, and only in the headless mode. An
+/// on-demand `shot` token never does — the agent that sent it is still driving.
+fn ends_run(exit: bool, on_demand: bool) -> bool {
+    exit && !on_demand
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ends_run;
+
+    #[test]
+    fn only_the_automatic_headless_capture_ends_the_run() {
+        assert!(ends_run(true, false));
+        assert!(!ends_run(true, true), "an on-demand shot never ends a driven session");
+        assert!(!ends_run(false, false));
+        assert!(!ends_run(false, true));
     }
 }

@@ -175,10 +175,8 @@ impl Initial {
         Ok(initial)
     }
     pub(crate) fn capture_home(host: &str, port: i32) -> Result<(Self, Option<crate::plex::session::DeferredLoad>), &'static str> {
-        if crate::dev::flag("app-init") {
-            let value = crate::ui::rec::initial_value(&crate::paths::in_runtime_dir("plxnative-app-init"))
-                .map_err(|_| "invalid explicit initial input")?;
-            return Self::from_value(value).map(|initial| (initial, None));
+        if let Some(value) = crate::dev::scenarios::app_init_value() {
+            return Self::from_value(value?).map(|initial| (initial, None));
         }
         let token = crate::dev::scenarios::dev_token();
         let (saved, entropy, deferred) = crate::plex::session::load_capturing_entropy();
@@ -232,7 +230,7 @@ impl Initial {
             return Err("unsupported initial Settings input");
         }
         if self.settings.is_some()
-            != self.triggers.iter().any(|trigger| trigger == "plxnative-settings") {
+            != crate::dev::listed(&self.triggers, "settings") {
             return Err("incoherent initial Settings input");
         }
         let content_triggers = ["detail", "detailsec", "detailok", "filmography", "personcredits", "nowan"];
@@ -244,7 +242,7 @@ impl Initial {
             }
         }
         for name in content_triggers {
-            if self.content.is_some() != self.triggers.iter().any(|t| t == &format!("plxnative-{name}")) {
+            if self.content.is_some() != crate::dev::listed(&self.triggers, name) {
                 return Err("incoherent initial content input");
             }
         }
@@ -255,14 +253,8 @@ impl Initial {
                 return Err("initial seed mismatch"),
             _ => {}
         }
-        for trigger in &self.triggers {
-            if !matches!(trigger.as_str(), "plxnative-rec" | "plxnative-recplay" |
-                "plxnative-focus" | "plxnative-noidle" | "plxnative-token" |
-                "plxnative-app-init" | "plxnative-settings" | "plxnative-detail" |
-                "plxnative-detailsec" | "plxnative-detailok" | "plxnative-filmography" |
-                "plxnative-personcredits" | "plxnative-nowan") {
-                return Err("unsupported initial developer input");
-            }
+        if !self.triggers.iter().all(|trigger| crate::dev::controlled_trigger(trigger)) {
+            return Err("unsupported initial developer input");
         }
         Ok(())
     }

@@ -239,7 +239,7 @@ impl Rows {
                 Rect::new(ix, card.y + CARD_PAD + 100.0, card.w - 2.0 * CARD_PAD, 0.0),
             );
         p.text(
-            c"MORE".as_ptr(),
+            crate::ui::text_view::MORE_MARK.as_ptr(),
             card.x + card.w - CARD_PAD,
             card.y + card.h - CARD_PAD - theme::size::CAPTION as f32,
             theme::size::CAPTION,
@@ -306,7 +306,7 @@ impl Rows {
         if tracks {
             let plate = self.languages_rect(y - COL_Y, measure);
             p.text(
-                c"MORE".as_ptr(),
+                crate::ui::text_view::MORE_MARK.as_ptr(),
                 plate.x + plate.w - CARD_PAD,
                 plate.y + plate.h - CARD_PAD - theme::size::CAPTION as f32,
                 theme::size::CAPTION,
