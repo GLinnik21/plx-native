@@ -324,7 +324,8 @@ def generate(args) -> str:
     # Actions" line printed under `asset uploader: GLinnik21` is the audit telling two stories.
     by_ci = args.uploader in (None, "github-actions[bot]")
     rows.append(row("built by",
-                    "GitHub Actions (`.github/workflows/release.yml`, job `build + verify`)" if by_ci
+                    "GitHub Actions (`.github/workflows/release.yml`'s `build + verify` job, "
+                    "which runs `.github/workflows/build-package.yml`)" if by_ci
                     else f"**not GitHub Actions** — the assets were uploaded by `{args.uploader}`, "
                          "so the build and verify jobs did not produce them"))
     out += [table(rows, ("field", "value")), ""]
