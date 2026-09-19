@@ -371,5 +371,26 @@ class BundleTests(unittest.TestCase):
         self.assertIn(b'expected candidate', result.stderr)
 
 
+class RepositoryTreeScan(unittest.TestCase):
+    """Run the bundle's credential scan over the REAL tree, before any ARM build.
+
+    The release step scans the bundle only after a full cross-build; a first-party fixture that
+    looked like a token (X-Plex-Token=<20+ chars>) surfaced there and nowhere earlier.
+    """
+
+    def test_every_bundled_file_passes_the_credential_scan(self):
+        from source_bundle import scan, tracked_sources
+        root = Path(__file__).resolve().parents[1]
+        failures, count = [], 0
+        for name, data, _mode, _transformation in tracked_sources(root):
+            count += 1
+            try:
+                scan(data, name, [])
+            except ValueError as error:
+                failures.append(str(error))
+        self.assertGreater(count, 100)
+        self.assertEqual(failures, [])
+
+
 if __name__ == '__main__':
     unittest.main()
