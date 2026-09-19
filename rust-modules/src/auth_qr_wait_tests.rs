@@ -85,6 +85,8 @@ struct ScriptedPin {
     /// What one request costs. Settable because it is the axis the old iteration count was
     /// blind to, and because `net::API` lets one poll cost 25 s.
     poll_cost: Duration,
+    /// Every [`PinWatch::link_trouble`] report, in order.
+    troubles: Vec<Option<Stall>>,
 }
 
 impl ScriptedPin {
@@ -96,6 +98,7 @@ impl ScriptedPin {
             superseded_at: None,
             polls: 0,
             poll_cost: Duration::from_millis(300),
+            troubles: Vec::new(),
         }
     }
 }
@@ -108,7 +111,7 @@ impl PinWatch for ScriptedPin {
         // always longer than the pin it was watching — by minutes on a healthy link and by
         // hours against `net::API`'s 25 s deadline.
         self.clock += self.poll_cost;
-        self.answers.pop_front().unwrap_or(PinPoll::Unreachable)
+        self.answers.pop_front().unwrap_or(PinPoll::Unreachable(Ok(503)))
     }
     fn wait(&mut self, d: Duration) -> bool {
         if self.superseded_at == Some(self.waits.len()) {
@@ -120,6 +123,9 @@ impl PinWatch for ScriptedPin {
     }
     fn elapsed(&self) -> Duration {
         self.clock
+    }
+    fn link_trouble(&mut self, stall: Option<Stall>) {
+        self.troubles.push(stall);
     }
 }
 
@@ -138,7 +144,7 @@ fn the_wait_for_one_code_cannot_outlive_that_code() {
 
     // nothing ever answers: the pathological case, and the one that used to run for hours
     let mut w = ScriptedPin::new(Vec::new());
-    assert_eq!(poll_for_token(&mut w, window), PollEnd::Expired);
+    assert!(matches!(poll_for_token(&mut w, window), PollEnd::Expired(_)));
     assert!(
         w.clock >= window,
         "it did wait out the code it was given, rather than giving up early"
@@ -158,12 +164,9 @@ fn the_wait_for_one_code_cannot_outlive_that_code() {
 /// code is then another 25 s late, on a screen whose whole complaint is waiting.
 #[test]
 fn a_poll_that_itself_crosses_the_deadline_is_the_last_one() {
-    let mut w = ScriptedPin::new(vec![PinPoll::Unreachable]);
+    let mut w = ScriptedPin::new(vec![PinPoll::Unreachable(Ok(503))]);
     w.poll_cost = Duration::from_secs(25); // `net::API`'s whole-transfer deadline
-    assert_eq!(
-        poll_for_token(&mut w, Duration::from_secs(20)),
-        PollEnd::Expired
-    );
+    assert!(matches!(poll_for_token(&mut w, Duration::from_secs(20)), PollEnd::Expired(_)));
     assert_eq!(
         w.polls, 1,
         "the request in flight answered, and nothing was asked after it"
@@ -184,7 +187,7 @@ fn a_poll_that_itself_crosses_the_deadline_is_the_last_one() {
 #[test]
 fn a_code_plex_tv_no_longer_knows_ends_the_wait_at_once() {
     let mut w = ScriptedPin::new(vec![PinPoll::Pending, PinPoll::Pending, PinPoll::Gone]);
-    assert_eq!(poll_for_token(&mut w, pin_window(900)), PollEnd::Expired);
+    assert!(matches!(poll_for_token(&mut w, pin_window(900)), PollEnd::Expired(_)));
     assert_eq!(w.polls, 3);
     assert!(
         w.clock < Duration::from_secs(30),
@@ -199,10 +202,10 @@ fn a_code_plex_tv_no_longer_knows_ends_the_wait_at_once() {
 #[test]
 fn a_run_of_unanswered_polls_backs_off_and_keeps_going() {
     let mut w = ScriptedPin::new(vec![
-        PinPoll::Unreachable,
-        PinPoll::Unreachable,
-        PinPoll::Unreachable,
-        PinPoll::Unreachable,
+        PinPoll::Unreachable(Ok(503)),
+        PinPoll::Unreachable(Ok(503)),
+        PinPoll::Unreachable(Ok(503)),
+        PinPoll::Unreachable(Ok(503)),
         PinPoll::Authorized("account-token".into()),
     ]);
     assert_eq!(
@@ -236,9 +239,9 @@ fn a_run_of_unanswered_polls_backs_off_and_keeps_going() {
 fn an_authorization_that_lands_during_the_last_backoff_is_still_collected() {
     let window = Duration::from_secs(20);
     let mut w = ScriptedPin::new(vec![
-        PinPoll::Unreachable, // t=2.0  -> 2.3, backoff 4
-        PinPoll::Unreachable, // t=6.3  -> 6.6, backoff 8
-        PinPoll::Unreachable, // t=14.6 -> 14.9, backoff 16 — which would end at 30.9
+        PinPoll::Unreachable(Ok(503)), // t=2.0  -> 2.3, backoff 4
+        PinPoll::Unreachable(Ok(503)), // t=6.3  -> 6.6, backoff 8
+        PinPoll::Unreachable(Ok(503)), // t=14.6 -> 14.9, backoff 16 — which would end at 30.9
         PinPoll::Authorized("account-token".into()),
     ]);
     assert_eq!(
@@ -276,7 +279,7 @@ fn automatic_replacement_is_bounded_and_ends_somewhere_with_a_way_out() {
 #[test]
 fn an_answer_restores_the_two_second_cadence() {
     let mut w = ScriptedPin::new(vec![
-        PinPoll::Unreachable,
+        PinPoll::Unreachable(Ok(503)),
         PinPoll::Pending,
         PinPoll::Authorized("t".into()),
     ]);
@@ -316,4 +319,75 @@ fn a_codes_lifetime_is_read_from_the_pin_and_clamped_at_both_ends() {
     );
     assert_eq!(pin_window(-7), Duration::from_secs(60), "or a nonsense one");
     assert_eq!(pin_window(86_400), Duration::from_secs(1800));
+}
+
+fn dns_miss() -> PinPoll {
+    PinPoll::Unreachable(Err(crate::net::RequestFailure {
+        cause: crate::net::RequestError::Transport,
+        status: None,
+        body_limit: None,
+        curl_rc: Some(6),
+    }))
+}
+
+/// **Two unanswered polls in a row is a stalled wait; one is a bad moment.** 0.6.6's rule, ported
+/// into the poll loop: the report is made ONCE per run of misses — at the second — carrying the
+/// latest miss's evidence, and an answer after it clears it. A lone miss says nothing.
+#[test]
+fn two_unanswered_polls_in_a_row_report_link_trouble_once_and_an_answer_clears_it() {
+    let mut w = ScriptedPin::new(vec![
+        dns_miss(),
+        PinPoll::Pending,
+        PinPoll::Unreachable(Ok(503)),
+        dns_miss(),
+        dns_miss(),
+        PinPoll::Pending,
+        PinPoll::Authorized("t".into()),
+    ]);
+    assert_eq!(poll_for_token(&mut w, pin_window(900)), PollEnd::Token("t".into()));
+    assert_eq!(w.troubles.len(), 2, "one report for the run of three, one clearance: {:?}", w.troubles);
+    let stall = w.troubles[0].expect("the first report is the stall");
+    assert_eq!(stall.unanswered, 2, "reported at the second miss, not the third");
+    assert!(matches!(stall.last, Err(crate::net::RequestFailure { curl_rc: Some(6), .. })),
+        "with the latest miss's evidence");
+    assert!(stall.failing_for > Duration::ZERO, "since the FIRST miss of the run");
+    assert_eq!(w.troubles[1], None, "an answer clears it");
+}
+
+/// One miss followed by an answer is a bad moment, not a stalled wait: nothing is reported.
+#[test]
+fn a_single_miss_reports_no_link_trouble() {
+    let mut w = ScriptedPin::new(vec![dns_miss(), PinPoll::Pending, PinPoll::Authorized("t".into())]);
+    assert_eq!(poll_for_token(&mut w, pin_window(900)), PollEnd::Token("t".into()));
+    assert!(w.troubles.is_empty(), "{:?}", w.troubles);
+}
+
+/// **The last code running out says how its polls went.** A flow that ends on "Sign-in timed out"
+/// after plex.tv spent the code answering 429 is a rate limit, not a person who never scanned —
+/// and the PinExpired report used to carry neither the answer nor the run of misses.
+#[test]
+fn an_expiry_after_refused_polls_carries_what_they_answered() {
+    use crate::telemetry::incident::{LinkClass, UnansweredBucket};
+    let mut answers = vec![PinPoll::Pending];
+    answers.extend((0..40).map(|_| PinPoll::Unreachable(Ok(429))));
+    let mut w = ScriptedPin::new(answers);
+    // 20 s: one pending answer, then four refused polls on the 2-4-8 s backoff before the end.
+    let PollEnd::Expired(tail) = poll_for_token(&mut w, Duration::from_secs(20)) else {
+        panic!("the code must run out");
+    };
+    let incident = expired_incident(&tail, MAX_PIN_GENERATIONS);
+    assert_eq!(incident.kind, crate::telemetry::incident::IncidentKind::PinExpired);
+    assert_eq!((incident.link, incident.http_status), (LinkClass::Answered4xx, Some(429)));
+    assert_eq!(incident.unanswered, UnansweredBucket::TwoToFive);
+    assert_ne!(incident.failing_for, crate::telemetry::incident::FailingForBucket::None);
+    assert_eq!(incident.code_generation, Some(4));
+
+    // A code nobody scanned, on a link that answered every time, says exactly that.
+    let mut w = ScriptedPin::new((0..40).map(|_| PinPoll::Pending).collect());
+    let PollEnd::Expired(tail) = poll_for_token(&mut w, Duration::from_secs(60)) else {
+        panic!("the code must run out");
+    };
+    let incident = expired_incident(&tail, 4);
+    assert_eq!((incident.link, incident.http_status), (LinkClass::Answered2xx, Some(200)));
+    assert_eq!(incident.unanswered, UnansweredBucket::Zero);
 }

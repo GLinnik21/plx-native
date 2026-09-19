@@ -204,11 +204,13 @@ Every `plxnative-*` trigger in the install's runtime root is read **once at boot
 must be in place before the launch. Anything you want to do to a *running* app goes through
 the remote FIFO (`tv-session.sh key` / `click`).
 
-**Three exceptions, all deliberate and all read LIVE**: `plxnative-failtest` (so a read-out variant
-can be swapped mid-playback), `plxnative-testpat` (the same for the synthetic ground), and
+**Some exceptions are deliberate and read LIVE**: `plxnative-failtest` (so a read-out variant
+can be swapped mid-playback), `plxnative-testpat` (the same for the synthetic ground),
 `plxnative-gohome` (which leg of the root press to force — armed AFTER the screen you want has
 settled, because arming it before the launch also makes the boot count as automated and moves which
-screen you land on).
+screen you land on), and `plxnative-signinfail` (`dev::scenarios::signinfail_spec` is re-read on
+every sign-in code request and every poll, so *Try again* keeps failing the same way until the file
+is removed).
 
 **Two traps that cost real time:**
 

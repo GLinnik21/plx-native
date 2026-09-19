@@ -204,6 +204,7 @@ fn write_locked(records: &[Record]) -> bool {
         crate::log(&format!(
             "telemetry: spool over cap, dropped {dropped} oldest records"
         ));
+        settle_discarded(records, &kept);
     }
     let bytes: Vec<u8> = kept.iter().filter_map(queue::encode).flatten().collect();
     let ok = crate::plex::session::write_atomic(&p, &bytes);
@@ -242,10 +243,15 @@ pub(crate) fn commit_retiring(retired: &[String]) {
 ///
 /// Per category, never wholesale: the two switches are independent, and turning off usage must not
 /// discard crash reports somebody is still consenting to.
+///
+/// **`Category::OneOff` is never named here, and that is deliberate.** A one-off record's consent
+/// was the single press that queued it, not either standing switch, so there is no decision here
+/// for it to be withdrawn BY. Erasure is [`purge_all_local`]'s job.
 pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
     let _g = lock();
     let mut all = read_locked();
     let before = all.len();
+    let snapshot = all.clone();
     if !c.errors {
         all = queue::purge(all, queue::Category::Errors);
     }
@@ -257,7 +263,35 @@ pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
             "telemetry: withdrawal purged {} queued records",
             before - all.len()
         ));
+        settle_discarded(&snapshot, &all);
         write_locked(&all);
+    }
+}
+
+/// Every record in `before` that is not in `after` was thrown away unsent: a watched one will never
+/// be delivered (`super::delivery`), so its Report ID must stop reading as on its way.
+fn settle_discarded(before: &[Record], after: &[Record]) {
+    for r in before.iter().filter(|r| !after.iter().any(|k| k.event_id == r.event_id)) {
+        super::delivery::settle(&r.event_id, super::delivery::DeliveryState::Failed);
+    }
+}
+
+/// **Destroy EVERY queued record, `Category::OneOff` included** — what sign-out and Delete all
+/// local data do, through `app::adapters::consent`'s forget path.
+///
+/// [`purge_withdrawn`] spares a one-off record because a consent change does not withdraw the press
+/// that queued it. Ending the account's tenure is not a consent change: it erases this
+/// television's local data, and a report the departing account pressed Send for is part of it.
+pub(crate) fn purge_all_local() {
+    let _g = lock();
+    let n = read_locked().len();
+    if n == 0 {
+        return; // nothing queued: no file is created just to be empty
+    }
+    if write_locked(&[]) {
+        crate::log(&format!("telemetry: local erasure purged {n} queued records"));
+    } else {
+        crate::log("telemetry: could not persist the emptied spool to ANY candidate path");
     }
 }
 
@@ -274,9 +308,16 @@ fn test_path() -> Option<PathBuf> {
 /// There is one spool per process by design, so without this every test in the suite would share
 /// one file under the build directory — the cross-test pollution `crate::testlock` exists for,
 /// arriving by a path nobody would think to grep. Callers hold [`crate::testlock::serial`].
+///
+/// **Also forgets [`ON_DISK`].** It is a per-PROCESS count, sound in production because `path()`
+/// is a `OnceLock` and the file never moves — but a test moves it, and a stale count from whichever
+/// spool test ran last makes the next `append` skip compaction and try to open a file that was
+/// never created at the new path (`append_locked`'s fast path only opens, it never creates). A
+/// one-off submit then reads that as a spool failure and takes the direct fallback instead.
 #[cfg(test)]
 pub(crate) fn set_test_path(p: Option<PathBuf>) {
     *TEST_PATH.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    ON_DISK.store(UNKNOWN, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -321,6 +362,33 @@ mod tests {
 
     fn ids() -> Vec<String> {
         read().into_iter().map(|r| r.event_id).collect()
+    }
+
+    /// **A watched report the spool throws away is a failure**, not a report still on its way:
+    /// a withdrawal's purge and the cap's trim both settle it, so the screen can offer Send
+    /// report again instead of spinning over a record that no longer exists.
+    #[test]
+    fn a_watched_report_the_spool_discards_is_settled_as_failed() {
+        use crate::telemetry::delivery::{self, DeliveryState};
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("discard");
+        delivery::forget();
+        let standing = Record { category: Category::Errors, dest: Dest::Sentry, ..rec("standing") };
+        assert_eq!(append_if(&standing, || true), Some(true));
+        assert!(delivery::watch("standing", DeliveryState::Queued, delivery::tenure()));
+        purge_withdrawn(&crate::telemetry::consent::Consent::default());
+        let purged = delivery::state("standing");
+
+        let oldest = Record { category: Category::Errors, dest: Dest::Sentry, ..rec("oldest") };
+        assert_eq!(append_if(&oldest, || true), Some(true));
+        assert!(delivery::watch("oldest", DeliveryState::Queued, delivery::tenure()));
+        for i in 0..queue::MAX_RECORDS {
+            let r = Record { category: Category::Errors, dest: Dest::Sentry, ..rec(&format!("e{i}")) };
+            append(&r);
+        }
+        let trimmed = delivery::state("oldest");
+        delivery::forget();
+        assert_eq!((purged, trimmed), (Some(DeliveryState::Failed), Some(DeliveryState::Failed)));
     }
 
     #[test]
@@ -486,6 +554,40 @@ mod tests {
         purge_withdrawn(&c);
 
         assert_eq!(ids(), vec!["a-crash".to_string()]);
+    }
+
+    /// **A withdrawal never touches a `OneOff` record, even with BOTH standing switches off** —
+    /// its consent was the one press that queued it, not either switch.
+    #[test]
+    fn a_withdrawal_never_touches_a_one_off_record() {
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("withdraw-oneoff");
+
+        append(&Record { category: Category::OneOff, dest: Dest::Sentry, ..rec("one-off") });
+        append(&Record { category: Category::Errors, ..rec("a-crash") });
+        append(&rec("a-usage"));
+
+        purge_withdrawn(&crate::telemetry::consent::Consent::default());
+
+        assert_eq!(ids(), vec!["one-off".to_string()]);
+    }
+
+    /// **Unlike a withdrawal, a LOCAL ERASURE takes the `OneOff` record too.** Sign-out and Delete
+    /// all local data remove every queued report; a one-off surviving either would contradict both.
+    #[test]
+    fn a_local_erasure_purges_a_one_off_record_too() {
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("erase-oneoff");
+
+        append(&Record { category: Category::OneOff, dest: Dest::Sentry, ..rec("one-off") });
+        append(&Record { category: Category::Errors, ..rec("a-crash") });
+
+        purge_all_local();
+
+        assert!(ids().is_empty());
+        // …and the next record lands normally: the erasure emptied the queue, not broke it.
+        assert!(append(&rec("after")));
+        assert_eq!(ids(), vec!["after".to_string()]);
     }
 
     /// **0600.** The spool holds no credential, but it holds what a person consented to send and

@@ -9,7 +9,8 @@
 //!
 //! Stored Home, picker and explicit developer bootstrap use the same owner, with distinct typed
 //! authority. Network/PIN derivation remain worker operations; offline policy is retained below.
-use crate::plex::account::{AccountClient, HomeUser, PinPoll, Resource, SwitchOutcome};
+use crate::plex::account::{AccountClient, CallEvidence, HomeUser, PinPoll, Resource, SwitchOutcome};
+use crate::telemetry::incident::{DiscoveryClass, IncidentContext, IncidentKind};
 use crate::plex::probe::{self, Candidate, Outcome, ProbePlan};
 use crate::plex::session::{self, ProfileCreds, ServerRef, Session, SourceRef, UserRef};
 use crate::plex::{CredentialPolicy, Origin, ServerId};
@@ -700,7 +701,14 @@ pub(crate) enum LoginProgress {
     /// The whole attempt failed for the stated, already-user-facing reason — no server on the
     /// account, discovery unreachable/refused, the pin ran out of automatic replacements, or pin
     /// creation itself could not reach plex.tv. Only the current owner may publish that failure.
-    Failed { epoch: u64, message: String },
+    ///
+    /// `incident` is the same failure as closed evidence for the onboarding report — a kind, the
+    /// class of the last network call and its counters, never `message`'s text.
+    Failed { epoch: u64, message: String, incident: crate::telemetry::incident::IncidentContext },
+    /// plex.tv stopped answering the polls of the code on screen (`Some`, once, when the run of
+    /// unanswered polls reaches [`LINK_TROUBLE_AFTER`]) or answered again (`None`). Non-terminal:
+    /// the wait goes on, and the owner raises a `LinkStalled` incident from the evidence.
+    LinkTrouble { epoch: u64, trouble: Option<crate::telemetry::incident::IncidentContext> },
     /// Discovery and the account's Home-user fetch both finished. Carries everything
     /// the owner's resource commit needs to update the session coherently: the winning
     /// server, the reachable roster, and the Home users (empty for a single-user account, in which
@@ -780,8 +788,57 @@ fn merge_profile_delta(session: &mut Session, delta: ProfileDelta) {
 
 // ---- worker threads ----
 
-fn output_failed(output: &dyn owner::ObservationSink, epoch: u64, message: &str) {
-    output.terminal(LoginProgress::Failed { epoch, message: message.into() }.into());
+/// A failure's evidence for a test that is not about the incident offer.
+#[cfg(test)]
+pub(crate) fn synthetic_incident() -> IncidentContext {
+    IncidentContext::new(IncidentKind::PinCreate, None)
+}
+
+/// End a sign-in on the error read-out. `incident` is the same failure as closed evidence — the
+/// caption is for the person, the context is what an onboarding report may carry.
+fn output_failed(output: &dyn owner::ObservationSink, epoch: u64, message: &str,
+    incident: IncidentContext) {
+    output.terminal(LoginProgress::Failed { epoch, message: message.into(), incident }.into());
+}
+
+/// The caption and the incident for a discovery that found nothing usable. One table for the
+/// sign-in and the rediscovery paths, so the two cannot word — or report — the same verdict
+/// differently: the rediscovery worker is reached only through *Try again* after a discovery
+/// failure (`retry_kind`), and reporting that failure under a kind of its own made the retry ask
+/// the question the person had just answered. `None` for the outcomes that are not failures.
+///
+/// **plex.tv refusing the account token is not silence.** `/resources` answering 401 or 403 is an
+/// [`IncidentKind::Authorization`] failure, with a caption that does not send the person to a
+/// network that is working.
+fn discovery_failure(d: &Discovery) -> Option<(&'static str, IncidentContext)> {
+    if let Discovery::Silent(Some(last)) = d {
+        let status = match last {
+            Ok(status) => Some(*status),
+            Err(failure) => failure.status,
+        };
+        if matches!(status, Some(401 | 403)) {
+            return Some((
+                "Plex didn't accept this sign-in. Try again.",
+                IncidentContext::new(IncidentKind::Authorization, Some(*last)),
+            ));
+        }
+    }
+    let (message, class, last) = match d {
+        Discovery::Ok { .. } | Discovery::Cancelled => return None,
+        Discovery::NoServers => ("This Plex account has no server yet.", DiscoveryClass::NoServers, None),
+        Discovery::Refused => (
+            "Your Plex server refused the connection — check its network access settings.",
+            DiscoveryClass::Refused,
+            None,
+        ),
+        Discovery::Silent(last) => (
+            "Couldn't reach any Plex server — check the connection.",
+            DiscoveryClass::Silent,
+            *last,
+        ),
+        Discovery::InsecureOnly => (DISCOVERY_INSECURE_ONLY_MESSAGE, DiscoveryClass::InsecureOnly, None),
+    };
+    Some((message, IncidentContext::new(IncidentKind::Discovery(class), last)))
 }
 
 fn login_worker_with_output(epoch: u64, cid: String, output: &dyn owner::ObservationSink) {
@@ -804,16 +861,19 @@ fn login_worker_with_output(epoch: u64, cid: String, output: &dyn owner::Observa
             id: code.id,
             output,
             started: code.minted,
+            epoch,
+            generation,
         };
         match poll_for_token(&mut watch, pin_window(code.expires_in)) {
             PollEnd::Token(t) => break t,
             PollEnd::Superseded => return, // cancelled — whoever superseded us owns the screen
-            PollEnd::Expired if another_code_allowed(generation) => {
+            PollEnd::Expired(_) if another_code_allowed(generation) => {
                 log("auth: the sign-in code ran out — minting a fresh one");
             }
-            PollEnd::Expired => {
+            PollEnd::Expired(tail) => {
                 log("auth: out of automatic sign-in codes — asking the user to start again");
-                return output_failed(output, epoch, "Sign-in timed out — try again.");
+                let incident = expired_incident(&tail, generation);
+                return output_failed(output, epoch, "Sign-in timed out — try again.", incident);
             }
         }
     };
@@ -836,26 +896,11 @@ fn login_worker_with_output(epoch: u64, cid: String, output: &dyn owner::Observa
     // It now describes what actually happened, and none of the three sends the user to the wrong
     // place: a token refusal is not a router problem, and an account with no server is not an
     // outage.
-    let (server, sources) = match discover_and_store(&ac, epoch, output) {
-        Discovery::Ok { server, sources } => (server, sources),
-        Discovery::Cancelled => return,
-        Discovery::NoServers => return output_failed(output, epoch, "This Plex account has no server yet."),
-        Discovery::Refused => {
-            return output_failed(output,
-                epoch,
-                "Your Plex server refused the connection — check its network access settings.",
-            )
-        }
-        Discovery::Silent => {
-            return output_failed(output,
-                epoch,
-                "Couldn't reach any Plex server — check the connection.",
-            )
-        }
-        Discovery::InsecureOnly => {
-            return output_failed(output, epoch, DISCOVERY_INSECURE_ONLY_MESSAGE)
-        }
-    };
+    let discovery = discover_and_store(&ac, epoch, output);
+    if let Some((message, incident)) = discovery_failure(&discovery) {
+        return output_failed(output, epoch, message, incident);
+    }
+    let Discovery::Ok { server, sources } = discovery else { return };
     finish_sign_in(&ac, epoch, server, sources, output);
 }
 
@@ -901,15 +946,22 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32,
         }
         if !output.progress(LoginProgress::CodeReplacing { epoch }.into()) { return None; }
     }
-    let pin = match ac.create_pin() {
-        Some(p) if p.id != 0 && !p.code.is_empty() => p,
-        _ => {
-            // Says what the internet is FOR here, because the one time this screen appears
-            // with the link deliberately down is the first boot of a set that has never signed
-            // in — and that person needs to know the app works offline once it has.
+    let created = crate::dev::scenarios::signin_trouble_create().unwrap_or_else(|| ac.create_pin_evidence());
+    let pin = match created {
+        Ok(p) if p.id != 0 && !p.code.is_empty() => p,
+        failed => {
+            // A 2xx that decoded into a pin with no id or code is still an answer: classed by
+            // its status, which is the 2xx it was.
+            let last = match failed { Err(evidence) => evidence, Ok(_) => Ok(200) };
+            // Says what the internet is FOR here — signing in — because the one time this screen
+            // appears with the link deliberately down is the first boot of a set that has never
+            // signed in. Drawn as the reason under "Couldn't sign in" (`screens/login.rs`).
             output_failed(output,
                 epoch,
-                "Couldn't reach Plex — check the connection. Signing in needs the internet once.",
+                "Couldn\u{2019}t reach Plex. Check your internet connection. An internet connection is \
+                 needed to sign in.",
+                IncidentContext::new(IncidentKind::PinCreate, Some(last))
+                    .with_link_state(0, None, generation),
             );
             return None;
         }
@@ -1007,20 +1059,39 @@ fn rediscovery_worker_with_output(cid: String, token: String, epoch: u64,
     output: &dyn owner::ObservationSink) {
     if !output.live() { return; }
     let ac = AccountClient::new(&cid, Some(&token));
-    match discover_and_store(&ac, epoch, output) {
-        Discovery::Ok { server, sources } => finish_sign_in(&ac, epoch, server, sources, output),
-        Discovery::Cancelled => {}
-        Discovery::NoServers => output_failed(output, epoch, "This Plex account has no server yet."),
-        Discovery::Refused => output_failed(output,
-            epoch,
-            "Your Plex server refused the connection — check its network access settings.",
-        ),
-        Discovery::Silent => output_failed(output,
-            epoch,
-            "Couldn't reach any Plex server — check the connection.",
-        ),
-        Discovery::InsecureOnly => output_failed(output, epoch, DISCOVERY_INSECURE_ONLY_MESSAGE),
+    let discovery = discover_and_store(&ac, epoch, output);
+    if let Some((message, incident)) = discovery_failure(&discovery) {
+        // The same caption AND the same incident as sign-in: this is the retry of that failure.
+        return output_failed(output, epoch, message, incident);
     }
+    if let Discovery::Ok { server, sources } = discovery {
+        finish_sign_in(&ac, epoch, server, sources, output);
+    }
+}
+
+/// What the polls of a code that ran out last observed — the evidence its expiry report carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct PollTail {
+    /// The latest poll's evidence: `Ok(200)` for an answer that was still pending, the failed
+    /// call's own evidence for an unanswered one. `None` when no poll produced any.
+    last: Option<CallEvidence>,
+    /// Consecutive unanswered polls at the end.
+    unanswered: u32,
+    /// How long that run of misses lasted, on the code's clock. `None` without one.
+    failing_for: Option<Duration>,
+}
+
+impl PollTail {
+    /// The tail at `elapsed` on the code's clock, with a run of `misses` that began at `since`.
+    fn at(elapsed: Duration, misses: u32, since: Duration, last: Option<CallEvidence>) -> Self {
+        Self { last, unanswered: misses, failing_for: (misses > 0).then(|| elapsed.saturating_sub(since)) }
+    }
+}
+
+/// The report for the last code of a flow running out, from how its polls last went.
+fn expired_incident(tail: &PollTail, generation: u32) -> IncidentContext {
+    IncidentContext::new(IncidentKind::PinExpired, tail.last)
+        .with_link_state(tail.unanswered, tail.failing_for, generation)
 }
 
 /// How one publication of a QR code ended.
@@ -1029,8 +1100,8 @@ enum PollEnd {
     /// The user authorized on their phone and plex.tv handed over the account token.
     Token(String),
     /// This code is finished — plex.tv says so, or its own lifetime ran out. There is nothing
-    /// left to wait for and the caller must mint another.
-    Expired,
+    /// left to wait for and the caller must mint another. Carries how its polls last went.
+    Expired(PollTail),
     /// A newer flow owns the sign-in, or the screen left [`Phase::Waiting`]. Say nothing.
     Superseded,
 }
@@ -1080,6 +1151,25 @@ trait PinWatch {
     fn wait(&mut self, d: Duration) -> bool;
     /// How long this code has been on screen.
     fn elapsed(&self) -> Duration;
+    /// plex.tv has stopped answering (`Some`, once per run of misses, when it reaches
+    /// [`LINK_TROUBLE_AFTER`]) or answers again (`None`, only after a `Some`).
+    fn link_trouble(&mut self, stall: Option<Stall>);
+}
+
+/// Consecutive unanswered polls before the wait is called stalled — 0.6.6's rule, and the
+/// shortest run that is not one bad moment: a single miss already backs off and says so in the
+/// log, a second in a row is a link that has gone.
+const LINK_TROUBLE_AFTER: u32 = 2;
+
+/// Evidence of a stalled wait, handed to [`PinWatch::link_trouble`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stall {
+    /// Consecutive unanswered polls.
+    unanswered: u32,
+    /// Since the first of them, on the code's clock.
+    failing_for: Duration,
+    /// What the latest of them observed.
+    last: CallEvidence,
 }
 
 /// The real one: a live pin, the wall clock, and the flow's epoch.
@@ -1088,11 +1178,14 @@ struct LivePin<'a> {
     id: i64,
     output: &'a dyn owner::ObservationSink,
     started: Instant,
+    epoch: u64,
+    /// Which code of the flow this is, 1-based — the report's code generation.
+    generation: u32,
 }
 
 impl PinWatch for LivePin<'_> {
     fn poll(&mut self) -> PinPoll {
-        self.ac.poll_pin(self.id)
+        crate::dev::scenarios::signin_trouble_poll().unwrap_or_else(|| self.ac.poll_pin(self.id))
     }
     fn wait(&mut self, d: Duration) -> bool {
         // SLICED, so a cancel is noticed within a slice however far the backoff has grown. The
@@ -1115,6 +1208,13 @@ impl PinWatch for LivePin<'_> {
     fn elapsed(&self) -> Duration {
         self.started.elapsed()
     }
+    fn link_trouble(&mut self, stall: Option<Stall>) {
+        let trouble = stall.map(|s| {
+            IncidentContext::new(IncidentKind::LinkStalled, Some(s.last))
+                .with_link_state(s.unanswered, Some(s.failing_for), self.generation)
+        });
+        self.output.progress(LoginProgress::LinkTrouble { epoch: self.epoch, trouble }.into());
+    }
 }
 
 /// Poll `/pins/{id}` until the user authorizes, the code dies, or the flow is superseded.
@@ -1124,8 +1224,16 @@ impl PinWatch for LivePin<'_> {
 /// "plex.tv stopped answering" produced identical evidence. Now a miss backs off, says so once,
 /// and says when the answers come back; and the one answer that really is an ending, a pin plex.tv
 /// no longer knows, ends the wait immediately instead of being retried for the rest of the window.
+///
+/// A run of [`LINK_TROUBLE_AFTER`] misses is also REPORTED ([`PinWatch::link_trouble`]), once per
+/// run, and the first answer after it clears the report — the screen says the link is down, and the
+/// onboarding report may offer the stall.
 fn poll_for_token(w: &mut impl PinWatch, window: Duration) -> PollEnd {
     let mut misses: u32 = 0;
+    // When the current run of misses began, on the code's clock.
+    let mut failing_since = Duration::ZERO;
+    // What the latest poll observed — the evidence an expiry is reported with.
+    let mut last_seen: Option<CallEvidence> = None;
     loop {
         // **The wait never runs past the deadline, and the deadline never cancels a poll.** Both
         // halves are one bug found in review, and it is the bug this whole change exists to stop:
@@ -1141,17 +1249,30 @@ fn poll_for_token(w: &mut impl PinWatch, window: Duration) -> PollEnd {
         match w.poll() {
             PinPoll::Authorized(t) => return PollEnd::Token(t),
             PinPoll::Pending => {
+                // `poll_response` decodes a pending pin only out of a 200.
+                last_seen = Some(Ok(200));
                 if misses > 0 {
                     log("auth: plex.tv is answering again — still waiting for authorization");
+                }
+                if misses >= LINK_TROUBLE_AFTER {
+                    w.link_trouble(None);
                 }
                 misses = 0;
             }
             PinPoll::Gone => {
                 log("auth: plex.tv no longer knows this sign-in code — expired or already used");
-                return PollEnd::Expired;
+                return PollEnd::Expired(PollTail::at(w.elapsed(), misses, failing_since, last_seen));
             }
-            PinPoll::Unreachable => {
+            PinPoll::Unreachable(last) => {
+                last_seen = Some(last);
+                if misses == 0 {
+                    failing_since = w.elapsed();
+                }
                 misses = misses.saturating_add(1);
+                if misses == LINK_TROUBLE_AFTER {
+                    let failing_for = w.elapsed().saturating_sub(failing_since);
+                    w.link_trouble(Some(Stall { unanswered: misses, failing_for, last }));
+                }
                 // Once when it starts, and rarely after, because this line is written every two
                 // seconds by an app whose event log is truncated at every launch.
                 if misses == 1 || misses % 15 == 0 {
@@ -1171,7 +1292,7 @@ fn poll_for_token(w: &mut impl PinWatch, window: Duration) -> PollEnd {
         // allowed to answer.
         if w.elapsed() >= window {
             log("auth: the sign-in code reached the end of its life unused");
-            return PollEnd::Expired;
+            return PollEnd::Expired(PollTail::at(w.elapsed(), misses, failing_since, last_seen));
         }
     }
 }
@@ -1242,8 +1363,10 @@ enum Discovery {
     /// that is [`Discovery::Silent`], because a request that never arrived says nothing about what
     /// the account owns.
     NoServers,
-    /// Servers exist; none of them answered (or plex.tv itself did not).
-    Silent,
+    /// Servers exist; none of them answered (or plex.tv itself did not). Carries the failed
+    /// `/api/v2/resources` call's evidence when that is what went silent; `None` when the servers
+    /// themselves did.
+    Silent(Option<CallEvidence>),
     /// At least one answered **401**, and none was reachable. Something in front of that server
     /// refuses unauthenticated requests — an auth proxy, or `allowedNetworks` excluding this
     /// subnet. It is not a network fault and not a dead server, so it must not be worded as one.
@@ -2239,7 +2362,7 @@ fn resolved_without_roster(resolved: Resolved) -> Result<Vec<SourceRef>, Discove
             Err(Discovery::InsecureOnly)
         }
         Resolved::None { refused: true, insecure: false } => Err(Discovery::Refused),
-        Resolved::None { refused: false, insecure: false } => Err(Discovery::Silent),
+        Resolved::None { refused: false, insecure: false } => Err(Discovery::Silent(None)),
         Resolved::Reached(found) => Ok(found),
     }
 }
@@ -2256,14 +2379,14 @@ fn resolved_without_roster(resolved: Resolved) -> Result<Vec<SourceRef>, Discove
 /// same session file it always did (plus a one-entry roster beside it).
 fn discover_and_store(ac: &AccountClient, epoch: u64, output: &dyn owner::ObservationSink) -> Discovery {
     if !output.live() { return Discovery::Cancelled; }
-    let resources = match ac.resources() {
-        Some(r) => r,
-        None => {
+    let resources = match ac.resources_evidence() {
+        Ok(r) => r,
+        Err(last) => {
             // No response, or one that would not deserialize: plex.tv is unreachable from here.
             // NOT `NoServers` — that copy tells the user their account owns no server, which is a
             // statement about their account made on the strength of never having heard from it.
             log("auth: resources request FAILED (no response/deser)");
-            return Discovery::Silent;
+            return Discovery::Silent(Some(last));
         }
     };
     log(&format!(

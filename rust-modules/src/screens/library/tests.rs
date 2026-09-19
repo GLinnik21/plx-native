@@ -295,13 +295,53 @@ fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason(
         let (caption, reason) = page.status_text(&cx);
         assert_eq!(reason.is_some(), !owner.is_empty());
         let mut overlay = crate::ui::widgets::StatusOverlay::new(page.status_frame(), &caption,
-            crate::ui::widgets::StatusKind::Failed).action(c"Try again");
+            crate::ui::widgets::StatusKind::Failed).page().action(c"Try again");
         if let Some(reason) = &reason { overlay = overlay.reason(reason); }
         let expected = overlay.action_frame_measured(cx.measure).unwrap();
         for at in [At::Drawn, At::SpringTarget] {
             let actual = page.place(&RETRY, &cx, at).unwrap().rect;
             assert_eq!([actual.x, actual.y, actual.w, actual.h], [expected.x, expected.y, expected.w, expected.h],
                 "reason={owner:?}, at={at:?}");
+        }
+    }
+}
+
+/// **A failed Library section and a failed Home stand on ONE line** (owner, 2026-09-19: the
+/// Library's read-out sat ~y 830 while Home's was near the centre). The Library's verdict hangs
+/// from `StatusOverlay::FULL_ANCHOR_TOP` exactly where Home's failed hub read-out puts its own
+/// (`screens/home`'s `status_overlay`: the full frame, `.page()`, *Try again*, no reason); its own
+/// server's read-out carries no reason, so its *Try again* is Home's too, word for word, while a
+/// borrowed source's reason stacks the row one reason slot lower, on the same column.
+#[test]
+fn a_failed_library_section_and_a_failed_home_share_the_verdict_and_the_row() {
+    use crate::ui::widgets::{StatusKind, StatusOverlay};
+    let _guard = crate::testlock::serial();
+    let home = StatusOverlay::new(Rect::FULL, c"Can\u{2019}t reach your Plex server", StatusKind::Failed)
+        .page()
+        .action(c"Try again");
+    for owner in ["", "friend"] {
+        let mut fixture = Fixture::new();
+        fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
+        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, crate::plex::ServerId::from_raw(7),
+            crate::browse::SrcGroup { name: "Cinema server".into(), handle: owner.into(),
+                state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+        let page = fixture.screen();
+        let cx = fixture.cx(Some(page.key(RETRY)));
+        let (caption, reason) = page.status_text(&cx);
+        if owner.is_empty() {
+            assert_eq!(caption.to_str().unwrap(), "Can\u{2019}t reach your Plex server");
+        }
+        let library = page.status_overlay(&cx, &caption, reason.as_deref());
+        let (lv, hv) = (library.verdict_band_measured(cx.measure), home.verdict_band_measured(cx.measure));
+        assert_eq!(lv.y, hv.y, "owner={owner:?}: the verdicts share a line");
+        assert_eq!(lv.y, StatusOverlay::FULL_ANCHOR_TOP);
+        let lr = page.place(&RETRY, &cx, At::Drawn).unwrap().rect;
+        let hr = home.action_frame_measured(cx.measure).unwrap();
+        assert_eq!(lr.cx(), hr.cx(), "owner={owner:?}: one column");
+        if owner.is_empty() {
+            assert_eq!(lr.y, hr.y, "own server: the rows share a line");
+        } else {
+            assert!(lr.y > hr.y, "a borrowed source's reason stacks its row under it");
         }
     }
 }
@@ -518,7 +558,7 @@ fn discovery_failure_retry_targets_the_source_without_a_section() {
     let mut page = fixture.screen();
     assert!(fixture.listing.view().id().is_none());
     assert_eq!(page.readout, Readout::Failed);
-    assert_eq!(page.status_text(&fixture.cx(None)).0.to_str().unwrap(), "Can't reach Cinema server");
+    assert_eq!(page.status_text(&fixture.cx(None)).0.to_str().unwrap(), "Can\u{2019}t reach Cinema server");
     let mut out = Vec::new();
     let mut present = crate::ui::present::Present::new();
     page.activate(RETRY, false, &fixture.cx(Some(page.key(RETRY))),

@@ -212,7 +212,7 @@ fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
         d.emit(MachineId::Input, Fx::Deliver(MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::Activate(0))));
         frame(&mut rig, &mut d);
-        assert!(ran.load(Ordering::Acquire), "mounted Try Again must cross revoke ACK and launch clean Login");
+        assert!(ran.load(Ordering::Acquire), "mounted Try again must cross revoke ACK and launch clean Login");
         let state = rig.session.snapshot_init();
         assert!(matches!(state.authority, BootstrapAuthority::Account { ref extras } if extras.is_empty()));
         assert!(state.persisted.account_token.is_empty());
@@ -326,7 +326,7 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
             let SessionWork::Login { client_id } = input else { panic!("dev exit must start clean Login") };
             assert_eq!(client_id, "synthetic-device");
             signal.store(true, Ordering::Release);
-            output.complete(crate::auth::LoginProgress::Failed { epoch, message: "synthetic stop".into() }.into()).unwrap();
+            output.complete(crate::auth::LoginProgress::Failed { epoch, message: "synthetic stop".into(), incident: crate::auth::synthetic_incident() }.into()).unwrap();
         });
         for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 1 {
             execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));

@@ -86,6 +86,21 @@ The closed diagnostic vocabulary includes terminal kinds such as `playback_inter
 Original-check outcomes `started`, `succeeded`, `no_body`, `deadline`, `transport`,
 `inconclusive`, `server_state` and `refused`.
 
+The same choice also covers a **sign-in problem report** when signing in fails. It contains the
+`kind` of sign-in step that failed — or, when the failure was inside the app rather than on the
+network (the app's own sign-in work refused, stopped or left unfinished), which of those fixed
+internal kinds it was — the connection's `link` class, an `http_status` or network error number
+(`curl_rc`) when there is one, how long the connection went `unanswered` and how long sign-in had
+been `failing_for` (both bucketed), how many codes were shown (`code_generation`, capped), whether
+the report was `consent`ed to as a standing choice or as a one-off, the app version and when it
+happened. It never includes your account name, tokens, PIN, sign-in code or network addresses. With
+crash reports on, it is sent automatically, carries the Crash report ID, and the sign-in screen
+shows the random **Report ID** of that one report. With them off, or not yet decided, the sign-in
+screen can offer **Send report** instead: that sends one report, only when you press it, with no
+Crash report ID and with a random **Report ID** shown on screen that identifies only that one
+report — not you or this television. A stalled wait is only ever reported that way, never
+automatically.
+
 ## Optional product analytics
 
 Product analytics is a separate choice and is off until you choose to share it. If enabled,
@@ -148,7 +163,8 @@ be sent; no further report is picked up after it.
 To ask what a category holds for your installation, or to have it deleted, write to the contact
 below and quote the identifier Settings shows for that category — the Crash report ID for crash
 and error reports, the Analytics ID for product analytics. Each identifier is the only handle its
-reports carry, so a request without it cannot be matched to anything.
+reports carry, so a request without it cannot be matched to anything. A one-off sign-in problem
+report is sent only when you press Send report; quote the Report ID it showed to ask about it.
 
 ## Contact and non-affiliation
 

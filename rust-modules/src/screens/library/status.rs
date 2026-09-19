@@ -9,7 +9,11 @@ impl LibraryScreen {
             Readout::Failed => StatusKind::Failed, Readout::Loading => StatusKind::Working,
             Readout::Empty | Readout::Grid => StatusKind::Empty,
         };
-        let mut overlay = StatusOverlay::new(self.status_frame(), caption, kind).phase(cx.tick.ms)
+        // A failed source fills the page under the live chrome, so it stands on the shared page
+        // lines (`StatusOverlay::page`) — level with Home's and the sign-in failure's — rather than
+        // centring in the content region, which dropped it ~250px below them. Loading and the
+        // empty answer keep the region.
+        let mut overlay = StatusOverlay::new(self.status_frame(), caption, kind).page().phase(cx.tick.ms)
             .focused(cx.focus.current == Some(self.key(RETRY)));
         if let Some(reason) = reason { overlay = overlay.reason(reason); }
         if self.readout == Readout::Failed { overlay = overlay.action(c"Try again"); }
@@ -30,7 +34,13 @@ impl LibraryScreen {
                 let source = directory.source().map(|(_, source)| source);
                 let name = source.map(|source| source.name.as_str()).filter(|name| !name.is_empty()).unwrap_or("server");
                 let owner = source.map(|source| source.handle.as_str()).filter(|owner| !owner.is_empty());
-                (format!("Can't reach {name}"), owner.map(|owner| format!("Shared by {owner} · your own server is fine.")))
+                // Your own server is "your Plex server", the words Home uses for the same fault;
+                // a borrowed one is named, since "your" would be untrue of it.
+                let caption = match owner {
+                    None => "Can\u{2019}t reach your Plex server".to_string(),
+                    Some(_) => format!("Can\u{2019}t reach {name}"),
+                };
+                (caption, owner.map(|owner| format!("Shared by {owner} · your own server is fine.")))
             }
             Readout::Empty => {
                 let caption = if self.wanted_kind.is_some() { "Nothing here matches".into() }

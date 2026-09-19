@@ -1498,7 +1498,7 @@ impl Bridge {
         use crate::ui::machine::{Addr, RequestId};
         if let Some(io) = &mut self.home_io {
             if matches!(effect, SessionFx::Capture { .. } | SessionFx::Work { .. }
-                | SessionFx::Coordinator(_) | SessionFx::Erase { .. }) {
+                | SessionFx::Coordinator(_) | SessionFx::Erase { .. } | SessionFx::Incident { .. }) {
                 io.failure = Some("unsupported controlled Home Session operation");
                 return;
             }
@@ -1559,6 +1559,10 @@ impl Bridge {
                 self.session_ready = None;
                 let leftovers = self.session_adapter.erase(all_local, &mut self.stores.metadata);
                 deliver(SessionEvent::Erased { epoch, leftovers });
+            }
+            SessionFx::Incident { id, lane, report } => {
+                let delivery = self.session_adapter.report_incident(id, lane, report);
+                deliver(SessionEvent::IncidentReported { id, delivery });
             }
             SessionFx::Coordinator(action) => {
                 if matches!(action, crate::auth::owner::CoordinatorAction::LocalDataErased) {
@@ -1659,6 +1663,12 @@ impl Bridge {
         let mut results: AppResults = self.session_adapter.take_results().into_iter()
             .map(|envelope| (envelope.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope))))
             .collect();
+        // What became of the report whose Report ID the sign-in screen shows: held, delivered or
+        // dropped.
+        if let Some((id, delivery)) = self.session_adapter.take_incident_delivery() {
+            results.push((crate::ui::machine::Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(0) },
+                AppMsg::Session(crate::auth::owner::SessionEvent::IncidentReported { id, delivery })));
+        }
         results.extend(self.take_hubs_results());
         if self.home_io.is_some() {
             if let Some(result) = crate::ui::landgate::take(StoreId::Browse.ord(),

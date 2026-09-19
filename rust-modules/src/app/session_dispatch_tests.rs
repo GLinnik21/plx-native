@@ -276,7 +276,7 @@ fn session_cancel_preserves_carried_receipts_until_unique_discard() {
         assert!(output.progress(AuthProgress::Registry(RegistryProgress::Install {
             epoch: 1, expected: None, sources: Vec::new(), primary: None,
         })).is_ok());
-        assert!(output.complete(LoginProgress::Failed { epoch: 1, message: "synthetic".into() }.into()).is_ok());
+        assert!(output.complete(LoginProgress::Failed { epoch: 1, message: "synthetic".into(), incident: crate::auth::synthetic_incident() }.into()).is_ok());
     }).unwrap();
     let records = rig.session_adapter.take_results();
     assert_eq!(records.len(), 2);
@@ -301,7 +301,7 @@ fn session_cancel_preserves_carried_receipts_until_unique_discard() {
 
     let next_key = SessionWorkKey { epoch: 2, op: SessionOp::Login };
     rig.session_adapter.launch(RequestId(2), next_key, true, |job| { job(); true }, |output| {
-        assert!(output.complete(LoginProgress::Failed { epoch: 2, message: "synthetic-new".into() }.into()).is_ok());
+        assert!(output.complete(LoginProgress::Failed { epoch: 2, message: "synthetic-new".into(), incident: crate::auth::synthetic_incident() }.into()).is_ok());
     }).unwrap();
     // Return A's unique credit twice while B is still carried. Neither can release B.
     rig.session_adapter.acknowledge(&[old_ack, old_ack]);
@@ -407,7 +407,7 @@ fn session_registry_then_terminal_waits_for_queued_commit_replies() {
                     port: 32400, token: "synthetic-server-token".into(), ..Default::default()
                 }, sources: Vec::new(), users: Vec::new() }
             } else {
-                LoginProgress::Failed { epoch: key.epoch, message: "synthetic failure".into() }
+                LoginProgress::Failed { epoch: key.epoch, message: "synthetic failure".into(), incident: crate::auth::synthetic_incident() }
             };
             assert!(output.complete(AuthProgress::Login(terminal)).is_ok());
         }).unwrap();

@@ -886,7 +886,9 @@ pub(crate) fn draw_readout(
 // zero-, one- or two-element reason leaves the hint at the same y. All on the video ground —
 // pure black by the time an error is up — so there is no card chrome.
 const FR_GLYPH_S: f32 = 96.0;
-const FR_GLYPH_TOP: f32 = 372.0;
+/// The full-screen read-out's shared top anchor — the same line a full-frame `Failed`
+/// [`StatusOverlay`] hangs its verdict from.
+const FR_GLYPH_TOP: f32 = StatusOverlay::FULL_ANCHOR_TOP;
 const FR_VERDICT_TOP: f32 = FR_GLYPH_TOP + FR_GLYPH_S + 44.0;
 const FR_REASON_TOP: f32 = FR_VERDICT_TOP + 48.0 + 24.0;
 /// two BODY lines' worth of slot, reserved whether or not anything is in it

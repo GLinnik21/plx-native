@@ -87,7 +87,7 @@ mod carry_matrix {
                     epoch: key.epoch, expected: None, sources: Vec::new(), primary: None,
                 })).unwrap();
             }
-            output.complete(LoginProgress::Failed { epoch: key.epoch, message: "old flow".into() }.into()).unwrap();
+            output.complete(LoginProgress::Failed { epoch: key.epoch, message: "old flow".into(), incident: crate::auth::synthetic_incident() }.into()).unwrap();
         }).unwrap();
         let records = rig.session_adapter.take_results();
         assert_eq!(records.len(), 3);
@@ -118,7 +118,7 @@ mod carry_matrix {
         assert!(records.iter().all(|r| rig.session_adapter.admitted(r)));
         let next_key = SessionWorkKey { epoch: EPOCH + 1, op: SessionOp::Login };
         rig.session_adapter.launch(RequestId(2), next_key, true, |job| { job(); true }, move |output| {
-            output.complete(LoginProgress::Failed { epoch: next_key.epoch, message: "next batch".into() }.into()).unwrap();
+            output.complete(LoginProgress::Failed { epoch: next_key.epoch, message: "next batch".into(), incident: crate::auth::synthetic_incident() }.into()).unwrap();
         }).unwrap();
         assert!(rig.session_adapter.take_results().is_empty());
         assert!(frame(&mut rig, &mut d, Vec::new(), &mut trace).carried > 0);
