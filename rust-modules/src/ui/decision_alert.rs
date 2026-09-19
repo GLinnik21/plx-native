@@ -272,7 +272,11 @@ impl DecisionAlert {
             // Live over the frozen host — and the first `live` of a frame is what takes the
             // snapshot, before this scrim lands on it. See `popover::host::live`.
             let _live = crate::ui::popover::host::live();
-            self.pop.scrim(0.55);
+            // The DECISION role's weight. Still the flat ink (`Popover::scrim`), not the
+            // container's inherited field: this alert is a legacy `Popover` drawn from inside its
+            // page (consent, and the player's repair alert over the video plane), not a
+            // `ModalStack` surface, so it has no field owner to inherit through.
+            self.pop.scrim(theme::underlay::DIM_DECISION);
         }
     }
     pub(crate) fn draw(

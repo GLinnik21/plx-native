@@ -1009,6 +1009,11 @@ impl Measure for Measurements {
         if let Self::Live(source)=self { return source.line_h(sz); }
         self.query(MetricKey::Line {sz},|m|m.line_h(sz))
     }
+    /// Only `Live` passes its source's answer through: `Record` must see every query, and
+    /// `Pending`/`Replay` must never be answered from the font.
+    fn live_font(&self)->bool {
+        matches!(self, Self::Live(source) if source.live_font())
+    }
 }
 
 /// Prove a lower-layer geometry closure uses only the supplied measurement capability. The

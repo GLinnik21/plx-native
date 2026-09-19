@@ -300,12 +300,21 @@ impl<'a> TextView<'a> {
         self.max_lines.hash(&mut h);
         // the lead run narrows line 0, so two views differing only in it wrap differently
         self.lead.map(|(r, _)| r).unwrap_or("").hash(&mut h);
-        if self.measure.is_some() {
+        if let Some(measure) = self.measure {
             // One borrowed view owns at most one wrap. Exact width/weight matter here;
-            // nothing can survive a new capability, replay, or frame through this memo.
+            // nothing can survive a new capability, replay, or frame through this memo —
+            // UNLESS the capability is the live font itself, whose answers are the ones the
+            // process memo already holds (`Measure::live_font`). Then the paragraph is wrapped
+            // once, not once per frame.
             width.to_bits().hash(&mut h);
             self.lead_bold.hash(&mut h);
             let key = h.finish();
+            if measure.live_font() {
+                #[cfg(test)]
+                assert!(!FORBID_LIVE.with(std::cell::Cell::get), "live TextView wrap memo forbidden");
+                // Salted so an exact-width live-capability entry never aliases a legacy one.
+                return wrap_memo(key ^ 0x6c69_7665_5f66_6e74, || self.wrap_uncached(width));
+            }
             if let Some((old, lines)) = self.measured_wrap.borrow().as_ref() {
                 if *old == key { return Rc::clone(lines); }
             }
@@ -606,6 +615,44 @@ mod tests {
             let _ = measured.with_measure(&missing).wrap(180.0);
             assert!(missing.take_miss().is_some(), "changing capability must invalidate this view's memo too");
         }
+        crate::text::take_measure_fault();
+    }
+
+    /// **A live-font capability wraps a paragraph ONCE, not once per frame.** Every frame builds
+    /// a fresh `TextView`, so a memo owned by the view dies with it; the Detail page re-wrapped
+    /// its whole about/hero text through TrueType on every frame this way and was CPU-bound at
+    /// 50 fps with nothing drawn (2026-09-19, stack samples + `drawmask=all`). A capability that
+    /// IS the live font shares the process memo; the test above still proves a table does not.
+    #[test]
+    fn a_live_font_capability_wraps_once_across_frames() {
+        use crate::ui::machine::Measure;
+        use std::cell::Cell;
+        let _serial = crate::testlock::serial();
+        struct CountingLive(Cell<u32>);
+        impl Measure for CountingLive {
+            fn width(&self, s: &std::ffi::CStr, sz: i32, _: bool) -> f32 {
+                self.0.set(self.0.get() + 1);
+                s.to_bytes().len() as f32 * sz as f32 * 0.5
+            }
+            fn cap_h(&self, sz: i32) -> f32 { sz as f32 }
+            fn line_h(&self, sz: i32) -> f32 { sz as f32 }
+            fn live_font(&self) -> bool { true }
+        }
+        let font = CountingLive(Cell::new(0));
+        // A text no other test wraps, so the process memo cannot already hold it.
+        let text = "zq-live-memo alpha beta gamma delta epsilon zeta eta theta iota";
+        let frame = || {
+            TextView::new(text, theme::size::BODY, theme::TEXT_PRIMARY)
+                .max_lines(2)
+                .with_measure(&font)
+                .wrap(211.0)
+        };
+        let first = frame();
+        let after_first = font.0.get();
+        assert!(after_first > 0, "the first frame measures");
+        let second = frame();
+        assert_eq!(font.0.get(), after_first, "the next frame's fresh view re-measured the paragraph");
+        assert_eq!(first.lines, second.lines);
         crate::text::take_measure_fault();
     }
 

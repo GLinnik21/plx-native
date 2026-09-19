@@ -198,6 +198,12 @@ pub(crate) struct DetailScreen {
     disc_unfurl: [Spring; 3],
     season_metrics: season::Metrics,
     about_rows: about::Rows,
+    /// The page's own keyed ground. Deliberately a bare [`AmbientWash`] and not the shared
+    /// `PageGround`, which is the browsing screens' policy: that type draws itself whenever it is
+    /// not flat and dithers unconditionally, and both are wrong here. This wash must not be laid
+    /// over a live video plane at all ([`keyed_ground_over_plane`]), which is a per-frame answer
+    /// `PageGround` does not offer and should not. (Its dither is not a question: every wash
+    /// dithers, the photograph sliding over it included — `gfx::draw_ambient`.)
     ground: AmbientWash,
     /// The catalog row for this item, captured ONCE at [`new`](Self::new) — the same
     /// construction-time-only snapshot [`ground`](Self::ground)'s blur envelope takes. This is a
@@ -2090,11 +2096,7 @@ impl DetailScreen {
             .ground
             .is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
         if keyed_ground_over_plane(preview.picture, texture, art_alpha, ground_flat) {
-            self.ground.draw_with(
-                p,
-                Rect::FULL,
-                crate::gfx::page_wash_dither(self.scroll.vel.abs() < 15.0),
-            );
+            self.ground.draw(p, Rect::FULL);
         }
         if texture != 0 {
             p.tex(

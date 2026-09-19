@@ -166,10 +166,6 @@ const CARD_GAP: f32 = theme::space::MD;
 /// outside `MARGIN_X`.
 const EDGE: f32 = theme::space::XL;
 const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
-/// Scrim peak alpha. Deliberately LIGHTER than the in-player panels' 0.58: the design's whole point
-/// is that the card and the shelf stay legible behind the popover, so this recesses them rather than
-/// blanking them.
-const SCRIM_A: f32 = 0.34;
 
 pub(crate) const SHAPE: &str =
     "ItemMenu{arg:ItemMenuArg,acts:[Option<Action{tag:u32,rk:str,season:u32,part:str,vcodec:str,acodec:str,title:str}>],sel:i32,\
@@ -701,7 +697,10 @@ impl<H: AppLike + crate::screens::registry::MetadataLike> Screen<H> for ItemMenu
     /// itself quietly contradicts. The un-dimmed copy is also what the host snapshot holds, so the
     /// panel's own glass never frosts a dimmed picture of the very card it is about.
     fn scrim(&self) -> Scrim {
-        Scrim::dim(SCRIM_A)
+        // The COMPACT role — the lightest dim in `theme::underlay`: the design's whole point is that
+        // the card and the shelf stay legible behind the popover, so this recesses them rather
+        // than blanking them.
+        Scrim::dim(theme::underlay::DIM_COMPACT)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {
         Glass::CACHED.prepare(&mut self.glass, false);

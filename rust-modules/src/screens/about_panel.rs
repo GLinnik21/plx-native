@@ -90,8 +90,6 @@ pub(crate) const CONTENT_W: f32 = PANEL_W - 2.0 * PAD;
 /// edge. It is a property of the MATERIAL, not taste — a backdrop blur samples a window around its
 /// own rect, and a panel flush to an edge has nothing on one side to sample.
 const EDGE_CLEAR: f32 = 68.0;
-/// The modal scrim's peak alpha — the mock's `scrimStill: 0.46`, shared by all four alerts.
-const SCRIM_A: f32 = theme::alert::SCRIM_A;
 
 // ---- the ladder ------------------------------------------------------------------------------
 //
@@ -493,7 +491,8 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
     /// the page-drawn version could reach.
     fn scrim(&self) -> crate::ui::screen::Scrim {
-        crate::ui::screen::Scrim::dim(SCRIM_A)
+        // the mock's `scrimStill` — the PANEL role every read-only alert shares
+        crate::ui::screen::Scrim::dim(theme::underlay::DIM_PANEL)
     }
     fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
         // **The item is the one that LANDED, not the page's.** The panel is presented over exactly
