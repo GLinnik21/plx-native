@@ -112,10 +112,9 @@ pub(crate) enum Role {
     /// the ink is zero. **`weight == 0` is today's flat `theme::scrim_black` and must stay
     /// BIT-IDENTICAL to it** — see [`plan`].
     ///
-    /// Not constructed outside this module's own tests yet: `RouteGround` (PR2 stage B) only ever
-    /// draws [`Role::Ground`]. A scrim that reads the page under it — a popover or the player HUD —
-    /// is PR3's consumer of this variant, not a reason to delete it now.
-    #[allow(dead_code)]
+    /// `RouteGround` (PR2 stage B) only ever draws [`Role::Ground`]; this variant's consumer is
+    /// PR3's `ModalUnderlay` (`containers::modal::ModalStack::draw_scrims`), which constructs it as
+    /// `Role::Dim { weight: theme::underlay::TINT }` for every surface's scrim.
     Dim { weight: f32 },
 }
 
@@ -205,6 +204,19 @@ impl UnderlayField {
             return;
         }
         self.adopt(cells_from_corners(corners, grade));
+    }
+
+    /// **Replace the latch with a grid somebody else already sampled** — the RE-latch, for an owner
+    /// whose page changed under a field that is already up (the container's, when the host
+    /// snapshot is re-taken: `containers::modal::ModalUnderlay`).
+    ///
+    /// Unlike [`latch_from_frame`](Self::latch_from_frame) it is NOT idempotent, and that is the
+    /// point: the owner samples FIRST and only calls this with a real answer, so a frame on which
+    /// `gfx::sample_underlay_field` has none (a blur source pass, a frozen page) keeps the field
+    /// it had instead of dropping to the flat dim for a frame. It is also the seam a host test
+    /// drives the latch through, since the sample is the one step that needs a GL context.
+    pub(crate) fn latch_sampled(&mut self, raw: &[[f32; 3]; N], grade: Grade) {
+        self.adopt(cells_from_frame(raw, grade));
     }
 
     /// Re-arm. The texture name is kept — the next latch re-specs it — because a field that is

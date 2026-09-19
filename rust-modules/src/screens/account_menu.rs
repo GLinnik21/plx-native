@@ -71,10 +71,6 @@ pub(crate) enum Action {
 /// signed-out case, where naming an account we do not have would be the same lie in reverse).
 const HEADER_FALLBACK: &str = "Account";
 
-/// How dark the page goes behind this menu — the peak the container ramps with the appear spring
-/// (`ModalStack::draw_scrims`).
-const SCRIM_A: f32 = 0.5;
-
 /// The pinned ~24px corner radius.
 const PANEL_RAD: f32 = 24.0;
 
@@ -381,7 +377,9 @@ impl<H: AppLike> Screen<H> for AccountMenuScreen {
     /// panel's placement is its own (it hangs under the top bar), not a function of the chip's
     /// rect.
     fn scrim(&self) -> Scrim {
-        Scrim::lifting(SCRIM_A, crate::ui::widgets::redraw_profile_chip)
+        // The SHEET role: how dark the page goes behind this menu, the peak the container ramps
+        // with the appear spring (`ModalStack::draw_scrims`).
+        Scrim::lifting(crate::ui::theme::underlay::DIM_SHEET, crate::ui::widgets::redraw_profile_chip)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {
         Glass::CACHED.prepare(&mut self.glass, false);
