@@ -29,6 +29,9 @@ impl crate::ui::machine::Measure for LegacyMeasure {
     fn line_h(&self, sz: c_int) -> f32 {
         crate::text::text_height(sz, 0)
     }
+    fn live_font(&self) -> bool {
+        true
+    }
 }
 
 // ---- backdrop glass -------------------------------------------------------------------------
@@ -3381,24 +3384,12 @@ impl AmbientWash {
     }
     /// Paint it over `r`. Opaque — this REPLACES what is under it (see the type docs), so it belongs
     /// at the bottom of a screen's draw, standing in for the flat clear.
+    ///
+    /// Always dithered, on every screen and every frame — including under Home's diving hero and
+    /// Detail's scrolling still (`gfx::draw_ambient` records the three gates that were tried and
+    /// why each came back out).
     pub(crate) fn draw(&self, p: Painter, r: Rect) {
-        self.draw_with(p, r, true);
-    }
-    /// [`draw`](Self::draw) with the dither made the caller's decision: `false` on the frames a
-    /// wash is only being seen THROUGH moving artwork (Home's hero fold and slide, Detail's
-    /// scrolling still — both through `gfx::page_wash_dither`, which asks about that artwork and
-    /// nothing else), where the noise buys nothing and costs ~2.5M GPU cycles a frame at full
-    /// screen. Every other wash is the screen itself and takes [`draw`](Self::draw), which dithers
-    /// on every frame. A caller must answer from the springs that move its ARTWORK — never from a
-    /// frame-wide or page-wide motion verdict, which counts this wash's own dissolve and flickers
-    /// the bands the noise exists to remove. See `gfx::draw_ambient`.
-    pub(crate) fn draw_with(&self, p: Painter, r: Rect, dither: bool) {
-        p.ambient(
-            r,
-            1.0,
-            self.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos]),
-            dither,
-        );
+        p.ambient(r, 1.0, self.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos]));
     }
 }
 
@@ -3419,10 +3410,9 @@ impl AmbientWash {
 /// * **A ground that has resolved to the app's own clear colour is not drawn.** It is a
 ///   ~2M-fragment full-screen pass that changes nothing; `AmbientWash::is_flat` is the test and
 ///   forgetting it costs a whole screen's fill-rate headroom for an invisible gradient.
-/// * **This ground always dithers.** The noise is ~2.5M GPU cycles a frame at full screen
-///   (`gfx::draw_ambient`) and the two page washes with artwork sliding over them refuse it on
-///   those frames (`gfx::page_wash_dither`) — but a browsing ground has nothing over it, so there
-///   is no frame on which it is not the thing being looked at. [`draw`](Self::draw) takes no flag.
+/// * **This ground always dithers** — as every wash does now, the two with artwork sliding over
+///   them included (`gfx::draw_ambient`). A browsing ground has nothing over it, so there is no
+///   frame on which it is not the thing being looked at. [`draw`](Self::draw) takes no flag.
 ///
 /// What stays the screen's business is the per-corner SHAPE — how far each corner leans — for the
 /// reason [`AmbientWash::GROUND_W`] gives: one strength, many arrangements. [`CARD_W`](Self::CARD_W)
@@ -3508,19 +3498,17 @@ impl PageGround {
     /// Paint the ground under everything, standing in for the flat clear — **skipped when it has
     /// resolved to that clear anyway**, which is the whole fill-rate argument in the type's doc.
     ///
-    /// **Dithered on every frame, unconditionally.** Home's hero ground can drop the noise while a
-    /// photograph slides over it (`gfx::page_wash_dither`, answered there from the artwork's own
-    /// springs); a browsing screen's ground has no artwork over it at all — it is directly visible
-    /// in every gutter of the grid standing on it, at rest and while it dissolves, and an
-    /// undithered gradient there bands in slow diagonal treads that CRAWL as the ground moves. So
-    /// the choice is not the caller's here, and the type does not offer it. The fill-rate answer
+    /// **Dithered on every frame, unconditionally**, like every wash. A browsing screen's ground is
+    /// directly visible in every gutter of the grid standing on it, at rest and while it dissolves,
+    /// and an undithered gradient there bands in slow diagonal treads that CRAWL as the ground
+    /// moves. The fill-rate answer
     /// this type DOES keep is the one above it: a ground that has resolved to the clear colour is
     /// not drawn at all, so the frames it costs nothing are the frames it shows nothing.
     pub(crate) fn draw(&self, p: Painter, r: Rect) {
         if self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS) {
             return;
         }
-        self.wash.draw_with(p, r, true);
+        self.wash.draw(p, r);
     }
 
     /// Has the ground resolved to the app's own surface? The screens' own tests ask this; the draw

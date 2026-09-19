@@ -522,13 +522,14 @@ impl Drop for MotionScope {
 /// **The first still frame after motion is presented too — the SETTLE frame.** A spring in flight
 /// is judged by the rest test at the top of this file, so the last frame it forces is one whose
 /// residual is under a quarter pixel; the frame after it, where the spring reports nothing, is the
-/// picture that stays on the panel until the next key. The one at-rest term in the renderer —
-/// `gfx::page_wash_dither`, which is what puts the ±1 LSB dither on Home's and Detail's page wash
-/// — is answered from the ARTWORK's own springs by the screen that owns them, and those springs
-/// come to rest on the frame that forces no present of its own, so without one more present the
-/// resting picture would be the undithered in-flight one and the banding the dither exists for
-/// would reappear at exactly the moment the eye rests on it. One frame, once per settle, and the
-/// idle gate then closes as before. (This repairs the LIVE page only. A frozen-host snapshot is
+/// picture that stays on the panel until the next key. It was added for an at-rest term in the
+/// renderer — `gfx::page_wash_dither`, which dropped the ±1 LSB dither from Home's and Detail's
+/// page wash while their artwork moved and restored it on the frame the artwork's springs came to
+/// rest, a frame that forced no present of its own. That gate is gone (2026-09-19: every wash
+/// dithers on every frame, `gfx::draw_ambient`), so no renderer term differs between the last
+/// moving frame and the first still one any more; the settle present is kept as the one extra
+/// frame that guarantees the resting picture is the fully-settled one. One frame, once per
+/// settle, and the idle gate then closes as before. (This repairs the LIVE page only. A frozen-host snapshot is
 /// drawn again on page damage or, under a fading panel, on page motion —
 /// `popover::host::begin_frame`'s rule — and never by this frame.)
 pub(crate) fn should_present(now: u32) -> bool {

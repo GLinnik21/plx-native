@@ -56,19 +56,21 @@ pub(crate) use glsl;
 ///
 /// Every program built with this owes `gfx` two things at link time: `u_dither_tex` set to texture
 /// unit 2 ([`bind_dither_tile`]), and `u_dither` set per draw from [`dither_for_field`] (the ambient
-/// wash asks through its caller's flag instead — [`page_wash_dither`] for the two pages that slide
-/// artwork over their wash, `true` everywhere else).
+/// wash takes [`DITHER_LSB`] on every draw: it is always broad, and since 2026-09-19 nothing may
+/// switch its noise off).
 ///
 /// **Only the three SLOW-FIELD programs are built with it** — `fs_ambient`, `fs_modal_ground` and
 /// `fs_glass`, the ones whose ramp is a blur or a full-screen wash. `fs_src` and `fs_shadow`, the
 /// per-rect programs every card, chip, scrim and row highlight goes through, are deliberately plain:
-/// the prelude's uniform branch is not free on Midgard, and carrying it on those two was measured
+/// the prelude is not free on Midgard (then behind a uniform branch, which is itself not free —
+/// `dither.glsl` cost rule 1), and carrying it on those two was measured
 /// at +4M shader words a frame on the hero paging scene — the whole of the 57→50 fps regression the
 /// tile arrived with (bisected 2026-09-04; `docs/backdrop-blur-profiling.md`). The test
 /// `every_dithered_program_carries_the_one_shared_dither_and_no_hash_of_its_own` pins both lists.
 /// [`glsl_dithered`]'s twin: the SAME fragment source behind `shaders/dither_stub.glsl`, whose
-/// `plx_dither` is the identity — so one file links as two programs, and the in-flight one has no
-/// uniform, no sampler and no branch. See [`ambient_program`] for why the branch is worth a program.
+/// `plx_dither` is the identity — so one file links as two programs, and the plain one (the hero
+/// scrim's, `draw_grad4`) has no
+/// uniform, no sampler and no fetch. See [`ambient_program`] for why OFF is a program, not a zero.
 macro_rules! glsl_undithered {
     ($file:literal) => {
         // SAFETY: as `glsl!` — GLSL sources contain no interior NUL.
@@ -91,6 +93,23 @@ macro_rules! glsl_dithered {
     };
 }
 
+/// The VERTEX half of a [`glsl_dithered`] program: the same vertex source with `PLX_DITHER_NC`
+/// defined, which makes it emit `v_dither_nc` — the noise tile's coordinate, target px /
+/// [`NOISE_DIM`] — so `shaders/dither.glsl` fetches straight from a varying and does no arithmetic
+/// on `gl_FragCoord` (its cost rule 4, measured 2026-09-19). Every `glsl_dithered!` fragment source
+/// must link against one of these; the plain vertex source (`VS_IMG` behind every poster and card,
+/// `VS_AMBIENT` behind the undithered twin) stays free of the extra varying.
+macro_rules! glsl_vs_dithered {
+    ($file:literal) => {
+        // SAFETY: as `glsl!` — GLSL sources contain no interior NUL.
+        unsafe {
+            ::std::ffi::CStr::from_bytes_with_nul_unchecked(
+                concat!("#define PLX_DITHER_NC\n", include_str!($file), "\0").as_bytes(),
+            )
+        }
+    };
+}
+
 const VS_SRC: &CStr = glsl!("shaders/vs_src.vert");
 const FS_SRC: &CStr = glsl!("shaders/fs_src.frag");
 const FS_AMBIENT: &CStr = glsl_dithered!("shaders/fs_ambient.frag");
@@ -98,6 +117,8 @@ const FS_AMBIENT_PLAIN: &CStr = glsl_undithered!("shaders/fs_ambient.frag");
 const VS_AMBIENT: &CStr = glsl!("shaders/vs_ambient.vert");
 const FS_SHADOW: &CStr = glsl!("shaders/fs_shadow.frag");
 const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
+const VS_AMBIENT_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_ambient.vert");
+const VS_IMG_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_img.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
 const FS_MODAL_GROUND: &CStr = glsl_dithered!("shaders/fs_modal_ground.frag");
 const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
@@ -115,6 +136,7 @@ const GL_STATIC_DRAW: c_uint = 0x88E4;
 const GL_FLOAT: c_uint = 0x1406;
 const GL_FALSE: u8 = 0;
 const GL_TRIANGLE_STRIP: c_uint = 0x0005;
+const GL_TRIANGLES: c_uint = 0x0004;
 const GL_BLEND: c_uint = 0x0BE2;
 const GL_DITHER: c_uint = 0x0BD0;
 const GL_ONE: c_uint = 0x0001;
@@ -417,8 +439,9 @@ static mut FL_RECT: c_int = 0;
 static mut FL_COL: c_int = 0;
 static mut ML_DITHER: c_int = 0;
 static mut AL_DITHER: c_int = 0;
-/// The ambient field's IN-FLIGHT program (`FS_AMBIENT_PLAIN`) and its uniforms; 0 when the link
-/// failed, in which case `APROG` serves every frame with `u_dither` at 0 as before.
+/// The ambient field's PLAIN program (`FS_AMBIENT_PLAIN`) — the hero scrim's (`draw_grad4`), never
+/// the wash's — and its uniforms; 0 when the link failed, in which case `APROG` serves the scrim
+/// with `u_dither` at 0.
 static mut APROG_PLAIN: c_uint = 0;
 static mut PL_RECT: c_int = 0;
 static mut PL_TL: c_int = 0;
@@ -426,7 +449,7 @@ static mut PL_TR: c_int = 0;
 static mut PL_BR: c_int = 0;
 static mut PL_BL: c_int = 0;
 /// The ONE dither source for every `glsl_dithered!` program: a [`NOISE_DIM`]-square tile of TPDF noise, `GL_REPEAT`,
-/// `GL_NEAREST`, sampled at `gl_FragCoord / NOISE_DIM`. A TEXTURE rather than a hash for one reason
+/// `GL_NEAREST`, sampled 1:1 with the panel through the vertex shader's `v_dither_nc`. A TEXTURE rather than a hash for one reason
 /// the counters made plain: on this part the arithmetic pipe is what binds a full-screen quad, and
 /// the texture pipe sits nearly idle beside it. The interleaved-gradient hash that preceded it —
 /// two `fract`s, a `dot` and a multiply, all in highp because `gl_FragCoord` is — cost the fold's
@@ -523,6 +546,7 @@ static mut IL_TEX: c_int = 0;
 static mut IL_RIMW: c_int = 0;
 static mut IL_RIMCOL: c_int = 0;
 static mut IL_CH: c_int = 0;
+static mut IL_INNER: c_int = 0;
 static mut IL_SHINV: c_int = 0;
 static mut IL_SHCOL: c_int = 0;
 static mut MPROG: c_uint = 0;
@@ -698,6 +722,37 @@ pub(crate) fn use_prog(p: c_uint) {
 
 static QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
 
+/// Cells per side of the FIELD MESH — the grid the four-corner programs (`draw_ambient`,
+/// `draw_grad4`) are drawn as instead of one quad. See [`field_mesh`].
+const FIELD_N: usize = 16;
+/// Vertices in the field mesh: two triangles a cell.
+const FIELD_VERTS: usize = FIELD_N * FIELD_N * 6;
+
+/// **The unit square as `FIELD_N`² cells of two triangles each**, as `GL_TRIANGLES` positions.
+///
+/// The four-corner field is bilinear, and the cheapest place to evaluate it is per VERTEX: the
+/// fragment then reads one interpolated colour and does no arithmetic on it at all. One quad
+/// cannot carry that — a triangle interpolates linearly and the field is not linear — which is why
+/// the quad form kept `top(u)`/`bot(u)` as two varyings plus `v_uv` and mixed them per fragment.
+/// On a grid the linear interpolant is within `twist·h²/4` of the field (`h = 1/FIELD_N`), under
+/// half an 8-bit code at 16 for the largest twist a colour can have; the test
+/// `the_field_mesh_is_the_bilinear_field_within_half_a_code` walks this very list.
+///
+/// Measured on the set (2026-09-19, `plxnative-hwcnt`, `docs/backdrop-blur-profiling.md`): the
+/// full-screen wash drawn this way cost ~0.4M fewer GPU cycles a frame on Home's fold and grid —
+/// four varyings down to two — for 1536 vertices the vertex stage does not notice.
+fn field_mesh() -> Vec<f32> {
+    let mut v = Vec::with_capacity(FIELD_VERTS * 2);
+    let f = |i: usize| i as f32 / FIELD_N as f32;
+    for j in 0..FIELD_N {
+        for i in 0..FIELD_N {
+            let (x0, x1, y0, y1) = (f(i), f(i + 1), f(j), f(j + 1));
+            v.extend_from_slice(&[x0, y0, x1, y0, x0, y1, x1, y0, x1, y1, x0, y1]);
+        }
+    }
+    v
+}
+
 /// Bind the one vertex array object a desktop core profile requires.
 ///
 /// **GLES2 has no VAOs and a core profile has no DEFAULT one**, and the difference is silent: with
@@ -769,16 +824,21 @@ pub(crate) fn init_gl() {
         let mut vbo: c_uint = 0;
         glGenBuffers(1, &mut vbo);
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        // ONE buffer, one attribute layout: the unit quad at vertex 0 and the field mesh right
+        // after it at vertex 4, so a field draw is `glDrawArrays(GL_TRIANGLES, 4, ..)` against the
+        // same pointer and nothing is ever rebound (see `bind_core_profile_vao`).
+        let mut verts: Vec<f32> = QUAD.to_vec();
+        verts.extend(field_mesh());
         glBufferData(
             GL_ARRAY_BUFFER,
-            std::mem::size_of_val(&QUAD) as isize,
-            QUAD.as_ptr() as *const c_void,
+            std::mem::size_of_val(verts.as_slice()) as isize,
+            verts.as_ptr() as *const c_void,
             GL_STATIC_DRAW,
         );
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, std::ptr::null());
 
-        APROG = link_program(VS_AMBIENT.as_ptr(), FS_AMBIENT.as_ptr()).unwrap_or_else(|| {
+        APROG = link_program(VS_AMBIENT_DITHERED.as_ptr(), FS_AMBIENT.as_ptr()).unwrap_or_else(|| {
             log("ambient prog link failed");
             0 // draw_ambient then binds program 0 and draws nothing — the corner wash is a nicety
         });
@@ -1100,30 +1160,26 @@ pub(crate) fn draw_ambient(
     tr: *const f32,
     br: *const f32,
     bl: *const f32,
-    dither: bool,
 ) {
     if culled(x, y, w, h) || gate(Class::Ambient, x, y, w, h) {
         return;
     }
     unsafe {
         let c3 = |p: *const f32, i: usize| *p.add(i);
-        // **`dither` is the caller's word, and the whole of the decision.** The noise exists for a
-        // still, opaque, slow gradient — the one case 8-bit output bands visibly. A wash behind a
-        // moving translucent photograph (Home's hero fold and slide, Detail's art) is never seen
-        // as a gradient, and the fetch plus its two arithmetic ops on 2M pixels are ~2.5M GPU
-        // cycles a frame on the set (2026-09-02) — the difference between the fold passing its
-        // 50 fps gate and not; those two pages answer through `page_wash_dither`, from their OWN
-        // artwork's springs and from nothing else. Every other wash — a browsing screen's ground,
-        // and the screens whose wash IS the picture (Settings, the who's-watching picker, first
-        // run, sign-in) — passes `true` and dithers on every frame, moving or not. Twice now a
-        // motion verdict has been wired into this decision and twice it has had to come back out:
-        // globally on 2026-09-04, where every focus spring on those screens drew the wash's bands
-        // and erased them again on the settle frame, and as the PAGE's verdict until 2026-09-19,
-        // where the wash's own colour dissolve undithered the wash it was dissolving. The tile
-        // lives permanently on unit 2
-        // (`bind_dither_tile`), so the dithered draw is one uniform and no binding; the in-flight
-        // draw is a different PROGRAM, with no branch to pay for — see `ambient_program`.
-        let amp = if dither { DITHER_LSB } else { 0.0 };
+        // **The wash ALWAYS dithers — every page, every frame, moving or not.** It is the one
+        // surface in the app that is a still, opaque, slow gradient across the whole panel, which
+        // is the one case 8-bit output bands visibly, and every attempt to take its noise away for
+        // "frames nobody looks at" has come back as banding the owner saw: a global motion gate
+        // (2026-09-04, every focus spring on Settings), the PAGE's motion verdict (until
+        // 2026-09-19, the wash's own colour dissolve), and last the ARTWORK's (Home's snap dive and
+        // hero slide, Detail's scroll — the wash-only band under the sliding photograph is exactly
+        // what the eye is on). Those gates existed because the noise used to cost ~2.5M GPU cycles
+        // a frame at full screen (2026-09-02). It does not any more: cost rules 1 and 4 in
+        // `dither.glsl` and the field mesh made it one fetch and one add, and the whole of it on
+        // Home's fold measured +0.6M cycles a frame (2026-09-19,
+        // `docs/backdrop-blur-profiling.md`). The tile lives permanently on unit 2
+        // (`bind_dither_tile`), so the dithered draw is one uniform and no binding.
+        let amp = DITHER_LSB;
         let (prog, l_rect, l_tl, l_tr, l_br, l_bl) = ambient_program(amp);
         use_prog(prog); // u_screen is set once per program at init
         glUniform4f(l_rect, x, y, w, h);
@@ -1134,18 +1190,25 @@ pub(crate) fn draw_ambient(
         if prog == APROG {
             glUniform1f(AL_DITHER, amp);
         }
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        draw_field_mesh();
     }
 }
 
+/// Issue the field mesh (see [`field_mesh`]) — every four-corner draw goes through this.
+#[inline]
+unsafe fn draw_field_mesh() {
+    glDrawArrays(GL_TRIANGLES, 4, FIELD_VERTS as c_int);
+}
+
 /// Which of the two ambient programs draws a field, with its uniform locations: the dithered one
-/// (`APROG`) only when it will actually dither, the plain twin (`APROG_PLAIN`, the same source
-/// behind the no-op stub) for every in-flight frame — or as the fallback when the twin failed to
-/// link, in which case the caller sets `u_dither` itself.
+/// (`APROG`) for the wash, which always dithers, and the plain twin (`APROG_PLAIN`, the same source
+/// behind the no-op stub) for the hero scrim (`draw_grad4`) — each the other's fallback when one
+/// failed to link, in which case the caller sets `u_dither` itself.
 ///
-/// A `u_dither` of 0 skips the fetch and the add but not the branch, and on a 2.07M-fragment wash
-/// drawn under every Home fold and every cast-row scroll the branch alone is on the order of a
-/// million GPU cycles a frame (`docs/backdrop-blur-profiling.md`, 2026-09-04) for noise that is off.
+/// The prelude has no off switch of its own — it is straight-line, because a uniform branch there
+/// measured +5.8M arithmetic words a frame on a scrolling Library (`dither.glsl` cost rule 1,
+/// 2026-09-19) — so an undithered field is the plain twin, and a `u_dither` of 0 on `APROG` (the
+/// fallback) pays the fetch times zero.
 #[inline]
 unsafe fn ambient_program(amp: f32) -> (c_uint, c_int, c_int, c_int, c_int, c_int) {
     // Each program is the other's fallback: a positive amplitude with the dithered program gone
@@ -1190,7 +1253,7 @@ pub(crate) fn draw_grad4(
         if prog == APROG {
             glUniform1f(AL_DITHER, 0.0);
         }
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        draw_field_mesh();
     }
 }
 
@@ -1446,6 +1509,7 @@ pub(crate) fn init_image() {
         IL_RIMW = glGetUniformLocation(IPROG, c"u_rimw".as_ptr());
         IL_RIMCOL = glGetUniformLocation(IPROG, c"u_rimcol".as_ptr());
         IL_CH = glGetUniformLocation(IPROG, c"u_ch".as_ptr());
+        IL_INNER = glGetUniformLocation(IPROG, c"u_inner".as_ptr());
         IL_SHINV = glGetUniformLocation(IPROG, c"u_shinv".as_ptr());
         IL_SHCOL = glGetUniformLocation(IPROG, c"u_shcol".as_ptr());
         // Set this program's constant uniforms once (per-program state): the fixed screen size
@@ -1457,7 +1521,7 @@ pub(crate) fn init_image() {
         // The full-screen Settings ground has no SDF, rim or shadow. Its tiny dedicated shader
         // keeps the image program's hot poster path unchanged and adds saturation without another
         // sample. A link failure is harmless: the draw site falls back to IPROG.
-        MPROG = link_program(VS_IMG.as_ptr(), FS_MODAL_GROUND.as_ptr()).unwrap_or(0);
+        MPROG = link_program(VS_IMG_DITHERED.as_ptr(), FS_MODAL_GROUND.as_ptr()).unwrap_or(0);
         if MPROG != 0 {
             ML_RECT = glGetUniformLocation(MPROG, c"u_trect".as_ptr());
             ML_SCREEN = glGetUniformLocation(MPROG, c"u_tscreen".as_ptr());
@@ -1700,6 +1764,20 @@ fn uv_rect_padded(w: f32, h: f32, qw: f32, qh: f32) -> [f32; 4] {
     [0.5 - 0.5 * sx, 0.5 - 0.5 * sy, sx, sy]
 }
 
+/// `fs_img.frag`'s `u_inner`: the half-extent, about the card centre, of the box whose every point
+/// is at least `max(radius, 2) + 1` px inside the rounded rect — so its SDF is below −2, the rim,
+/// the AA edge and the shadow are all exactly zero there, and the fragment is `(tex, ta)` without
+/// evaluating the SDF at all. Inside a rounded box inset by `k ≥ r`, both components of the SDF's
+/// `q` are negative and `d = max(q) − r < −k`. Negative (never true) for a card too small to have
+/// an interior. Measured 2026-09-19: the highp SDF on a card's interior is what made a card
+/// fragment cost ~3 GPU cycles against ~1 for the flat path, and cards were the largest single
+/// class on Home's fold and grid.
+#[inline]
+fn card_inner(chw: f32, chh: f32, radius: f32) -> [f32; 2] {
+    let k = radius.max(2.0) + 1.0;
+    [chw - k, chh - k]
+}
+
 /// The IPROG draw, with every term already in the shader's own units: `q*` is the QUAD (shadow
 /// inflation included), `uv` the source sub-rect it samples, `ch` the CARD half-size the SDF is
 /// measured against. [`draw_tex_impl`] folds a card's parameters into these; the blur backdrop
@@ -1733,6 +1811,8 @@ fn draw_tex_core(
         glUniform1f(IL_RIMW, rimw);
         glUniform4fv(IL_RIMCOL, 1, rimcol);
         glUniform2f(IL_CH, chw, chh);
+        let inner = card_inner(chw, chh, radius);
+        glUniform2f(IL_INNER, inner[0], inner[1]);
         glUniform1f(IL_SHINV, shinv);
         glUniform4fv(IL_SHCOL, 1, shcol);
         glBindTexture(GL_TEXTURE_2D, tex);
@@ -2955,7 +3035,7 @@ fn blur_lazy_init() -> bool {
         glUniform4f(BL_RECT, 0.0, 0.0, SCR_W, SCR_H);
         glUniform4f(BL_UVRECT, 0.0, 0.0, 1.0, 1.0);
 
-        GPROG = match link_program(VS_IMG.as_ptr(), FS_GLASS.as_ptr()) {
+        GPROG = match link_program(VS_IMG_DITHERED.as_ptr(), FS_GLASS.as_ptr()) {
             Some(p) => p,
             None => {
                 log("blur: glass prog link failed — backdrop blur off");
@@ -3708,61 +3788,38 @@ const DITHER_LSB: f32 = 2.0 / 255.0;
 /// **THE ONE RULE for whether a surface's output needs dithering**, shared by the three programs
 /// built with `glsl_dithered!`. `shaders/dither.glsl` is the argument; this is the decision.
 ///
-/// **A field dithers whenever it is drawn, and the two PAGE washes ask about their own ARTWORK.**
-/// The noise is a texture fetch plus two arithmetic ops per fragment, and it is priced by AREA:
-/// on a popover's glass or the Settings ground it is nothing anyone has measured, while on the
-/// 2M-fragment wash under Home's hero fold it was the difference between 45 and 50 fps
-/// (2026-09-02). So the wash that sits under moving artwork — Home's, Detail's — is the caller's
-/// decision through [`page_wash_dither`], and the question it answers is narrow: is translucent
-/// artwork sliding or fading over this wash right now? Only the screen that owns the artwork can
-/// answer that, and each one does, from the POSITION AND VELOCITY of the springs that move it
-/// (`screens::home`'s snap dive and hero slide, `screens::detail`'s scroll and art ease) — a
-/// position test alone misses the last dozen frames of a critically damped slide, which is the
-/// gap a motion verdict used to paper over. `ui::idle::should_present`'s SETTLE FRAME presents
-/// the first still frame once more, so the picture that stays on the panel is the dithered one.
+/// **A field dithers whenever it is drawn, and so does every page wash.** The noise is one texture
+/// fetch and one add per fragment (`dither.glsl`'s cost rules), priced by AREA. On the 2M-fragment
+/// wash it was once the difference between 45 and 50 fps on Home's fold (2026-09-02), and for that
+/// the wash under moving artwork — Home's, Detail's — was for a while allowed to drop it while the
+/// artwork slid. That exception is gone (2026-09-19): the rules and the field mesh brought the whole
+/// of the wash's noise to ~0.6M cycles a frame on the fold, and the wash-only band under a sliding
+/// photograph banded visibly without it. `draw_ambient` takes no flag at all now.
 ///
-/// **No global motion verdict is in this decision, and putting one back is the recorded mistake.**
-/// For one day (2026-09-04) the gate was global — this function and `draw_ambient` both refused
-/// every draw while any spring was in flight — and it was wrong on every screen whose wash is the
-/// whole picture: Settings, the who's-watching picker, first run, sign-in. It was then narrowed to
-/// the PAGE's verdict, which was the same mistake one layer down (2026-09-19): `AmbientWash::step`
-/// drives twelve corner springs through [`spring`], so the wash's own colour dissolve — and every
-/// focus pop, shelf scroll and press dip beside it — reported page motion and undithered the wash
-/// for the length of the animation. Both times the owner saw the same thing: bands that appear
-/// while something moves and vanish when it stops. Ask the artwork, never the frame.
+/// **No motion verdict is in this decision, and putting one back is the recorded mistake — three
+/// times over.** For one day (2026-09-04) the gate was global — this function and `draw_ambient`
+/// both refused every draw while any spring was in flight — and it was wrong on every screen whose
+/// wash is the whole picture: Settings, the who's-watching picker, first run, sign-in. It was then
+/// narrowed to the PAGE's verdict, which was the same mistake one layer down (2026-09-19):
+/// `AmbientWash::step` drives twelve corner springs through [`spring`], so the wash's own colour
+/// dissolve — and every focus pop, shelf scroll and press dip beside it — reported page motion and
+/// undithered the wash for the length of the animation. Then to the ARTWORK's motion, which left
+/// the band of wash below Home's diving hero undithered for the whole dive. Every time the owner
+/// saw the same thing: bands that appear while something moves and vanish when it stops.
 ///
 /// **And no dither on a RECT at all.** Until 2026-09-04 `fs_src` and `fs_shadow` carried the
 /// prelude too, behind a per-draw ramp test (`dither_for_ramp`: slow enough, broad enough, a
 /// container rather than a page field). The test answered 0 for nearly every draw — and the draws
-/// still paid, because the branch it gates is resolved per draw on Midgard but not for free: the
+/// still paid, because the branch it gated was resolved per draw on Midgard but not for free: the
 /// hero paging scene measured +4M shader words a frame with the prelude on those two programs
 /// against without, the whole of a 57→50 fps regression, on frames where every ramp test had
 /// answered 0. A rect's ramp is a scrim or a two-stop fill, crossing tens of codes over hundreds
 /// of pixels, and nobody had reported a tread on one; the fields that DID band (the wash, the
 /// glass blur, the modal ground) are exactly the three that keep the prelude.
-/// **The page wash's answer** — Home's and Detail's, the two full-screen grounds that ever have
-/// moving, fading artwork over them.
-///
-/// `art_still` is the whole of it, and it is the OWNING SCREEN's answer to one question: is
-/// translucent artwork sliding or fading over this wash on this frame? Home computes it where it
-/// steps the snap dive and the hero slide (`screens::home`'s `Backdrop::still`), Detail where it
-/// draws the backdrop it is scrolling (`screens::detail`'s `art_still`) — in both cases from the
-/// springs' position AND velocity, because a critically damped slide spends its last dozen frames
-/// under any position threshold while still visibly moving.
-///
-/// **It reads no global motion state at all**, and the doc above says why twice over: a frame-wide
-/// or page-wide verdict counts every spring in the app, including the wash's own dissolve, and
-/// turns the noise off for the length of every animation on the page. A wash that is not under
-/// artwork — the browsing grounds through `ui::widgets::PageGround`, and every screen whose wash is
-/// the whole picture — does not come through here: it dithers unconditionally.
-#[inline]
-pub(crate) fn page_wash_dither(art_still: bool) -> bool {
-    art_still
-}
 
 /// **The rule for a surface whose ramp is in SAMPLED DATA or a whole-screen field** — the frosted
-/// glass over a blurred snapshot, the Settings ground's desaturate-and-tint grade, and (through
-/// `draw_ambient`'s caller flag) the ambient wash.
+/// glass over a blurred snapshot and the Settings ground's desaturate-and-tint grade. (The ambient
+/// wash does not ask: it is always full-screen, so `draw_ambient` passes [`DITHER_LSB`] directly.)
 ///
 /// The tread cannot be computed here: the ramp is whatever the blur chain produced, and a blur is
 /// by construction the slowest field the app ever puts on screen (that is what a blur IS). So the
@@ -3777,7 +3834,8 @@ fn dither_for_field(w: f32, h: f32) -> f32 {
 }
 
 /// The smallest surface on which a staircase is findable by eye, in authored px, applied to BOTH
-/// axes. Below it the branch is never taken and the fragment pays nothing.
+/// axes. Below it the amplitude is 0: the fetch still runs (the prelude has no branch — cost rule
+/// 1 in `dither.glsl`) but on a field this small it is on the idle texture pipe and adds nothing.
 const DITHER_MIN_SPAN: f32 = 96.0;
 
 /// Bind the dither tile on texture unit 2 for the LIFE OF THE PROCESS, and leave the active unit
@@ -4820,28 +4878,65 @@ mod tests {
 
     /// The ambient program is drawn over more pixels than any other in the app — the hero's
     /// corner scrim, the atmospheric ramps and the page wash are all full-width quads — so its
-    /// per-fragment contract is pinned by text: fp16 coordinates (a highp varying promoted the
-    /// mixes to fp32 and cost 3.2M cycles a frame on the set) and ONE mix. Its dither is the
-    /// shared one now and is graded by the case below, across all five programs that carry it.
+    /// per-fragment contract is pinned by text: NO arithmetic on the colour at all. The whole
+    /// bilinear field is evaluated per VERTEX of [`FIELD_N`]² cells and handed over as one fp16
+    /// varying; the fragment reads it and (dithered) adds the noise. Its dither is the shared one
+    /// and is graded by the case below, across all the programs that carry it.
     #[test]
-    fn full_screen_ambient_is_mediump_with_one_mix_per_fragment() {
+    fn full_screen_ambient_reads_one_interpolated_colour_per_fragment() {
         let src = shader_code(FS_AMBIENT);
+        assert!(src.contains("varying vec4 v_col"), "the colour stays fp16");
         assert!(
-            src.contains("varying vec2 v_uv"),
-            "the coordinate stays fp16"
-        );
-        assert!(!src.contains("varying highp vec2 v_uv"));
-        assert!(
-            src.contains("mix(v_top, v_bot, v_uv.y)"),
-            "ONE mix per fragment: the corner mixes are exact varyings from vs_ambient.vert"
+            !src.contains("mix("),
+            "no per-fragment mix: the field is evaluated per vertex of the mesh"
         );
         assert!(
             !src.contains("u_atl"),
-            "the corners are the vertex shader's business now"
+            "the corners are the vertex shader's business"
         );
         let vs = VS_AMBIENT.to_str().unwrap();
-        assert!(vs.contains("v_top = mix(u_atl, u_atr, a_pos.x)"));
-        assert!(vs.contains("v_bot = mix(u_abl, u_abr, a_pos.x)"));
+        assert!(vs.contains("v_col = mix(mix(u_atl, u_atr, a_pos.x), mix(u_abl, u_abr, a_pos.x), a_pos.y)"));
+    }
+
+    /// **The field mesh is the bilinear field to within half an 8-bit code, at its worst.**
+    ///
+    /// A triangle interpolates LINEARLY, and a bilinear field is not linear: inside one cell of
+    /// side `h` it differs from the plane through the cell's corners by `k·s·t·h²` where `k` is
+    /// the field's twist `tl − tr − bl + br` per channel. On either triangle of the cell that
+    /// deviation peaks at `k·h²/4`. The largest twist a colour field can have is 2 (opposite
+    /// corners at 0 and at 1), so at `FIELD_N` = 16 the error is at most `2/(4·256)` — under half
+    /// an 8-bit code, i.e. below the quantum the one-LSB dither already spreads. This test walks
+    /// the REAL mesh ([`field_mesh`]) rather than the formula, so a coarser grid or a triangle
+    /// wound across the wrong diagonal fails it.
+    #[test]
+    fn the_field_mesh_is_the_bilinear_field_within_half_a_code() {
+        let v = field_mesh();
+        assert_eq!(v.len(), FIELD_N * FIELD_N * 6 * 2, "two triangles a cell, two floats a vertex");
+        // The worst-case twist: tl = br = 1, tr = bl = 0.
+        let f = |x: f32, y: f32| {
+            let top = (1.0 - x) * 1.0 + x * 0.0;
+            let bot = (1.0 - x) * 0.0 + x * 1.0;
+            top * (1.0 - y) + bot * y
+        };
+        let mut worst = 0.0f32;
+        let mut area = 0.0f32;
+        for tri in v.chunks(6) {
+            let (p0, p1, p2) = ((tri[0], tri[1]), (tri[2], tri[3]), (tri[4], tri[5]));
+            area += ((p1.0 - p0.0) * (p2.1 - p0.1) - (p2.0 - p0.0) * (p1.1 - p0.1)).abs() / 2.0;
+            let (f0, f1, f2) = (f(p0.0, p0.1), f(p1.0, p1.1), f(p2.0, p2.1));
+            for i in 0..=8 {
+                for j in 0..=(8 - i) {
+                    let (a, b) = (i as f32 / 8.0, j as f32 / 8.0);
+                    let c = 1.0 - a - b;
+                    let x = a * p0.0 + b * p1.0 + c * p2.0;
+                    let y = a * p0.1 + b * p1.1 + c * p2.1;
+                    let lin = a * f0 + b * f1 + c * f2;
+                    worst = worst.max((lin - f(x, y)).abs());
+                }
+            }
+        }
+        assert!((area - 1.0).abs() < 1e-4, "the mesh tiles the unit square exactly once: {area}");
+        assert!(worst * 255.0 <= 0.5, "worst deviation {:.3} codes", worst * 255.0);
     }
 
     /// **The shared output dither, graded across every program that carries it.**
@@ -4853,8 +4948,10 @@ mod tests {
     /// own header had been recording that same construction as a mistake it had made and fixed
     /// (38% of a Home frame). Five programs, four answers, and nothing compiling the difference.
     ///
-    /// The three properties are the three cost rules in `shaders/dither.glsl`: a uniform branch, a
-    /// texture fetch rather than arithmetic, and the tile sampled 1:1 at `1/NOISE_DIM`.
+    /// The properties are the cost rules in `shaders/dither.glsl`: no branch (the off state is a
+    /// twin program), a texture fetch rather than arithmetic, the tile sampled 1:1 at
+    /// `1/NOISE_DIM`, and its coordinate handed over by the vertex shader rather than computed
+    /// from `gl_FragCoord`.
     #[test]
     fn every_dithered_program_carries_the_one_shared_dither_and_no_hash_of_its_own() {
         let prelude = shader_code(unsafe {
@@ -4863,22 +4960,52 @@ mod tests {
             )
         });
         assert!(prelude.contains("uniform float u_dither"));
+        // Cost rule 1, as REVISED 2026-09-19: no branch at all. The uniform branch this prelude
+        // carried measured +5.8M arithmetic words a frame on a scrolling Library's dithered wash
+        // (49 fps against 59 without it); the undithered case is a different PROGRAM
+        // (`ambient_program`'s twin) or a field too small for the fetch to matter.
         assert!(
-            prelude.contains("if (u_dither > 0.0)"),
-            "the dither is behind a uniform branch — Midgard resolves that per draw"
+            !prelude.contains("if (u_dither"),
+            "the dither is unconditional — its off state is the twin program, not a branch"
         );
         assert!(
-            prelude.contains("texture2D(u_dither_tex, gl_FragCoord.xy"),
-            "the dither is a texture fetch on the idle pipe, not arithmetic"
+            prelude.contains("texture2D(u_dither_tex, v_dither_nc)"),
+            "the dither is a texture fetch on the idle pipe, addressed straight from a varying"
         );
-        // The tile is sampled 1:1 in SCREEN space, so this divisor and `NOISE_DIM` are one number
-        // written in two languages. Nothing tied them together before, and the failure is silent
-        // in the worst way: a divisor left behind when the tile grows does not band or blank, it
-        // magnifies the tile into exactly the periodic pattern the 256 was measured to remove.
+        // Cost rule 4: NO arithmetic on `gl_FragCoord`. It is highp, so scaling it into the tile
+        // was an fp32 multiply on every fragment of every dithered surface — measured 2026-09-19
+        // as the difference between 45 and 60 fps on a scrolling Library (the whole wash cost).
         assert!(
-            prelude.contains(&format!("(1.0 / {NOISE_DIM}.0)")),
-            "dither.glsl must sample the noise tile at 1/NOISE_DIM ({NOISE_DIM})"
+            !prelude.contains("gl_FragCoord"),
+            "the noise coordinate comes from the vertex shader, never from gl_FragCoord"
         );
+        assert!(prelude.contains("varying highp vec2 v_dither_nc"));
+        // The tile is sampled 1:1 in SCREEN space, so the vertex shaders' divisor and `NOISE_DIM`
+        // are one number written in two languages. Nothing tied them together before, and the
+        // failure is silent in the worst way: a divisor left behind when the tile grows does not
+        // band or blank, it magnifies the tile into exactly the periodic pattern the 256 was
+        // measured to remove.
+        for (name, vs) in [
+            ("vs_ambient.vert", VS_AMBIENT_DITHERED),
+            ("vs_img.vert", VS_IMG_DITHERED),
+        ] {
+            let code = shader_code(vs);
+            assert!(
+                code.contains(&format!("v_dither_nc = px * (1.0 / {NOISE_DIM}.0)")),
+                "{name} must hand the tile coordinate at 1/NOISE_DIM ({NOISE_DIM}) of the target px"
+            );
+            assert!(
+                code.contains("#define PLX_DITHER_NC"),
+                "{name}: the dithered twin defines it"
+            );
+        }
+        for (name, vs) in [("vs_ambient.vert", VS_AMBIENT), ("vs_img.vert", VS_IMG)] {
+            assert!(
+                !shader_code(vs).contains("#define PLX_DITHER_NC"),
+                "{name}: the plain vertex shader (every image program, the undithered twin) \
+                 carries no noise varying"
+            );
+        }
 
         for (name, src) in [
             ("fs_ambient.frag", FS_AMBIENT),
@@ -4900,8 +5027,8 @@ mod tests {
                 "{name} has a sine hash of its own; the shared tile is the one answer"
             );
             assert!(
-                code.matches("u_dither > 0.0").count() <= 2,
-                "{name} must reach the dither through the prelude's two helpers, not inline it"
+                !code.contains("if (u_dither"),
+                "{name} must reach the dither through the prelude's helpers, never a branch of its own"
             );
         }
         // The other half of the list: the per-rect programs carry NOTHING of it — not the branch,
@@ -4919,6 +5046,44 @@ mod tests {
                 "{name} is a hot-path program and must stay free of the dither prelude"
             );
             assert!(!code.contains("fract(sin("), "{name} has a sine hash of its own");
+        }
+    }
+
+    /// **The card composite's box test is an exact subset of its SDF early-out.** `fs_img.frag`
+    /// returns `(tex, ta)` without evaluating the highp rounded-box SDF for any fragment strictly
+    /// inside `u_inner`; that is only the same picture if every such point also has `d < -2`, the
+    /// SDF path's own early-out. Graded against a replica of `sdBox` over a dense grid of cards,
+    /// radii and points — a margin shaved off `card_inner` would put a rim or an AA edge inside
+    /// the box and cut it off.
+    #[test]
+    fn the_card_interior_box_never_reaches_the_rim() {
+        fn sd_box(p: (f32, f32), b: (f32, f32), r: f32) -> f32 {
+            let q = (p.0.abs() - b.0 + r, p.1.abs() - b.1 + r);
+            let outside = (q.0.max(0.0).powi(2) + q.1.max(0.0).powi(2)).sqrt();
+            outside + q.0.max(q.1).min(0.0) - r
+        }
+        let code = shader_code(FS_IMG);
+        let boxed = code.find("all(lessThan(abs(v_p), u_inner))").expect("the interior box test");
+        let sdf = code.find("sdBox(v_p").expect("the SDF");
+        assert!(boxed < sdf, "the box test must run BEFORE the SDF it exists to skip");
+        for &(w, h) in &[(260.0_f32, 390.0_f32), (410.0, 230.0), (12.0, 12.0), (3.0, 40.0)] {
+            for &r in &[0.5_f32, 1.0, 6.0, 14.0, 24.0, 60.0] {
+                let (chw, chh) = (w * 0.5, h * 0.5);
+                let inner = card_inner(chw, chh, r);
+                let n = 60;
+                for i in 0..=n {
+                    for j in 0..=n {
+                        let p = (
+                            -chw + w * i as f32 / n as f32,
+                            -chh + h * j as f32 / n as f32,
+                        );
+                        if p.0.abs() < inner[0] && p.1.abs() < inner[1] {
+                            let d = sd_box(p, (chw, chh), r);
+                            assert!(d < -2.0, "card {w}x{h} r{r}: p {p:?} is boxed but d={d}");
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -4942,26 +5107,23 @@ mod tests {
     ///
     /// The cost of this whole mechanism is the number of draws that answer non-zero, so the two
     /// refusals matter more than the acceptance: a flat fill has no ramp to quantise, and a chip
-    /// too small to show a plateau must never take the branch. The app draws far more chips, pills
+    /// too small to show a plateau must never dither. The app draws far more chips, pills
     /// and row highlights than it draws panels.
-    /// The page wash is gated on its OWN ARTWORK and a field (glass, the modal ground) pays
-    /// whenever it is drawn, spring in flight or not. Observed RED against the day-old global gate,
-    /// which answered 0 for the field under motion and produced the banding-flicker the owner
-    /// reported on Settings, the picker and first run (2026-09-04) — and RED again against the
-    /// PAGE-scoped gate that replaced it, which did the same thing to the wash on every screen
-    /// (2026-09-19; the two cases above this one). Every motion this test can raise is raised
-    /// through the real seams — a popover's scope, the page's unscoped springs, the verdict app.rs
-    /// threads into `popover::host::begin_frame` — and NONE of them may move either answer.
+    /// A field (glass, the modal ground) pays whenever it is drawn, spring in flight or not — and
+    /// the page wash has no answer to give at all: `draw_ambient` takes no flag. Observed RED
+    /// against the day-old global gate, which answered 0 for the field under motion and produced
+    /// the banding-flicker the owner reported on Settings, the picker and first run (2026-09-04).
+    /// Every motion this test can raise is raised through the real seams — a popover's scope, the
+    /// page's unscoped springs, the verdict app.rs threads into `popover::host::begin_frame` — and
+    /// NONE of them may move the answer.
     #[test]
-    fn the_page_wash_is_gated_on_its_own_artwork_and_nothing_else() {
+    fn a_field_keeps_its_dither_through_every_motion() {
         use crate::ui::idle::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
         use crate::ui::popover::host::begin_frame;
         let _g = crate::testlock::serial();
         frame_begin(1.0 / 60.0);
         begin_frame(false);
         assert_eq!(dither_for_field(700.0, 700.0), DITHER_LSB, "at rest, the field pays");
-        assert!(page_wash_dither(true), "a wash with its artwork at rest pays");
-        assert!(!page_wash_dither(false), "a wash under sliding artwork never does");
 
         // A POPOVER's spring: 100 units from its target, stepped inside its own scope, the way
         // `Popover::update` steps every appear spring. The frame is in motion — and the page is not.
@@ -4976,81 +5138,15 @@ mod tests {
             DITHER_LSB,
             "a field still pays in motion — a focus spring on Settings must not strip its ground"
         );
-        assert!(
-            page_wash_dither(true),
-            "a popover's own spring is not the page's: the snapshot under it stays dithered"
-        );
 
         // The page's UNSCOPED springs (Detail updates outside `scoped_motion`) and the SCOPED
         // verdict app.rs threads in (Home, the Library, Search, the press dip). Both are real page
-        // motion; neither is artwork over a wash, and neither may reach this decision.
+        // motion, and neither may reach this decision.
         frame_begin(1.0 / 60.0);
         note_spring(0.0, 100.0, 0.0);
         assert!(page_moving());
         begin_frame(true);
-        assert!(
-            page_wash_dither(true),
-            "page motion is not artwork motion: the wash keeps its noise through the animation"
-        );
-        assert!(
-            !page_wash_dither(false),
-            "…and the owning screen's own answer is still the whole of it"
-        );
-
-        // …and a frame that published nothing at all reads nothing stale, in either direction.
-        frame_begin(1.0 / 60.0);
-        assert!(page_wash_dither(true));
-        assert!(!page_wash_dither(false));
-    }
-
-    /// **The wash's OWN dissolve is a spring like any other, and it must not undither the wash it
-    /// is dissolving.** `AmbientWash::step` drives twelve corner springs through `gfx::spring`, so
-    /// a `PageGround` keying to a new item reports motion at scope depth zero exactly the way a
-    /// card's focus pop does — and a page-wide motion verdict therefore answered "moving" for the
-    /// whole of the colour dissolve, which is the one animation in which the wash IS what the eye
-    /// is on. The owner saw it as banding that appears while the ground changes colour.
-    #[test]
-    fn a_wash_dissolving_to_a_new_item_still_dithers() {
-        use crate::ui::idle::{frame_begin, page_moving};
-        use crate::ui::popover::host::begin_frame;
-        use crate::ui::widgets::PageGround;
-        let _g = crate::testlock::serial();
-        let dt = 1.0 / 60.0;
-        let mut ground = PageGround::new();
-
-        frame_begin(dt);
-        // The real springs, stepped the way a browsing screen steps them once a frame.
-        ground.key(Some([[0.9, 0.2, 0.1]; 4]), PageGround::CARD_W, dt);
-        assert!(
-            page_moving(),
-            "the dissolve's own corner springs report motion at scope depth 0"
-        );
-        begin_frame(false);
-        assert!(
-            page_wash_dither(true),
-            "a wash dissolving toward a new item is still artwork-still: it must keep its noise"
-        );
-    }
-
-    /// A focus pop, a shelf scroll, a press dip — any spring the PAGE steps outside a popover's
-    /// scope — is not translucent artwork sliding over the wash, and must not take the wash's
-    /// noise away with it. This is the same shape as the 2026-09-04 global-gate regression, one
-    /// layer down: there it was every field on Settings, here it is the page wash on every
-    /// browsing screen.
-    #[test]
-    fn an_unrelated_focus_spring_does_not_strip_the_page_wash() {
-        use crate::ui::idle::{frame_begin, note_spring, page_moving};
-        use crate::ui::popover::host::begin_frame;
-        let _g = crate::testlock::serial();
-        frame_begin(1.0 / 60.0);
-        // 100 units from its target, at scope depth 0 — a card's focus pop mid-flight.
-        note_spring(0.0, 100.0, 0.0);
-        assert!(page_moving(), "the page's own spring is in flight");
-        begin_frame(false);
-        assert!(
-            page_wash_dither(true),
-            "a spring elsewhere on the page is not artwork over the wash"
-        );
+        assert_eq!(dither_for_field(700.0, 700.0), DITHER_LSB, "page motion is not a field's business");
     }
 
     #[test]

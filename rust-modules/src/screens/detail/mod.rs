@@ -201,9 +201,9 @@ pub(crate) struct DetailScreen {
     /// The page's own keyed ground. Deliberately a bare [`AmbientWash`] and not the shared
     /// `PageGround`, which is the browsing screens' policy: that type draws itself whenever it is
     /// not flat and dithers unconditionally, and both are wrong here. This wash must not be laid
-    /// over a live video plane at all ([`keyed_ground_over_plane`]), and it has a PHOTOGRAPH
-    /// sliding over it — so its dither is a per-frame answer ([`art_still`]), which `PageGround`
-    /// does not offer and should not.
+    /// over a live video plane at all ([`keyed_ground_over_plane`]), which is a per-frame answer
+    /// `PageGround` does not offer and should not. (Its dither is not a question: every wash
+    /// dithers, the photograph sliding over it included — `gfx::draw_ambient`.)
     ground: AmbientWash,
     /// The catalog row for this item, captured ONCE at [`new`](Self::new) — the same
     /// construction-time-only snapshot [`ground`](Self::ground)'s blur envelope takes. This is a
@@ -2096,15 +2096,7 @@ impl DetailScreen {
             .ground
             .is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
         if keyed_ground_over_plane(preview.picture, texture, art_alpha, ground_flat) {
-            self.ground.draw_with(
-                p,
-                Rect::FULL,
-                crate::gfx::page_wash_dither(art_still(
-                    self.scroll.vel,
-                    self.preview_art,
-                    preview.art,
-                )),
-            );
+            self.ground.draw(p, Rect::FULL);
         }
         if texture != 0 {
             p.tex(
@@ -2573,58 +2565,6 @@ fn ease(value: &mut f32, target: f32, dt: f32) -> bool {
     let moved = (next - *value).abs() > 0.001;
     *value = next;
     moved
-}
-
-/// How fast this page's scroll may be travelling, in px/s, with the backdrop still counting as
-/// still. Generous on purpose: the wash under the artwork is a slow full-screen gradient, and the
-/// frames worth paying the ±1 LSB noise for are the ones the eye rests on.
-const ART_SCROLL_REST_VEL: f32 = 15.0;
-
-/// How close [`ease`] has to have brought the art alpha to the value it is chasing before the
-/// backdrop counts as settled — **[`ease`]'s own rest threshold, restated as a distance**: it stops
-/// reporting motion once a step falls under 0.001, and a step is `|target − value| · dt/0.35`, so
-/// at this page's frame time that is a gap of about 0.021. Derived rather than chosen, so the two
-/// cannot drift apart.
-const ART_EASE_REST: f32 = 0.001 / ((1.0 / 60.0) / 0.35);
-
-/// **Is translucent artwork sliding or fading over this page's wash right now?** The whole of
-/// Detail's `gfx::page_wash_dither` argument, and deliberately a question about THIS page's own
-/// artwork rather than about motion anywhere.
-///
-/// Two motions put the backdrop art over the wash: the page SCROLL, which slides the still up and
-/// fades it out as the hero leaves (`draw_backdrop`'s `sf`), and the art ALPHA's own ease, which
-/// crossfades the still against a trailer's picture (`preview_art` chasing `preview::View::art`).
-/// Velocity for the first and a distance-to-target for the second, because that is the form each
-/// one's own rest test takes — and neither is a global motion verdict: the wash's dissolve, the
-/// focus pops and the strip scrolls all move on this page without moving a pixel of artwork over
-/// the ground, and gating on them undithered the wash for the length of every animation
-/// (2026-09-19).
-fn art_still(scroll_vel: f32, preview_art: f32, art_target: f32) -> bool {
-    scroll_vel.abs() < ART_SCROLL_REST_VEL && (preview_art - art_target).abs() <= ART_EASE_REST
-}
-
-#[cfg(test)]
-mod art_still_tests {
-    use super::{art_still, ART_EASE_REST, ART_SCROLL_REST_VEL};
-
-    #[test]
-    fn the_wash_dithers_unless_this_pages_own_artwork_is_moving_over_it() {
-        assert!(art_still(0.0, 1.0, 1.0), "a page at rest under a settled still");
-        assert!(!art_still(400.0, 1.0, 1.0), "a scrolling page slides the still over the wash");
-        assert!(
-            !art_still(0.0, 0.5, 0.0),
-            "…and so does the art crossfading out under a trailer's picture"
-        );
-        assert!(
-            art_still(0.0, 1.0 - ART_EASE_REST * 0.5, 1.0),
-            "inside the ease's own rest threshold nothing is moving any more"
-        );
-        assert!(
-            art_still(-(ART_SCROLL_REST_VEL - 1.0), 1.0, 1.0),
-            "the velocity test is on the magnitude, so a scroll back up is motion too…"
-        );
-        assert!(!art_still(-400.0, 1.0, 1.0), "…at any speed that shows");
-    }
 }
 
 #[cfg(test)]
