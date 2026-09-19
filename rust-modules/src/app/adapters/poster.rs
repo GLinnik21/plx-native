@@ -175,11 +175,12 @@ fn retry_due(s: &Pslot, now: u32) -> bool {
 /// even while a settled screen skips draws; the draw it requests is what probes the slot again and
 /// moves it back to `P_WANT`.
 fn invalidate_due_retries(slots: &mut [Pslot; PT_CAP], now: u32) {
-    if let Some(s) = slots
-        .iter_mut()
-        .find(|s| !s.retry_wake_sent && retry_due(s, now))
-    {
-        s.retry_wake_sent = true;
+    let mut due = false;
+    for s in slots.iter_mut().filter(|s| !s.retry_wake_sent && retry_due(s, now)) {
+        s.retry_wake_sent = true; // latch the whole batch; one frame probes every visible slot
+        due = true;
+    }
+    if due {
         crate::ui::idle::invalidate();
     }
 }
@@ -1329,6 +1330,11 @@ mod tests {
         crate::ui::idle::reset_for_test();
         let mut slots = [Pslot::ZERO; PT_CAP];
         slots[3] = Pslot {
+            state: P_RETRY,
+            retry_at: Some(2_000),
+            ..Pslot::ZERO
+        };
+        slots[4] = Pslot {
             state: P_RETRY,
             retry_at: Some(2_000),
             ..Pslot::ZERO
