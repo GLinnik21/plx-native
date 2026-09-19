@@ -1504,15 +1504,40 @@ pub(crate) fn consent_override() -> Option<String> {
 /// `/tmp/plxnative-rec` — read by controlled-bootstrap preflight. The recorder/replay MECHANISM
 /// stays in `app/recorder.rs` (this phase's instructions: it is not a scenario), but the raw
 /// trigger read goes through the one door every other trigger does.
+///
+/// Compiled out, not merely guarded, in a release build: these three controlled-boot readers are
+/// the recorder's whole `/tmp` surface, and a runtime `ENABLED` check still leaves the trigger
+/// names in the binary's bytes, where `ci/check-package.py` grades them.
+#[cfg(feature = "devtriggers")]
 pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
-    if !crate::dev::ENABLED { return Ok(None); }
-    crate::ui::rec::mode_value(&crate::paths::in_runtime_dir("plxnative-rec"))
-        .map_err(|_| "invalid recorder trigger")
+    crate::ui::rec::mode_value(&super::path("rec")).map_err(|_| "invalid recorder trigger")
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
+    Ok(None)
 }
 
 /// `/tmp/plxnative-recplay` — see [`rec_trigger`].
+#[cfg(feature = "devtriggers")]
 pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
-    if !crate::dev::ENABLED { return Ok(None); }
-    crate::ui::rec::mode_value(&crate::paths::in_runtime_dir("plxnative-recplay"))
-        .map_err(|_| "invalid replay trigger")
+    crate::ui::rec::mode_value(&super::path("recplay")).map_err(|_| "invalid replay trigger")
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
+    Ok(None)
+}
+
+/// `/tmp/plxnative-app-init` — an explicit typed initial for a controlled boot, read by
+/// `app::bootstrap` in place of capturing one. `None` when the trigger is absent (always, in a
+/// release build); `Some(Err)` when it is present but unreadable. See [`rec_trigger`].
+#[cfg(feature = "devtriggers")]
+pub(crate) fn app_init_value() -> Option<Result<serde_json::Value, &'static str>> {
+    crate::dev::flag("app-init").then(|| {
+        crate::ui::rec::initial_value(&super::path("app-init"))
+            .map_err(|_| "invalid explicit initial input")
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn app_init_value() -> Option<Result<serde_json::Value, &'static str>> {
+    None
 }
