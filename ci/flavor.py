@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Which install a package is for — a transform from the tracked descriptors to a flavour's.
 
-Two builds of this app live on one television: `stable` is what users install
+Three builds of this app live on one television: `stable` is what users install
 (`com.beb.plxnative` — the id in every release, every manifest and the webosbrew channel listing),
-and `debug` is the day-to-day developer build beside it (`com.beb.plxnative.debug`), with its own
-launcher tile, its own sign-in and its own `/tmp` root. The Makefile's FLAVOR block is the account
-of why; this file is the part that has to be identical in three places at once.
+`debug` is the day-to-day developer build beside it (`com.beb.plxnative.debug`), with its own
+launcher tile, its own sign-in and its own `/tmp` root, and `nightly` (`com.beb.plxnative.nightly`)
+is a third install beside both — always a `RELEASE=1` build (no dev triggers, ever), with its own
+tile ("PlxNative Nightly"), its own sign-in and its own `/tmp` root, that additionally carries a
+PACKAGE version ahead of the tracked one (see `appinfo_for`'s nightly arm) and a dated REPORTED
+version (`rust-modules/build.rs::emit_version`'s `PLX_CHANNEL=nightly` arm). The Makefile's FLAVOR
+block is the account of why; this file is the part that has to be identical in three places at
+once.
 
 **PATCH, DO NOT DUPLICATE.** `pkg/appinfo.json` has 15 fields and exactly TWO of them may differ
 between flavours: `id` and `title`. The other thirteen — `type`, `main`, `transparent`,
@@ -33,14 +38,27 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import version_rule  # noqa: E402  — ci/version_rule.py, the shared "next X.Y.Z" arithmetic
+
 ROOT = Path(__file__).resolve().parent.parent
 
 #: The app id users install. Everything else is this plus a dotted suffix.
 STABLE_ID = "com.beb.plxnative"
 
-#: The flavours the Makefile will accept. A typo here would mint a third registered app on the
+#: The flavours the Makefile will accept. A typo here would mint a fourth registered app on the
 #: television whose only symptom is a mystery tile, which is why the Makefile whitelists too.
-FLAVORS = ("stable", "debug")
+FLAVORS = ("stable", "debug", "nightly")
+
+
+def _release_line_content() -> "str | None":
+    """The tracked `RELEASE_LINE` marker's text, or `None` when this checkout is trunk.
+
+    Read fresh rather than cached: this module is imported once per process by short-lived CI/make
+    invocations, never a long-running one, so there is no staleness window to guard against.
+    """
+    p = ROOT / "RELEASE_LINE"
+    return p.read_text() if p.is_file() else None
 
 
 def app_id(flavor: str) -> str:
@@ -53,11 +71,11 @@ def app_id(flavor: str) -> str:
 def appinfo_for(flavor: str) -> dict:
     """The tracked `pkg/appinfo.json`, re-pointed at `flavor`. Identity when flavor == stable.
 
-    Only `id` and `title` move. The icon FIELDS deliberately do not: they name `icon.png` and
-    `largeIcon.png`, and the badged artwork is staged over those basenames from `pkg/dev/` by the
-    Makefile — so the flavour lives in the directory a file is read from and never in the name it
-    is packaged under. `ci/check-package.py` grades the payload by basename, and appinfo's own
-    fields have to match what is in the box.
+    Only `id`, `title` and — for `nightly` ONLY — `version` move. The icon FIELDS deliberately do
+    not: they name `icon.png` and `largeIcon.png`, and the badged artwork is staged over those
+    basenames from `pkg/dev/` by the Makefile — so the flavour lives in the directory a file is
+    read from and never in the name it is packaged under. `ci/check-package.py` grades the payload
+    by basename, and appinfo's own fields have to match what is in the box.
     """
     a = dict(json.loads((ROOT / "pkg/appinfo.json").read_text()))
     if flavor == "stable":
@@ -65,8 +83,23 @@ def appinfo_for(flavor: str) -> dict:
     a["id"] = app_id(flavor)
     # The launcher shows this under the tile. Two tiles reading `PlxNative` would be a coin flip
     # every time, and the badged icon only helps someone who is looking at the artwork rather than
-    # at a list — `dev/listApps` and SAM's own dialogs show the title, not the icon.
-    a["title"] = f"{a['title']} {flavor}"
+    # at a list — `dev/listApps` and SAM's own dialogs show the title, not the icon. Nightly's own
+    # title is a product decision ("PlxNative Nightly", capitalised) rather than the bare lowercase
+    # suffix debug uses, so it is spelled out rather than titlecased generically.
+    suffix = "Nightly" if flavor == "nightly" else flavor
+    a["title"] = f"{a['title']} {suffix}"
+    # NIGHTLY ONLY: the package version itself moves to the next minor (or next patch, on a
+    # maintenance line) — the SAME arithmetic `rust-modules/build.rs::emit_version` uses for a
+    # `-dev` build's REPORTED version, reused here via `ci/version_rule.py` rather than
+    # re-derived. A nightly install has to carry a package version LG's installer treats as newer
+    # than whatever stable is at, or it could never upgrade itself between nightly builds cut on
+    # the same tracked version. `ci/check-package.py`'s `--selftest` is what keeps this the ONLY
+    # flavour allowed to move `version` — see its `moved` assertion.
+    if flavor == "nightly":
+        triplet, err = version_rule.next_version_triplet(a["version"], _release_line_content())
+        if err:
+            raise SystemExit(err)
+        a["version"] = "{}.{}.{}".format(*triplet)
     return a
 
 
@@ -83,6 +116,14 @@ def control_for(text: str, flavor: str) -> str:
     out, n = re.subn(r"(?m)^Package: .*$", f"Package: {app_id(flavor)}", text, count=1)
     if n != 1:
         raise SystemExit("control file has no Package: line to re-point")
+    if flavor == "nightly":
+        # The one flavour whose PACKAGE version itself moves (see `appinfo_for`) — the control
+        # file's `Version:` field has to move with it, or the archive's own two version witnesses
+        # (control vs appinfo) would disagree, which `ci/check-package.py` already grades.
+        version = appinfo_for(flavor)["version"]
+        out, n = re.subn(r"(?m)^Version: .*$", f"Version: {version}", out, count=1)
+        if n != 1:
+            raise SystemExit("control file has no Version: line to re-point")
     return out
 
 
@@ -117,7 +158,28 @@ def _selftest() -> int:
     # behaviour change that would show up only on the television, on the flavour nobody releases.
     moved = {k for k in tracked_appinfo if dbg.get(k) != tracked_appinfo[k]}
     check(moved == {"id", "title"},
-          f"only id and title differ between flavours (also saw {sorted(moved - {'id', 'title'})})")
+          f"only id and title differ between debug and stable (also saw {sorted(moved - {'id', 'title'})})")
+
+    # Nightly is a different app too, AND its package version moves ahead of the tracked one —
+    # the one flavour allowed to widen the `moved` set, asserted explicitly rather than by relaxing
+    # the debug check above.
+    nightly = appinfo_for("nightly")
+    check(nightly["id"] == f"{STABLE_ID}.nightly",
+          f'nightly appinfo id == {STABLE_ID}.nightly (got {nightly["id"]})')
+    check(nightly["title"] == f'{tracked_appinfo["title"]} Nightly',
+          f'nightly appinfo title is "{tracked_appinfo["title"]} Nightly" (got {nightly["title"]!r})')
+    _tracked_major, _tracked_minor, _ = (int(x) for x in tracked_appinfo["version"].split("."))
+    check(nightly["version"] == f"{_tracked_major}.{_tracked_minor + 1}.0",
+          f'nightly appinfo version is the next minor on trunk (got {nightly["version"]!r})')
+    nightly_moved = {k for k in tracked_appinfo if nightly.get(k) != tracked_appinfo[k]}
+    check(nightly_moved == {"id", "title", "version"},
+          "only id, title and version differ between nightly and stable (also saw "
+          f"{sorted(nightly_moved - {'id', 'title', 'version'})})")
+    nightly_control = control_for(tracked_control, "nightly")
+    check(f"Package: {STABLE_ID}.nightly" in nightly_control,
+          "nightly control Package is the nightly id")
+    check(f"Version: {nightly['version']}" in nightly_control,
+          "nightly control Version is the bumped nightly package version")
 
     # The same string, in three languages that cannot see each other.
     rust = (ROOT / "rust-modules/src/paths.rs").read_text()
@@ -133,19 +195,25 @@ def _selftest() -> int:
     # The capture listener's port is the one value spelled in BOTH Rust and make with no shared
     # source, because a shell cannot call into the binary and the binary cannot read the Makefile.
     # Two installs binding one port fails silently on both sides, so the agreement gets a gate.
-    # It also fails deliberately if a THIRD flavour is added: "stable or one higher" stops being a
-    # rule at that point and somebody has to decide, in both languages.
+    # NIGHTLY WAS THE THIRD FLAVOUR "stable, or one higher" warned about: it needed a real,
+    # explicit decision in both languages rather than a wildcard arm, which is why the Makefile's
+    # rule and `capture::default_port`'s match are both now three named cases rather than two.
     cap = (ROOT / "rust-modules/src/capture.rs").read_text()
     rs_stable = re.search(r"(?m)^const STABLE_PORT: u16 = (\d+);", cap)
-    mk_port = re.search(r"(?m)^APPPORT\s*=\s*\$\(if \$\(filter stable,\$\(FLAVOR\)\),(\d+),(\d+)\)", mk)
+    mk_port = re.search(
+        r"(?m)^APPPORT\s*=\s*\$\(if \$\(filter stable,\$\(FLAVOR\)\),(\d+),"
+        r"\$\(if \$\(filter nightly,\$\(FLAVOR\)\),(\d+),(\d+)\)\)", mk)
     check(rs_stable is not None and mk_port is not None
           and rs_stable.group(1) == mk_port.group(1)
-          and int(mk_port.group(2)) == int(mk_port.group(1)) + 1
-          and "Some(_) => STABLE_PORT + 1," in cap,
-          "capture port: Makefile APPPORT and capture::default_port agree (stable, stable+1)")
-    check(len(FLAVORS) == 2,
-          "the capture-port rule is 'stable, or one higher' — a third flavour needs a real rule "
-          "in BOTH capture.rs and the Makefile")
+          and int(mk_port.group(3)) == int(mk_port.group(1)) + 1
+          and int(mk_port.group(2)) == int(mk_port.group(1)) + 2
+          and 'Some("debug") => STABLE_PORT + 1,' in cap
+          and 'Some("nightly") => STABLE_PORT + 2,' in cap,
+          "capture port: Makefile APPPORT and capture::default_port agree "
+          "(stable, debug=+1, nightly=+2)")
+    check(len(FLAVORS) == 3,
+          "the capture-port rule now names debug and nightly explicitly — a FOURTH flavour needs "
+          "a real decision in both capture.rs and the Makefile, the same way nightly just did")
 
     # The seven query targets are the FIRST targets in the Makefile, and make takes the first
     # target it sees as the default goal. That made a bare `make` print the flavour and exit 0

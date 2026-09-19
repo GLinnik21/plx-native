@@ -1,20 +1,7 @@
-# SEQUENCING REQUIREMENT: this repo's Pages source is currently "Deploy from a
-# branch" (legacy, building docs/ with Jekyll), not "GitHub Actions". This
-# workflow only takes effect once an owner with admin access switches the
-# Pages source to GitHub Actions in Settings > Pages.
-#
-# The commit that adds this workflow also deletes docs/index.html and
-# docs/.nojekyll (the landing page moved to site/). If that commit is pushed
-# to main BEFORE the Pages source is switched, the legacy Jekyll build will
-# run over docs/ with no index page and the live site will 404 or render the
-# docs/ tree until the switch happens. Switch the Pages source to Actions
-# FIRST, then push this commit (or push and switch in the same sitting) —
-# never push it against a still-legacy source and leave it there.
-#
-# Verify the current source with:
+# This repo's Pages source is "GitHub Actions" (switched from the legacy
+# "Deploy from a branch" Jekyll build that used to serve docs/). Verify with:
 #   gh api repos/<owner>/<repo>/pages --jq .build_type
-# It should read "workflow" once the switch is done; "legacy" means the
-# ordering above still needs to happen.
+# It should read "workflow"; "legacy" would mean the source reverted.
 name: Deploy landing page
 
 on:
@@ -28,6 +15,12 @@ on:
       - "pkg/appfont-bold.ttf"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
+  # nightly.yml calls this after every published nightly, so the site's "latest nightly" pointer
+  # (staged below, `_site/nightly/latest.json`) moves the same day a nightly does rather than
+  # waiting for the next unrelated site/docs push. The caller grants pages: write, id-token: write
+  # and contents: read on the calling job; this workflow's own top-level `permissions:` still
+  # governs the push/workflow_dispatch triggers above.
+  workflow_call:
 
 permissions:
   contents: read
@@ -54,6 +47,7 @@ jobs:
           mkdir -p _site/assets
           mkdir -p _site/docs/screenshots
           mkdir -p _site/fonts
+          mkdir -p _site/nightly
 
           cp site/index.html _site/index.html
           cp site/styles.css _site/styles.css
@@ -75,6 +69,16 @@ jobs:
 
           cp pkg/appfont.ttf _site/fonts/appfont.ttf
           cp pkg/appfont-bold.ttf _site/fonts/appfont-bold.ttf
+
+      - name: Stage nightly/latest.json
+        # `{"available": false}` when no nightly has ever published — the site has to build before
+        # the first nightly exists, so a `gh api` miss here must not fail the whole Pages build.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 ci/nightly.py latest-json --repo "${{ github.repository }}" > _site/nightly/latest.json
+          cat _site/nightly/latest.json
 
       - name: Check for missing assets
         run: |

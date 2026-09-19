@@ -106,10 +106,11 @@ add `FLAVOR=stable` is backwards; the developer install is the one you get by ty
 
 This is §2 seen from the other side: a dev-featured binary under the shipped id carries the whole
 `/tmp` trigger surface, the world-writable `plxnative-remote` FIFO and the `:8910` capture
-listener (8910 is the *stable* install's port; a flavoured one defaults to 8911, which is exactly
-why the shipped id carrying a listener **at all** is the thing being ruled out here). Before the
-split that could only happen by publishing by hand, which is how v0.2.1's defects got out; now it
-is one forgotten `RELEASE=1` on a machine that also has a television, so it gets a mechanism.
+listener (8910 is the *stable* install's port; debug defaults to 8911 and nightly to 8912, which
+is exactly why the shipped id carrying a listener **at all** is the thing being ruled out here).
+Before the split that could only happen by publishing by hand, which is how v0.2.1's defects got
+out; now it is one forgotten `RELEASE=1` on a machine that also has a television, so it gets a
+mechanism.
 
 **`ci/check-package.py` grades the same rule on the packaged BYTES, and it now does so
 unconditionally** — the check sits outside the `pkg/.build-config` branch, gated on nothing but
@@ -257,11 +258,12 @@ considering the patch done. There is no tooling for this yet; do it by hand and 
 `docs/known-issues.md` if a fix's port needs anything nontrivial, so the next person doesn't
 re-derive it.
 
-**There is no flavour input here, and you do not want one.** `release.yml` pins `FLAVOR: stable` in
-the build job's `env`, which is the right place for it: CI is the one context where the Makefile's
-`FLAVOR ?= debug` default is always wrong, and a value nobody can forget to type beats one they
-can. So the `FLAVOR=stable` you spell on every *local* command is already spelled for you in the
-workflow — do not try to pass it as `-f`. If you ever need to confirm which id a run actually
+**There is no flavour input here, and you do not want one.** `release.yml`'s `build` job pins
+`flavor: stable` in the `with:` block it hands to the shared `build-package.yml` workflow, which is
+the right place for it: CI is the one context where the Makefile's `FLAVOR ?= debug` default is
+always wrong, and a value nobody can forget to type beats one they can. So the `FLAVOR=stable` you
+spell on every *local* command is already spelled for you in the workflow — do not try to pass it
+as `-f`. If you ever need to confirm which id a run actually
 packaged, read it off the artifact filename, which the workflow asserts, rather than from what the
 job was meant to do.
 
@@ -364,4 +366,10 @@ advisory reaches people the old page never will. The same applies to an audit: i
 artifact, gains a dated erratum if it is wrong about itself, and gains nothing else.
 
 If a release is wrong enough to withdraw, say so in the note and publish a fixed one. Never delete
-a tag that has been public; the hash in someone's notes has to keep meaning something.
+a **stable** tag that has been public; the hash in someone's notes has to keep meaning something.
+
+This does not extend to nightly. `ci/nightly.py prune` deletes `nightly/v*` releases and their
+tags 30 days after publishing them, on purpose and by design — every nightly's own body says so
+("nightly builds are deleted after 30 days"), so nobody reading one is told a hash that later stops
+meaning anything without warning. The rule above is about a claim nobody was told was temporary;
+a nightly's claim always was.

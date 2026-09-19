@@ -1265,12 +1265,13 @@ where
                 }
             }
             // **The surfaces' modal dim, last thing in the page pass** (§6.2, §8.3). It is here
-            // and not with each panel because the dim has to be on the framebuffer BEFORE the
-            // host snapshot is taken — see `ModalStack::draw_scrims`, which owns the rule and the
-            // one style it does not apply to. `surface_scope` is the freeze lift the paint needs:
-            // a page served from its cached quad refuses every fill, and this is the frame's first
-            // `popover::host::live()`, which is also what defines the snapshot as the UNDIMMED
-            // page.
+            // and not with each panel because the dim has to be on the framebuffer BEFORE any
+            // surface's glass grabs its backdrop — see `ModalStack::draw_scrims`, which owns the
+            // rule and the one style it does not apply to. `surface_scope` is the freeze lift the
+            // paint needs: a page served from its cached quad refuses every fill, and this is the
+            // frame's first `popover::host::live()`, which is also what defines the host snapshot
+            // as the UNDIMMED page — and the instant the dims' inherited field is read from
+            // (`ModalUnderlay`), for the same reason.
             {
                 let _scope = rig.surface_scope();
                 let read = scrim_lift_read(rig, glass.as_deref());

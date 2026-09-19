@@ -235,10 +235,12 @@ pub(crate) unsafe fn run(app: &mut App) {
         // `Surface` around every modal tick and surface step — §4.4), so it is exactly the term
         // the legacy loop got from stepping `library::update` inside `idle::scoped_motion`.
         //
-        // Its readers are `popover::host::begin_frame` below: `gfx::page_wash_dither`, which
-        // costs a 2M-fragment dither on a wash that is about to slide, and `host_refresh`'s
-        // `page_moving` term for a page under a FADING panel. Neither could see an owned page
-        // move.
+        // Its one reader is `popover::host::begin_frame` below — `host_refresh`'s `page_moving`
+        // term, which decides whether the frozen snapshot under a FADING panel is taken again,
+        // and which could not see an owned page move. (It fed `gfx::page_wash_dither` too until
+        // 2026-09-19; a page-wide verdict turned out to be the wrong question for a wash, since
+        // the wash's own dissolve is in it, and the function itself is gone now — every wash
+        // dithers on every frame.)
         fr.underlay_moving |= tree_report.underlay_moving;
         if was_player && super::bridge::player(&app.pages).is_none() { restore_played_entry(app); }
         content_requests(app, fr);
@@ -467,7 +469,11 @@ unsafe fn present_and_swap(
         app.instr.mark(crate::diag::heartbeat::Phase::Capture); // capture
         // Before the swap, never after: the back buffer is undefined once presented.
         #[cfg(feature = "hostsim")]
-        crate::shot::maybe_capture(_vx, _vy, _vw, _vh);
+        if crate::shot::maybe_capture(_vx, _vy, _vw, _vh) {
+            // The headless one-shot is done: finish this frame, then leave through the ordinary
+            // shutdown rather than exiting from inside the frame (see `shot::maybe_capture`).
+            app.running = false;
+        }
         #[cfg(feature = "hostsim")]
         crate::surface::present_supersampled();
         SDL_GL_SwapWindow(app.win);
@@ -1673,6 +1679,8 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
         }
         // dev: /tmp/plxnative-navosc — `crate::dev::scenarios::nav_osc_tick`.
         crate::dev::scenarios::nav_osc_tick(app, fr.now);
+        // dev: /tmp/plxnative-pushbench — `crate::dev::scenarios::push_bench_tick`.
+        crate::dev::scenarios::push_bench_tick(app, fr.now);
 
         // ---- the page cross-fade's commit frame ------------------------------------------
         // Stepped UNCONDITIONALLY, never per-route: a fader only one screen advances is a fader
@@ -1901,6 +1909,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // for the modal ramp, 520 ms for the three focus sweeps. Bodies live in
         // `crate::dev::scenarios` now; this frame still runs them at the same phase boundary.
         crate::dev::scenarios::modal_osc_tick(app, fr.now);
+        // dev: /tmp/plxnative-modalbench — `crate::dev::scenarios::modal_bench_tick`.
+        crate::dev::scenarios::modal_bench_tick(app, fr.now);
         crate::dev::scenarios::legal_doc_tick(app, fr.now, fr.dt);
         crate::dev::scenarios::alert_tick(app, fr.now, fr.dt);
         crate::dev::scenarios::settings_osc_tick(app, fr.now, fr.dt);
@@ -2427,6 +2437,10 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
 /// The iteration's report: the route word (on change), the lab route note, the focus probe
 /// and the FRAMEDROP line.
 pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
+        // dev: the stress-bench oscillators' own frame-time accumulator — right after Swap is
+        // stamped (`present_and_swap`, just above this call in `run()`), the earliest point this
+        // iteration's total is known. See `crate::dev::scenarios::bench_frame_tick`'s doc.
+        crate::dev::scenarios::bench_frame_tick(app, fr.present);
         fr.rn = super::words::route_word(&app.route());
     let rn = fr.rn;
     if crate::text::take_measure_fault() && !app.measure_fault_logged {
@@ -2965,6 +2979,8 @@ mod lifecycle_regression_tests {
                 pause_tried: Default::default(),
                 pause_script: Default::default(),
                 pause_resume_at: Default::default(),
+                push_bench: Default::default(),
+                modal_bench: Default::default(),
                 dev: crate::dev::scenarios::DevFlags {
                     detail_osc: Default::default(),
                     home_osc: Default::default(),

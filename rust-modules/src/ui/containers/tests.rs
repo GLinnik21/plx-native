@@ -181,6 +181,231 @@ fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
     assert!(SEEN.load(Ordering::Relaxed), "the dispatcher never invoked the lift callback");
 }
 
+// ── The inherited dim: one field per stack, latched from a page no dim has touched ────────────
+
+/// A framebuffer that remembers what was painted on it: one grey level, darkened by every dim
+/// exactly as `scrim_black(a)` over it would. `sample` reads it back as a flat grid, so a field
+/// latched from it says, in its `key`, which picture it saw.
+struct FakeFb {
+    level: f32,
+    epoch: u32,
+    refuse: bool,
+    video_plane: bool,
+    events: Vec<&'static str>,
+}
+
+impl FakeFb {
+    fn new(level: f32) -> Self {
+        Self { level, epoch: 0, refuse: false, video_plane: false, events: Vec::new() }
+    }
+    /// The page is drawn again (live, or served from the snapshot) at the start of a frame.
+    fn frame(&mut self, level: f32) {
+        self.level = level;
+        self.events.clear();
+    }
+}
+
+impl super::modal::DimSink for FakeFb {
+    fn video_plane(&self) -> bool {
+        self.video_plane
+    }
+    fn page_epoch(&self) -> u32 {
+        self.epoch
+    }
+    fn sample(&mut self) -> Option<[[f32; 3]; crate::gfx::FIELD_CELLS]> {
+        if self.refuse {
+            return None;
+        }
+        self.events.push("sample");
+        Some([[self.level; 3]; crate::gfx::FIELD_CELLS])
+    }
+    fn dim(&mut self, _field: &crate::ui::underlay::UnderlayField, alpha: f32) {
+        self.events.push("dim");
+        self.level *= 1.0 - alpha;
+    }
+}
+
+fn two_dimming_sheets(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig) -> (EntryId, EntryId) {
+    let a = open_modal(d, rig, Style::Sheet, 16);
+    let b = open_modal(d, rig, Style::Sheet, 32);
+    for id in [a, b] {
+        modal_mut(d, id).scrim_alpha = 0.5;
+        d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    }
+    (a, b)
+}
+
+fn key_level(d: &Dispatcher<FixtureHost>) -> f32 {
+    d.nav.modals.underlay.field().key()[0]
+}
+
+/// **The field is latched from the page BEFORE any dim is on it — and so it can never inherit its
+/// own dim** (the one property the whole mechanism rests on: a dim keyed to a dimmed picture of
+/// itself darkens a little more every time it is re-read).
+///
+/// Two sheets at 0.5 over a page of grey 0.5. The field must read 0.5, not 0.25 or 0.125, and the
+/// read must come before both dims in the frame's paint order. The next frame at the same host
+/// epoch must not read again at all, even though the framebuffer it would see now carries two dims.
+///
+/// Observed RED with `underlay.sync` moved after the dim loop in `draw_scrims_on`: the events were
+/// `["dim", "dim", "sample"]`.
+#[test]
+fn the_dims_field_is_latched_from_the_undimmed_page_before_the_first_dim() {
+    let (mut d, mut rig, _) = booted();
+    let _ = two_dimming_sheets(&mut d, &mut rig);
+    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
+    let mut fb = FakeFb::new(0.5);
+
+    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
+    assert_eq!(fb.events, ["sample", "dim", "dim"], "the read precedes every dim of the frame");
+    assert!((key_level(&d) - 0.5).abs() < 2e-3, "latched from the UNDIMMED page, got {}", key_level(&d));
+    assert!((fb.level - 0.125).abs() < 1e-6, "and both dims still landed, bottom to top");
+
+    // Same host snapshot: the page has not been re-captured, so the field is not re-read — even
+    // though what is on the framebuffer between frames is the dimmed picture.
+    fb.frame(0.5);
+    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
+    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
+    assert_eq!(fb.events, ["dim", "dim"], "no re-read while the host snapshot stands");
+    assert!((key_level(&d) - 0.5).abs() < 2e-3);
+}
+
+/// **A re-captured host re-latches; a refused read keeps what it had; the last dismissal resets.**
+#[test]
+fn a_recaptured_host_relatches_and_the_last_dismissal_resets_the_field() {
+    let (mut d, mut rig, _) = booted();
+    let (a, b) = two_dimming_sheets(&mut d, &mut rig);
+    let mut fb = FakeFb::new(0.5);
+    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
+    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
+    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Page(0));
+
+    // The page under the stack changed and `popover::host` re-took its snapshot.
+    fb.frame(0.8);
+    fb.epoch = 1;
+    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
+    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
+    assert_eq!(fb.events, ["sample", "dim", "dim"], "a new host snapshot is read again, first");
+    assert!((key_level(&d) - 0.8).abs() < 2e-3, "…and the field follows it, got {}", key_level(&d));
+    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Page(1));
+
+    // A frame with no honest read (a blur source pass, a frozen page): the field it had stands
+    // rather than dropping to the flat ink for a frame, and the read is owed again next frame.
+    fb.frame(0.3);
+    fb.epoch = 2;
+    fb.refuse = true;
+    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
+    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
+    assert!(d.nav.modals.underlay.field().is_latched(), "a refusal keeps the field");
+    assert!((key_level(&d) - 0.8).abs() < 2e-3);
+    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Page(1), "still owed");
+
+    // Both sheets leave: once the stack is empty the field is re-armed for whatever comes next.
+    // (`hide` rather than a dismissal stepped through `Dispatcher::frame`: a frame DRAWS, and a
+    // host test has no GL context for a dim at a nonzero alpha to be painted into.) One leaving
+    // is not enough — the other still dims the same page.
+    assert!(d.nav.modals.hide(b));
+    d.nav.modals.prune();
+    assert!(d.nav.modals.underlay.field().is_latched(), "a surface is still up over the page");
+    assert!(d.nav.modals.hide(a));
+    d.nav.modals.prune();
+    assert!(d.nav.modals.is_empty(), "both surfaces retired");
+    assert!(!d.nav.modals.underlay.field().is_latched(), "the last dismissal resets the field");
+    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Nothing);
+}
+
+/// The latch policy, as the pure table it is.
+#[test]
+fn the_latch_policy_reads_the_page_once_per_snapshot_and_never_over_the_video_plane() {
+    use super::modal::{latch_step, LatchStep as S, Latched as L};
+    use crate::ui::screen::UnderlaySource as U;
+    let c = [[0.2, 0.4, 0.1]; 4];
+    let c2 = [[0.4, 0.1, 0.2]; 4];
+    // the page, never read / re-captured / unchanged
+    assert_eq!(latch_step(Some(U::Page), L::Nothing, 3, false), S::SamplePage);
+    assert_eq!(latch_step(Some(U::Page), L::Page(2), 3, false), S::SamplePage);
+    assert_eq!(latch_step(Some(U::Page), L::Page(3), 3, false), S::Keep);
+    // framebuffer 0 is the punch-through hole on a video-plane frame: never read it
+    assert_eq!(latch_step(Some(U::Page), L::Nothing, 3, true), S::Keep);
+    // the video plane's stand-in: an envelope, re-latched only when it changes
+    assert_eq!(latch_step(Some(U::Corners(c)), L::Nothing, 0, true), S::Corners(c));
+    assert_eq!(latch_step(Some(U::Corners(c)), L::Corners(c), 0, true), S::Keep);
+    assert_eq!(latch_step(Some(U::Corners(c2)), L::Corners(c), 0, true), S::Corners(c2));
+    // nothing to inherit, or nobody dimming: the flat ink
+    assert_eq!(latch_step(Some(U::Flat), L::Corners(c), 0, true), S::Reset);
+    assert_eq!(latch_step(None, L::Page(1), 1, false), S::Reset);
+    assert_eq!(latch_step(None, L::Nothing, 1, false), S::Keep);
+}
+
+/// **At `TINT == 0` the inherited dim IS today's flat scrim, to the bit, at every role's weight** —
+/// the one knob that turns the whole family's inheritance off must turn it off exactly. And an
+/// unlatched field (nothing read yet, or a video-plane item with no envelope) is the flat ink
+/// whatever `TINT` is.
+#[test]
+fn a_zero_tint_and_an_unlatched_field_are_the_flat_scrim_bit_for_bit() {
+    use crate::ui::theme::{scrim_black, underlay as u};
+    use crate::ui::underlay::{plan, Draw};
+    for role in [u::DIM_COMPACT, u::DIM_PANEL, u::DIM_SHEET, u::DIM_DECISION, u::DIM_PLAYER, u::DIM_PROSE] {
+        for appear in [0.0, 0.25, 1.0] {
+            let a = role * appear;
+            assert_eq!(plan(true, 0.0, a), Draw::Flat(scrim_black(a)));
+            assert_eq!(plan(false, u::TINT, a), Draw::Flat(scrim_black(a)));
+            assert_eq!(plan(true, u::TINT, a), Draw::Field([u::TINT, u::TINT, u::TINT, a]));
+        }
+    }
+    assert!(u::TINT > 0.0 && u::TINT < 1.0, "the dim inherits some light and stays a dim");
+}
+
+/// **No surface states its own dim weight.** Every modal dim is a `theme::underlay` role; a literal
+/// alpha handed to `Scrim::dim`/`lifting`/`over_video` or to `Popover::scrim`, a private
+/// `SCRIM_A` constant, or a hand-drawn `scrim_black` in a panel that the container now dims, is
+/// the per-screen number this mechanism exists to remove. Pinned from source because a value can
+/// only be proven to come from the table by where it is spelled.
+#[test]
+fn no_surface_states_its_own_dim_weight() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    let mut dirs = vec![root.join("ui"), root.join("screens")];
+    while let Some(dir) = dirs.pop() {
+        for e in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                files.push(p);
+            }
+        }
+    }
+    assert!(files.len() > 50, "the walk found the tree ({} files)", files.len());
+    let literal_after = |line: &str, call: &str| -> bool {
+        line.match_indices(call).any(|(i, _)| {
+            line[i + call.len()..].trim_start().chars().next().is_some_and(|c| c.is_ascii_digit() || c == '.')
+        })
+    };
+    // the panels whose dim the container paints now: any black sheet here is a second dim
+    let dimmed_by_the_container = ["more_menu.rs", "track_menu.rs", "modal.rs"];
+    let mut bad = Vec::new();
+    for f in &files {
+        let name = f.file_name().unwrap().to_string_lossy().into_owned();
+        if name == "theme.rs" || name.ends_with("tests.rs") {
+            continue;
+        }
+        let src = std::fs::read_to_string(f).unwrap();
+        for (n, line) in src.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            let hit = ["Scrim::dim(", "Scrim::lifting(", "Scrim::over_video(", ".scrim("]
+                .iter()
+                .any(|c| literal_after(code, c))
+                || code.contains("const SCRIM_A")
+                || (dimmed_by_the_container.contains(&name.as_str()) && code.contains("scrim_black("));
+            if hit {
+                bad.push(format!("{}:{}: {}", f.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "a modal dim weight outside theme::underlay:\n{}", bad.join("\n"));
+}
+
 fn modal_of(d: &Dispatcher<FixtureHost>, id: EntryId) -> &crate::ui::fixture::FixtureModal {
     d.nav.entry(id).unwrap().inst.as_ref().unwrap().screen.as_any().unwrap()
         .downcast_ref::<crate::ui::fixture::FixtureModal>().unwrap()

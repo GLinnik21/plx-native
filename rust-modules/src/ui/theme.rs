@@ -70,8 +70,9 @@ const SAND_100: [f32; 4] = rgb8(0xe9, 0xe6, 0xe0);
 // real keyed hero ground (`AmbientWash::keyed`, capped at `GROUND_LUMA` 0.42 and mixed toward the
 // surface at `GROUND_W` 0.26) can and does land in a similarly narrow band when the source artwork
 // itself is flat — the difference is that a `RouteGround` fallback bypasses that mix entirely
-// (`RouteGround::latch_target` `jump`s the literal quad, unmixed) and has no artwork to fall back
-// on if it reads as flat, so it has to carry its OWN contrast rather than borrow the keying
+// (`underlay::Grade::Dim` is the identity grade `RouteGround` latches this quad through — unmixed,
+// unlike the `Grade::Ground` a real seed or live frame is capped and leaned through) and has no
+// artwork to fall back on if it reads as flat, so it has to carry its OWN contrast rather than borrow the keying
 // pipeline's. These four now spread across a ~3x luminance range (see
 // `route_screen::tests::the_pre_home_fallback_reads_as_a_directional_wash`) on the same diagonal
 // an authored key light would use — bright near one corner, dark at its opposite — while every
@@ -533,21 +534,13 @@ impl Material {
 /// are still there, so it reads as glass rather than as paint. The reference agrees — iOS's own
 /// context menu passes almost nothing of the page behind it.
 pub const PANEL_MATERIAL: Material = Material::UltraThick;
-/// Full-screen Settings-family modal ground. A full-HD surface cannot afford the four extra
-/// per-fragment taps used by the thicker compact materials on the target TV, so it samples the
-/// already-blurred cached snapshot once. Density is a separate token: it is what keeps poster
-/// titles and faces from competing with route copy without turning every Settings frame into a
-/// two-million-pixel multi-tap pass.
-pub const MODAL_SAMPLE_MATERIAL: Material = Material::UltraThin;
-pub const MODAL_FROST_ALPHA: f32 = 0.92;
-/// The one-time Kawase kernel used only while freezing the Settings host. Compact glass keeps its
-/// lighter 0.35/0.75 kernel; this wider pair deliberately destroys letter-scale structure so the
-/// host reads as a wallpaper rather than as a second interface behind the modal.
-pub const MODAL_BLUR_TAPS: [f32; 4] = [1.0, 2.0, 3.5, 5.5];
-/// Multiplicative grade for the cached full-screen blur. Keeping the density in the same texture
-/// pass avoids a second two-million-fragment frost quad on the target TV.
-pub const MODAL_BLUR_TINT: [f32; 4] = [0.46, 0.48, 0.54, 1.0];
-pub const MODAL_BLUR_SATURATION: f32 = 1.32;
+// The five `MODAL_*` tokens that stood here — `MODAL_SAMPLE_MATERIAL`, `MODAL_FROST_ALPHA`,
+// `MODAL_BLUR_TAPS`, `MODAL_BLUR_TINT`, `MODAL_BLUR_SATURATION` — were the material of a
+// full-screen BLURRED modal ground (`Glass::modal_ground` → `Painter::backdrop_blur_flat` →
+// `gfx::draw_blur_snapshot_flat` → `shaders/fs_modal_ground.frag`). That chain had no live caller
+// left and was deleted whole; a route ground is an `AmbientWash` (see `ui::route_screen`) and,
+// from PR2, an `ui::underlay::UnderlayField`, neither of which is a blur. Do not re-add the tokens
+// without the surface that reads them.
 
 #[cfg(test)]
 mod material_tests {
@@ -609,15 +602,6 @@ mod material_tests {
         );
     }
 
-    #[test]
-    fn fullscreen_modal_uses_one_cached_sample_and_its_own_dense_frost() {
-        assert_eq!(MODAL_SAMPLE_MATERIAL, UltraThin);
-        assert!(MODAL_FROST_ALPHA > UltraThick.frost());
-        assert!(MODAL_BLUR_TAPS
-            .windows(2)
-            .all(|w| w[0] > 0.0 && w[1] > w[0]));
-        assert!((1.0..=1.5).contains(&MODAL_BLUR_SATURATION));
-    }
 }
 pub const PANEL_FROST_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.72);
 /// The frosted sheet's bottom stop — see [`PANEL_FROST_TOP`].
@@ -684,6 +668,43 @@ pub const fn scrim_black(a: f32) -> [f32; 4] {
         SCRIM_BLACK_INK[2],
         a,
     ]
+}
+
+/// **The modal DIM — the one weight table every overlay's dim is read from.**
+///
+/// A dim is not a black sheet here: it is the page's own light, pushed down. Every surface that
+/// dims its host paints it through ONE field (`ui::underlay::UnderlayField`, owned by the
+/// container — `ModalStack`'s underlay), as `Role::Dim { weight: TINT }` at the alpha below times
+/// the surface's appear spring and the route dip. So green under a panel stays green, and stays
+/// where it was. What a surface chooses is only its ROLE's row in this table; there is no
+/// per-screen scrim number anywhere else (`containers::tests::no_surface_states_its_own_dim_weight` greps for one).
+///
+/// The rows are roles, not screens, and each alpha is the value the role already shipped at:
+/// moving them here changed which file states a number, not what any panel looks like at
+/// [`TINT`] `= 0`.
+pub mod underlay {
+    /// A compact menu beside the thing it is about (the card menu, the Library's Sort/Filter
+    /// menu): most of the page stays readable, so the dim only separates the panel from it.
+    pub const DIM_COMPACT: f32 = 0.34;
+    /// A read-only or picker panel in the middle of the frame (*Also available*, *About*,
+    /// *Track information*, Settings' own ground dim). Was `alert::SCRIM_A` — the design's
+    /// `scrimStill`.
+    pub const DIM_PANEL: f32 = 0.46;
+    /// A sheet that takes over a side of the screen (the profile menu, the player's `…` menu).
+    pub const DIM_SHEET: f32 = 0.50;
+    /// A decision alert: the page is not what is being asked about, so it recedes further than
+    /// behind a read-only panel.
+    pub const DIM_DECISION: f32 = 0.55;
+    /// The player's track menu over moving video: its rows sit on the busiest ground in the app.
+    pub const DIM_PLAYER: f32 = 0.58;
+    /// A panel of PROSE over artwork (the person bio): the text-legibility floor
+    /// [`super::SCRIM_TEXT_A`] derives, restated as this role's weight rather than borrowed.
+    pub const DIM_PROSE: f32 = 0.72;
+    /// **How much of the inherited field survives the dim's black ink** — the `weight` of
+    /// `Role::Dim`, `mix(SCRIM_BLACK_INK, field, TINT)`. `0.0` is the flat
+    /// [`super::scrim_black`] rect exactly, to the bit (`underlay::plan` owns that contract), so
+    /// this is the one knob that turns the whole family's inheritance down or off.
+    pub const TINT: f32 = 0.35;
 }
 /// Splat a token's rgb with an overridden alpha (e.g. the `env.sp`-baked hub title). Also how a role
 /// spells a stop on the white/black **alpha ramps**: `with_a(WHITE, 0.20)`.
@@ -1216,12 +1237,6 @@ pub mod alert {
     /// is four private constants in four files. It was exactly that, and `widgets::KeyHint` had to
     /// reason about "the PAD 48 all three read-only alerts drew" with no name to say it with.
     pub const PAD: f32 = 48.0;
-    /// The still-scrim behind a modal alert — the design's `scrimStill`. Promoted for the reason
-    /// [`super::super::popover::Popover::RISE`] was: the family arrived with four files each
-    /// claiming to carry the shared value, and no two of them agreeing. This is the weight the
-    /// READ-ONLY alerts share; a panel with a different job (a destructive decision, a picker over
-    /// prose) still states its own, which is a design choice rather than a stray literal.
-    pub const SCRIM_A: f32 = 0.46;
     /// The scrolled-viewport edge dissolve (`ui::text_view::TextView::edge_fade`, since
     /// 2026-09-02 — was `widgets::edge_feather`'s opaque gradient) — how far the crossing text
     /// fades at the top and bottom of a scissor-clipped body.

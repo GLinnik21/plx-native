@@ -114,6 +114,16 @@ pub(crate) fn probe(name: &'static str, pos: f32, vel: f32, target: f32, dt: f32
 
 // Separate stream from the main event log — the per-settle (and, if extended, per-frame) trace can
 // get large, and it should never drown the primary /tmp/plxnative-events.log debugging surface.
+//
+// Gated on `devtriggers` — like every other per-trigger diagnostic sink (`gpu_timer`'s
+// `plxnative-gputime.jsonl`, `ui::profile`'s `plxnative-hwcnt.jsonl`) — rather than left to
+// `enabled()`'s runtime `false`: `ENABLED` is only ever flipped true from
+// `dev::scenarios::arm_anim`, which is itself compiled out without the feature, but a runtime
+// latch is not how this crate keeps a trigger's own NAME out of a release binary's bytes. Without
+// this gate the literal `plxnative-anim.log` path stayed in `--no-default-features` release
+// binaries even though nothing could ever open it — exactly the class of leak
+// `ci/check-package.py`'s dev-trigger-catalog check now audits for.
+#[cfg(feature = "devtriggers")]
 fn log(m: &str) {
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -124,6 +134,8 @@ fn log(m: &str) {
         let _ = writeln!(f, "{m}");
     }
 }
+#[cfg(not(feature = "devtriggers"))]
+fn log(_m: &str) {}
 
 impl Entry {
     fn cur(&self) -> f32 {

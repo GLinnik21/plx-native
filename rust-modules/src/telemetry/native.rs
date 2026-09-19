@@ -7,7 +7,7 @@
 //! that executable's deliberately tiny alternate entry point; it moves the envelope into a
 //! private pending directory and exits before the ordinary boot opens or truncates any log.
 //!
-//! A later healthy boot calls [`import_pending`]. It discards the SDK's envelope header (including
+//! A later healthy boot calls [`read_pending`] (via `crashreport::recover_pending`). It discards the SDK's envelope header (including
 //! its DSN), accepts exactly one bounded event item, strips local directory names from module
 //! paths, keeps the crash-report identifier the SDK scope carried as `user.id` (and nothing else
 //! of `user`), and appends the JSON body to the application's existing consent-aware durable spool.
@@ -32,8 +32,8 @@ const PENDING_DIR: &str = "plxnative-sentry-pending";
 /// Keep the capture backend alive until the app leaves `plex_run`.
 pub(crate) struct Guard;
 
-/// Enough identity to suppress the local fallback copy of a crash whose native envelope was
-/// already durably queued. There is no timestamp in the async-signal-safe fallback record.
+/// Enough identity to pair a native envelope with the crash log's record of the same death. There
+/// is no timestamp in the async-signal-safe fallback record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CrashKey {
     pub build_id: String,
@@ -70,7 +70,7 @@ pub(crate) fn sync(c: &super::consent::Consent) -> Guard {
 pub(crate) fn sync_change(c: &super::consent::Consent) {
     let wanted = c.answered() && c.errors && super::sender::sentry_dsn().is_some();
     if wanted {
-        let _ = import_pending();
+        import_all();
         start();
         set_user(c.errors_id.as_deref());
     } else {
@@ -633,8 +633,38 @@ fn event_from_envelope(bytes: &[u8]) -> Option<(String, Vec<u8>, Option<CrashKey
     (body.len() <= super::queue::MAX_RECORD).then_some((header_id, body, crash_key))
 }
 
-/// Import every complete native envelope, deleting it only after the durable spool accepted it.
-pub(crate) fn import_pending() -> Vec<CrashKey> {
+/// One complete native envelope waiting in the pending directory: parsed, not yet queued.
+///
+/// Reading and committing are separate because the crash log decides what happens to it. A panic
+/// that aborted leaves both a `*** RUST PANIC` record and this SIGABRT envelope, and the panic is
+/// the one worth sending — so the envelope must still be on disk, unqueued, when that is decided.
+/// `crashreport::recover_pending` owns the order of every append, delete and watermark write.
+pub(crate) struct PendingNative {
+    path: PathBuf,
+    event_id: String,
+    body: Vec<u8>,
+    pub(crate) key: Option<CrashKey>,
+}
+
+impl PendingNative {
+    /// Append the event to the durable spool. The envelope stays on disk until [`Self::delete`].
+    pub(crate) fn append(&self) -> bool {
+        super::spool::append(&super::queue::Record {
+            category: super::queue::Category::Errors,
+            dest: super::queue::Dest::Sentry,
+            event_id: self.event_id.clone(),
+            body: self.body.clone(),
+        })
+    }
+
+    pub(crate) fn delete(&self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Every complete native envelope, oldest first. Malformed ones are deleted here, as nothing can
+/// ever make them sendable; valid ones are left exactly where they are.
+pub(crate) fn read_pending() -> Vec<PendingNative> {
     if !super::consent::allows_errors() || super::sender::sentry_dsn().is_none() {
         return Vec::new();
     }
@@ -643,9 +673,8 @@ pub(crate) fn import_pending() -> Vec<CrashKey> {
     };
     let mut paths: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
     paths.sort();
-    let mut queued = 0usize;
     let mut rejected = 0usize;
-    let mut crash_keys = Vec::new();
+    let mut pending = Vec::new();
     for path in paths {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
@@ -667,31 +696,32 @@ pub(crate) fn import_pending() -> Vec<CrashKey> {
                 (bytes.len() <= super::queue::MAX_RECORD).then_some(bytes)
             })
             .and_then(|b| event_from_envelope(&b));
-        let Some((event_id, body, crash_key)) = parsed else {
+        let Some((event_id, body, key)) = parsed else {
             rejected += 1;
             let _ = std::fs::remove_file(&path);
             continue;
         };
-        let accepted = super::spool::append(&super::queue::Record {
-            category: super::queue::Category::Errors,
-            dest: super::queue::Dest::Sentry,
-            event_id,
-            body,
-        });
-        if accepted {
+        pending.push(PendingNative { path, event_id, body, key });
+    }
+    if rejected != 0 {
+        crate::log(&format!("telemetry: native crash envelopes rejected={rejected}"));
+    }
+    pending
+}
+
+/// Queue every pending envelope with no crash log to reconcile against: a mid-session opt-in,
+/// where the log's watermark was advanced past everything the previous consent period wrote.
+fn import_all() {
+    let mut queued = 0usize;
+    for native in read_pending() {
+        if native.append() {
             queued += 1;
-            if let Some(key) = crash_key {
-                crash_keys.push(key);
-            }
-            let _ = std::fs::remove_file(&path);
+            native.delete();
         }
     }
-    if queued != 0 || rejected != 0 {
-        crate::log(&format!(
-            "telemetry: native crash envelopes queued={queued} rejected={rejected}"
-        ));
+    if queued != 0 {
+        crate::log(&format!("telemetry: native crash envelopes queued={queued}"));
     }
-    crash_keys
 }
 
 #[cfg(all(target_os = "linux", target_arch = "arm"))]
