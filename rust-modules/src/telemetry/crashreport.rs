@@ -763,12 +763,29 @@ fn execute(plan: &Plan, fresh: bool, fx: &mut impl Recovery) {
 /// at all, which is indistinguishable from never having uploaded symbols. Sending no image at least
 /// says so.
 pub(crate) fn recover_pending() {
-    if !super::consent::allows_errors() {
-        return; // no consent for this category — nothing is read and nothing is queued
+    recover_pending_at(&crate::paths::in_runtime_dir("plxnative-crash.log"));
+}
+
+/// **May this process read crash data at all** — the crash log here, and the native envelopes in
+/// `native::read_pending`? Both halves, or nothing:
+///
+/// * crash-report consent (`consent::allows_errors`) — consent gates collection, not just the send;
+/// * a Sentry destination compiled into this build (`sender::has_sentry`). Without one, every
+///   report read would be spooled for a send that can never happen, and the watermark would move
+///   past the records, so a later build that DOES carry a DSN could never report them.
+///
+/// A build with no DSN therefore touches nothing: no read, no watermark write, no envelope delete.
+/// The log and the envelopes stay exactly as the crashed process left them.
+pub(crate) fn may_read_crash_data() -> bool {
+    super::consent::allows_errors() && super::sender::has_sentry()
+}
+
+fn recover_pending_at(path: &std::path::Path) {
+    if !may_read_crash_data() {
+        return; // no consent, or nowhere to send — nothing is read and nothing is queued
     }
     let natives = super::native::read_pending();
-    let path = crate::paths::in_runtime_dir("plxnative-crash.log");
-    let bytes = std::fs::read(&path).unwrap_or_default();
+    let bytes = std::fs::read(path).unwrap_or_default();
     let from = resume_from(bytes.len() as u64, read_mark().reported_bytes) as usize;
     let fresh = from < bytes.len();
     let reports = if fresh {
@@ -1506,5 +1523,39 @@ mod tests {
         assert_eq!(signal_name(4), "SIGILL");
         assert_eq!(signal_name(7), "SIGBUS");
         assert_eq!(signal_name(999), "SIGNAL");
+    }
+
+    /// A build with no Sentry destination must not read the crash log at all: whatever it queued
+    /// could never be sent, and a moved watermark would skip those records for good.
+    #[test]
+    fn a_build_without_a_sentry_dsn_reads_no_crash_data() {
+        use super::super::{consent, spool};
+        let _g = crate::testlock::serial();
+        if super::super::sender::has_sentry() {
+            return; // a developer build with a DSN compiled in cannot exercise this branch
+        }
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-crashreport-nodsn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("plxnative-crash.log");
+        std::fs::write(&log, REC).unwrap();
+        let spool_file = dir.join("spool.bin");
+        spool::set_test_path(Some(spool_file.clone()));
+        let saved = consent::current();
+        consent::install(consent::apply(&consent::Consent::default(), true, false, || {
+            Some("e".into())
+        }));
+
+        recover_pending_at(&log);
+
+        let spooled = std::fs::metadata(&spool_file).map(|m| m.len()).unwrap_or(0);
+        consent::install(saved.unwrap_or_default());
+        spool::set_test_path(None);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            spooled, 0,
+            "a build with no Sentry DSN read the crash log and spooled {spooled} bytes it can never send"
+        );
     }
 }
