@@ -580,6 +580,18 @@ impl Client {
         self.body_2xx_bulk(path_no_token, &[])
     }
 
+    /// A size-bounded body on either transport, with a finite stalled-transfer timeout.
+    pub(super) fn get_sidecar_bytes(&self, path_no_token: &str) -> Option<Vec<u8>> {
+        if !self.may_send() { return None; }
+        let owned = pms_headers(&[]);
+        let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let r = http::request_probe(
+            &self.origin, &self.with_token(path_no_token), Method::Get, &headers,
+            super::SIDECAR_MAX_BYTES, 25, self.resolve_pin.as_ref(),
+        )?;
+        r.ok().then_some(r.body)
+    }
+
     /// GET raw bytes for a path this server ALREADY BUILT — the one entry point that does **not**
     /// append `X-Plex-Token`, because the path handed in already ends in one.
     ///

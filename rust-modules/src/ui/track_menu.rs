@@ -52,7 +52,11 @@ pub(crate) struct TrackMenuState {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum TrackCommit {
     Audio { ordinal: c_int, codec: String, stream_id: i64 },
-    Subtitle { render_ordinal: c_int, stream_id: i64 },
+    /// `sidecar_key` is `Some` when the pick is an EXTERNAL text subtitle the client can draw
+    /// on direct play (`metadata::Stream::sidecar_renderable`): it has no demuxer ordinal
+    /// (`render_ordinal` is -1), so the loop hands it to `player::sidecar` beside the unchanged
+    /// route commit. `None` — Off, or an embedded track — deselects any sidecar.
+    Subtitle { render_ordinal: c_int, stream_id: i64, sidecar_key: Option<String> },
     /// The caption's tone. Not a track at all, but it is picked in this panel and it is the
     /// loop that performs it (`player::set_subtitle_tone` writes the session), like the two above.
     SubtitleTone(crate::plex::session::SubtitleTone),
@@ -240,7 +244,8 @@ impl TrackMenuState {
             let changed = self.active_sub != new_sub;
             self.active_sub = new_sub;
             // the client renderer takes the EMBEDDED-subtitle ordinal (what the demuxer
-            // enumerates); an external pick (transcode-only row) renders nothing — it's burned
+            // enumerates); an external pick has no demux ordinal — it is drawn by the sidecar
+            // renderer on direct play, or burned
             let ridx = tracks(meta)
                 .filter(|_| new_sub >= 0)
                 .map(|t| metadata::sub_render_ordinal(&t.subs, new_sub as usize))
@@ -250,9 +255,15 @@ impl TrackMenuState {
                     feature: crate::diag::schema::Feature::SubtitleTrack,
                 });
             }
+            let sidecar_key = tracks(meta)
+                .filter(|_| new_sub >= 0)
+                .and_then(|t| t.subs.get(new_sub as usize))
+                .filter(|s| s.sidecar_renderable())
+                .map(|s| s.key.clone());
             Some(TrackCommit::Subtitle {
                 render_ordinal: ridx,
                 stream_id: self.sub_stream_id(meta),
+                sidecar_key,
             })
         }
     }
@@ -329,6 +340,9 @@ impl TrackMenuState {
                 }
                 if s.sdh {
                     row = row.badge(Badge::Sdh);
+                }
+                if s.external {
+                    row = row.badge(Badge::Text("EXTERNAL".to_string()));
                 }
                 if is_image_sub_codec(&s.codec) {
                     row = row.badge(Badge::Text(s.codec.to_uppercase()));
@@ -530,16 +544,17 @@ fn tracks<'a>(meta: metadata::MetadataView<'a>) -> Option<&'a metadata::PlayingI
 fn n_audio(meta: metadata::MetadataView<'_>) -> c_int {
     tracks(meta).map(|t| t.audio.len()).unwrap_or(0) as c_int
 }
-/// Subtitle rows currently offered, as indices into the playing subs list. External/sidecar
-/// subs are NOT in the container, so the client renderer can't show them on direct-play —
-/// they're listed only while transcoding (the server can burn them).
+/// Subtitle rows offered on this route: text sidecars can be drawn on direct play;
+/// all sidecars are offered during transcoding, when the server burns them.
 fn visible_subs(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Vec<usize> {
     tracks(meta)
         .map(|t| {
             t.subs
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| !s.external || crate::route::is_transcoding(ps))
+                .filter(|(_, s)| {
+                    !s.external || s.sidecar_renderable() || crate::route::is_transcoding(ps)
+                })
                 .map(|(i, _)| i)
                 .collect()
         })
@@ -750,6 +765,66 @@ mod tests {
         for sel in [-1, 0, 3, c_int::MAX] {
             assert_eq!(tone_at(None, sel), None);
         }
+    }
+
+    /// Sidecars are subtitle rows, so the Color section starts after them just as it starts after
+    /// embedded tracks. Exercise the menu's actual flat-row dispatch: row 2 is the EXTERNAL
+    /// sidecar and row 3 is the first tone when the list is Off + embedded + sidecar.
+    #[test]
+    fn sidecar_and_tone_rows_map_to_their_own_commits_in_one_menu() {
+        let ps = crate::route::PlaybackSession::IDLE;
+        let mut store = crate::stores::metadata::MetadataStore::default();
+        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
+            crate::metadata::PlayingItem {
+                sid: crate::plex::ServerId::from_raw(0),
+                rk: "rk".into(),
+                show_rk: String::new(),
+                audio: Vec::new(),
+                subs: vec![
+                    crate::metadata::Stream {
+                        id: 41,
+                        index: 0,
+                        lang: "English".into(),
+                        codec: "srt".into(),
+                        ..Default::default()
+                    },
+                    crate::metadata::Stream {
+                        id: 42,
+                        index: 1,
+                        lang: "French".into(),
+                        codec: "srt".into(),
+                        external: true,
+                        key: "/library/streams/42.srt".into(),
+                        ..Default::default()
+                    },
+                ],
+                video_fps: 0.0,
+                width: 0,
+                height: 0,
+                bitrate: 0,
+                dovi: Default::default(),
+                markers: Vec::new(),
+                chapters: Vec::new(),
+                blur: None,
+            },
+        ))));
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1);
+
+        menu.focus_row(2);
+        assert_eq!(
+            menu.on_ok(&ps, store.view()),
+            Some(TrackCommit::Subtitle {
+                render_ordinal: -1,
+                stream_id: 42,
+                sidecar_key: Some("/library/streams/42.srt".into()),
+            })
+        );
+
+        menu.focus_row(3);
+        assert_eq!(
+            menu.on_ok(&ps, store.view()),
+            Some(TrackCommit::SubtitleTone(SubtitleTone::LADDER[0]))
+        );
     }
 
     /// **Position is the join, so an unnamed track must occupy a slot rather than be skipped.**

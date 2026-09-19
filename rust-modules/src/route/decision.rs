@@ -5907,6 +5907,13 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
     } else {
         install_active_encoder(&active_encoder);
     }
+    // Restore the external renderer AND the route's stream identity before publishing the
+    // start contract, so timeline reports and later audio/quality transcodes keep this pick.
+    if plan.sub_render_ordinal.is_none() && !is_transcoding(ps) {
+        if let Some(id) = crate::player::sidecar::restore_server_selection(cur_sid(ps), meta.view()) {
+            set_subtitle(ps, id);
+        }
+    }
     let start = prepare_playback_landing(ps, !ps.url.is_empty());
     // SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
     if let Some(ord) = plan.feed_audio_ordinal {
@@ -6237,7 +6244,7 @@ pub(crate) fn commit_subtitle_selection(ps: &mut PlaybackSession, sub_idx: i32, 
         crate::plex::TranscodeDelivery::FixedHls { .. }
     ) {
         { let s = &mut *ps; {
-            if sub_idx < 0 {
+            if stream_id == 0 {
                 if let Some(candidate) = s.auto_original.as_mut() {
                     candidate.subtitle_ordinal = None;
                 }

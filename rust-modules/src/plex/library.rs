@@ -4,6 +4,13 @@ use super::client::{Client, QueryBuilder, StreamUrl};
 use super::models::{MediaContainer, Metadata};
 use super::params::{SectionQuery, StreamSelection};
 
+fn sidecar_key_allowed(key: &str) -> bool {
+    let Some(tail) = key.strip_prefix("/library/streams/") else { return false; };
+    let (id, ext) = tail.split_once('.').unwrap_or((tail, ""));
+    !id.is_empty() && id.len() <= 20 && id.bytes().all(|b| b.is_ascii_digit())
+        && ext.len() <= 10 && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 impl Client {
     /// GET /library/sections (D-3: spec-canonical is /library/sections/all; keep the
     /// known-working bare path). Read `.directory[]` for {kind, key}.
@@ -247,6 +254,27 @@ impl Client {
         ))
     }
 
+    /// Fetch a SIDECAR subtitle (`Stream.key`, i.e. `/library/streams/{id}`) for the client
+    /// renderer. The endpoint takes `encoding` and `format` (docs/plex-openapi.json), so the first
+    /// ask is for UTF-8 SubRip whatever the file on disk is — that is what turns a Windows-1250
+    /// `.srt` or an `.ass` into something one parser reads. The two fallbacks exist because the
+    /// conversion is the server's and has been seen refusing a FORMAT before (`.vtt` → 501):
+    /// without `format` PMS re-encodes only, and the bare key is the file as it lies on disk.
+    /// `player::sidecar::parse` reads whichever of the three comes back.
+    pub fn sidecar_subtitle(&self, key: &str) -> Option<Vec<u8>> {
+        if !sidecar_key_allowed(key) {
+            return None; // a key is server data: only ever the path this method is for
+        }
+        let sep = if key.contains('?') { '&' } else { '?' };
+        [
+            format!("{key}{sep}encoding=utf-8&format=srt"),
+            format!("{key}{sep}encoding=utf-8"),
+            key.to_string(),
+        ]
+        .iter()
+        .find_map(|path| self.get_sidecar_bytes(path).filter(|b| !b.is_empty()))
+    }
+
     /// PUT /library/parts/{id} — select the part's audio/subtitle streams SERVER-side (the
     /// transcoder encodes the SELECTED audio and burns the SELECTED subtitle; a query-param
     /// on the stream URL does NOT change them, only this PUT does). `subtitleStreamID` is
@@ -353,6 +381,16 @@ mod tests {
             assert!(elapsed < Duration::from_millis(1500 + 300), "optional GET delayed play: {elapsed:?}");
             assert_eq!(requests, 1, "failed preference GET must not fetch the show tree");
         }
+    }
+
+    #[test]
+    fn sidecar_download_refuses_path_traversal() {
+        for key in ["/library/streams/../../identity", "/library/streams/%2e%2e/identity",
+                    "/library/streams/1?path=/identity", "/library/streams/1#fragment"] {
+            assert!(!sidecar_key_allowed(key), "{key}");
+        }
+        assert!(sidecar_key_allowed("/library/streams/123"));
+        assert!(sidecar_key_allowed("/library/streams/123.srt"));
     }
 
     /// The numbers are PMS's, and the mapping is the only thing standing between "Also available"

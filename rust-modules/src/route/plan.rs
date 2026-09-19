@@ -1658,10 +1658,10 @@ fn encode_audio_id(
 /// per-part override) and it is arguably the account setting working, but if it ever needs
 /// suppressing, the gate belongs here — not on the flag itself.
 ///
-/// Two deliberate limits, both about what the client renderer can actually deliver:
-///   - an EXTERNAL (sidecar) selection returns None. It is not in the container, so nothing would
-///     render; only a server burn can show it, and silently forcing a transcode to obey a stored
-///     flag is not a trade the user asked for.
+/// Two deliberate limits of this embedded-track selection:
+///   - an EXTERNAL (sidecar) selection returns None because it has no container ordinal.
+///     Renderable text sidecars are restored separately by `apply_plan`; image sidecars
+///     still require a server burn.
 ///   - this is the direct-play path only. The transcode path keeps PUTting `subtitleStreamID=0`
 ///     (subs off) as before: honouring a selection there means a server-side BURN, i.e. a
 ///     re-encode carrying a picture-quality cost, which is a trade to put behind the settings
