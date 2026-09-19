@@ -85,9 +85,8 @@ pub(crate) fn submit(record: Record) -> bool {
         return false;
     }
     let tenure = delivery::tenure();
-    match super::spool::append_if(&record, || delivery::current(tenure)) {
+    match super::spool::append_watched_if(&record, tenure, || true) {
         Some(true) => {
-            let _ = delivery::watch(&record.event_id, DeliveryState::Queued, tenure);
             kick_flush();
             true
         }
@@ -110,7 +109,7 @@ pub(crate) fn submit(record: Record) -> bool {
                 false
             }
         }
-        // The account's tenure ended between the press and the append.
+        // The tenure ended, or no delivery watch could be admitted. Neither permits a fallback.
         None => false,
     }
 }
@@ -162,6 +161,49 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         delivery::state(id)
+    }
+
+    #[test]
+    fn completion_before_append_returns_is_not_lost() {
+        let _g = crate::testlock::serial();
+        let _reset = setup("append-race");
+        for verdict in [Verdict::Done, Verdict::Keep, Verdict::Hopeless] {
+            delivery::forget();
+            super::super::spool::on_append_for_test(move || {
+                let records = super::super::spool::read();
+                assert_eq!(records.len(), 1);
+                let (retired, _) = super::super::process_records(
+                    &records, &super::super::consent::Consent::default(), || true,
+                    |_| (verdict, None),
+                );
+                super::super::spool::commit_retiring(&retired);
+            });
+            assert!(submit(record("append-race", b"body")));
+            let expected = match verdict {
+                Verdict::Done => DeliveryState::Delivered,
+                Verdict::Keep => DeliveryState::Held,
+                Verdict::Hopeless => DeliveryState::Failed,
+            };
+            assert_eq!(delivery::state("append-race"), Some(expected),
+                "the ordinary flush settled before submit resumed");
+            super::super::spool::commit_retiring(&["append-race".into()]);
+        }
+    }
+
+    #[test]
+    fn forget_before_append_returns_does_not_resurrect_the_watch() {
+        let _g = crate::testlock::serial();
+        let _reset = setup("append-forget");
+        let tenure = delivery::tenure();
+        super::super::spool::on_append_for_test(|| {
+            delivery::forget();
+            super::super::spool::purge_all_local();
+        });
+        assert!(submit(record("forgotten", b"body")));
+        assert!(super::super::spool::read().is_empty());
+        assert_eq!(delivery::state("forgotten"), None);
+        delivery::settle_if_current("forgotten", DeliveryState::Delivered, tenure);
+        assert_eq!(delivery::state("forgotten"), None);
     }
 
     #[test]

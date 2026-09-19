@@ -564,16 +564,13 @@ pub(crate) fn report_standing(ctx: IncidentContext) -> Option<String> {
 /// Report ID from that moment (`super::delivery`) — the flush settles it from there.
 fn queue_standing(record: &super::queue::Record, allowed: impl FnOnce() -> bool) -> bool {
     let tenure = super::delivery::tenure();
-    match super::spool::append_if(record, allowed) {
-        Some(true) => {
-            let _ = super::delivery::watch(&record.event_id, super::delivery::DeliveryState::Queued, tenure);
-            true
-        }
+    match super::spool::append_watched_if(record, tenure, allowed) {
+        Some(true) => true,
         Some(false) => {
             crate::log("telemetry: onboarding incident did not fit the durable spool");
             false
         }
-        None => false, // consent changed while the event was being shaped
+        None => false, // consent/tenure changed, or no delivery watch could be admitted
     }
 }
 
@@ -1016,6 +1013,40 @@ mod tests {
         delivery::forget();
         assert!(queued && !refused);
         assert_eq!(states, (Some(DeliveryState::Queued), None));
+    }
+
+    #[test]
+    fn completion_before_append_returns_is_not_lost() {
+        use super::super::{delivery, spool};
+        use delivery::DeliveryState;
+        let _g = crate::testlock::serial();
+        delivery::forget();
+        let dir = std::env::temp_dir().join(format!("plxnative-standing-race-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        spool::set_test_path(Some(dir.join("spool.bin")));
+        let record = super::super::queue::Record {
+            category: super::super::queue::Category::Errors,
+            dest: super::super::queue::Dest::Sentry,
+            event_id: "standing-race".into(), body: b"body".to_vec(),
+        };
+        spool::on_append_for_test(|| {
+            let records = spool::read();
+            assert_eq!(records.len(), 1);
+            let consent = consent::Consent {
+                asked_version: consent::POLICY_VERSION, errors: true, ..Default::default()
+            };
+            let (retired, _) = super::super::process_records(
+                &records, &consent, || true, |_| (super::super::sender::Verdict::Done, None),
+            );
+            spool::commit_retiring(&retired);
+        });
+        let queued = queue_standing(&record, || true);
+        let state = delivery::state(&record.event_id);
+        spool::set_test_path(None);
+        delivery::forget();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(queued);
+        assert_eq!(state, Some(DeliveryState::Delivered), "the ordinary flush settled before queue_standing resumed");
     }
 
     /// A stalled wait is never sent without asking, even for a person who granted the scope; and
