@@ -164,13 +164,14 @@ Two rules, both of which this material got wrong on its own before 2026-09-02:
 
 - **It is not a precision problem.** Promoting a mix to fp32 changes nothing visible and costs ~4.5
   arithmetic words a fragment. The cure is noise at the OUTPUT.
-- **The noise is a texture fetch behind a uniform branch, never a hash.** `fs_glass.frag` carried
+- **The noise is a texture fetch, never a hash — and, since 2026-09-19, never a branch either:** a uniform `if (u_dither > 0.0)` was tried and cost +5.8M arithmetic words a frame on a scrolling Library, so the prelude is straight-line and an undithered surface is a twin PROGRAM (`shaders/dither_stub.glsl`) instead. `fs_glass.frag` carried
   `fract(sin(dot(p,k))*43758.5)` and evaluated it on EVERY fragment of every glass surface — the
   same construction `fs_ambient.frag`'s own header had been recording as a mistake that cost 38% of
   a Home frame. A sine hash is also structured, which is the "strange patterns" half of the report.
 
 `shaders/dither.glsl` is now the one answer for the three programs whose ramp is a blur or a
-whole-screen wash (`fs_ambient`, `fs_modal_ground`, `fs_glass` — the per-rect `fs_src`/`fs_shadow`
+whole-screen wash (`fs_ambient`, `fs_field`, `fs_glass` — `fs_field` took the slot of the deleted
+`fs_modal_ground` on 2026-09-19; the per-rect `fs_src`/`fs_shadow`
 carried it for two days and cost the hero paging scene 57→50 fps for a branch that answered "no" on
 every draw, 2026-09-04), `gfx::dither_for_field` the one policy for which draws pay. Measured on the panel afterwards: the flat runs that ARE the
 staircase fall from 9.6 px / 15.7 px to 2.2 px, the horizontal autocorrelation at lag 64 from

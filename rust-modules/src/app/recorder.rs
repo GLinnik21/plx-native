@@ -946,7 +946,23 @@ impl Recplay {
 
     /// The frame's tail. `hash` is computed only when a state record is due (an event frame while
     /// recording; a graded frame while replaying). Returns `true` when a replay has just ended.
+    ///
+    /// `store_gen` is Stage B's seam: every store's generation now lives on the owning `Bridge`'s
+    /// `Stores` aggregate rather than a crate-global compatibility array, so the per-frame land
+    /// scan below reaches it through the caller's closure instead of naming `crate::stores::gen`
+    /// (deleted — there is no free store left for it to answer for).
+    #[cfg(test)]
     pub(crate) fn end_frame(&mut self, hash: &dyn Fn() -> u64) -> bool {
+        self.end_frame_with(hash, &|_| 0)
+    }
+
+    /// [`Self::end_frame`], but with an explicit per-store generation lookup — the production
+    /// path (`app::run::recorder_end_frame`) supplies `Bridge::store_gen`.
+    pub(crate) fn end_frame_with(
+        &mut self,
+        hash: &dyn Fn() -> u64,
+        store_gen: &dyn Fn(crate::stores::StoreId) -> u32,
+    ) -> bool {
         match self {
             Recplay::Off => false,
             Recplay::Recording(r) => {
@@ -957,7 +973,7 @@ impl Recplay {
                 // a mailbox this frame, whichever of its sites did it. Written before `st`, so a
                 // reader sees the arrival above the state it produced.
                 for (ord, n) in crate::ui::landgate::take_frame_lands() {
-                    let gen = crate::stores::StoreId::from_ord(ord).map_or(0, crate::stores::gen);
+                    let gen = crate::stores::StoreId::from_ord(ord).map_or(0, store_gen);
                     r.w.land(r.f, ord.0, gen, n);
                     r.events = true;
                 }

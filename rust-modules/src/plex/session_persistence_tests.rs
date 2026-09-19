@@ -197,7 +197,7 @@ fn a_cleared_canonical_tenure_boots_clean_and_still_shadows_a_reappearing_legacy
 
     // AUTH-09a: not locked/blocked UI framing.
     let read = read_locked();
-    let (session, save) = prepare_load(read, || "fresh-id".to_string());
+    let (session, save) = prepare_load(&read, || "fresh-id".to_string());
     assert!(
         session.account_token.is_empty(),
         "a cleared tenure must not read back with an account token"
@@ -429,8 +429,8 @@ fn clear_reports_a_non_durable_outcome_when_the_canonical_commit_is_refused() {
 /// the `| ReadState::Cleared` arm) leaves the rest of this module's suite green.
 #[test]
 fn prepare_load_seeds_a_fresh_playback_quality_for_cleared_exactly_as_for_missing() {
-    let missing = prepare_load(ReadState::Missing, || "id-missing".to_string()).0;
-    let cleared = prepare_load(ReadState::Cleared, || "id-cleared".to_string()).0;
+    let missing = prepare_load(&ReadState::Missing, || "id-missing".to_string()).0;
+    let cleared = prepare_load(&ReadState::Cleared, || "id-cleared".to_string()).0;
     assert!(
         missing.playback_quality.is_some(),
         "setup: a Missing read must seed a fresh quality"
@@ -638,7 +638,7 @@ fn a_full_save_of_a_switch_snapshot_keeps_auto_sign_in() {
     save(&s);
     assert!(set_auto_sign_in(true));
 
-    let mut snap = peek();
+    let mut snap = (*peek()).clone();
     snap.user.uuid = "u-kid".into();
     save(&snap);
 

@@ -687,7 +687,7 @@ mod tests {
             let mut newer = saved;
             newer.server.address = "127.0.0.2".into();
             newer.server.origin_url = "http://127.0.0.2:32400".into();
-            newer.server.token = "synthetic-new-profile-token".into();
+            newer.server.token = "synthetic-new-tok".into();
             newer.user.token = newer.server.token.clone();
             newer.sources[0].address = newer.server.address.clone();
             newer.sources[0].origin_url = newer.server.origin_url.clone();
@@ -697,7 +697,7 @@ mod tests {
             session::save(&newer);
             let disk = std::fs::read(tmp.path()).unwrap();
             let replacement = crate::plex::register_for_test("resource-server", "127.0.0.2", 32400,
-                "synthetic-new-profile-token", "synthetic-resource-client");
+                "synthetic-new-tok", "synthetic-resource-client");
             assert_eq!(replacement, id);
             let new_client = crate::plex::client_for(id).unwrap();
             assert!(!std::ptr::eq(old_client, new_client));
@@ -706,7 +706,7 @@ mod tests {
             let replacement_generation = new_client.token_gen();
             // URL construction reads the actual Client token without making any request.
             let replacement_url = new_client.direct_play_url("/synthetic", "test").to_url();
-            assert!(replacement_url.contains("X-Plex-Token=synthetic-new-profile-token"));
+            assert!(replacement_url.contains("X-Plex-Token=synthetic-new-tok"));
             let terminal = records[0].clone();
             frame(&mut rig, &mut d, records);
             assert!(std::ptr::eq(new_client, crate::plex::client_for(id).unwrap()));

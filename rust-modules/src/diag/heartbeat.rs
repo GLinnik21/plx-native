@@ -180,6 +180,22 @@ impl Instruments {
         self.ms(self.stamps[i].wrapping_sub(self.stamps[i - 1]))
     }
 
+    /// The just-finished frame's total (Top→Swap), or `0.0` unarmed. The narrow read the
+    /// stress-bench oscillators (`dev::scenarios::bench_frame_tick`) need without duplicating
+    /// what [`Self::frame_drop_line`] already computes — that method's `total` local, pulled out
+    /// so a caller that wants the number and not the threshold/log-line behaviour can have it.
+    /// No side effect, unlike `frame_drop_line`: it does not fold into `self.worst` and may be
+    /// called on every iteration, presented or not — an unpresented frame's Draw/Capture/Swap
+    /// stamps equal Prepare's (`skip_present_phases`), so its "total" reads as the prepare-only
+    /// cost, which is why callers that want presented-frame timing gate on `Frame::present`
+    /// themselves rather than trusting this alone.
+    pub(crate) fn last_frame_ms(&self) -> f64 {
+        if !self.armed {
+            return 0.0;
+        }
+        self.ms(self.stamps[Phase::Swap as usize].wrapping_sub(self.stamps[Phase::Top as usize]))
+    }
+
     /// At the iteration's tail of a PRESENTED frame: fold the total into the peak and return the
     /// `FRAMEDROP` line when it crossed the threshold. The four per-frame counters come from
     /// [`Self::note_frame_counters`] — this frame's, not the accumulation since the last drop

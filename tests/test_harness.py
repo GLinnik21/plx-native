@@ -556,6 +556,19 @@ class ReplayFixtures(unittest.TestCase):
                                         "%s/%s: a %d-char string outside the alphabet" % (name, fn, len(v)))
         self.assertGreater(checked, 0)
 
+    # Fixture 12 cannot be re-recorded until the controlled-effect encoder
+    # (`app/bootstrap/effects.rs`) learns `ContentReq::PreviewStart`: it currently handles only
+    # `ContentReq::Push`/`Present`/`Back`, and Flow 12's own flow trips the Detail hero-preview
+    # autostart. Quarantined explicitly rather than silently passed by a schema-only check — a
+    # reader of `make check` output should see "known-stale, encoder gap" instead of silence.
+    QUARANTINED_FIXTURES = {
+        "12-filmography-detail-return":
+            "state_fp stale (0x8fac311a39190e46, anchors 1/6 moved to 0x155947674871ffe8): "
+            "the controlled-effect encoder cannot record the Detail hero-preview autostart this "
+            "flow trips, so it cannot be re-recorded until app/bootstrap/effects.rs gains "
+            "ContentReq::PreviewStart",
+    }
+
     def test_every_committed_fixture_carries_the_trees_recording_schema(self):
         """`ui/rec.rs`'s SCHEMA moved 1 -> 2 in restructure phase 11 and this suite did not
         notice: a stale fixture's manifest only refuses to LOAD at replay time
@@ -563,7 +576,16 @@ class ReplayFixtures(unittest.TestCase):
         the tree the way `ci/flavor.py` reads other Rust constants agreed with a second language —
         a plain regex over the source, no cargo invocation — and check every committed fixture's
         manifest agrees with it, so a fixture left behind by a schema bump fails loudly beside the
-        alphabet check above instead of only at `tests/focusfp.sh --replay` time."""
+        alphabet check above instead of only at `tests/focusfp.sh --replay` time.
+
+        `schema` alone is not the only way a fixture goes stale: two anchors can share `schema`
+        while their `state_fp` (the recorded state SHAPE — route/overlay/focus/tree/session/
+        consent/initial) has moved apart, which is exactly what `tools/plxnative-rec rerecord`
+        reports as a load-time REFUSED and what the README documents happened to fixture 12. So
+        this also checks every non-quarantined fixture's `state_fp` agrees with the majority
+        value among committed anchors, and reports (without reddening `make check`) any
+        quarantined fixture whose `state_fp` has drifted onto the current value — at that point
+        the quarantine itself is stale and should be lifted."""
         rec_rs_path = os.path.join(REPO_ROOT, "rust-modules", "src", "ui", "rec.rs")
         with open(rec_rs_path, encoding="utf-8") as f:
             rec_rs = f.read()
@@ -571,6 +593,7 @@ class ReplayFixtures(unittest.TestCase):
         self.assertIsNotNone(m, "ui/rec.rs SCHEMA constant found")
         schema = int(m.group(1))
         checked = 0
+        fps = {}
         for name in sorted(os.listdir(self.FIXTURES)):
             d = os.path.join(self.FIXTURES, name)
             if not os.path.isdir(d):
@@ -585,7 +608,27 @@ class ReplayFixtures(unittest.TestCase):
                               "%s/manifest.json: schema %r does not match ui/rec.rs SCHEMA=%d "
                               "(tools/plxnative-rec rerecord it)"
                               % (name, manifest.get("schema"), schema))
+            fps[name] = manifest.get("state_fp")
         self.assertGreater(checked, 0)
+
+        live_fps = {n: fp for n, fp in fps.items() if n not in self.QUARANTINED_FIXTURES}
+        if live_fps:
+            from collections import Counter
+            current_fp, _ = Counter(live_fps.values()).most_common(1)[0]
+            for name, fp in live_fps.items():
+                self.assertEqual(fp, current_fp,
+                                  "%s/manifest.json: state_fp %r does not match the other "
+                                  "committed anchors' %r (tools/plxnative-rec rerecord it, or "
+                                  "quarantine it in QUARANTINED_FIXTURES with a reason)"
+                                  % (name, fp, current_fp))
+            for name, reason in self.QUARANTINED_FIXTURES.items():
+                if name not in fps:
+                    continue
+                if fps[name] == current_fp:
+                    print("NOTE: quarantined fixture %s now shares state_fp with the live "
+                          "anchors (%r) — lift its QUARANTINED_FIXTURES entry" % (name, current_fp))
+                else:
+                    print("QUARANTINED: %s/manifest.json — %s" % (name, reason))
 
     def _tool(self, *args):
         tool = os.path.join(os.path.dirname(self.FIXTURES), "..", "..", "tools", "plxnative-rec")
@@ -1107,6 +1150,118 @@ class FrameCeilingsManifest(unittest.TestCase):
             self.assertIsNotNone(run.frame_ceiling_threshold(s), name)
         self.assertEqual(scenes["cold-open"].get("warmup_s"), 0,
                          "a cold open grades its FIRST frames")
+
+
+class BenchGrading(unittest.TestCase):
+    """`parse_bench`/`grade_bench` — the stress-bench (`push-100`/`modal-100`) parser and its four
+    fail conditions (missed-frame, drift, rss-growth, incomplete-run) plus the latch exemption.
+    Synthetic `bench:` lines, so the arithmetic is pinned here rather than first exercised on the
+    television — the same reason `FrameCeilings` above is synthetic."""
+
+    def _lines(self, kind, worsts, rss=None, n=None, done=True, target="detail"):
+        n = n if n is not None else len(worsts)
+        rss = rss if rss is not None else [1000] * len(worsts)
+        out = [
+            f"bench: kind={kind} cycle={i}/{n} target={target} worst_ms={w:.1f} frames=5 "
+            f"dur_ms=1400 rss_kb={r}"
+            for i, (w, r) in enumerate(zip(worsts, rss), start=1)
+        ]
+        if done:
+            out.append(f"bench: kind={kind} done cycles={n}")
+        return out
+
+    def test_parse_bench_reads_every_field_and_ignores_the_other_kind(self):
+        lines = self._lines("push", [5.0, 6.5]) + self._lines("modal", [9.0])
+        cycles, done = run.parse_bench(lines, "push")
+        self.assertTrue(done)
+        self.assertEqual([c["cycle"] for c in cycles], [1, 2])
+        self.assertEqual(cycles[0],
+                         {"cycle": 1, "n": 2, "target": "detail", "worst_ms": 5.0, "frames": 5,
+                          "dur_ms": 1400, "rss_kb": 1000})
+        modal_cycles, modal_done = run.parse_bench(lines, "modal")
+        self.assertTrue(modal_done)
+        self.assertEqual(len(modal_cycles), 1)
+
+    def test_a_healthy_run_of_100_cycles_passes(self):
+        lines = self._lines("push", [5.0] * 100, rss=[1000] * 100)
+        ok, detail = run.grade_bench({"bench": "push"}, lines)
+        self.assertTrue(ok, detail)
+        self.assertIn("worst_ms p50=", detail)
+
+    def test_one_cycle_over_bench_worst_ms_fails(self):
+        worsts = [5.0] * 11 + [25.0]  # default bench_worst_ms is 20.0
+        lines = self._lines("push", worsts)
+        ok, detail = run.grade_bench({"bench": "push"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("over bench_worst_ms=20.0", detail)
+        self.assertIn("cycle=12/12", detail)
+
+    def test_last_ten_cycles_drifting_above_the_first_ten_fails(self):
+        worsts = [5.0] * 10 + [10.0] * 10  # every value is well under bench_worst_ms
+        lines = self._lines("push", worsts)
+        ok, detail = run.grade_bench({"bench": "push"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("drift(last10-first10)=+5.00ms", detail)
+        # a drift ceiling raised past the measured drift passes the same run
+        ok, _ = run.grade_bench({"bench": "push", "bench_drift_ms": 10.0}, lines)
+        self.assertTrue(ok)
+
+    def test_rss_growing_past_cycle_ten_fails(self):
+        rss = [1000] * 10 + [20000] * 2  # growth is measured from cycle 10, not cycle 1
+        lines = self._lines("push", [5.0] * 12, rss=rss)
+        ok, detail = run.grade_bench({"bench": "push"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("rss growth(last-cycle10)=19000kB", detail)
+        ok, _ = run.grade_bench({"bench": "push", "bench_rss_growth_kb": 20000}, lines)
+        self.assertTrue(ok)
+
+    def test_a_run_missing_the_done_line_fails_even_if_every_cycle_looks_clean(self):
+        lines = self._lines("push", [5.0] * 12, done=False)
+        ok, detail = run.grade_bench({"bench": "push"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("no `done` line", detail)
+
+    def test_no_bench_lines_at_all_fails_rather_than_passing_vacuously(self):
+        ok, detail = run.grade_bench({"bench": "push"}, ["loop=60 route=home fps=12"])
+        self.assertFalse(ok)
+        self.assertIn("no `bench: kind=push` cycle lines", detail)
+
+    def test_bench_latch_exempt_ms_absorbs_one_cycle_and_names_it(self):
+        worsts = [5.0] * 11 + [25.0]  # over bench_worst_ms=20.0, at/under the exemption ceiling
+        lines = self._lines("push", worsts)
+        ok, detail = run.grade_bench({"bench": "push", "bench_latch_exempt_ms": 30.0}, lines)
+        self.assertTrue(ok, detail)
+        self.assertIn("1 cycle(s) exempted under bench_latch_exempt_ms=30.0", detail)
+        self.assertIn("cycle=12 target=detail worst_ms=25.0", detail)
+        # a SECOND cycle over the exemption ceiling still fails
+        worsts2 = [5.0] * 10 + [25.0, 35.0]
+        lines2 = self._lines("push", worsts2)
+        ok2, detail2 = run.grade_bench({"bench": "push", "bench_latch_exempt_ms": 30.0}, lines2)
+        self.assertFalse(ok2, detail2)
+
+    def test_push_and_modal_kinds_are_graded_independently(self):
+        lines = self._lines("push", [5.0] * 12) + self._lines("modal", [25.0] * 12)
+        ok_push, _ = run.grade_bench({"bench": "push"}, lines)
+        ok_modal, _ = run.grade_bench({"bench": "modal"}, lines)
+        self.assertTrue(ok_push)
+        self.assertFalse(ok_modal)
+
+
+class BenchManifest(unittest.TestCase):
+    def test_push_100_and_modal_100_are_bench_scenes_with_an_item_and_enough_run_secs(self):
+        scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
+        push = scenes["push-100"]
+        modal = scenes["modal-100"]
+        self.assertEqual(push["bench"], "push")
+        self.assertEqual(modal["bench"], "modal")
+        self.assertEqual(push.get("item"), "movie_in_home_catalog")
+        # 100 cycles * 2 half-periods each; run_secs must clear that plus warmup with margin.
+        self.assertGreater(push["run_secs"], 100 * 2 * 1.4 + push.get("warmup_s", 5))
+        self.assertGreater(modal["run_secs"], 100 * 2 * 1.5 + modal.get("warmup_s", 5))
+        for name in ("push-100", "modal-100"):
+            self.assertEqual(scenes[name]["tier"], "ui")
+            self.assertIn("plxnative-framedrop", scenes[name]["triggers"],
+                         f"{name}: bench worst_ms reads 0.0 unarmed — see bench_frame_tick's doc")
 
 
 class LoadManifest(unittest.TestCase):

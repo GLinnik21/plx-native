@@ -103,6 +103,10 @@ pub(crate) struct AppViews<'a> {
     pub(crate) section_hubs: crate::stores::browse::HubsView<'a>,
     pub(crate) search: crate::search::view::SearchView<'a>,
     pub(crate) person: crate::person::PersonView<'a>,
+    /// Stage A of the store-ownership migration (`docs/stores-as-machines.md`): the owner's
+    /// borrowed read handle, shaped like [`crate::person::PersonView`]. It still reads the
+    /// process-wide `metadata` statics underneath — see `crate::metadata::MetadataView`'s doc.
+    pub(crate) metadata: crate::metadata::MetadataView<'a>,
     /// **The playback session, as this frame's publication** (spec §2.3, phase 9). The Player
     /// machine (`App.player`) owns the value; `Split` can only lend what the RIG owns, so the loop
     /// copies the decisions in once per frame ([`crate::route::PlaybackSession::publication`]) and
@@ -198,6 +202,10 @@ impl crate::screens::registry::LibraryLike for AppHost {
 
 impl crate::screens::registry::PersonLike for AppHost {
     fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a> { cx.views.person }
+}
+
+impl crate::screens::registry::MetadataLike for AppHost {
+    fn metadata<'a>(cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> { cx.views.metadata }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -367,6 +375,12 @@ impl Bridge {
         let mut stores = crate::stores::Stores::default();
         stores.hubs = crate::stores::hubs::HubsStore::from_parts(state, adapter);
         let hubs = stores.hubs.snapshot();
+        // Arms controlled-content recording/replay's admission ledger over detail terminals —
+        // exactly the decision the retired crate-global `record::reset(initial.content.is_some())`
+        // made at `bootstrap::stores::init` before Stage B moved the Tracker onto this per-owner
+        // adapter (`crate::metadata::record::arm`'s own doc has the history). Must run before this
+        // `Bridge` can admit any detail request.
+        stores.metadata.arm_detail_tracker(initial.content.is_some());
         let mut bridge = Self::with_publications_and_stores(&TTF, now_us, initial.session.clone(),
             super::adapters::session::SessionAdapter::controlled_home(mt, replay),
             initial.consent.clone(), super::adapters::consent::ConsentAdapter::live(),
@@ -575,7 +589,7 @@ impl Bridge {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback }, &self.measure);
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback }, &self.measure);
         let item = page.selected_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -595,7 +609,7 @@ impl Bridge {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback }, &self.measure);
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback }, &self.measure);
         let item = page.focused_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -648,7 +662,7 @@ impl Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
             }, &self.measure);
             screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?
                 .focused_rect::<AppHost>(Some(key), &cx, At::Drawn)
@@ -689,7 +703,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         Some(f(home, &cx, focus))
     }
@@ -815,7 +829,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         if home.grid_position::<AppHost>(parts.focus.current, &cx).is_none() { return false; }
         self.home_command(HomeCmd::ItemMenu)
@@ -840,20 +854,21 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
-            if let Some((rk, mark)) = page.focused_season(ret.focus) {
+            let meta = <AppHost as crate::screens::registry::MetadataLike>::metadata(&cx);
+            if let Some((rk, mark)) = page.focused_season(ret.focus, meta) {
                 Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark }, entry, ret.focus, rect))
-            } else if let Some((rk, mark)) = page.focused_episode(ret.focus) {
+            } else if let Some((rk, mark)) = page.focused_episode(ret.focus, meta) {
                 // the ONE entry point whose item is a leaf of the season this page has loaded
                 Some(strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark }, entry, ret.focus, rect))
             } else {
                 // …a RELATED tile is a DIFFERENT item standing on the same page: an ordinary card
                 // row, which is exactly what `MenuHost::Related` existed to say.
-                let item = page.focused_related(ret.focus).filter(|m| crate::screens::item_menu::has_actions(m))?;
+                let item = page.focused_related(ret.focus, meta).filter(|m| crate::screens::item_menu::has_actions(m))?;
                 Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
             }
         } else if let Some(page) = screen.downcast_ref::<crate::screens::person::PersonScreen>() {
@@ -890,7 +905,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         let mut frame = DrawFrame::with_navigation(&cx, crate::ui::Painter::root(), self.navigation_presentation());
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
@@ -1000,6 +1015,29 @@ impl Bridge {
         self.stores.person_view()
     }
 
+    pub(crate) fn metadata_mut(&mut self) -> &mut crate::stores::metadata::MetadataStore {
+        &mut self.stores.metadata
+    }
+
+    /// Metadata's same-turn boundary — the sibling of `browse_run`/`person_run`/`viewstate_run`
+    /// that Stage A/B left out. A caller uses it when the answer is consumed in the SAME
+    /// synchronous step, which for Metadata means one thing: a reconciliation whose `Requested`
+    /// phase becomes observable the moment the command returns (trap T2). Screen-issued Metadata
+    /// commands that are not same-turn boundaries still cross `AppFx::Store` like every other
+    /// store's; see `app/content.rs`'s `refresh_content`.
+    pub(crate) fn metadata_run(&mut self, cmd: crate::stores::metadata::MetadataCmd) -> bool {
+        self.stores.metadata_run(cmd)
+    }
+
+    pub(crate) fn metadata_view(&self) -> crate::metadata::MetadataView<'_> {
+        self.stores.metadata_view()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn metadata_pump(&mut self) -> bool {
+        self.stores.metadata_pump()
+    }
+
     pub(crate) fn viewstate_run(&mut self, cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
         self.stores.viewstate_run(cmd, self.directory.view())
     }
@@ -1033,6 +1071,30 @@ impl Bridge {
     pub(crate) fn hubs_run(&mut self, cmd: crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome {
         let directory = self.directory.view();
         self.stores.hubs.run_with_directory(cmd, directory)
+    }
+
+    /// One store's generation, for the recorder's per-frame landing scan
+    /// (`recorder::Recplay::end_frame_with`) — every store lives on this owner's `Stores`
+    /// aggregate now, so this is the one door onto all six.
+    pub(crate) fn store_gen(&self, id: crate::stores::StoreId) -> u32 {
+        self.stores.gen(id)
+    }
+
+    /// The `MetadataStore`'s own async detail landing — `app/run.rs`'s route-unconditional pump.
+    pub(crate) fn metadata_pump_detail(&mut self) -> bool {
+        self.stores.metadata.pump_detail()
+    }
+
+    /// The `MetadataStore`'s own async season landing — `app/run.rs`'s route-unconditional pump.
+    pub(crate) fn metadata_pump_season(&mut self) -> bool {
+        self.stores.metadata.pump_season()
+    }
+
+    /// The `MetadataStore`'s cross-source alt-sources resolve, scoped by this owner's retained
+    /// Browse directory — `app/run.rs`'s route-unconditional pump.
+    pub(crate) fn metadata_pump_alt_sources(&mut self) -> bool {
+        let directory = self.directory.view();
+        self.stores.metadata.pump_alt_sources_with_directory(directory)
     }
 
     /// Refresh only the retained directory at synchronous application boundaries that must make
@@ -1193,7 +1255,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
             },
             measure: &self.measure,
         }
@@ -1224,7 +1286,7 @@ impl Rig<AppHost> for Bridge {
             let publication = self.session.publication();
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
             }, &self.measure);
             return self.session.step(event, &cx, fx);
         }
@@ -1289,13 +1351,17 @@ impl Rig<AppHost> for Bridge {
                 self.viewstate_run(command.clone());
                 return Handled::Yes;
             }
+            AppMsg::Store(StoreCmd::Metadata(command)) => {
+                self.stores.metadata_run(command.clone());
+                return Handled::Yes;
+            }
             _ => {}
         }
         let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), person: self.stores.person_view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         match msg {
             AppMsg::Store(StoreCmd::Browse(c)) => {
@@ -1491,7 +1557,7 @@ impl Bridge {
             // may already have advanced the epoch, but cannot skip deleting old credentials.
             SessionFx::Erase { epoch, all_local, .. } => {
                 self.session_ready = None;
-                let leftovers = self.session_adapter.erase(all_local);
+                let leftovers = self.session_adapter.erase(all_local, &mut self.stores.metadata);
                 deliver(SessionEvent::Erased { epoch, leftovers });
             }
             SessionFx::Coordinator(action) => {
@@ -1519,12 +1585,11 @@ impl Bridge {
     }
 }
 
-fn step_store(cmd: &StoreCmd, cx: &Cx<'_, AppHost>, fx: &mut Effects<'_, AppHost>) -> Handled {
-    use crate::stores::metadata;
+fn step_store(cmd: &StoreCmd, _cx: &Cx<'_, AppHost>, _fx: &mut Effects<'_, AppHost>) -> Handled {
     match cmd {
         StoreCmd::Browse(_) => unreachable!("Browse is stepped by Bridge's owned store"),
         StoreCmd::Hubs(_) => unreachable!("Hubs is stepped by Bridge with its Browse directory"),
-        StoreCmd::Metadata(c) => metadata::MetadataStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::Metadata(_) => unreachable!("Metadata is stepped by Bridge's owned store"),
         StoreCmd::Search(_) => unreachable!("Search is stepped by Bridge with its Browse directory"),
         StoreCmd::Person(_) => unreachable!("Person is stepped by Bridge's owned store"),
         StoreCmd::ViewState(_) => unreachable!("ViewState is stepped by Bridge with its Browse owner"),
@@ -1615,8 +1680,8 @@ impl Bridge {
 /// **The trunk every app frame passes through, so it is where the test-only lock rule is
 /// ENFORCED** — the rule stated in prose below
 /// `route_flips_preserve_content_and_player_origin_entries` and broken from another module
-/// anyway. A frame is not a walk of a nav tree: it drains the aggregate's Browse notice plus the
-/// remaining stores' compatibility notices, and it pumps every store — and `browse`'s pump ends in
+/// anyway. A frame is not a walk of a nav tree: it drains each of the six owners' own notice, and it
+/// pumps every store — and `browse`'s pump ends in
 /// `sync_roster`, which calls `browse::reset()` the moment the section table holds a source the
 /// live registry does not. Every `browse` fixture in the suite leaves it holding exactly that
 /// (`ServerId::UNSET` sources), so an unguarded frame ANYWHERE empties another module's seeded
@@ -1818,7 +1883,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             hubs: rig.hubs.view(),
             listing: rig.listing.view(),
             directory: rig.directory.view(),
-            section_hubs: rig.section_hubs.view(), search: rig.search.view(), person: rig.stores.person_view(), session: &rig.playback,
+            section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), session: &rig.playback,
         }, &rig.measure);
         let position = home.grid_position::<AppHost>(focus, &cx);
         let (row, col) = position.map(|(r, c)| (r as i64, c as i64)).unwrap_or((-1, -1));
@@ -1840,7 +1905,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
         let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(), hubs: rig.hubs.view(), listing: rig.listing.view(),
-            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), person: rig.stores.person_view(), session: &rig.playback }, &rig.measure);
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), session: &rig.playback }, &rig.measure);
         let menu = d.top_surface_name() == Some("library_menu");
         let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
             crate::ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
@@ -1882,7 +1947,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         hubs: rig.hubs.view(),
         listing: rig.listing.view(),
         directory: rig.directory.view(),
-        section_hubs: rig.section_hubs.view(), search: rig.search.view(), person: rig.stores.person_view(), session: &rig.playback,
+        section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), session: &rig.playback,
     }, &rig.measure);
     let mut groups = Vec::new();
     instance.screen.groups(&cx, &mut groups);
@@ -1908,7 +1973,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
                 if i > 0 { out.push(','); }
                 let _ = write!(out, "{col}");
             }
-            let show = crate::metadata::current().is_some_and(|m| m.sid == *sid && m.rk == *rk && m.kind == "show");
+            let show = cx.views.metadata.current().is_some_and(|m| m.sid == *sid && m.rk == *rk && m.kind == "show");
             // `alt=` is now a question about the TREE — the *Also available* picker is a surface,
             // so "is it up" is the container's answer and not a module flag's.
             let alt = surface_up(d, |arg| matches!(arg, AppArg::AltSources(_)));
@@ -1926,7 +1991,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             out.push_str(" ep=");
             let episode = instance.screen.as_any()
                 .and_then(|s| s.downcast_ref::<crate::screens::detail::DetailScreen>())
-                .and_then(|s| s.focused_episode(focus));
+                .and_then(|s| s.focused_episode(focus, <AppHost as crate::screens::registry::MetadataLike>::metadata(&cx)));
             if let Some((rk, mark)) = episode {
                 crate::focusprobe::push_rk(&mut out, &rk);
                 out.push_str(match mark {
@@ -1968,6 +2033,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
 /// player route). `survives_failure` is the `…` popover's alone — see `OverlayKind`.
 pub(crate) fn open_player_overlay(
     ps: &crate::route::PlaybackSession,
+    meta: crate::metadata::MetadataView<'_>,
     d: &mut Dispatcher<AppHost>,
     kind: crate::screens::player::overlay::OverlayKind,
 ) {
@@ -1975,7 +2041,7 @@ pub(crate) fn open_player_overlay(
     // pressed while the Subtitles tab is showing — and never a second surface of the same kind.
     if player_overlay_kind(d).is_some_and(|up| up.slot() == kind.slot()) {
         if let Some(surface) = player_overlay_mut(d) {
-            surface.retarget(ps, kind);
+            surface.retarget(ps, meta, kind);
         }
         return;
     }

@@ -106,7 +106,7 @@ pub(crate) fn is_started() -> bool {
 
 /// Perform what the `…` popover reported. Shared by the OK key and the pointer click, so
 /// the two paths can never come to disagree about what a row does.
-pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter, a: crate::ui::more_menu::Action) {
+pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter, bridge: &mut super::bridge::Bridge, a: crate::ui::more_menu::Action) {
     match a {
         crate::ui::more_menu::Action::ToggleStats => crate::app::diagnostics::toggle(),
         // A rung of the playback-quality ladder — a routing POLICY, not a number handed to a
@@ -120,7 +120,7 @@ pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut
             let failed = matches!(crate::player::state(ps), crate::player::PlaybackState::Error);
             if failed {
                 crate::route::set_quality_for_retry(q);
-                retry_failed_playback(ps, pa);
+                retry_failed_playback(ps, pa, bridge.metadata_mut());
             } else {
                 crate::route::set_quality(ps, q);
             }
@@ -138,7 +138,7 @@ pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut
 /// refusal which never created an Engine, retires a failed server transcode when there was one,
 /// and gives telemetry two honest attempts.  The descriptor lives in `route`; the app owns only
 /// the current playhead and the Engine lifecycle.
-pub(crate) fn retry_failed_playback(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter) -> bool {
+pub(crate) fn retry_failed_playback(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter, meta: &mut crate::stores::metadata::MetadataStore) -> bool {
     // URL/dev-trigger playback has no Plex descriptor.  Check BEFORE teardown: extinguishing its
     // Error Engine and only then discovering it cannot be rebuilt would replace an actionable
     // read-out with an idle black frame.
@@ -154,7 +154,7 @@ pub(crate) fn retry_failed_playback(ps: &mut crate::route::PlaybackSession, pa: 
         .max(crate::route::unpresented_resume_ns(ps))
         .max(0);
     crate::player::stop_bufferfeed(ps, pa);
-    if crate::route::retry_current_play(ps, resume_ns) {
+    if crate::route::retry_current_play(ps, meta, resume_ns) {
         crate::ui::idle::invalidate();
         true
     } else {
@@ -249,9 +249,12 @@ pub(crate) fn start_playback(
 /// Resource effects below launch policy. Implementations receive no navigation, origin, or
 /// return state: acceptance cannot invent where a session returns to.
 pub(super) trait PlaybackResources {
-    fn request_movie(&mut self, ps: &mut crate::route::PlaybackSession, item: &crate::pms::PmsMovie) -> bool;
-    fn request_episode(&mut self, ps: &mut crate::route::PlaybackSession, rk: &str) -> bool;
-    fn describe_movie(&mut self, sid: crate::plex::ServerId, rk: &str);
+    fn request_movie(&mut self, ps: &mut crate::route::PlaybackSession,
+        meta: &mut crate::stores::metadata::MetadataStore, item: &crate::pms::PmsMovie) -> bool;
+    fn request_episode(&mut self, ps: &mut crate::route::PlaybackSession,
+        meta: &mut crate::stores::metadata::MetadataStore, rk: &str) -> bool;
+    fn describe_movie(&mut self, meta: &mut crate::stores::metadata::MetadataStore,
+        sid: crate::plex::ServerId, rk: &str);
     fn prepare_start(&mut self, ps: &mut crate::route::PlaybackSession,
         pa: &mut crate::player::adapter::PlayerAdapter, resume_ns: i64) -> bool;
 }
@@ -259,15 +262,18 @@ pub(super) trait PlaybackResources {
 pub(super) struct LivePlaybackResources;
 
 impl PlaybackResources for LivePlaybackResources {
-    fn request_movie(&mut self, ps: &mut crate::route::PlaybackSession, item: &crate::pms::PmsMovie) -> bool {
-        crate::route::request_play_movie(ps, item)
+    fn request_movie(&mut self, ps: &mut crate::route::PlaybackSession,
+        meta: &mut crate::stores::metadata::MetadataStore, item: &crate::pms::PmsMovie) -> bool {
+        crate::route::request_play_movie(ps, meta, item)
     }
-    fn request_episode(&mut self, ps: &mut crate::route::PlaybackSession, rk: &str) -> bool {
-        request_loaded_episode(ps, rk)
+    fn request_episode(&mut self, ps: &mut crate::route::PlaybackSession,
+        meta: &mut crate::stores::metadata::MetadataStore, rk: &str) -> bool {
+        request_loaded_episode(ps, meta, rk)
     }
-    fn describe_movie(&mut self, sid: crate::plex::ServerId, rk: &str) {
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
+    fn describe_movie(&mut self, meta: &mut crate::stores::metadata::MetadataStore,
+        sid: crate::plex::ServerId, rk: &str) {
+        meta.run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        meta.run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
     }
     fn prepare_start(&mut self, ps: &mut crate::route::PlaybackSession,
         pa: &mut crate::player::adapter::PlayerAdapter, resume_ns: i64) -> bool {
@@ -361,28 +367,30 @@ pub(crate) fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
 }
 
 /// Legacy card launches resolve media data without creating an invisible Detail screen.
-pub(crate) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession) -> Option<i64> {
-    let d = crate::metadata::current()?;
+pub(crate) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore) -> Option<i64> {
+    let d = meta.view().current()?.clone();
     if d.kind == "show" || !d.seasons.is_empty() {
         let started = d.on_deck.as_ref().is_some_and(|e| e.resume_ms > 0)
             || d.seasons.iter().any(|s| s.viewed_leaf_count > 0);
         let ep = (if started { d.on_deck.as_ref() } else { None })
-            .or_else(|| d.episodes.first())?;
-        request_episode(ps, d, ep).then(|| crate::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
+            .or_else(|| d.episodes.first())?
+            .clone();
+        request_episode(ps, meta, &d, &ep).then(|| crate::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
     } else {
-        crate::route::request_play(ps, crate::route::item_sid(d.sid), &d.rk, &d.part,
+        crate::route::request_play(ps, meta, crate::route::item_sid(d.sid), &d.rk, &d.part,
             &d.vcodec, &d.acodec, &d.title, "")
             .then(|| crate::metadata::resume_ns(d.resume_ms, d.dur_ms))
     }
 }
 
-pub(crate) fn request_loaded_episode(ps: &mut crate::route::PlaybackSession, rk: &str) -> bool {
-    let Some(d) = crate::metadata::current() else { return false };
-    d.episodes.iter().find(|e| e.rk == rk).is_some_and(|ep| request_episode(ps, d, ep))
+pub(crate) fn request_loaded_episode(ps: &mut crate::route::PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, rk: &str) -> bool {
+    let Some(d) = meta.view().current().cloned() else { return false };
+    let Some(ep) = d.episodes.iter().find(|e| e.rk == rk).cloned() else { return false };
+    request_episode(ps, meta, &d, &ep)
 }
 
-fn request_episode(ps: &mut crate::route::PlaybackSession, d: &crate::metadata::Detail, ep: &crate::metadata::Episode) -> bool {
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(crate::metadata::NowPlaying {
+fn request_episode(ps: &mut crate::route::PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, d: &crate::metadata::Detail, ep: &crate::metadata::Episode) -> bool {
+    meta.run(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(crate::metadata::NowPlaying {
         is_episode: true, is_real_episode: true, title: d.title.clone(), ep_title: ep.title.clone(),
         season: ep.season, index: ep.index, summary: ep.summary.clone(),
         year: ep.aired.get(..4).and_then(|s| s.parse().ok()).unwrap_or(0),
@@ -390,7 +398,7 @@ fn request_episode(ps: &mut crate::route::PlaybackSession, d: &crate::metadata::
     })));
     let title = if ep.title.is_empty() { &d.title } else { &ep.title };
     let context = format!("{}  ·  S{} E{}", d.title, ep.season, ep.index);
-    crate::route::request_play(ps, crate::route::item_sid(d.sid), &ep.rk, &ep.part,
+    crate::route::request_play(ps, meta, crate::route::item_sid(d.sid), &ep.rk, &ep.part,
         &ep.vcodec, &ep.acodec, title, &context)
 }
 
@@ -419,13 +427,15 @@ pub(crate) unsafe fn commit_info_press(
     pa: &mut crate::player::adapter::PlayerAdapter,
     refresh_hubs_at: &mut u32,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
 ) {
-    let Some(action) = super::bridge::player_overlay_mut(pages).and_then(|o| o.info_press_action())
+    let Some(action) = super::bridge::player_overlay_mut(pages)
+        .and_then(|o| o.info_press_action(bridge.metadata_view()))
     else {
         return;
     };
     close_player_overlays(pages);
-    apply_info_action(ps, pa, action, refresh_hubs_at, pages);
+    apply_info_action(ps, pa, action, refresh_hubs_at, pages, bridge);
 }
 
 /// **Perform what a player overlay decided** (§14): the panel owns its own state and its own
@@ -461,7 +471,7 @@ pub(crate) fn player_requests(
     now: u32,
     refresh_hubs_at: &mut u32,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
-    _bridge: &mut super::bridge::Bridge,
+    bridge: &mut super::bridge::Bridge,
     ok_armed: &mut bool,
     press: &mut crate::ui::press::Press,
     repause_at: &mut i64,
@@ -490,12 +500,7 @@ pub(crate) fn player_requests(
             // The fall-through a surface cannot perform (`screens::player::overlay`'s module doc):
             // the same toggle the bare transport reaches, with the panel left untouched.
             PlayerReq::Transport(play) => {
-                let want_paused = match play {
-                    Some(true) => false,
-                    Some(false) => true,
-                    None => !paused(),
-                };
-                set_transport_paused(pa, want_paused);
+                set_transport_paused(pa, super::lifecycle::transport_target(play, paused()));
                 if let Some(player) = super::bridge::player_mut(pages) {
                     player.hud.extend(now, HUD_LINGER_MS);
                     player.publish();
@@ -508,20 +513,20 @@ pub(crate) fn player_requests(
             // …and its twin, which does NOT resume: the scrub bar is how a paused film is moved.
             // `repause_at` is an `App` field, which is exactly why this is a request.
             PlayerReq::CommitSeek(ns) => commit_seek(ns, repause_at),
-            PlayerReq::More(action) => apply_more_action(ps, pa, action),
+            PlayerReq::More(action) => apply_more_action(ps, pa, bridge, action),
             PlayerReq::CommitTrack(commit) => commit_track(ps, commit),
             PlayerReq::ArmInfoPress => {
                 press.begin_ctl(now);
                 *ok_armed = true;
             }
             PlayerReq::Info(action) => {
-                apply_info_action(ps, pa, action, refresh_hubs_at, pages)
+                apply_info_action(ps, pa, action, refresh_hubs_at, pages, bridge)
             }
             // The old `key_ok`'s tabs-row (`focus == 2`) and failure-read-out (`ChooseQuality`)
             // arms, both of which presented a panel immediately rather than through the deferred
             // press `ArmControlRow`/`ArmInfoPress` use.
             PlayerReq::OpenOverlay(kind) => {
-                super::bridge::open_player_overlay(ps, pages, kind);
+                super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, kind);
             }
             // The old `key_ok`'s `focus == 1` arm: dip the same tvOS press `ArmInfoPress` does,
             // for the transport's OWN control row rather than a panel's action column. The loop's
@@ -682,7 +687,7 @@ pub(crate) fn activate_ctrl_row(
                     // Retire the segment FIRST: the seek lands on the preceding keyframe, which
                     // is usually still inside it, so without this the button comes straight back
                     // (see `metadata::mark_skipped`).
-                    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
+                    bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
                     request_seek(ns);
                     resume_if_paused(pa);
                     false
@@ -730,7 +735,7 @@ pub(crate) fn play_up_next(
     );
     close_player_overlays(pages);
     crate::player::stop_bufferfeed(ps, pa);
-    if !crate::route::request_play_up_next(ps, u) {
+    if !crate::route::request_play_up_next(ps, bridge.metadata_mut(), u) {
         return false;
     }
     // Same ritual as `play_item_now`: retire the finished episode's descriptor so the HUD
@@ -738,11 +743,11 @@ pub(crate) fn play_up_next(
     // whole pre-roll, and fetch the new leaf off the loop.
     // Read BEFORE `retire_playing` drops the store: the successor is a row of the queue
     // the finished episode created, so it lives on that episode's server.
-    let sid = crate::metadata::playing()
+    let sid = bridge.metadata_view().playing()
         .map(|p| p.sid)
         .unwrap_or_else(crate::plex::current_server);
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RetirePlaying);
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
+    bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RetirePlaying);
+    bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
     start_playback(
         ps,
         pa,
@@ -793,7 +798,7 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
     if mm.rk.is_empty() {
         return;
     }
-    if !resources.request_movie(ps, mm) {
+    if !resources.request_movie(ps, bridge.metadata_mut(), mm) {
         return;
     }
     // resolve OFF the SDL loop — pump_play starts it
@@ -807,7 +812,7 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
     // playback with the last one's title for the whole pre-roll. None is honest (the
     // route's own TITLE/CTXLINE, set synchronously by request_play_movie, still carry
     // this item), and the landing refills it via sync_now_playing.
-    resources.describe_movie(mm.sid, &mm.rk);
+    resources.describe_movie(bridge.metadata_mut(), mm.sid, &mm.rk);
     start_playback_with(
         ps,
         pa,
@@ -853,6 +858,7 @@ fn apply_info_action(
     action: crate::ui::info_panel::InfoAction,
     refresh_hubs_at: &mut u32,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
 ) {
     match action {
         crate::ui::info_panel::InfoAction::FromBeginning => {
@@ -873,7 +879,7 @@ fn apply_info_action(
                 // The played leaf's server, read BEFORE the exit ritual — `detail_rk` is that
                 // item's own show, so it is on the same machine, and the store this reads is torn
                 // down below.
-                let sid = crate::metadata::playing()
+                let sid = bridge.metadata_view().playing()
                     .map(|p| p.sid)
                     .unwrap_or_else(crate::plex::current_server);
                 exit_player(ps, pa, refresh_hubs_at, pages);
@@ -937,10 +943,11 @@ pub(crate) unsafe fn activate_player_row(
     } else if btn == crate::ui::player_hud::BTN_MORE {
         // …so the discs are what row 1 holds — the complement of the arm above, and the row's only
         // other occupant. OK on a control disc PRESENTS its panel on this page's own stack.
-        super::bridge::open_player_overlay(ps, pages, crate::screens::player::overlay::OverlayKind::More { quality: false });
+        super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::More { quality: false });
     } else {
         super::bridge::open_player_overlay(
             ps,
+            bridge.metadata_view(),
             pages,
             crate::screens::player::overlay::OverlayKind::Tracks { tab: if btn == 0 { 1 } else { 0 } },
         );

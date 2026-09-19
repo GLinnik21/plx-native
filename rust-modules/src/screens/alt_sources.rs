@@ -152,10 +152,6 @@ const BTN_GAP: f32 = theme::space::MD;
 /// `MARGIN_X` horizontally by 32px.
 const EDGE: f32 = theme::space::XL;
 const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
-/// Scrim peak alpha — the Library toolbar chip menu's design, deliberately, because this
-/// is the same object one page over: a chip-shaped control on a live page opening a list over it.
-/// The page recedes; it is not blanked, and the hero behind stays readable.
-const SCRIM_A: f32 = 0.45;
 /// How far the panel rises into place, matching those same chip menus. The container's appear
 /// spring drives it now (`DrawFrame::page_alpha` IS `Surface::motion.appear`), so the translate is
 /// applied here rather than by `Popover::painter`; at rest it contributes nothing, which is what
@@ -330,7 +326,7 @@ pub(crate) struct AltSourcesScreen {
 }
 
 impl AltSourcesScreen {
-    pub(crate) fn new(entry: EntryId, arg: AltSourcesArg) -> Self {
+    pub(crate) fn new(entry: EntryId, arg: AltSourcesArg, meta: crate::metadata::MetadataView<'_>) -> Self {
         let mut screen = Self {
             entry,
             arg,
@@ -338,7 +334,7 @@ impl AltSourcesScreen {
             table: TableView::new(),
             glass: GlassState::new(),
         };
-        screen.rebuild(Sel::OnTheCopyYouAreOn);
+        screen.rebuild(Sel::OnTheCopyYouAreOn, meta);
         screen
     }
 
@@ -350,28 +346,28 @@ impl AltSourcesScreen {
     /// film left `current` on our own server, no copy matched the pair, and the panel drew **no
     /// tick at all** — owner-reported. The tick answers "which of these am I looking at", and only
     /// the page knows; since phase 10 it says so on the argument.
-    fn live_rows(&self) -> Vec<AltRow> {
+    fn live_rows(&self, meta: crate::metadata::MetadataView<'_>) -> Vec<AltRow> {
         rows(
-            crate::metadata::alt_copies(self.arg.sid, &self.arg.rk),
+            meta.alt_copies(self.arg.sid, &self.arg.rk),
             self.arg.sid,
             &self.arg.rk,
         )
     }
 
     /// Materialise the store into the table, when and only when the drawn content would differ.
-    fn refresh(&mut self) -> bool {
-        let next = self.live_rows();
+    fn refresh(&mut self, meta: crate::metadata::MetadataView<'_>) -> bool {
+        let next = self.live_rows(meta);
         if next == self.rows {
             return false;
         }
         self.rows = next;
-        self.rebuild(Sel::Keep);
+        self.rebuild(Sel::Keep, meta);
         true
     }
 
-    fn rebuild(&mut self, sel_mode: Sel) {
+    fn rebuild(&mut self, sel_mode: Sel, meta: crate::metadata::MetadataView<'_>) {
         if matches!(sel_mode, Sel::OnTheCopyYouAreOn) {
-            self.rows = self.live_rows();
+            self.rows = self.live_rows(meta);
         }
         let mut sec = Section::new("");
         let mut sel = match sel_mode {
@@ -437,16 +433,16 @@ impl AltSourcesScreen {
     }
 }
 
-impl<H: AppLike<Memory = PageMemory>> Machine<H> for AltSourcesScreen {
+impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> Machine<H> for AltSourcesScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             ScreenEvent::Mount | ScreenEvent::Enter(_) => {
-                self.refresh();
+                self.refresh(H::metadata(cx));
                 Handled::Yes
             }
             ScreenEvent::StoreChanged(ord, _) => {
-                if *ord == crate::stores::StoreId::Metadata.ord() && self.refresh() {
+                if *ord == crate::stores::StoreId::Metadata.ord() && self.refresh(H::metadata(cx)) {
                     fx.invalidate(crate::ui::present::Provenance::Landing(fx.from()));
                 }
                 Handled::Yes
@@ -594,7 +590,7 @@ impl LogicalState for AltSourcesScreen {
     }
 }
 
-impl<H: AppLike<Memory = PageMemory>> Screen<H> for AltSourcesScreen {
+impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> Screen<H> for AltSourcesScreen {
     fn name(&self) -> &'static str {
         "alt"
     }
@@ -621,7 +617,9 @@ impl<H: AppLike<Memory = PageMemory>> Screen<H> for AltSourcesScreen {
     /// appear spring and by `nav::page_alpha` — the second of which the in-`draw` version could
     /// not reach, `DrawFrame::page_alpha` being the surface's own spring alone.
     fn scrim(&self) -> Scrim {
-        Scrim::dim(SCRIM_A)
+        // The PANEL role (`theme::underlay::DIM_PANEL`): a picker in the middle of the frame. The
+        // page recedes; it is not blanked, and the hero behind stays readable.
+        Scrim::dim(theme::underlay::DIM_PANEL)
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let appear = f.page_alpha;

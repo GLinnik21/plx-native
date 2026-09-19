@@ -830,7 +830,9 @@ ramp policy had answered 0 for nearly all of them.
   per draw rather than a link-time constant. (The same day's GLOBAL motion gate — no field dithered
   while any spring was in flight — lasted one day: it flickered the wash's bands in and out on every
   focus spring on Settings, the picker and first run, screens that were at 60 fps with the noise on.
-  Only the two page washes under moving artwork keep a motion gate, `gfx::page_wash_dither`.)
+  Only the two page washes under moving artwork kept a motion gate, `gfx::page_wash_dither` — and
+  that one lost its own motion term on 2026-09-19, for the same reason at a smaller scale; see the
+  addendum at the end of this file.)
 - `ui::idle::should_present` presents one **settle frame** after motion stops, so the LIVE picture left
   on the panel is the dithered one.
 - The ambient field has an in-flight twin program (`fs_ambient.frag` linked behind
@@ -872,3 +874,139 @@ Still open from the same census, and not renderer work: the show detail's entry 
 CPU frames rasterising the episode list and the hero text (`dt.eps`, `dt.hero`); the Cast & Crew
 row's remaining drops are the page's fill (a full-screen wash plus fifteen shadowed circle
 composites) crossing the budget on the frames the ambient twin does not reach.
+
+### 2026-09-19 addendum: the page wash asks its own artwork, and the answer is unmeasured
+
+The gate this section left in place — `gfx::page_wash_dither`, the page wash's own slide flag AND
+the page's motion verdict — has been narrowed again, to the slide flag alone, spelled as a question
+about the ARTWORK rather than about the frame. The owner's report was the same sentence as
+2026-09-04's, one screen further in: "ambient background has discretisation during animations".
+
+The mechanism is the one this file already documents and did not follow far enough. Every spring
+integrator reports to `ui::idle::note_spring`, and `AmbientWash::step` drives TWELVE corner springs
+— so a wash dissolving toward a newly focused item reported page motion for the whole of its own
+dissolve, and a page-wide verdict therefore undithered the wash exactly while the wash was the thing
+changing. Every focus pop, shelf scroll and press dip on the page did the same. `page_wash_dither`
+is now the identity on its argument; Home answers it where it steps the snap dive and the hero
+slide (position AND velocity, `screens/home/mod.rs`'s `Backdrop::still`), Detail from its scroll
+velocity and its art ease's distance to target (`screens/detail/mod.rs`'s `art_still`), and
+`PageGround` — the browsing grounds, which never have artwork over them — dithers unconditionally.
+`ui::idle::underlay_moving` lost its last reader with it and is gone.
+
+**Nothing here is a device measurement.** The expected cost is confined to frames on which the wash
+now takes the noise that previously did not: the ~2.5M GPU cycles a frame the dither costs at full
+screen are paid during a wash dissolve and under a focus pop, on top of whatever the page was doing.
+The two numbers to take on the set are `fps:home-hero` and `fps:home-fold` (this section's 60 and
+55/53 are the baseline to beat, and the fold is the scene where the artwork IS moving, so it should
+not have changed at all), plus a captured still of a library page mid-dissolve to confirm the
+staircase is gone. Both are pending; treat the fps claims in the table above as the last measured
+state of this policy, not this one's.
+
+(Superseded by the next section, which measured it — and then deleted `page_wash_dither` along
+with Home's `Backdrop::still` and Detail's `art_still`.)
+
+## 2026-09-19 (later): the wash at 60 — a branch, a multiply and a mix, and no gate at all
+
+The addendum above was measured on the set, and it was worse than "confined to frames on which the
+wash now takes the noise": PR1 (`ecab5d13`) took `fps:library-scroll` from 60 to 45 and
+`fps:home-grid` from 56 to 51. The goal set for this pass was the owner's: every screen with the
+wash at ~60 fps, the wash dithered on every frame including mid-animation, no global motion gate.
+Every number below is the set (LG webOS 4.5, Mali-T820), `tests/run.py --fps` after `make deploy`
+with the deployed binary's md5 checked against `pkg/plxnative`, panel and sound off. GPU numbers
+are `plxnative-hwcnt=frame.ui` means per frame (fps in those legs is not a measurement); `mask`
+is `plxnative-drawmask=<class>`.
+
+**Baseline, interleaved, two runs each** — fps median (loop robust_min):
+
+| scene | main `a7083465` | PR1 `ecab5d13` |
+|---|---|---|
+| `home-hero` | 60 (57–59) | 60 (58) |
+| `home-fold` | 54–54.5 (52–53) | 54 (52) |
+| `home-grid` | 56 (55) | 50.5–52.5 (49) |
+| `detail-transition` | 50 (46–48) | 50–51 (38–48) |
+| `settings-root` | 60 (59–60) | 60 (59–60) |
+| `library-scroll` | 60 (60) | 45 (44) |
+| `search-type` | 58 / 46 (59) | 36 / 35 (45–46) |
+
+**What it cost, and the four changes, in the order the census found them.**
+
+1. *The tile coordinate was a highp multiply per fragment* (`gl_FragCoord.xy * (1.0/256.0)`), on
+   every fragment of every dithered surface. It is linear in screen position, so the paired vertex
+   shader now computes it (`glsl_vs_dithered!`, `#define PLX_DITHER_NC`, varying `v_dither_nc`)
+   and the fetch reads the varying directly — `dither.glsl` cost rule 4. With it: library 45 → 50,
+   search loop 45 → 50, grid 51 → 54, detail 50 → 56 (the last also carries the Detail TextView's
+   wrap now going through the global `wrap_memo` — `Measure::live_font`, the one CPU term the
+   `cpuprof` leg found above the budget there).
+2. *The uniform `if (u_dither > 0.0)` in the prelude was not near-free.* Library scroll, same
+   binary, same frames: branch in, 13.40M GPU / 22.75M ARITH, 49 fps; the same fetch unguarded,
+   11.22M / 16.98M, 59 fps — **+5.8M arithmetic words a frame for one uniform branch**. The prelude
+   is straight-line now; OFF is a different program (rule 1, rewritten). Library 50 → 59.5, search
+   loop 50 → 57.
+3. *Card interiors paid the rounded-rect SDF.* A card image's fragments more than `max(r,2)+1`
+   inside its edge cannot touch the rim, so `fs_img.frag` returns the texel before `sdBox`
+   (`u_inner`, `gfx::card_inner`). Fold 11.41M → 10.68M, grid 11.27M → 10.60M; library 60,
+   fold 55, grid 56, detail 55.
+4. *The wash mixed the field per fragment.* The drawmask census on that binary put the ambient
+   class at 2.05M of the fold's 10.68M and a 16×16-cell mesh at −0.4M, so the field is now evaluated
+   per VERTEX of `gfx::field_mesh` (16×16 cells, GL_TRIANGLES; bilinear error ≤ twist·h²/4, under
+   half a code — pinned by a host test) and `fs_ambient.frag` is one varying plus the dither, no
+   colour arithmetic at all. Fold 10.68M → 9.64M (58.5 fps), grid 9.73M (58), detail 60.
+
+**Then the gate went.** Steps 1–4 were measured with PR1's art gate still in, and a mid-dive
+capture of `plxnative-homefoldosc` showed what that gate costs the picture: the band of wash under
+the diving hero — wash-only, nothing over it — had an adjacent-pixel change fraction of **0.023**
+(undithered treads) against ~0.70 dithered. `gfx::page_wash_dither`, `home::Backdrop::still` and
+`detail::art_still` are deleted; `gfx::draw_ambient` and `Painter::ambient` take no dither flag.
+Price: fold 9.64M → **10.25M** (+0.6M), grid 9.73M → 9.92M.
+
+**The fold, after all of it** (mask census, GPU per frame, dither on every frame):
+
+| masked | none | rect | grad | image | card | glass | ambient | rect+grad+image | all |
+|---|---|---|---|---|---|---|---|---|---|
+| GPU | 10.25M | 8.98M | 9.73M | 9.07M | 8.27M | 9.21M | 8.56M | 7.43M | 3.14M |
+
+The 3.14M floor is the compositor's full-screen composite; the remaining 7.1M is spread over
+every class with none above 2M (card 1.98M, ambient 1.69M, rect 1.27M, image 1.18M, glass
+1.04M, grad 0.52M). There is no single term left whose removal buys the missing frame.
+
+**Final**, binary `1e457d4e`, two runs — fps median (loop robust_min):
+
+| scene | run 1 | run 2 |
+|---|---|---|
+| `home-hero` | 60 (59) | 60 (59) |
+| `home-fold` | 57 (55) | 57 (55) |
+| `home-grid` | 58 (56) | 57 (56) |
+| `detail-transition` | 59 (54) | 58 (57) |
+| `settings-root` | 60 (60) | 60 (60) |
+| `library-scroll` | 60 (60) | 60 (58) |
+| `search-type` | 45 (60) | 46 (59) |
+| `person-page` | idle: robust_max 1 fps vs ceiling 5 (loop 61) | idle: robust_max 1 (loop 61) |
+| `library-switch` | 24 (55) | 25 (56) |
+| `home-acct-glass` | 58 (58) | 58 (58) |
+
+`search-type`'s and `library-switch`'s fps medians count presents, which follow keystrokes and
+menu steps rather than the render rate; their loop robust_min is the render measurement, and both
+sit at 55–60 (main read 58 and 46 on two consecutive runs of the same binary).
+
+**Mid-animation captures** (`tools/capture-screen.sh`, six 0.4 s apart during
+`plxnative-grid`+`plxnative-homeosc` and during `plxnative-homefoldosc`). Metric: fraction of
+horizontally/vertically adjacent pixels that differ, on a wash-only region (luma std < 3); an
+undithered field reads ~0.02, the dithered one ~0.5–0.7.
+
+| capture | wash-only region | change h / v | smooth windows, min |
+|---|---|---|---|
+| fold, mid-dive | rows 862–900 × 500–1900 (std 0.45) | 0.703 / 0.709 | 0.538 |
+| fold, mid-dive ×2 | left strip x 0–60 (std ~0.5) | ~0.70 | 0.53–0.57 |
+| fold, late | — | — | 0.384 |
+| grid, mid-scroll ×2 | left strip (std ~2.3) | 0.69–0.71 | 0.52–0.56 |
+| grid, mid-scroll ×3 | cards over the fixed region | — | 0.31–0.41 |
+| PR1 gate, fold mid-dive | rows 862–900 × 500–1900 | **0.023** | — |
+
+**Unresolved.** `home-fold` is at 57 median / 55 loop robust_min on both runs against a 58 target,
+and `home-grid` straddles it (58 then 57, robust_min 56 both times; main read 56 / 55), with the
+wash dithered; the census above is the evidence — 10.25M cycles a frame against a 3.14M
+floor, spread evenly over every class. Removing the gate cost it 58.5 → 57; keeping the gate is the
+banding measured above, so that trade is not available. The next levers are structural, not
+per-shader: extend the hero's one-pass ground (`fs_hero`) across the fold so the wash and the hero
+scrim are one pass, and opaque card interiors that let the tiler skip the wash beneath them.
+`ui::idle`'s settle frame no longer has a renderer term to settle and could be retired separately.

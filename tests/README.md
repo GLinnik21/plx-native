@@ -130,10 +130,10 @@ it makes a mis-set item a named setup error instead of a mystery failure.
 
 ## Which install it drives (`--flavor`)
 
-Two builds can sit on one television: **`com.beb.plxnative`**, the app users install, and
-**`com.beb.plxnative.debug`**, the developer build beside it — its own launcher tile, its own
-sign-in, its own runtime files. They are separate apps to SAM, and a run has to drive exactly one
-of them end to end.
+Three builds can sit on one television: **`com.beb.plxnative`**, the app users install,
+**`com.beb.plxnative.debug`**, the developer build beside it, and **`com.beb.plxnative.nightly`**,
+the nightly build — each with its own launcher tile, its own sign-in, its own runtime files. They
+are separate apps to SAM, and a run has to drive exactly one of them end to end.
 
 The flavour is resolved once, before anything is touched: **`--flavor`**, else the overlay's
 **`flavour`** key, else the Makefile's own default (`debug` — the dangerous id has to be typed).

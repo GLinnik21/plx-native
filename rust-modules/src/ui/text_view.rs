@@ -64,6 +64,14 @@ fn wrap_memo(key: u64, compute: impl FnOnce() -> Wrapped) -> Rc<Wrapped> {
     v
 }
 
+/// The one mark drawn to open a truncated block of text — the About card's footer and the person
+/// page's bio panel are its two callers today. **Clickable text marks are always ALL CAPS** (owner
+/// rule, 2026-09-19): it is a general rule for clickable text blocks, not a per-screen style
+/// choice, so every screen reads this constant rather than spelling its own literal. An earlier
+/// commit (`fc63c0c1`) drew the person page's mark as sentence-case `"More"`; that was wrong and is
+/// the reason this exists as one definition instead of two that can drift apart.
+pub(crate) const MORE_MARK: &std::ffi::CStr = c"MORE";
+
 pub struct TextView<'a> {
     measure: Option<&'a dyn crate::ui::machine::Measure>,
     measured_wrap: std::cell::RefCell<Option<(u64, Rc<Wrapped>)>>,
@@ -300,12 +308,21 @@ impl<'a> TextView<'a> {
         self.max_lines.hash(&mut h);
         // the lead run narrows line 0, so two views differing only in it wrap differently
         self.lead.map(|(r, _)| r).unwrap_or("").hash(&mut h);
-        if self.measure.is_some() {
+        if let Some(measure) = self.measure {
             // One borrowed view owns at most one wrap. Exact width/weight matter here;
-            // nothing can survive a new capability, replay, or frame through this memo.
+            // nothing can survive a new capability, replay, or frame through this memo —
+            // UNLESS the capability is the live font itself, whose answers are the ones the
+            // process memo already holds (`Measure::live_font`). Then the paragraph is wrapped
+            // once, not once per frame.
             width.to_bits().hash(&mut h);
             self.lead_bold.hash(&mut h);
             let key = h.finish();
+            if measure.live_font() {
+                #[cfg(test)]
+                assert!(!FORBID_LIVE.with(std::cell::Cell::get), "live TextView wrap memo forbidden");
+                // Salted so an exact-width live-capability entry never aliases a legacy one.
+                return wrap_memo(key ^ 0x6c69_7665_5f66_6e74, || self.wrap_uncached(width));
+            }
             if let Some((old, lines)) = self.measured_wrap.borrow().as_ref() {
                 if *old == key { return Rc::clone(lines); }
             }
@@ -575,6 +592,24 @@ mod tests {
     use super::*;
     use crate::ui::theme;
 
+    /// Owner rule, 2026-09-19: a clickable text mark (the truncation/expand affordance) is always
+    /// ALL CAPS — it is a general rule for clickable text blocks, not a per-screen style choice.
+    /// `fc63c0c1` drew the person page's mark as sentence-case `"More"`, which this constant exists
+    /// to make impossible to repeat: every screen reads `MORE_MARK` instead of spelling its own
+    /// literal, so a future edit that lowers the case fails HERE, citing the rule, rather than
+    /// silently drifting one screen away from every other.
+    #[test]
+    fn the_more_mark_is_ascii_uppercase() {
+        let s = MORE_MARK.to_str().expect("MORE_MARK must be valid UTF-8");
+        assert_eq!(
+            s,
+            s.to_ascii_uppercase(),
+            "clickable text marks are ALL CAPS (owner rule, 2026-09-19) — MORE_MARK in \
+             ui/text_view.rs must stay uppercase; see fc63c0c1 for the sentence-case regression \
+             this test exists to catch"
+        );
+    }
+
     #[test]
     fn measured_wrapping_keeps_live_semantics_and_cannot_reuse_another_owner() {
         use crate::ui::machine::Measure;
@@ -606,6 +641,44 @@ mod tests {
             let _ = measured.with_measure(&missing).wrap(180.0);
             assert!(missing.take_miss().is_some(), "changing capability must invalidate this view's memo too");
         }
+        crate::text::take_measure_fault();
+    }
+
+    /// **A live-font capability wraps a paragraph ONCE, not once per frame.** Every frame builds
+    /// a fresh `TextView`, so a memo owned by the view dies with it; the Detail page re-wrapped
+    /// its whole about/hero text through TrueType on every frame this way and was CPU-bound at
+    /// 50 fps with nothing drawn (2026-09-19, stack samples + `drawmask=all`). A capability that
+    /// IS the live font shares the process memo; the test above still proves a table does not.
+    #[test]
+    fn a_live_font_capability_wraps_once_across_frames() {
+        use crate::ui::machine::Measure;
+        use std::cell::Cell;
+        let _serial = crate::testlock::serial();
+        struct CountingLive(Cell<u32>);
+        impl Measure for CountingLive {
+            fn width(&self, s: &std::ffi::CStr, sz: i32, _: bool) -> f32 {
+                self.0.set(self.0.get() + 1);
+                s.to_bytes().len() as f32 * sz as f32 * 0.5
+            }
+            fn cap_h(&self, sz: i32) -> f32 { sz as f32 }
+            fn line_h(&self, sz: i32) -> f32 { sz as f32 }
+            fn live_font(&self) -> bool { true }
+        }
+        let font = CountingLive(Cell::new(0));
+        // A text no other test wraps, so the process memo cannot already hold it.
+        let text = "zq-live-memo alpha beta gamma delta epsilon zeta eta theta iota";
+        let frame = || {
+            TextView::new(text, theme::size::BODY, theme::TEXT_PRIMARY)
+                .max_lines(2)
+                .with_measure(&font)
+                .wrap(211.0)
+        };
+        let first = frame();
+        let after_first = font.0.get();
+        assert!(after_first > 0, "the first frame measures");
+        let second = frame();
+        assert_eq!(font.0.get(), after_first, "the next frame's fresh view re-measured the paragraph");
+        assert_eq!(first.lines, second.lines);
         crate::text::take_measure_fault();
     }
 

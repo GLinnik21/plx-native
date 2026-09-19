@@ -7,7 +7,7 @@
 //! Browse projection distinguishes independent owners whose local generations happen to match.
 
 use crate::plex::{ServerId, MAX_SERVERS};
-use std::ptr::addr_of_mut;
+use std::cell::RefCell;
 use std::sync::Arc;
 
 /// The retained facts for one granted Search source.
@@ -109,7 +109,14 @@ impl DirectoryInput {
     }
 }
 
-static mut CACHE: Option<Cache> = None;
+/// Per-owner memo of the last built [`SourceScopeSnapshot`]. Lives on `SearchState` so each
+/// `Bridge`'s Search owner memoizes its own scope; two owners in one process never share a cache
+/// entry. The production callers only ever reach this through `&self`/`&mut self` on the owning
+/// `SearchState`, so the cell is interior-mutable rather than a plain field.
+#[derive(Default)]
+pub(crate) struct ScopeCache {
+    cache: RefCell<Option<Cache>>,
+}
 
 /// Read every registry input used by a standalone Search fixture. Production adds the retained
 /// Browse directory generations through [`read_key_with_directory`].
@@ -162,46 +169,47 @@ fn read_registry_key() -> Key {
     }
 }
 
-/// Capture the current source facts, rebuilding only when a cheap semantic input moves.
-pub(crate) fn snapshot() -> SourceScopeSnapshot {
-    let key = read_key();
-    // SAFETY: called by the main-thread Search publication boundary. The retained Arc keeps old
-    // source facts alive after this cache replaces its current publication.
-    let cache = unsafe { &mut *addr_of_mut!(CACHE) };
-    let matches = cache.as_ref().is_some_and(|cached| {
-        cached.key == key && cached.directory.is_none()
-    });
-    if !matches {
-        *cache = Some(Cache {
-            key,
-            directory: None,
-            publication: build(),
+impl ScopeCache {
+    /// Capture the current source facts, rebuilding only when a cheap semantic input moves.
+    pub(crate) fn snapshot(&self) -> SourceScopeSnapshot {
+        let key = read_key();
+        let mut cache = self.cache.borrow_mut();
+        let matches = cache.as_ref().is_some_and(|cached| {
+            cached.key == key && cached.directory.is_none()
         });
+        if !matches {
+            *cache = Some(Cache {
+                key,
+                directory: None,
+                publication: build(),
+            });
+        }
+        cache
+            .as_ref()
+            .expect("source scope cache was just built")
+            .publication
+            .clone()
     }
-    cache
-        .as_ref()
-        .expect("source scope cache was just built")
-        .publication
-        .clone()
-}
 
-pub(crate) fn snapshot_with_directory(
-    directory: crate::stores::browse::DirectoryView<'_>,
-) -> SourceScopeSnapshot {
-    let key = read_key_with_directory(directory);
-    let cache = unsafe { &mut *addr_of_mut!(CACHE) };
-    let matches = cache.as_ref().is_some_and(|cached| {
-        cached.key == key
-            && cached.directory.as_ref().is_some_and(|input| input.matches(directory))
-    });
-    if !matches {
-        *cache = Some(Cache {
-            key,
-            directory: Some(DirectoryInput::capture(directory)),
-            publication: build_with_directory(directory),
+    pub(crate) fn snapshot_with_directory(
+        &self,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> SourceScopeSnapshot {
+        let key = read_key_with_directory(directory);
+        let mut cache = self.cache.borrow_mut();
+        let matches = cache.as_ref().is_some_and(|cached| {
+            cached.key == key
+                && cached.directory.as_ref().is_some_and(|input| input.matches(directory))
         });
+        if !matches {
+            *cache = Some(Cache {
+                key,
+                directory: Some(DirectoryInput::capture(directory)),
+                publication: build_with_directory(directory),
+            });
+        }
+        cache.as_ref().expect("source scope cache was just built").publication.clone()
     }
-    cache.as_ref().expect("source scope cache was just built").publication.clone()
 }
 
 fn build() -> SourceScopeSnapshot {
@@ -247,13 +255,6 @@ fn build_with_directory(
 }
 
 #[cfg(test)]
-fn reset_for_test() {
-    unsafe {
-        *addr_of_mut!(CACHE) = None;
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -280,7 +281,8 @@ mod tests {
             },
         ]);
 
-        let scope = snapshot_with_directory(directory.view());
+        let cache = ScopeCache::default();
+        let scope = cache.snapshot_with_directory(directory.view());
 
         assert_eq!(scope.sources()[0].libraries, ["Retained Library"]);
     }
@@ -314,8 +316,9 @@ mod tests {
         assert!(read_key_with_directory(alpha.view()) == read_key_with_directory(beta.view()),
             "the regression requires equal owner-local generations");
 
-        let first = snapshot_with_directory(alpha.view());
-        let second = snapshot_with_directory(beta.view());
+        let cache = ScopeCache::default();
+        let first = cache.snapshot_with_directory(alpha.view());
+        let second = cache.snapshot_with_directory(beta.view());
 
         assert_eq!(first.sources()[0].libraries, ["Alpha"]);
         assert_eq!(second.sources()[0].libraries, ["Beta"],
@@ -323,11 +326,65 @@ mod tests {
         assert!(!first.same_publication(&second));
     }
 
+    /// The two-owner proof for the memo's move off `static mut CACHE`. Two independent
+    /// [`ScopeCache`]s (standing in for two `Bridge`s' `SearchState`s) build under the SAME
+    /// registry-generation `Key` but DIFFERENT directory content — equal enough that only owner
+    /// identity, not key or content, could ever distinguish them if the memo were shared. A
+    /// content-identical scenario would pass trivially even on a single process-wide cache (the
+    /// `DirectoryInput` comparison would keep matching), which is exactly the worthless shape the
+    /// migration warns about, so owner B's content must differ from owner A's here. With a shared
+    /// cache, owner B's differing-content call would evict owner A's cached entry, so owner A's
+    /// following call — same key, same content as its first — would needlessly rebuild and lose
+    /// `same_publication`'s Arc identity. Two per-owner caches must not do that.
+    #[test]
+    fn two_owners_do_not_share_the_scope_memo() {
+        let _serial = crate::testlock::serial();
+        let _reset = Reset;
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test(
+            "shared-key-scope", "127.0.0.1", 9, "shared", "scope");
+        let directory = |title: &str| crate::stores::browse::DirectorySnapshot::fixture(4, 0, vec![
+            crate::stores::browse::SectionView {
+                borrowed: false,
+                sid: Some(sid),
+                key: 12,
+                kind: crate::stores::browse::SecKind::Movie,
+                row: crate::stores::browse::SrcRow {
+                    section: 0,
+                    title: title.into(),
+                    pinned: true,
+                    current: true,
+                    ..Default::default()
+                },
+            },
+        ]);
+        let dir_a = directory("Owner A's Library");
+        let dir_b = directory("Owner B's Library");
+        assert!(read_key_with_directory(dir_a.view()) == read_key_with_directory(dir_b.view()),
+            "the regression requires equal owner-local generations");
+
+        let owner_a = ScopeCache::default();
+        let owner_b = ScopeCache::default();
+
+        let a1 = owner_a.snapshot_with_directory(dir_a.view());
+        // Owner B observes the same key but different content, interleaved between two of
+        // owner A's calls.
+        let b1 = owner_b.snapshot_with_directory(dir_b.view());
+        let a2 = owner_a.snapshot_with_directory(dir_a.view());
+
+        assert_eq!(b1.sources()[0].libraries, ["Owner B's Library"]);
+        assert!(
+            a1.same_publication(&a2),
+            "owner A's own repeated call must hit its own memo, undisturbed by owner B's call \
+             in between — a shared cache would have owner B's call evict owner A's entry"
+        );
+        assert!(Arc::ptr_eq(&a1.sources, &a2.sources));
+    }
+
     struct Reset;
 
     impl Drop for Reset {
         fn drop(&mut self) {
-            reset_for_test();
             crate::plex::reset_servers_for_test();
             crate::plex::session::publish_profile_for_test(None,
                 crate::plex::session::current_gen().wrapping_add(1));
@@ -356,8 +413,9 @@ mod tests {
         let _serial = crate::testlock::serial();
         let _reset = Reset;
         let (stores, mut directory, own, share) = fixture();
-        let old = snapshot_with_directory(directory.view());
-        let same = snapshot_with_directory(directory.view());
+        let cache = ScopeCache::default();
+        let old = cache.snapshot_with_directory(directory.view());
+        let same = cache.snapshot_with_directory(directory.view());
         assert!(old.same_publication(&same));
         assert!(Arc::ptr_eq(&old.sources, &same.sources));
         assert_eq!(old.sources()[0].sid, own);
@@ -371,7 +429,7 @@ mod tests {
         stores.browse.borrow_mut().append_section_for_test(
             1, 9, "Archive", crate::browse::SecKind::Movie);
         stores.capture_browse(&mut directory);
-        let changed = snapshot_with_directory(directory.view());
+        let changed = cache.snapshot_with_directory(directory.view());
         assert!(!old.same_publication(&changed));
         assert_eq!(old.sources()[1].name, "nas-home");
         assert_eq!(old.sources()[1].handle, "friend");
@@ -386,7 +444,7 @@ mod tests {
 
         stores.browse.borrow_mut().seed_sources_for_test(2, false);
         stores.capture_browse(&mut directory);
-        let unreachable = snapshot_with_directory(directory.view());
+        let unreachable = cache.snapshot_with_directory(directory.view());
         assert!(old.sources()[0].live && old.sources()[1].live);
         assert!(!unreachable.sources()[0].live && !unreachable.sources()[1].live);
     }
@@ -401,11 +459,12 @@ mod tests {
         stores.browse.borrow_mut().seed_sources_for_test(1, true);
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
         stores.capture_browse(&mut directory);
-        let old = snapshot_with_directory(directory.view());
+        let cache = ScopeCache::default();
+        let old = cache.snapshot_with_directory(directory.view());
 
         let share =
             crate::plex::register_for_test("share-machine", "127.0.0.1", 2, "share", "scope");
-        let next = snapshot_with_directory(directory.view());
+        let next = cache.snapshot_with_directory(directory.view());
 
         assert_eq!(old.sources().len(), 1);
         assert_eq!(old.sources()[0].sid, own);
@@ -433,12 +492,13 @@ mod tests {
         let (stores, mut directory, _, share) = fixture();
         stores.browse.borrow_mut().seed_sources_for_test(2, true);
         stores.capture_browse(&mut directory);
-        let old = snapshot_with_directory(directory.view());
+        let cache = ScopeCache::default();
+        let old = cache.snapshot_with_directory(directory.view());
         let before = read_key_with_directory(directory.view());
         assert!(old.sources().iter().all(|source| source.live));
 
         crate::plex::describe_server(share, "renamed-share", "new-friend", false);
-        let described = snapshot_with_directory(directory.view());
+        let described = cache.snapshot_with_directory(directory.view());
         let after = read_key_with_directory(directory.view());
         assert!(!old.same_publication(&described), "a described source is a new sentence");
         assert_eq!(described.sources()[1].handle, "new-friend");
@@ -451,7 +511,7 @@ mod tests {
 
         stores.browse.borrow_mut().seed_sources_for_test(2, false);
         stores.capture_browse(&mut directory);
-        let quiet = snapshot_with_directory(directory.view());
+        let quiet = cache.snapshot_with_directory(directory.view());
         assert!(!described.same_publication(&quiet), "a source going quiet is a new sentence");
         assert!(quiet.sources().iter().all(|source| !source.live));
         assert!(described.sources().iter().all(|source| source.live),
@@ -464,7 +524,8 @@ mod tests {
         let _serial = crate::testlock::serial();
         let _reset = Reset;
         let (stores, mut directory, _, old_share) = fixture();
-        let old = snapshot_with_directory(directory.view());
+        let cache = ScopeCache::default();
+        let old = cache.snapshot_with_directory(directory.view());
 
         crate::plex::reset_servers_for_test();
         let replacement =
@@ -473,7 +534,7 @@ mod tests {
         assert_ne!(old_share, replacement);
         stores.browse_run(crate::stores::browse::BrowseCmd::Reset);
         stores.capture_browse(&mut directory);
-        let next = snapshot_with_directory(directory.view());
+        let next = cache.snapshot_with_directory(directory.view());
 
         assert_eq!(old.sources().len(), 2);
         assert_eq!(next.sources().len(), 2);

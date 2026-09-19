@@ -29,6 +29,9 @@ impl crate::ui::machine::Measure for LegacyMeasure {
     fn line_h(&self, sz: c_int) -> f32 {
         crate::text::text_height(sz, 0)
     }
+    fn live_font(&self) -> bool {
+        true
+    }
 }
 
 // ---- backdrop glass -------------------------------------------------------------------------
@@ -416,25 +419,6 @@ impl Glass {
         }
     }
 
-    /// Full-screen modal ground: one cached snapshot under the dense shared modal frost token.
-    /// Unlike [`sheet`](Self::sheet), this is not a floating slab, so it has no visible rim and no
-    /// rounded edge; unlike dynamic glass, it never resamples while Settings is open.
-    pub(crate) fn modal_ground(self, p: Painter, r: Rect) {
-        if !p.backdrop_blur_flat(
-            r,
-            theme::MODAL_BLUR_TINT,
-            &theme::MODAL_BLUR_TAPS,
-            theme::MODAL_BLUR_SATURATION,
-        ) {
-            p.rect(
-                r,
-                0.0,
-                theme::with_a(theme::PANEL_FROST_TOP, theme::MODAL_FROST_ALPHA),
-                theme::with_a(theme::PANEL_FROST_BOT, theme::MODAL_FROST_ALPHA),
-                0.0,
-            );
-        }
-    }
 }
 
 /// **What a popover is made of — both halves, from one name.** See [`theme::Material`].
@@ -1559,11 +1543,27 @@ const KEYCAP_BOLD: c_int = 1;
 /// spec; two pixels either side of one cap is not a thing anyone would have found by looking.
 const KEYCAP_GAP: f32 = 12.0;
 
-/// The width [`key_cap`] will occupy for `label` — the measure-first companion, so a caller can
+/// The glyph box inside a [`CapFace::Glyph`] cap. A remote's arrow keys carry an arrow, not a
+/// word, so their cap wears the design system's chevron; 20px lands the chevron's ink at about the
+/// cap height of the bold `MICRO` label a word cap carries, so the two kinds of cap read as one family.
+const KEYCAP_GLYPH: f32 = 20.0;
+
+/// What is printed on a [`key_cap`]: the key's NAME (`BACK`, `OK`) or, for a key whose face is a
+/// symbol (the remote's arrows), the design system's glyph for it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CapFace<'a> {
+    Label(&'a std::ffi::CStr),
+    Glyph(crate::ui::icons::Icon),
+}
+
+/// The width [`key_cap`] will occupy for `face` — the measure-first companion, so a caller can
 /// right-align or centre the whole line before drawing any of it.
-pub(crate) fn key_cap_w(label: &std::ffi::CStr, measure: &dyn crate::ui::machine::Measure) -> f32 {
-    (measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0) + 2.0 * KEYCAP_PAD_X)
-        .max(KEYCAP_MIN_W)
+pub(crate) fn key_cap_w(face: CapFace<'_>, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    let inner = match face {
+        CapFace::Label(label) => measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0),
+        CapFace::Glyph(_) => KEYCAP_GLYPH,
+    };
+    (inner + 2.0 * KEYCAP_PAD_X).max(KEYCAP_MIN_W)
 }
 
 /// Draw one key cap with its LEFT edge at `x`, centred on `cy`; returns its width.
@@ -1571,27 +1571,42 @@ pub(crate) fn key_cap(
     p: Painter,
     x: f32,
     cy: f32,
-    label: &std::ffi::CStr,
+    face: CapFace<'_>,
     ink: [f32; 4],
     measure: &dyn crate::ui::machine::Measure,
 ) -> f32 {
-    let w = key_cap_w(label, measure);
+    let w = key_cap_w(face, measure);
     p.rring(
         Rect::new(x, cy - KEYCAP_H * 0.5, w, KEYCAP_H),
         KEYCAP_RAD,
         KEYCAP_W,
         ink,
     );
-    let tw = measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0);
-    p.text(
-        label.as_ptr(),
-        x + (w - tw) * 0.5,
-        crate::text::text_vcenter_y(theme::size::MICRO, KEYCAP_BOLD, cy),
-        theme::size::MICRO,
-        ink,
-        0,
-        KEYCAP_BOLD,
-    );
+    match face {
+        CapFace::Label(label) => {
+            let tw = measure.width(label, theme::size::MICRO, KEYCAP_BOLD != 0);
+            p.text(
+                label.as_ptr(),
+                x + (w - tw) * 0.5,
+                crate::text::text_vcenter_y(theme::size::MICRO, KEYCAP_BOLD, cy),
+                theme::size::MICRO,
+                ink,
+                0,
+                KEYCAP_BOLD,
+            );
+        }
+        CapFace::Glyph(icon) => crate::ui::icons::draw(
+            p,
+            icon,
+            Rect::new(
+                x + (w - KEYCAP_GLYPH) * 0.5,
+                cy - KEYCAP_GLYPH * 0.5,
+                KEYCAP_GLYPH,
+                KEYCAP_GLYPH,
+            ),
+            ink,
+        ),
+    }
     w
 }
 
@@ -1603,11 +1618,11 @@ pub(crate) fn key_cap(
 /// than centring itself precisely so that both are the caller's to choose — the alignment is the
 /// half that belongs to the screen, the assembled line is the half that does not.
 ///
-/// The three `&CStr`s are BORROWED for the widget's lifetime — the `Label` rule in `ui/CLAUDE.md`:
+/// The `&CStr`s are BORROWED for the widget's lifetime — the `Label` rule in `ui/CLAUDE.md`:
 /// keep the `CString` (or a `c"…"` literal) alive across the draw.
 pub(crate) struct KeyHint<'a> {
     pre: &'a std::ffi::CStr,
-    key: &'a std::ffi::CStr,
+    key: CapFace<'a>,
     post: &'a std::ffi::CStr,
 }
 
@@ -1617,7 +1632,24 @@ impl<'a> KeyHint<'a> {
         key: &'a std::ffi::CStr,
         post: &'a std::ffi::CStr,
     ) -> Self {
-        Self { pre, key, post }
+        Self {
+            pre,
+            key: CapFace::Label(key),
+            post,
+        }
+    }
+
+    /// The same line for a key whose face is a SYMBOL rather than a word — the remote's arrows.
+    pub(crate) fn glyph(
+        pre: &'a std::ffi::CStr,
+        key: crate::ui::icons::Icon,
+        post: &'a std::ffi::CStr,
+    ) -> Self {
+        Self {
+            pre,
+            key: CapFace::Glyph(key),
+            post,
+        }
     }
 
     /// Total width of the assembled line.
@@ -3275,7 +3307,19 @@ impl AmbientWash {
     /// artwork-keyed wash goes through here; a palette token (the resting warm tint) does not need
     /// it, because we chose that value.
     pub(crate) fn keyed(blur: [[f32; 3]; 4], w: [f32; 4]) -> [[f32; 4]; 4] {
-        Self::target(blur.map(ground_capped), w)
+        std::array::from_fn(|i| Self::keyed_one(blur[i], w[i]))
+    }
+
+    /// **ONE artwork colour graded into a ground** — [`keyed`](Self::keyed) for a single sample,
+    /// and the function `keyed` is now four of.
+    ///
+    /// It exists because the four-corner envelope is no longer the only shape a ground can have:
+    /// [`ui::underlay`](crate::ui::underlay) grades 120 cells the same way, and "the same way" has
+    /// to mean the same CODE or the two shapes drift into two palettes. The cap and the lean are
+    /// the legibility contract `widgets_ambient_ground_tests.rs` grades; nothing may reach them by
+    /// re-writing this line.
+    pub(crate) fn keyed_one(c: [f32; 3], w: f32) -> [f32; 4] {
+        theme::mix(theme::SURFACE_APP, ground_capped(c), w)
     }
 
     /// A wash resting flat on one colour — what a page opens as before any item keys it.
@@ -3333,21 +3377,12 @@ impl AmbientWash {
     }
     /// Paint it over `r`. Opaque — this REPLACES what is under it (see the type docs), so it belongs
     /// at the bottom of a screen's draw, standing in for the flat clear.
+    ///
+    /// Always dithered, on every screen and every frame — including under Home's diving hero and
+    /// Detail's scrolling still (`gfx::draw_ambient` records the three gates that were tried and
+    /// why each came back out).
     pub(crate) fn draw(&self, p: Painter, r: Rect) {
-        self.draw_with(p, r, true);
-    }
-    /// [`draw`](Self::draw) with the dither made the caller's decision: `false` for a wash that is
-    /// only ever seen THROUGH something moving (Home's hero fold and slide, Detail's art — through
-    /// `gfx::page_wash_dither`), where the noise buys nothing and costs ~2.5M GPU cycles a frame at
-    /// full screen. Every other wash is the screen itself and takes [`draw`](Self::draw), which
-    /// dithers on every frame. See `gfx::draw_ambient`.
-    pub(crate) fn draw_with(&self, p: Painter, r: Rect, dither: bool) {
-        p.ambient(
-            r,
-            1.0,
-            self.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos]),
-            dither,
-        );
+        p.ambient(r, 1.0, self.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos]));
     }
 }
 
@@ -3368,10 +3403,9 @@ impl AmbientWash {
 /// * **A ground that has resolved to the app's own clear colour is not drawn.** It is a
 ///   ~2M-fragment full-screen pass that changes nothing; `AmbientWash::is_flat` is the test and
 ///   forgetting it costs a whole screen's fill-rate headroom for an invisible gradient.
-/// * **The dither is spent only on a ground that is being LOOKED at.** The noise is ~2.5M GPU
-///   cycles a frame at full screen (`gfx::draw_ambient`) and buys nothing under moving content;
-///   `gfx::page_wash_dither` is the shared gate and [`draw_moving`](Self::draw_moving) is how a
-///   screen says its page is in motion.
+/// * **This ground always dithers** — as every wash does now, the two with artwork sliding over
+///   them included (`gfx::draw_ambient`). A browsing ground has nothing over it, so there is no
+///   frame on which it is not the thing being looked at. [`draw`](Self::draw) takes no flag.
 ///
 /// What stays the screen's business is the per-corner SHAPE — how far each corner leans — for the
 /// reason [`AmbientWash::GROUND_W`] gives: one strength, many arrangements. [`CARD_W`](Self::CARD_W)
@@ -3457,17 +3491,17 @@ impl PageGround {
     /// Paint the ground under everything, standing in for the flat clear — **skipped when it has
     /// resolved to that clear anyway**, which is the whole fill-rate argument in the type's doc.
     ///
-    /// **Dithered, through the shared `gfx::page_wash_dither` gate.** Home's hero ground can drop
-    /// the noise because its wash is only ever seen THROUGH a moving photograph; a browsing screen's
-    /// is not — it is directly visible in every gutter of the grid standing on it, at rest and while
-    /// it dissolves, and an undithered gradient there bands in slow diagonal treads that CRAWL as
-    /// the ground moves. So the choice is not the caller's here, and the type does not offer it.
+    /// **Dithered on every frame, unconditionally**, like every wash. A browsing screen's ground is
+    /// directly visible in every gutter of the grid standing on it, at rest and while it dissolves,
+    /// and an undithered gradient there bands in slow diagonal treads that CRAWL as the ground
+    /// moves. The fill-rate answer
+    /// this type DOES keep is the one above it: a ground that has resolved to the clear colour is
+    /// not drawn at all, so the frames it costs nothing are the frames it shows nothing.
     pub(crate) fn draw(&self, p: Painter, r: Rect) {
         if self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS) {
             return;
         }
-        self.wash
-            .draw_with(p, r, crate::gfx::page_wash_dither(true));
+        self.wash.draw(p, r);
     }
 
     /// Has the ground resolved to the app's own surface? The screens' own tests ask this; the draw
@@ -7275,7 +7309,7 @@ pub(crate) fn badge(
 
 /// Mark box (px). A little over the meta line's cap height so a 26-unit silhouette still resolves
 /// at couch distance — these marks carry the VERDICT, so legibility here is not cosmetic.
-const RATING_MARK_D: f32 = 30.0;
+pub(crate) const RATING_MARK_D: f32 = 30.0;
 /// Glyph → its score. They are one unit, so it stays tight.
 const RATING_GAP: f32 = 10.0;
 /// Provider caption → the first score under it.

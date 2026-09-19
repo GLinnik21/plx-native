@@ -45,6 +45,29 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 
+thread_local! {
+    // TEST ONLY. This file drives one screen per test through free helper fns (`install`,
+    // `step`, `apply_metadata`, ...) that pre-date per-owner `MetadataStore`s, so — unlike
+    // `stores/person.rs`'s tests, which thread an owned `PersonStore` through every call
+    // explicitly — the owner lives here instead, confined to the thread each test body runs on.
+    // Every access still goes through `MetadataStore`'s own `run`/`state_mut`/`view` (the sole
+    // owner API); this only changes WHERE the owner lives, not a second mechanism for reaching
+    // it. `testlock::serial()` (already required before any of these helpers may be called)
+    // keeps two tests from ever overlapping even if the runner reuses this thread.
+    static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+        std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+}
+
+fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+}
+
+impl crate::screens::registry::MetadataLike for TestHost {
+    fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        test_store().view()
+    }
+}
+
 fn cx<'a>(measure: &'a dyn crate::ui::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
     Cx {
         views: (),
@@ -84,8 +107,11 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         preview_played_for: None,
         preview_started_for: None,
         preview_had_picture: false,
+        trailer_ctl: trailer::Transport::IDLE,
         refresh: DetailRefreshPhase::None,
+        refresh_gen: 0,
         restore_intent: None,
+        teardown_cleared: false,
         scroll: Spring::at(0.0),
         scroll_target: 0.0,
         episode_scroll: Spring::at(0.0),
@@ -110,8 +136,9 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),
         layout: std::cell::Cell::new(None),
+        spot_facts: SpotFacts::default(),
     };
-    screen.sync_keys();
+    screen.sync_keys(test_store().view());
     screen
 }
 
@@ -150,16 +177,16 @@ fn detail(sid: ServerId, rk: &str) -> Detail {
 
 fn install(d: Detail) -> crate::testlock::Serial {
     let guard = crate::testlock::serial();
-    crate::metadata::set_current_for_test(Some(d));
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(d));
     guard
 }
 
 fn clear() {
-    crate::metadata::set_current_for_test(None);
+    crate::metadata::set_current_for_test(test_store().state_mut(), None);
     // The *Also available* store outlives a page, so a test that seeded it hands the next one an
     // empty one — the addressed store cannot MIS-answer, but it can answer for an item a later
     // test happens to reuse the pair of.
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::AltInstall {
+    test_store().run(crate::stores::metadata::MetadataCmd::AltInstall {
         sid: crate::plex::ServerId::UNSET,
         rk: String::new(),
         copies: Vec::new(),
@@ -171,7 +198,7 @@ fn step(
     event: &ScreenEvent<TestHost>,
     focus: Option<u32>,
 ) -> (Handled, Vec<crate::ui::machine::Stamped<TestHost>>) {
-    screen.sync_keys();
+    screen.sync_keys(test_store().view());
     let focus = focus.and_then(|key| screen.engine_key(key).or(Some(key)));
     let translated;
     let event = match event {
@@ -201,6 +228,20 @@ fn step(
     (handled, effects)
 }
 
+/// `DetailScreen::pump_restore` now takes the same `fx: &mut Effects<'_, H>` every other
+/// dispatch path does; this test file drives it with a throwaway sink, mirroring `step`'s own
+/// scaffold, since none of the call sites below inspect the pushed effects.
+fn pump_restore(screen: &mut DetailScreen) {
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut sink = Effects::new(
+        &mut effects,
+        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        &mut present,
+    );
+    screen.pump_restore::<TestHost>(test_store().view(), &mut sink);
+}
+
 #[test]
 fn logical_hash_names_the_mounted_item() {
     let _guard = crate::testlock::serial();
@@ -224,8 +265,8 @@ fn logical_hash_names_the_full_restore_target() {
     };
     let right = left.clone();
     left.col = 0;
-    a.restore_episode(&left, Some("e1"));
-    b.restore_episode(&right, Some("e2"));
+    a.restore_episode(&left, Some("e1"), test_store().view());
+    b.restore_episode(&right, Some("e2"), test_store().view());
     assert_ne!(a.hash(), b.hash());
     let settled = b.hash();
     b.refresh = DetailRefreshPhase::Deferred;
@@ -268,49 +309,114 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
     for cached in [false, true] {
         for phase in [DetailRefreshPhase::None, DetailRefreshPhase::Deferred, DetailRefreshPhase::Requested] {
             for status in [None, Some(true), Some(false)] {
-                apply_metadata(MetadataCmd::Clear);
-                crate::metadata::set_current_for_test(cached.then(|| detail(sid, "show")));
+                test_store().run(MetadataCmd::Clear);
+                crate::metadata::set_current_for_test(test_store().state_mut(), cached.then(|| detail(sid, "show")));
                 let pending = status.and_then(|loading| {
-                    let generation = crate::metadata::begin_detail_for_test(sid, "show");
+                    let generation = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
                     if !loading {
-                        crate::metadata::land_detail_for_test(sid, "show", generation, None);
+                        let (__s, __a) = test_store().split_for_test();
+                        crate::metadata::land_detail_for_test(__s, __a, sid, "show", generation, None);
                     }
                     loading.then_some(generation)
                 });
-                assert_eq!(crate::metadata::detail_request_status(sid, "show"), status);
+                assert_eq!(test_store().view().detail_request_status(sid, "show"), status);
                 let mut screen = bare(&guard, sid, "show");
                 screen.refresh = phase;
-                let generation = crate::metadata::detail_generation_for_test();
-                step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Restored), None);
+                let generation = crate::metadata::detail_generation_for_test(test_store().adapter_ref());
+                let (_, entered) = step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Restored), None);
+                // Both request paths (the direct RequestDetail push and start_reconciliation's
+                // own) only ENQUEUE the command; a real Bridge applies it on its next dispatch
+                // turn. This file drives no dispatcher, so it must apply it itself before reading
+                // the generation the request is expected to have minted.
+                apply_metadata_effects(&entered);
                 let requests = match phase {
                     DetailRefreshPhase::Deferred => 1,
                     DetailRefreshPhase::Requested => u32::from(status.is_none()),
                     DetailRefreshPhase::None => u32::from(!cached && status != Some(true)),
                 };
-                assert_eq!(crate::metadata::detail_generation_for_test(), generation + requests,
+                assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), generation + requests,
                     "cached={cached} phase={phase:?} status={status:?}");
-                screen.pump_restore();
+                pump_restore(&mut screen);
                 let expected = match (phase, status) {
                     (DetailRefreshPhase::None, _) | (DetailRefreshPhase::Requested, Some(false)) => DetailRefreshPhase::None,
                     _ => DetailRefreshPhase::Requested,
                 };
                 assert_eq!(screen.refresh, expected,
                     "cached={cached} phase={phase:?} status={status:?} after={:?}",
-                    crate::metadata::detail_request_status(sid, "show"));
+                    test_store().view().detail_request_status(sid, "show"));
                 assert!(screen.restore_intent.is_none());
                 // Synthetic workers still owe a terminal acknowledgment after supersession;
                 // otherwise this matrix exhausts the production reservation budget itself.
                 if let Some(generation) = pending {
-                    crate::metadata::land_detail_for_test(sid, "show", generation, None);
+                    let (__s, __a) = test_store().split_for_test();
+                    crate::metadata::land_detail_for_test(__s, __a, sid, "show", generation, None);
                 }
                 if requests > 0 {
-                    crate::metadata::land_detail_for_test(sid, "show", generation + requests, None);
+                    let (__s, __a) = test_store().split_for_test();
+                    crate::metadata::land_detail_for_test(__s, __a, sid, "show", generation + requests, None);
                 }
-                crate::stores::metadata::pump_detail();
+                test_store().pump_detail();
             }
         }
     }
-    apply_metadata(MetadataCmd::Clear);
+    test_store().run(MetadataCmd::Clear);
+    clear();
+}
+
+/// **T2 pin.** `start_reconciliation` (`Enter(Restored)`'s promotion of a `Deferred` obligation)
+/// pushes `RequestDetail` onto the deferred `AppFx::Store` queue and flips `self.refresh` to
+/// `Requested` in the SAME synchronous step — but the store only admits that command on a later
+/// drain iteration (`Bridge::app_fx` -> `Fx::Deliver` to the store machine, several queue pops
+/// later; see `ui/dispatch.rs::drain`/`absorb`). If a `StoreChanged` or `Tick` reaches this
+/// screen's `pump_restore` inside that window, the store still answers with the STALE terminal
+/// (`Some(false)`) left by the PREVIOUS reconciliation at this exact `(sid, rk)` address.
+///
+/// Closed by IDENTITY, not synchrony: `DetailScreen::step` has no same-turn boundary the way
+/// `app::content::refresh_content` does for `DetailRestore` (see C1fix, `3b628b23`) — `Cx`
+/// publishes stores as read-only views, so there is no `&mut Stores` here by construction. Rather
+/// than widen `Cx`/`Rig`, `start_reconciliation` now records `self.refresh_gen =
+/// meta.detail_generation()` — the generation that already existed BEFORE this promotion's own
+/// request is admitted — and `pump_restore`'s `(Requested, Some(false))` arm only retires the
+/// obligation once `meta.detail_generation() > self.refresh_gen`, mirroring the generation check
+/// completions already use for T3 (`metadata.rs`'s `if gen != adapter.detail_gen...`).
+#[test]
+fn enter_restored_promotion_survives_a_stale_terminal_before_admission_t2() {
+    let guard = install(detail(ServerId::UNSET, "show"));
+    // Seed a stale, already-completed reconciliation at this exact address so the store answers
+    // `Some(false)` (a completed reconciliation to consume) before the NEW request is admitted.
+    let generation = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "show");
+    {
+        let (__s, __a) = test_store().split_for_test();
+        crate::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "show", generation, None);
+    }
+    assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "show"), Some(false));
+
+    let mut screen = bare(&guard, ServerId::UNSET, "show");
+    screen.refresh = DetailRefreshPhase::Deferred; // obligation carried while this page was covered
+
+    // Enter(Restored) promotes Deferred -> Requested and pushes RequestDetail, synchronously with
+    // the phase flip, but the pushed effect is not yet admitted to the store.
+    let (_, entered) = step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Restored), None);
+    assert_eq!(screen.refresh, DetailRefreshPhase::Requested, "Enter(Restored) must promote the obligation");
+    assert!(
+        entered.iter().any(|e| matches!(
+            &e.fx,
+            Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(MetadataCmd::RequestDetail { .. })))
+        )),
+        "Enter(Restored) must have queued the reconciliation request"
+    );
+
+    // Simulate a StoreChanged/Tick landing BEFORE the drain admits that queued command:
+    // deliberately do NOT run `apply_metadata_effects` first, unlike every other test in this file.
+    pump_restore(&mut screen);
+
+    assert_ne!(
+        screen.refresh,
+        DetailRefreshPhase::None,
+        "T2: a freshly promoted reconciliation obligation must survive a stale terminal result that \
+         predates the request which is still only queued, not yet admitted to the owning store"
+    );
+    test_store().run(MetadataCmd::Clear);
     clear();
 }
 
@@ -322,7 +428,7 @@ fn restore_memory_cannot_rewind_a_newer_refresh_obligation() {
             let mut screen = bare(&guard, ServerId::UNSET, "show");
             let PageMemory::Detail(memory) = Screen::<TestHost>::memory_at(&screen, None) else { unreachable!() };
             let spot = Spot { section: 2, season: Some(2), ..Default::default() };
-            screen.restore_episode(&spot, Some("e2"));
+            screen.restore_episode(&spot, Some("e2"), test_store().view());
             screen.refresh = phase;
             if cancelled { screen.restore_intent = None; }
             step(&mut screen, &ScreenEvent::RestoreMemory(PageMemory::Detail(memory)), None);
@@ -337,16 +443,25 @@ fn restore_memory_cannot_rewind_a_newer_refresh_obligation() {
     clear();
 }
 
+/// **T1 pin (contract).** A refresh/reconciliation obligation must survive a CANCELLED
+/// focus-restore intent: directional input cancels `restore_intent` (the `ScreenEvent::Input`
+/// arm below, `mod.rs`'s `Key::Up|Down|Left|Right` guard), but it must leave `self.refresh` alone
+/// — the two are independent obligations, and only the store's own terminal landing may retire
+/// the server one. Checked red by mutation: making that same guard also zero `self.refresh`
+/// (simulating the T1 defect — an obligation folded into the cancellable intent) turns the first
+/// assertion below red (`left: None, right: Requested`); reverted before commit, not left in the
+/// tree. This test predates Stage C2 (landed with ViewState's own refactor, `4b390cdd`) but was
+/// not labelled as the T1 pin the contract calls for until now.
 #[test]
 fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_failure() {
     let guard = crate::testlock::serial();
     let sid = ServerId::UNSET;
     for success in [false, true] {
-        apply_metadata(MetadataCmd::Clear);
-        crate::metadata::set_current_for_test(Some(detail(sid, "show")));
-        let generation = crate::metadata::begin_detail_for_test(sid, "show");
+        test_store().run(MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(detail(sid, "show")));
+        let generation = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
         let mut screen = bare(&guard, sid, "show");
-        screen.restore_episode(&Spot::default(), Some("e2"));
+        screen.restore_episode(&Spot::default(), Some("e2"), test_store().view());
         screen.refresh = DetailRefreshPhase::Requested;
         step(&mut screen, &ScreenEvent::Input(crate::ui::machine::InputEvent {
             at: Default::default(), source: crate::ui::machine::Source::Script,
@@ -354,15 +469,16 @@ fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_fai
         }), None);
         assert!(screen.restore_intent.is_none());
         assert_eq!(screen.refresh, DetailRefreshPhase::Requested);
-        assert_eq!(crate::metadata::land_detail_for_test(sid, "show", generation,
+        let (__s, __a) = test_store().split_for_test();
+        assert_eq!(crate::metadata::land_detail_for_test(__s, __a, sid, "show", generation,
             success.then(|| detail(sid, "show"))), success);
         step(&mut screen, &ScreenEvent::StoreChanged(StoreId::Metadata.ord(), generation), None);
         assert_eq!(screen.refresh, DetailRefreshPhase::None);
         assert!(screen.restore_intent.is_none());
-        screen.pump_restore();
-        assert_eq!(crate::metadata::detail_generation_for_test(), generation);
+        pump_restore(&mut screen);
+        assert_eq!(crate::metadata::detail_generation_for_test(test_store().adapter_ref()), generation);
     }
-    apply_metadata(MetadataCmd::Clear);
+    test_store().run(MetadataCmd::Clear);
     clear();
 }
 
@@ -399,9 +515,9 @@ fn a_spot_round_trips_through_the_page_it_describes() {
         let spot = screen.spot(Some(FocusKey {
             entry: EntryId(7),
             elem,
-        }));
+        }), SpotFacts::of(&screen, test_store().view()));
         assert_eq!((spot.section, spot.col, spot.ep_text), (section, col, text));
-        screen.restore(&spot);
+        screen.restore(&spot, test_store().view());
         let restored = Focusable::<TestHost>::reconcile(
             &screen,
             FocusKey {
@@ -413,7 +529,7 @@ fn a_spot_round_trips_through_the_page_it_describes() {
         assert_eq!(restored.elem, elem);
         screen.restore_intent = None;
     }
-    crate::metadata::set_current_for_test(Some(Detail {
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
         sid,
         rk: "movie".into(),
         kind: "movie".into(),
@@ -424,7 +540,7 @@ fn a_spot_round_trips_through_the_page_it_describes() {
     let languages = movie.spot(Some(FocusKey {
         entry: EntryId(7),
         elem: about::LANGUAGES_ELEM,
-    }));
+    }), SpotFacts::of(&movie, test_store().view()));
     assert_eq!((languages.section, languages.col), (5, 2));
     clear();
 }
@@ -433,7 +549,7 @@ fn a_spot_round_trips_through_the_page_it_describes() {
 fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
     let sid = ServerId::UNSET;
     let _guard = crate::testlock::serial();
-    crate::metadata::set_current_for_test(None);
+    crate::metadata::set_current_for_test(test_store().state_mut(), None);
     let mut screen = bare(&_guard, sid, "show");
     let measure = crate::ui::fixture::FixtureMeasure;
     let want = FocusKey {
@@ -446,7 +562,7 @@ fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
         season: Some(1),
         ..Default::default()
     };
-    screen.restore(&spot);
+    screen.restore(&spot, test_store().view());
     assert_eq!(
         Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None)).elem,
         hero::ELEM_PLAY,
@@ -455,8 +571,8 @@ fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
 
     let mut d = detail(sid, "show");
     d.related = vec![Default::default(), Default::default()];
-    crate::metadata::set_current_for_test(Some(d));
-    screen.restore(&spot);
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+    screen.restore(&spot, test_store().view());
     assert_eq!(
         Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None)).elem,
         screen.engine_key(related::elem(1).unwrap()).unwrap(),
@@ -464,8 +580,8 @@ fn a_restored_spot_clamps_onto_an_item_whose_lists_shrank() {
     );
     let mut no_related = detail(sid, "show");
     no_related.related.clear();
-    crate::metadata::set_current_for_test(Some(no_related));
-    screen.restore(&spot);
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(no_related));
+    screen.restore(&spot, test_store().view());
     assert_eq!(
         Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None)).elem,
         hero::ELEM_PLAY,
@@ -488,7 +604,7 @@ fn a_movie_spot_does_not_wait_for_a_season_that_will_never_land() {
         section: 5,
         season: None,
         ..Default::default()
-    });
+    }, test_store().view());
     let measure = crate::ui::fixture::FixtureMeasure;
     let restored = Focusable::<TestHost>::reconcile(
         &screen,
@@ -585,12 +701,28 @@ fn an_open_request_does_not_outlive_its_page() {
             .any(|effect| matches!(&effect.fx, Fx::App(AppFx::Content(ContentReq::Push(_))))),
         "a replacement page cannot inherit an earlier instance's action"
     );
-    step(&mut screen, &ScreenEvent::Unmount, None);
+    // Unmount only ENQUEUES its `MetadataCmd::Clear` (a real Bridge applies it on the next
+    // dispatch turn); this test drives no dispatcher, so it must apply that effect itself before
+    // asking whether the page still answers a press — otherwise `test_store()` still holds the
+    // Detail this page unmounted from, and the assertion below would prove nothing.
+    let (_, unmount_effects) = step(&mut screen, &ScreenEvent::Unmount, None);
+    apply_metadata_effects(&unmount_effects);
     let (_, after) = step(&mut screen, &press, Some(related::elem(0).unwrap()));
     assert!(!after
         .iter()
         .any(|effect| matches!(&effect.fx, Fx::App(AppFx::Content(ContentReq::Push(_))))));
     clear();
+}
+
+/// Applies every `AppFx::Store(StoreId::Metadata, ..)` effect in `effects` to `test_store()` —
+/// the store-side half of what a real `Bridge` does on its next dispatch turn, for tests that
+/// drive a screen with no dispatcher around it (see `step`'s own module doc).
+fn apply_metadata_effects(effects: &[crate::ui::machine::Stamped<TestHost>]) {
+    for effect in effects {
+        if let Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(cmd))) = &effect.fx {
+            test_store().run(cmd.clone());
+        }
+    }
 }
 
 #[test]
@@ -606,7 +738,7 @@ fn the_episode_text_highlight_fits_the_block_the_flow_already_reserves() {
 ///
 /// Red-first, and SIMULATED rather than historical: the old spelling was
 /// `ui::tracks_panel::is_available()`, a function of a module this commit deletes. Narrow
-/// `DetailScreen::tracks_available` to `crate::metadata::current().is_some_and(describes)` — which
+/// `DetailScreen::tracks_available` to `test_store().view().current().is_some_and(describes)` — which
 /// is exactly what that function did — and this fails on the first leg: a Detail page mounted on an
 /// item whose own fetch has not landed answers from whatever landed LAST, which after a step
 /// through a Person page is another film. The About footer would then draw a MORE affordance and
@@ -629,33 +761,33 @@ fn tracks_availability_is_detail_state_not_surface_state() {
     let screen = DetailScreen::new(EntryId(7), ServerId::UNSET, "here".into(),
         crate::pms::HubsSnapshot::empty_for_test().view());
     assert!(
-        !screen.tracks_available(),
+        !screen.tracks_available(test_store().view()),
         "the page has no item of its own yet, so there is no file it can describe"
     );
     assert!(
-        screen.locate(about::LANGUAGES_ELEM).is_none(),
+        screen.locate(about::LANGUAGES_ELEM, test_store().view()).is_none(),
         "…and the About footer publishes no Languages element to press"
     );
 
     // The page's OWN item lands, and it is a show: its streams are episode 1's, so still no file.
-    crate::metadata::set_current_for_test(Some(detail(ServerId::UNSET, "here")));
-    assert!(!screen.tracks_available(), "a show has no file of its own");
-    assert!(screen.locate(about::LANGUAGES_ELEM).is_none());
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(detail(ServerId::UNSET, "here")));
+    assert!(!screen.tracks_available(test_store().view()), "a show has no file of its own");
+    assert!(screen.locate(about::LANGUAGES_ELEM, test_store().view()).is_none());
 
     // A leaf with a part, on this page's own key: now the column is pressable.
-    crate::metadata::set_current_for_test(Some(Detail {
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
         sid: ServerId::UNSET,
         rk: "here".into(),
         part: "/library/parts/751/1745595530/file.mp4".into(),
         ..Default::default()
     }));
-    assert!(screen.tracks_available());
+    assert!(screen.tracks_available(test_store().view()));
     assert!(
-        matches!(screen.locate(about::LANGUAGES_ELEM), Some(Located::About(1))),
+        matches!(screen.locate(about::LANGUAGES_ELEM, test_store().view()), Some(Located::About(1))),
         "the page's own leaf has a file, so the column is the About footer's second element"
     );
     clear();
-    apply_metadata(MetadataCmd::Clear);
+    test_store().run(MetadataCmd::Clear);
 }
 
 #[test]
@@ -664,21 +796,29 @@ fn opening_a_catalog_row_mounts_on_it_without_blocking_on_the_fetch() {
     let mut pms_state = crate::pms::PmsState::default();
     let pms_adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
     crate::pms::seed_for_test(&mut pms_state, &pms_adapter, 3, crate::pms::HubState::Ready);
-    apply_metadata(MetadataCmd::Clear);
+    test_store().run(MetadataCmd::Clear);
     let row = crate::pms::movie(&pms_state, 1).expect("seeded catalog row");
     let (sid, rk) = (row.sid, row.rk.clone());
     let hubs_snap = crate::pms::hubs_snapshot(&pms_state);
-    let screen = DetailScreen::new(EntryId(7), sid, rk.clone(), hubs_snap.view());
+    let mut screen = DetailScreen::new(EntryId(7), sid, rk.clone(), hubs_snap.view());
     assert_eq!((screen.sid, screen.rk.as_str()), (sid, rk.as_str()));
     assert!(
-        crate::metadata::current().is_none(),
+        test_store().view().current().is_none(),
         "construction must not run the fetch to completion inline"
     );
+    // The fetch itself starts on the mounted page's first Enter (T2: the request is admitted in
+    // the same step that publishes it), not on construction — a real Bridge delivers Mount then
+    // Enter right after the Push this test simulates by driving both directly.
+    step(&mut screen, &ScreenEvent::Mount, None);
+    let (_, entered) = step(&mut screen, &ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
+        focus: crate::ui::screen::FocusTarget::ContainerGroup(crate::ui::machine::GroupId(0)),
+    }), None);
+    apply_metadata_effects(&entered);
     assert!(
-        crate::metadata::detail_loading(),
+        crate::metadata::detail_loading(test_store().adapter_ref()),
         "the asynchronous request is in flight"
     );
-    apply_metadata(MetadataCmd::Clear);
+    test_store().run(MetadataCmd::Clear);
 }
 
 #[test]
@@ -809,13 +949,13 @@ fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_
         season: Some(2),
         ..Default::default()
     };
-    screen.restore_episode(&spot, Some("e3"));
+    screen.restore_episode(&spot, Some("e3"), test_store().view());
     let kept = Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None));
-    assert_eq!(screen.locate(kept.elem).and_then(Located::local_key).and_then(episodes::locate), Some((2, episodes::Row::Still)));
+    assert_eq!(screen.locate(kept.elem, test_store().view()).and_then(Located::local_key).and_then(episodes::locate), Some((2, episodes::Row::Still)));
 
     let mut changed_season = detail(sid, "show");
     changed_season.cur_season = 0;
-    crate::metadata::set_current_for_test(Some(changed_season));
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(changed_season));
     screen.restore_intent = Some(RestoreIntent {
         spot: Spot {
             season: Some(2),
@@ -824,7 +964,7 @@ fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_
         episode: Some("e3".into()),
         season_requested: true,
     });
-    screen.pump_restore();
+    pump_restore(&mut screen);
     assert!(
         screen.restore_intent.is_none(),
         "a different-season landing retires the latch"
@@ -832,11 +972,11 @@ fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_
 
     let mut removed = detail(sid, "show");
     removed.cur_season = 1;
-    crate::metadata::set_current_for_test(Some(removed));
-    screen.restore_episode(&spot, Some("gone"));
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(removed));
+    screen.restore_episode(&spot, Some("gone"), test_store().view());
     let fallback = Focusable::<TestHost>::reconcile(&screen, want, &cx(&measure, None));
     assert_eq!(
-        screen.locate(fallback.elem).and_then(Located::local_key).and_then(episodes::locate),
+        screen.locate(fallback.elem, test_store().view()).and_then(Located::local_key).and_then(episodes::locate),
         Some((0, episodes::Row::Still))
     );
     assert!(
@@ -860,6 +1000,7 @@ fn a_landed_view_state_refresh_puts_the_browsed_season_back_and_never_steers_ano
             ..Default::default()
         },
         Some("e2"),
+        test_store().view(),
     );
     let measure = crate::ui::fixture::FixtureMeasure;
     let got = Focusable::<TestHost>::reconcile(
@@ -870,9 +1011,9 @@ fn a_landed_view_state_refresh_puts_the_browsed_season_back_and_never_steers_ano
         },
         &cx(&measure, None),
     );
-    assert_eq!(screen.locate(got.elem).and_then(Located::local_key).and_then(episodes::locate), Some((1, episodes::Row::Still)));
+    assert_eq!(screen.locate(got.elem, test_store().view()).and_then(Located::local_key).and_then(episodes::locate), Some((1, episodes::Row::Still)));
 
-    crate::metadata::set_current_for_test(Some(Detail {
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
         sid,
         rk: "other".into(),
         ..Default::default()
@@ -946,7 +1087,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
         for alt in [false, true] {
             for watched in [false, true] {
                 for trailer in [false, true] {
-                    crate::metadata::set_current_for_test(Some(Detail {
+                    crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
                         sid, rk: "hero-hit".into(), kind: "movie".into(), watched,
                         resume_ms: if restart { 30_000 } else { 0 }, dur_ms: 120_000,
                         extras: trailer
@@ -964,7 +1105,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     // The *Also available* control's gate is the STORE, addressed by the page's own
                     // pair — seeded here the way a landed cross-source resolve seeds it, never by
                     // opening the panel.
-                    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::AltInstall {
+                    test_store().run(crate::stores::metadata::MetadataCmd::AltInstall {
                         sid,
                         rk: "hero-hit".into(),
                         copies: if alt {
@@ -977,7 +1118,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                         },
                     });
                     let mut screen = bare(&_guard, sid, "hero-hit");
-                    let set = screen.hero_set();
+                    let set = screen.hero_set(test_store().view());
                     assert_eq!(
                         (set.restart, set.alt, set.trailer),
                         (restart, alt, false),
@@ -1005,7 +1146,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                                 let placed = Focusable::<TestHost>::place(&screen, &key.elem, &context, At::Drawn).expect("every drawn control places");
                                 // Same primitive geometry used by draw_buttons; its painter scroll
                                 // translation must match the screen-space hit placement exactly.
-                                let mut painted = hero::hero_btn_rect_at(set, i, screen.hero_chain(&crate::ui::fixture::FixtureMeasure).btn_y, widths);
+                                let mut painted = hero::hero_btn_rect_at(set, i, screen.hero_chain(&crate::ui::fixture::FixtureMeasure, test_store().view()).btn_y, widths);
                                 painted.y -= scroll;
                                 assert_eq!((placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h),
                                     (painted.x, painted.y, painted.w, painted.h),
@@ -1044,6 +1185,216 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
     crate::plex::reset_servers_for_test();
 }
 
+/// **A pointer click must not be able to reach the hero row — Play included — while full-trailer
+/// mode owns the screen.** `hero::focusable`/`valid()` keep Play "valid" so the engine has a
+/// legitimate keyboard anchor to stand on, but `draw_buttons` fades the whole row (Play too) to
+/// alpha 0 there. Before the fix, `record_stops` still registered Play's rect as a Stop, so a
+/// magic-remote click on the old pill position resolved and activated it — starting the FEATURE
+/// from a screen showing only a trailer. This drives the real `player::preview` singleton (behind
+/// `testlock::serial()`, reset before returning) because `full_trailer()` reads it live.
+#[test]
+fn full_trailer_mode_registers_no_hero_stops_at_all() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    crate::player::preview::force_playing_for_test();
+    assert!(screen.full_trailer(), "the fixture must land in full-trailer mode for this test to mean anything");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let context = cx(&measure, Some(hero::HeroCtl::Play.elem()));
+    let mut draw = DrawFrame::new(&context, crate::ui::Painter::root());
+    screen.record_stops(&mut draw);
+    let stops = draw.into_stops();
+    let set = screen.hero_set(test_store().view());
+    let (all, n) = hero::hero_ctls(set);
+    for ctl in &all[..n] {
+        assert!(
+            !stops.iter().any(|stop| stop.key.elem == ctl.elem()),
+            "{ctl:?} must not register a pointer stop while full_trailer() is up"
+        );
+    }
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
+/// **The mechanism, not a special case.** `preview_chrome` is the one scalar `draw_hero` already
+/// fades the hero's own chrome through, and `draw`'s below-hero loop (season/episodes, Extras,
+/// Related, Cast & Crew, About) now hands that SAME value to every section as `below_hero`'s
+/// alpha, rather than a second predicate one of them could drift from. Proving `preview_chrome`
+/// itself eases to 0 while `full_trailer()` holds and back to 1 on collapse is proving the
+/// sections hide and reappear too — the page draws no rendering harness can drive here, but this
+/// is the one number every one of them multiplies through.
+#[test]
+fn preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_and_back() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    crate::player::preview::force_playing_for_test();
+    screen.preview_promoted = true;
+    assert!(screen.full_trailer(), "the fixture must land in full-trailer mode for this test to mean anything");
+
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut sink = Effects::new(
+        &mut effects,
+        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        &mut present,
+    );
+    let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
+    let mut now = 0u32;
+    for _ in 0..300 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
+    }
+    assert!(
+        screen.preview_chrome < 0.01,
+        "preview_chrome={} should have eased to 0 in full-trailer mode — the value every \
+         below-hero section now fades through",
+        screen.preview_chrome
+    );
+
+    // Collapse: full-trailer mode ends, and every section's alpha must climb back to full.
+    screen.preview_promoted = false;
+    for _ in 0..300 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
+    }
+    assert!(
+        screen.preview_chrome > 0.99,
+        "preview_chrome={} should have eased back to full once full-trailer mode collapsed",
+        screen.preview_chrome
+    );
+
+    drop(sink);
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
+/// **Background autoplay must not fade the rows between the synopsis and Play.** `draw_hero`
+/// used to gate the identity/meta line, the ratings row, the facts row and the people column on
+/// `chrome * preview_prose` — and `preview_prose` tracks `player::preview::View::prose`, which
+/// drops to 0 the instant ANY picture is up, background autoplay included. `preview_chrome` is
+/// the value those rows are drawn through now (same as the buttons and the below-hero sections),
+/// and it only leaves 1.0 in FULL-trailer mode (`preview_promoted && picture`), not for a picture
+/// merely dwelling in the background. This pins that split: `preview_chrome` stays full while a
+/// background trailer plays even though the OLD gating value (`preview_prose`) has already
+/// dropped to zero underneath it, and only sinking into full-trailer mode (promoted) still takes
+/// it to zero.
+#[test]
+fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_people() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    crate::player::preview::force_playing_for_test();
+    assert!(
+        !screen.full_trailer(),
+        "not promoted yet — this must be the background-autoplay case, not full-trailer"
+    );
+
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut sink = Effects::new(
+        &mut effects,
+        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        &mut present,
+    );
+    let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
+    let mut now = 0u32;
+    for _ in 0..300 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
+    }
+    assert!(
+        screen.preview_prose < 0.01,
+        "preview_prose={} must drop once a picture is up: draw_hero gates the identity/meta line \
+         and the rating marks on it, and the owner wants those two out of the way while the \
+         trailer answers the same question they do",
+        screen.preview_prose
+    );
+    assert!(
+        screen.preview_chrome > 0.99,
+        "preview_chrome={} must stay full during background autoplay: draw_hero gates the facts \
+         row (date · runtime · Direct Play) and the people column on it, and those must not \
+         vanish and come back under a playing preview",
+        screen.preview_chrome
+    );
+
+    // Promote to full-trailer mode: NOW everything hides, `preview_chrome` included.
+    screen.preview_promoted = true;
+    assert!(screen.full_trailer());
+    for _ in 0..300 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
+    }
+    assert!(
+        screen.preview_chrome < 0.01,
+        "preview_chrome={} should still ease to 0 once full-trailer mode takes over — that part \
+         is unchanged",
+        screen.preview_chrome
+    );
+
+    drop(sink);
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
+/// **Regression, 2026-09-18: `preview_tick`'s per-frame path must not read the session file every
+/// frame.** `preview::blocked` (called unconditionally from `preview_tick`, hero-focused or not)
+/// calls `preview::enabled()`, which calls `session::peek()` — and `peek` used to take
+/// `session::IO` on every call, which on the television guards a `recv(2)` round trip to the
+/// storage helper, measured at ~27 ms/frame: the whole gap between 60 fps and the 26 fps the
+/// detail page actually drew. The fix is `session::peek()`'s own live read cache (`session::CACHE`,
+/// next to `IO`): a durable write installs its outcome, so every later `peek()` is an uncontended
+/// `Mutex` lock and an `Arc` clone, never a re-read. This drives 30 real frames with the hero
+/// focused (dwelling toward a preview, same as
+/// `preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_and_back`'s setup)
+/// and asserts the underlying session read never happens after the fixture's own `save` primed the
+/// cache — not even once, let alone once per frame. Watched RED against the original bug: reverting
+/// `session::peek()` to its pre-cache, always-reads-`IO` form fails this with `reads=1` (left) vs
+/// the expected `reads=0` (right).
+#[test]
+fn preview_tick_does_not_read_the_session_file_every_frame() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+
+    // A readable session, so `preview::enabled()`'s `peek()` call has real Ready bytes behind it,
+    // rather than the trivially-cheap Missing/default path.
+    let _session = crate::plex::session::TempSession::new("detail-preview-fps");
+    crate::plex::session::save(&crate::plex::session::Session {
+        client_id: "cid-detail-preview-fps".into(),
+        trailer_autoplay: true,
+        ..Default::default()
+    });
+
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut sink = Effects::new(
+        &mut effects,
+        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        &mut present,
+    );
+    let hero_focus = Some(Located::Hero(hero::HeroCtl::Play));
+
+    crate::plex::session::reset_reads_for_test();
+    let mut now = 0u32;
+    for _ in 0..30 {
+        now += 16;
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
+    }
+    let reads = crate::plex::session::reads_for_test();
+    assert_eq!(
+        reads, 0,
+        "preview_tick must not re-read the session file every frame -- {reads} session reads over \
+         30 frames of hero focus reproduces the 60->26 fps regression (2026-09-18); the write-through \
+         cache installs on `save` above, so even the very first frame's peek() must be a hit"
+    );
+
+    drop(sink);
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
 #[test]
 fn an_item_with_no_ultrablur_keeps_the_flat_app_ground() {
     let wash = AmbientWash::flat(theme::SURFACE_APP);
@@ -1075,7 +1426,7 @@ fn an_episode_page_leads_with_the_episodes_own_still() {
         ..Default::default()
     });
     let screen = bare(&_guard, sid, "episode");
-    assert_eq!(screen.art_identity(screen.detail()).2, "episode-still");
+    assert_eq!(screen.art_identity(screen.detail(test_store().view())).2, "episode-still");
     clear();
 }
 
@@ -1092,7 +1443,7 @@ fn a_shows_hero_still_outranks_every_other_art() {
     });
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
-    assert_eq!(screen.art_identity(screen.detail()).2, "next-still");
+    assert_eq!(screen.art_identity(screen.detail(test_store().view())).2, "next-still");
     clear();
 }
 
@@ -1110,13 +1461,43 @@ fn a_long_synopsis_keeps_the_first_section_one_region_gap_below_the_buttons() {
     });
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
-    let detail = screen.detail().unwrap();
-    let chain = screen.hero_chain(&crate::ui::fixture::FixtureMeasure);
+    let detail = screen.detail(test_store().view()).unwrap();
+    let chain = screen.hero_chain(&crate::ui::fixture::FixtureMeasure, test_store().view());
     assert_eq!(
         screen.section_top(1, detail, &crate::ui::fixture::FixtureMeasure),
         chain.btn_y + hero::CD + theme::space::XL
     );
-    assert_eq!(screen.content_top(&crate::ui::fixture::FixtureMeasure), screen.section_top(1, detail, &crate::ui::fixture::FixtureMeasure));
+    assert_eq!(screen.content_top(&crate::ui::fixture::FixtureMeasure, test_store().view()), screen.section_top(1, detail, &crate::ui::fixture::FixtureMeasure));
+    clear();
+}
+
+/// **A landing must not move ground being read**, restated for the trailer preview: the
+/// identity/meta line, the review scores and the playback note fade to zero alpha while a
+/// trailer plays in the background (`preview_prose`/`preview_synopsis`/`preview_chrome`,
+/// `screens::detail::mod::draw_hero`'s `chrome`/`prose` painters), and back on collapse. Nothing
+/// about the hero's own Y chain may follow that fade: `compute_hero_chain` takes only the item's
+/// content (the synopsis text, whether it has ratings) and must return byte-identical geometry
+/// whichever way the same item's preview alphas sit.
+#[test]
+fn the_hero_chain_is_identical_whether_or_not_the_trailer_preview_has_faded_its_prose() {
+    let sid = ServerId::UNSET;
+    let d = detail(sid, "show");
+    let _guard = install(d);
+    let mut screen = bare(&_guard, sid, "show");
+
+    let rest = screen.compute_hero_chain(screen.detail(test_store().view()), &crate::ui::fixture::FixtureMeasure);
+
+    screen.preview_prose = 0.0;
+    screen.preview_synopsis = 0.0;
+    screen.preview_chrome = 0.0;
+    screen.preview_field = 0.0;
+    let faded = screen.compute_hero_chain(screen.detail(test_store().view()), &crate::ui::fixture::FixtureMeasure);
+
+    assert_eq!(rest.meta_y, faded.meta_y, "meta line must not move when it fades");
+    assert_eq!(rest.ratings_y, faded.ratings_y, "ratings row must not move when it fades");
+    assert_eq!(rest.syn_y, faded.syn_y, "synopsis must not move");
+    assert_eq!(rest.facts_y, faded.facts_y, "facts/playback-note line must not move when it fades");
+    assert_eq!(rest.btn_y, faded.btn_y, "the action row must not move");
     clear();
 }
 
@@ -1216,6 +1597,270 @@ fn back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise() {
     clear();
 }
 
+/// **The input arm's own claim: full-trailer mode answers a key it owns on EVERY edge, before any
+/// other arm, but a `Reveal`-mapped key only ACTS on the DOWN edge.** UP is the probe:
+/// `trailer::trailer_key` maps it to `Reveal`, which has no effect this test can mistake for
+/// ordinary UP navigation, so a `revealed()` flip after the DOWN edge (and none after the UP edge)
+/// can only have come from this arm running — and running before whatever ordinary UP handling
+/// exists further down. (LEFT/RIGHT now map to `Scrub`, which — unlike `Reveal` — DOES act on
+/// every edge; that contract is graded separately, by the scrub-specific tests below.)
+#[test]
+fn full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_down_edge() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    crate::player::preview::force_playing_for_test();
+    assert!(screen.full_trailer(), "the fixture must actually be in full-trailer mode");
+
+    fn key_event(key: Key, edge: Edge) -> ScreenEvent<TestHost> {
+        ScreenEvent::Input(InputEvent {
+            at: Default::default(),
+            source: crate::ui::machine::Source::Script,
+            kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false },
+        })
+    }
+    let play = Some(hero::HeroCtl::Play.elem());
+
+    let (handled, _) = step(&mut screen, &key_event(Key::Up, Edge::Up), play);
+    assert_eq!(handled, Handled::Yes, "the up edge of an owned key must still be swallowed");
+    assert!(!screen.trailer_ctl.revealed(), "the up edge must not act");
+
+    let (handled, _) = step(&mut screen, &key_event(Key::Up, Edge::Down), play);
+    assert_eq!(handled, Handled::Yes, "the down edge must be swallowed too");
+    assert!(
+        screen.trailer_ctl.revealed(),
+        "the down edge must act (Reveal) — proof this ran before ordinary UP handling"
+    );
+
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
+/// Drive one full-trailer key's EFFECT (`trailer_act`) directly. `full_trailer()`'s own guard
+/// (swallowing every edge, acting only on Down) is covered end to end at the input-arm level by
+/// `full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_down_edge` above,
+/// via the `player::preview::force_playing_for_test()`/`set_phase_for_test` seam; what is graded
+/// here is only this page's own per-key EFFECT, which does not need the live singleton at all. The
+/// key ladder that chooses the action is pure and graded in `screens::detail::trailer`.
+fn trailer_act(
+    screen: &mut DetailScreen,
+    act: trailer::TrailerKey,
+) -> Vec<crate::ui::machine::Stamped<TestHost>> {
+    trailer_act_edge(screen, act, Edge::Down, 0)
+}
+
+/// The edge-aware twin, for `Scrub`'s own tests below — every other variant here only ever acts
+/// on `Down`, which is what the plain [`trailer_act`] above always passes.
+fn trailer_act_edge(
+    screen: &mut DetailScreen,
+    act: trailer::TrailerKey,
+    edge: Edge,
+    now: u32,
+) -> Vec<crate::ui::machine::Stamped<TestHost>> {
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut sink = Effects::new(
+        &mut effects,
+        crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(1)),
+        &mut present,
+    );
+    screen.trailer_act::<TestHost>(act, edge, now, &mut sink);
+    drop(sink);
+    effects
+}
+
+fn transport_reqs(
+    effects: &[crate::ui::machine::Stamped<TestHost>],
+) -> Vec<Option<bool>> {
+    effects
+        .iter()
+        .filter_map(|effect| match &effect.fx {
+            Fx::App(AppFx::Content(ContentReq::PreviewTransport(play))) => Some(*play),
+            _ => None,
+        })
+        .collect()
+}
+
+fn seek_reqs(effects: &[crate::ui::machine::Stamped<TestHost>]) -> Vec<i64> {
+    effects
+        .iter()
+        .filter_map(|effect| match &effect.fx {
+            Fx::App(AppFx::Content(ContentReq::PreviewSeek(target_ns))) => Some(*target_ns),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **Full-trailer mode's transport keys.** OK/PLAYPAUSE ask for the toggle, the remote's dedicated
+/// PLAY and PAUSE ask for their own direction, and every one of the three leaves the controls on
+/// screen. (LEFT/RIGHT's own `Scrub` request — `ContentReq::PreviewSeek` — is graded separately,
+/// by `a_held_left_right_scrub_commits_a_preview_seek_on_key_up` below: unlike these three, it
+/// only fires once the gesture ends, and only on some edges.)
+#[test]
+fn ok_toggles_the_trailers_pause_and_play_pause_pick_a_direction() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    for (act, want) in [
+        (trailer::TrailerKey::Toggle, None),
+        (trailer::TrailerKey::Play, Some(true)),
+        (trailer::TrailerKey::Pause, Some(false)),
+    ] {
+        let mut screen = bare(&_guard, sid, "show");
+        screen.preview_promoted = true;
+        let effects = trailer_act(&mut screen, act);
+        assert_eq!(transport_reqs(&effects), vec![want], "act={act:?}");
+        assert!(
+            screen.trailer_ctl.revealed(),
+            "act={act:?} must leave the controls on screen"
+        );
+        assert!(screen.preview_promoted, "act={act:?} must not leave the mode");
+    }
+    clear();
+}
+
+/// `trailer_act`'s `Scrub` arm reads `player::duration_ns()`/`playpos_ns()` on `Down`
+/// (`Transport::scrub_fresh`'s own doc: passed in rather than read inside `trailer.rs`, but
+/// `trailer_act` is exactly the one caller that does the reading). Those are the crate-wide
+/// `SHARED` atomics — held together with the `testlock::serial()` guard `install` already hands
+/// back (construct the fixture AFTER it, never beside a second `serial()`: that lock is a plain
+/// mutex and taking it twice on one thread hangs the suite rather than failing it), same as
+/// `screens::player::mod`'s own scrub `Fixture`. `duration_ns` must be positive or
+/// `scrub_fresh` is a deliberate no-op (nothing to scrub within).
+struct DurationFixture(i64, i64);
+impl DurationFixture {
+    const DUR: i64 = 100_000_000_000;
+    fn new() -> Self {
+        use std::sync::atomic::Ordering::Relaxed;
+        let was = DurationFixture(
+            crate::player::SHARED.duration_ns.load(Relaxed),
+            crate::player::SHARED.playpos_ns.load(Relaxed),
+        );
+        crate::player::SHARED.duration_ns.store(Self::DUR, Relaxed);
+        crate::player::SHARED.playpos_ns.store(0, Relaxed);
+        was
+    }
+}
+impl Drop for DurationFixture {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        crate::player::SHARED.duration_ns.store(self.0, Relaxed);
+        crate::player::SHARED.playpos_ns.store(self.1, Relaxed);
+    }
+}
+
+/// **`TrailerKey::Scrub` is dispatched on every edge, not just `Down`** — `Down` hops the fixed
+/// step, `Up` (with no repeat in between, i.e. a tap) arms the debounce rather than committing at
+/// once, and it fires a `ContentReq::PreviewSeek` — never `PreviewTransport` — once the debounce's
+/// own tick (driven by `preview_tick`, not exercised by this direct `trailer_act` harness) elapses.
+/// This proves the wiring from the key ladder into `Transport::scrub_fresh`/`scrub_release`; the
+/// gesture math itself (accumulation, the hold ramp, the lost-keyup net) is graded in
+/// `screens::detail::trailer`'s own tests.
+#[test]
+fn left_right_scrub_hops_on_down_and_asks_for_no_transport_request() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let _dur = DurationFixture::new();
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+
+    let effects = trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Down, 0);
+
+    assert!(transport_reqs(&effects).is_empty(), "a scrub press is not a pause/resume");
+    assert!(seek_reqs(&effects).is_empty(), "a fresh press previews — it does not commit yet");
+    assert!(screen.trailer_ctl.scrubbing(), "the gesture is now tracked on the transport");
+    assert!(screen.trailer_ctl.revealed(), "any key the mode keeps re-arms the linger");
+    assert!(screen.preview_promoted, "a scrub must not leave the mode");
+    clear();
+}
+
+/// A HELD scrub commits at once on its key-up, through `ContentReq::PreviewSeek` — never
+/// `route::request_seek`'s own `PlayerReq::SeekTo`/`CommitSeek`, which is the whole point of
+/// routing a preview's seek through `player::preview::seek` instead (see `ContentReq::PreviewSeek`
+/// and `player/preview.rs`'s own module doc for the watch-state promise this keeps).
+#[test]
+fn a_held_left_right_scrub_commits_a_preview_seek_on_key_up() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let _dur = DurationFixture::new();
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+
+    trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Down, 0);
+    trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Repeat, 0);
+    let target = screen.trailer_ctl.preview_ns_for_test();
+    let effects = trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Up, 0);
+
+    assert_eq!(seek_reqs(&effects), vec![target], "the hold's own preview position, verbatim");
+    assert!(transport_reqs(&effects).is_empty(), "a seek is not a pause/resume");
+    assert!(!screen.trailer_ctl.scrubbing(), "committing ends the gesture");
+    clear();
+}
+
+/// A direction key the mode keeps only REVEALS: it asks for no transport at all, which is the
+/// whole of the "no seek on a preview session" rule at this layer.
+#[test]
+fn a_revealing_key_asks_for_no_transport() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    let effects = trailer_act(&mut screen, trailer::TrailerKey::Reveal);
+    assert!(transport_reqs(&effects).is_empty());
+    assert!(screen.trailer_ctl.revealed());
+    clear();
+}
+
+/// The mode's own collapse key goes through `collapse_full_trailer` — the one collapse body BACK
+/// and DOWN already share — and takes the transport down with it. Nothing is resumed here because
+/// nothing is paused: `preview::paused()` is false with no live session, which is exactly the
+/// state a host test is in.
+#[test]
+fn the_collapse_key_leaves_the_mode_and_dismisses_the_transport() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    screen.trailer_ctl.reveal();
+    let effects = trailer_act(&mut screen, trailer::TrailerKey::Collapse);
+    assert!(!screen.preview_promoted, "the mode must be over");
+    assert!(!screen.trailer_ctl.revealed(), "the controls go with it");
+    assert!(transport_reqs(&effects).is_empty(), "nothing was paused to resume");
+    clear();
+}
+
+/// The collapse's OTHER branch: `preview::paused()` true means the transport was left paused when
+/// the mode closed, so `collapse_full_trailer` asks for a resume on the way out. The empty case
+/// above (nothing paused, nothing to resume) is the only one the pure `trailer_act` path can reach
+/// on its own; `preview::paused()` reads the live singleton and `player::TX`, so this one drives
+/// both — the same `force_playing_for_test`/`reset_for_test` seam as the input-arm test above, plus
+/// `TX.commit_paused`/`TX.reset`, the same production seam `player::mod`'s own tests use.
+#[test]
+fn the_collapse_key_resumes_the_transport_when_it_was_left_paused() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    screen.trailer_ctl.reveal();
+    crate::player::preview::force_playing_for_test();
+    crate::player::TX.commit_paused(true);
+    assert!(crate::player::preview::paused(), "the fixture must actually be paused");
+
+    let effects = trailer_act(&mut screen, trailer::TrailerKey::Collapse);
+
+    assert!(!screen.preview_promoted, "the mode must be over");
+    assert!(!screen.trailer_ctl.revealed(), "the controls go with it");
+    assert_eq!(
+        transport_reqs(&effects),
+        vec![Some(true)],
+        "leaving the mode while paused must ask to resume"
+    );
+
+    crate::player::TX.reset();
+    crate::player::preview::reset_for_test();
+    clear();
+}
+
 /// BACK's second stage, `collapse_background_preview`: with no live trailer picture up (the
 /// default host-test state — driving the live `player::preview` singleton is deliberately avoided
 /// here, same as `preview_completed_naturally`'s extraction reasons above), BACK must not be
@@ -1283,6 +1928,66 @@ fn preview_already_played_is_a_plain_key_match() {
     assert!(super::preview_already_played(Some("rk1"), "rk1"));
 }
 
+/// The preview logo's own scroll fade: untouched at `t=0` (a normal hero has no preview to pin
+/// into a corner, and the caller's own `hero_alpha` already governs it), full at the top even
+/// while shrunk (`t=1`, `scroll_pos=0`), eased down as `scroll_pos` climbs toward `hero_extent`
+/// (where the below-hero flow starts), pinned at 0 once past it, and — because it is a pure
+/// function of the CURRENT `scroll_pos` with no memory — back to full the moment scroll returns
+/// to 0, exactly the "come back when scrolled back up" the owner asked for.
+#[test]
+fn preview_logo_scroll_alpha_only_fades_the_shrunk_logo_past_the_hero() {
+    let extent = 800.0_f32;
+
+    // t=0: a normal hero position is untouched by this factor at any scroll.
+    for scroll in [0.0, 400.0, 800.0, 2000.0] {
+        assert_eq!(
+            super::preview_logo_scroll_alpha(scroll, extent, 0.0),
+            1.0,
+            "t=0 (no preview) must not be touched by this fade at scroll={scroll}"
+        );
+    }
+
+    // t=1: full at the very top, and monotonically non-increasing as scroll rises.
+    assert_eq!(super::preview_logo_scroll_alpha(0.0, extent, 1.0), 1.0);
+    let mut prev = 1.0;
+    let mut s = 0.0;
+    while s <= extent * 1.5 {
+        let a = super::preview_logo_scroll_alpha(s, extent, 1.0);
+        assert!((0.0..=1.0).contains(&a), "scroll={s}: alpha {a} outside 0..=1");
+        assert!(a <= prev + 1e-6, "scroll={s}: alpha rose from {prev} to {a}");
+        prev = a;
+        s += extent / 16.0;
+    }
+    assert_eq!(
+        super::preview_logo_scroll_alpha(extent, extent, 1.0),
+        0.0,
+        "fully hidden once scrolled exactly to the below-hero flow's own start"
+    );
+    assert_eq!(
+        super::preview_logo_scroll_alpha(extent * 2.0, extent, 1.0),
+        0.0,
+        "clamped, not negative, once scrolled well past it"
+    );
+
+    // Scrolling back up restores it — a pure function of the current position, no hysteresis.
+    assert_eq!(
+        super::preview_logo_scroll_alpha(extent, extent, 1.0),
+        0.0
+    );
+    assert_eq!(
+        super::preview_logo_scroll_alpha(0.0, extent, 1.0),
+        1.0,
+        "back to full the instant scroll returns to the top"
+    );
+
+    // Partway through `t` (the spring mid-travel) blends the two: half-shrunk halves the fade.
+    assert_eq!(
+        super::preview_logo_scroll_alpha(extent, extent, 0.5),
+        0.5,
+        "at t=0.5 the fully-past-hero case should only be half faded"
+    );
+}
+
 /// Closes the outside-voice-found gap: `preview_played_for`/`preview_started_for` must reset on
 /// leave, matching the existing `preview_dwell`/`preview_promoted` convention at the same call
 /// site, or §8.2's own "resets whenever you leave and re-enter" decision silently does not hold.
@@ -1307,7 +2012,7 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
     let _guard = crate::testlock::serial();
     crate::plex::reset_servers_for_test();
     let sid = crate::plex::register_for_test("detail-watch", "127.0.0.1", 1, "t", "c");
-    crate::metadata::set_current_for_test(Some(Detail {
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
         sid,
         rk: "movie".into(),
         kind: "movie".into(),
@@ -1332,7 +2037,7 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
             sid, rk: "movie".into(), keep: None,
         }), "")],
         "Detail must address the typed ViewState command to its owning Bridge");
-    assert!(!crate::metadata::current().unwrap().watched,
+    assert!(!test_store().view().current().unwrap().watched,
         "the screen must not call the process-global compatibility facade itself");
     clear();
     crate::plex::reset_servers_for_test();
@@ -1442,7 +2147,7 @@ fn the_loading_spinner_reports_motion_on_every_tick_while_unloaded() {
     let sid = ServerId::UNSET;
     let guard = crate::testlock::serial();
     let mut screen = bare(&guard, sid, "show");
-    assert!(screen.detail().is_none(), "no metadata installed for this test");
+    assert!(screen.detail(test_store().view()).is_none(), "no metadata installed for this test");
     let measure = crate::ui::fixture::FixtureMeasure;
     let context = cx(&measure, None);
     let mut present = crate::ui::present::Present::new();
@@ -1501,7 +2206,7 @@ fn a_movie_trailer_disc_plays_the_extra_from_the_start() {
         extras: vec![extra.clone()],
         ..Default::default()
     });
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(
+    test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(
         crate::metadata::NowPlaying {
             is_episode: true,
             is_real_episode: true,
@@ -1518,7 +2223,7 @@ fn a_movie_trailer_disc_plays_the_extra_from_the_start() {
         },
     )));
     let mut screen = bare(&_guard, ServerId::UNSET, "movie");
-    assert!(!screen.hero_set().trailer, "the preview path replaced the Trailer disc");
+    assert!(!screen.hero_set(test_store().view()).trailer, "the preview path replaced the Trailer disc");
     let (_, effects) = step(
         &mut screen,
         &ScreenEvent::Activate(hero::ELEM_TRAILER),
@@ -1541,12 +2246,12 @@ fn a_movie_trailer_disc_plays_the_extra_from_the_start() {
         _ => panic!("expected PlayIntent::Item for Trailer"),
     }
     assert_eq!(resume_ns, 0);
-    assert_eq!(crate::metadata::current().unwrap().rk, "movie");
+    assert_eq!(test_store().view().current().unwrap().rk, "movie");
     assert!(
-        crate::metadata::now_playing().is_some_and(|n| n.detail_rk == "show"),
+        test_store().view().now_playing().is_some_and(|n| n.detail_rk == "show"),
         "activate queues Play; NowPlaying is installed only after request_play accepts"
     );
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+    test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
     clear();
 }
 
@@ -1611,8 +2316,8 @@ fn a_movie_without_extras_does_not_offer_a_trailer_disc() {
         ..Default::default()
     });
     let screen = bare(&_guard, ServerId::UNSET, "movie");
-    assert!(!screen.hero_set().trailer);
-    assert!(hero::index_of(screen.hero_set(), hero::HeroCtl::Trailer).is_none());
+    assert!(!screen.hero_set(test_store().view()).trailer);
+    assert!(hero::index_of(screen.hero_set(test_store().view()), hero::HeroCtl::Trailer).is_none());
     clear();
 }
 
@@ -1631,7 +2336,7 @@ fn a_trailer_disc_requires_both_rk_and_part() {
             ..Default::default()
         },
     ];
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(
+    test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(
         crate::metadata::NowPlaying {
             is_episode: true,
             is_real_episode: true,
@@ -1648,7 +2353,7 @@ fn a_trailer_disc_requires_both_rk_and_part() {
         },
     )));
     for extra in cases {
-        crate::metadata::set_current_for_test(Some(Detail {
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
             sid: ServerId::UNSET,
             rk: "movie".into(),
             kind: "movie".into(),
@@ -1657,10 +2362,10 @@ fn a_trailer_disc_requires_both_rk_and_part() {
         }));
         let screen = bare(&_guard, ServerId::UNSET, "movie");
         assert!(
-            !screen.hero_set().trailer,
+            !screen.hero_set(test_store().view()).trailer,
             "visibility must match Extra::playable, not a nonempty part alone"
         );
-        assert!(hero::index_of(screen.hero_set(), hero::HeroCtl::Trailer).is_none());
+        assert!(hero::index_of(screen.hero_set(test_store().view()), hero::HeroCtl::Trailer).is_none());
         let mut screen = screen;
         let (_, effects) = step(
             &mut screen,
@@ -1672,11 +2377,11 @@ fn a_trailer_disc_requires_both_rk_and_part() {
             "an unplayable extra must not emit Play"
         );
         assert!(
-            crate::metadata::now_playing().is_some_and(|n| n.detail_rk == "show"),
+            test_store().view().now_playing().is_some_and(|n| n.detail_rk == "show"),
             "a Trailer no-op must not wipe a leftover episode NowPlaying"
         );
     }
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+    test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
     clear();
 }
 
@@ -1690,18 +2395,18 @@ fn extras_landing_does_not_grow_a_trailer_disc_or_move_play_identity() {
         ..Default::default()
     });
     let screen = bare(&_guard, sid, "movie");
-    let before = screen.hero_set();
+    let before = screen.hero_set(test_store().view());
     assert!(!before.trailer);
     assert_eq!(hero::index_of(before, hero::HeroCtl::Play), Some(0));
     let play_elem = hero::HeroCtl::Play.elem();
-    crate::metadata::set_current_for_test(Some(Detail {
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
         sid,
         rk: "movie".into(),
         kind: "movie".into(),
         extras: vec![trailer_extra()],
         ..Default::default()
     }));
-    let after = screen.hero_set();
+    let after = screen.hero_set(test_store().view());
     assert!(!after.trailer, "the preview path replaced the Trailer disc");
     assert_eq!(hero::index_of(after, hero::HeroCtl::Play), Some(0));
     assert_eq!(hero::HeroCtl::Play.elem(), play_elem);
@@ -1744,7 +2449,7 @@ fn section_tops_do_not_remeasure_per_credit() {
         .collect();
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
-    let detail = screen.detail().expect("installed");
+    let detail = screen.detail(test_store().view()).expect("installed");
     let measure = CountMeasure {
         widths: Cell::new(0),
     };
@@ -1803,7 +2508,7 @@ fn cached_section_tops_match_the_stacking_walk() {
     d.related = vec![Default::default()];
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
-    let detail = screen.detail().expect("installed");
+    let detail = screen.detail(test_store().view()).expect("installed");
     let measure = crate::ui::fixture::FixtureMeasure;
 
     let cast_first = screen.section_top(4, detail, &measure);
@@ -1816,19 +2521,28 @@ fn cached_section_tops_match_the_stacking_walk() {
         cast_first,
         "asking a later section first must not change earlier tops"
     );
-    assert_eq!(seasons, screen.content_top(&measure));
+    // The walk asks for each gap the same way the flow does, because there are three of them and
+    // which one applies is a property of the section ABOVE: a shelf (4 cast, 3 related) already
+    // carries its own label band, so what follows it is `UNDER_LABEL_AIR` and not a second full
+    // region gap stacked on top of it. Hard-coding `SECTION_GAP` here is what made this test read
+    // the layout as 42px out when the shelves stopped double-spacing.
+    let gap = |above: i32, below: i32| DetailScreen::section_gap(above, Some(below));
+    assert_eq!(gap(4, 3), crate::ui::consts::UNDER_LABEL_AIR, "a shelf brings its own band");
+    assert_eq!(gap(2, 4), super::SECTION_GAP, "a bare list does not");
+
+    assert_eq!(seasons, screen.content_top(&measure, test_store().view()));
     assert_eq!(episodes, seasons + season::ROW_H + super::TAB_EP_GAP);
     assert_eq!(
         cast_first,
-        episodes + screen.block_h(2, detail, &measure) + super::SECTION_GAP
+        episodes + screen.block_h(2, detail, &measure) + gap(2, 4)
     );
     assert_eq!(
         related,
-        cast_first + screen.block_h(4, detail, &measure) + super::SECTION_GAP
+        cast_first + screen.block_h(4, detail, &measure) + gap(4, 3)
     );
     assert_eq!(
         about,
-        related + screen.block_h(3, detail, &measure) + super::SECTION_GAP
+        related + screen.block_h(3, detail, &measure) + gap(3, 5)
     );
     clear();
 }
@@ -1847,7 +2561,7 @@ fn a_replaced_episode_list_moves_the_cast_row() {
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
     let measure = crate::ui::fixture::FixtureMeasure;
-    let before = screen.section_top(4, screen.detail().expect("installed"), &measure);
+    let before = screen.section_top(4, screen.detail(test_store().view()).expect("installed"), &measure);
 
     let mut taller = detail(sid, "show");
     taller.cast = vec![crate::metadata::Cast {
@@ -1865,8 +2579,8 @@ fn a_replaced_episode_list_moves_the_cast_row() {
             ep
         })
         .collect();
-    crate::metadata::set_current_for_test(Some(taller));
-    let after = screen.section_top(4, screen.detail().expect("replaced"), &measure);
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(taller));
+    let after = screen.section_top(4, screen.detail(test_store().view()).expect("replaced"), &measure);
     assert!(
         after > before,
         "replacing CURRENT must miss the cached walk, not keep the short-episode cast top ({after} vs {before})"
@@ -1893,9 +2607,9 @@ fn a_movie_without_a_filmstrip_sits_its_first_block_on_content_top() {
         ..Default::default()
     });
     let screen = bare(&_guard, sid, "movie");
-    let detail = screen.detail().expect("installed");
+    let detail = screen.detail(test_store().view()).expect("installed");
     let measure = crate::ui::fixture::FixtureMeasure;
-    let top = screen.content_top(&measure);
+    let top = screen.content_top(&measure, test_store().view());
     assert_eq!(screen.section_top(4, detail, &measure), top);
     assert_eq!(
         screen.section_top(1, detail, &measure),
@@ -1942,7 +2656,7 @@ fn ticking_the_page_allows_layout_to_remeasure() {
     let measure = CountMeasure {
         widths: Cell::new(0),
     };
-    let detail = screen.detail().expect("installed");
+    let detail = screen.detail(test_store().view()).expect("installed");
     let _ = screen.section_top(1, detail, &measure);
     let after_first = measure.widths.get();
     assert!(after_first > 0);
@@ -1956,7 +2670,7 @@ fn ticking_the_page_allows_layout_to_remeasure() {
         }),
         None,
     );
-    let _ = screen.section_top(1, screen.detail().expect("still installed"), &measure);
+    let _ = screen.section_top(1, screen.detail(test_store().view()).expect("still installed"), &measure);
     assert!(
         measure.widths.get() > after_first,
         "tick must drop the walk so the next present can remeasure"
@@ -1986,22 +2700,26 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     show.extras = vec![extra.clone(), extra];
     let _guard = install(show);
     let mut screen = bare(&_guard, ServerId::UNSET, "show");
-    let loaded = screen.detail().expect("installed");
+    let loaded = screen.detail(test_store().view()).expect("installed");
     let (sections, n) = screen.sections(Some(loaded));
     assert_eq!(
         &sections[..n],
         &[0, 1, 2, 4, 6, 3, 5],
         "extras sits after Cast and before Related"
     );
-    let hide = super::compact_title_hide_pos(&sections, n, true).unwrap();
-    assert_eq!(sections[hide], 4, "a show still hides the compact title at Cast");
+    // The pinned title is no longer anchored to a NAMED section: it leaves as soon as the first
+    // block below the hero starts to travel, whichever section that is.
+    let first_top = screen.section_top_settled(sections[1], loaded, &crate::ui::fixture::FixtureMeasure);
+    let hide_at = first_top - crate::ui::detail_layout::TOP_MARGIN;
+    assert_eq!(super::compact_title_alpha(hide_at, first_top, 0.0), 1.0);
+    assert_eq!(super::compact_title_alpha(hide_at + 400.0, first_top, 0.0), 0.0);
 
     let mut spot = crate::metadata::Spot::default();
     spot.section = 6;
     spot.col = 1;
-    screen.restore(&spot);
-    let key = screen.restore_focus().expect("extras column restores");
-    assert!(matches!(screen.locate(key), Some(Located::Extras(1))));
+    screen.restore(&spot, test_store().view());
+    let key = screen.restore_focus(test_store().view()).expect("extras column restores");
+    assert!(matches!(screen.locate(key, test_store().view()), Some(Located::Extras(1))));
 
     let movie = Detail {
         sid: ServerId::UNSET,
@@ -2037,8 +2755,12 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     };
     let (sections, n) = screen.sections(Some(&movie));
     assert_eq!(&sections[..n], &[0, 4, 6, 3, 5]);
-    let hide = super::compact_title_hide_pos(&sections, n, false).unwrap();
-    assert_eq!(sections[hide], 3, "a movie still hides the compact title at Related");
+    // Same rule on a movie, whose first below-hero section is Cast rather than the season strip:
+    // the title is out by the time that block has moved a fraction of its own height.
+    let first_top = screen.section_top_settled(sections[1], &movie, &crate::ui::fixture::FixtureMeasure);
+    let hide_at = first_top - crate::ui::detail_layout::TOP_MARGIN;
+    assert!(super::compact_title_alpha(hide_at - 1.0, first_top, 0.0) > 0.99);
+    assert!(super::compact_title_alpha(hide_at + 400.0, first_top, 0.0) < 0.01);
     clear();
 }
 
@@ -2069,7 +2791,7 @@ fn cast_section_top_is_keyed_by_identity_not_array_position() {
     };
     let _guard = install(movie);
     let screen = bare(&_guard, ServerId::UNSET, "movie-cast-pos");
-    let loaded = screen.detail().expect("installed");
+    let loaded = screen.detail(test_store().view()).expect("installed");
     let (sections, n) = screen.sections(Some(loaded));
     assert_eq!(
         &sections[..n],
@@ -2078,7 +2800,7 @@ fn cast_section_top_is_keyed_by_identity_not_array_position() {
     );
     let measure = crate::ui::fixture::FixtureMeasure;
     let cast_top = screen.section_top(section::SectionId::Cast.raw(), loaded, &measure);
-    let content_top = screen.content_top(&measure);
+    let content_top = screen.content_top(&measure, test_store().view());
     let layout_end = screen.ensure_layout(loaded, &measure).end;
     assert!(
         cast_top >= content_top && cast_top < layout_end,

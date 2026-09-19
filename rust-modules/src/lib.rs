@@ -161,7 +161,22 @@ pub(crate) mod testlock {
         }
     }
 
+    /// Take the lock, or PANIC if this thread already holds it.
+    ///
+    /// The re-entrancy check is not a nicety. [`GLOBALS`] is a plain mutex, so a test that takes
+    /// the guard and then calls a helper which takes it again — `screens::detail`'s `install()` is
+    /// exactly such a helper, and two trailer-scrub tests did this on 2026-09-18 — does not fail.
+    /// It *hangs*, holding the one lock the whole suite queues on, so every other serial test in
+    /// the run wedges behind it at 0% CPU with no output and no failure to read. That cost an hour
+    /// of wall clock and was indistinguishable from a slow build from the outside. A deadlock and
+    /// a panic are the same bug; only one of them names itself.
     pub(crate) fn serial() -> Serial {
+        assert!(
+            !held(),
+            "testlock::serial() taken twice on one thread — the second take would deadlock the \
+             whole suite. Hold the guard a helper (e.g. detail's `install`) already returned \
+             instead of taking a second one."
+        );
         let guard = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
         OWNER.store(ticket(), Ordering::SeqCst);
         Serial(guard)
@@ -233,6 +248,24 @@ pub(crate) mod testlock {
             );
             drop(guard);
             assert!(!super::held(), "the claim ends with the guard, not after it");
+        }
+
+        /// A second take on one thread must PANIC, not block.
+        ///
+        /// Graded on a spawned thread so the failure mode under test cannot take the suite's own
+        /// lock down with it, and because that is the shape the bug has: a test takes the guard,
+        /// then calls a helper that takes it again. Without this assertion the inner take blocks
+        /// forever holding the lock every other serial test queues on — a silent, output-free
+        /// hang. `join` returning an `Err` is the panic; a `join` that never returns would itself
+        /// be the regression, which is why nothing here has a timeout to get wrong.
+        #[test]
+        fn taking_the_guard_twice_on_one_thread_panics_instead_of_hanging() {
+            let attempt = std::thread::spawn(|| {
+                let _guard = super::serial();
+                let _second = super::serial(); // the deadlock this assertion replaces
+            })
+            .join();
+            assert!(attempt.is_err(), "the re-entrant take must panic");
         }
     }
 }

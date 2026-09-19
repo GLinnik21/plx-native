@@ -626,7 +626,8 @@ fn edit_item_with_scope(
     edit: LocalEdit,
     scope: &BrowseScope,
 ) -> bool {
-    // Same crate-global catalog guard as `request_refetch_hubs` — see `lib.rs::testlock`.
+    // Same test-only catalog guard as `request_refetch_hubs` — the catalog is `PmsState`, a
+    // field of the per-`Bridge` `HubsStore`, not a crate-global; see `lib.rs::testlock` and D5.
     #[cfg(test)]
     crate::testlock::assert_held("the pms hub catalog (edit_item)");
     let mut hit = false;
@@ -1619,7 +1620,8 @@ fn retry_now_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, launch: &mut dyn 
 /// who asks for it should never be made to sit out a 30-second automatic wait. A no-op for any
 /// source whose fetch is already in flight.
 fn request_retry(state: &mut PmsState, adapter: &Arc<PmsAdapter>) -> crate::stores::EndpointRefreshSet {
-    // Same crate-global catalog guard as `request_refetch_hubs` — see `lib.rs::testlock`.
+    // Same test-only catalog guard as `request_refetch_hubs` — the catalog is `PmsState`, a
+    // field of the per-`Bridge` `HubsStore`, not a crate-global; see `lib.rs::testlock` and D5.
     #[cfg(test)]
     crate::testlock::assert_held("the pms hub catalog (request_retry)");
     let gen = state.hub_gen;
@@ -1652,7 +1654,8 @@ fn pump_with_landings(state: &mut PmsState, adapter: &Arc<PmsAdapter>, dt: f32,
 /// Test-only compatibility tick for fixtures without a retained directory.
 #[cfg(test)]
 pub(crate) fn tick(state: &mut PmsState, adapter: &Arc<PmsAdapter>, dt: f32) -> crate::stores::EndpointRefreshSet {
-    // Same crate-global catalog guard as `request_refetch_hubs` — see `lib.rs::testlock`.
+    // Same test-only catalog guard as `request_refetch_hubs` — the catalog is `PmsState`, a
+    // field of the per-`Bridge` `HubsStore`, not a crate-global; see `lib.rs::testlock` and D5.
     #[cfg(test)]
     crate::testlock::assert_held("the pms hub catalog (tick)");
     pump_with_landings(state, adapter, dt, Vec::new)
@@ -2034,15 +2037,17 @@ fn seed_with_scope_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, sid
 ///
 /// Private since D3's follow-up: `app/bridge.rs` and `app/recorder.rs` (nine `#[cfg(test)] mod
 /// tests` call sites between them) were the last two direct callers, both now routed through
-/// `stores::hubs::apply(HubsCmd::Reset)` — `HubsCmd` already had the variant and `pms::run`
-/// already matched it, so closing this was a caller-site swap alone, no new enum surface.
+/// `HubsStore::run`/`run_with_directory` (`HubsCmd::Reset`) — `HubsCmd` already had the variant
+/// and `pms::run` already matched it, so closing this was a caller-site swap alone, no new enum
+/// surface.
 #[cfg(test)]
 fn reset(state: &mut PmsState, adapter: &Arc<PmsAdapter>) {
     reset_with_scope(state, adapter, &BrowseScope::standalone());
 }
 
 fn reset_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, scope: &BrowseScope) {
-    // Same crate-global catalog guard as `request_refetch_hubs` — see `lib.rs::testlock`.
+    // Same test-only catalog guard as `request_refetch_hubs` — the catalog is `PmsState`, a
+    // field of the per-`Bridge` `HubsStore`, not a crate-global; see `lib.rs::testlock` and D5.
     #[cfg(test)]
     crate::testlock::assert_held("the pms hub catalog (reset)");
     let _ = adapter; // rotation is the caller's job (`HubsStore::run*` on `HubsCmd::Reset`)

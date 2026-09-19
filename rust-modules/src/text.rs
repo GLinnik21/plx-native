@@ -1105,6 +1105,9 @@ impl crate::ui::machine::Measure for TtfMeasure {
     fn line_h(&self, sz: c_int) -> f32 {
         text_height(sz, 0)
     }
+    fn live_font(&self) -> bool {
+        true
+    }
 }
 
 static mut ELIDE_CACHE: Option<HashMap<u64, String>> = None;

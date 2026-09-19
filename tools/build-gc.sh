@@ -69,27 +69,76 @@ install_worktree_cargo_policy() {
   wt_root="$MAIN/.claude/worktrees"
   [ -d "$wt_root" ] || return 0
   cfg="$wt_root/.cargo/config.toml"
-  if [ -f "$cfg" ] && grep -q 'plx-build-gc-policy' "$cfg" 2>/dev/null; then return 0; fi
-  [ -f "$cfg" ] && return 0     # somebody else's file; leave it alone and say so in the report
-  # `-n` writes nothing, including this. A dry run that creates a file is not a dry run.
-  if [ -n "$DRY" ]; then echo "build-gc: would install the linked-worktree incremental policy at $cfg"; return 0; fi
+  if [ -f "$cfg" ]; then
+    # The marker carries a version because the policy itself grew one: v1 (2026-09-17) was
+    # `incremental = false` alone, and v2 (2026-09-18, below) adds the debuginfo trim. A file
+    # carrying the v2 marker is already current — nothing to do. A file carrying the BARE marker
+    # (v1, or any future policy that forgot to version itself) is OURS but stale, and gets
+    # REPLACED below rather than left — the whole reason it is a marker and not just "file
+    # exists" is so this script can tell its own output from a human's. A file with no marker at
+    # all is somebody else's and is never touched, on this run or any later one.
+    if grep -q 'plx-build-gc-policy v2' "$cfg" 2>/dev/null; then return 0; fi
+    if ! grep -q 'plx-build-gc-policy' "$cfg" 2>/dev/null; then return 0; fi
+  fi
+  # `-n` writes nothing, including this. A dry run that creates or rewrites a file is not a dry run.
+  if [ -n "$DRY" ]; then
+    if [ -f "$cfg" ]; then echo "build-gc: would update the linked-worktree cargo policy at $cfg (v1 -> v2)"
+    else echo "build-gc: would install the linked-worktree cargo policy at $cfg"; fi
+    return 0
+  fi
   mkdir -p "$wt_root/.cargo" || return 0
   cat > "$cfg" <<'POLICY'
-# plx-build-gc-policy — installed by tools/build-gc.sh, not tracked by git.
+# plx-build-gc-policy v2 — installed by tools/build-gc.sh, not tracked by git.
 #
 # Cargo merges config upward from the working directory, so this file applies to every linked
 # worktree under `.claude/worktrees/` and to NOTHING else: the main checkout lives above this
-# directory and keeps its incremental cache, which is the policy the Makefile states beside
-# `RUST_FEATFLAGS`. The Makefile can only enforce it for its own cargo invocations; an agent
-# running `cargo test` or `cargo check` by hand bypassed it, and 12.9 GB of lane incremental
-# caches is what that cost.
+# directory and keeps its incremental cache and full DWARF, which is the policy the Makefile
+# states beside `RUST_FEATFLAGS`. The Makefile can only enforce it for its own cargo invocations;
+# an agent running `cargo test` or `cargo check` by hand bypassed it, and 12.9 GB of lane
+# incremental caches is what that cost.
 #
 # `CARGO_INCREMENTAL=1` in the environment still wins — an env var outranks a config file — so a
 # lane that really is doing long iterative work can still buy the cache back for itself.
 [build]
 incremental = false
+
+# v2, 2026-09-18. The incremental cache reads 0 B in every lane now that the rule above actually
+# holds — but a lane's `target/` did not shrink with it, because it was never the incremental
+# cache doing most of the damage there. A measured lane's target dir was 4.0 GB, of which 3.1 GB
+# was `debug/deps`, of which 1.5 GB was `*.rcgu.o` — one object file per codegen unit, left next
+# to the test binary because this host's cargo defaults to `split-debuginfo=unpacked` rather than
+# packing debuginfo into the binary or dropping it. The main checkout carries the identical shape
+# at larger scale (4.1 GB of `.o` in a 5.5 GB `debug/`), which is precisely why this section does
+# NOT apply there: a lane is cut for one task and its whole target dir is thrown away with the
+# worktree (see `--worktrees` below), so it has no use for the debugger's-eye view those object
+# files exist for — only the coarse line-table entry a panic backtrace needs. `line-tables-only`
+# keeps that; `debug = false` on every third-party package drops the same bloat in code this
+# repository does not own or step through anyway.
+#
+# Measured 2026-09-18 against this crate's own `--lib --no-run` test build (host target, two
+# clean /tmp target dirs so nothing but the profile differed): full DWARF (`debug = 2`, cargo's
+# own default) produced a 789 MB `debug/`, of which the root crate's 16 `*.rcgu.o` codegen units
+# alone were 318 MB; this policy produced a 703 MB `debug/` with the same 16 files at 236 MB — an
+# 11% cut to the whole tree and a 26% cut to the object files directly, from ONE crate's `--lib`
+# closure. The saving is modest, plainly: most of the object-file bulk is code, not DWARF.
+#
+# `CARGO_PROFILE_DEV_DEBUG=2` in the environment still overrides this, the same escape hatch as
+# `CARGO_INCREMENTAL=1` above: an env var outranks a config file, so a lane genuinely attaching
+# `lldb`/`rust-lldb` to a host test can buy full DWARF back for itself without touching this file.
+#
+# Checked before landing that nothing else in the nearer config chain already sets this and would
+# make the addition a no-op or a conflict: neither `rust-modules/Cargo.toml` (only
+# `[profile.release]`) nor `rust-modules/.cargo/config.toml` (only `[target...]` rustflags and
+# `[unstable] build-std`) mentions `[profile.dev]` debug. Cargo resolves a manifest `[profile]`
+# against a config `[profile]` by letting config win, and the nearest config wins over a farther
+# one — both rules favour this file over anything upstream, which is the reason it is safe to add
+# here rather than in the crate manifest.
+[profile.dev]
+debug = "line-tables-only"
+[profile.dev.package."*"]
+debug = false
 POLICY
-  echo "build-gc: installed the linked-worktree incremental policy at $cfg"
+  echo "build-gc: installed the linked-worktree cargo policy (v2) at $cfg"
 }
 MODE=report
 DRY=
@@ -99,6 +148,7 @@ for a in "$@"; do
     --incremental) MODE=incremental ;;
     --lanes)       MODE=lanes ;;
     --orphans)     MODE=orphans ;;
+    --worktrees)   MODE=worktrees ;;
     --cache)       MODE=cache ;;
     --all)         MODE=all ;;
     -n|--dry-run)  DRY=1 ;;
@@ -123,6 +173,18 @@ usage: tools/build-gc.sh [MODE] [-n]
   --orphans       delete ONLY the external lane target dirs whose worktree no longer exists.
                   The narrowest mode and the one to reach for first: nothing on this machine
                   will ever refer to those trees again, and no live lane pays a rebuild.
+  --worktrees     remove FINISHED linked worktrees outright: working tree clean, not locked, not
+                  the main checkout, not the checkout this script is running from, and its HEAD
+                  is already on `main` (`git merge-base --is-ancestor`, or a squash-merge check
+                  via `git merge-tree --write-tree` against `main`'s tree — the check
+                  `git branch --merged` cannot make, and the shape every lane here actually
+                  lands as, per AGENTS.md's squash-only trunk rule). Removal is a plain
+                  `git worktree remove` (no --force, so it refuses rather than eating anything
+                  the clean-tree check missed) followed by that lane's external target dir under
+                  $PLX_FLEET_DIR if one exists. Branches are never deleted; a removed worktree
+                  whose branch still exists is reported as "branch left" so the owner decides.
+                  Every worktree NOT removed is reported with one reason: dirty | locked |
+                  unmerged | building | current | main.
   --cache         delete shared FFmpeg build trees under $PLX_BUILD_CACHE untouched for
                   $PLX_CACHE_MAX_DAYS days (default 30). They are keyed by configure flags AND
                   toolchain, so a version bump or an NDK upgrade strands the old entry silently —
@@ -150,9 +212,16 @@ done
 # in. An empty answer to "which worktrees exist" is never a licence to delete; in this repository
 # it cannot even be true, since the checkout asking the question is itself one.
 WT_RAW=$(git worktree list --porcelain 2>/dev/null) || WT_RAW=""
+# `if ... fi`, not `[ -d "$w" ] && echo "$w"`: under `set -e`, a loop's LAST statement failing
+# (the test false, so the `&&` short-circuits with a nonzero status) becomes the exit status of
+# the enclosing function or `while` subshell. A caller that then pipes this function's output
+# (safe — non-last pipeline stages are exempt) is fine, but a caller that invokes it as a bare
+# command, or a `while read` loop whose own last statement is a bare call to a function shaped
+# like this, aborts that subshell on the FIRST iteration whose candidate happens to not exist —
+# which silently truncated `--lanes`/`--incremental` to one worktree. `if/fi` always returns 0.
 worktrees() {
   printf '%s\n' "$WT_RAW" | sed -n 's/^worktree //p' | while IFS= read -r w; do
-    [ -d "$w" ] && echo "$w"
+    if [ -d "$w" ]; then echo "$w"; fi
   done
 }
 
@@ -201,7 +270,7 @@ checkout_kb() {
 lane_trees() {
   for d in "$1"/rust-modules/target*; do
     case "$d" in *'*'*) continue ;; esac
-    [ -d "$d" ] && echo "$d"
+    if [ -d "$d" ]; then echo "$d"; fi
   done
   vendor_trees "$1"
 }
@@ -214,13 +283,13 @@ vendor_trees() {
            "$1"/vendor/ffmpeg-build/destdir "$1"/vendor/ffmpeg-build-host/destdir \
            "$1"/vendor/sentry-native-build "$1"/vendor/sentry-native-src; do
     case "$d" in *'*'*) continue ;; esac
-    [ -d "$d" ] && echo "$d"
+    if [ -d "$d" ]; then echo "$d"; fi
   done
 }
 incremental_trees() {
   for d in "$1"/rust-modules/target*/debug/incremental; do
     case "$d" in *'*'*) continue ;; esac
-    [ -d "$d" ] && echo "$d"
+    if [ -d "$d" ]; then echo "$d"; fi
   done
 }
 
@@ -236,14 +305,14 @@ external_trees() {
   [ -n "$FLEET_DIR" ] && [ -d "$FLEET_DIR" ] || return 0
   for d in "$FLEET_DIR"/*/target*; do
     case "$d" in *'*'*) continue ;; esac
-    [ -d "$d" ] && echo "$d"
+    if [ -d "$d" ]; then echo "$d"; fi
   done
 }
 external_incremental_trees() {
   [ -n "$FLEET_DIR" ] && [ -d "$FLEET_DIR" ] || return 0
   for d in "$FLEET_DIR"/*/target*/debug/incremental; do
     case "$d" in *'*'*) continue ;; esac
-    [ -d "$d" ] && echo "$d"
+    if [ -d "$d" ]; then echo "$d"; fi
   done
 }
 
@@ -268,7 +337,7 @@ env_trees_report_only() {
 external_is_orphan() {
   lane=$(basename "$(dirname "$1")")
   worktrees | while IFS= read -r w; do
-    [ "$(basename "$w")" = "$lane" ] && echo live
+    if [ "$(basename "$w")" = "$lane" ]; then echo live; fi
   done | grep -q live && return 1
   return 0
 }
@@ -533,6 +602,55 @@ skip_live() {
   done
 }
 
+# `--worktrees` — REMOVE A LANE OUTRIGHT, not just its build tree. Everything above this line
+# reclaims what a worktree LEFT BEHIND; this is the mode for a worktree nobody needs anymore, and
+# it exists because `git worktree list` at 128 entries (measured 2026-09-18) is not a report
+# anyone reads by hand, and `git branch --merged` cannot see the answer at all — every lane here
+# lands on `main` as a SQUASH (`AGENTS.md`, Working rules), so a lane branch's commits are never
+# reachable from `main` by ancestry even when every byte they added is sitting on trunk. Instead,
+# merge the lane tip into `main` with `git merge-tree --write-tree`; if the result equals
+# `main^{tree}`, the lane adds nothing. The known limit: a lane whose lines `main` has since
+# changed again conflicts and reads `unmerged` — the check errs toward keeping. (Measured
+# 2026-09-18: 5 of 128 removable, 74 unmerged.)
+#
+# Two fields come off `git worktree list --porcelain`, and both need the multi-line record parsed
+# rather than grepped line-by-line, because `locked` and `branch` are only PRESENT when true —
+# their absence is exactly the fact being recorded, and a flat grep across the whole listing
+# cannot attribute a `locked` line back to the worktree block it belongs to. Emits
+# `path<TAB>sha<TAB>branch<TAB>locked` per worktree; `branch` is `(detached)` when there is none.
+worktree_records() {
+  printf '%s\n' "$WT_RAW" | awk '
+    BEGIN { w="" }
+    /^worktree / { if (w != "") print w "\t" sha "\t" branch "\t" locked
+                   w=$0; sub(/^worktree /,"",w); sha=""; branch="(detached)"; locked="0"; next }
+    /^HEAD /      { sha=$2; next }
+    /^branch refs\/heads\// { b=$0; sub(/^branch refs\/heads\//,"",b); branch=b; next }
+    /^locked/     { locked="1"; next }
+    END { if (w != "") print w "\t" sha "\t" branch "\t" locked }
+  '
+}
+# One word, or empty for "remove it". Order matters: cheapest and least surprising checks first,
+# so a locked worktree reads as `locked` even if it also happens to be dirty. `building` protects
+# a checkout a live compiler is writing into, the same guard `--lanes`/`--orphans` use via
+# `in_live_checkout`.
+worktree_reason() {
+  _w=$1 _sha=$2 _locked=$3
+  [ "$_w" = "$MAIN" ] && { echo main; return; }
+  [ "$_w" = "$ROOT" ] && { echo current; return; }
+  [ "$_locked" = "1" ] && { echo locked; return; }
+  if in_live_checkout "$_w" 2>/dev/null; then echo building; return; fi
+  if [ -n "$(git -C "$_w" status --porcelain 2>/dev/null)" ]; then echo dirty; return; fi
+  if git -C "$_w" merge-base --is-ancestor "$_sha" main 2>/dev/null; then echo ""; return; fi
+  # A detached HEAD that is an ancestor of main is caught above. Everything else — a branch tip,
+  # detached or not — goes through the squash check: three-way merge `main` with `$_sha` and
+  # compare the resulting tree to `main`'s own. No conflicts and no difference means every byte
+  # the lane ever added is already on trunk, whether that arrived by squash-merge or by hand.
+  _mt=$(git -C "$_w" merge-tree --write-tree main "$_sha" 2>/dev/null) || { echo unmerged; return; }
+  _mt=$(printf '%s\n' "$_mt" | head -1)
+  _maintree=$(git -C "$MAIN" rev-parse 'main^{tree}' 2>/dev/null)
+  if [ -n "$_mt" ] && [ "$_mt" = "$_maintree" ]; then echo ""; else echo unmerged; fi
+}
+
 install_worktree_cargo_policy
 
 if [ "$MODE" != report ]; then
@@ -618,7 +736,7 @@ report)
   fi
   df -h "$ROOT" | tail -1 | awk '{print "volume              " $4 " free of " $2}'
   echo
-  echo "reclaim with: tools/build-gc.sh --orphans | --incremental | --cache | --lanes | --all   (add -n to preview)"
+  echo "reclaim with: tools/build-gc.sh --orphans | --incremental | --cache | --lanes | --worktrees | --all   (add -n to preview)"
   ;;
 esac
 
@@ -714,6 +832,68 @@ cache|all)
       echo "  in use, skipped  $d"
     fi
   done
+  ;;
+esac
+
+case "$MODE" in
+worktrees)
+  echo "== finished linked worktrees (clean, unlocked, already on main; main and the running checkout are never touched) =="
+  worktree_records | while IFS="$(printf '\t')" read -r w sha branch locked; do
+    [ -n "$w" ] || continue
+    reason=$(worktree_reason "$w" "$sha" "$locked")
+    if [ -n "$reason" ]; then
+      printf '  %-9s %s  (%s)\n' "$reason" "$w" "$branch"
+      continue
+    fi
+    if [ -n "$DRY" ]; then
+      printf '  would remove  %s  (%s)\n' "$w" "$branch"
+      continue
+    fi
+    # `worktree_reason` answered "building?" from the snapshot taken once before this whole loop
+    # started (`live_checkouts`, above the mode dispatch) — a build that started in `$w` AFTER
+    # that snapshot and before we reach it here is invisible to that answer. `live_checkouts` is
+    # cheap (pgrep + lsof, not a `du`), so refresh it right before the one irreversible step
+    # instead of trusting a snapshot that can be several worktrees stale. This narrows the race to
+    # the moment between this refresh and `git worktree remove` itself — not zero, but far
+    # smaller than the whole loop.
+    live_checkouts >/dev/null 2>&1 || true
+    if in_live_checkout "$w" 2>/dev/null; then
+      printf '  in use, skipped  %s  (%s)\n' "$w" "$branch"
+      continue
+    fi
+    # No --force: a worktree this reached is already known clean, so a plain `remove` succeeding
+    # is a second, independent confirmation of that — and if it somehow fails (a lock file, a
+    # race with something else touching it this instant), refusing is the right answer, not
+    # reaching for the flag that also eats uncommitted tracked changes (`fleet-plan`, §"Collecting
+    # the work" measured this 2026-08-23: `--force` took a tree with modified tracked files and
+    # all).
+    if git worktree remove "$w" 2>&1; then
+      printf '  removed       %s  (%s)\n' "$w" "$branch"
+      # Same staleness risk as above for the external tree, plus `$FLEET_DIR` itself: `${VAR-def}`
+      # only substitutes when VAR is UNSET, so `PLX_FLEET_DIR=""` in the environment leaves
+      # `FLEET_DIR` empty rather than defaulted, and `"$FLEET_DIR/$(basename "$w")"` would then be
+      # a ROOT-level path like `/agent-abc`. Guard exactly like `external_trees()` does — non-empty
+      # AND an existing directory — before ever building that path.
+      if [ -n "$FLEET_DIR" ] && [ -d "$FLEET_DIR" ]; then
+        ext="$FLEET_DIR/$(basename "$w")"
+        live_checkouts >/dev/null 2>&1 || true
+        if [ -d "$ext" ]; then
+          if in_live_checkout "$ext" 2>/dev/null; then
+            printf '    in use, skipped  %s\n' "$ext"
+          else
+            printf '%s\n' "$ext" | drop | sed 's/^/  /'
+          fi
+        fi
+      fi
+      case "$branch" in
+        '(detached)') ;;
+        *) printf '    branch left: %s\n' "$branch" ;;
+      esac
+    else
+      echo "  FAILED to remove $w — see git's message above; left in place" >&2
+    fi
+  done
+  git worktree prune >/dev/null 2>&1 || true
   ;;
 esac
 

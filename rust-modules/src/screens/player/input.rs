@@ -138,14 +138,14 @@ impl Scrub {
     /// seconds, which is a seek past the point the pipeline can prime from. The one place the two
     /// bounds are written, shared by the key hop, the continuous ramp and the pointer drag — they
     /// were three copies of the same four lines in `app/run.rs` and `app/playback.rs`.
+    ///
+    /// A thin call-through to `ui::player_hud::scrub_clamp_target` — the shared home for this
+    /// formula and the tuning constants below, since `screens::detail::trailer`'s own hold-to-scrub
+    /// (the trailer transport's LEFT/RIGHT) wants the exact same bound and `ci/check-deps.sh`'s
+    /// `sibling` gate forbids that module from naming `crate::screens::player` to reach it here.
+    /// Every call site in this file is unchanged.
     pub(crate) fn clamp_target(ns: i64, duration_ns: i64) -> i64 {
-        let cap = duration_ns - 3_000_000_000;
-        let ns = ns.max(0);
-        if cap > 0 && ns > cap {
-            cap
-        } else {
-            ns
-        }
+        crate::ui::player_hud::scrub_clamp_target(ns, duration_ns)
     }
 }
 /// The player HUD's focus cursor: WHICH row owns focus, plus the index WITHIN each of the
@@ -305,19 +305,18 @@ impl HudState {
     }
 }
 // scrub tuning: a press jumps SCRUB_STEP_NS; holding engages a continuous scrub ramping
-// SCRUB_BASE→SCRUB_MAX (playback-seconds per real-second).
-pub(crate) const SCRUB_STEP_NS: i64 = 10_000_000_000; // 10s per press
-pub(crate) const SCRUB_BASE: f32 = 10.0;
-pub(crate) const SCRUB_ACCEL: f32 = 45.0; // added per second of hold
-pub(crate) const SCRUB_MAX: f32 = 140.0;
-// tap released → commit after this (further taps accumulate). Long enough that a rapid
-// ±10s tap burst coalesces into ONE seek — each separate commit is a full reopen+prime on
-// the engine, and back-to-back in-flight seeks are what race the demux (the stale-audio
-// silence incident); short enough that a single tap still feels immediate.
-pub(crate) const TAP_COMMIT_MS: u32 = 450;
-pub(crate) const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
-                                // HUD auto-hide: how long the HUD lingers after the input that raised it.
-pub(crate) const HUD_LINGER_MS: u32 = 4500; // plain transport/nav input
+// SCRUB_BASE→SCRUB_MAX (playback-seconds per real-second). Defined in `ui::player_hud` and
+// re-exported here — the trailer transport's own hold-to-scrub (`screens::detail::trailer`) wants
+// the identical feel and cannot name this module directly (`ci/check-deps.sh`'s `sibling` gate).
+// Long enough that a rapid ±10s tap burst coalesces into ONE seek (`TAP_COMMIT_MS`) — each
+// separate commit is a full reopen+prime on the engine, and back-to-back in-flight seeks are what
+// race the demux (the stale-audio silence incident); short enough that a single tap still feels
+// immediate.
+pub(crate) use crate::ui::player_hud::{
+    SCRUB_ACCEL, SCRUB_BASE, SCRUB_LOST_MS, SCRUB_MAX, SCRUB_STEP_NS, TAP_COMMIT_MS,
+};
+// HUD auto-hide: how long the HUD lingers after the input that raised it.
+pub(crate) const HUD_LINGER_MS: u32 = crate::ui::player_hud::LINGER_MS; // plain transport/nav input
 pub(crate) const HUD_MENU_MS: u32 = 8000; // a modal menu is up (track/chapter nav) — longer read time
 pub(crate) const HUD_HEADLESS_MS: u32 = 60_000; // autoplay/headless runs pin the HUD up for capture
 

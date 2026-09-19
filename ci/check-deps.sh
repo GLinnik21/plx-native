@@ -18,8 +18,8 @@
 # Phase 4 rule (D3 rewrite, phase 12):
 #   mutators — a screen (ui/, screens/) or the loop (app/) never calls a data module's MUTATOR directly
 #              (`crate::browse::set_cur(`, `crate::search::set_query(`, …): every mutation is a
-#              `stores::StoreCmd` applied through `stores::<store>::apply` (spec §14, the
-#              (caller, mutator) allowlist — `docs/stores-as-machines.md`). PRODUCTION lines only:
+#              `StoreCmd` applied through the owner's run/step method (e.g. `Bridge::<store>_run`)
+#              (spec §14, the (caller, mutator) allowlist — `docs/stores-as-machines.md`). PRODUCTION lines only:
 #              a `#[cfg(test)] mod` seeds a store however it likes. The player side joins in phase
 #              9: `route/` (both halves of the split — `plan.rs`, the pure selection half, and
 #              `decision.rs`, the network/adapter half) and `player/` are scanned the same as
@@ -34,8 +34,9 @@
 #              is one accidental `use` away from a violation the gate would then have to catch by
 #              name a second time. `mutators-visibility` (below) is the fix: it reads the
 #              DECLARATION line of every real mutator in its owning legacy module and fails if it
-#              is anything looser than private/`pub(super)`, so `stores::<store>::apply` (or, for
-#              `browse::section_hubs`, a `pub(super)` reached only from its parent `browse`) is
+#              is anything looser than private/`pub(super)`, so the owner's run/step method (e.g.
+#              `Bridge::<store>_run`) (or, for `browse::section_hubs`, a `pub(super)` reached only
+#              from its parent `browse`) is
 #              the only door BY CONSTRUCTION, not by nobody having tried the other one yet. The
 #              two gates are independent and both must be green: a name absent from
 #              `mutators-visibility`'s per-file list (a PUMP/landing door like `pump`/`tick`/
@@ -541,6 +542,31 @@ else
   fail "hubs-owner: retired Hubs compatibility surface returned"
 fi
 
+# metadata-owner: Detail's item/season/playing model (`MetadataState`) and its worker adapter
+# (`Arc<MetadataAdapter>`, D3's `record::Tracker` included) belong to one `MetadataStore` per
+# Bridge (`stores/mod.rs`'s `Stores::metadata`, `metadata_run`/`metadata_pump`/`metadata_view`).
+# Zero tolerance, no allowlist: any free process-wide selector or module-level dispatcher
+# reconnects that owner and lets an unaddressed Clear or landing cross the Bridge boundary —
+# exactly the pre-port shape `crate::stores::metadata::apply` had, a free function reading/writing
+# process-wide `metadata.rs` statics instead of one owner's `MetadataState`/`Arc<MetadataAdapter>`
+# pair. `metadata::run`/`pump`/`pump_detail`/`pump_season`/`pump_alt_sources` are deliberately NOT
+# listed: they keep the explicit-parameter architecture, taking `state`/`adapter` in, exactly like
+# hubs' and search's own owned stores.
+metadata_facades='apply'
+metadata_selectors='DETAIL_LANDING|SEASON_LANDING|ALT_LANDING|NOW|CURRENT|TRACKER|NOTICES'
+metadata_owner_matches=$({
+  owner_declarations "$metadata_facades" "$metadata_selectors" \
+    'MetadataState|MetadataAdapter|MetadataStore|Tracker' \
+    "$SRC/metadata.rs" "$SRC/stores/metadata.rs"
+  grep_code "(crate::metadata|crate::stores::metadata|stores::metadata)::($metadata_facades)\(" "$SRC"
+} | sort -u)
+if [ -z "$metadata_owner_matches" ]; then
+  ok "metadata-owner: zero global storage, transport, selectors, and free facades"
+else
+  echo "$metadata_owner_matches" | sed 's/^/    /'
+  fail "metadata-owner: retired Metadata compatibility surface returned"
+fi
+
 # libm: the method-call spelling, OUTSIDE ui/motion.rs (which owns the integrators and their
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
 # Wholly-test files (see `wholly_test_files`) are skipped like inline `#[cfg(test)]` blocks: a
@@ -620,7 +646,7 @@ while IFS= read -r f; do
 # block, a masked `crate::ui::…::…(`, a `stores::` line), so this prefilter is a superset of the files
 # that can produce a hit.
 done < <(grep -rlE --include='*.rs' "$MUTATORS" "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" 2>/dev/null | sort)
-if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use stores::<store>::apply)"; fi
+if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use the owner's run/step method, e.g. Bridge::<store>_run)"; fi
 
 # mutators-visibility (D3): the call-site rule above can only ever prove "nobody currently calls
 # this directly" — it says nothing about whether they COULD. This reads the DECLARATION line of
@@ -640,7 +666,7 @@ if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(
 #     `screens/alt_sources_tests.rs` calls directly to grade its own shape.
 # No other exceptions: `pms::reset` (once tracked as an open item — `app/bridge.rs` and
 # `app/recorder.rs` still called it directly from their own `#[cfg(test)] mod`s) is closed, routed
-# through `stores::hubs::apply(HubsCmd::Reset)` (the variant and `pms::run`'s arm both already
+# through `HubsStore::run`/`run_with_directory` (the variant and `pms::run`'s arm both already
 # existed) and narrowed to private like every other `pms.rs` mutator.
 # One "<file>|<space-separated fn list>" entry per store — a plain array, not `declare -A`: the
 # script's own shebang is `env bash` and the dev Mac's `/bin/bash` is 3.2 (Apple ships nothing
@@ -669,7 +695,7 @@ for entry in "${MUT_FNS_TABLE[@]}"; do
   for fn in $fns; do
     hit=$(grep -nE "^[[:space:]]*pub(\(crate\))?[[:space:]]+fn[[:space:]]+${fn}\b" "$f" 2>/dev/null || true)
     if [ -n "$hit" ] && ! store_seamed "$relf" "$fn"; then
-      echo "    $relf: fn $fn is still pub(crate)/pub — narrow to private (stores::<store>::apply must be the only door)"
+      echo "    $relf: fn $fn is still pub(crate)/pub — narrow to private (the owner's run/step method, e.g. Bridge::<store>_run, must be the only door)"
       vis_bad=$((vis_bad+1))
     fi
   done

@@ -20,6 +20,12 @@ use crate::ui::{Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::c_int;
 
+/// [`actions`]'s fixed length: it always returns two labels, only their TEXT depends on
+/// `is_episode`. Every caller that only needs the count (focus bounds, group sizing) uses this
+/// constant instead of building the whole array, which is what lets those call sites avoid
+/// needing a `MetadataView` at all.
+const N_ACTIONS: usize = 2;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum InfoAction {
     None,
@@ -55,7 +61,7 @@ impl InfoPanelState {
     /// true when focus is on the last action button — a further DOWN should leave the card (back to
     /// the tabs) rather than staying pinned to the bottom row
     pub(crate) fn at_last(&self) -> bool {
-        self.focus >= actions().len() as c_int - 1
+        self.focus >= N_ACTIONS as c_int - 1
     }
 
     /// **Write back the engine's own focus cursor** (restructure phase 12): the Column group
@@ -68,16 +74,17 @@ impl InfoPanelState {
 
     /// activate the focused action — dismissing the card afterward is the container's job now, not
     /// this method's.
-    pub(crate) fn on_ok(&self) -> InfoAction {
+    pub(crate) fn on_ok(&self, meta: metadata::MetadataView<'_>) -> InfoAction {
         let f = self.focus;
         if f <= 0 {
             return InfoAction::FromBeginning;
         }
         // second action opens the show (episode) or the movie
-        let rk = metadata::now_playing()
+        let rk = meta
+            .now_playing()
             .map(|n| n.detail_rk.clone())
             .filter(|s| !s.is_empty())
-            .or_else(|| metadata::current().map(|d| d.rk.clone()))
+            .or_else(|| meta.current().map(|d| d.rk.clone()))
             .unwrap_or_default();
         if rk.is_empty() {
             InfoAction::None
@@ -98,7 +105,7 @@ impl InfoPanelState {
     fn ctl_index(&self) -> Option<usize> {
         usize::try_from(self.focus)
             .ok()
-            .filter(|&i| i < actions().len())
+            .filter(|&i| i < N_ACTIONS)
     }
 
     pub(crate) fn update(&mut self, dt: f32) {
@@ -113,9 +120,10 @@ impl InfoPanelState {
         ps: &crate::route::PlaybackSession,
         appear: f32,
         measure: &dyn crate::ui::machine::Measure,
+        meta: metadata::MetadataView<'_>,
     ) {
-        let np = metadata::now_playing();
-        let d = metadata::current();
+        let np = meta.now_playing();
+        let d = meta.current();
         if np.is_none() && d.is_none() {
             return;
         }
@@ -166,7 +174,7 @@ impl InfoPanelState {
             .unwrap_or_default();
         // capability badges come from the PLAYING item's own tracks — `current()` is the show
         // (episode-1 streams) during a show-page episode play, or another item entirely
-        let (audio, subs): (&[metadata::Stream], &[metadata::Stream]) = match metadata::playing() {
+        let (audio, subs): (&[metadata::Stream], &[metadata::Stream]) = match meta.playing() {
             Some(t) => (&t.audio, &t.subs),
             None => (
                 d.map(|x| x.audio.as_slice()).unwrap_or(&[]),
@@ -212,7 +220,7 @@ impl InfoPanelState {
         }
 
         // action buttons (right column)
-        let acts = actions();
+        let acts = actions(meta);
         let focus = self.focus;
         let env = crate::ui::Env::inert();
         for (i, label) in acts.iter().enumerate() {
@@ -501,18 +509,18 @@ where
             reachable: AxisMask::VERTICAL,
             edge: [EdgeRule::Stop, EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop],
             extent: card_geometry().0,
-            len: actions().len(),
+            len: N_ACTIONS,
             elem: ElemKind::Control,
         });
     }
     fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        ((key.index()? as usize) < actions().len()).then_some(self.group)
+        ((key.index()? as usize) < N_ACTIONS).then_some(self.group)
     }
     fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
         let Some(i) = key.elem.index() else {
             return Step::Edge;
         };
-        let n = actions().len() as u32;
+        let n = N_ACTIONS as u32;
         match dir {
             Dir::Up if i > 0 => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(i - 1) }),
             Dir::Down if i + 1 < n => Step::Move(FocusKey { entry: self.entry, elem: H::Elem::of_index(i + 1) }),
@@ -521,7 +529,7 @@ where
     }
     fn place(&self, key: &H::Elem, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
         let i = key.index()? as usize;
-        if i >= actions().len() {
+        if i >= N_ACTIONS {
             return None;
         }
         let r = button_rect(i);
@@ -533,7 +541,7 @@ where
         })
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        let i = (want.elem.index().unwrap_or(0) as usize).min(actions().len().saturating_sub(1));
+        let i = (want.elem.index().unwrap_or(0) as usize).min(N_ACTIONS.saturating_sub(1));
         FocusKey { entry: self.entry, elem: H::Elem::of_index(i as u32) }
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
@@ -553,7 +561,7 @@ where
     /// owned `InfoPanelState` from `PlayerOverlayScreen::draw` (see the struct doc above).
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         let p = Painter::root();
-        for i in 0..actions().len() {
+        for i in 0..N_ACTIONS {
             let r = button_rect(i);
             f.stop(
                 p,
@@ -576,20 +584,20 @@ where
 /// whether the playing item is an episode (→ "Go to Show") rather than a movie ("Go to Movie").
 /// A trailer session does not install a playing-leaf descriptor, so with `now_playing` absent
 /// the loaded page is the parent — a show's trailer still says Go to Show.
-fn is_episode() -> bool {
-    metadata::now_playing()
+fn is_episode(meta: metadata::MetadataView<'_>) -> bool {
+    meta.now_playing()
         .map(|n| n.is_episode)
-        .unwrap_or_else(|| metadata::current().is_some_and(|d| d.is_show))
+        .unwrap_or_else(|| meta.current().is_some_and(|d| d.is_show))
 }
 
-/// the action-button labels for the playing item. An ARRAY, not a `Vec`: the count is fixed at two
-/// (it is what `CtlPop`'s const generic is sized from), and five callers ask this — one of them
-/// [`InfoPanelState::draw`], every frame the card is up — so a heap allocation to hand back two
-/// `&'static str`s was paid 60 times a second to learn a constant.
-fn actions() -> [&'static str; 2] {
+/// the action-button labels for the playing item. An ARRAY, not a `Vec`: the count is fixed at
+/// [`N_ACTIONS`] (it is what `CtlPop`'s const generic is sized from) — every caller that only
+/// needs the count uses that constant instead, so this is called only where the actual label TEXT
+/// is drawn ([`InfoPanelState::draw`]).
+fn actions(meta: metadata::MetadataView<'_>) -> [&'static str; 2] {
     [
         "From Beginning",
-        if is_episode() {
+        if is_episode(meta) {
             "Go to Show"
         } else {
             "Go to Movie"
@@ -617,7 +625,7 @@ fn button_rect(i: usize) -> Rect {
     let bw = 352.0f32;
     let bh = 70.0f32;
     let bx = card.x + card.w - pad - bw;
-    let n = actions().len();
+    let n = N_ACTIONS;
     let total_bh = n as f32 * bh + n.saturating_sub(1) as f32 * 16.0;
     let by0 = card.y + (card.h - total_bh) * 0.5;
     Rect::new(bx, by0 + i as f32 * (bh + 16.0), bw, bh)
@@ -985,6 +993,18 @@ mod focus_tests {
     use crate::screens::registry::{AppFx, AppMsg, PageMemory};
     use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
 
+    // TEST ONLY: a thread-confined store, so `set_current_for_test`/`apply` and the `view()`
+    // this test's `on_ok`/`is_episode` calls read from are the SAME owner, not two disconnected
+    // `MetadataStore::default()`s (same pattern as `screens::detail::tests`'s `TEST_METADATA`).
+    thread_local! {
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+
     struct HostFixture;
     impl Host for HostFixture {
         type Arg = crate::ui::fixture::FixtureArg;
@@ -1039,7 +1059,7 @@ mod focus_tests {
         let st = InfoPanelState::new();
         let part = InfoPanelPart { state: &st, entry: e, group: GroupId(0) };
         with_cx(e, |cx| {
-            for i in 0..actions().len() as u32 {
+            for i in 0..N_ACTIONS as u32 {
                 let placed = <InfoPanelPart as Focusable<HostFixture>>::place(&part, &i, cx, At::Drawn)
                     .expect("both buttons are placeable");
                 let want = button_rect(i as usize);
@@ -1080,8 +1100,8 @@ mod focus_tests {
     #[test]
     fn go_to_after_a_trailer_opens_the_loaded_parent() {
         let _g = crate::testlock::serial();
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
             rk: "parent-movie".into(),
             kind: "movie".into(),
             ..Default::default()
@@ -1089,12 +1109,12 @@ mod focus_tests {
         let mut movie = InfoPanelState::new();
         movie.set_focus(1);
         assert_eq!(
-            movie.on_ok(),
+            movie.on_ok(test_store().view()),
             InfoAction::GoToDetail("parent-movie".into())
         );
-        assert!(!is_episode(), "a movie parent labels Go to Movie");
+        assert!(!is_episode(test_store().view()), "a movie parent labels Go to Movie");
 
-        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
             rk: "parent-show".into(),
             kind: "show".into(),
             is_show: true,
@@ -1102,10 +1122,10 @@ mod focus_tests {
         }));
         let mut show = InfoPanelState::new();
         show.set_focus(1);
-        assert_eq!(show.on_ok(), InfoAction::GoToDetail("parent-show".into()));
-        assert!(is_episode(), "a show parent labels Go to Show");
+        assert_eq!(show.on_ok(test_store().view()), InfoAction::GoToDetail("parent-show".into()));
+        assert!(is_episode(test_store().view()), "a show parent labels Go to Show");
 
-        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
             sid: crate::plex::ServerId::UNSET,
             rk: "parent-show".into(),
             kind: "show".into(),
@@ -1120,20 +1140,19 @@ mod focus_tests {
             }],
             ..Default::default()
         }));
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(
-            crate::metadata::trailer_now_playing(crate::plex::ServerId::UNSET, "9"),
-        ));
+        let trailer = crate::metadata::trailer_now_playing(test_store().state(), crate::plex::ServerId::UNSET, "9");
+        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(trailer));
         let mut playing = InfoPanelState::new();
         playing.set_focus(1);
-        assert_eq!(playing.on_ok(), InfoAction::GoToDetail("parent-show".into()));
-        assert!(is_episode(), "an installed show-trailer card still says Go to Show");
+        assert_eq!(playing.on_ok(test_store().view()), InfoAction::GoToDetail("parent-show".into()));
+        assert!(is_episode(test_store().view()), "an installed show-trailer card still says Go to Show");
         assert_eq!(
-            crate::metadata::now_playing().map(|n| n.dur_ms),
+            test_store().view().now_playing().map(|n| n.dur_ms),
             Some(120_000),
             "the extra's duration, not the show's"
         );
 
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
-        crate::metadata::set_current_for_test(None);
+        test_store().run(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 }

@@ -104,6 +104,5 @@ impl Drop for DirectoryPolicyCleanup {
         // Search and Hubs are now owned per-Bridge (`rig`, dropped with the test's own stack
         // frame), so there is no process-wide store state left for this cleanup to reset.
         crate::plex::reset_servers_for_test();
-        let _ = crate::stores::take_notices();
     }
 }

@@ -125,14 +125,18 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   hair *smaller* than without) — but its target dir is 356 MB, and this repo already keys a
   separate `rust-modules/target*` per configuration and multiplies that again per worktree.
   (**`make disk` is how you see what that has come to**, across every checkout at once, and
-  `tools/build-gc.sh --incremental|--lanes|--all` is how you get it back. Measured 2026-09-03,
+  `tools/build-gc.sh --incremental|--lanes|--worktrees|--all` is how you get it back — every mode
+  there except `--worktrees` deletes only rebuildable output; `--worktrees` removes finished lane
+  checkouts. Measured 2026-09-03,
   twelve lanes in: 45 GB across the family with 3.2 GiB free on the volume — of which the cargo
   **incremental cache alone was 24 GB** and FFmpeg, the usual suspect, was 2.6 GB. A linked
   worktree is not supposed to write an incremental cache at all — the Makefile says so beside
   `RUST_FEATFLAGS`, but it can only say it to the cargo runs `make` launches, and a direct
   `cargo test`/`cargo check` in a lane wrote one anyway: 12.9 GB of them, measured 2026-09-17.
   `tools/build-gc.sh` now installs `.claude/worktrees/.cargo/config.toml` with
-  `incremental = false`, which every cargo reads and which stops above the main checkout.)
+  `incremental = false`, which every cargo reads and which stops above the main checkout. Since
+  2026-09-18 the same file also sets `[profile.dev] debug = "line-tables-only"` and `debug = false`
+  for third-party packages in lanes (main keeps full DWARF).)
   `SYMBOLS` is in the `RUST_CFG` stamp beside `RELEASE`, and it has to be: a debuginfo build and a
   plain one produce **different build ids from identical sources**, so without the stamp
   `make RELEASE=1 ipk` followed by `make RELEASE=1 SYMBOLS=1 symbols` would hand you a `.debug`
@@ -176,34 +180,48 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   the recipe (its module doc names the three ways a Mac bundle silently ships broken);
   `docs/macos-app.md` is the design note, and `docs/macos-app-readme.md` is what ships beside the
   zip for the recipient.
-- **`FLAVOR`** selects **WHICH INSTALL** every TV-facing target talks to. Two builds live on one
+- **`FLAVOR`** selects **WHICH INSTALL** every TV-facing target talks to. Three builds live on one
   television: `stable` (`com.beb.plxnative` — the app users install, the id in every release,
-  manifest and channel listing) and `debug` (`com.beb.plxnative.debug` — the day-to-day developer
-  build beside it, with its own launcher tile, its own sign-in and its own runtime root).
-  **`FLAVOR ?= debug` in the tracked Makefile, and `stable` has to be TYPED.** That asymmetry is
-  the safety argument, not a preference: every command in this repo's muscle memory is spelled
-  `make deploy` / `make run` / `./tests/run.py` with no flavour, and each one used to overwrite the
-  only install there was — retyping one command is not comparable to destroying the install the
-  household watches with, possibly mid-film, with no undo. Tracked rather than a gitignored dotfile
-  because a fresh clone or worktree has none, so the dangerous default would be inherited invisibly
-  by exactly the checkouts nobody is watching. An unknown value is a parse-time `$(error)` rather
-  than a third registered app on the television. A flavour must be installed ONCE before `deploy`
-  can reach it — `make FLAVOR=debug install` builds its .ipk, `dev/install`s it and then deploys
-  into it (appinstalld replaces `applications/<id>/` WHOLESALE, so stopping at the install leaves
-  the packaged binary behind); `make FLAVOR=debug uninstall` removes one and refuses the stable id.
-  `deploy`/`ipk` on the stable id refuse a dev build unless `ALLOW_DEV_ON_STABLE=1`.
-  **FLAVOR is NOT a codegen input**, which is what makes it cheap: the app reads its id from the
-  INSTALL DIRECTORY at runtime (`paths::app_id`, via `/proc/self/exe`), so flipping it costs
-  nothing — no rebuild, no second `--target-dir`, no FFmpeg rebuild, one `pkg/plxnative`. Ask the
-  seven query targets for any of it (they compose — several goals on one command line print several
-  lines): `make -s print-flavor print-appid print-appdir print-rundir print-eventlog print-appport
-  print-tv FLAVOR=<f>`. `print-appport` is the newest and the least obvious: the capture listener's
-  TCP port MOVES with the flavour (8910 stable, 8911 flavoured), because two installs cannot both
+  manifest and channel listing), `debug` (`com.beb.plxnative.debug` — the day-to-day developer
+  build beside it, with its own launcher tile, its own sign-in and its own runtime root), and
+  `nightly` (`com.beb.plxnative.nightly` — a third install beside both, tile "PlxNative Nightly",
+  own sign-in, own runtime root, but ALWAYS a `RELEASE=1` build — `release-guard` refuses one
+  without it, with no `ALLOW_DEV_ON_STABLE`-shaped hatch, because nightly ships no dev-trigger
+  surface ever).
+  **`FLAVOR ?= debug` in the tracked Makefile, and `stable`/`nightly` have to be TYPED.** That
+  asymmetry is the safety argument, not a preference: every command in this repo's muscle memory is
+  spelled `make deploy` / `make run` / `./tests/run.py` with no flavour, and each one used to
+  overwrite the only install there was — retyping one command is not comparable to destroying the
+  install the household watches with, possibly mid-film, with no undo. Tracked rather than a
+  gitignored dotfile because a fresh clone or worktree has none, so the dangerous default would be
+  inherited invisibly by exactly the checkouts nobody is watching. An unknown value is a parse-time
+  `$(error)` rather than a fourth registered app on the television. A flavour must be installed ONCE
+  before `deploy` can reach it — `make FLAVOR=debug install` builds its .ipk, `dev/install`s it and
+  then deploys into it (appinstalld replaces `applications/<id>/` WHOLESALE, so stopping at the
+  install leaves the packaged binary behind); `make FLAVOR=debug uninstall` removes one and refuses
+  the stable id. `deploy`/`ipk` on the stable id refuse a dev build unless `ALLOW_DEV_ON_STABLE=1`;
+  `deploy`/`ipk` on the nightly id refuse a dev build outright, with no override.
+  **FLAVOR is NOT a codegen input for stable/debug**, which is what makes flipping between them
+  cheap: the app reads its id from the INSTALL DIRECTORY at runtime (`paths::app_id`, via
+  `/proc/self/exe`), so no rebuild, no second `--target-dir`, no FFmpeg rebuild, one
+  `pkg/plxnative`. **Nightly is the one exception**: the Makefile derives `PLX_CHANNEL=nightly` from
+  `FLAVOR=nightly` and exports it (empty for the other two), and `rust-modules/build.rs` reads it to
+  decide what `PLX_VERSION` the binary reports — a REAL codegen input, so switching to or from
+  `FLAVOR=nightly` does trigger cargo's `rerun-if-env-changed` and relinks. `PLX_NIGHTLY_DATE`
+  (`YYYYMMDD`, defaulted to today's UTC date by the Makefile) rides the same mechanism and is what
+  turns the reported version into `X.Y.Z-nightly-YYYYMMDD` rather than plain `X.Y.Z-dev`; a nightly
+  package's OWN `appinfo.json`/control `version` also moves ahead to that same next `X.Y.Z` (see
+  `ci/flavor.py::appinfo_for`'s nightly arm and `ci/version_rule.py`), which is why nightly is the
+  one flavour `ci/flavor.py --selftest` allows to move `version` at all. Ask the seven query targets
+  for any of it (they compose — several goals on one command line print several lines): `make -s
+  print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv
+  FLAVOR=<f>`. `print-appport` is the newest and the least obvious: the capture listener's TCP port
+  MOVES with the flavour (8910 stable, 8911 debug, 8912 nightly), because two installs cannot both
   bind one and both halves of that failure are silent — see the capture trigger below.
   **Never `make -p`/`make -pn`**, which prints a recursive variable's UNEXPANDED
   definition, so `TV` comes back as the literal
   `$(strip $(shell cat .tv-host …))` and every ssh built from it fails against a live television.
-  Full account: **`docs/two-installs.md`**.
+  Full account (predates nightly): **`docs/two-installs.md`**.
 - **`RELEASE=1`** drops **both** default cargo features: `devtools` (the on-screen counter — the
   last completed `fps=` present window, held until an ordinary present repaints it; the feature is
   contracted to be draw-only and never wakes an idle screen) and `devtriggers` (the whole `/tmp` surface, the remote
@@ -509,9 +527,10 @@ which the linking section explains is load-bearing rather than tidy.
   deadlocked the whole `auth` test block and put five `read`s on every log line.
 - `rust-modules/src/stores/` — **the data stores behind ONE vocabulary and ONE step** (restructure
   phase 4, 2026-09-07; `docs/stores-as-machines.md`): `StoreCmd` is the complete set of mutations
-  of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`. Browse, Hubs, Person, Search and
-  ViewState are physically owned per `Bridge` by `Stores`: `BrowseStore` owns its
+  of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`. Browse, Hubs, Metadata, Person,
+  Search and ViewState are physically owned per `Bridge` by `Stores`: `BrowseStore` owns its
   state/adapter/notice, `HubsStore` owns its `PmsState`/`Arc<PmsAdapter>`/notice,
+  `MetadataStore` owns its state/`Arc<MetadataAdapter>`/notice,
   `PersonStore` owns its model/generation/retry state plus a rotated indexed fetch adapter,
   `SearchStore` owns its state/adapter/notice with a rotated adapter, and `ViewStateStore`
   owns its queue, in-flight request, retry/refresh latches, rotated worker adapter and notice.
@@ -524,8 +543,8 @@ which the linking section explains is load-bearing rather than tidy.
   `Stores` before capturing those publications. Person's borrowed `PersonView` reaches its three
   live readers through `AppViews`/`Cx`, never a
   free selector. The aggregate notice drain in `app/bridge.rs` delivers `StoreChanged` to live
-  pages; `metadata` still retains its compatibility
-  global/mailbox implementation.
+  pages; `metadata` reads go through `MetadataView`, which borrows from the owner (`&'a`), not
+  a compatibility global or mailbox.
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Four** callers in a lab build and three in every other, each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
@@ -1096,12 +1115,15 @@ you get without waking a television. What it covers today, by module:
   — see `tools/sockprobe.c` above, where `shutdown`-during-`connect` behaves oppositely on the two
   kernels. A socket assertion that passes here is evidence about macOS, not about the TV.
   **(3) Some app async seams remain process-wide**, so some tests are serialized rather than parallel:
-  `metadata.rs`'s two take `lib.rs`'s crate-wide `testlock::serial()` (the detail and season
-  mailboxes contend across modules — a per-module mutex cannot see that, because the season
-  generation also moves under `pump_detail`), and `metadata`'s compatibility catalog statics are
-  still shared. Browse, Hubs, Person and ViewState are the exceptions: a production `Bridge` owns
-  those stores' state, adapters and notices, so separate owners share neither state nor landings;
-  their fixtures use explicit `Stores` owners. Those locks are load-bearing for the remaining globals, not incidental
+  `metadata.rs`'s test that drives `set_current_for_test` still takes `lib.rs`'s crate-wide
+  `testlock::serial()` — not because its own state is global any more (`MetadataState` and
+  `MetadataAdapter`, detail and season mailboxes included, are per-owner fields now, like the other
+  five stores), but because `set_current_for_test`'s `assert_held` enforces the SAME crate-wide
+  lock the genuinely-still-global seams (route's play mailbox, the player's SHARED block) also
+  take, and the convention is one lock, not one per module. Browse, Hubs, Metadata, Person, Search
+  and ViewState are all owned now: a production `Bridge` owns each store's state, adapters and
+  notices, so separate owners share neither state nor landings; their fixtures use explicit
+  `Stores` owners. Those locks are load-bearing for the remaining globals, not incidental
   — hold one for anything that touches the shared registry, compatibility state or the app frame.
   **Since 2026-09-10 the lock also records WHICH THREAD holds it, and the stores ASSERT it.** A
   mutex nobody is obliged to take is a convention, and a convention broken by one test in two
@@ -1450,7 +1472,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   no-line PASS, 191.4, 227.8", in which a 30 ms open and a 159 ms one are the same output. The
   `coldopen` line is UNARMED and unconditional, so one mount is one sample and an absent line
   fails. Its value on `cold-open` is PROVISIONAL until TV session 7 leg 6 measures it, and the
-  scene's `_coldopen_note` says so. The Search pair is the
+  scene's `_coldopen_note` says so. **And, since 2026-09-19, one STRESS family** — `bench_worst_ms`, `bench_drift_ms`, `bench_rss_growth_kb`, plus the optional `bench_latch_exempt_ms` exemption. It does not compose with the six: a scene carrying `bench` (`push-100`, `modal-100`) is graded entirely by `run.py`'s `grade_bench` and never reaches the rate, frame-time or mount gates, so "six" counts the gates of an ordinary scene. The Search pair is the
   clearest illustration that these are two halves of ONE question — same screen, same trigger, the
   oscillator added or taken away. A scene with no motion and only a `loop_floor`
   gates nothing — **`home-hero` carries an `_idle_gate_note` saying exactly that, and it is the only
@@ -1653,7 +1675,13 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   cross-fade `ui::nav` draws. EMPTY = Home↔the first library section, the two pages that SHARE the
   top tab bar (`fps:home-library-nav`); a ratingKey = Home↔that item's DETAIL page instead, which
   has no shared chrome, a hero backdrop and ambient ground on the far side, and a real teardown at
-  the fade floor (`fps:home-detail-nav`). Both boot to Home), and
+  the fade floor (`fps:home-detail-nav`). Both boot to Home). The COUNTED stress-bench twins of
+  the two above: `/tmp/plxnative-pushbench[=<n>[,<ratingKey>]]` (n push→settle→pop cycles rotating
+  Detail/Person/Library, default n=100 — `fps:push-100`) and
+  `/tmp/plxnative-modalbench[=<n>[,<ratingKey>]]` (n present→settle→dismiss cycles rotating every
+  modal Style reachable without a TV-only gesture — `fps:modal-100`); both log one `bench:` line
+  per cycle (worst-frame ms, presented frames, RSS) and a `bench: ... done` line once, then go
+  idle, graded by `tests/run.py`'s `grade_bench`. See `dev::scenarios::bench`'s module doc. Plus
   `/tmp/plxnative-itemmenu` (snap into the grid, then open the **press-and-hold card context menu**
   on the focused card — `route=home overlay=itemmenu` since UI-restructure phase 10, when the menu
   became a `ModalStack` surface and `route=itemmenu` stopped existing; the interactive path is a
@@ -1670,7 +1698,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   picture to `ck:` tokens (hover is deliberately NOT forwarded — it used to park app focus on a
   tab pill so the next ENTER opened the library). The one real trigger here is
   `/tmp/plxnative-capture[=port]` (the in-app live UI capture stream:
-  the app's own GLES frames over TCP — **:8910 for the stable install, :8911 for a flavoured one**
+  the app's own GLES frames over TCP — **:8910 stable, :8911 debug, :8912 nightly**
   when the trigger names no port (`capture::default_port`; `make -s print-appport` is the same rule
   for the shell, and is what `tools/tv-session.sh` hands `stream-screen.py --app-port`). Two
   installs cannot both bind one port and neither side says so: the second `bind` writes one line

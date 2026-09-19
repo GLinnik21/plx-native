@@ -6,8 +6,9 @@
 
 **What:** Add a row to `widgets::hero_scrim_a`'s anchor table for "synopsis-weight (`LABEL` 26px)
 text over a bound video plane at `field=1.35`" and grade it against a real device capture, real
-trailer content — then tune `landing_hero::PROMOTED_FIELD` (the full-trailer-mode scrim residual)
-the same way.
+trailer content. *(The `landing_hero::PROMOTED_FIELD` half of this item is GONE as of 2026-09-17:
+full-trailer mode draws no page chrome at all, so the wedge eases to 0.0 and the constant was
+deleted.)*
 
 **Why:** `docs/trailer-ux-plan.md` §2.3 keeps the detail hero's synopsis visible during background
 trailer autoplay for the first time — previously no prose was ever drawn over playing video, only
@@ -17,8 +18,8 @@ trailer-UX PR (a scope decision, not an oversight) because it needs a TV and rea
 anything — a host test can only check the arithmetic is internally consistent, not that it's
 actually legible.
 
-**Context:** Full detail, the exact anchor-table row to add, and the `PROMOTED_FIELD` tuning
-process are already written out in `docs/trailer-ux-plan.md` §2.3 and §2.4(c). Land this as its own
+**Context:** Full detail and the exact anchor-table row to add are already written out in
+`docs/trailer-ux-plan.md` §2.3. Land this as its own
 device pass immediately after the trailer-UX PR ships, using `tools/capture-screen.sh` on real
 trailer content per §5's "Fast-follow" list.
 

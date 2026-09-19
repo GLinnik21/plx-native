@@ -557,7 +557,7 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
         let hubs = &mut stores.hubs;
         stores.viewstate.borrow_mut().pump(&mut |_| false, &mut |cmd| {
             hubs.run(cmd)
-        }, &mut |_| false, &mut |_| false).emit(&mut fx);
+        }, &mut |_| false, &mut |_| false, &mut |_| false).emit(&mut fx);
         drop(fx);
         drop(cx);
         assert_eq!(out.len(), 2);

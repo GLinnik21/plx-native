@@ -21,10 +21,12 @@ use super::test_support::{frame};
 #[test]
 fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
     let _guard = crate::testlock::serial();
+    // Metadata is owned per-`Bridge` now, so `rig`'s own store drops with it — there is no
+    // process-wide metadata state left for a `Cleanup` to clear. Server registration is still
+    // process-global, so that reset stays.
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
             crate::plex::reset_servers_for_test();
         }
     }
@@ -32,7 +34,13 @@ fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
     crate::plex::reset_servers_for_test();
     let here = crate::plex::register_for_test("park-here", "127.0.0.1", 1, "t", "c1");
     let other = crate::plex::register_for_test("park-other", "127.0.0.2", 2, "t", "c2");
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::AltInstall {
+
+    // Naming the page IS naming the item since the fold: the argument carries the identity, so
+    // a frame on `detail_arg("m1")` mounts that detail page and a frame on `person_arg("p1")`
+    // stacks the person page over it — which is the shape the loop really produces.
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.stores.metadata.run(crate::stores::metadata::MetadataCmd::AltInstall {
         sid: here,
         rk: "m1".into(),
         copies: vec![
@@ -40,12 +48,6 @@ fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
             crate::metadata::AltCopy { sid: other, rk: "copy".into(), library: "Shared".into(), ..Default::default() },
         ],
     });
-
-    // Naming the page IS naming the item since the fold: the argument carries the identity, so
-    // a frame on `detail_arg("m1")` mounts that detail page and a frame on `person_arg("p1")`
-    // stacks the person page over it — which is the shape the loop really produces.
-    let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
     let mut t = 0u32;
     let run = |d: &mut Dispatcher<AppHost>,
                rig: &mut Bridge,
@@ -170,15 +172,22 @@ fn panel_sel(d: &Dispatcher<AppHost>, entry: EntryId) -> i32 {
 fn an_alt_sources_anchor_travels_on_its_arg() {
     use crate::screens::alt_sources::{AltSourcesArg, AltSourcesScreen};
     let _guard = crate::testlock::serial();
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
     let arg = |x: f32, y: f32| AltSourcesArg {
         host: InstanceId(1),
         sid: crate::plex::ServerId::UNSET,
         rk: "m1".into(),
         anchor: [x, y, 300.0, 60.0].map(f32::to_bits),
     };
-    let high = AltSourcesScreen::new(EntryId(1), arg(320.0, 200.0));
-    let low = AltSourcesScreen::new(EntryId(2), arg(700.0, 880.0));
+    let high = AltSourcesScreen::new(
+        EntryId(1),
+        arg(320.0, 200.0),
+        crate::stores::metadata::MetadataStore::default().view(),
+    );
+    let low = AltSourcesScreen::new(
+        EntryId(2),
+        arg(700.0, 880.0),
+        crate::stores::metadata::MetadataStore::default().view(),
+    );
     let (a, b) = (high.frame(), low.frame());
     assert_ne!(
         (a.x, a.y),
