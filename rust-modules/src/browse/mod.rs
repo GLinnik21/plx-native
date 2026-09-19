@@ -16,7 +16,12 @@
 //! The sort/filter MENUS are server-driven: the first page of a section is requested with
 //! `includeMeta=1` and the response's `Meta.Type[]` supplies the Sort entries; the genre
 //! value list is fetched lazily (`kick_genres`) when the filter menu first opens. Nothing
-//! menu-shaped is hardcoded — a music section would bring its own sorts.
+//! menu-shaped is hardcoded, with one measured exception: PMS 1.43.4 never advertises a
+//! play-count sort in `Meta.Type[].Sort` on any section type, yet it DOES honour
+//! `sort=viewCount:desc`/`:asc` on movie and show sections (an unrecognised key 500s the whole
+//! listing, so this is not something to guess at for a section type that hasn't been proven).
+//! [`with_plays_sort`] appends that one client-side entry where [`SecKind`] proves it works,
+//! and only once, in case a future server starts advertising the key itself (issue #146).
 //!
 //! [`BrowseState`] is main-thread-only; worker threads touch only their owning store adapter's
 //! mailboxes + atomics and the `&'static` Plex client.
@@ -1823,10 +1828,15 @@ impl BrowseState {
                                 }
                             }
                         } else if result.gen == self.query_gen() {
+                            let kind = self.section_kind(result.sec);
                             if let Some(state) = self.state_mut(result.sec) {
                                 state.fetch = SecFetch::Ready;
                                 if let Some(sorts) = result.sorts {
                                     if state.sorts.is_empty() {
+                                        let sorts = match kind {
+                                            Some(kind) => with_plays_sort(sorts, kind),
+                                            None => sorts,
+                                        };
                                         state.sorts = Arc::new(sorts);
                                     }
                                 }
@@ -2044,6 +2054,39 @@ impl SecKind {
             SecKind::Show => "TV shows",
         }
     }
+}
+
+/// PMS's own sort key for play count — never advertised by `includeMeta=1` (measured against
+/// PMS 1.43.4, on movie and show sections alike) but honoured by the server on both when sent
+/// directly, sorting movies by their view count and shows by their own. An unrecognised key
+/// 500s the whole listing, which is why [`with_plays_sort`] never sends this for a kind that
+/// hasn't been proven to accept it.
+const PLAYS_SORT_KEY: &str = "viewCount";
+
+/// Whether the server is proven to honour [`PLAYS_SORT_KEY`] for this section kind. An
+/// exhaustive match rather than a wildcard default: [`SecKind`]'s own doc says a third variant
+/// (`Artist`/`Photo`) belongs in "the commit that builds its level", and when that lands this
+/// match must fail to compile until someone decides whether the new kind belongs here too,
+/// rather than silently inheriting `true`.
+fn kind_offers_plays_sort(kind: SecKind) -> bool {
+    match kind {
+        SecKind::Movie | SecKind::Show => true,
+    }
+}
+
+/// Append the client-side "Plays" sort where the server is proven to honour it, unless it is
+/// already in the advertised list (a future PMS that starts advertising `viewCount` itself
+/// must not produce two rows). Descending by default — most-played first, the direction the
+/// feature exists for.
+fn with_plays_sort(mut sorts: Vec<SortEntry>, kind: SecKind) -> Vec<SortEntry> {
+    if kind_offers_plays_sort(kind) && !sorts.iter().any(|sort| sort.key == PLAYS_SORT_KEY) {
+        sorts.push(SortEntry {
+            key: PLAYS_SORT_KEY.into(),
+            title: "Plays".into(),
+            default_desc: true,
+        });
+    }
+    sorts
 }
 
 /// Point the app's CURRENT server at the source of section `i`, and drop the per-server state that

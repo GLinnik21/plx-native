@@ -144,12 +144,23 @@ pub(super) fn registered_source(
 }
 pub(super) fn registered_page_source(
 ) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client) {
+    registered_page_source_of_kind(SecKind::Movie)
+}
+/// Same as [`registered_page_source`], but for a chosen section kind — used to prove the
+/// "Plays" sort gate (issue #146) behaves the same for `Show` as it does for `Movie`.
+pub(super) fn registered_page_source_of_kind(
+    kind: SecKind,
+) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client) {
     let (cleanup, mut browse, sid, client) = registered_source();
     if let Some(source) = browse.state.source_mut(0) {
         source.sections_done = true;
         source.counts_done = true;
     }
-    browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+    let title = match kind {
+        SecKind::Movie => "Movies",
+        SecKind::Show => "TV Shows",
+    };
+    browse.append_sections(0, vec![(1, title.into(), kind)]);
     (cleanup, browse, sid, client)
 }
 pub(super) fn registered_resident_page_source(
@@ -279,6 +290,24 @@ pub(super) fn land_page(browse: &mut TestBrowse, total: i64, items: usize) {
         items: (0..items).map(|_| PmsMovie::default()).collect(),
         total,
         sorts: None,
+    };
+    *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+    let _outcome = browse.pump();
+}
+/// Same as [`land_page`], but carrying a server-advertised sort list (as `includeMeta=1` would)
+/// for the CURRENT section — used to exercise the client-side "Plays" sort augmentation
+/// (issue #146) that runs where this landing is applied.
+pub(super) fn land_page_with_sorts(browse: &mut TestBrowse, sorts: Vec<SortEntry>) {
+    let client = crate::plex::client();
+    let r = PageResult {
+        client,
+        token_gen: client.token_gen(),
+        gen: browse.state.query_gen(),
+        sec: browse.state.cur(),
+        start: 0,
+        items: Vec::new(),
+        total: 0,
+        sorts: Some(sorts),
     };
     *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
     let _outcome = browse.pump();
