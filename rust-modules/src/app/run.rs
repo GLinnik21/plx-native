@@ -291,6 +291,9 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
     // stamp `dt` so a spring's velocity can be judged as travel-this-frame rather than as
     // a bare units-per-second. The decision itself is taken just above `glViewport`.
     crate::ui::idle::frame_begin(fr.dt);
+    // Is a page capture still in flight on the GPU? Latched once, before the springs step, so
+    // the held appear spring and the present gate below read the same answer.
+    crate::gfx::snapshot_frame_begin();
     // ui::press (tvOS click) — advance the dip/spring every frame; when a deferred activation
     // commits (the spring-back bounce has played), run it for whichever CARD view armed the
     // press. A long-press does NOT commit (`press::tick` clears `want_commit` at `LONG_MS`):
@@ -378,8 +381,14 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     crate::ui::tex::note_queued(&mut app.pages.budget);
     // Lifecycle is a hard outer gate: even noidle, a bound plane or queued uploads must
     // not reach EGL/Mali while SDL's window is backgrounded.
-    fr.present = app.window_activity.allow_present(
-        crate::ui::idle::should_present(fr.now) || app.pages.budget.has_queued_work());
+    //
+    // A third term goes FIRST and short-circuits the other two: a page capture still in flight on
+    // the GPU (`gfx::SNAPSHOT_THIS_FRAME`'s doc). Presenting now would only wait a whole vsync for
+    // a buffer; not asking `should_present` leaves its damage and motion for the frame that does.
+    fr.present = !crate::gfx::snapshot_pending()
+        && app.window_activity.allow_present(
+            crate::ui::idle::should_present(fr.now) || app.pages.budget.has_queued_work(),
+        );
     app.rec.present(fr.present);
     if fr.present {
         app.window_activity.begin_present(fr.player);
@@ -498,6 +507,8 @@ unsafe fn present_and_swap(
         crate::gfx::blur_frame_end();
         // …and a queued underlay-field reduction has had one more drawn frame to finish in.
         crate::gfx::field_frame_end();
+        // …and a frame that captured the page leaves a fence the next frames wait on.
+        crate::gfx::snapshot_frame_end();
         crate::ui::idle::note_present(fr.now);
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         if let Some(budget) = wslg_frame_budget {

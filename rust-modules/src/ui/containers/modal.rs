@@ -116,7 +116,14 @@ impl PopoverMotion {
         !self.holding && (self.appear - self.target).abs() < 0.002 && self.vel.abs() < 0.02
     }
     pub fn tick(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
-        self.holding = std::mem::take(&mut self.hold);
+        self.tick_gated(t, present, crate::gfx::snapshot_pending());
+    }
+    /// [`tick`](Self::tick) with the host snapshot's GPU state passed in: a HELD surface stays
+    /// held while the snapshot its hold frame rendered is still in flight, because those frames
+    /// are not presented (`gfx::snapshot_frame_begin`) and a ramp stepped through them would open
+    /// with a jump. A surface already ramping is never re-held.
+    pub fn tick_gated(&mut self, t: Tick, present: &mut PresentHandle<'_>, snapshot_in_flight: bool) {
+        self.holding = std::mem::take(&mut self.hold) || (self.holding && snapshot_in_flight);
         if self.holding {
             // Still moving: the next frame must present and take the first real step.
             present.note(super::super::present::PresentEvent::Motion);
@@ -867,6 +874,36 @@ mod hide_tests {
         assert_eq!(ms.surface(id).unwrap().motion.appear, 0.0);
         let life = ms.prune();
         assert_eq!(life.len(), 2, "…and it retires on the next frame");
+    }
+
+    /// **The hold lasts until the host snapshot has left the GPU, not one frame.** The frame after
+    /// the capture is not presented while the snapshot render is still in flight (`app::run`'s
+    /// present gate, `gfx::snapshot_frame_begin`), so a spring stepped on those frames would start
+    /// its ramp off-screen and open with a jump. Only a HELD surface stays held: one already ramping
+    /// when an unrelated recapture lands keeps its clock.
+    #[test]
+    fn a_held_surface_stays_at_zero_while_its_snapshot_is_in_flight() {
+        let mut m = PopoverMotion::at(0.0);
+        m.to(1.0);
+        m.hold_one_frame();
+        let mut present = Present::new();
+        for (i, in_flight) in [false, true, true].into_iter().enumerate() {
+            let mut ph = PresentHandle::of(&mut present);
+            m.tick_gated(tick(16 * (i as u32 + 1)), &mut ph, in_flight);
+            assert_eq!(m.appear, 0.0, "frame {i}: held while the capture is in flight");
+            assert!(!m.settled(), "frame {i}: a held surface is not settled");
+        }
+        {
+            let mut ph = PresentHandle::of(&mut present);
+            m.tick_gated(tick(64), &mut ph, false);
+        }
+        let a = m.appear;
+        assert!(a > 0.0 && a < 0.2, "the ramp starts from 0 once it has landed: {a}");
+        {
+            let mut ph = PresentHandle::of(&mut present);
+            m.tick_gated(tick(80), &mut ph, true);
+        }
+        assert!(m.appear > a, "a ramping surface is not re-held by a later capture");
     }
 
     /// `hide` retires on the same frame — no spring runs at all — while `dismiss` over the same

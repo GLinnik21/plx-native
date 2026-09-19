@@ -4,7 +4,7 @@
 //! main-thread statics. link_program/use_prog are also used by text.rs (crate path).
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 use crate::ui::overdraw::{gate, masked, note_px, set_clip, Class};
@@ -1779,6 +1779,68 @@ pub(crate) mod tex_ledger {
     }
 }
 
+/// **A frame that snapshots the page is not followed by a present until the GPU has finished it.**
+///
+/// A [`FrameCache`] capture puts a whole page render on a frame that also composites the page
+/// and whatever stands over it — the heaviest GPU frame a modal has, and more than a vsync of GPU
+/// on the television. The CPU runs a frame ahead of the GPU, so the capture frame itself returns
+/// quickly and its cost lands on the NEXT presented frame, which waits a whole extra vsync for a
+/// buffer (22–37 ms, once per modal open, `fps:modal-100`, 2026-09-19). The GPU cannot do the
+/// work faster; what can change is who waits. A fence goes in after the capture frame's swap
+/// ([`snapshot_frame_end`]) and the frames that follow are simply not presented until it
+/// signals ([`snapshot_frame_begin`], `app::run`'s present gate) — the panel still shows the
+/// capture frame, which is the unchanged page, and the modal's appear spring stays held at 0
+/// (`PopoverMotion`), so its ramp starts on a GPU with nothing queued rather than behind a
+/// page render.
+///
+/// Bounded by [`SNAPSHOT_DEFER_MAX`] frames, so a fence that never signals costs a few frames
+/// once and never a frozen screen; with no fences (the simulator) nothing is ever deferred.
+static SNAPSHOT_THIS_FRAME: AtomicBool = AtomicBool::new(false);
+/// The capture frame's fence. Main render thread only, like the chain.
+static mut SNAPSHOT_FENCE: Option<crate::egl::fence::Fence> = None;
+/// Consecutive frames deferred for the fence so far.
+static SNAPSHOT_DEFERRED: AtomicU32 = AtomicU32::new(0);
+/// This iteration's answer, latched once by [`snapshot_frame_begin`] so the present gate and the
+/// appear spring see the same one.
+static SNAPSHOT_PENDING: AtomicBool = AtomicBool::new(false);
+/// Frames a capture may defer presents for — about 67 ms, several times the capture's own GPU cost.
+pub(crate) const SNAPSHOT_DEFER_MAX: u32 = 4;
+
+/// [`snapshot_frame_begin`]'s decision: `fence` is `None` with nothing to wait for, else whether
+/// it has signalled; `deferred` the frames already deferred for it.
+pub(crate) fn snapshot_defers(fence: Option<bool>, deferred: u32) -> bool {
+    fence == Some(false) && deferred < SNAPSHOT_DEFER_MAX
+}
+
+/// Close a presented frame: a frame that captured the page leaves a fence behind it.
+pub(crate) fn snapshot_frame_end() {
+    if SNAPSHOT_THIS_FRAME.swap(false, Ordering::Relaxed) {
+        // SAFETY: main render thread, like every GL call here.
+        unsafe { SNAPSHOT_FENCE = crate::egl::fence::Fence::insert() };
+        SNAPSHOT_DEFERRED.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Start an iteration: is a capture still in flight on the GPU? Latched for
+/// [`snapshot_pending`]; a signalled fence (or the cap) drops it.
+pub(crate) fn snapshot_frame_begin() {
+    // SAFETY: main render thread.
+    let fence = unsafe { (*std::ptr::addr_of!(SNAPSHOT_FENCE)).as_ref().map(|f| f.signaled()) };
+    let n = SNAPSHOT_DEFERRED.load(Ordering::Relaxed);
+    let defer = snapshot_defers(fence, n);
+    if defer {
+        SNAPSHOT_DEFERRED.store(n + 1, Ordering::Relaxed);
+    } else if fence.is_some() {
+        unsafe { SNAPSHOT_FENCE = None };
+    }
+    SNAPSHOT_PENDING.store(defer, Ordering::Relaxed);
+}
+
+/// Is this iteration waiting for a page capture to leave the GPU? See [`SNAPSHOT_THIS_FRAME`].
+pub(crate) fn snapshot_pending() -> bool {
+    SNAPSHOT_PENDING.load(Ordering::Relaxed)
+}
+
 /// Force a freshly uploaded texture RESIDENT now, on the upload's own frame, by sampling it once.
 ///
 /// On this driver `glTexImage2D` returns after the copy and defers the rest — the allocation and
@@ -2038,6 +2100,7 @@ impl FrameCache {
             }
         }
         self.valid = true;
+        SNAPSHOT_THIS_FRAME.store(true, Ordering::Relaxed);
         true
     }
 
@@ -2115,6 +2178,7 @@ impl FrameCache {
     pub(crate) fn rendered(&mut self, target: crate::surface::PageTarget) {
         drop(target);
         self.valid = true;
+        SNAPSHOT_THIS_FRAME.store(true, Ordering::Relaxed);
         self.draw();
     }
 
@@ -5522,6 +5586,19 @@ mod tests {
         assert_eq!(field_answer(t, 4, Some(4)), TicketState::Due, "the head read this run");
         assert_eq!(field_answer(t, 5, Some(4)), TicketState::Lost, "a later run reused the targets");
         assert_eq!(field_answer(t, 5, Some(5)), TicketState::Lost, "another run's page");
+    }
+
+    /// **A frame that rendered the page offscreen is not followed by a present until the GPU has
+    /// finished it — for a bounded number of frames.** Unfenced (the simulator), nothing is ever
+    /// pending; a fence that never signals stops deferring after `SNAPSHOT_DEFER_MAX` frames rather
+    /// than freezing the screen.
+    #[test]
+    fn a_snapshot_in_flight_defers_presents_for_a_bounded_number_of_frames() {
+        assert!(!snapshot_defers(None, 0), "no fence: nothing in flight");
+        assert!(!snapshot_defers(Some(true), 0), "signalled: present");
+        assert!(snapshot_defers(Some(false), 0), "in flight: defer");
+        assert!(snapshot_defers(Some(false), SNAPSHOT_DEFER_MAX - 1));
+        assert!(!snapshot_defers(Some(false), SNAPSHOT_DEFER_MAX), "the cap: present anyway");
     }
 
     #[test]
