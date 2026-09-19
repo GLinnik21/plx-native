@@ -10,7 +10,7 @@
 //! its third line into a right-pinned `MORE` (`TextView::fade_last` + the pinned label), and that
 //! affordance is unchanged: `MORE` is still a mark rather than a control, still unfocusable, still
 //! drawn only when `bio.truncates(BIO_W)`. This panel is what OK on the header now opens, and it is
-//! gated on **exactly that same predicate** — [`person::bio_is_truncated`]. A panel that opened on a
+//! gated on **exactly that same predicate** — `PersonScreen::bio_more` (the header's measured `bio.truncates(BIO_W)`). A panel that opened on a
 //! two-line bio would show the reader the words they had just finished reading.
 //!
 //! ## Three things here are not obvious
@@ -675,7 +675,7 @@ fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn crate::ui::mach
     y += theme::alert::TITLE_LEAD + theme::alert::GAP_TITLE_SUB;
 
     let runs = meta_runs(
-        &person.roles,
+        &person.roles.join(", "),
         &crate::ui::fmt::pretty_date(&person.born, 0),
         &crate::ui::fmt::pretty_date(&person.died, 0),
         &person.birthplace,
