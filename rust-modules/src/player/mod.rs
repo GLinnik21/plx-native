@@ -509,6 +509,15 @@ pub(crate) fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState
     if ps.jail_load_blocked || crate::route::play_refused(ps) || crate::route::play_resolution_failed(ps) {
         return shared::PlaybackState::Error;
     }
+    // A seek in flight is derived HERE too, not only published by the pump's own ladder (which
+    // says the same thing in the same order — a seek outranks frames). `request_seek` sets the
+    // flag at the press, but `pb_state` is only republished at the end of a pump pass, so a
+    // reader between the two still saw Playing: the HUD, which freezes the playhead at the
+    // target only while busy, drew one frame of the PRE-seek position between the scrub preview
+    // and the frozen target — a visible jump back and forth on every seek.
+    if SHARED.seeking.load(Relaxed) {
+        return shared::PlaybackState::Seeking;
+    }
     shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
 }
 
@@ -2818,5 +2827,54 @@ mod native_failure_regressions {
         SHARED.load_timed_out.store(true, Relaxed);
         SHARED.reset_session();
         assert!(!SHARED.load_timed_out.load(Relaxed));
+    }
+}
+
+/// The two halves of "the playbar jumps on a seek", reported on an LG C3 (webOS 23), where
+/// in-place seeking is disabled and every seek is a reload.
+#[cfg(test)]
+mod seek_hud_regressions {
+    use super::*;
+
+    /// **A reload keeps the file's duration; a real stop does not.** `teardown` zeroed it on
+    /// every reload, so for the few hundred ms until the demuxer reopened the file the HUD drew
+    /// the playhead at position ÷ 0 — the far left — while the clock beside it, which is the
+    /// position alone, read correctly. Differential: before the fix the reload path called
+    /// `reset_session` and the first assertion reads 0.
+    #[test]
+    fn a_reload_keeps_the_files_duration_and_a_stop_does_not() {
+        let _serial = crate::testlock::serial();
+        SHARED.reset_session();
+        SHARED.duration_ns.store(5_400_000_000_000, Relaxed);
+        SHARED.playpos_ns.store(1_200_000_000_000, Relaxed);
+        SHARED.reset_session_for_reload();
+        assert_eq!(duration_ns(), 5_400_000_000_000, "the same file is about to be reopened");
+        assert_eq!(playpos_ns(), 0, "…and everything that IS the session's was still cleared");
+        SHARED.reset_session();
+        assert_eq!(duration_ns(), 0, "a real stop: the next item is a new file");
+    }
+
+    /// **A requested seek reads as Seeking at once**, not one pump pass later. `request_seek`
+    /// sets the flag at the press; `pb_state` is republished only at the end of a pump pass, so
+    /// a reader in between saw Playing with the scrub preview already cleared, and the HUD drew
+    /// one frame of the pre-seek position before freezing on the target.
+    #[test]
+    fn a_requested_seek_reads_as_seeking_before_the_pump_republishes() {
+        let _serial = crate::testlock::serial();
+        let ps = crate::route::PlaybackSession::IDLE;
+        crate::route::reset_player_control_for_test(&ps);
+        SHARED.reset_session();
+        TX.reset();
+        SHARED.pb_state.store(PlaybackState::Playing as u8, Relaxed);
+        assert_eq!(state(&ps), PlaybackState::Playing);
+        // the REAL press path — and deliberately so: `tests/test_harness.py` holds that exactly
+        // one place in the tree arms this flag, which a test arming it by hand would break
+        request_seek(90_000_000_000);
+        assert_eq!(state(&ps), PlaybackState::Seeking, "the pump has not run yet");
+        assert!(state(&ps).is_busy(), "busy is what freezes the HUD's playhead on the target");
+        assert_eq!(seek_display_ns(), 90_000_000_000, "…and this is the target it freezes on");
+        SHARED.reset_session();
+        TX.reset();
+        crate::route::reset_player_control_for_test(&ps);
     }
 }
