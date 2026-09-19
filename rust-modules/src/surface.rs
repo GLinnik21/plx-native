@@ -151,16 +151,70 @@ pub(crate) const fn render_scale() -> i32 {
 }
 
 /// The framebuffer a frame is drawn into — what every "back to the screen" bind must name instead
-/// of a literal 0. The supersampling target when [`render_scale`] is above 1, else 0.
-#[cfg(feature = "hostsim")]
+/// of a literal 0. A page being rendered straight into a snapshot ([`PageTarget`]) first, then the
+/// supersampling target when [`render_scale`] is above 1, else 0.
 #[inline]
 pub(crate) fn default_fb() -> u32 {
+    match PAGE_TARGET.load(Ordering::Relaxed) {
+        0 => frame_fb(),
+        fbo => fbo,
+    }
+}
+
+/// The framebuffer the frame is PRESENTED from — [`default_fb`] without the page redirect.
+#[cfg(feature = "hostsim")]
+#[inline]
+pub(crate) fn frame_fb() -> u32 {
     SS_FBO.load(Ordering::Relaxed)
 }
 #[cfg(not(feature = "hostsim"))]
 #[inline]
-pub(crate) const fn default_fb() -> u32 {
+pub(crate) const fn frame_fb() -> u32 {
     0
+}
+
+/// The framebuffer a host page is being drawn into instead of [`frame_fb`], or 0. See [`PageTarget`].
+static PAGE_TARGET: AtomicU32 = AtomicU32::new(0);
+
+/// **A host page drawn straight into its snapshot** — `popover::host`'s capture frame.
+///
+/// While one is alive, [`default_fb`] names `fbo`, so every "back to the screen" bind a pass makes
+/// inside the page (the glass chains, the field reduction, a blur source pass) comes back to the
+/// snapshot rather than to the frame, and the page lands in the texture the modal is then served
+/// from. Dropping it binds the frame's own framebuffer again. The texture behind `fbo` has to be
+/// the drawable's size, so the viewport and every scissor mean the same pixels in both.
+pub(crate) struct PageTarget {
+    _private: (),
+}
+
+impl PageTarget {
+    /// Bind `fbo` and make it the page's target. `fbo` must be complete; the caller checked.
+    pub(crate) fn enter(fbo: u32) -> Self {
+        debug_assert!(fbo != 0, "a page target is an FBO, never the window");
+        debug_assert_eq!(PAGE_TARGET.load(Ordering::Relaxed), 0, "page targets do not nest");
+        PAGE_TARGET.store(fbo, Ordering::Relaxed);
+        // SAFETY: main render thread, current context — like every other bind in the renderer.
+        unsafe { bind_framebuffer(fbo) };
+        Self { _private: () }
+    }
+}
+
+impl Drop for PageTarget {
+    fn drop(&mut self) {
+        PAGE_TARGET.store(0, Ordering::Relaxed);
+        // SAFETY: as in `enter`.
+        unsafe { bind_framebuffer(frame_fb()) };
+    }
+}
+
+extern "C" {
+    #[link_name = "glBindFramebuffer"]
+    fn gl_bind_framebuffer(target: u32, framebuffer: u32);
+}
+
+unsafe fn bind_framebuffer(fbo: u32) {
+    const GL_FRAMEBUFFER: u32 = 0x8D40;
+    gl_bind_framebuffer(GL_FRAMEBUFFER, fbo);
 }
 
 #[cfg(feature = "hostsim")]
@@ -236,7 +290,7 @@ unsafe fn create_supersample_fb(w: c_int, h: c_int) -> Option<u32> {
 /// swap. A no-op unless supersampling.
 #[cfg(feature = "hostsim")]
 pub(crate) fn present_supersampled() {
-    let fbo = default_fb();
+    let fbo = frame_fb();
     if fbo == 0 {
         return;
     }
@@ -268,7 +322,7 @@ pub(crate) fn present_supersampled() {
 #[inline]
 fn pointer_map() -> (f32, i32, i32) {
     #[cfg(feature = "hostsim")]
-    if default_fb() != 0 {
+    if frame_fb() != 0 {
         return (
             f32::from_bits(WIN_SCALE_BITS.load(Ordering::Relaxed)),
             WIN_VIEW[0].load(Ordering::Relaxed),

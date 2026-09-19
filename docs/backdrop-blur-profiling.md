@@ -1090,3 +1090,68 @@ reference is the latest figures in this document.
 | modal-ramp | PASS, worst robust_max 58.7 ms against 75 |
 | item-menu | PASS, loop 60 |
 | home-acct-glass | PASS, median 56 fps (60 in the 2026-09-04 table) |
+
+## 2026-09-19 (later): the modal open, one frame at a time — still over budget
+
+All numbers come from the television, with the panel off and the sound muted. They are from
+`TMP-modal-short`, a 16-cycle copy of `fps:modal-100` that cycles through Settings, the account
+menu, the item menu and About. Because the run is short, its RSS line covers only six cycles after
+cycle 10.
+
+| build (worst_ms per cycle) | p50 | p95 | max | RSS last − cycle 10 |
+|---|---|---|---|---|
+| start of this lane (ed3801b4 + FBO capture + fence) | 40.1 | 75.9 | 75.9 | +9.7 MB |
+| + frozen page never reads its ground, read once the dim is seen | 40.1 | 61.7 | 61.7 | +4.7 MB |
+| + separable `texture_rgba` | 37.2 | 62.5 | 62.5 | +8.6 MB |
+| + the appear spring held for the capture frame | 31.1 | 71.6 | 71.6 | +8.6 MB |
+
+The max figure is Settings' cold first cycle each time. The RSS figure moves by ±4 MB between
+back-to-back runs of the same build, so six cycles cannot settle a leak verdict.
+
+**What landed, and why.**
+
+- **The host page renders straight INTO the snapshot.** `FrameCache::render_into` does this
+  instead of drawing to framebuffer 0 and then copying it out mid-frame. The underlay field reads
+  its fence-guarded ticket (`egl::fence`) only after the GPU has signalled, so `fieldread` is never
+  a drain.
+- **A frozen page never reads its ground** (`gfx::may_read_ground`). Every thirtieth frame of a
+  modal held over Home, the tab-track and Hero-row samplers issued a synchronous `glReadPixels`.
+  That drained the GPU for 21 ms on a page whose pixels could not have changed.
+  Test: `a_frozen_page_answers_its_ground_from_the_last_reading`, observed red (SIGSEGV, reaching
+  `glReadPixels`).
+- **The field is read on the first frame a dim is SEEN** (`draw_scrims_on`, `RouteGround::draw_host`).
+  Before this, it was read on the frame the surface was presented.
+- **`texture_rgba` is separable and bit-identical.** It computes the x pass once per (grid row,
+  texel column) and runs only the y pass per texel. Its CPU time on the dim-latch frame fell from
+  7.5–8.6 ms to 3.5–4.5 ms. What remains is mostly 5,760 `powf` in `gfx::enc`.
+  Test: `a_separable_texture_is_reconstruct_to_the_bit`.
+- **The appear spring holds at 0 for one tick after `present`** (`PopoverMotion::hold`). The frame
+  that renders the host into its snapshot therefore carries no dim, no reduction and no panel ramp.
+  The ramp is the same curve, one frame later.
+  Test: `a_presented_surface_holds_at_zero_for_one_frame_then_ramps`, observed red.
+
+**What is still over 20 ms: GPU backlog at the open.** The graded worst frame of almost every
+cycle is the third frame after the open. It waits 22–37 ms (`tpp`) for a buffer while doing
+3–6 ms of its own CPU work. `main.ui` HWCNT per frame (About):
+
+| frame | GPU cycles |
+|---|---|
+| capture | 11.2 M |
+| next | 5.5 M |
+| next | 12.1 M |
+| steady | 7.7 M |
+
+Home is 8.7 M a frame, and 3.0 M of every frame is the compositor floor
+(`drawmask=all`, the 2026-09-02 section). The steady modal frame is already close to a vsync
+of GPU, so the open's roughly 5.8 M excess has no headroom to drain into. With
+`drawmask=all` the same bench grades p50 17.5 and 12 of 16 cycles pass, which shows that the
+remaining cost is the app's own draw work, not presentation pacing.
+
+Leads not yet taken:
+- Serve the Held::Ground stage from the settle frame. It never fired in these runs.
+- Price the steady frame's 4.5 M app cycles class by class. A `drawmask` leg does NOT change the
+  HWCNT legs of `--graphics-profile`, so use `frame.ui` production A/B runs.
+- Replace `enc` with an exact threshold search.
+- Handle Settings' cold first open. Its `surf` is 46–56 ms on the CPU.
+
+`push-100` was not worked in this lane.

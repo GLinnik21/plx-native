@@ -265,8 +265,12 @@ fn a_latch_is_idempotent_and_reset_re_arms_it() {
     f.latch_from_corners(b, Grade::Dim);
     assert_eq!(f.cells, first, "a second latch must not move a latched field");
     // And the frame path takes the same early exit — which is also why this case can call it at
-    // all: `gfx::sample_underlay_field` is never reached, so no GL context is needed.
-    assert!(f.latch_from_frame(Grade::Ground), "a latched field is already an answer");
+    // all: `gfx::field_kick` is never reached, so no GL context is needed.
+    assert_eq!(
+        f.latch_from_frame(Grade::Ground, None),
+        FrameLatch::Latched,
+        "a latched field is already an answer"
+    );
     assert_eq!(f.cells, first);
 
     f.reset();
@@ -354,6 +358,36 @@ fn the_texture_is_sixty_by_thirty_two_and_opaque() {
         px.chunks_exact(4).all(|p| p[0..3] == *first),
         "a flat field must not acquire structure in the reconstruction"
     );
+}
+
+/// The separable texture is [`reconstruct`] per texel TO THE BIT — the speed-up shares the x pass
+/// between the texels of a column and may not move a single byte. Structured, steep and
+/// out-of-range cells, so the clamp, the edge extrapolation and every knot position all bind.
+#[test]
+fn a_separable_texture_is_reconstruct_to_the_bit() {
+    let mut s = 0x9e37_79b9u32;
+    let mut rnd = || {
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        (s % 10_000) as f32 / 8_000.0 - 0.1
+    };
+    for _ in 0..8 {
+        let cells: [[f32; 3]; N] = std::array::from_fn(|_| [rnd(), rnd(), rnd()]);
+        let px = texture_rgba(&cells);
+        for j in 0..TEX_H {
+            for i in 0..TEX_W {
+                let u = (i as f32 + 0.5) / TEX_W as f32;
+                let v = (j as f32 + 0.5) / TEX_H as f32;
+                let c = reconstruct(&cells, u, v);
+                let o = (j * TEX_W + i) * 4;
+                for ch in 0..3 {
+                    let want = (gfx::enc(c[ch]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                    assert_eq!(px[o + ch], want, "texel ({i},{j}) channel {ch}");
+                }
+            }
+        }
+    }
 }
 
 // ── The panel material (`draw_panel` / `panel_plan`) ─────────────────────────────────────────────

@@ -244,7 +244,7 @@ impl super::modal::DimSink for FakeFb {
     }
     fn collect(&mut self, t: crate::gfx::FieldTicket) -> crate::gfx::FieldRead {
         use crate::gfx::{field_ticket_state, FieldRead, TicketState};
-        match field_ticket_state(t, self.runs, self.swaps) {
+        match field_ticket_state(t, self.runs, self.swaps, true) {
             TicketState::Due => {
                 self.events.push("collect");
                 FieldRead::Ready([[self.reduced; 3]; crate::gfx::FIELD_CELLS])

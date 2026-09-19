@@ -967,6 +967,7 @@ unsafe fn cache_store(
     let cache = &mut *addr_of_mut!(TCACHE_A);
     let slot = take_slot(cache);
     if cache[slot].tex != 0 {
+        crate::gfx::tex_ledger::deleted(cache[slot].tex);
         glDeleteTextures(1, &cache[slot].tex);
     }
     set_entry_key(&mut cache[slot], s_bytes);

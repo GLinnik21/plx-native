@@ -670,6 +670,11 @@ pub(crate) mod host {
     /// Which stage [`CACHE`] holds.
     static mut HELD: Held = Held::Nothing;
 
+    /// The page being drawn straight INTO [`CACHE`] this frame (`gfx::FrameCache::render_into`),
+    /// opened by [`page_pass`] when it owes a capture and closed by [`capture_now`] at the instant
+    /// the capture would otherwise have been copied. `None` on every other frame.
+    static mut TARGET: Option<crate::surface::PageTarget> = None;
+
     /// Has the ground quad already gone down this frame? A popover reaches [`live`] twice (its
     /// scrim and its panel), and the quad is one full-screen draw that belongs to the frame rather
     /// than to either call.
@@ -694,6 +699,15 @@ pub(crate) mod host {
     /// (Settings, whose opaque ground needs no lift) re-rendered its host AND re-copied it on
     /// every ramp frame — 67 ms a frame on the entry fade, 33 ms once the copy is held.
     fn capture_now() -> bool {
+        // The page went straight into the snapshot (`page_pass` redirected it): close that pass and
+        // put the page on the frame from the texture. No copy, and no pointless-capture question —
+        // the redirect is only ever opened when the capture is wanted.
+        if let Some(target) = unsafe { (*std::ptr::addr_of_mut!(TARGET)).take() } {
+            unsafe { (*std::ptr::addr_of_mut!(CACHE)).rendered(target) };
+            unsafe { HELD = Held::Page };
+            PAGE_EPOCH.fetch_add(1, Relaxed);
+            return true;
+        }
         if CAPTURE_POINTLESS.load(Relaxed) {
             return false;
         }
@@ -884,6 +898,16 @@ pub(crate) mod host {
         };
         if !served {
             CAPTURE_OWED.store(true, Relaxed);
+            // Draw this page into the snapshot rather than onto the frame and copy it out after:
+            // see `FrameCache::render_into` for what the copy cost. Not in a blur source pass (the
+            // capture is refused there anyway) and not when the capture would be thrown away.
+            if !crate::gfx::blur_source_pass() && !CAPTURE_POINTLESS.load(Relaxed) {
+                unsafe {
+                    if (*std::ptr::addr_of!(TARGET)).is_none() {
+                        TARGET = (*std::ptr::addr_of_mut!(CACHE)).render_into();
+                    }
+                }
+            }
         }
         PagePass {
             was_frozen: crate::gfx::set_page_frozen(served),
@@ -901,7 +925,8 @@ pub(crate) mod host {
             // Nobody lifted: this page's popovers draw AFTER the closure (the two menus,
             // `account_menu`). The framebuffer holds the completed undimmed page, which is exactly
             // what the snapshot is.
-            if CAPTURE_OWED.swap(false, Relaxed) {
+            let redirected = unsafe { (*std::ptr::addr_of!(TARGET)).is_some() };
+            if CAPTURE_OWED.swap(false, Relaxed) || redirected {
                 capture_now();
             }
         }

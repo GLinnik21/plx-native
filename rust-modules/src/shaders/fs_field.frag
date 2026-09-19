@@ -4,7 +4,7 @@
 //
 // It is deliberately the smallest fragment program in the app: one fetch, one multiply, one shared
 // dither. The blur it replaces is not approximated here — it was PAID on the CPU/GPU once, when
-// `gfx::sample_underlay_field` reduced the framebuffer to 15x8 cells and `ui::underlay` low-passed
+// `gfx::field_kick` reduced the framebuffer to 15x8 cells and `ui::underlay` low-passed
 // and reconstructed them into a 60x32 texture. What is left at draw time is a magnification, and
 // GL_LINEAR on a 60x32 source over a 1920x1080 quad is the whole of the gradient.
 //

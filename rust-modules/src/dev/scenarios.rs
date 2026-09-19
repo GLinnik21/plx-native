@@ -1477,6 +1477,14 @@ fn read_rss_kb() -> u64 {
         .unwrap_or(0)
 }
 
+/// `tex=<live textures>/<live kB>` from `gfx::tex_ledger` — appended after `rss_kb=` (the
+/// harness's `BENCH_RE` anchors on the fields before it), so a cycle line that shows RSS growing
+/// also says whether GL textures are what grew.
+fn tex_field() -> String {
+    let (n, bytes) = crate::gfx::tex_ledger::totals();
+    format!("tex={n}/{}", bytes / 1024)
+}
+
 /// Called once per iteration, after the frame's Swap phase is stamped (`app::run::report`, right
 /// after `present_and_swap`) — the narrowest point either bench's accumulator can read this
 /// frame's total. Gated on `presented`: an iteration the idle gate skipped drew nothing, so
@@ -1603,8 +1611,8 @@ pub(crate) fn push_bench_tick(app: &mut App, now: u32) {
                 (b.clock.n, b.opened, b.clock.worst_ms, b.clock.frames, b.clock.cycle_start);
             let dur_ms = now.wrapping_sub(cycle_start);
             crate::log(&format!(
-                "bench: kind=push cycle={}/{n} target={} worst_ms={worst_ms:.1} frames={frames} dur_ms={dur_ms} rss_kb={}",
-                cycle + 1, opened.name(), read_rss_kb(),
+                "bench: kind=push cycle={}/{n} target={} worst_ms={worst_ms:.1} frames={frames} dur_ms={dur_ms} rss_kb={} {}",
+                cycle + 1, opened.name(), read_rss_kb(), tex_field(),
             ));
             push_bench_close(app, opened);
         }
@@ -1676,8 +1684,8 @@ pub(crate) fn modal_bench_tick(app: &mut App, now: u32) {
                 (b.clock.n, b.clock.worst_ms, b.clock.frames, b.clock.cycle_start);
             let dur_ms = now.wrapping_sub(cycle_start);
             crate::log(&format!(
-                "bench: kind=modal cycle={}/{n} target={} worst_ms={worst_ms:.1} frames={frames} dur_ms={dur_ms} rss_kb={}",
-                cycle + 1, target.name(), read_rss_kb(),
+                "bench: kind=modal cycle={}/{n} target={} worst_ms={worst_ms:.1} frames={frames} dur_ms={dur_ms} rss_kb={} {}",
+                cycle + 1, target.name(), read_rss_kb(), tex_field(),
             ));
             crate::app::bridge::dismiss_surfaces(&mut app.pages);
         }

@@ -282,8 +282,12 @@ impl DecisionAlert {
             // snapshot, before this scrim lands on it. See `popover::host::live`.
             let _live = crate::ui::popover::host::live();
             // The panel's field, from the page as it stands before the dim below touches it —
-            // idempotent once latched, and a refusal (the video plane) leaves the flat sheet.
-            let _ = self.field.latch_from_frame(crate::ui::underlay::Grade::Dim);
+            // idempotent once latched; until the read lands, and on a refusal (the video plane),
+            // the flat sheet.
+            let _ = self.field.latch_from_frame(
+                crate::ui::underlay::Grade::Dim,
+                crate::ui::popover::host::page_tex(),
+            );
             // The DECISION role's weight, as the flat ink (`Popover::scrim`): this alert is a
             // `Popover` drawn from inside its page (consent, and the player's repair alert over the
             // video plane), not a `ModalStack` surface, so its DIM has no container field to inherit.

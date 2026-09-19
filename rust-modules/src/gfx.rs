@@ -223,6 +223,7 @@ extern "C" {
     fn glTexParameteri(target: c_uint, pname: c_uint, param: c_int);
     // UI self-capture (the "cap_*" section at the bottom of this file)
     fn glGenFramebuffers(n: c_int, ids: *mut c_uint);
+    fn glDeleteFramebuffers(n: c_int, ids: *const c_uint);
     fn glBindFramebuffer(target: c_uint, framebuffer: c_uint);
     fn glFramebufferTexture2D(
         target: c_uint,
@@ -1718,6 +1719,7 @@ pub(crate) fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -
         if tex == 0 {
             glGenTextures(1, &mut tex);
         }
+        tex_ledger::specified(tex, w, h);
         glBindTexture(GL_TEXTURE_2D, tex);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glTexImage2D(
@@ -1736,6 +1738,44 @@ pub(crate) fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         tex
+    }
+}
+
+/// **Every texture [`upload_rgba`] specifies, counted until [`delete_tex`] frees it** — the live
+/// count and the bytes the driver holds for them (RGBA8, level 0). `VmRSS` on this driver
+/// includes GPU memory, so a stress bench that watches RSS grow cannot tell texture churn from a
+/// heap leak on its own; this ledger is the half it cannot see, and the stress benches print it
+/// beside `rss_kb=` on every cycle line. Main-render-thread only, like every GL call here.
+pub(crate) mod tex_ledger {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::os::raw::{c_int, c_uint};
+
+    thread_local! {
+        static LIVE: RefCell<HashMap<c_uint, u64>> = RefCell::new(HashMap::new());
+    }
+
+    /// `tex` was (re)specified at `w`×`h`: a re-spec of a known name replaces its size.
+    pub(crate) fn specified(tex: c_uint, w: c_int, h: c_int) {
+        let bytes = w.max(0) as u64 * h.max(0) as u64 * 4;
+        LIVE.with(|m| {
+            m.borrow_mut().insert(tex, bytes);
+        });
+    }
+
+    /// `tex` was deleted. A name this ledger never saw is ignored.
+    pub(crate) fn deleted(tex: c_uint) {
+        LIVE.with(|m| {
+            m.borrow_mut().remove(&tex);
+        });
+    }
+
+    /// `(live textures, live bytes)`.
+    pub(crate) fn totals() -> (usize, u64) {
+        LIVE.with(|m| {
+            let m = m.borrow();
+            (m.len(), m.values().sum())
+        })
     }
 }
 
@@ -1778,6 +1818,7 @@ pub(crate) fn warm_tex(tex: c_uint) {
 /// guard resurrects the crash the moment a host test calls `delete_tex` with a nonzero id again.
 pub(crate) fn delete_tex(tex: c_uint) {
     if tex != 0 {
+        tex_ledger::deleted(tex);
         #[cfg(not(test))]
         unsafe {
             glDeleteTextures(1, &tex)
@@ -1934,6 +1975,12 @@ pub(crate) struct FrameCache {
     valid: bool,
     checked: bool,
     off: bool,
+    /// The framebuffer object over [`tex`](Self::tex) that [`render_into`](Self::render_into)
+    /// draws the page through; 0 until first asked for, and dropped with the texture it names.
+    fbo: c_uint,
+    /// The FBO came back incomplete once: [`render_into`](Self::render_into) declines from then
+    /// on and the capture falls back to [`capture`](Self::capture)'s copy.
+    fbo_off: bool,
 }
 
 impl FrameCache {
@@ -1945,6 +1992,8 @@ impl FrameCache {
             valid: false,
             checked: false,
             off: false,
+            fbo: 0,
+            fbo_off: false,
         }
     }
 
@@ -1972,13 +2021,7 @@ impl FrameCache {
             return false;
         }
         unsafe {
-            if self.tex == 0 || self.w != vw || self.h != vh {
-                delete_tex(self.tex);
-                self.tex = cap_tex(vw, vh);
-                self.w = vw;
-                self.h = vh;
-                self.checked = false;
-            }
+            self.ensure_tex(vw, vh);
             glBindTexture(GL_TEXTURE_2D, self.tex);
             crate::diag::spans::span("cap", || glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vx, vy, vw, vh));
             if !self.checked {
@@ -1996,6 +2039,83 @@ impl FrameCache {
         }
         self.valid = true;
         true
+    }
+
+    /// A texture of the viewport's size, re-made (and its FBO with it) when the viewport moved.
+    unsafe fn ensure_tex(&mut self, vw: c_int, vh: c_int) {
+        if self.tex == 0 || self.w != vw || self.h != vh {
+            if self.fbo != 0 {
+                glDeleteFramebuffers(1, &self.fbo);
+                self.fbo = 0;
+            }
+            delete_tex(self.tex);
+            self.tex = cap_tex(vw, vh);
+            self.w = vw;
+            self.h = vh;
+            self.checked = false;
+        }
+    }
+
+    /// **Draw the page INTO the cache rather than copying it out afterwards.** Binds an FBO over
+    /// the cache's texture as the page's target ([`crate::surface::PageTarget`]) and returns the
+    /// guard; the page is then drawn exactly as it would be to the frame, and
+    /// [`rendered`](Self::rendered) closes it and puts it on the frame as one quad.
+    ///
+    /// Why, when [`capture`](Self::capture) already works: a `glCopyTexSubImage2D` of framebuffer 0
+    /// in the MIDDLE of a frame makes a tiler resolve the whole frame to memory so it can be read,
+    /// and then reload every tile of it when the modal draws on top. Drawn into the texture, the
+    /// page is written once, where it is needed, and the frame gets it back as the same quad every
+    /// later frame of the modal is served with.
+    ///
+    /// `None` — the caller copies instead — inside a blur source pass, on a video-plane frame, on
+    /// a letterboxed drawable (the texture is the viewport's size and would not line up with a
+    /// viewport that does not start at the origin), and once the FBO has proved incomplete.
+    pub(crate) fn render_into(&mut self) -> Option<crate::surface::PageTarget> {
+        if self.off || self.fbo_off || blur_source_pass() {
+            return None;
+        }
+        if video_plane_refuses("FrameCache::render_into") {
+            return None;
+        }
+        let (vx, vy, vw, vh) = crate::surface::viewport();
+        if vw <= 0 || vh <= 0 || vx != 0 || vy != 0 {
+            return None;
+        }
+        unsafe {
+            self.ensure_tex(vw, vh);
+            if self.fbo == 0 {
+                let mut f: c_uint = 0;
+                glGenFramebuffers(1, &mut f);
+                glBindFramebuffer(GL_FRAMEBUFFER, f);
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self.tex, 0);
+                let st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+                glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+                if st != GL_FRAMEBUFFER_COMPLETE {
+                    log(&format!(
+                        "frame cache: FBO {vw}x{vh} incomplete (status=0x{st:x}) — copying instead"
+                    ));
+                    glDeleteFramebuffers(1, &f);
+                    self.fbo_off = true;
+                    return None;
+                }
+                self.fbo = f;
+            }
+            self.valid = false;
+            let target = crate::surface::PageTarget::enter(self.fbo);
+            // A fresh pass over the texture: a clear is what tells a tiler it need not load the
+            // previous capture's tiles first. The page's own `frame_clear` lays its ground next.
+            glClearColor(0.0, 0.0, 0.0, 0.0);
+            glClear(GL_COLOR_BUFFER_BIT);
+            Some(target)
+        }
+    }
+
+    /// Close a [`render_into`](Self::render_into): the frame's framebuffer is bound again, the
+    /// texture holds the page, and the page goes onto the frame from it as one quad.
+    pub(crate) fn rendered(&mut self, target: crate::surface::PageTarget) {
+        drop(target);
+        self.valid = true;
+        self.draw();
     }
 
     /// Draw the cached viewport across the authored canvas. A framebuffer copy is bottom-up;
@@ -3570,6 +3690,22 @@ static mut GROUND_AT: u32 = 0;
 /// weight so its INK clears a contrast floor over these pixels; a surface that is not inside `r`
 /// gets a density answered for somewhere else. `BarMaterial`'s doc carries the measurement for the
 /// one surface in this app that is in that position.
+/// **May a ground sampler take a FRESH reading on this draw?** Not while the page is frozen.
+///
+/// Both samplers ([`sample_ground`], [`sample_control_ground`]) answer from a `glReadPixels`, and a
+/// read of the framebuffer is SYNCHRONOUS: it returns only once the GPU has drawn everything
+/// submitted before it, the previous frame's work included. A frozen page is one served from the
+/// host snapshot under a modal — its draw produces no pixels, so the ground under its bar and its
+/// Hero row is by construction the one the last live reading already took, and a fresh read can
+/// only return that same answer. What it did cost was the stall: every thirtieth frame of a modal
+/// held over Home drew the page for 21 ms of `glReadPixels` wait, the one frame per cycle over
+/// budget in `fps:modal-100` once the open itself fitted (television, 2026-09-19). The last answer
+/// is kept, and the first live frame after the modal re-reads on its own cadence.
+#[inline]
+fn may_read_ground() -> bool {
+    !page_frozen()
+}
+
 pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
         // A caller can refuse a FRESH reading while still wanting the last one — the route
@@ -3580,7 +3716,7 @@ pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
         if !may_read {
             return *std::ptr::addr_of!(GROUND_RGB);
         }
-        if BLUR_IN_PASS {
+        if BLUR_IN_PASS || !may_read_ground() {
             return *std::ptr::addr_of!(GROUND_RGB);
         }
         let n = (*std::ptr::addr_of!(GROUND_AT)).wrapping_add(1);
@@ -3731,7 +3867,7 @@ fn diffuse_ground_mean(samples: impl IntoIterator<Item = [f32; 3]>) -> [f32; 3] 
 /// Sample the pixels already rendered beneath one Hero action row.
 pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
-        if !may_read || BLUR_IN_PASS {
+        if !may_read || BLUR_IN_PASS || !may_read_ground() {
             return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
         }
         let at = (*std::ptr::addr_of!(CONTROL_GROUND_AT)).wrapping_add(1);
@@ -3946,7 +4082,7 @@ pub(crate) fn video_plane_frame() -> bool {
 /// **The refusal every framebuffer-SAMPLING door takes on a video-plane frame** (spec §9).
 ///
 /// `true` = refuse. The four doors are `popover::host::begin_frame` (the frozen-host snapshot),
-/// `draw_blur_backdrop` (Glass), `underlay::sample_underlay_field` (the field `RouteGround::draw_host`
+/// `draw_blur_backdrop` (Glass), `gfx::field_kick` (the field `RouteGround::draw_host`
 /// latches its live source from) and `FrameCache::capture`. Every one of them answers a question by
 /// READING BACK framebuffer 0 —
 /// and on this frame framebuffer 0 is a hole: the picture the viewer sees is a hardware plane the
@@ -4878,23 +5014,6 @@ fn field_lazy_init() -> bool {
     }
 }
 
-/// **The colour field under the frame as it stands right now**, 15x8 cells, display-encoded sRGB,
-/// row-major from the TOP-LEFT. `None` means "no honest answer this frame" and is not a failure —
-/// `ui::underlay` has a CPU source (`latch_from_corners`) for every case below.
-///
-/// This is [`field_kick`] and an immediate read of what it produced, i.e. a `glReadPixels` on the
-/// frame that queued the work, which STALLS until the GPU has drawn everything submitted so far —
-/// measured on the television (2026-09-19): 26–37 ms, the single largest cost of a modal's open
-/// frame. A caller that can wait a frame for its answer takes [`field_kick`] and [`field_collect`]
-/// instead, and `containers::modal::ModalUnderlay` does.
-///
-/// The refusals are [`field_kick`]'s.
-pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
-    field_kick(None)?;
-    // SAFETY: main render thread; `field_kick` just built the chain this reads.
-    unsafe { field_readback((*std::ptr::addr_of!(FIELDST)).as_ref()?) }
-}
-
 /// A reduction [`field_kick`] queued, to be read by [`field_collect`] once the GPU has had a frame
 /// to finish it. `run` names the chain run (a later kick reuses the same targets, so an older
 /// ticket is simply lost), `swaps` the drawn-frame count it was queued in.
@@ -4928,14 +5047,20 @@ static mut FIELD_RUNS: u32 = 0;
 /// Drawn frames so far, advanced by [`field_frame_end`] beside the swap.
 static FIELD_SWAPS: AtomicU32 = AtomicU32::new(0);
 
-/// Drawn frames that must end between a kick and its read. ONE, measured against two on the
-/// television (2026-09-19, `docs/backdrop-blur-profiling.md`): one frame later the read still
-/// waits 11–25 ms (`fieldread`) because the GPU runs more than a frame behind, and at two it
-/// costs 0.3 ms — but the frame that collects it then pays a LARGER unspanned throttle wait
-/// (50–57 ms against 42–45), because the ramp is GPU-bound and the extra frame only adds to the
-/// backlog. The worst frame is what the bench grades, so one it is; the same-frame read (26–37
-/// ms on top of the open frame's capture) is what this split exists to avoid.
+/// Drawn frames that must end between a kick and its read — the FLOOR, not the rule. The swap is
+/// what flushes the kick (and its fence) to the GPU, so nothing can be finished before one.
+///
+/// The rule is the kick's fence ([`crate::egl::fence`]): the read waits for the GPU to have
+/// actually passed the reduction. A frame count alone was a guess, and a wrong one on the
+/// television, where the GPU runs more than a frame behind a modal's open: one frame later the
+/// read still waited 11–25 ms (`fieldread`), and two frames later the collecting frame paid a
+/// larger throttle wait instead (2026-09-19, `docs/backdrop-blur-profiling.md`). With no fences
+/// (the simulator) the floor is the whole rule.
 const FIELD_READ_LAG_SWAPS: u32 = 1;
+
+/// The fence [`field_kick`] inserted after its passes, with the run it belongs to. Main render
+/// thread only, like the chain.
+static mut FIELD_FENCE: Option<(u32, crate::egl::fence::Fence)> = None;
 
 /// Close a DRAWN frame for the field's tickets — `app::run` calls it beside `blur_frame_end`,
 /// inside the idle gate, because a frame the gate skipped queued nothing on the GPU and gives a
@@ -4952,14 +5077,25 @@ pub(crate) enum TicketState {
     Lost,
 }
 
-/// [`field_collect`]'s decision, as a pure function of the ticket and the two counters.
-pub(crate) fn field_ticket_state(t: FieldTicket, runs: u32, swaps: u32) -> TicketState {
+/// [`field_collect`]'s decision, as a pure function of the ticket, the two counters and the GPU's
+/// word on the kick (`finished`: its fence has signalled, or there is no fence to ask).
+pub(crate) fn field_ticket_state(t: FieldTicket, runs: u32, swaps: u32, finished: bool) -> TicketState {
     if t.run != runs {
         TicketState::Lost
-    } else if swaps.wrapping_sub(t.swaps) < FIELD_READ_LAG_SWAPS {
+    } else if swaps.wrapping_sub(t.swaps) < FIELD_READ_LAG_SWAPS || !finished {
         TicketState::Pending
     } else {
         TicketState::Due
+    }
+}
+
+/// Has the GPU finished run `run`'s reduction? `true` when there is no fence to ask — a chain
+/// without fences answers by frame count alone.
+fn field_run_finished(run: u32) -> bool {
+    // SAFETY: main render thread, like every other access to the chain.
+    match unsafe { (*std::ptr::addr_of!(FIELD_FENCE)).as_ref() } {
+        Some((r, fence)) if *r == run => fence.signaled(),
+        _ => true,
     }
 }
 
@@ -4996,7 +5132,7 @@ pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
         if BLUR_IN_PASS || PAGE_FROZEN || masked(Class::Field) {
             return None;
         }
-        if video_plane_refuses("underlay::sample_underlay_field") {
+        if video_plane_refuses("gfx::field_kick") {
             return None;
         }
         if !field_lazy_init() {
@@ -5055,6 +5191,9 @@ pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
         glEnable(GL_BLEND);
 
         FIELD_RUNS = FIELD_RUNS.wrapping_add(1);
+        // After the passes, so it signals once they are done. Replacing the previous run's fence
+        // destroys it: that run's ticket is `Lost` from here on and nobody will ask.
+        FIELD_FENCE = crate::egl::fence::Fence::insert().map(|f| (FIELD_RUNS, f));
         Some(FieldTicket {
             run: FIELD_RUNS,
             swaps: FIELD_SWAPS.load(Ordering::Relaxed),
@@ -5071,7 +5210,8 @@ pub(crate) fn field_collect(t: FieldTicket) -> FieldRead {
         let Some(c) = (*std::ptr::addr_of!(FIELDST)).as_ref() else {
             return FieldRead::Lost;
         };
-        match field_ticket_state(t, FIELD_RUNS, FIELD_SWAPS.load(Ordering::Relaxed)) {
+        let finished = field_run_finished(t.run);
+        match field_ticket_state(t, FIELD_RUNS, FIELD_SWAPS.load(Ordering::Relaxed), finished) {
             TicketState::Due => field_readback(c).map_or(FieldRead::Lost, FieldRead::Ready),
             TicketState::Pending => FieldRead::Pending,
             TicketState::Lost => FieldRead::Lost,
@@ -5224,12 +5364,25 @@ mod tests {
     #[test]
     fn a_field_ticket_is_due_a_frame_later_and_lost_to_a_later_run() {
         let t = FieldTicket { run: 4, swaps: 10 };
-        assert_eq!(field_ticket_state(t, 4, 10), TicketState::Pending, "same frame: would stall");
-        assert_eq!(field_ticket_state(t, 4, 11), TicketState::Due);
-        assert_eq!(field_ticket_state(t, 4, 40), TicketState::Due, "late is still the same page");
-        assert_eq!(field_ticket_state(t, 5, 11), TicketState::Lost, "another run reused the targets");
+        assert_eq!(field_ticket_state(t, 4, 10, true), TicketState::Pending, "same frame: would stall");
+        assert_eq!(field_ticket_state(t, 4, 11, true), TicketState::Due);
+        assert_eq!(field_ticket_state(t, 4, 40, true), TicketState::Due, "late is still the same page");
+        assert_eq!(field_ticket_state(t, 5, 11, true), TicketState::Lost, "another run reused the targets");
         let wrapped = FieldTicket { run: 1, swaps: u32::MAX };
-        assert_eq!(field_ticket_state(wrapped, 1, 0), TicketState::Due, "the swap count wraps");
+        assert_eq!(field_ticket_state(wrapped, 1, 0, true), TicketState::Due, "the swap count wraps");
+    }
+
+    /// **A frame count is only the floor: the read waits for the GPU's own word.** On the
+    /// television the GPU runs more than a frame behind a modal's open, so "one frame later" still
+    /// stalled the collecting frame by 11–25 ms; an unsignalled fence keeps the ticket pending however
+    /// many frames have passed, and a signalled one is still refused on the kick's own frame.
+    #[test]
+    fn a_field_ticket_waits_for_its_fence_whatever_the_frame_count() {
+        let t = FieldTicket { run: 4, swaps: 10 };
+        assert_eq!(field_ticket_state(t, 4, 11, false), TicketState::Pending, "not finished: no read");
+        assert_eq!(field_ticket_state(t, 4, 40, false), TicketState::Pending, "late but unfinished");
+        assert_eq!(field_ticket_state(t, 4, 10, true), TicketState::Pending, "the floor still holds");
+        assert_eq!(field_ticket_state(t, 5, 40, false), TicketState::Lost, "a reused chain is lost either way");
     }
 
     #[test]
@@ -5497,6 +5650,34 @@ mod tests {
     /// Every motion this test can raise is raised through the real seams — a popover's scope, the
     /// page's unscoped springs, the verdict app.rs threads into `popover::host::begin_frame` — and
     /// NONE of them may move the answer.
+    /// **A frozen page never reads its ground.** Under a modal the page is the host snapshot, so
+    /// both samplers answer with their last reading however many draws pass — neither cadence
+    /// counter moves, so no `glReadPixels` (a full GPU drain) is ever reached — and the freeze
+    /// lifting hands the cadence back where it was.
+    #[test]
+    fn a_frozen_page_answers_its_ground_from_the_last_reading() {
+        let _g = crate::testlock::serial();
+        let last = Some([0.25f32, 0.5, 0.75]);
+        unsafe {
+            GROUND_RGB = last;
+            CONTROL_GROUND_RGB = last;
+            GROUND_AT = 0;
+            CONTROL_GROUND_AT = 0;
+        }
+        let was = set_page_frozen(true);
+        for _ in 0..(3 * GROUND_SAMPLE_EVERY.max(CONTROL_GROUND_SAMPLE_EVERY)) {
+            assert_eq!(sample_ground([0.0, 0.0, 100.0, 40.0], true), last);
+            assert_eq!(sample_control_ground([0.0, 0.0, 100.0, 40.0], true), last);
+        }
+        set_page_frozen(was);
+        let (at, cat) = unsafe { (GROUND_AT, CONTROL_GROUND_AT) };
+        assert_eq!((at, cat), (0, 0), "no reading was even counted toward while frozen");
+        unsafe {
+            GROUND_RGB = None;
+            CONTROL_GROUND_RGB = None;
+        }
+    }
+
     #[test]
     fn a_field_keeps_its_dither_through_every_motion() {
         use crate::ui::idle::{frame_begin, note_spring, page_moving, present_moving, MotionScope};

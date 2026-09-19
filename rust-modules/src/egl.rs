@@ -44,8 +44,11 @@
 //!   outright, whatever the extension string says.
 //! - `GL_EXTENSIONS`, which nothing in the app logged either.
 //!
-//! Diagnostic only. Nothing in this module is called from a draw path, it runs exactly once at
-//! boot, and no other module reads it — it exists to put a fact in the event log.
+//! The probe is diagnostic only: it runs exactly once at boot, and no other module reads it — it
+//! exists to put a fact in the event log. The one exception to "boot only" is [`fence`], which
+//! the draw path DOES call — `gfx::field_kick` fences the underlay-field reduction so its
+//! read-back is taken only once the GPU has finished it — and which resolves its entry points the
+//! same way, for the same `DT_NEEDED` reason.
 use crate::dynlib::Handle;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
@@ -535,4 +538,110 @@ fn log_gl_extensions() {
         return;
     }
     crate::log(&format!("gl extensions: {}", cstr(p)));
+}
+
+/// **"Has the GPU finished this yet?" — asked without waiting for the answer** (`EGL_KHR_fence_sync`).
+///
+/// The one draw-path use of this module, and the reason it is one: GLES2 has no way to ask whether
+/// queued work is done, only `glReadPixels`/`glFinish`, which WAIT for it. The underlay field's
+/// read-back (`gfx::field_collect`) used to guess instead — "one drawn frame later" — and on the
+/// television the GPU runs more than a frame behind a modal's open, so the guess still stalled
+/// the frame that collected it by 11–25 ms. A fence inserted after the reduction and polled with a
+/// zero timeout turns the guess into a fact: the read happens on the first frame the work is
+/// actually finished, and never waits.
+///
+/// Resolved the way everything else here is — through the EGL SDL already mapped, so no new
+/// `DT_NEEDED` — and only when the display advertises the extension; the dev set does (webOS 4.5,
+/// Mali r12p0: `EGL_KHR_fence_sync` in the boot `egl extensions:` line). Absent (the simulator has
+/// no EGL at all), [`Fence::insert`] answers `None` and the caller falls back to its frame count.
+///
+/// Polled with `flags = 0`, never `EGL_SYNC_FLUSH_COMMANDS_BIT_KHR`: a flush in the middle of a frame
+/// makes a tiler submit the half-drawn render pass and reload it afterwards, which is the very cost
+/// being avoided. The swap flushes the fence along with the rest of the frame.
+pub(crate) mod fence {
+    use super::{resolve, Handle};
+    use std::os::raw::{c_int, c_uint, c_void};
+    use std::sync::OnceLock;
+
+    const EGL_SYNC_FENCE_KHR: c_uint = 0x30F9;
+    const EGL_CONDITION_SATISFIED_KHR: c_int = 0x30F6;
+    const EGL_NONE: c_int = 0x3038;
+
+    type FnCreate = unsafe extern "C" fn(*mut c_void, c_uint, *const c_int) -> *mut c_void;
+    type FnClientWait = unsafe extern "C" fn(*mut c_void, *mut c_void, c_int, u64) -> c_int;
+    type FnDestroy = unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_uint;
+
+    /// The display and the three entry points, as addresses: raw pointers are not `Sync`, and
+    /// every call is made on the render thread that resolved them anyway.
+    struct Api {
+        dpy: usize,
+        create: usize,
+        wait: usize,
+        destroy: usize,
+    }
+
+    static API: OnceLock<Option<Api>> = OnceLock::new();
+
+    fn api() -> Option<&'static Api> {
+        API.get_or_init(|| {
+            let mut lib: Option<Handle> = None;
+            let get_display = resolve("eglGetCurrentDisplay", &mut lib)?;
+            let get_display: super::FnGetCurrentDisplay = unsafe { std::mem::transmute(get_display) };
+            let dpy = unsafe { get_display() };
+            if dpy.is_null() {
+                return None;
+            }
+            let query = resolve("eglQueryString", &mut lib)?;
+            let query: super::FnQueryString = unsafe { std::mem::transmute(query) };
+            let ext = super::cstr(unsafe { query(dpy, super::EGL_EXTENSIONS) });
+            if !ext.split_ascii_whitespace().any(|e| e == "EGL_KHR_fence_sync") {
+                crate::log("egl fence: EGL_KHR_fence_sync not advertised — field reads count frames");
+                return None;
+            }
+            let api = Api {
+                dpy: dpy as usize,
+                create: resolve("eglCreateSyncKHR", &mut lib)? as usize,
+                wait: resolve("eglClientWaitSyncKHR", &mut lib)? as usize,
+                destroy: resolve("eglDestroySyncKHR", &mut lib)? as usize,
+            };
+            crate::log("egl fence: EGL_KHR_fence_sync in use for the field read-back");
+            Some(api)
+        })
+        .as_ref()
+    }
+
+    /// A fence in the GL command stream, destroyed on drop.
+    pub(crate) struct Fence {
+        sync: usize,
+    }
+
+    impl Fence {
+        /// Insert a fence after everything submitted so far, or `None` where there are no fences.
+        pub(crate) fn insert() -> Option<Self> {
+            let a = api()?;
+            let create: FnCreate = unsafe { std::mem::transmute(a.create) };
+            let attribs = [EGL_NONE];
+            let sync = unsafe { create(a.dpy as *mut c_void, EGL_SYNC_FENCE_KHR, attribs.as_ptr()) };
+            (!sync.is_null()).then_some(Self { sync: sync as usize })
+        }
+
+        /// Has the GPU passed it? A zero-timeout poll: never waits, never flushes. An error reads
+        /// as "yes", so a broken driver degrades to the frame-count rule rather than to a read
+        /// that never happens.
+        pub(crate) fn signaled(&self) -> bool {
+            let Some(a) = api() else { return true };
+            let wait: FnClientWait = unsafe { std::mem::transmute(a.wait) };
+            let r = unsafe { wait(a.dpy as *mut c_void, self.sync as *mut c_void, 0, 0) };
+            r == EGL_CONDITION_SATISFIED_KHR || r == 0
+        }
+    }
+
+    impl Drop for Fence {
+        fn drop(&mut self) {
+            if let Some(a) = api() {
+                let destroy: FnDestroy = unsafe { std::mem::transmute(a.destroy) };
+                unsafe { destroy(a.dpy as *mut c_void, self.sync as *mut c_void) };
+            }
+        }
+    }
 }

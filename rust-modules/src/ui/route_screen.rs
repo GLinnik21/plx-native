@@ -192,11 +192,11 @@ impl RouteGround {
     /// the consent question moved ahead of the profile picker it usually has no rendered host to
     /// sample at all.
     ///
-    /// `latch_from_frame` is `gfx::sample_underlay_field`'s own refusal list (§9's video-plane door
-    /// among them — see [`crate::gfx::sample_underlay_field`]'s doc): whenever it answers `false`
-    /// this falls back to the same authored atmosphere [`Self::draw_default`] uses when it has no
-    /// host at all, graded [`Grade::Ground`] because it is standing in for a live sample rather than
-    /// being drawn as itself.
+    /// `latch_from_frame` refuses on `gfx::field_kick`'s list (§9's video-plane door among them —
+    /// see [`crate::gfx::field_kick`]'s doc): whenever it answers [`FrameLatch::Refused`] this falls
+    /// back to the same authored atmosphere [`Self::draw_default`] uses when it has no host at all,
+    /// graded [`Grade::Ground`] because it is standing in for a live sample rather than being drawn
+    /// as itself.
     ///
     /// Split from the draw call below (`latch_host` / `draw_host`) so a host test can prove the
     /// live-frame-fails-so-fall-back-to-corners decision without ever reaching `field.draw`'s real
@@ -204,24 +204,29 @@ impl RouteGround {
     /// is not gated behind a `PROG == 0`/`tex == 0` check (`field.draw`'s `Role::Ground` arm is not,
     /// once latched, is not either — see [`UnderlayField::draw`]) is an immediate SIGSEGV.
     ///
-    /// `visible` is whether the ground this frame is drawn at a nonzero opacity. When it is not —
-    /// Settings, on the frame it is presented, at appear 0 — the read is DEFERRED a frame
-    /// ([`UnderlayField::latch_from_frame_deferred`]) and nothing differs on the panel; that read
-    /// was the 50 ms `surf` span of the Settings open frame on the television (2026-09-19). A
-    /// pending read is not a refusal: the corner fallback is for a frame with no honest source,
-    /// and it latches for the life of the ground.
-    fn latch_host(&mut self, visible: bool) {
+    /// The read never stalls the frame ([`UnderlayField::latch_from_frame`]): it lands a frame or
+    /// two into the Settings fade, and until it does the ground draws the flat app surface an
+    /// unlatched field falls back to, at the bottom of the appear ramp. Read synchronously it was
+    /// the 50 ms `surf` span of the Settings open frame on the television (2026-09-19), and 21 ms of
+    /// the frame after once deferred only while invisible. A pending read is not a refusal: the
+    /// corner fallback is for a frame with no honest source, and it latches for the life of the
+    /// ground.
+    fn latch_host(&mut self) {
         // The host snapshot is the undimmed page when there is one (Settings caches its host), and
         // it saves the chain its own full-screen copy; a route with no snapshot reads the frame.
         let src = crate::ui::popover::host::page_tex();
-        if self.field.latch_from_frame_deferred(Grade::Ground, !visible, src) == FrameLatch::Refused
-        {
+        if self.field.latch_from_frame(Grade::Ground, src) == FrameLatch::Refused {
             self.field.latch_from_corners(Self::fallback_corners(), Grade::Ground);
         }
     }
 
     pub(crate) fn draw_host(&mut self, p: Painter) {
-        self.latch_host(p.opacity() > 0.0);
+        // Read on the first frame the ground is SEEN — `ModalStack::draw_scrims_on`'s rule, for
+        // its reason: the open frame is the one that renders the host into its snapshot, and at
+        // opacity 0 nothing is drawn through the field.
+        if p.opacity() > 0.0 {
+            self.latch_host();
+        }
         self.field.draw(p, Rect::FULL, Role::Ground, 1.0);
     }
 
@@ -1390,7 +1395,7 @@ mod tests {
     }
 
     /// **A route whose live-frame latch fails still gets an atmosphere.** `draw_host` cannot force
-    /// `gfx::sample_underlay_field` to answer — a video-plane frame, a blur source pass, a frozen
+    /// `gfx::field_kick` to answer — a video-plane frame, a blur source pass, a frozen
     /// page and a drawable the exact-2x chain cannot be built for are all real "no honest frame this
     /// time" answers this route does not get to pick between — so it has to fall back, once, to the
     /// same authored corners `draw_default` uses when it has no host at all. The video-plane refusal
@@ -1402,17 +1407,17 @@ mod tests {
     /// for why a host test cannot call through to `field.draw`.
     #[test]
     fn a_route_ground_whose_frame_latch_fails_falls_back_to_corners() {
-        // Visible (read now) and invisible (read deferred a frame) alike: a refusal is not a
-        // pending read, and a deferral must not turn one into a frame of no atmosphere.
-        for visible in [true, false] {
+        // A refusal is not a pending read, and the deferred read must not turn one into a frame of
+        // no atmosphere.
+        {
             let was = crate::gfx::set_video_plane_frame(true);
             let mut ground = RouteGround::new();
-            ground.latch_host(visible);
+            ground.latch_host();
             crate::gfx::set_video_plane_frame(was);
 
             assert!(
                 ground.is_latched(),
-                "a refused live frame must still leave the ground with an atmosphere (visible={visible})"
+                "a refused live frame must still leave the ground with an atmosphere"
             );
             let mut want = UnderlayField::new();
             want.latch_from_corners(RouteGround::fallback_corners(), Grade::Ground);

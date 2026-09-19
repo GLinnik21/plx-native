@@ -13,7 +13,7 @@
 //!   field below, and [`UnderlayField::latch_from_corners`] is what a caller with no readable
 //!   frame — the video plane, a route that opens before Home has drawn — still reaches for.)
 //!
-//! This is the third: a 15x8 grid reduced from the frame itself (`gfx::sample_underlay_field`),
+//! This is the third: a 15x8 grid reduced from the frame itself (`gfx::field_kick`),
 //! low-passed, graded, reconstructed to 60x32 and drawn as one magnified quad with the shared
 //! dither. **It is spatially faithful** — the green stays where the green is — and it costs one
 //! texture fetch a fragment, because the expensive part happened once, at the latch.
@@ -164,12 +164,12 @@ pub(crate) struct UnderlayField {
     /// rather than recomputed per draw: a panel asks every frame, the field changes only at a latch.
     luma: [u8; TEX_W * TEX_H],
     latched: bool,
-    /// A page reduction queued by [`latch_from_frame_deferred`](Self::latch_from_frame_deferred)
+    /// A page reduction queued by [`latch_from_frame`](Self::latch_from_frame)
     /// and not yet read back.
     pending: Option<gfx::FieldTicket>,
 }
 
-/// What [`UnderlayField::latch_from_frame_deferred`] answers.
+/// What [`UnderlayField::latch_from_frame`] answers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum FrameLatch {
     /// The field holds a picture (this call's, or an earlier one's).
@@ -211,66 +211,40 @@ impl UnderlayField {
         }
     }
 
-    /// **Freeze the frame that has already been drawn.** Idempotent while latched — the second
-    /// caller gets `true` and the first caller's picture, which is the property that makes this
-    /// safe to call from a `draw` that runs every frame.
+    /// **Freeze the frame that has already been drawn — without ever waiting for it.** Idempotent
+    /// while latched, which is what makes it safe to call from a `draw` that runs every frame.
     ///
-    /// `false` means `gfx::sample_underlay_field` had no honest answer this frame (a blur source
-    /// pass, a video-plane frame, a frozen page, a drawable the exact-2x chain cannot be built
-    /// for); the caller keeps whatever it was drawing and may ask again next frame, or fall back
-    /// to [`latch_from_corners`](Self::latch_from_corners).
-    pub(crate) fn latch_from_frame(&mut self, grade: Grade) -> bool {
-        if self.latched {
-            return true;
-        }
-        let Some(raw) = gfx::sample_underlay_field() else {
-            return false;
-        };
-        self.adopt(cells_from_frame(&raw, grade));
-        true
-    }
-
-    /// [`latch_from_frame`](Self::latch_from_frame) for an owner that may be told "next frame".
-    ///
-    /// `can_wait` is the owner's word that nothing it draws from this field is visible THIS frame
-    /// (Settings' ground, on the frame the modal is presented, at appear 0). Then the page is
-    /// reduced now and read back on a later call ([`FrameLatch::Pending`] until it lands), and the
-    /// `glReadPixels` that stalled the whole frame on the GPU — 26–37 ms on the television,
-    /// 2026-09-19 — reads finished work instead. When it cannot wait this is exactly
-    /// `latch_from_frame`, the stall included, because a visible ground has no honest picture to
-    /// show without its read; a read already in flight is then finished synchronously.
+    /// The page is reduced on the first call (`gfx::field_kick`) and read back on a LATER one, once
+    /// the GPU has actually finished the reduction (`gfx::field_collect`; [`FrameLatch::Pending`]
+    /// until then). Reading it on the frame that asked — which this used to do whenever the
+    /// owner's surface was already visible — made the `glReadPixels` wait for everything the GPU
+    /// had queued: 26–37 ms of a modal's open frame on the television (2026-09-19). A field that
+    /// is not latched yet draws its owner's fallback (the flat ground, the flat panel sheet) for
+    /// the frame or two the read takes, at the very bottom of an appear ramp.
     ///
     /// `src` is `gfx::field_kick`'s: a texture that already holds the page, or `None` for the
-    /// framebuffer as it stands.
-    pub(crate) fn latch_from_frame_deferred(
-        &mut self,
-        grade: Grade,
-        can_wait: bool,
-        src: Option<u32>,
-    ) -> FrameLatch {
+    /// framebuffer as it stands. [`FrameLatch::Refused`] is `field_kick`'s refusals (a blur source
+    /// pass, a video-plane frame, a frozen page, a drawable the exact-2x chain cannot be built
+    /// for): the caller keeps what it was drawing, may ask again next frame, or falls back to
+    /// [`latch_from_corners`](Self::latch_from_corners).
+    pub(crate) fn latch_from_frame(&mut self, grade: Grade, src: Option<u32>) -> FrameLatch {
         if self.latched {
             return FrameLatch::Latched;
         }
         if let Some(t) = self.pending.take() {
             match gfx::field_collect(t) {
                 gfx::FieldRead::Ready(raw) => {
-                    self.adopt(cells_from_frame(&raw, grade));
+                    let c = cells_from_frame(&raw, grade);
+                    self.adopt(c);
                     return FrameLatch::Latched;
                 }
-                gfx::FieldRead::Pending if can_wait => {
+                gfx::FieldRead::Pending => {
                     self.pending = Some(t);
                     crate::ui::idle::wake();
                     return FrameLatch::Pending;
                 }
-                gfx::FieldRead::Pending | gfx::FieldRead::Lost => {}
+                gfx::FieldRead::Lost => {}
             }
-        }
-        if !can_wait {
-            return if self.latch_from_frame(grade) {
-                FrameLatch::Latched
-            } else {
-                FrameLatch::Refused
-            };
         }
         match gfx::field_kick(src) {
             Some(t) => {
@@ -305,7 +279,7 @@ impl UnderlayField {
     ///
     /// Unlike [`latch_from_frame`](Self::latch_from_frame) it is NOT idempotent, and that is the
     /// point: the owner samples FIRST and only calls this with a real answer, so a frame on which
-    /// `gfx::sample_underlay_field` has none (a blur source pass, a frozen page) keeps the field
+    /// `gfx::field_kick` has none (a blur source pass, a frozen page) keeps the field
     /// it had instead of dropping to the flat dim for a frame. It is also the seam a host test
     /// drives the latch through, since the sample is the one step that needs a GL context.
     pub(crate) fn latch_sampled(&mut self, raw: &[[f32; 3]; N], grade: Grade) {
@@ -630,21 +604,56 @@ pub(crate) fn reconstruct(cells: &[[f32; 3]; N], u: f32, v: f32) -> [f32; 3] {
 
 /// The 60x32 display-encoded RGBA8 the shader samples. Alpha is opaque: coverage is the tint's
 /// business (`fs_field.frag` multiplies `c.a * u_tint.a`), never the texture's.
+///
+/// **[`reconstruct`] evaluated SEPARABLY**, and to the bit: `reconstruct` already runs its cubic
+/// along x for each of four rows and then once along y, so the x pass depends only on a texel's
+/// COLUMN and a grid row, and is shared by every texel of that column. Computing it once per
+/// (row, column) and then running the y pass per texel performs exactly the arithmetic
+/// `reconstruct` does, in the same order, with a quarter of the cubics and none of the per-tap
+/// extrapolation — `a_separable_texture_is_reconstruct_to_the_bit` holds it to that. Evaluated per
+/// texel it was 7.5–8.6 ms of the frame a modal's dim first latched on the television
+/// (2026-09-19), the one CPU cost left in a frame the GPU already fills.
 pub(crate) fn texture_rgba(cells: &[[f32; 3]; N]) -> [u8; TEX_W * TEX_H * 4] {
+    // The grid rows a texel's y pass can reach: `j0 - 1 ..= j0 + 2` over every texel row.
+    let row_lo = texel_knot(0, TEX_H, H).0 - 1;
+    let row_hi = texel_knot(TEX_H - 1, TEX_H, H).0 + 2;
+    let rows = (row_hi - row_lo + 1) as usize;
+    // x pass: `xs[r][i][ch]` is the cubic along x through grid row `row_lo + r` at texel column i.
+    let mut xs = vec![[[0.0f32; 3]; TEX_W]; rows];
+    for (r, out) in xs.iter_mut().enumerate() {
+        let j = row_lo + r as isize;
+        for (i, o) in out.iter_mut().enumerate() {
+            let (i0, fx) = texel_knot(i, TEX_W, W);
+            *o = std::array::from_fn(|ch| {
+                let p: [f32; 4] = std::array::from_fn(|m| cell_at(cells, i0 - 1 + m as isize, j, ch));
+                crom(p, fx)
+            });
+        }
+    }
     let mut px = [0u8; TEX_W * TEX_H * 4];
     for j in 0..TEX_H {
+        let (j0, fy) = texel_knot(j, TEX_H, H);
         for i in 0..TEX_W {
-            let u = (i as f32 + 0.5) / TEX_W as f32;
-            let v = (j as f32 + 0.5) / TEX_H as f32;
-            let c = reconstruct(cells, u, v);
             let o = (j * TEX_W + i) * 4;
             for ch in 0..3 {
-                px[o + ch] = (gfx::enc(c[ch]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                let col: [f32; 4] =
+                    std::array::from_fn(|k| xs[(j0 - 1 + k as isize - row_lo) as usize][i][ch]);
+                let c = crom(col, fy);
+                px[o + ch] = (gfx::enc(c).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
             }
             px[o + 3] = 255;
         }
     }
     px
+}
+
+/// Texel `t` of `n` across a grid of `cells`: its left/top knot and the fraction past it —
+/// [`reconstruct`]'s own `(i0, fx)` for `u = (t + 0.5) / n`, by the same expressions.
+fn texel_knot(t: usize, n: usize, cells: usize) -> (isize, f32) {
+    let u = (t as f32 + 0.5) / n as f32;
+    let x = u.clamp(0.0, 1.0) * cells as f32 - 0.5;
+    let x0 = x.floor();
+    (x0 as isize, x - x0)
 }
 
 #[cfg(test)]

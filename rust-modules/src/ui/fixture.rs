@@ -1856,7 +1856,7 @@ fn below_drawn(d: &Dispatcher<FixtureHost>) -> u32 {
 ///
 /// *Takes no snapshot.* Four doors read framebuffer 0 back — the frozen-host snapshot
 /// (`popover::host::begin_frame`), Glass, the underlay field's live-frame sample
-/// (`underlay::sample_underlay_field`, `RouteGround::draw_host`'s source) and `FrameCache::capture`
+/// (`gfx::field_kick`, `RouteGround::draw_host`'s source) and `FrameCache::capture`
 /// — and on this frame framebuffer 0 IS the hole. What each of them would cache is a photograph of
 /// transparent black, served back over the film for as long as the cache lives. Before phase 9 the
 /// only statement of that rule was prose ("never call it on the player route") plus the loop
@@ -1965,7 +1965,7 @@ fn a_video_plane_screen_replaces_its_host_and_takes_no_snapshot() {
         ("src/gfx.rs", "video_plane_refuses(\"FrameCache::capture\")"),
         ("src/gfx.rs", "video_plane_refuses(\"Glass::backdrop\")"),
         ("src/ui/popover.rs", "video_plane_refuses(\"popover::host::begin_frame\")"),
-        ("src/gfx.rs", "video_plane_refuses(\"underlay::sample_underlay_field\")"),
+        ("src/gfx.rs", "video_plane_refuses(\"gfx::field_kick\")"),
     ] {
         let src =
             std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))
