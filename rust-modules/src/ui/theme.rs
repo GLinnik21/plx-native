@@ -533,21 +533,13 @@ impl Material {
 /// are still there, so it reads as glass rather than as paint. The reference agrees — iOS's own
 /// context menu passes almost nothing of the page behind it.
 pub const PANEL_MATERIAL: Material = Material::UltraThick;
-/// Full-screen Settings-family modal ground. A full-HD surface cannot afford the four extra
-/// per-fragment taps used by the thicker compact materials on the target TV, so it samples the
-/// already-blurred cached snapshot once. Density is a separate token: it is what keeps poster
-/// titles and faces from competing with route copy without turning every Settings frame into a
-/// two-million-pixel multi-tap pass.
-pub const MODAL_SAMPLE_MATERIAL: Material = Material::UltraThin;
-pub const MODAL_FROST_ALPHA: f32 = 0.92;
-/// The one-time Kawase kernel used only while freezing the Settings host. Compact glass keeps its
-/// lighter 0.35/0.75 kernel; this wider pair deliberately destroys letter-scale structure so the
-/// host reads as a wallpaper rather than as a second interface behind the modal.
-pub const MODAL_BLUR_TAPS: [f32; 4] = [1.0, 2.0, 3.5, 5.5];
-/// Multiplicative grade for the cached full-screen blur. Keeping the density in the same texture
-/// pass avoids a second two-million-fragment frost quad on the target TV.
-pub const MODAL_BLUR_TINT: [f32; 4] = [0.46, 0.48, 0.54, 1.0];
-pub const MODAL_BLUR_SATURATION: f32 = 1.32;
+// The five `MODAL_*` tokens that stood here — `MODAL_SAMPLE_MATERIAL`, `MODAL_FROST_ALPHA`,
+// `MODAL_BLUR_TAPS`, `MODAL_BLUR_TINT`, `MODAL_BLUR_SATURATION` — were the material of a
+// full-screen BLURRED modal ground (`Glass::modal_ground` → `Painter::backdrop_blur_flat` →
+// `gfx::draw_blur_snapshot_flat` → `shaders/fs_modal_ground.frag`). That chain had no live caller
+// left and was deleted whole; a route ground is an `AmbientWash` (see `ui::route_screen`) and,
+// from PR2, an `ui::underlay::UnderlayField`, neither of which is a blur. Do not re-add the tokens
+// without the surface that reads them.
 
 #[cfg(test)]
 mod material_tests {
@@ -609,15 +601,6 @@ mod material_tests {
         );
     }
 
-    #[test]
-    fn fullscreen_modal_uses_one_cached_sample_and_its_own_dense_frost() {
-        assert_eq!(MODAL_SAMPLE_MATERIAL, UltraThin);
-        assert!(MODAL_FROST_ALPHA > UltraThick.frost());
-        assert!(MODAL_BLUR_TAPS
-            .windows(2)
-            .all(|w| w[0] > 0.0 && w[1] > w[0]));
-        assert!((1.0..=1.5).contains(&MODAL_BLUR_SATURATION));
-    }
 }
 pub const PANEL_FROST_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.72);
 /// The frosted sheet's bottom stop — see [`PANEL_FROST_TOP`].

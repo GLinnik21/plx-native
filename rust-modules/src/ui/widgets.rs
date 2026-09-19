@@ -419,25 +419,6 @@ impl Glass {
         }
     }
 
-    /// Full-screen modal ground: one cached snapshot under the dense shared modal frost token.
-    /// Unlike [`sheet`](Self::sheet), this is not a floating slab, so it has no visible rim and no
-    /// rounded edge; unlike dynamic glass, it never resamples while Settings is open.
-    pub(crate) fn modal_ground(self, p: Painter, r: Rect) {
-        if !p.backdrop_blur_flat(
-            r,
-            theme::MODAL_BLUR_TINT,
-            &theme::MODAL_BLUR_TAPS,
-            theme::MODAL_BLUR_SATURATION,
-        ) {
-            p.rect(
-                r,
-                0.0,
-                theme::with_a(theme::PANEL_FROST_TOP, theme::MODAL_FROST_ALPHA),
-                theme::with_a(theme::PANEL_FROST_BOT, theme::MODAL_FROST_ALPHA),
-                0.0,
-            );
-        }
-    }
 }
 
 /// **What a popover is made of — both halves, from one name.** See [`theme::Material`].
@@ -3326,7 +3307,19 @@ impl AmbientWash {
     /// artwork-keyed wash goes through here; a palette token (the resting warm tint) does not need
     /// it, because we chose that value.
     pub(crate) fn keyed(blur: [[f32; 3]; 4], w: [f32; 4]) -> [[f32; 4]; 4] {
-        Self::target(blur.map(ground_capped), w)
+        std::array::from_fn(|i| Self::keyed_one(blur[i], w[i]))
+    }
+
+    /// **ONE artwork colour graded into a ground** — [`keyed`](Self::keyed) for a single sample,
+    /// and the function `keyed` is now four of.
+    ///
+    /// It exists because the four-corner envelope is no longer the only shape a ground can have:
+    /// [`ui::underlay`](crate::ui::underlay) grades 120 cells the same way, and "the same way" has
+    /// to mean the same CODE or the two shapes drift into two palettes. The cap and the lean are
+    /// the legibility contract `widgets_ambient_ground_tests.rs` grades; nothing may reach them by
+    /// re-writing this line.
+    pub(crate) fn keyed_one(c: [f32; 3], w: f32) -> [f32; 4] {
+        theme::mix(theme::SURFACE_APP, ground_capped(c), w)
     }
 
     /// A wash resting flat on one colour — what a page opens as before any item keys it.
