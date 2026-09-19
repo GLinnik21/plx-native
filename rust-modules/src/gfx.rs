@@ -375,12 +375,33 @@ pub(crate) fn frame_clear_through() {
     frame_clear_alpha(0.0, 0.0, 0.0, 0.0);
 }
 
+thread_local! {
+    static SUPPRESS_FRAME_CLEAR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A text-recording scene may call raw frame clears outside its recording Painter.
+/// Keep those calls off the visible framebuffer; restore even if the screen unwinds.
+pub(crate) fn without_frame_clear<R>(draw: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SUPPRESS_FRAME_CLEAR.with(|v| v.set(self.0));
+        }
+    }
+    let _restore = Restore(SUPPRESS_FRAME_CLEAR.with(|v| v.replace(true)));
+    draw()
+}
+
+fn frame_clear_allowed() -> bool {
+    !page_frozen() && !SUPPRESS_FRAME_CLEAR.with(|v| v.get())
+}
+
 fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
     // A frozen page must not clear: the cached host quad is already on the framebuffer and this is
     // the FIRST thing every page draws, so an ungated clear would wipe the snapshot and leave the
     // popover sitting on flat grey. See [`PAGE_FROZEN`] — this is the one refusal that is not a
     // quad and so cannot ride on [`culled`].
-    if page_frozen() {
+    if !frame_clear_allowed() {
         return;
     }
     crate::diag::spans::span("clear", || unsafe {
@@ -6675,5 +6696,35 @@ mod tests {
             blur_is_bottom_up(),
             "the v span runs backwards iff stored bottom-up"
         );
+    }
+}
+
+#[cfg(test)]
+mod recording_clear_tests {
+    #[test]
+    fn text_prewarm_cannot_clear_the_visible_frame() {
+        let _guard = crate::testlock::serial();
+        let old = super::set_page_frozen(false);
+        assert!(super::frame_clear_allowed());
+        super::without_frame_clear(|| {
+            assert!(!super::frame_clear_allowed(), "pending screen raw clear must be refused");
+        });
+        assert!(super::frame_clear_allowed());
+        super::set_page_frozen(old);
+    }
+
+    #[test]
+    fn recording_clear_scope_restores_after_nesting_and_unwind() {
+        let _guard = crate::testlock::serial();
+        let old = super::set_page_frozen(false);
+        super::without_frame_clear(|| {
+            let _ = std::panic::catch_unwind(|| super::without_frame_clear(|| panic!("screen")));
+            assert!(!super::frame_clear_allowed());
+        });
+        assert!(super::frame_clear_allowed());
+        super::set_page_frozen(true);
+        super::without_frame_clear(|| {});
+        assert!(!super::frame_clear_allowed(), "must preserve the independent modal freeze");
+        super::set_page_frozen(old);
     }
 }

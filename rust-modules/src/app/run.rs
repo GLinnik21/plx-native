@@ -235,7 +235,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // `Surface` around every modal tick and surface step — §4.4), so it is exactly the term
         // the legacy loop got from stepping `library::update` inside `idle::scoped_motion`.
         //
-        // Its one reader is `popover::host::begin_frame` below — `host_refresh`'s `page_moving`
+        // Its host-cache reader is `popover::host::begin_frame` below — `host_refresh`'s `page_moving`
         // term, which decides whether the frozen snapshot under a FADING panel is taken again,
         // and which could not see an owned page move. (It fed `gfx::page_wash_dither` too until
         // 2026-09-19; a page-wide verdict turned out to be the wrong question for a wash, since
@@ -1849,6 +1849,9 @@ fn loop_requests(app: &mut App) {
 /// dev oscillators, the play landing and the remaining pumps — `tick_drain` on the FRAMEDROP
 /// line.
 pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
+        // The owned page and navigation have stepped; shared chrome has not. Its density,
+        // chip and strip springs still request presents, but do not change the page they blur.
+        app.glass.note_page_motion(crate::ui::idle::present_moving() || fr.underlay_moving);
 
         // `Route::Login`/`Route::Profiles` no longer have a route-gated `update(dt)` call here
         // (phase 6, mirroring `Route::Onboard`'s own removal in 5b): both are owned screens now,
@@ -2175,6 +2178,8 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         if !(app.player.video_plane_bound && crate::route::is_preview(&app.player.session)) {
                             crate::ui::popover::host::begin_frame(fr.underlay_moving);
                         }
+                        app.glass.cover_page(app.pages.surface_up());
+                        let source_visible = app.glass.source_visible();
                         // Resolve every glass owner BEFORE anything on this route draws — that is
                         // `Glass::prepare`'s contract, and the shared top tab track is an owner on
                         // every route that wears it.
@@ -2194,7 +2199,8 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // this one is not routed at all, because the shelves it rides appear on
                         // Home, the Library and Search and the trigger is the whole condition.
                         app.glass.prepare_tile_band();
-                        // THE PAGE, named once because it is drawn TWICE: the direct source path
+                        // THE PAGE, named once for a visible pass and, only when needed, a source
+                        // pass. With a modal up the source is invisible; otherwise the direct path
                         // produces a glass surface's backdrop by rendering the page again into a
                         // small FBO, and that has to happen HERE, before the visible pass — the
                         // capture path's hook is inside the glass surface itself, far too late to
@@ -2246,15 +2252,8 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             // frame draws the real tree once, later frames submit one quad while
                             // the popover's own scrim, springs and panel stay live above it.
                             //
-                            // **Inside the closure, so BOTH passes get it** — the visible one
-                            // and the direct blur-source one below, which re-renders this same
-                            // closure into a small FBO. The guard is RAII because `home_draw`
-                            // catches panics; see `popover::host::PagePass`.
-                            //
-                            // This was the profile menu's private `FrameCache` and applied to
-                            // exactly one popover. Every popover that asked for it now gets it,
-                            // including the four that draw from INSIDE their page and so could
-                            // never have used the old shape.
+                            // Source passes are excluded while any modal surface is visible,
+                            // including its exit fade. Only the visible pass manages this cache.
                             let _host = crate::ui::popover::host::page_pass();
                             // `Route::Login`/`Route::Profiles`/`Route::Search` are deliberately
                             // absent (phase 6/7, mirroring `Route::Onboard`'s own absence here
@@ -2307,8 +2306,13 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             // it), which satisfies the rule from the other side: the scrim and
                             // the surface are one draw, so they cannot be separated by a pass.)
                         };
-                        if let Some(reg) = crate::gfx::blur_direct_region() {
-                            crate::gfx::blur_snapshot_direct(reg, &mut page);
+                        // All shipping blur owners are page chrome. A modal's dim/panel uses
+                        // its latched underlay field instead, so this source has no visible user
+                        // while a surface is up. Do not dispatch surfaces into a source FBO.
+                        if source_visible {
+                            if let Some(reg) = crate::gfx::blur_direct_region() {
+                                crate::gfx::blur_snapshot_direct(reg, &mut page);
+                            }
                         }
                         // Settings owns a frozen, already-blurred image of the host. After its
                         // first visible draw, repainting the full Home hero and shelves beneath

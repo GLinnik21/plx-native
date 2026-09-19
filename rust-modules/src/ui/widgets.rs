@@ -5045,14 +5045,16 @@ impl TabBand {
         }
     }
 
-    pub(crate) fn prepare(&mut self, data: TabLabels<'_>, clock: &mut DynamicClock) {
+    pub(crate) fn prepare(
+        &mut self, data: TabLabels<'_>, clock: &mut DynamicClock, underlay_changed: bool,
+    ) {
         if !with_tab_metrics_for(data, |_, widths| tab_glass_on(tab_track_w(widths))) {
             return;
         }
         Glass::DYNAMIC_BACKDROP.prepare_on(
             clock,
             &mut self.glass,
-            crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
+            underlay_changed,
         );
     }
 

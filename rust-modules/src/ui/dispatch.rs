@@ -1247,7 +1247,7 @@ where
         // tree through a painter which records text and submits no visual primitive. Re-recording
         // each frame is intentional: cache hits disappear from the queue, while work which missed
         // this frame's deadline is rediscovered next frame without stale cross-navigation state.
-        if nav.tabs.stack.transition.prewarms_text() {
+        if prewarm_text_due(nav.tabs.stack.transition.prewarms_text(), crate::gfx::blur_source_pass()) {
             crate::text::clear_prewarm();
             if let Some(entry) = nav.tabs.stack.pending_target_mut() {
                 if let Some(inst) = entry.inst.as_mut() {
@@ -1261,14 +1261,16 @@ where
                         navigation,
                     );
                     f.page_alpha = 0.0;
-                    inst.screen.draw(&mut f);
+                    // Raw screen clears bypass Painter::recording; they must not erase
+                    // the outgoing page while its destination only records text.
+                    crate::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
                 }
             }
             crate::text::drain_prewarm(
                 super::containers::transition::TEXT_PREWARM_BUDGET_US,
                 || rig.now_us(),
             );
-        } else {
+        } else if !crate::gfx::blur_source_pass() {
             crate::text::clear_prewarm();
         }
         if host_render == HostRender::Cached {
@@ -2805,5 +2807,20 @@ mod edge_back_tests {
         assert!(r.back_at_root, "the root refused it");
         assert_eq!(rig.roots, 1, "…and the application heard it once");
         assert_eq!(d.nav.tabs.stack.depth(), 1, "the stack never moved");
+    }
+}
+
+/// Text preparation belongs to the visible frame, not each rendering of its blur source.
+fn prewarm_text_due(requested: bool, source_pass: bool) -> bool {
+    requested && !source_pass
+}
+
+#[cfg(test)]
+mod prewarm_pass_tests {
+    #[test]
+    fn blur_source_does_not_spend_a_second_text_prewarm_budget() {
+        assert!(!super::prewarm_text_due(true, true));
+        assert!(super::prewarm_text_due(true, false));
+        assert!(!super::prewarm_text_due(false, false));
     }
 }

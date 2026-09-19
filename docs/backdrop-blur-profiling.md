@@ -1325,3 +1325,111 @@ changed here.
 | home-grid | PASS, loop robust_min 57 |
 
 This is not a same-day A/B. The base figures in the table two sections up predate 3a3e640e.
+
+## 2026-09-19 (r3)
+
+**Host-side diagnosis and fixes; no new television measurements.** Inputs were
+`/tmp/stress-r3/modal-100-frames.txt` and `/tmp/stress-r3/push-100-frames.txt` on
+`perf/stress-r3`. The cycle lines reproduce 17/100 modal failures (Settings 8, item menu 4,
+account menu 3, About 2) and 42/100 push failures (Detail 25, Library 12, Person 5).
+The files contain 312 modal FRAMEDROPs, all on Home, and 116 push FRAMEDROPs (Home 61,
+Detail 46, Library 8, Person 1). Counting every line in these supplied files gives 189 modal
+frames with all of `clearx2,pagex2,chromex2,scrimsx2,surfx2`, rather than the request's 174;
+the duplicate-pass finding is present. There are 227 modal `pagex2` frames overall. Counts
+are calls within one frame, not a claim that every draw primitive survives the host freeze.
+
+**Why the second pass survives a frozen host.** `app/run.rs::draw` prepared the top track
+whenever the page wore tab chrome, even with a modal up. `TabBand::prepare` fed the shared
+`DynamicClock` the entire frame's `idle::present_moving() || present_dirty()`. Surface
+animation therefore invalidated the chrome blur. `gfx::blur_direct_region` saw an invalid
+snapshot and the previous frame's requested region, and `blur_snapshot_direct` called the
+same `page` closure into its small FBO. That closure calls `Dispatcher::draw_with_glass`;
+`ui/dispatch.rs::draw_with` draws pages/chrome, scrims, AND modal surfaces. It is not a
+page-only source callback.
+
+`ui/popover.rs::host::page_pass` serves `Held::Page` as a cached quad and freezes page
+primitives, but the dispatcher's surface scopes call `host::live`, which lifts the freeze.
+Both `page_pass` and `live` also invalidate `Held::Ground` during a source pass. Worse,
+`gfx::blur_invalidate` invalidates that ground before the pass even starts. A modal whose
+host reached the ground stage can consequently lose its snapshot and redraw the page too.
+A fresh page capture deliberately refuses `FrameCache::render_into` inside a source FBO;
+the visible pass must capture it instead. Thus the cache is not a guard against a second
+whole-dispatch traversal, and the blur's invalidation can destroy the cache's benefit.
+
+**Shared fixes.** `ui/frame/glass.rs::GlassPlan` now owns the source's visibility and motion
+verdict. `run.rs` supplies `Dispatcher::surface_up()` (including entrance and exit phases)
+and samples page/navigation motion before the shared chrome steps. Covered chrome does not
+prepare/invalidate the track or experimental tile source, and the loop does not enter the
+source callback while a modal is visible. Modal fields and foreground rendering retain their
+ordinary visible pass. On an uncovered page, chrome's own density/strip/chip springs still
+animate, but no longer invalidate what is behind them. Actual page motion, one final settle
+frame, and discrete damage still refresh; existing activation and region-miss handling remain
+in force. Returning from a different route therefore still gets a fresh source before reuse.
+This is not a promise to skip the first pop-back frame or a still-changing page transition.
+
+**Elimination versus cadence.** The earlier experiment in this document measured 46 fps with
+source work every present, 35 without glass, and 36 at one-in-eight. The source pass paces the
+GPU; its exact driver/DVFS explanation remains unproven. We have not changed the cadence for
+changing pages (`DEFAULT_DYNAMIC_PERIOD` remains 1), nor disabled glass globally. We eliminate
+an invisible source under a modal, and reuse a valid source when only its foreground chrome
+moves. This avoids redundant work without temporally undersampling changing artwork. It still
+changes GPU submission on the eliminated frames and needs a television A/B before any speedup
+or bench pass can be claimed. The ambient wash's per-frame dithering is unchanged.
+
+**A second shared defect in the push path: text recording cleared the live framebuffer.**
+The dispatcher's PageDip prewarm drew the pending screen with `Painter::recording`, but Home,
+Library and Detail call raw `gfx::frame_clear` outside that painter. The recording pass could
+therefore erase the outgoing page and issue another clear. Eight Detail FRAMEDROPs have
+`clearx2` with only one `page` span, consistent with this path; that shape is different from
+the glass source's two page spans. `gfx::without_frame_clear` now suppresses both opaque and
+transparent frame clears while the pending screen records, restoring its state on nesting
+and unwind. It preserves the independent modal freeze. The dispatcher also runs text prewarm
+only on the visible pass: a source callback previously recorded and drained a second 6 ms
+budget in the same presented frame. The text budget itself and its admission rules are unchanged.
+
+**Remaining classes, and limits of attribution:**
+
+- Settings' recurring failed cycles are 21, 49, 53, 69, 73, 81 and 89, plus cold cycle 1.
+  Adjacent return-to-Home frames at file lines 110, 224, 284, 307, 343 and 378 have single
+  `clear` calls around 14–15 ms and chrome around 5–7 ms, not duplicate surface draws.
+  Cycle 81 additionally has a 22.1 ms frame (line 344) with page 0.5 ms, surface 2.3 ms,
+  but draw 20.6 ms: the named nested spans do not cover all host-cache/driver work.
+  Cold cycle 1 is 69.2 ms with surface 53.4 ms. Covered-source invalidation is fixed for
+  the whole family, but these samples do not prove a Settings-local defect or identify
+  another safe optimization. No speculative change to Settings' ground or text was made.
+- Detail has 46 slow frames, all single-page-pass; 43 have at least 10 ms in `clear` and
+  44 have no uploads. One warm sample is total 32.7, draw 31.5, clear 29.9 ms. These are
+  consistent with the previously measured GPU/back-buffer backlog, not evidence that the
+  page's CPU work or a synchronous read is responsible. The redundant recording clears
+  above are fixed, but ordinary clears, fill-rate, probe timing and driver scheduling have
+  not been blindly altered. Cold Detail is 88.5 ms (prepare 13.2, page 73.8); three Detail
+  frames have prepare over 10 ms. Existing prewarm remains budgeted and does not guarantee
+  that all cold strings/assets fit before first paint.
+- All eight slow Library frames have `pagex2`; seven have no uploads. The shared source
+  policy addresses the subset caused by chrome-only motion, and the prewarm fix prevents
+  duplicate preparation during transitions. The logs do not contain a page-motion verdict,
+  so they cannot prove that all eight source passes were unnecessary. Changing content
+  still requires a source. Five have at least 10 ms in `clear`.
+- Home in push has 24 `pagex2` frames and 35 with a single `page` span in the complete file
+  (rather than the request's 31). Fifty-six have at least 10 ms in `clear`. The static-source
+  fix applies on return, but single-pass backlog is not itself a duplicated-pass defect.
+- Person has one logged slow frame: total 23.1, page 21.5, no uploads. The five failed
+  Person-labelled cycles cannot all be assigned to Person rendering: the bench measures
+  only its Measuring phase, while FRAMEDROP also records the waiting/return intervals.
+  Likewise, nearby Settings log lines are context, not exact cycle-frame joins. A cycle's
+  target is not necessarily the route of its worst frame. No Person-specific change was made.
+
+**Verification.** Before each change, host tests reproduced covered-source eligibility,
+chrome-only source invalidation, the missing final settle refresh, recording clears (including
+nested/unwinding scopes), and duplicate source-pass text preparation as failures. The fixes
+make those predicates pass without a GL context; an additional test preserves discrete-damage
+refresh. Host checks cannot establish pixels, GPU pacing, or the 20 ms cycle limit. No TV,
+SSH, deployment, private configuration files, grading rules, ceilings or bench exemptions were
+used or changed. The final targeted run (`ui::`, `gfx::`, shared chrome/navigation tests) passed
+743 tests; the shipping `cargo +nightly check --lib --no-default-features` passed too. An earlier
+full host run passed 3,630 tests, ignored one and failed 126 network tests: 123 explicitly report
+sandbox permission errors, and three fail in connection/fixture setup. It is not a full green gate.
+No ARM build or device result is claimed. A manual review of the changed prose and render boundaries
+found no new FFI, symbol, linkage or firmware ABI change.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
